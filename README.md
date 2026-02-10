@@ -6,6 +6,8 @@
 > production-ready**. Expect breaking changes, incomplete features, and
 > evolving architecture.
 
+For a look at the earlier feasibility work and verification, check out the [Syneroym Prototype](https://github.com/syneroym/syneroym-prototype) repository.
+
 ## What This Is
 Syneroym is an identity-native, user-space peer substrate enabling direct
 peer-to-peer interaction among independently owned entities, without
