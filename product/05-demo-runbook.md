@@ -37,7 +37,7 @@ $ syneroym config set policy.auto_consent=true --profile host-a
 $ syneroym daemon run --profile host-a
 > [INFO] Syneroym Substrate Instance v0.1.0
 > [INFO] Identity: did:key:zHostA...
-> [INFO] Listening on: /ip4/127.0.0.1/tcp/4001
+> [INFO] Listening on: /ip4/127.0.0.1/tcp/4001 (or quic/4001)
 > [INFO] Management Socket: /tmp/syneroym-host-a.sock
 ```
 
@@ -62,6 +62,7 @@ $ syneroym config set policy.auto_consent=true --profile host-b
 $ syneroym daemon run --profile host-b
 > [INFO] Syneroym Substrate Instance v0.1.0
 > [INFO] Identity: did:key:zHostB...
+> [INFO] Listening on: /ip4/127.0.0.1/udp/4002/quic
 ```
 
 *In a split pane or new tab:*
@@ -162,14 +163,14 @@ $ syneroym host inspect --profile host-a --peer did:key:zPeer...
 
 **Goal**: Verify the deployed service is accessible.
 
-### Step 4.1: Connect to Peer (Terminal 3 or any Client)
-Interact with the running peer.
+### Step 4.1: Call Peer Method (Terminal 3 or any Client)
+Interact with the running peer using a named method call (RPC).
 
 ```bash
-$ syneroym connect syn://did:key:zPeer...
+$ syneroym call syn://did:key:zPeer... --method greet --args "User"
 > Connecting to peer... Connected via host-a.
-> Sending "PING"
-> Received "PONG from hello-peer running on host-a"
+> Invoking method "greet"...
+> Result: "Hello, User! from hello-peer running on host-a"
 ```
 
 ---
@@ -187,10 +188,10 @@ $ syneroym host revoke --profile host-a --peer did:key:zPeer...
 ```
 
 ### Step 5.2: Observe Failure (Terminal 3)
-Try to connect again.
+Try to call the peer again.
 
 ```bash
-$ syneroym connect syn://did:key:zPeer...
+$ syneroym call syn://did:key:zPeer... --method greet --args "User"
 > Error: Peer unreachable.
 ```
 
@@ -214,13 +215,121 @@ $ syneroym peer deploy --file hello-peer.syn --remote host-b --force
 ```
 
 ### Step 5.5: Verify Recovery (Terminal 3)
-Connect to the *same* peer identity, now running on a new host.
+Call the *same* peer identity, now running on a new host.
 
 ```bash
-$ syneroym connect syn://did:key:zPeer...
+$ syneroym call syn://did:key:zPeer... --method greet --args "User"
 > Resolving peer... Found on host-b.
 > Connected.
-> Received "PONG from hello-peer running on host-b"
+> Result: "Hello, User! from hello-peer running on host-b"
+```
+
+---
+
+## Scenario 6: Lifecycle Management
+
+**Goal**: Validate explicit suspension and resumption of a running peer without removing it.
+
+### Step 6.1: Suspend Peer (Terminal 3)
+Temporarily pause the peer execution.
+
+```bash
+$ syneroym peer suspend --remote host-b --peer did:key:zPeer...
+> Peer suspended.
+```
+
+### Step 6.2: Verify Unavailability (Terminal 3)
+Confirm the peer is not responding.
+
+```bash
+$ syneroym call syn://did:key:zPeer... --method greet --args "User"
+> Error: Peer is suspended.
+```
+
+### Step 6.3: Resume Peer (Terminal 3)
+Resume execution.
+
+```bash
+$ syneroym peer resume --remote host-b --peer did:key:zPeer...
+> Peer resumed.
+```
+
+### Step 6.4: Verify Availability (Terminal 3)
+Confirm the peer is back online.
+
+```bash
+$ syneroym call syn://did:key:zPeer... --method greet --args "User"
+> Result: "Hello, User! from hello-peer running on host-b"
+```
+
+---
+
+## Scenario 7: Proxying Existing Services
+
+**Goal**: Expose a legacy local service (e.g., a local HTTP server) through the Substrate network.
+
+### Step 7.1: Start Local Service (Terminal 2 - Host B)
+Start a simple HTTP server on Host B's machine (or a port reachable by Host B).
+
+```bash
+# In a new shell on Host B's machine
+$ python3 -m http.server 8080
+> Serving HTTP on 0.0.0.0 port 8080 ...
+```
+
+### Step 7.2: Create Proxy Manifest (Terminal 3)
+Create a manifest that points to the local service address *relative to the host*.
+
+```bash
+$ syneroym bundle init --name "local-proxy" --proxy "http://localhost:8080"
+> Created syneroym.toml (Proxy Mode)
+```
+
+### Step 7.3: Deploy Proxy Peer (Terminal 3)
+Deploy the proxy configuration to Host B.
+
+```bash
+$ syneroym bundle pack
+> Packed proxy bundle: local-proxy.syn
+> Peer Identity: did:key:zProxy...
+
+$ syneroym peer deploy --file local-proxy.syn --remote host-b
+> Requesting consent... GRANTED.
+> Starting proxy peer...
+> Peer "local-proxy" running on "host-b".
+```
+
+### Step 7.4: Access Proxy (Terminal 3)
+Call the proxy peer. The substrate translates the call to an HTTP request on the host.
+
+```bash
+$ syneroym call syn://did:key:zProxy... --method GET --args "/"
+> Connecting...
+> Result: "<!DOCTYPE HTML PUBLIC ... (Directory listing of Host B)"
+```
+
+---
+
+## Scenario 8: Peer Removal
+
+**Goal**: Permanently remove a deployed peer from a host, fulfilling the "remove" lifecycle requirement.
+
+### Step 8.1: Remove Peer (Terminal 3)
+Issue a command to the host to stop and delete the peer instance.
+
+```bash
+$ syneroym peer remove --remote host-b --peer did:key:zPeer...
+> Stopping peer...
+> Removing artifacts...
+> Peer "did:key:zPeer..." removed from "host-b".
+```
+
+### Step 8.2: Verify Removal (Terminal 3)
+Confirm the peer is no longer resolvable or reachable on the host.
+
+```bash
+$ syneroym call syn://did:key:zPeer... --method greet --args "User"
+> Error: Peer not found on specified host.
 ```
 
 ---
@@ -231,3 +340,5 @@ $ syneroym connect syn://did:key:zPeer...
 - [ ] **Identities Verified**: All communications authenticated via DIDs; invalid tokens rejected (Step 3.0).
 - [ ] **Caps Enforced**: Host inspection (Step 3.4) shows resource limits applied to the WASM runtime.
 - [ ] **Migration Success**: Peer Identity persisted across host migration; only the transport route changed.
+- [ ] **Lifecycle Control**: Peer correctly suspends, resumes (Scenario 6), and is removed (Scenario 8).
+- [ ] **Proxy Functionality**: Legacy service successfully accessed via Substrate identity (Scenario 7).

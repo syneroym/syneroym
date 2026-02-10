@@ -26,10 +26,10 @@ execution across at least two hosts.
 - Intent storage and local reconciliation for simple cases (single peer, single
   host replacement on failure).
 - Peer discovery by identity for external consumers.
-- Transport abstraction layer defined to allow non-IP transports in the future;
-  Phase 1 implementations may use IP transports (TCP/QUIC/WebSocket) plus a
-  simulated delay-tolerant transport (e.g., store-and-forward via local file
-  exchange).
+- Transport abstraction layer defined to allow non-IP transports; Phase 1
+  implementations will include IP transport support, one simulated
+  delay-tolerant transport (e.g., store-and-forward via local file exchange),
+  and one functional non-IP transport.
 
 ### Minimal artifacts
 - Peer identity
@@ -40,8 +40,8 @@ execution across at least two hosts.
 
 ### Packaging target
 - CLI-based substrate reference app (for host onboarding and peer deployment).
-- Minimal SDK surface in one language (choose at implementation time; can be
-  extended later).
+- Minimal SDK surface in one language; additional client language support may
+  be included when required by platform access constraints (e.g., browser).
 
 ---
 
@@ -54,7 +54,7 @@ execution across at least two hosts.
 - Kernel-level controls or privileged OS integrations.
 - Full anonymity or obfuscation systems.
 - Rich UI clients beyond a reference CLI.
-- Functional non-IP transports (e.g., BLE/LoRa) beyond simulation.
+- Functional non-IP transports (e.g., LoRa) beyond BLE.
 
 ---
 
