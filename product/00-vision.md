@@ -110,7 +110,7 @@ The following invariants are mandatory and define the system’s intent.
   or disabled** based on:
   - component role
   - platform capabilities
-  - explicit owner policy
+  - explicit host owner policy
 - No deployment requires custom builds or bespoke variants.
 - Operational complexity **MUST remain low**, with minimal configuration,
   orchestration, or lifecycle burden.

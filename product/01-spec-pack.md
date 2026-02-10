@@ -7,10 +7,11 @@ This system is a user-space **substrate** that lets independently owned services
 interact directly as peers without depending on central authorities, global
 consensus, or permanent infrastructure. The substrate is an application that can
 ship as a CLI, service, or mobile/desktop app. A **peer** is a uniquely
-addressable component, typically a micro-app/service. Each peer is owned by the
-user who installs it on a **host/node** (a logical machine or subset of machine
-resources managed by the substrate on that machine). End users consume system
-services by interacting with peers; peers may also interact with other peers.
+addressable component, typically a micro-app/service. The **host owner** installs
+and controls the substrate on a **host/node** (a logical machine or subset of
+machine resources). The **service owner** installs and controls peers on hosts.
+End users consume system services by interacting with peers; peers may also
+interact with other peers.
 
 Each peer is defined by a self-owned cryptographic identity. Discovery, trust
 establishment, intent expression, and failure handling are intrinsic, not
@@ -55,7 +56,7 @@ shrink-wrapped components with capability gating rather than bespoke builds.
 - **Identity-native peer model**: Peers (micro-apps/services) have self-owned
   cryptographic identities; identity is primary over network location.
 - **Host/substrate model**: Peers run on host/nodes managed by a substrate; the
-  owner of a peer is the user who installs it on a host.
+  host owner controls substrate instances, and the service owner controls peers.
 - **Cryptographic verification**: All externally obtained data is verified; no
   trust by position or mediation.
 - **Decentralized discovery**: Best-effort, hint-based discovery with optional
@@ -221,25 +222,17 @@ move without centralized coordination.
 
 ## 5) Acceptance criteria (demo + tests)
 
-### Demo criteria
-- **Identity-native interaction**: Demonstrate two peers establishing a
-  relationship using self-owned cryptographic identities with no central
-  authority or trusted coordinator.
-- **Verifiable discovery**: Show hint-based discovery (with and without an
-  optional registry) and cryptographic verification of discovered data.
-- **Intent reconciliation under failure**: Demonstrate a declared intent that
-  remains unsatisfied during disconnection and is later reconciled without a
-  control plane.
-- **Portable execution**: Deploy a micro-app on Peer B from Peer A, suspend it,
-  and resume it on Peer C after revocation by Peer B.
-- **Transport diversity**: Demonstrate operation over a non-IP or
-  delay-tolerant transport (or a simulated store–carry–forward link).
-- **Privacy by default**: Show that identity and intent disclosure is explicit
-  and contextual, and that metadata leakage is minimized in defaults.
-- **Uniform components**: Demonstrate the same component set running on two
-  distinct platforms with capability gating (no bespoke builds).
+### Demo criteria (Phase 1 baseline)
+- **Host onboarding**: Install substrate on two hosts, publish capability
+  profiles via DNS/PKARR or OOB tokens, and verify identities.
+- **Service deployment**: Discover both hosts, negotiate hosting consent
+  grants, deploy a peer bundle, and confirm enforced resource caps.
+- **Service consumption**: An external client discovers the peer by identity
+  hash and successfully connects after verification.
+- **Revocation and recovery**: Host revokes consent, peer is suspended, and
+  redeployed to the second host via reconciliation.
 
-### Test criteria
+### Test criteria (Phase 1 baseline)
 - **Identity verification tests**
   - Reject any externally obtained data that fails cryptographic verification.
   - Confirm that identity is independent of network location.
