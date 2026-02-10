@@ -101,3 +101,5 @@ erDiagram
   HOSTING_CONSENT_GRANT }o--|| PEER : authorizes
   EXTERNAL_CONSUMER }o--o{ PEER : consumes
 ```
+
+> **Note:** The External Consumer logically talks to the Peer, but in reality all connections will go through the Substrate Instance only.
