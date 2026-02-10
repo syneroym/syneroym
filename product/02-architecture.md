@@ -11,8 +11,12 @@ This is the architecture frame used to lock Phase 1 scope and demos.
 - **Peer**: A uniquely addressable micro-app/service with its own cryptographic
   identity. Peers can interact with other peers and with external consumers.
 - **Host/Node**: A logical machine (or subset of resources) that can run peers.
-- **Substrate**: The user-space application running on a host/node that manages
-  peers and enforces policy, resource limits, discovery, and trust.
+- **Substrate**: The overall system and product surface. It runs as a
+  **substrate instance** on each host/node and can enable different roles
+  (host control, service control, signaling, data relay, proxy) while using the
+  same underlying components.
+- **Substrate instance**: A running copy of the substrate on a host/node.
+  Instances can enable specific roles based on owner intent and host policy.
 - **Host Owner**: The user who installs a substrate instance and controls host
   policy.
 - **Service Owner**: The user who installs and controls peers/services.
@@ -36,7 +40,8 @@ This is the architecture frame used to lock Phase 1 scope and demos.
 ### 3) Consent & Policy Layer
 - Negotiates explicit, revocable **Hosting Consent Grants** between peers and
   hosts.
-- Applies host owner policy (allow/deny lists, time/usage caps).
+- Applies host owner policy (allow/deny lists, time/usage caps) via the Host
+  Substrate.
 
 ### 4) Execution & Resource Control Layer
 - Runs peers under explicit resource caps (CPU, memory, disk, GPU).
@@ -48,6 +53,9 @@ This is the architecture frame used to lock Phase 1 scope and demos.
 - Continuously reconciles desired state vs. observed state without a central
   control plane.
 - Handles churn, disconnections, and revocations.
+  - Reconciliation is driven by any reachable substrate instance with service
+    control enabled. An offline host’s substrate instance cannot reconcile on
+    its own.
 
 ### 6) Transport Abstraction Layer
 - Operates across intermittent connectivity and diverse transports.
@@ -77,10 +85,11 @@ This is the architecture frame used to lock Phase 1 scope and demos.
 ---
 
 ## End-to-End Interaction Summary
-1. **Host onboarding**: Host owner installs substrate, generates host identity,
-   advertises non-authoritative capability hints.
-2. **Service deployment**: Service owner discovers candidate hosts, verifies
-   identities, negotiates consent grants, deploys peer bundles.
+1. **Host onboarding**: Host owner installs a substrate instance on a host,
+   generates host identity, and advertises non-authoritative capability hints.
+2. **Service deployment**: Service owner uses a substrate instance with service
+   control enabled to discover candidate hosts, verify identities, negotiate
+   consent grants, and deploy peer bundles.
 3. **Service consumption**: Consumers discover peers by identity, verify
    identity and capabilities, then interact.
 4. **Change & migration**: Service owners update peer characteristics; substrate

@@ -4,8 +4,10 @@
 - **Host Owner**: User who installs and controls a substrate instance on their
   host(s).
 - **Service Owner**: User who owns and deploys peer services onto hosts.
-- **Substrate App**: User-space application that runs on a host and manages
-  peers, policy, discovery, and resource enforcement.
+- **Substrate App**: User-space application that runs on a host. The overall
+  system is the **Substrate**, which runs as a **substrate instance** on each
+  host. Instances can enable roles like host control, service control, signaling,
+  data relay, or proxy while using the same underlying components.
 - **Host/Node**: A logical machine or subset of resources governed by a
   substrate instance.
 - **Peer**: A uniquely addressable micro-app/service with its own identity.
@@ -24,28 +26,29 @@
 ## Relationships (Cardinality)
 | Entity A | Relationship | Entity B | Cardinality | Notes |
 | --- | --- | --- | --- | --- |
-| Host Owner | installs/controls | Substrate App | 1 owner : many substrate instances | A host owner can run multiple substrate apps across hosts. |
-| Substrate App | governs | Host/Node | 1:1 (per instance) | A substrate instance manages a single host/node slice. |
+| Host Owner | installs/controls | Substrate Instance | 1 owner : many substrate instances | A host owner can run multiple instances across hosts. |
+| Substrate Instance | governs | Host/Node | 1:1 (per instance) | A substrate instance manages a single host/node slice. |
 | Service Owner | installs/controls | Peer | 1 owner : many peers | Ownership is explicit and revocable. |
 | Peer | runs on | Host/Node | many peers : 1 host (at a time) | A peer is hosted by one host at a time in Phase 1. |
 | Host/Node | runs | Peer | 1 host : many peers | Hosts can run multiple peers. |
-| Substrate App | issues | Host Identity | 1:1 | Each substrate instance has exactly one host identity. |
+| Substrate Instance | issues | Host Identity | 1:1 | Each instance has exactly one host identity. |
 | Host/Node | advertises | Capability Profile | 1:1 (current) | Capability profile can be updated over time. |
 | Peer | packages into | Peer Bundle | 1:1 (current) | A peer bundle may be versioned. |
-| Substrate App | grants | Hosting Consent Grant | 1 substrate : many grants | Each grant is scoped and revocable. |
+| Substrate Instance | grants | Hosting Consent Grant | 1 substrate : many grants | Each grant is scoped and revocable. |
 | Hosting Consent Grant | authorizes | Peer | many grants : 1 peer | A peer may have multiple grants over time. |
 | External Consumer | consumes | Peer | many consumers : many peers | Discovery and verification are required. |
 
 ## Relationships & Lifecycle (High Level)
 1. **Host onboarding**
-   - Host Owner installs substrate app on Host/Node.
-   - Substrate creates Host Identity and Capability Profile.
-   - Substrate advertises non-authoritative hints (DNS, PKARR, OOB token).
+   - Host Owner installs a substrate instance on Host/Node.
+   - The substrate instance creates Host Identity and Capability Profile.
+   - The substrate instance advertises non-authoritative hints (DNS, PKARR, OOB token).
 
 2. **Peer provisioning**
    - Service Owner creates Peer Bundle and Peer Identity.
    - Service Owner discovers candidate hosts via hints and verifies Host Identity.
-   - Service Owner negotiates Hosting Consent Grant with host substrate.
+   - Service Owner negotiates Hosting Consent Grant with a substrate instance
+     that has host control enabled.
 
 3. **Execution & consumption**
    - Peer is deployed and run under host resource caps.
@@ -53,20 +56,21 @@
 
 4. **Change & migration**
    - Service Owner updates Peer Bundle or policy.
-   - Substrate propagates updates or migrates peer to another host under
-     explicit consent.
+   - A substrate instance with service control enabled propagates updates or
+     migrates peer to another host under explicit consent.
 
 ## Conceptual Diagram (Mermaid)
 ```mermaid
 flowchart LR
-  HO["Host Owner"] --> SA["Substrate App"]
-  SA --> H["Host/Node"]
-  SA --> HI["Host Identity"]
-  SA --> CP["Capability Profile"]
-  SA --> DH["Discovery Hints\n(DNS / PKARR / OOB)"]
+  HO["Host Owner"] --> SIH["Substrate Instance\n(host control)"]
+  SIH --> H["Host/Node"]
+  SIH --> HI["Host Identity"]
+  SIH --> CP["Capability Profile"]
+  SIH --> DH["Discovery Hints\n(DNS / PKARR / OOB)"]
 
-  SO["Service Owner"] --> PB["Peer Bundle"]
-  SO --> PI["Peer Identity"]
+  SO["Service Owner"] --> SIS["Substrate Instance\n(service control)"]
+  SIS --> PB["Peer Bundle"]
+  SIS --> PI["Peer Identity"]
 
   PB --> P["Peer"]
   PI --> P
@@ -85,14 +89,15 @@ flowchart LR
 ## Cardinality Diagram (Mermaid)
 ```mermaid
 erDiagram
-  HOST_OWNER ||--o{ SUBSTRATE_APP : controls
-  SUBSTRATE_APP ||--|| HOST_NODE : governs
-  SERVICE_OWNER ||--o{ PEER : owns
+  HOST_OWNER ||--o{ SUBSTRATE_INSTANCE : controls
+  SUBSTRATE_INSTANCE ||--|| HOST_NODE : governs
+  SERVICE_OWNER ||--o{ SUBSTRATE_INSTANCE : operates
+  SUBSTRATE_INSTANCE ||--o{ PEER : deploys
   HOST_NODE ||--o{ PEER : runs
-  SUBSTRATE_APP ||--|| HOST_IDENTITY : issues
+  SUBSTRATE_INSTANCE ||--|| HOST_IDENTITY : issues
   HOST_NODE ||--|| CAPABILITY_PROFILE : advertises
   PEER ||--|| PEER_BUNDLE : packaged_as
-  SUBSTRATE_APP ||--o{ HOSTING_CONSENT_GRANT : grants
+  SUBSTRATE_INSTANCE ||--o{ HOSTING_CONSENT_GRANT : grants
   HOSTING_CONSENT_GRANT }o--|| PEER : authorizes
   EXTERNAL_CONSUMER }o--o{ PEER : consumes
 ```

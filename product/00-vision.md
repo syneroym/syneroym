@@ -27,6 +27,8 @@ The substrate embeds **discovery, trust establishment, intent expression, and
 failure handling** as intrinsic capabilities, allowing peers to cooperate,
 host services for one another, and maintain continuity under intermittent
 connectivity and strict operating constraints.
+The substrate runs as **substrate instances** on hosts; instances enable roles
+as needed (e.g., host control, service control, signaling, relay, proxy).
 
 The system is designed for **heterogeneous, partially connected, and
 adversarial environments**, where availability is variable, trust is local,
@@ -63,7 +65,8 @@ The following invariants are mandatory and define the system’s intent.
 - The substrate supports **declarative expression of service intent**.
 - Desired state and observed state are allowed to diverge.
 - The system continuously **reconciles intent against reality** without any
-  centralized control plane.
+  centralized control plane, driven by reachable peers/substrate instances with
+  authority; an offline host substrate cannot reconcile on its own.
 - Reconciliation is **local, cooperative, and interruptible**, not globally
   coordinated.
 

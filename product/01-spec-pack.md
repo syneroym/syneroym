@@ -6,12 +6,17 @@
 This system is a user-space **substrate** that lets independently owned services
 interact directly as peers without depending on central authorities, global
 consensus, or permanent infrastructure. The substrate is an application that can
-ship as a CLI, service, or mobile/desktop app. A **peer** is a uniquely
-addressable component, typically a micro-app/service. The **host owner** installs
-and controls the substrate on a **host/node** (a logical machine or subset of
-machine resources). The **service owner** installs and controls peers on hosts.
-End users consume system services by interacting with peers; peers may also
-interact with other peers.
+ship as a CLI, service, or mobile/desktop app. The overall system is the
+**Substrate**, which runs as a **substrate instance** on each host/node and can
+enable distinct roles (host control, service control, signaling, data relay,
+proxy). A **peer** is a
+uniquely addressable component, typically a micro-app/service. The **host owner**
+installs and controls a substrate instance on a **host/node** (a logical machine
+or subset of machine resources). The **service owner** operates a substrate
+instance with service control enabled to deploy and manage peers across hosts.
+Additional roles (signaling, relay, proxy) may be enabled as needed. End users
+consume system services by interacting with peers; peers may also interact with
+other peers.
 
 Each peer is defined by a self-owned cryptographic identity. Discovery, trust
 establishment, intent expression, and failure handling are intrinsic, not
@@ -55,19 +60,22 @@ shrink-wrapped components with capability gating rather than bespoke builds.
 ### In scope
 - **Identity-native peer model**: Peers (micro-apps/services) have self-owned
   cryptographic identities; identity is primary over network location.
-- **Host/substrate model**: Peers run on host/nodes managed by a substrate; the
-  host owner controls substrate instances, and the service owner controls peers.
+- **Host/substrate model**: Peers run on host/nodes managed by a substrate
+  instance with host control enabled; service owners use a substrate instance
+  with service control enabled to deploy and manage peers.
 - **Cryptographic verification**: All externally obtained data is verified; no
   trust by position or mediation.
 - **Decentralized discovery**: Best-effort, hint-based discovery with optional
   non-authoritative registries (initially DNS-based, PKARR, and out-of-band
-  tokens); clients verify all discovered data.
+  tokens); clients verify all discovered data. Phase 1 discovery fallback order:
+  OOB token → PKARR → DNS hints → fail.
 - **Declarative intent & reconciliation**: Peers express desired state; substrate
   continuously reconciles intent vs. observed reality locally and
   cooperatively.
 - **Portable execution units**: Micro-apps/services can be hosted across peers
   with explicit, revocable permission; lifecycle operations include deploy,
-  move, suspend, resume, remove.
+  move, suspend, resume, remove. Phase 1 also allows proxying existing services
+  by assigning a peer identity and exposing them through the substrate.
 - **Transport agnosticism**: Operates over intermittent connectivity and
   non-IP/delay-tolerant transports, including lossy links and
   store–carry–forward.
@@ -119,6 +127,9 @@ shrink-wrapped components with capability gating rather than bespoke builds.
   - The substrate supports declarative expression of service intent.
   - The system continuously reconciles intent against reality locally,
     cooperatively, and interruptibly, without centralized control.
+  - Reconciliation is driven by any reachable substrate instance with service
+    control enabled; an offline host’s substrate instance cannot reconcile on
+    its own.
 
 - **Portable execution**
   - Micro-apps/services are portable execution units that can be moved across
@@ -174,11 +185,11 @@ shrink-wrapped components with capability gating rather than bespoke builds.
   substrate to run a peer under specified limits.
 
 ### Flow A: Host onboarding and capability advertisement
-1. A host/node owner installs the substrate on Host H, making a resource slice
-   available for peers.
-2. The substrate creates or loads its host identity and local policy (resource
+1. A host/node owner installs a substrate instance on Host H, making a resource
+   slice available for peers.
+2. The substrate instance creates or loads its host identity and local policy (resource
    caps, allowed peers, exposure rules).
-3. The substrate advertises non-authoritative hints to discovery sources
+3. The substrate instance advertises non-authoritative hints to discovery sources
    (DNS-based, PKARR, or an out-of-band token) that describe the host identity
    and declared substrate capabilities (CPU, memory, disk, GPU, etc.).
 4. Peers or service owners that encounter these hints treat them as candidates
@@ -190,16 +201,20 @@ becoming authoritative or trusted by default.
 ### Flow B: Service owner finds hosts and deploys peers
 1. A service owner wants to deploy a set of micro-app/services (peers) with
    specific resource requirements and policies; the peer bundle includes a
-   manifest describing required capabilities and resource caps.
+   manifest describing required capabilities and resource caps. Phase 1 assumes
+   a WASM-based peer bundle format with a minimal manifest; other formats are
+   deferred.
 2. The service owner queries discovery hints (DNS/PKARR/OOB token, or direct
    negotiation) to find candidate hosts advertising compatible capabilities.
 3. For each candidate, the service owner verifies the host identity and
-   negotiates a Hosting Consent Grant via the substrate.
+   negotiates a Hosting Consent Grant via a substrate instance with host control
+   enabled.
 4. The service owner deploys the peer bundle to the selected hosts; each host’s
-   substrate enforces declared resource limits and capability gates, within OS
-   constraints.
-5. If a host revokes consent or becomes unreachable, the substrate suspends the
-   affected peer and attempts to reconcile by rehosting on other eligible hosts.
+   substrate instance enforces declared resource limits and capability gates,
+   within OS constraints.
+5. If a host revokes consent or becomes unreachable, the service owner’s
+   substrate instance (service control enabled) suspends the affected peer and
+   attempts to reconcile by rehosting on other eligible hosts.
 
 **Outcome**: Peers are deployed onto compatible hosts with explicit consent,
 enforced resource limits, and local reconciliation on failure.
@@ -211,7 +226,7 @@ enforced resource limits, and local reconciliation on failure.
    before interaction; unverified data is discarded.
 3. The service owner updates peer characteristics (policy, resource profile, or
    version). The substrate propagates the change to deployed instances via the
-   host substrates.
+   host substrate instances.
 4. If required, the substrate migrates a peer to a new host under explicit
    consent, preserving identity while changing execution location.
 
@@ -254,7 +269,8 @@ move without centralized coordination.
 
 - **Transport tests**
   - Validate operation under intermittent connectivity.
-  - Verify compatibility with non-IP and delay-tolerant transports.
+  - Verify transport abstraction allows non-IP in the future; Phase 1 may
+    demonstrate delay tolerance via simulated store-and-forward.
 
 - **Privacy tests**
   - Confirm metadata-minimizing defaults (identity correlation, topology
