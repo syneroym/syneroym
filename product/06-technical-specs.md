@@ -25,19 +25,21 @@ This section defines the specific technologies chosen to implement the architect
     - **OOB**: Manual token entry.
 
 ### Protocols (Control vs. Data)
-A hybrid approach is used to balance system robustness with peer expressiveness.
+A pluggable architecture is used to support various serialization formats tailored to the deployment stage (Production vs. Development).
 
 - **Control Plane** (Substrate ↔ Substrate / CLI ↔ Daemon):
-    - **Format**: **Protobuf**.
-    - **Reasoning**: Mature, strictly typed, high performance (`prost` in Rust), and excellent cross-language support for SDKs.
+    - **Architecture**: Pluggable transport and serialization.
+    - **Production Default**: **Protobuf**. Chosen for maturity, strict typing, high performance (`prost` in Rust), and excellent cross-language support.
+    - **Development/Debug**: **JSON**. Supported for human-readable inspection and easy troubleshooting.
 - **Data Plane** (Peer ↔ Peer / Client ↔ Peer):
-    - **Internal**: **WIT (Wasm Interface Types)** via **wRPC**. Native to the WASM Component Model; defines interfaces cleanly.
-    - **External/Debug**: **JSON-RPC**. An adapter layer to allow easy debugging and interaction from standard HTTP/Web clients.
+    - **Architecture**: Pluggable interface adapters.
+    - **Production Default**: **WIT (Wasm Interface Types)** via **wRPC**. Native to the WASM Component Model for high-performance internal communication.
+    - **Development/Debug**: **JSON-RPC**. An adapter layer to allow easy debugging and interaction from standard HTTP/Web clients without specialized tooling.
 
 ### Data & State
 - **Local State**: **SQLite**. Structured storage for configuration, keys, and consent grants.
 - **Wire Formats**:
-    - **Control**: Protobuf binaries.
+    - **Control**: Protobuf (binary) or JSON (text) depending on configuration.
     - **Peer Exchange**: wRPC (binary) or JSON-RPC (text) depending on client negotiation.
 
 ---
