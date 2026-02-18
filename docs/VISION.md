@@ -20,7 +20,8 @@
     - Fault tolerance
     - Legal shielding
     - Reputation aggregation
-    - Economies of scaleNetwork effects
+    - Economies of scale
+    - Network effects
 
 - And have the following drawbacks:
     - Non-availability (geographies, power/network/technology constrained scenarios)
