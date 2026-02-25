@@ -4,7 +4,8 @@ This document expands on the vision described [here] (/VISION.md). Please go thr
 This requirements spec is structured as follows.
 
 - Philosophy & Design Constraints
-- Substrate Primitives: The core protocol layer for all participants
+- Conceptual Model
+- Substrate Functionality: The core substrate layer for all participants
 - Shared Utilities and Services: Common Utilities useful to multiple mini-apps
 - Mini-App Specs:
     - Vertical 1: Home Services Guild (e.g. Electricians, Plumbers)
@@ -39,7 +40,7 @@ Following is a list of benefits of large-scale consumer platforms we need to pre
     - Strategic dependency
     - Not friendly to buildup of deep provider-client relationships, mostly transactional
 
-## Conceptual Diagram
+## Conceptual Model
 The following diagram shows various conceptual entities in the Syneroym ecosystem and relationships between them.
 
 ```mermaid
@@ -73,7 +74,8 @@ erDiagram
 
 ```
 
-## Flows
+## Core Substrate Functionality
+Description of the core Syneroym substrate functionality, key protocols, important flows.
 
 ### Substrate Setup
 - Node-owner Installs substrate on node
@@ -88,12 +90,13 @@ erDiagram
     - Enable necessary substrate access to owner primary key
     - Provide access control to various SYN-APP owner pubkeys for SYNAPP management APIs of substrate (deploy, remove, observe), and associated quotas
 
+## Supporting Services
 ### Relay
 - Iroh Relay, and/or TURN Relay (for WebRTC)
 - Apply to register as community relay with syneroym bootstrap server if interested in contributing (refresh periodically)
 - On successful registration, it is available as relaynodeid.syneroym.net, download certs
 
-### Bootstrap Server
+### Bootstrap
 Register new relays:
 - Register some officially maintained relays with capabilities (tcp relay, TURN)
 - Accept new relay's Offer to register as community relay for capabilities it provides, accept after verification (offline, or real-time checks)
@@ -108,6 +111,11 @@ Relay Lookup for nodeid:
 ### DNS
 - Store all relay subdomain mappings with DNS service (e.g. Cloudfare or Route 55)
 
-### Application Dev
-### Design considerations
+## Synapp Development process
+## Spec Vertical 1: Home Services Guild
+## Spec Vertical 2: Food and Small Retailer Mesh
+
+## Design considerations
+- Iroh for p2p, hole punching, relay
+- webrtc-rs for connection via browser WebRTC Datachannels
 - Consider "Connect" library to support both JSON and gRPC
