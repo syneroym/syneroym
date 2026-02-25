@@ -15,11 +15,10 @@ central authorities or global consensus. The substrate is designed for
 intermittent connectivity, explicit trust boundaries, and portable execution.
 
 ## Repository Layout
-- `product/` — Product specs, vision mapping, and acceptance criteria
+- `docs/` — Vision mapping, Product specs, other docs
 - `libs/` — Language-specific substrate libraries (identity, discovery, transport, execution)
 - `apps/` — User-facing applications (CLI, desktop/mobile shells, signaling surfaces)
 - `examples/` — Demo integrations and reference apps
-- `docs/` — Supporting documentation
 
 ## Scope Boundary: Substrate vs. Mini-Apps
 The `libs/` directory is the shared substrate library layer that applications use.
@@ -28,8 +27,8 @@ expected to be built independently (e.g., HTML/CSS/JS or WASM).
 
 ## Getting Started
 This repo is being bootstrapped. For now:
-- Read the vision in `product/00-vision.md`
-- Read the spec pack in `product/01-spec-pack.md`
+- Read the vision in `docs/VISION.md`
+- Read the requirement spec in `docs/requirements.md`
 
 ## Contributing
 Contributions are welcome once the Phase 1 scope is locked. See

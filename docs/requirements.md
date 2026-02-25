@@ -39,10 +39,8 @@ Following is a list of benefits of large-scale consumer platforms we need to pre
     - Strategic dependency
     - Not friendly to buildup of deep provider-client relationships, mostly transactional
 
-
-### Conceptual Diagram
+## Conceptual Diagram
 The following diagram shows various conceptual entities in the Syneroym ecosystem and relationships between them.
-
 
 ```mermaid
 ---
@@ -74,3 +72,42 @@ erDiagram
     SVC-SB[SVC-SANDBOX]{}
 
 ```
+
+## Flows
+
+### Substrate Setup
+- Node-owner Installs substrate on node
+- Substrate creates admin keys
+- Register to relay:
+    - Get home relay to connect from bootstrap server
+    - Insert node key and relay used in Pkarr signed packet (for node's control plane services like SYN-SVC deploy/remove) in BEP 0044 DHT
+    - Start iroh quic server on that relay
+- Substrate Identifies its capabilities (sandbox/container types, quota configurability), user configures limits (CPU, Mem, Disk) for Services
+- Access control:
+    - Register substrate pubkey with owner's primary substrate (i.e. owner owns multiple substrates), 
+    - Enable necessary substrate access to owner primary key
+    - Provide access control to various SYN-APP owner pubkeys for SYNAPP management APIs of substrate (deploy, remove, observe), and associated quotas
+
+### Relay
+- Iroh Relay, and/or TURN Relay (for WebRTC)
+- Apply to register as community relay with syneroym bootstrap server if interested in contributing (refresh periodically)
+- On successful registration, it is available as relaynodeid.syneroym.net, download certs
+
+### Bootstrap Server
+Register new relays:
+- Register some officially maintained relays with capabilities (tcp relay, TURN)
+- Accept new relay's Offer to register as community relay for capabilities it provides, accept after verification (offline, or real-time checks)
+- Register the DNS entry for that relay with registrar for *.relaynodeid.syneroym.net
+- Return a random set of relays from the registered ones based on relay capability requested, weight relays by their capacity (powerful relays are returned with higher probability)
+- Periodically run relay checks and expire stale community relays
+
+Relay Lookup for nodeid:
+- For any nodeid lookup, check in internal cache or DHT fallback and return relay
+- For HTTP url nodeid lookups (browsers), find the relay and send an HTTP redirect to it. 
+
+### DNS
+- Store all relay subdomain mappings with DNS service (e.g. Cloudfare or Route 55)
+
+### Application Dev
+### Design considerations
+- Consider "Connect" library to support both JSON and gRPC
