@@ -65,6 +65,7 @@ Following are common user requirements irrespective of business domain.
 - Hardware infrastructure owners make hardware (old PCs, or cloud) available for service providers who then can then host applications or their parts (modules, services) on such leased infrastructure.
 - Service Providers can monitor online service health, react to notifications about service status - Service Providers can move services and data across Infrastructure providers without restriction
 - Service Providers can backup and restore app data
+- Service Providers can install the same app on multiple devices and both should work independently whenever not connected to each other, and synchronize the internal storage/state whenever connected. 
 - Service Providers can access services/data from other providers and also control access to their data/services as per agreements and workflows with ecosystem partners. E.g. Medical service provider can provide Patients their latest medical records, or allow access to other providers if patient consents.
 
 ## Conceptual Model
@@ -144,7 +145,7 @@ Relay Lookup for nodeid:
 - Application specification composing components
 - Provider Applies application spec to substrates available
 ### Runtime
-- Substrates monitor application and provide health info, notifications, redeploy support
+- Substrates monitor application and provide health info, notifications, help redeploys
 
 ## Spec Vertical 1: Home Services Guild
 ## Spec Vertical 2: Food and Small Retailer Mesh
