@@ -4,6 +4,7 @@ This document expands on the vision described [here] (/VISION.md). Please go thr
 This requirements spec is structured as follows.
 
 - Philosophy & Design Constraints
+- Requirements Overview
 - Conceptual Model
 - Substrate Functionality: The core substrate layer for all participants
 - Shared Utilities and Services: Common Utilities useful to multiple mini-apps
@@ -40,8 +41,34 @@ Following is a list of benefits of large-scale consumer platforms we need to pre
     - Strategic dependency
     - Not friendly to buildup of deep provider-client relationships, mostly transactional
 
+
+## Requirements Overview
+High level requirement highlights
+
+### Personas in Syneroym ecosystem
+The following are key personas in the Syneroym ecosystem. 
+
+- Provider:
+    - Individual Provider: E.g. Anyone providing some service to others. E.g. a plumber, photographer, blogger.
+    - Self hosted Provider: Providers who hosts their online services themselves.
+    - Provider Aggregator: They take up the responsibility of hosting online services of multiple providers.
+- Infrastructure providers: They make their hardware infrastructure available for others to use/lease.
+- Consumer: Entities consuming online services like a retail buyer, or person requesting plumbing service. 
+- App Developer: Who builds business mini-apps and make those available for others to deploy on their infrastructure.
+
+Of course, it is likely that a single Person/Org plays the role of different personas. 
+
+### Common requirements
+Following are common user requirements irrespective of business domain.
+
+- Service Providers host business applications on PCs or Mobiles they control, and use those via UI, CLI or other means as applicable.
+- Hardware infrastructure owners make hardware (old PCs, or cloud) available for service providers who then can then host applications or their parts (modules, services) on such leased infrastructure.
+- Service Providers can monitor online service health, react to notifications about service status - Service Providers can move services and data across Infrastructure providers without restriction
+- Service Providers can backup and restore app data
+- Service Providers can access services/data from other providers and also control access to their data/services as per agreements and workflows with ecosystem partners. E.g. Medical service provider can provide Patients their latest medical records, or allow access to other providers if patient consents.
+
 ## Conceptual Model
-The following diagram shows various conceptual entities in the Syneroym ecosystem and relationships between them.
+The following diagram shows various conceptual entities in the Syneroym ecosystem and relationships between them. Will help establish common nomenclature too.
 
 ```mermaid
 ---
@@ -108,14 +135,21 @@ Relay Lookup for nodeid:
 - For any nodeid lookup, check in internal cache or DHT fallback and return relay
 - For HTTP url nodeid lookups (browsers), find the relay and send an HTTP redirect to it. 
 
-### DNS
-- Store all relay subdomain mappings with DNS service (e.g. Cloudfare or Route 55)
+## Synapp Lifecycle
+### Development
+- Build wasm components with wRPC for inter-component calling
+- JSON-RPC Dispatch Code generation for non wRPC callers if needed (e.g. JSON-RPC for calls from browser). 
+- Packaging in OCI containers
+### Deployment
+- Application specification composing components
+- Provider Applies application spec to substrates available
+### Runtime
+- Substrates monitor application and provide health info, notifications, redeploy support
 
-## Synapp Development process
 ## Spec Vertical 1: Home Services Guild
 ## Spec Vertical 2: Food and Small Retailer Mesh
 
 ## Design considerations
 - Iroh for p2p, hole punching, relay
 - webrtc-rs for connection via browser WebRTC Datachannels
-- Consider "Connect" library to support both JSON and gRPC
+- Consider JSON-RPC and wasm components or wRPC. WIT as Canonical API and JSON-RPC derived from it

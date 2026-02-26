@@ -57,7 +57,7 @@ Mini-apps have the following characteristics
 - They can scale out by federating lower-end hardware units. These hardware units can be made available by other ecosystem participants having spare infrastructure with needed capabilities
 - They provide benefits of large platforms as described above, but also avoid drawbacks discussed
 - They work autonomously within the group owning it
-- They also help providers using different mini-apps to coordinate and cooperate via rich collaboration and coordination primitives in the underlying technology substrate
+- They also help providers using different mini-apps to coordinate and cooperate via rich primitives in the underlying technology substrate
 
 # Rationale behind selecting our initial mini-apps
 We selected the 2 mini-apps mentioned above, namely, Services Guild, and Producer-Distributor mesh, due to their following inherent characteristics:
