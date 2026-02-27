@@ -45,27 +45,32 @@ Following is a list of benefits of large-scale consumer platforms we need to pre
 ## Requirements Overview
 High level requirement highlights
 
-### Personas in Syneroym ecosystem
+## Personas in Syneroym ecosystem
 The following are key personas in the Syneroym ecosystem. 
 
-- Provider:
-    - Individual Provider: E.g. Anyone providing some service to others. E.g. a plumber, photographer, blogger.
-    - Self hosted Provider: Providers who hosts their online services themselves.
-    - Provider Aggregator: They take up the responsibility of hosting online services of multiple providers.
-- Infrastructure providers: They make their hardware infrastructure available for others to use/lease.
-- Consumer: Entities consuming online services like a retail buyer, or person requesting plumbing service. 
+- Service Provider:
+    - Individual Service Provider: E.g. Anyone providing some service to others. E.g. a plumber, photographer, blogger. Can self-host his services online, or through a Provider aggregator, as described below
+    - Self-hosted Service Provider: Provider who host their own online services.
+    - Service Provider Aggregator: They take up the responsibility of managing online services of multiple providers.
+- Infrastructure provider: They make their hardware infrastructure available for others to use/lease.
+- Consumer: Entities consuming online services. Generally end-consumer like a retail buyer, or person requesting plumbing service. Sometimes other services.
 - App Developer: Who builds business mini-apps and make those available for others to deploy on their infrastructure.
 
 Of course, it is likely that a single Person/Org plays the role of different personas. 
 
-### Common requirements
+## Common requirements
 Following are common user requirements irrespective of business domain.
 
 - Service Providers host business applications on PCs or Mobiles they control, and use those via UI, CLI or other means as applicable.
-- Hardware infrastructure owners make hardware (old PCs, or cloud) available for service providers who then can then host applications or their parts (modules, services) on such leased infrastructure.
-- Service Providers can monitor online service health, react to notifications about service status - Service Providers can move services and data across Infrastructure providers without restriction
+- Infrastructure providers make hardware (old PCs, or cloud) available for service providers who then can then host applications or their parts (modules, services) on such leased infrastructure.
+- Service Providers can monitor online service health, react to notifications about service status through UI, CLI or other tools that leverage substrate provided hooks.
+- Infrastructure Providers can monitor infrastructure health, control access to nodes, and react to notifications about infrastructure status through UI, CLI or other tools that leverage substrate provided hooks
+- App Developers can write mini-apps / services appropriately packaged e.g. in WASM modules or OCI images which Providers can deploy to matching container infrastructure (wasm runtime, docker)
+- Consumers can access Provider services through options made available by providers such as app UI, Browser, API, or Command line tools
+- Service Providers can move services and data across Infrastructure providers without restriction
 - Service Providers can backup and restore app data
-- Service Providers can install the same app on multiple devices and both should work independently whenever not connected to each other, and synchronize the internal storage/state whenever connected. 
+- Service Providers can install the same app on multiple secondary devices. App works independently on those whenever not connected to each other, and synchronize the storage/state with primary when connected. 
+- Service Providers can install app such that parts (shards) of the app are hosted on different hosts each managing a subset of load.
 - Service Providers can access services/data from other providers and also control access to their data/services as per agreements and workflows with ecosystem partners. E.g. Medical service provider can provide Patients their latest medical records, or allow access to other providers if patient consents.
 
 ## Conceptual Model
@@ -108,11 +113,11 @@ Description of the core Syneroym substrate functionality, key protocols, importa
 ### Substrate Setup
 - Node-owner Installs substrate on node
 - Substrate creates admin keys
-- Register to relay:
+- Register with Relay:
     - Get home relay to connect from bootstrap server
     - Insert node key and relay used in Pkarr signed packet (for node's control plane services like SYN-SVC deploy/remove) in BEP 0044 DHT
     - Start iroh quic server on that relay
-- Substrate Identifies its capabilities (sandbox/container types, quota configurability), user configures limits (CPU, Mem, Disk) for Services
+- Substrate Identifies its capabilities (sandbox/container types, quota configurability), user configures capability & limits (CPU, GPU, Mem, Disk, other capabilities) for Services
 - Access control:
     - Register substrate pubkey with owner's primary substrate (i.e. owner owns multiple substrates), 
     - Enable necessary substrate access to owner primary key
@@ -145,7 +150,7 @@ Relay Lookup for nodeid:
 - Application specification composing components
 - Provider Applies application spec to substrates available
 ### Runtime
-- Substrates monitor application and provide health info, notifications, help redeploys
+- Substrate monitors application and provide health info, notifications, help redeploys
 
 ## Spec Vertical 1: Home Services Guild
 ## Spec Vertical 2: Food and Small Retailer Mesh
@@ -154,3 +159,5 @@ Relay Lookup for nodeid:
 - Iroh for p2p, hole punching, relay
 - webrtc-rs for connection via browser WebRTC Datachannels
 - Consider JSON-RPC and wasm components or wRPC. WIT as Canonical API and JSON-RPC derived from it
+- Litestream and cr-sqlite for CRDT and replication/backup.
+- Consider having own DNS server to manage numerous dynamically changing relay servers and cost of DNS maintainence with cloud providers increases.
