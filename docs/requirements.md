@@ -127,6 +127,7 @@ Description of the core Syneroym substrate functionality, key protocols, importa
 ### Substrate managing services
 Substrate enables and manages access to services deployed under it.
     - Substrate provides a secure end-to-end communication channel between clients and services it manages.
+    - Substrate supports variety of services and sandbox environments. Start with WASM, Podman
     - Substrate tries to support direct client server communication for services it manages wherever possible, or uses external relays (DERP) if intermediate network infrastructure does not allow direct connections
     - On mobile platforms, if the substrate and embedded services are throttled, requests are sent over as offline notifications. The service response is triggered when the substrate application is active again.
 
