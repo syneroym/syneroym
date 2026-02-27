@@ -61,7 +61,7 @@ Of course, it is likely that a single Person/Org plays the role of different per
 ## Common requirements
 Following are common user requirements irrespective of business domain.
 
-- Service Providers host business applications on PCs or Mobiles they control, and use those via UI, CLI or other means as applicable.
+- Service Providers run business applications and supporting services on PCs or Mobiles they control, even when machines are not available on external network, behind network firewalls.
 - Infrastructure providers make hardware (old PCs, or cloud) available for service providers who then can then host applications or their parts (modules, services) on such leased infrastructure.
 - Service Providers can monitor online service health, react to notifications about service status through UI, CLI or other tools that leverage substrate provided hooks.
 - Infrastructure Providers can monitor infrastructure health, control access to nodes, and react to notifications about infrastructure status through UI, CLI or other tools that leverage substrate provided hooks
@@ -71,8 +71,9 @@ Following are common user requirements irrespective of business domain.
 - Service Providers can backup and restore app data
 - Service Providers can install the same app on multiple secondary devices. App works independently on those whenever not connected to each other, and synchronize the storage/state with primary when connected. 
 - Service Providers can install app such that parts (shards) of the app are hosted on different hosts each managing a subset of load.
-- Service Providers can access services/data from other providers and also control access to their data/services as per agreements and workflows with ecosystem partners. E.g. Medical service provider can provide Patients their latest medical records, or allow access to other providers if patient consents.
+- Services owned by a Provider can access services/data from other providers and also control access to their data/services as per agreements and workflows with ecosystem partners. E.g. Medical service provider can provide Patients their latest medical records, or allow access to other providers if patient consents.
 
+### Limitations
 ## Conceptual Model
 The following diagram shows various conceptual entities in the Syneroym ecosystem and relationships between them. Will help establish common nomenclature too.
 
@@ -107,7 +108,7 @@ erDiagram
 
 ```
 
-## Core Substrate Functionality
+## Substrate Functionality
 Description of the core Syneroym substrate functionality, key protocols, important flows.
 
 ### Substrate Setup
@@ -123,11 +124,20 @@ Description of the core Syneroym substrate functionality, key protocols, importa
     - Enable necessary substrate access to owner primary key
     - Provide access control to various SYN-APP owner pubkeys for SYNAPP management APIs of substrate (deploy, remove, observe), and associated quotas
 
-## Supporting Services
+### Substrate managing services
+Substrate enables and manages access to services deployed under it.
+    - Substrate provides a secure end-to-end communication channel between clients and services it manages.
+    - Substrate tries to support direct client server communication for services it manages wherever possible, or uses external relays (DERP) if intermediate network infrastructure does not allow direct connections
+    - On mobile platforms, if the substrate and embedded services are throttled, requests are sent over as offline notifications. The service response is triggered when the substrate application is active again.
+
+## Supporting Ecosystem Entities
 ### Relay
-- Iroh Relay, and/or TURN Relay (for WebRTC)
-- Apply to register as community relay with syneroym bootstrap server if interested in contributing (refresh periodically)
-- On successful registration, it is available as relaynodeid.syneroym.net, download certs
+
+- On startup, relay applies to register as community relay with syneroym bootstrap server if interested in contributing (refresh periodically)
+- On successful registration, it is available as <relaynodeid>.syneroym.net
+- Relay acts as coordination server for direct connections between peers using UDP hole punching
+- Relay acts as a encrypted TCP data relay for cases when direct connection is not possible (no UDP, or symmetric NAT, CGNAT)
+- Acts as TURN Relay (for WebRTC when browsers access services behind NAT)
 
 ### Bootstrap
 Register new relays:
@@ -149,14 +159,16 @@ Relay Lookup for nodeid:
 ### Deployment
 - Application specification composing components
 - Provider Applies application spec to substrates available
-### Runtime
+### Monitoring
 - Substrate monitors application and provide health info, notifications, help redeploys
 
-## Spec Vertical 1: Home Services Guild
-## Spec Vertical 2: Food and Small Retailer Mesh
+## Verticals: Home Services Guild, Food & Small Retailer Mesh
+- Provider registers with necessary details
+- Provider uploads service/product info catalog
 
 ## Design considerations
-- Iroh for p2p, hole punching, relay
+- Iroh for p2p, hole punching, relay. 
+- Inter-Service networking via podman pods (or rootless networks) if services live on same node.
 - webrtc-rs for connection via browser WebRTC Datachannels
 - Consider JSON-RPC and wasm components or wRPC. WIT as Canonical API and JSON-RPC derived from it
 - Litestream and cr-sqlite for CRDT and replication/backup.
