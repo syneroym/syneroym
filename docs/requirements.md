@@ -53,7 +53,7 @@ The following are key personas in the Syneroym ecosystem.
     - Self-hosted Service Provider: Provider who host their own online services.
     - Service Provider Aggregator: They take up the responsibility of managing online services of multiple providers.
 - Infrastructure provider: They make their hardware infrastructure available for others to use/lease.
-- Consumer: Entities consuming online services. Generally end-consumer like a retail buyer, or person requesting plumbing service. Sometimes other services.
+- General User: Uses Syneroym platform to avail services, or interacts with other entities. E.g. chat group or discussion thread around a context like a social media wall, or book a electrician visit.
 - App Developer: Who builds business mini-apps and make those available for others to deploy on their infrastructure.
 
 Of course, it is likely that a single Person/Org plays the role of different personas. 
@@ -71,9 +71,13 @@ Following are common user requirements irrespective of business domain.
 - Service Providers can backup and restore app data
 - Service Providers can install the same app on multiple secondary devices. App works independently on those whenever not connected to each other, and synchronize the storage/state with primary when connected. 
 - Service Providers can install app such that parts (shards) of the app are hosted on different hosts each managing a subset of load.
-- Services owned by a Provider can access services/data from other providers and also control access to their data/services as per agreements and workflows with ecosystem partners. E.g. Medical service provider can provide Patients their latest medical records, or allow access to other providers if patient consents.
+- All Entities, Providers, Consumers, and Services can exchange messages with each other as per access control policies set up by the entity owner. Messages structure and type depends upon the nature of the participating entities and use case. E.g. 
+    - A provider and consumer might simply text/audio/video chat, or exchange structured messages pertaining to accessing data/services. E.g. 
+    - Medical service provider can provide Patients their latest medical records, or allow access to other providers if patient consents. 
+    - Two Substrate owners could chat with each other, share media
+    - Multiple entities could participate in a discussion thread around some pivot context like user wall. 
+    - Multiple entities could collaborate over shared content. E.g. collective project artifact edit
 
-### Limitations
 ## Conceptual Model
 The following diagram shows various conceptual entities in the Syneroym ecosystem and relationships between them. Will help establish common nomenclature too.
 
@@ -126,10 +130,14 @@ Description of the core Syneroym substrate functionality, key protocols, importa
 
 ### Substrate managing services
 Substrate enables and manages access to services deployed under it.
-    - Substrate provides a secure end-to-end communication channel between clients and services it manages.
-    - Substrate supports variety of services and sandbox environments. Start with WASM, Podman
-    - Substrate tries to support direct client server communication for services it manages wherever possible, or uses external relays (DERP) if intermediate network infrastructure does not allow direct connections
-    - On mobile platforms, if the substrate and embedded services are throttled, requests are sent over as offline notifications. The service response is triggered when the substrate application is active again.
+- Substrate provides a secure end-to-end communication channel between clients and services it manages.
+- Substrate supports variety of services and sandbox environments. Start with WASM, Podman
+- Substrate tries to support direct client server communication for services it manages wherever possible, or uses external relays (DERP) if intermediate network infrastructure does not allow direct connections
+- On mobile platforms, if the substrate and embedded services are throttled, requests are sent over as offline notifications. The service response is triggered when the substrate application is active again.
+
+### Core Substrate services
+- Substrate enables general messaging and data sharing across all entities pivoted around specific context. E.g. one-one multimedia chats, group chat, discussion threads around a pivot context like blog or post, social media follow/subscribe, browsing content
+- Discovery: Nodes store a partition of search index to aid federated service discovery
 
 ## Supporting Ecosystem Entities
 ### Relay
@@ -163,9 +171,36 @@ Relay Lookup for nodeid:
 ### Monitoring
 - Substrate monitors application and provide health info, notifications, help redeploys
 
-## Verticals: Home Services Guild, Food & Small Retailer Mesh
-- Provider registers with necessary details
-- Provider uploads service/product info catalog
+## SynApp 1: Business, Professional, Retail Spaces. 
+Home Services Guild, Food & Small Retailer Mesh
+- Small Retail & Services Synapp is available as a package for Service Providers or Aggregators to use.
+- Provider configures deployment parameters, and deploys Synapp on chosen infrastructure provider.
+- Provider creates online Space. Or multiple Spaces, especially if Provider is an aggregator. Setup space managemer access controls.
+- Space manager sets up the common Space settings such as Branding details, Payment type setup
+- Space manager sets up catalog schema and service/product catalog within their their space. 
+    - Info: Title, Description, Images, Pricing, Cancellation policy
+    - Order to Fulfilment workflow configuration: Allow selection/synthesization of multiple workflows
+- Space manager ingests digital content corresponding to catalog, if applicable (movies, online course packages, books etc.)
+- Consumer-Provider progress toward order -> fulfilment workflow
+    - Terms, Pricing tuning: Select from available options, negotiate, finalize.
+    - Order confirmation: Pickup/Delivery location, Time window
+    - Payment and Delivery: Digital content delivery via DRM respecting players, others as per agreement.
+    - Cancellation, Return-Refund
+    - Compose multiple sub-workflows (e.g. food and delivery workflows)
+- System accomodates service variations across workflow
+    - Booking: Event, consulting time slots
+    - Payment: One-time, pre-post delivery, multi-part, Negotiation, subscription, escrow, system coins, mutual-credit systems
+    - Product type: Time bound product (food), Digital content
+    - Service type: Time-slot Service, Job completion based service, Location based
+    - Location: Fixed location, Location-proximity based
+    - Relationship: One time, recurring, long-term with continuous history (doctor-patient)
+    - Service record: Long term (e.g. doctor patient), Engagement specific (courses), Location tracking
+- Service record history for provider consumer pair with expiry
+- Data sharing across Providers-Users leveraging substrate primitives for sharing and access control.
+- Discovery mechanisms: Entities can discover other entities by various kinds of searches and triggers. Keyword search, attribute value point and interval/range search
+- Contextual Advertising
+- Referral based Reputation management 
+
 
 ## Design considerations
 - Iroh for p2p, hole punching, relay. 
@@ -174,3 +209,7 @@ Relay Lookup for nodeid:
 - Consider JSON-RPC and wasm components or wRPC. WIT as Canonical API and JSON-RPC derived from it
 - Litestream and cr-sqlite for CRDT and replication/backup.
 - Consider having own DNS server to manage numerous dynamically changing relay servers and cost of DNS maintainence with cloud providers increases.
+- Shaka DRM respecting video player.
+- Substrate communication layer: Ideas from Matrix, ATProto, Nostr. 
+- Use AI to synthesize service types, discover-to-delivery workflows? How?
+- Client side contextual Ad matching, real-time index match
