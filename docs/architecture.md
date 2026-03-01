@@ -16,7 +16,7 @@
 11. [Resolved Architecture TBD Items](#11-resolved-architecture-tbd-items)
 12. [Consolidated Technology Stack](#12-consolidated-technology-stack)
 13. [MVP Phase 1 Scope & Acceptance Criteria](#13-mvp-phase-1-scope--acceptance-criteria)
-14. [Open Questions](#14-open-questions)
+14. [Open Questions](#14-open-questions--recommendations)
 15. [Glossary](#15-glossary)
 
 ---
@@ -164,7 +164,7 @@ flowchart LR
     end
 
     BS[Bootstrap Server] -->|"register + refresh"| Relay
-    BS -->|"Redirect to relay:  nodeid.relay.syneroym.net"| DR
+    BS -->|"Redirect to relay: <relaynodeid>.syneroym.net"| DR
     Peer1 <-->|"hole punch"| HP
     Peer2 <-->|"hole punch"| HP
     Peer1 <-->|"relay fallback"| DR
@@ -175,7 +175,7 @@ flowchart LR
 
 ### 4.3 Bootstrap Server & DHT Fallback
 
-**[TBD: Decentralised Bootstrap Fallback]**
+**Decentralised Bootstrap Fallback**
 
 The bootstrap server is an operational dependency. To survive its unavailability:
 
@@ -266,7 +266,7 @@ flowchart TD
 
 ### 5.2 SynApp Packaging & API Pipeline
 
-**[TBD: Migration Protocol, Backup Mechanism]**
+**Migration Protocol and Backup Mechanism**
 
 ```mermaid
 flowchart LR
@@ -297,7 +297,7 @@ flowchart LR
 
 ### 5.3 Storage & CRDT Merge Semantics
 
-**[TBD: CRDT merge semantics, Conflict resolution rules per entity type]**
+**CRDT merge semantics and conflict resolution**
 
 All structured data is stored in **cr-sqlite** — SQLite extended with CRDT primitives. Each table row carries a Hybrid Logical Clock (HLC) timestamp and a site ID.
 
@@ -326,6 +326,31 @@ flowchart TD
 | Booking slot | Availability is a set-CRDT (OR-Set); reservation is LWW with provider authority | Prevents double-booking |
 | Reputation record | Append-only; signed by issuer; no merge | Records are immutable attestations |
 | Access control policy | Provider LWW; infrastructure provider cannot override | Data sovereignty |
+
+### 5.4 Multi-Device Sync and Sharded Deployment
+
+This section covers two requirements from the high-level spec: app sync across provider secondary devices, and app sharding across multiple hosts.
+
+**A) Multi-device sync (primary + secondary provider devices)**
+
+- Each provider device runs a local substrate instance with its own site ID.
+- App state changes are committed locally first in cr-sqlite, then replicated asynchronously.
+- If a secondary device is offline, it continues operating on local state and queues outbound updates.
+- On reconnection, peers exchange oplogs and converge using entity-specific merge rules from §5.3.
+- Operational ownership fields (for example, order lifecycle authority) remain deterministic across devices via signed identity roles.
+
+**B) Sharded SynApp deployment (single app across multiple hosts)**
+
+- App Spec supports per-component placement constraints, allowing components to run on distinct nodes.
+- The substrate orchestrator schedules components based on declared resource class (`cpu`, `memory`, `gpu`, locality tags).
+- Inter-shard communication uses substrate-authenticated service identities over QUIC/WebSocket.
+- Failure of one shard does not halt unrelated shards; dependent workflows move to queued/retry mode until dependencies recover.
+
+Example placement:
+
+- `catalog-browser` + `space-manager` on low-cost edge node
+- `order-engine` + `payment-adapter` on higher-availability node
+- `drm-content-server` on storage-optimised node
 
 ---
 
@@ -367,7 +392,7 @@ flowchart TD
 
 ### 6.2 Discovery & DHT
 
-**[TBD: Partitioning and consistency model, Discovery ranking algorithm]**
+**Partitioning, consistency model, and ranking algorithm**
 
 ```mermaid
 flowchart TD
@@ -450,7 +475,7 @@ flowchart TD
 
 ### 6.4 Trust & Reputation
 
-**[TBD: Vouching mechanics and weighting, Credential format and verification, Reputation portability mechanism, Propagation protocol, Anti-gaming mechanisms, Sybil resistance]**
+**Trust, vouching, credentials, reputation portability, and anti-gaming**
 
 ```mermaid
 flowchart TD
@@ -513,7 +538,7 @@ Default `decay_factor = 0.5`. Max effective depth: 3 hops (weight < 0.125 beyond
 
 ### 6.5 Payments
 
-**[TBD: Payment rails and escrow, Coin and mutual credit mechanics]**
+**Payment rails, escrow, and post-MVP credit/coin direction**
 
 ```mermaid
 flowchart TD
@@ -545,7 +570,7 @@ flowchart TD
     ADAPTERS --> ESCROW_FLOW
 ```
 
-**Mutual credit (post-MVP):** A bilateral IOU system where providers and consumers issue credits to each other denominated in a local unit. No external currency required. Each credit line is a signed ledger between two parties; the substrate mediates settlement. Regulatory classification: internal loyalty points (not securities or currency) in most jurisdictions.
+**Mutual credit (post-MVP):** A bilateral IOU system where providers and consumers issue credits to each other denominated in a local unit. No external currency is required. Each credit line is a signed ledger between two parties; the substrate mediates settlement. Regulatory classification varies by jurisdiction and requires legal review before rollout.
 
 **Syneroym Coin (post-MVP):** Internal ledger token (not a cryptocurrency or blockchain-based token) managed by a community governance multi-sig. Used for ecosystem incentives and cross-aggregator settlement. Regulatory review required before launch.
 
@@ -603,7 +628,7 @@ flowchart TD
 
 #### 7.1.2 Order State Machine
 
-**[TBD: Conflict resolution rules per entity type (order)]**
+**Order conflict resolution rules**
 
 ```mermaid
 stateDiagram-v2
@@ -709,7 +734,7 @@ sequenceDiagram
 
 #### 7.1.4 Recommendation Algorithm
 
-**[TBD: Recommendation algorithm]**
+**Recommendation algorithm**
 
 Catalog recommendations are **client-side only** — no consumer query data is sent to third parties.
 
@@ -862,7 +887,7 @@ flowchart TD
 
 ---
 
-## 11. Architecture TBD Items
+## 11. Resolved Architecture TBD Items
 
 This section is an index of every `[TBD]` marker in the requirements spec, that need to be revisited and finalized.
 
@@ -976,13 +1001,32 @@ This section is an index of every `[TBD]` marker in the requirements spec, that 
 5. ABAC policies prevent unauthorised reads/writes across at least two independent users and two services
 6. At least one trust signal (VC, vouch count, or reputation score) is visible to the consumer before payment confirmation
 
+### 13.4 Requirements Traceability (requirements.md -> architecture.md)
+
+| Requirement Theme | Architecture Coverage |
+|---|---|
+| P2P-first with relay fallback | §4.1, §4.2 |
+| Bootstrap survivability | §4.3 |
+| Substrate lifecycle and service orchestration | §5.1, §5.2 |
+| Offline queue + deterministic reconciliation | §5.3 |
+| Multi-device app operation + reconnection sync | §5.4(A) |
+| Sharded app deployment across hosts | §5.4(B) |
+| Identity, delegation, key lifecycle | §6.1 |
+| Discovery index partitioning + ranking transparency | §6.2 |
+| Messaging modes and E2E encryption | §6.3, §10.1 |
+| Trust layers and reputation portability | §6.4 |
+| Payment and escrow integration | §6.5 |
+| Consumer unified app model | §9.1 |
+| Multi-tenant isolation and access control | §10.2 |
+| Phase 1 acceptance criteria alignment | §13.3 |
+
 ---
 
 ## 14. Open Questions & Recommendations
 
 | # | Question | Priority | Recommendation / Direction |
 |---|---|---|---|
-| OQ-1 | **DHT implementation choice:** libp2p Kademlia vs custom BEP 0044. | High | **Custom BEP 0044 over Iroh.** Avoids bloating dependency tree with libp2p and conflicting network stacks. Aligns with `pkarr`. Use `mainline` crate logic over Iroh QUIC connections. |
+| OQ-1 | **DHT implementation choice:** libp2p Kademlia vs custom BEP 0044. | High | **Custom BEP 0044 aligned with `pkarr`.** Keep DHT transport compatible with BEP 0044/mainline expectations; keep Iroh for peer transport and relay. Avoid mixed-stack coupling that breaks protocol compatibility. |
 | OQ-2 | **Consumer identity for non-self-hosters:** SLA and migration. | High | **Device-Bound Keys + Encrypted Cloud Backup.** Generate Ed25519 locally in browser. Encrypt state/keys symmetrically for multi-device sync, stored as opaque blobs on Syneroym/Aggregator storage. |
 | OQ-3 | **Bootstrap governance:** operations and funding. | High | **Consortium Model.** Major aggregators (e.g., Guilds, Meshes) form a non-profit consortium to share hosting costs of distributed bootstrap nodes, with DHT fallback ensuring network survival. |
 | OQ-4 | **Minimum federation contract:** WIT versioning. | Medium | **RFC Process for WIT Interfaces.** Establish `syneroym/core-interfaces`. Use Wasmtime adapter components to translate between versions (e.g., `v1` to `v2`) during deprecation periods. |
