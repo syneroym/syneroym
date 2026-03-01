@@ -51,7 +51,7 @@ This document defines the architecture, technology stack, component design for:
 |---|---|---|
 | Tier 1 — Minimal | Raspberry Pi 4, Android phone (2 GB RAM) | Single provider self-host, light load |
 | Tier 2 — Standard | Old PC / mini PC (4–8 GB RAM, SSD) | Provider or small aggregator |
-| Tier 3 — Aggregator | Cloud VM or dedicated server (8–32 GB RAM) | Infrastructure provider, large aggregator |
+| Tier 3 — Distributed | Multiple VMs, PCs, Servers (8–32 GB RAM) | Infrastructure provider, large aggregator |
 
 ---
 
@@ -106,14 +106,14 @@ erDiagram
     AGGREGATOR ||--o{ PROVIDER : hosts-for
     CONSUMER ||--o{ SYN-APP : accesses
 
-    NODE { string id string hardware_profile }
+    NODE { string id }
     SUBSTRATE { string public_key string version }
     SYN-SVC { string id string status }
     SYN-APP { string id string manifest_version }
     SYN-MOD { string id string package_type }
-    SVC-SANDBOX { string type string resource_quota }
-    HOME-RELAY { string url string capabilities }
-    PROVIDER { string identity_key string tier }
+    SVC-SANDBOX { string type capabilities resources }
+    HOME-RELAY { string url }
+    PROVIDER { string identity_key }
     CONSUMER { string identity_key }
     AGGREGATOR { string identity_key }
 ```
@@ -158,21 +158,20 @@ flowchart TD
 ```mermaid
 flowchart LR
     subgraph Relay["Relay Node (*.syneroym.net)"]
-        HP[UDP Hole Punch\nCoordinator]
-        DR[DERP Encrypted\nTCP Relay]
-        TR[TURN Server\nfor WebRTC]
-        DNS[Local DNS\ndnsmasq / Hickory]
+        HP[UDP Hole Punch Coordinator]
+        DR[DERP Encrypted TCP Relay]
+        TR[TURN Server for WebRTC]
     end
 
     BS[Bootstrap Server] -->|"register + refresh"| Relay
-    BS -->|"issues DNS: nodeid.syneroym.net"| DNS
+    BS -->|"Redirect to relay:  nodeid.relay.syneroym.net"| DR
     Peer1 <-->|"hole punch"| HP
     Peer2 <-->|"hole punch"| HP
     Peer1 <-->|"relay fallback"| DR
     Browser <-->|"WebRTC TURN"| TR
 ```
 
-**Local DNS:** Each substrate runs `Hickory DNS` (Rust) locally to cache relay hostname resolutions. This avoids hammering cloud DNS for the large number of dynamically rotating relay nodes.
+**Local DNS:** Each substrate caches relay hostname resolutions. This avoids hammering Bootstrap server for the large number of dynamically rotating relay nodes.
 
 ### 4.3 Bootstrap Server & DHT Fallback
 
@@ -188,11 +187,11 @@ The bootstrap server is an operational dependency. To survive its unavailability
 ```mermaid
 flowchart TD
     BS[Bootstrap Server]
-    DHT[BitTorrent DHT\npkarr namespace]
-    CACHE[Local Substrate Cache\n24hr TTL]
+    DHT[BitTorrent DHT pkarr namespace]
+    CACHE[Local Substrate Cache 24hr TTL]
     SUB[New Substrate]
 
-    BS -->|"mirror relay registry\nevery 15 min"| DHT
+    BS -->|"mirror relay registry every 15 min"| DHT
     BS -->|"normal response"| SUB
     SUB -->|"store locally"| CACHE
 
@@ -218,32 +217,32 @@ flowchart TD
         direction TB
         
         subgraph INGRESS["Ingress / API Gateway"]
-            WS[JSON-RPC over\nWebSocket]
-            QUIC_EP[Iroh QUIC\nEndpoint]
-            WRT[WebRTC\nData Channel]
+            WS[JSON-RPC over WebSocket]
+            QUIC_EP[Iroh QUIC Endpoint]
+            WRT[WebRTC Data Channel]
         end
 
         subgraph CORE["Core Services"]
-            KM[Key Manager\nEd25519 + Delegation]
-            AC[Access Control\nABAC Engine]
+            KM[Key Manager Ed25519 + Delegation]
+            AC[Access Control ABAC Engine]
             MSG[Message Router]
-            ORCH[Service Orchestrator\nDeploy / Lifecycle]
+            ORCH[Service Orchestrator Deploy / Lifecycle]
         end
 
         subgraph SANDBOX["Sandbox Environments"]
-            WASM[Wasmtime\nWASM Component Runtime]
-            OCI[Podman Rootless\nOCI Container Runtime]
+            WASM[Wasmtime WASM Component Runtime]
+            OCI[Podman Rootless OCI Container Runtime]
         end
 
         subgraph STORAGE["Storage Layer"]
-            CRSQL[cr-sqlite\nCRDT Local Store]
-            QUEUE[Offline Queue\nSQLite + Tokio channel]
-            BLOB[Content-addressed\nBlob Store]
-            LS[Litestream\nWAL Replication]
+            CRSQL[cr-sqlite CRDT Local Store]
+            QUEUE[Offline Queue SQLite + Tokio channel]
+            BLOB[Content-addressed Blob Store]
+            LS[Litestream WAL Replication]
         end
 
         subgraph UTIL["Shared Utilities"]
-            DISC[Discovery Index\nDHT Client]
+            DISC[Discovery Index DHT Client]
             REP[Reputation Engine]
             PAY[Payment Adapter]
         end
@@ -255,7 +254,7 @@ flowchart TD
     CORE --> STORAGE
     CORE --> UTIL
     STORAGE --> LS
-    LS -->|"stream WAL"| BACKUP[(Backup Store\nS3-compatible / peer)]
+    LS -->|"stream WAL"| BACKUP[(Backup Store S3-compatible / peer)]
 
     style SUBSTRATE fill:#f0f4f8,stroke:#1F4E79
     style INGRESS fill:#D6E4F0,stroke:#2E75B6
@@ -271,13 +270,13 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    WIT[WIT Interface\nDefinition]
-    WB[wit-bindgen\nCode Generator]
-    RS[Rust SynApp\nSource]
-    WASM_C[WASM Component\n.wasm]
-    APP_SPEC[App Spec\n.toml manifest]
-    SUB[Substrate\nOrchestrator]
-    JRPC[JSON-RPC 2.0\nExternal API]
+    WIT[WIT Interface Definition]
+    WB[wit-bindgen Code Generator]
+    RS[Rust SynApp Source]
+    WASM_C[WASM Component .wasm]
+    APP_SPEC[App Spec .toml manifest]
+    SUB[Substrate Orchestrator]
+    JRPC[JSON-RPC 2.0 External API]
 
     WIT -->|generates bindings| WB
     WB --> RS
@@ -305,15 +304,15 @@ All structured data is stored in **cr-sqlite** — SQLite extended with CRDT pri
 ```mermaid
 flowchart TD
     subgraph ONLINE["Both parties online"]
-        A1[Provider writes\norder state: CONFIRMED] -->|"HLC: T1, site: P"| MERGE
-        B1[Consumer writes\norder state: PAID] -->|"HLC: T2, site: C"| MERGE
-        MERGE[cr-sqlite merge\nLWW per field] --> FINAL1[Final: PAID\nboth fields converge]
+        A1[Provider writes order state: CONFIRMED] -->|"HLC: T1, site: P"| MERGE
+        B1[Consumer writes order state: PAID] -->|"HLC: T2, site: C"| MERGE
+        MERGE[cr-sqlite merge LWW per field] --> FINAL1[Final: PAID both fields converge]
     end
 
     subgraph OFFLINE["Offline conflict scenario"]
-        A2[Provider writes\nCANCELLED\nHLC: T3, site: P] --> RECON
-        B2[Consumer writes\nCANCELLED\nHLC: T3, site: C] --> RECON
-        RECON[Deterministic merge:\nProvider cancel\ntakes precedence] --> FINAL2[Final: CANCELLED\nby provider\nrefund triggered]
+        A2[Provider writes CANCELLED HLC: T3, site: P] --> RECON
+        B2[Consumer writes CANCELLED HLC: T3, site: C] --> RECON
+        RECON[Deterministic merge: Provider cancel takes precedence] --> FINAL2[Final: CANCELLED by provider refund triggered]
     end
 ```
 
@@ -352,17 +351,17 @@ flowchart TD
     end
 
     subgraph LIFECYCLE["Key Lifecycle"]
-        GEN[Generate keypair\non first run] --> REG[Register identity doc\nin DHT]
-        REG --> USE[Sign all messages\nand actions]
-        USE --> ROT[Key rotation:\nnew key signed\nby old key]
-        ROT --> REV[Old key published\nas revoked in DHT]
+        GEN[Generate keypair on first run] --> REG[Register identity doc in DHT]
+        REG --> USE[Sign all messages and actions]
+        USE --> ROT[Key rotation: new key signed by old key]
+        ROT --> REV[Old key published as revoked in DHT]
         REV --> USE
     end
 
     subgraph DELEGATION["Capability Delegation"]
-        ROOT[Root keypair] -->|"issue UCAN"| APP[SynApp component\nscoped token]
-        ROOT -->|"issue UCAN"| CONSUMER_TOK[Consumer\ntime-limited token]
-        APP --> INVOKE[Invoke substrate APIs\nwithin granted scope]
+        ROOT[Root keypair] -->|"issue UCAN"| APP[SynApp component scoped token]
+        ROOT -->|"issue UCAN"| CONSUMER_TOK[Consumer time-limited token]
+        APP --> INVOKE[Invoke substrate APIs within granted scope]
     end
 ```
 
@@ -374,10 +373,10 @@ flowchart TD
 flowchart TD
     subgraph DHT["Distributed Search Index (Kademlia DHT)"]
         direction LR
-        N1[Node A\nkeyspace 0x00-0x3F]
-        N2[Node B\nkeyspace 0x40-0x7F]
-        N3[Node C\nkeyspace 0x80-0xBF]
-        N4[Node D\nkeyspace 0xC0-0xFF]
+        N1[Node A keyspace 0x00-0x3F]
+        N2[Node B keyspace 0x40-0x7F]
+        N3[Node C keyspace 0x80-0xBF]
+        N4[Node D keyspace 0xC0-0xFF]
     end
 
     subgraph INDEX_ENTRY["Index Entry (per SynApp Space)"]
@@ -392,8 +391,8 @@ flowchart TD
     end
 
     subgraph QUERY["Query Flow"]
-        Q[Consumer query:\nkeyword + geo + attrs]
-        Q -->|"1. check local cache"| LC[Local Index Cache\n1hr TTL]
+        Q[Consumer query: keyword + geo + attrs]
+        Q -->|"1. check local cache"| LC[Local Index Cache 1hr TTL]
         LC -->|"2. cache miss → DHT lookup"| DHT
         DHT -->|"3. ranked results"| RANK[Ranking Engine]
         RANK -->|"4. return to consumer"| RESP[Response]
@@ -424,10 +423,10 @@ flowchart TD
 flowchart TD
     subgraph MSG_TYPES["Message Types"]
         direction LR
-        M1[1-to-1 Chat\nX3DH + Double Ratchet]
-        M2[Group Chat / Threads\nMLS RFC 9420]
-        M3[Structured Service Msgs\ne.g. booking request]
-        M4[Collaborative Editing\nCRDT OT document]
+        M1[1-to-1 Chat X3DH + Double Ratchet]
+        M2[Group Chat / Threads MLS RFC 9420]
+        M3[Structured Service Msgs e.g. booking request]
+        M4[Collaborative Editing CRDT OT document]
     end
 
     subgraph E2E["1-to-1 E2E Encryption"]
@@ -441,7 +440,7 @@ flowchart TD
     end
 
     subgraph STORAGE_MSG["Message Storage"]
-        CR[cr-sqlite append-only\nmessage log]
+        CR[cr-sqlite append-only message log]
         CR -->|"offline: queue locally"| Q2[Offline Queue]
         Q2 -->|"on reconnect: replay"| PEER[Peer substrate]
     end
@@ -486,11 +485,11 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    A[Consumer A\ntrusted anchor] -->|"vouch weight: 1.0"| B[Provider B]
+    A[Consumer A trusted anchor] -->|"vouch weight: 1.0"| B[Provider B]
     A -->|"vouch weight: 1.0"| C[Provider C]
-    C -->|"vouch weight: 0.5\n(1 hop decay)"| D[Provider D]
-    D -->|"vouch weight: 0.25\n(2 hop decay)"| E[Provider E]
-    E -. "3 hop limit\nnot propagated" .-> F[Provider F]
+    C -->|"vouch weight: 0.5 (1 hop decay)"| D[Provider D]
+    D -->|"vouch weight: 0.25 (2 hop decay)"| E[Provider E]
+    E -. "3 hop limit not propagated" .-> F[Provider F]
 
     style A fill:#1F4E79,color:#fff
     style F fill:#CCCCCC
@@ -527,19 +526,19 @@ flowchart TD
     end
 
     subgraph ADAPTERS["Payment Adapters (pluggable)"]
-        STRIPE[Stripe Connect\nAdapter]
-        UPI[UPI Deep Link\nAdapter]
-        ESCROW[Centralised Escrow\nStripe — MVP]
-        CREDIT[Mutual Credit\nPost-MVP]
-        COIN[Syneroym Coin\nPost-MVP]
+        STRIPE[Stripe Connect Adapter]
+        UPI[UPI Deep Link Adapter]
+        ESCROW[Centralised Escrow Stripe — MVP]
+        CREDIT[Mutual Credit Post-MVP]
+        COIN[Syneroym Coin Post-MVP]
     end
 
     subgraph ESCROW_FLOW["Escrow Flow (MVP)"]
         direction LR
         C[Consumer pays] -->|"funds held"| E[Stripe Escrow]
-        E -->|"service confirmed complete"| P[Provider receives\nminus platform fee]
-        E -->|"dispute raised"| D[Dispute resolution\nmanual or automated]
-        D -->|"resolved"| BOTH[Appropriate party\nreceives funds]
+        E -->|"service confirmed complete"| P[Provider receives minus platform fee]
+        E -->|"dispute raised"| D[Dispute resolution manual or automated]
+        D -->|"resolved"| BOTH[Appropriate party receives funds]
     end
 
     PAY_ABSTRACT --> ADAPTERS
@@ -561,7 +560,7 @@ flowchart TD
 ```mermaid
 flowchart TD
     subgraph CONSUMER_SIDE["Consumer Side"]
-        PWA[Consumer PWA\nReact + TypeScript]
+        PWA[Tauri Frontend or PWA]
     end
 
     subgraph PROVIDER_SUBSTRATE["Provider Substrate"]
@@ -578,7 +577,7 @@ flowchart TD
         end
 
         subgraph OCI_SERVICES["OCI Services"]
-            DRM[drm-content-server\nShaka Player backend]
+            DRM[drm-content-server Shaka Player backend]
         end
 
         subgraph SHARED["Shared Substrate Services"]
@@ -618,14 +617,14 @@ stateDiagram-v2
     PENDING_CONFIRM --> EXPIRED : timeout (24h default)
 
     CONFIRMED --> PAYMENT_PENDING : payment intent created
-    CONFIRMED --> CANCELLED_BY_CONSUMER : consumer cancels\n(per Space policy)
+    CONFIRMED --> CANCELLED_BY_CONSUMER : consumer cancels (per Space policy)
     CONFIRMED --> CANCELLED_BY_PROVIDER : provider cancels
 
     PAYMENT_PENDING --> PAID : payment confirmed
     PAYMENT_PENDING --> PAYMENT_FAILED : payment fails
     PAYMENT_PENDING --> CANCELLED_BY_CONSUMER : consumer abandons
 
-    PAID --> IN_PROGRESS : service started\nor delivery initiated
+    PAID --> IN_PROGRESS : service started or delivery initiated
     PAID --> CANCELLED_WITH_REFUND : within cancellation window
 
     IN_PROGRESS --> COMPLETE : service delivered & accepted
@@ -724,36 +723,6 @@ score(item, consumer_context) =
 
 Consumer session context (query history, viewed items) is kept **only in PWA local storage**, never transmitted. Collaborative signals are computed from **aggregate anonymised counts** published by the provider substrate — no individual consumer data leaves their device.
 
-### 7.2 SynApp 2: Local Producer-Distributor Mesh (Thin Demo)
-
-This SynApp shares all substrate primitives with SynApp 1 and demonstrates cross-SynApp sub-workflow composition.
-
-```mermaid
-flowchart LR
-    subgraph ORDER_SYNAPP["Food Order SynApp Instance"]
-        OE2[order-engine]
-        CAT[catalog-browser\nperishable items]
-    end
-
-    subgraph DELIVERY_SYNAPP["Delivery SynApp Instance"]
-        DE[delivery-engine]
-        TRACK[tracking-service]
-    end
-
-    subgraph SUBSTRATE2["Shared Substrate"]
-        MSG3[Messaging]
-        COORD[Coordination\nWIT interface]
-    end
-
-    CONSUMER2[Consumer] -->|"place food order"| OE2
-    OE2 -->|"emit: DeliveryRequired msg"| COORD
-    COORD -->|"structured substrate message"| DE
-    DE -->|"assign delivery partner"| TRACK
-    TRACK -->|"status updates"| COORD
-    COORD -->|"relay to order"| OE2
-    OE2 -->|"combined status"| CONSUMER2
-```
-
 **Key differences from SynApp 1:**
 - Catalog schema includes `available_until` (time-bounded perishables) and `preparation_time_minutes`
 - Adds `delivery-engine` and `tracking-service` components
@@ -768,15 +737,15 @@ flowchart LR
 ```mermaid
 flowchart TD
     subgraph CLUSTER_A["Cluster A (e.g. Mumbai)"]
-        SA1[Substrate A1\nHome Services]
-        SA2[Substrate A2\nFood Retailer]
+        SA1[Substrate A1 Home Services]
+        SA2[Substrate A2 Food Retailer]
     end
 
     subgraph CLUSTER_B["Cluster B (e.g. Pune)"]
-        SB1[Substrate B1\nHome Services]
+        SB1[Substrate B1 Home Services]
     end
 
-    subgraph DHT2["Global DHT\n(Kademlia)"]
+    subgraph DHT2["Global DHT (Kademlia)"]
         SHARD1[Shard 0x00-0x3F]
         SHARD2[Shard 0x40-0x7F]
         SHARD3[Shard 0x80-0xFF]
@@ -813,20 +782,20 @@ No central coordinator is required — these are convention-based contracts enfo
 ```mermaid
 flowchart TD
     subgraph PWA["Consumer PWA (React + TypeScript + Vite)"]
-        UI[UI Components\nTailwind CSS]
-        STATE[Local State\nZustand / React Query]
-        CRYPTO_CLIENT[Client-side Crypto\nlibsignal-protocol-wasm]
-        STORAGE_CLIENT[Local Storage\nIndexedDB]
-        CONN[Connection Manager\nWebSocket / WebRTC]
+        UI[UI Components Tailwind CSS]
+        STATE[Local State Zustand / React Query]
+        CRYPTO_CLIENT[Client-side Crypto libsignal-protocol-wasm]
+        STORAGE_CLIENT[Local Storage IndexedDB]
+        CONN[Connection Manager WebSocket / WebRTC]
     end
 
     subgraph IDENTITY_OPT["Consumer Identity Options"]
-        OPT_A[Option A: Self-hosted\nLightweight substrate\non phone / PC]
-        OPT_B[Option B: Hosted\nby trusted aggregator\nmigratable]
-        OPT_C[Option C: Guest\nbrowse-only\nno history]
+        OPT_A[Option A: Self-hosted Lightweight substrate on phone / PC]
+        OPT_B[Option B: Hosted by trusted aggregator migratable]
+        OPT_C[Option C: Guest browse-only no history]
     end
 
-    PWA <-->|"JSON-RPC\nWebSocket or WebRTC"| PROVIDER_GW[Provider\nSubstrate Gateway]
+    PWA <-->|"JSON-RPC WebSocket or WebRTC"| PROVIDER_GW[Provider Substrate Gateway]
     PWA -->|"identity ops"| IDENTITY_OPT
 
     style PWA fill:#D6E4F0,stroke:#2E75B6
@@ -848,15 +817,15 @@ flowchart TD
     end
 
     subgraph MESSAGING_ENC["Messaging Encryption"]
-        M1[1-to-1 chat: X3DH + Double Ratchet\nlibsignal-protocol-rust]
-        M2[Group chat: MLS RFC 9420\nopenmls]
-        M3[Structured service msgs: signed envelope\nEd25519 + payload encryption]
+        M1[1-to-1 chat: X3DH + Double Ratchet libsignal-protocol-rust]
+        M2[Group chat: MLS RFC 9420 openmls]
+        M3[Structured service msgs: signed envelope Ed25519 + payload encryption]
     end
 
     subgraph AT_REST["Data at Rest"]
-        R1[Sensitive fields: AES-256-GCM\nkey held by data owner]
-        R2[Litestream backups: encrypted\nwith provider key before upload]
-        R3[Blob store: content-addressed\noptionally encrypted]
+        R1[Sensitive fields: AES-256-GCM key held by data owner]
+        R2[Litestream backups: encrypted with provider key before upload]
+        R3[Blob store: content-addressed optionally encrypted]
     end
 ```
 
@@ -866,23 +835,23 @@ flowchart TD
 flowchart TD
     subgraph NODE2["NODE (physical machine)"]
         subgraph APP1["SynApp 1 (WASM sandbox)"]
-            W1[WASM Component\nWASI capability-limited]
-            DB1[(cr-sqlite\nApp 1 only)]
+            W1[WASM Component WASI capability-limited]
+            DB1[(cr-sqlite App 1 only)]
         end
 
         subgraph APP2["SynApp 2 (Podman container)"]
-            P1[OCI Container\nrootless, non-root user]
-            DB2[(cr-sqlite\nApp 2 only)]
+            P1[OCI Container rootless, non-root user]
+            DB2[(cr-sqlite App 2 only)]
         end
 
         subgraph SUBSTRATE_CORE["Substrate Core"]
-            AC3[ABAC Engine\nenforces all cross-app access]
-            MSG4[Message Router\nno cross-app ambient access]
+            AC3[ABAC Engine enforces all cross-app access]
+            MSG4[Message Router no cross-app ambient access]
         end
     end
 
-    APP1 <-->|"explicit substrate-mediated\nAPI calls only"| SUBSTRATE_CORE
-    APP2 <-->|"explicit substrate-mediated\nAPI calls only"| SUBSTRATE_CORE
+    APP1 <-->|"explicit substrate-mediated API calls only"| SUBSTRATE_CORE
+    APP2 <-->|"explicit substrate-mediated API calls only"| SUBSTRATE_CORE
     APP1 -. "no direct access" .-> APP2
     APP2 -. "no direct access" .-> APP1
 
@@ -997,7 +966,6 @@ This section is an index of every `[TBD]` marker in the requirements spec, that 
 - Advanced ad auction mechanics (ad boost field is present but auction engine is not)
 - Fully decentralised bootstrap replacement (DHT mirror is built; full replacement is not)
 - AI-assisted workflow synthesis
-- SynApp 2 (Food Mesh) — built post-MVP as thin demo
 
 ### 13.3 Acceptance Criteria
 
