@@ -1,5 +1,5 @@
 # Syneroym Ecosystem Spec [WIP]
-This document expands on the vision described [here](/VISION.md). Please go through that to understand the bigger picture. Following from there, our objective is to build a technology substrate that enables diverse classes of provider ecosystems to emerge through `Autonomous Mini-Apps Cooperating over a common technology substrate`. We also build initial mini-apps that kickstart these new ecosystems and demonstrate various interaction patterns.
+This document expands on the vision described [here](/VISION.md). Please go through that to understand the bigger picture. Following from there, our objective is to build a technology substrate that enables diverse classes of provider ecosystems to emerge through `Autonomous SynApps (Mini-apps) Cooperating over a common technology substrate`. We also build initial SynApps that kickstart these new ecosystems and demonstrate various interaction patterns.
 
 > **Document scope note:** This is a *requirements* document. It specifies *what* the system must do and *why*, not *how*. Sections marked `[Architecture TBD]` indicate areas where the approach is intentionally deferred to a separate Architecture Design Document. These include: reputation mechanisms, federated discoverability, coin/credit systems, DHT design, CRDT merge semantics, and relay topology.
 
@@ -13,9 +13,8 @@ This requirements spec is structured as follows:
 - Conceptual Model
 - Substrate Functionality
 - Shared Utilities and Services
-- Mini-App Specs:
-    - Vertical 1: Home Services Guild (e.g. Electricians, Plumbers)
-    - Vertical 2: Food and Small Retailer Mesh (e.g. Small restaurants, grocery stores)
+- SynApp Specs:
+    - Reference Application: Business, Professional, and Retail Spaces (covering Home Services and Small Retail)
 - Open Questions
 
 ---
@@ -61,7 +60,7 @@ The following principles guide design decisions throughout the system:
 
 **Transparency over opaqueness.** Ranking, discovery, and reputation algorithms are either open source or provider-auditable. No hidden algorithmic black boxes determining outcomes for providers.
 
-**Interoperability by convention.** Mini-apps cooperate through shared substrate primitives and open protocols. No mini-app should require a central coordinator to interoperate with another.
+**Interoperability by convention.** SynApps cooperate through shared substrate primitives and open protocols. No SynApp should require a central coordinator to interoperate with another.
 
 ---
 
@@ -72,7 +71,7 @@ High-level requirement highlights:
 - Providers can self-host business applications on commodity hardware (PCs, phones, Raspberry Pi) without requiring cloud accounts or deep technical expertise.
 - Providers can federate with others to share infrastructure and improve resilience and discovery reach.
 - Consumers can discover and transact with providers through a unified experience regardless of which substrate hosts the provider.
-- The substrate provides shared primitives (identity, messaging, payments, reputation) that mini-apps build on rather than re-implement.
+- The substrate provides shared primitives (identity, messaging, payments, reputation) that SynApps build on rather than re-implement.
 - The system degrades gracefully under network partition — queuing, offline-first storage, and async workflows keep transactions progressing.
 - All participants retain the ability to exit — migrating data and services to a different infrastructure provider or running independently.
 
@@ -92,7 +91,7 @@ The following are key personas. A single person or organisation may play multipl
 
 **Consumer / General User.** Uses the Syneroym ecosystem to discover and purchase services or products, or to interact with other entities (chat, follow, collaborate).
 
-**App Developer.** Builds business mini-apps and makes them available for others to deploy on their infrastructure.
+**App Developer.** Builds business SynApps and makes them available for others to deploy on their infrastructure.
 
 **Space Manager.** A persona within a SynApp — the person (often the provider or aggregator) responsible for configuring and managing a Space, its catalog, branding, and operational policies.
 
@@ -100,7 +99,7 @@ The following are key personas. A single person or organisation may play multipl
 
 ## Common Requirements
 
-These requirements apply across all business domains and mini-apps.
+These requirements apply across all business domains and SynApps.
 
 ### Infrastructure & Hosting
 
@@ -108,7 +107,7 @@ These requirements apply across all business domains and mini-apps.
 - Infrastructure Providers make hardware (old PCs, cloud VMs, etc.) available for Service Providers to host applications or application components on a leased basis.
 - Service Providers can monitor online service health and react to notifications about service status through UI, CLI, or other tools that leverage substrate-provided hooks.
 - Infrastructure Providers can monitor infrastructure health, control access to nodes, and react to notifications about infrastructure status through similar tooling.
-- App Developers can package mini-apps (e.g. as WASM modules or OCI images) which Providers can deploy to matching container infrastructure (WASM runtime, Podman/Docker).
+- App Developers can package SynApps (e.g. as WASM modules or OCI images) which Providers can deploy to matching container infrastructure (WASM runtime, Podman/Docker).
 - Consumers can access Provider services through options the Provider makes available: app UI, browser, API, or command-line tools.
 - Service Providers can move services and data across Infrastructure Providers without restriction. [Migration protocol: Architecture TBD]
 - Service Providers can back up and restore app data. [Backup mechanism: Architecture TBD — Litestream is a candidate]
@@ -184,18 +183,17 @@ erDiagram
     MOD ||--|{ SVC : template-for
     SYNAPP ||--|{ SVC : comprises-of
     SVC }|--|| SVC-SB : runs-in
-    HOST ||--o{ NODE : runs
     NODE ||--o{ SVC-SB : runs
     SUBSTRATE ||--|| NODE : runs-on
     SUBSTRATE ||--o{ SVC : manages-and-proxies
     NODE-OWNER ||--o{ SUBSTRATE : owns
     SYNAPP-OWNER ||--|{ SYNAPP : owns
     SYNAPP }o--|| SUBSTRATE : registers-at
-    SERVICE }o--|{ HOME_RELAY : registers-at
+    SVC }o--|{ HOME_RELAY : registers-at
+    SUBSTRATE }o--|{ HOME_RELAY : registers-at
     CONSUMER ||--o{ SYNAPP : accesses
     PROVIDER ||--o{ SYNAPP : owns-or-uses
-    AGGREGATOR ||--o{ PROVIDER : manages
-    AGGREGATOR ||--o{ SYNAPP : hosts-for
+    AGGREGATOR ||--o{ PROVIDER : hosts-for
 
     MOD[SYN-MOD]{}
     SVC[SYN-SVC]{}
@@ -215,7 +213,7 @@ erDiagram
 
 **SVC-SANDBOX.** The execution environment for a SYN-SVC. May be a WASM runtime instance, a Podman container, or equivalent. Provides isolation between services sharing a NODE.
 
-**SYN-APP (Syneroym Application).** A composed set of SYN-SVCs that together implement a business application (e.g. the Home Services Guild mini-app). Registered with a SUBSTRATE.
+**SYN-APP (Syneroym Application).** A composed set of SYN-SVCs that together implement a business application (e.g. the Home Services Guild SynApp). Registered with a SUBSTRATE.
 
 **SYN-SUBSTRATE.** The core runtime layer on a NODE. Manages service deployment, lifecycle, discovery registration, messaging, and access control on behalf of the NODE-OWNER.
 
@@ -234,9 +232,9 @@ Description of the core Syneroym substrate functionality, key protocols, and imp
 - Node owner installs the substrate on a node.
 - Substrate generates admin keypair on first run. Private key never leaves the node.
 - Substrate registers with a Relay:
-    - Contacts bootstrap server to obtain a home relay.
-    - Publishes node pubkey and associated relay address in a Pkarr-signed packet in the BEP 0044 DHT (used for the node's control plane, e.g. SYN-SVC deploy/remove).
-    - Starts an Iroh QUIC server using that relay.
+    - Contacts a bootstrap service to obtain a home relay assignment.
+    - Publishes its node public key and associated relay routing information to a distributed registry or network (used for the node's control plane, e.g. SYN-SVC deploy/remove).
+    - Starts a secure communication server listening via the assigned relay and/or direct peer-to-peer interfaces.
 - Substrate identifies its capabilities (sandbox/container types, quota configurability). Node owner configures capability limits (CPU, GPU, memory, disk, other capabilities) available to hosted Services.
 - Access control setup:
     - If the node owner has a primary substrate, this substrate's pubkey is registered with it.
@@ -287,7 +285,7 @@ Description of the core Syneroym substrate functionality, key protocols, and imp
 
 > This section addresses a gap in the prior spec. Centralised platforms provide consumers a single app. In Syneroym, providers may run on different substrates operated by different entities. The consumer experience must remain coherent.
 
-- A Consumer App (web or mobile) allows consumers to discover, browse, and transact with providers across multiple substrates and mini-apps from a single interface.
+- A Consumer App (web or mobile) allows consumers to discover, browse, and transact with providers across multiple substrates and SynApps from a single interface.
 - The Consumer App queries the distributed discovery index; it does not need to know which substrate hosts a given provider.
 - A consumer's identity, transaction history, and preferences are portable and self-owned — stored on a substrate the consumer controls or has designated.
 - The Consumer App is itself a thin client; business logic runs on provider substrates. The Consumer App is not a privileged participant in the ecosystem.
@@ -298,9 +296,9 @@ Description of the core Syneroym substrate functionality, key protocols, and imp
 
 ### Development
 
-- Build WASM components with wRPC for inter-component calling.
-- Generate JSON-RPC dispatch code for non-wRPC callers (e.g. browsers calling from JavaScript). WIT serves as the canonical API definition; JSON-RPC interface is derived from it.
-- Package in OCI containers where WASM is not appropriate.
+- Developers build encapsulated components (e.g. using WebAssembly or standard container images) that define clear, strongly-typed interfaces for inter-component communication.
+- The system supports automatically deriving external-facing APIs (e.g., JSON-RPC or HTTP/REST) from these internal component interfaces to support diverse clients like web browsers.
+- Components are packaged into standard distribution formats suitable for the target substrate execution environment.
 
 ### Deployment
 
@@ -387,11 +385,12 @@ The system accommodates the following variation axes across workflows:
 
 ---
 
-## Design Considerations
+## Candidate Technologies & Architectural Concepts
 
-*Technology choices under consideration — not final decisions.*
+*Technology choices under consideration — not final decisions. This section is illustrative and does not represent strict requirements.*
 
-- **P2P and relay:** Iroh for peer-to-peer connectivity, hole punching, and relay.
+- **P2P and relay:** Iroh for peer-to-peer connectivity mainly over Quic, hole punching, and relay.
+- **SynApp Registry:** pkarr signed packets, BEP 0044 DHT.
 - **Inter-service networking:** Podman pods or rootless networks for services co-located on the same node.
 - **Browser connectivity:** webrtc-rs for connections via browser WebRTC Data Channels.
 - **API layer:** JSON-RPC with WASM components and wRPC. WIT as canonical API; JSON-RPC derived from it.
@@ -408,7 +407,7 @@ The system accommodates the following variation axes across workflows:
 
 The following questions require decisions before or during detailed architecture design:
 
-1. **Governance of shared protocols.** Who maintains the interoperability protocols and schema versions that mini-apps must implement to federate? What is the process for evolving them? How are breaking changes managed?
+1. **Governance of shared protocols.** Who maintains the interoperability protocols and schema versions that SynApps must implement to federate? What is the process for evolving them? How are breaking changes managed?
 
 2. **Bootstrap server continuity.** Who operates and funds the bootstrap server long-term? What is the fallback if the Syneroym organisation cannot maintain it?
 
@@ -422,7 +421,7 @@ The following questions require decisions before or during detailed architecture
 
 7. **Infrastructure Provider SLA.** What guarantees, if any, can an Infrastructure Provider make to a Service Provider? How is breach of those guarantees resolved?
 
-8. **Minimum viable federation.** What is the minimum a third-party developer must implement to build a compliant mini-app that federates with existing Syneroym mini-apps?
+8. **Minimum viable federation.** What is the minimum a third-party developer must implement to build a compliant SynApp that federates with existing Syneroym SynApps?
 
 9. **Consumer UX ownership.** Who builds and maintains the consumer-facing aggregation app? Is it open source and community-maintained, or Syneroym-operated?
 
