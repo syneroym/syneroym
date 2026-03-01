@@ -1,7 +1,7 @@
-# Syneroym Ecosystem Spec [WIP]
-This document expands on the vision described [here](/VISION.md). Please go through that to understand the bigger picture. Following from there, our objective is to build a technology substrate that enables diverse classes of provider ecosystems to emerge through `Autonomous SynApps (Mini-apps) Cooperating over a common technology substrate`. We also build initial SynApps that kickstart these new ecosystems and demonstrate various interaction patterns.
+# Syneroym Ecosystem Requirements Specification [WIP]
+This document expands on the vision described [here](./VISION.md). Please go through that to understand the bigger picture. Following from there, our objective is to build a technology substrate that enables diverse classes of provider ecosystems to emerge through `Autonomous SynApps (Mini-apps) Cooperating over a common technology substrate`. We also build initial SynApps that kickstart these new ecosystems and demonstrate various interaction patterns.
 
-> **Document scope note:** This is a *requirements* document. It specifies *what* the system must do and *why*, not *how*. Sections marked `[Architecture TBD]` indicate areas where the approach is intentionally deferred to a separate Architecture Design Document. These include: reputation mechanisms, federated discoverability, coin/credit systems, DHT design, CRDT merge semantics, and relay topology.
+> **Document scope note:** This is a *requirements* document. It specifies *what* the system does and *why*, not *how*. Sections marked `[Architecture TBD]` indicate areas where the approach is intentionally deferred to a separate Architecture Design Document. These include: reputation mechanisms, federated discoverability, coin/credit systems, DHT design, CRDT merge semantics, and relay topology.
 
 This requirements spec is structured as follows:
 
@@ -21,7 +21,7 @@ This requirements spec is structured as follows:
 
 ## Philosophy & Design Constraints
 
-A key difference in the newly envisioned provider ecosystem compared to large-scale consumer platforms is the (often geographical) clustering of service providers and consumers. Global reach and scale from a single embedding source is not a fundamental requirement. Reach and scale are improved instead by pre-established collaboration and coordination patterns across clusters of autonomous participants. Given this differentiator, we need to preserve benefits and reduce the drawbacks of large-scale consumer platforms like those listed in the [vision document](/VISION.md#background).
+A key difference in the newly envisioned provider ecosystem compared to large-scale consumer platforms is the (often geographical) clustering of service providers and consumers. Global reach and scale from a single embedding source is not a fundamental requirement. Reach and scale are improved instead by pre-established collaboration and coordination patterns across clusters of autonomous participants. Given this differentiator, we need to preserve benefits and reduce the drawbacks of large-scale consumer platforms like those listed in the [vision document](./VISION.md#background).
 
 ### Preserving Benefits
 
@@ -54,13 +54,13 @@ The following principles guide design decisions throughout the system:
 
 **Locality-first.** The system is optimised for scenarios where providers and consumers are geographically proximate. Federation beyond local clusters is a secondary concern.
 
-**Progressive decentralisation.** A provider can start with a single device and no federation. Complexity is introduced incrementally as their needs grow. The system must not require full federation to be useful.
+**Progressive decentralisation.** A provider starts with a single device and no federation. Complexity is introduced incrementally as their needs grow. The system does not require full federation to be useful.
 
 **Data sovereignty.** All provider data lives on infrastructure the provider controls or has explicitly chosen to lease. No provider data is stored on Syneroym-operated infrastructure except transiently for routing.
 
 **Transparency over opaqueness.** Ranking, discovery, and reputation algorithms are either open source or provider-auditable. No hidden algorithmic black boxes determining outcomes for providers.
 
-**Interoperability by convention.** SynApps cooperate through shared substrate primitives and open protocols. No SynApp should require a central coordinator to interoperate with another.
+**Interoperability by convention.** SynApps cooperate through shared substrate primitives and open protocols. No SynApp requires a central coordinator to interoperate with another.
 
 ---
 
@@ -68,12 +68,30 @@ The following principles guide design decisions throughout the system:
 
 High-level requirement highlights:
 
-- Providers can self-host business applications on commodity hardware (PCs, phones, Raspberry Pi) without requiring cloud accounts or deep technical expertise.
-- Providers can federate with others to share infrastructure and improve resilience and discovery reach.
-- Consumers can discover and transact with providers through a unified experience regardless of which substrate hosts the provider.
+- Providers self-host business applications on commodity hardware (PCs, phones, Raspberry Pi) without requiring cloud accounts or deep technical expertise.
+- Providers federate with others to share infrastructure and improve resilience and discovery reach.
+- Consumers discover and transact with providers through a unified experience regardless of which substrate hosts the provider.
 - The substrate provides shared primitives (identity, messaging, payments, reputation) that SynApps build on rather than re-implement.
 - The system degrades gracefully under network partition — queuing, offline-first storage, and async workflows keep transactions progressing.
 - All participants retain the ability to exit — migrating data and services to a different infrastructure provider or running independently.
+
+## MVP Boundary (Phase 1)
+
+The following scope boundary is added to keep implementation decisions focused.
+
+### In Scope for MVP
+
+- Identity, messaging, service deployment, access control, and discovery work for single-node and small federated deployments.
+- Provider-hosted Space setup, catalog browsing, order confirmation, and payment intent initiation are supported for the first SynApp.
+- Offline queueing and eventual sync work for core transactional flows (order, status updates, fulfilment updates).
+- Data export for provider portability is available in a documented format.
+
+### Explicitly Out of Scope for MVP
+
+- Syneroym-native coin or mutual credit issuance.
+- Advanced ad auction and marketplace economics.
+- Fully decentralised bootstrap replacement.
+- Complex AI-assisted workflow synthesis.
 
 ---
 
@@ -105,14 +123,14 @@ These requirements apply across all business domains and SynApps.
 
 - Service Providers run business applications on PCs or mobiles they control, even when those machines are not reachable on the external internet or are behind network firewalls.
 - Infrastructure Providers make hardware (old PCs, cloud VMs, etc.) available for Service Providers to host applications or application components on a leased basis.
-- Service Providers can monitor online service health and react to notifications about service status through UI, CLI, or other tools that leverage substrate-provided hooks.
-- Infrastructure Providers can monitor infrastructure health, control access to nodes, and react to notifications about infrastructure status through similar tooling.
-- App Developers can package SynApps (e.g. as WASM modules or OCI images) which Providers can deploy to matching container infrastructure (WASM runtime, Podman/Docker).
-- Consumers can access Provider services through options the Provider makes available: app UI, browser, API, or command-line tools.
-- Service Providers can move services and data across Infrastructure Providers without restriction. [Migration protocol: Architecture TBD]
-- Service Providers can back up and restore app data. [Backup mechanism: Architecture TBD — Litestream is a candidate]
-- Service Providers can install the same app on multiple secondary devices. The app works independently on those devices when disconnected, and synchronises state with the primary device when reconnected. [CRDT merge semantics: Architecture TBD]
-- Service Providers can install an app such that parts (shards) of it are hosted on different hosts, each managing a subset of load.
+- Service Providers monitor online service health and react to notifications about service status through UI, CLI, or other tools that leverage substrate-provided hooks.
+- Infrastructure Providers monitor infrastructure health, control access to nodes, and react to notifications about infrastructure status through similar tooling.
+- App Developers package SynApps (e.g. as WASM modules or OCI images), and Providers deploy them to matching container infrastructure (WASM runtime, Podman/Docker).
+- Consumers access Provider services through options the Provider makes available: app UI, browser, API, or command-line tools.
+- Service Providers move services and data across Infrastructure Providers without restriction. [Migration protocol: Architecture TBD]
+- Service Providers back up and restore app data. [Backup mechanism: Architecture TBD — Litestream is a candidate]
+- Service Providers install the same app on multiple secondary devices. The app works independently on those devices when disconnected, and synchronises state with the primary device when reconnected. [CRDT merge semantics: Architecture TBD]
+- Service Providers install an app such that parts (shards) of it are hosted on different hosts, each managing a subset of load.
 
 ### Connectivity & Offline Behaviour
 
@@ -122,7 +140,7 @@ These requirements apply across all business domains and SynApps.
 
 ### Messaging & Data Sharing
 
-- All entities (Providers, Consumers, Services) can exchange messages with each other, subject to access control policies set by the entity owner.
+- All entities (Providers, Consumers, Services) exchange messages with each other, subject to access control policies set by the entity owner.
 - Message types include: one-to-one multimedia chat, group chat, discussion threads around a pivot context (e.g. a blog post, a project), structured service messages (e.g. booking requests, record access grants), and collaborative content editing.
 - Examples:
     - A provider and consumer text/audio/video chat, or exchange structured booking messages.
@@ -130,6 +148,17 @@ These requirements apply across all business domains and SynApps.
     - Two substrate owners chat or share media.
     - Multiple entities participate in a discussion thread around a shared context.
     - Multiple entities collaborate over shared content (e.g. collective project artifact editing).
+
+### Non-Functional Requirements
+
+- **Security:** All inter-node and client-node traffic is encrypted in transit. Sensitive data at rest supports encryption with keys controlled by the data owner or designated operator.
+- **Identity Security:** Key rotation and key revocation are supported without requiring complete account recreation.
+- **Availability:** The substrate continues serving read operations during temporary relay or bootstrap unavailability when cached or local data is sufficient.
+- **Durability:** Provider data backups are restorable to a new node without proprietary dependencies.
+- **Observability:** Substrate and SynApps expose health status, structured logs, and basic metrics suitable for UI and CLI monitoring.
+- **Performance:** Normal user actions (discover, browse, message send, order submit) complete within acceptable interactive latency on consumer broadband/mobile networks; exact SLO values are defined in architecture and test plans.
+- **Interoperability:** SynApps claiming federation compatibility implement the shared interoperability schemas and version negotiation rules.
+- **Portability:** Export/import formats for identity-linked service history are documented and versioned to avoid lock-in.
 
 ---
 
@@ -139,7 +168,12 @@ Centralized platforms derive consumer trust from brand, legal accountability, an
 
 ### The Trust Problem
 
-When a consumer discovers a provider through Syneroym, they have no prior relationship with either the provider or the infrastructure operator. The system must give the consumer sufficient signal to decide whether to transact. Conversely, providers must have signal that consumers are not fraudulent.
+When a consumer discovers a provider through Syneroym, they have no prior relationship with either the provider or the infrastructure operator. The system gives the consumer sufficient signal to decide whether to transact. Conversely, providers have signal that consumers are not fraudulent.
+
+Minimum requirement at transaction time:
+
+- Before payment confirmation, the consumer inspects provider identity, at least one trust signal (credential, vouch, or verified transaction history), policy terms, and dispute/cancellation policy.
+- Before accepting high-risk orders, providers require consumer-side trust signals (verified identity level, prior transaction history, or escrow commitment).
 
 ### Trust Layers
 
@@ -147,20 +181,20 @@ Trust in the Syneroym ecosystem operates at multiple levels:
 
 **Layer 1: Cryptographic Identity.** Every entity (person, service, substrate node) has a keypair-based identity. Messages and actions are signed. This proves authenticity but not trustworthiness.
 
-**Layer 2: Referral and Vouching.** Entities can vouch for other entities within their network. A consumer who transacts with a provider can vouch for them. A provider aggregator vouches for the providers it manages. Vouching creates a web of trust that consumers and automated systems can traverse. [Vouching mechanics and weighting: Architecture TBD]
+**Layer 2: Referral and Vouching.** Entities vouch for other entities within their network. A consumer who transacts with a provider vouches for them. A provider aggregator vouches for the providers it manages. Vouching creates a web of trust that consumers and automated systems traverse. [Vouching mechanics and weighting: Architecture TBD]
 
-**Layer 3: Verifiable Credentials.** Providers can attach verifiable credentials to their profile — e.g. a trade licence, a government ID, a certification. The system supports attaching and displaying such credentials without requiring a central verifier. The consuming party decides which credential issuers they trust. [Credential format and verification: Architecture TBD]
+**Layer 3: Verifiable Credentials.** Providers attach verifiable credentials to their profile — e.g. a trade licence, a government ID, a certification. The system supports attaching and displaying such credentials without requiring a central verifier. The consuming party decides which credential issuers they trust. [Credential format and verification: Architecture TBD]
 
 **Layer 4: Transaction History and Reputation.** Completed transactions generate a reputation record that is portable across the ecosystem. A provider's reputation is not locked to a single platform. [Reputation portability mechanism: Architecture TBD]
 
-**Layer 5: Community Moderation.** Provider Aggregators and local communities can maintain their own block/trust lists. Bad actor reports propagate across the federation with appropriate weighting. [Propagation protocol: Architecture TBD]
+**Layer 5: Community Moderation.** Provider Aggregators and local communities maintain their own block/trust lists. Bad actor reports propagate across the federation with appropriate weighting. [Propagation protocol: Architecture TBD]
 
 ### Legal Liability Boundary
 
 The system does not provide legal shielding in the way centralised platforms do — that shielding derives from the platform's legal personhood and terms of service. Syneroym infrastructure operators bear their own legal responsibility for services they host under applicable local law. The requirements are:
 
-- The substrate must make it straightforward for a Provider or Aggregator to display their own terms of service to consumers.
-- The substrate must not create an implicit representation to consumers that a federated node has been vetted by Syneroym.
+- The substrate makes it straightforward for a Provider or Aggregator to display their own terms of service to consumers.
+- The substrate does not create an implicit representation to consumers that a federated node has been vetted by Syneroym.
 - A separate document will outline recommended legal structures for Provider Aggregators operating at scale. [Legal guidance: Out of scope for this spec]
 
 ---
@@ -245,7 +279,7 @@ Description of the core Syneroym substrate functionality, key protocols, and imp
 
 - Substrate provides a secure end-to-end communication channel between clients and the services it manages.
 - Substrate supports WASM and Podman sandbox environments at minimum.
-- Substrate attempts direct client-service communication wherever possible; falls back to external relay (DERP) when intermediate network infrastructure does not permit direct connections.
+- Substrate attempts direct client-service communication wherever possible; it falls back to external relay (DERP) when intermediate network infrastructure does not permit direct connections.
 - On mobile platforms, if the substrate and embedded services are throttled by the OS, requests are sent as offline notifications. The service response is triggered when the substrate application is next active.
 
 ### Core Substrate Services
@@ -279,11 +313,11 @@ Description of the core Syneroym substrate functionality, key protocols, and imp
 - Periodically audits registered relays and expires stale entries.
 - For node ID lookups, checks internal cache or DHT fallback and returns the relay. For HTTP URL lookups from browsers, finds the relay and issues an HTTP redirect.
 
-> **Single point of failure note.** The bootstrap server is a governance and availability dependency. Requirement: the bootstrap server's registry must be exportable to a decentralised alternative (e.g. a well-known DHT namespace) so the ecosystem can survive bootstrap server unavailability. [Decentralised bootstrap fallback: Architecture TBD]
+> **Single point of failure note.** The bootstrap server is a governance and availability dependency. Requirement: the bootstrap server's registry is exportable to a decentralised alternative (e.g. a well-known DHT namespace) so the ecosystem can survive bootstrap server unavailability. [Decentralised bootstrap fallback: Architecture TBD]
 
 ### Consumer-Facing Aggregation
 
-> This section addresses a gap in the prior spec. Centralised platforms provide consumers a single app. In Syneroym, providers may run on different substrates operated by different entities. The consumer experience must remain coherent.
+> This section addresses a gap in the prior spec. Centralised platforms provide consumers a single app. In Syneroym, providers may run on different substrates operated by different entities. The consumer experience remains coherent.
 
 - A Consumer App (web or mobile) allows consumers to discover, browse, and transact with providers across multiple substrates and SynApps from a single interface.
 - The Consumer App queries the distributed discovery index; it does not need to know which substrate hosts a given provider.
@@ -366,13 +400,13 @@ The system accommodates the following variation axes across workflows:
 
 ### Discovery
 
-- Entities can discover other entities via keyword search, attribute-value point search, and interval/range search.
+- Entities discover other entities via keyword search, attribute-value point search, and interval/range search.
 - Discovery results are drawn from the distributed index maintained by participating substrate nodes.
 - Discovery ranking is transparent and configurable by the Space Manager within published bounds. [Discovery ranking algorithm: Architecture TBD]
 
 ### Reputation
 
-- Consumers can leave reviews and ratings for completed transactions.
+- Consumers leave reviews and ratings for completed transactions.
 - Reputation scores are portable — a provider's reputation is not lost if they move substrates.
 - Referral-based reputation mechanisms allow trusted community members to amplify or contextualise reputation signals.
 - [Reputation portability protocol, visibility, anti-gaming mechanisms, Sybil resistance: Architecture TBD]
@@ -380,8 +414,19 @@ The system accommodates the following variation axes across workflows:
 ### Advertising
 
 - Contextual advertising is matched client-side: the consumer's device evaluates ad relevance against the local index without sending consumer query data to a third party.
-- Space Managers can pay for elevated placement in discovery results within their local cluster. Placement weighting is disclosed to consumers.
+- Elevated placement in discovery results is available to Space Managers within their local cluster. Placement weighting is disclosed to consumers.
 - [Ad auction mechanics and placement limits: Architecture TBD]
+
+## Phase 1 Acceptance Criteria
+
+The following criteria define a minimum "requirements met" bar for the first deliverable:
+
+1. A provider deploys the SynApp on a single node and creates a Space with catalog entries.
+2. A consumer discovers that Space from a separate node and completes an order flow end-to-end.
+3. If either side goes offline during the flow, queued actions synchronize and resolve deterministically after reconnection.
+4. Provider exports service and transaction data, then restores it on a new node without data loss in core entities.
+5. Access control policies prevent unauthorized reads/writes across at least two independent users and two services.
+6. At least one trust signal is visible to the consumer before payment confirmation.
 
 ---
 
@@ -407,7 +452,7 @@ The system accommodates the following variation axes across workflows:
 
 The following questions require decisions before or during detailed architecture design:
 
-1. **Governance of shared protocols.** Who maintains the interoperability protocols and schema versions that SynApps must implement to federate? What is the process for evolving them? How are breaking changes managed?
+1. **Governance of shared protocols.** Who maintains the interoperability protocols and schema versions that SynApps implement to federate? What is the process for evolving them? How are breaking changes managed?
 
 2. **Bootstrap server continuity.** Who operates and funds the bootstrap server long-term? What is the fallback if the Syneroym organisation cannot maintain it?
 
@@ -419,9 +464,9 @@ The following questions require decisions before or during detailed architecture
 
 6. **Aggregator accountability.** What obligations does a Provider Aggregator take on toward the providers it manages? How are disputes between an aggregator and a provider resolved?
 
-7. **Infrastructure Provider SLA.** What guarantees, if any, can an Infrastructure Provider make to a Service Provider? How is breach of those guarantees resolved?
+7. **Infrastructure Provider SLA.** What guarantees, if any, might an Infrastructure Provider make to a Service Provider? How is breach of those guarantees resolved?
 
-8. **Minimum viable federation.** What is the minimum a third-party developer must implement to build a compliant SynApp that federates with existing Syneroym SynApps?
+8. **Minimum viable federation.** What is the minimum a third-party developer implements to build a compliant SynApp that federates with existing Syneroym SynApps?
 
 9. **Consumer UX ownership.** Who builds and maintains the consumer-facing aggregation app? Is it open source and community-maintained, or Syneroym-operated?
 
