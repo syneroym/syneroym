@@ -978,20 +978,20 @@ This section is an index of every `[TBD]` marker in the requirements spec, that 
 
 ---
 
-## 14. Open Questions
+## 14. Open Questions & Recommendations
 
-| # | Question | Priority | Blocker For |
+| # | Question | Priority | Recommendation / Direction |
 |---|---|---|---|
-| OQ-1 | **DHT implementation choice:** libp2p Kademlia vs custom BEP 0044 — interoperability with pkarr registry; maintenance burden | High | Discovery MVP |
-| OQ-2 | **Consumer identity for non-self-hosters:** define hosted identity service spec, SLA, and migration guarantee | High | Consumer PWA |
-| OQ-3 | **Bootstrap governance:** who operates and funds it long-term; key holder for the community DHT namespace | High | Federation |
-| OQ-4 | **Minimum federation contract:** formal schema versioning and breaking-change process for WIT interoperability interfaces | Medium | Multi-party federation |
-| OQ-5 | **Aggregator accountability:** legal and operational obligations of a Provider Aggregator; dispute resolution between aggregator and managed provider | Medium | Aggregator persona |
-| OQ-6 | **Infrastructure Provider SLA:** formal guarantees and breach resolution; whether substrate enforces SLA monitoring | Medium | Infra provider persona |
-| OQ-7 | **Consumer UX ownership:** community-maintained or Syneroym-operated; governance model for the Consumer PWA | Medium | Consumer experience |
-| OQ-8 | **Payment rail expansion:** cross-border payment handling; smart-contract escrow design post-MVP | Low | Post-MVP |
-| OQ-9 | **Regulatory review:** mutual credit and Syneroym coin in target markets (India first) | Low | Post-MVP |
-| OQ-10 | **AI-assisted workflow synthesis:** scope, integration point, and privacy implications | Low | Post-MVP |
+| OQ-1 | **DHT implementation choice:** libp2p Kademlia vs custom BEP 0044. | High | **Custom BEP 0044 over Iroh.** Avoids bloating dependency tree with libp2p and conflicting network stacks. Aligns with `pkarr`. Use `mainline` crate logic over Iroh QUIC connections. |
+| OQ-2 | **Consumer identity for non-self-hosters:** SLA and migration. | High | **Device-Bound Keys + Encrypted Cloud Backup.** Generate Ed25519 locally in browser. Encrypt state/keys symmetrically for multi-device sync, stored as opaque blobs on Syneroym/Aggregator storage. |
+| OQ-3 | **Bootstrap governance:** operations and funding. | High | **Consortium Model.** Major aggregators (e.g., Guilds, Meshes) form a non-profit consortium to share hosting costs of distributed bootstrap nodes, with DHT fallback ensuring network survival. |
+| OQ-4 | **Minimum federation contract:** WIT versioning. | Medium | **RFC Process for WIT Interfaces.** Establish `syneroym/core-interfaces`. Use Wasmtime adapter components to translate between versions (e.g., `v1` to `v2`) during deprecation periods. |
+| OQ-5 | **Aggregator accountability:** legal and operational obligations. | Medium | **Layer 3/4 Trust Mechanisms.** Aggregators issue Verifiable Credentials (VCs). If malicious, providers migrate via `SynExport`, drop bad VC, and acquire a new one from a trusted aggregator. |
+| OQ-6 | **Infrastructure Provider SLA:** formal guarantees. | Medium | **Substrate Uptime Proofs.** Substrates broadcast encrypted heartbeats to Provider PWAs. If SLA drops (e.g., < 99%), UI prompts provider to migrate Space using `SynExport`. |
+| OQ-7 | **Consumer UX ownership:** Consumer PWA governance. | Medium | **Reference Open-Source PWA.** Syneroym builds and open-sources a reference PWA (MIT/Apache). Aggregators fork and brand it, hardcoding their bootstrap nodes and tuning local discovery weights. |
+| OQ-8 | **Payment rail expansion:** cross-border, smart-contract escrow. | Low | Defer to Post-MVP. Evaluate based on initial adoption metrics. |
+| OQ-9 | **Regulatory review:** mutual credit and Syneroym coin in target markets. | Low | Defer to Post-MVP. Requires legal counsel engagement before implementation. |
+| OQ-10 | **AI-assisted workflow synthesis:** scope, integration, privacy. | Low | Defer to Post-MVP. Keep workflows manual for Phase 1. |
 
 ---
 

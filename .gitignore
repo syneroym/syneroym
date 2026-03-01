@@ -19,3 +19,5 @@ __pycache__/
 # Temporary
 *.tmp
 *.swp
+
+**/notes.md
