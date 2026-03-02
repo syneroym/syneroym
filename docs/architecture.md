@@ -217,7 +217,8 @@ flowchart TD
         direction TB
         
         subgraph INGRESS["Ingress / API Gateway"]
-            WS[JSON-RPC over WebSocket]
+            WS[JSON-RPC over WebSocket payload]
+            wRPC[WASM component-component call payload]
             QUIC_EP[Iroh QUIC Endpoint]
             WRT[WebRTC Data Channel]
         end
@@ -266,7 +267,7 @@ flowchart TD
 
 ### 5.2 SynApp Packaging & API Pipeline
 
-**Migration Protocol and Backup Mechanism**
+**Packaging**
 
 ```mermaid
 flowchart LR
@@ -276,7 +277,7 @@ flowchart LR
     WASM_C[WASM Component .wasm]
     APP_SPEC[App Spec .toml manifest]
     SUB[Substrate Orchestrator]
-    JRPC[JSON-RPC 2.0 External API]
+    JRPC[wRPC or JSON-RPC 2.0 External API]
 
     WIT -->|generates bindings| WB
     WB --> RS
@@ -289,7 +290,7 @@ flowchart LR
     style JRPC fill:#2E75B6,color:#fff
 ```
 
-**Migration Protocol:** Provider data portability is achieved via a documented export/import format:
+**Migration Protocol and Backup Mechanism**
 - `syneroym export --app <app-id>` produces a signed archive: cr-sqlite snapshot + blob store + identity keypair (optional) + App Spec
 - Archive is portable to any substrate running a compatible substrate version
 - Import validates the archive signature and replays into a fresh cr-sqlite instance
@@ -538,6 +539,8 @@ Default `decay_factor = 0.5`. Max effective depth: 3 hops (weight < 0.125 beyond
 
 ### 6.5 Payments
 
+**TBD**: Whether to include any kind of payment gateway like (stripe, razorpay, etc.) in MVP or handle payment out of system. Mostly, for MVP we will stay with redirection to UPI payment at max. All verifcation is offline-delayed. So we exclude payment gateway integrations for now. It is difficult to circumvent centralized payment operators for auto payment management. 
+
 **Payment rails, escrow, and post-MVP credit/coin direction**
 
 ```mermaid
@@ -589,7 +592,7 @@ flowchart TD
     end
 
     subgraph PROVIDER_SUBSTRATE["Provider Substrate"]
-        GW[JSON-RPC Gateway]
+        GW[wRPC or JSON-RPC Gateway]
         
         subgraph WASM_COMPONENTS["WASM Components"]
             SM[space-manager]
@@ -678,6 +681,8 @@ stateDiagram-v2
 - Both parties IN_PROGRESS state with diverged sub-state → **merge by union** of completed steps; disputed steps require manual resolution
 
 #### 7.1.3 Consumer Transaction Flow
+
+TBD: Whether payments will be handled post MVP.
 
 ```mermaid
 sequenceDiagram
@@ -931,7 +936,7 @@ This section is an index of every `[TBD]` marker in the requirements spec, that 
 | Local storage | **cr-sqlite** | CRDT-extended SQLite; HLC timestamps |
 | Backup / replication | **Litestream** | WAL streaming; S3-compatible or peer |
 | DHT / registry | **pkarr** + BEP 0044 DHT | SynApp registry + bootstrap fallback |
-| Local DNS | **Hickory DNS** (Rust) | Dynamic relay hostname resolution |
+| Local DNS | **Hickory DNS** (Rust) | Dynamic relay hostname resolution. Else, could use plain lookup cache |
 | Observability | **OpenTelemetry** (OTLP) | Traces + metrics + logs; Grafana/Prometheus exporters |
 | Configuration | **TOML** + JSON Schema | Human-readable; validated |
 
@@ -943,7 +948,7 @@ This section is an index of every `[TBD]` marker in the requirements spec, that 
 | OCI services | **Rust or Go** in Alpine container | For services that can't target WASM |
 | 1-to-1 messaging crypto | **libsignal-protocol-rust** | X3DH + Double Ratchet |
 | Group messaging crypto | **openmls** (Rust) | MLS RFC 9420 |
-| Verifiable Credentials | **didkit** (Rust) | W3C VC Data Model 2.0 |
+| Verifiable Credentials | **ssi** (Rust) | W3C VC Data Model 2.0 |
 | DRM video | **Shaka Player** | Digital content delivery |
 | Payment (MVP) | **Stripe Connect SDK** + UPI deep links | Pluggable adapter |
 
