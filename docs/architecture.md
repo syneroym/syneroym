@@ -484,6 +484,12 @@ flowchart TD
 
 ### 6.4 Trust & Reputation
 
+Reputation: A mix of the following, instead of global rating. 
+
+- A provider's rating is only visible to a consumer if there's a trust path between them in the vouch graph. No globally averaged star rating is shown to strangers — instead you see: "3 people in your network have transacted with this provider" and their assessments. This is how reputation works in real communities. Much harder to game (you can't buy fake reviews from strangers if strangers' reviews are invisible to your target audience). Downside: cold start problem for new consumers with thin networks.
+- Transactional proof without rating content
+Show only verified transaction count and repeat customer rate — no subjective rating at all. "47 completed jobs, 68% are repeat customers" is a strong signal that's nearly impossible to fake (both parties must sign the transaction record) and doesn't suffer from rating inflation.
+
 **Trust, vouching, credentials, reputation portability, and anti-gaming**
 
 ```mermaid
@@ -819,9 +825,9 @@ No central coordinator is required — these are convention-based contracts enfo
 
 ```mermaid
 flowchart TD
-    subgraph PWA["Consumer PWA (React + TypeScript + Vite)"]
+    subgraph PWA["Consumer PWA (SolidJS/React + TypeScript + Vite)"]
         UI[UI Components Tailwind CSS]
-        STATE[Local State Zustand / React Query]
+        STATE[Local State Zustand / React Query / SolidJS]
         CRYPTO_CLIENT[Client-side Crypto libsignal-protocol-wasm]
         STORAGE_CLIENT[Local Storage IndexedDB]
         CONN[Connection Manager WebSocket / WebRTC]
@@ -971,7 +977,7 @@ This section is an index of every `[TBD]` marker in the requirements spec, that 
 
 | Concern | Technology |
 |---|---|
-| Framework | **React** (TypeScript) + **Vite** |
+| Framework | **React/SolidJS** (TypeScript) + **Vite** |
 | Styling | **Tailwind CSS** |
 | State management | **Zustand** + **React Query** |
 | Mobile wrapper | **Tauri** (Rust) — code sharing with substrate |
