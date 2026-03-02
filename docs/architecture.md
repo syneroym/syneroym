@@ -222,8 +222,8 @@ flowchart TD
         direction TB
         
         subgraph INGRESS["Ingress / API Gateway"]
-            WS[JSON-RPC over WebSocket payload]
-            wRPC[WASM component-component call payload]
+            WS[JSON-RPC over WebSocket for edge of WASM, say Browsers, CLI]
+            wRPC[WASM component-component local or network calls]
             QUIC_EP[Iroh QUIC Endpoint]
             WRT[WebRTC Data Channel]
         end
@@ -248,7 +248,7 @@ flowchart TD
         end
 
         subgraph UTIL["Shared Utilities"]
-            DISC[Discovery Index DHT Client]
+            DISC[Discovery Client for Federated Index with Gossip]
             REP[Reputation Engine]
             PAY[Payment Adapter]
         end
@@ -397,6 +397,9 @@ flowchart TD
 ```
 
 ### 6.2 Discovery & DHT
+Relays: For relay information storage, We use BEP 0044 Mainline DHT (via pkarr).
+For Searchable Catalog, we use Federated local indexes with gossip
+    - Each substrate maintains a local SQLite FTS5 (full-text search) index of Spaces it knows about. Substrates in a cluster gossip new entries to peers. A consumer queries their local substrate's index; the substrate fans out to known peers if local results are thin. No global DHT for search — just epidemic propagation within clusters. This fits the locality-first principle very well.
 
 **Partitioning, consistency model, and ranking algorithm**
 
@@ -879,12 +882,18 @@ flowchart TD
             DB2[(cr-sqlite App 2 only)]
         end
 
+        subgraph APP3["SynApp 2 (WASM sandbox)"]
+            W2[WASM Component WASI capability-limited]
+            DB2[(cr-sqlite App 2 only)]
+        end
+
         subgraph SUBSTRATE_CORE["Substrate Core"]
             AC3[ABAC Engine enforces all cross-app access]
             MSG4[Message Router no cross-app ambient access]
         end
     end
 
+    APP1 <-->|"direct access after substrate-vetted initialization"| APP3
     APP1 <-->|"explicit substrate-mediated API calls only"| SUBSTRATE_CORE
     APP2 <-->|"explicit substrate-mediated API calls only"| SUBSTRATE_CORE
     APP1 -. "no direct access" .-> APP2
@@ -892,6 +901,7 @@ flowchart TD
 
     style APP1 fill:#E2EFDA,stroke:#548235
     style APP2 fill:#FCE4D6,stroke:#C55A11
+    style APP3 fill:#E2EFDA,stroke:#548235
     style SUBSTRATE_CORE fill:#D6E4F0,stroke:#2E75B6
 ```
 
