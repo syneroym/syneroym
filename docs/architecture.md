@@ -91,6 +91,11 @@ block-beta
 ### 3.1 Conceptual Entity Model
 
 ```mermaid
+---
+title: Syneroym Conceptual Model
+config:
+    layout: elk
+---
 erDiagram
     NODE-OWNER ||--o{ SUBSTRATE : owns
     SUBSTRATE ||--|| NODE : runs-on
