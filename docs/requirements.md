@@ -8,6 +8,7 @@ This requirements spec is structured as follows:
 - Philosophy & Design Constraints
 - Requirements Overview
 - Personas
+- Glossary / Terminology
 - Common Requirements
 - Trust Model
 - Conceptual Model
@@ -115,6 +116,91 @@ The following are key personas. A single person or organisation may play multipl
 
 ---
 
+## Glossary / Terminology
+
+**Aggregator.** Takes responsibility for managing online services for multiple providers. E.g. a plumber cooperative.
+
+**App Developer.** A person or organisation that builds SynApps and publishes them for others to deploy. Does not necessarily host or operate any infrastructure.
+
+**Bootstrap Server.** A Syneroym-operated service that maintains a registry of active Relays, and handles other system management responsibilities.
+
+**Consumer / General User.** Uses the Syneroym ecosystem to discover and purchase services or products, or to interact with other entities.
+
+**Federation.** The process by which independent providers and infrastructure nodes interoperate to share discovery, reputation, and messaging capabilities without a central authority.
+
+**Home Relay.** A Relay assigned to a Substrate or SYN-SVC as its primary connectivity point.
+
+**Infrastructure Provider.** A person or organisation that makes hardware or virtual infrastructure available for Service Providers to host applications on a leased basis.
+
+**Node.** A physical or virtual machine running one Substrate instance. May run multiple SVC-Sandboxes.
+
+**P2P.** Peer-to-peer. To denote direct interaction between 2 entities without any intermediate broker service.
+
+
+**Provider.** Short for *Service Provider*. Provides a service to others — e.g. plumber, photographer, consultant. May self-host or use an Aggregator.
+
+**Relay.** A service that provides connectivity for SUBSTRATEs and SVCs that cannot accept inbound connections directly (e.g. behind NAT or firewall). Coordinates direct connectivity, occasionally relays encrypted traffic where direct connectivity does not work.
+
+**Space.** A named, provider-configured business context within a SynApp (e.g. a plumber's catalog and booking page).
+
+**Space Manager.** The person (often the Provider or Aggregator) responsible for configuring and operating a Space: catalog, branding, access control, and operational policies.
+
+**Substrate (SYN-SUBSTRATE).** The core runtime layer on a NODE. Manages service deployment, lifecycle, discovery registration, messaging, and access control on behalf of the NODE-OWNER.
+
+**Service Sandbox (SVC-SANDBOX).** The execution environment for a SYN-SVC. May be a WASM runtime instance, a Podman container, or equivalent. Provides isolation between services sharing a NODE.
+
+**SynApp (SYN-APP, Syneroym Application).** A composed set of SYN-SVCs that together implement a business application (e.g. the Home Services Guild SynApp). Registered with a SUBSTRATE.
+
+**SynApp Owner.** The provider who deploys a SynApp to provide services to their clients. Distinct from the Developer who develops it.
+
+**Syneroym Module (SYN-MOD)).** A reusable, independently deployable unit of business logic. Packaged as a WASM component or OCI image.
+
+**Syneroym Service (SYN-SVC).** A running instance of a module, executing within a SVC-SANDBOX on a Node. Managed and proxied by the Substrate. Occasionally, could even be an existing service that the Substrate only proxies to enable interaction with other ecosystem entities.
+
+**Verifiable Credential.** A cryptographically signed attestation issued by a third party (e.g. a trade authority, government body, or community organisation) and attached to a Provider's profile. The consuming party decides which credential issuers they trust.
+
+**Vouching.** A trust mechanism where entities issue signed endorsements for other entities within their network, creating a verifiable web of trust.
+
+
+---
+
+## Ecosystem & Domain Model
+
+The following diagram shows the high-level business entities in the Syneroym ecosystem and how they interact.
+
+```mermaid
+---
+title: Syneroym Ecosystem Context
+config:
+    layout: elk
+---
+flowchart TD
+    Consumer([Consumer])
+    Provider([Provider])
+    Aggregator([Aggregator])
+    InfraProv([Infrastructure Provider])
+    
+    ConsumerApp[Consumer App]
+    SynApp[SynApp: Space / Catalog]
+    Substrate[Syneroym Substrate]
+    Node[Compute Node]
+
+    Consumer -->|uses| ConsumerApp
+    ConsumerApp -->|discovers & interacts via| Substrate
+    
+    Provider -->|manages| SynApp
+    Aggregator -->|hosts for| Provider
+    Aggregator -->|manages| SynApp
+    
+    SynApp -->|runs on| Substrate
+    Substrate -->|deployed on| Node
+    InfraProv -->|owns & operates| Node
+```
+
+*(Note: For the lower-level technical architecture diagram detailing modules, services, and sandboxes, please refer to the Architecture Design Document).*
+
+---
+
 ## Common Requirements
 
 These requirements apply across all business domains and SynApps.
@@ -201,7 +287,7 @@ The system does not provide legal shielding in the way centralised platforms do 
 
 ## Conceptual Model
 
-The following diagram shows various conceptual entities in the Syneroym ecosystem and relationships between them.
+The following ER diagram shows the formal entity model for the Syneroym ecosystem, with full relationship cardinalities. See the [Glossary](#glossary) for definitions of all entities. See the [Ecosystem Orientation](#ecosystem-orientation) diagram for a higher-level overview.
 
 ```mermaid
 ---
@@ -212,6 +298,7 @@ config:
 erDiagram
     direction TB
 
+    %% --- Module & Service structure ---
     MOD ||--|{ MOD : depends-on
     MOD ||--|{ SVC : invokes
     MOD ||--|{ SVC : template-for
@@ -220,40 +307,51 @@ erDiagram
     NODE ||--o{ SVC-SB : runs
     SUBSTRATE ||--|| NODE : runs-on
     SUBSTRATE ||--o{ SVC : manages-and-proxies
-    NODE-OWNER ||--o{ SUBSTRATE : owns
+
+    %% --- Ownership ---
+    PROVIDER ||--o{ SUBSTRATE : owns-or-leases
     SYNAPP-OWNER ||--|{ SYNAPP : owns
     SYNAPP }o--|| SUBSTRATE : registers-at
+    AGGREGATOR ||--o{ PROVIDER : manages-for
+
+    %% --- Connectivity ---
     SVC }o--|{ HOME_RELAY : registers-at
     SUBSTRATE }o--|{ HOME_RELAY : registers-at
-    CONSUMER ||--o{ SYNAPP : accesses
-    PROVIDER ||--o{ SYNAPP : owns-or-uses
-    AGGREGATOR ||--o{ PROVIDER : hosts-for
+    HOME_RELAY }o--|| BOOTSTRAP : registers-with
+
+    %% --- SynApp-level entities ---
+    PROVIDER ||--o{ SPACE : configures
+    SPACE }|--|| SYNAPP : runs-within
+    SPACE-MGR ||--|{ SPACE : manages
+
+    %% --- Consumer side ---
+    CONSUMER ||--o{ CONSUMER-APP : uses
+    CONSUMER-APP }o--|{ SUBSTRATE : connects-to
+    CONSUMER ||--o{ SPACE : transacts-with
+
+    %% --- Trust ---
+    PROVIDER }o--o{ VERIFIABLE-CRED : holds
+    CONSUMER }o--o{ PROVIDER : vouches-for
+    AGGREGATOR }o--o{ PROVIDER : vouches-for
 
     MOD[SYN-MOD]{}
     SVC[SYN-SVC]{}
     SYNAPP[SYN-APP]{}
+    SYNAPP-OWNER[SYNAPP-OWNER]{}
     SUBSTRATE[SYN-SUBSTRATE]{}
     SVC-SB[SVC-SANDBOX]{}
-    CONSUMER[CONSUMER]{}
+    NODE[NODE]{}
+    HOME_RELAY[HOME-RELAY]{}
+    BOOTSTRAP[BOOTSTRAP-SERVER]{}
     PROVIDER[PROVIDER]{}
     AGGREGATOR[AGGREGATOR]{}
+    SPACE[SPACE]{}
+    SPACE-MGR[SPACE-MANAGER]{}
+    CONSUMER[CONSUMER]{}
+    CONSUMER-APP[CONSUMER-APP]{}
+    VERIFIABLE-CRED[VERIFIABLE-CREDENTIAL]{}
 ```
 
-### Key Entity Definitions
-
-**SYN-MOD (Syneroym Module).** A reusable, independently deployable unit of business logic. Packaged as a WASM component or OCI image. May depend on other modules and may invoke or act as a template for SYN-SVCs.
-
-**SYN-SVC (Syneroym Service).** A running instance of a module, executing within a SVC-SANDBOX on a NODE. Managed and proxied by the SUBSTRATE.
-
-**SVC-SANDBOX.** The execution environment for a SYN-SVC. May be a WASM runtime instance, a Podman container, or equivalent. Provides isolation between services sharing a NODE.
-
-**SYN-APP (Syneroym Application).** A composed set of SYN-SVCs that together implement a business application (e.g. the Home Services Guild SynApp). Registered with a SUBSTRATE.
-
-**SYN-SUBSTRATE.** The core runtime layer on a NODE. Manages service deployment, lifecycle, discovery registration, messaging, and access control on behalf of the NODE-OWNER.
-
-**NODE.** A physical or virtual machine running one SUBSTRATE instance. May run multiple SVC-SANDBOXes.
-
-**HOME_RELAY.** A relay server that provides connectivity for SUBSTRATEs and SVCs that cannot accept inbound connections directly (e.g. behind NAT or firewall).
 
 ---
 
