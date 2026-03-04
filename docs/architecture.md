@@ -596,7 +596,7 @@ flowchart TD
 ## 7. Layer 4 — SynApp Specifications
 
 ### 7.1 SynApp 1: Business, Professional & Retail Spaces
-A lot of the domain related aspects like processes, protocols, workflows of this SynApp will try to leverage from [Beckn](https://beckn.io/) and tailor those to our p2p system. 
+A lot of the domain related aspects like processes, protocols, workflows of this SynApp will try to leverage from [Beckn](https://beckn.io/) and tailor those to our p2p system. See protocol spec [here](https://github.com/beckn/protocol-specifications-v2)
 
 #### 7.1.1 Component Architecture
 
@@ -1087,7 +1087,7 @@ This section is an index of every `[TBD]` marker in the requirements spec, that 
 | **wRPC** | WIT-native RPC — high-performance inter-component streaming calls within a node |
 | **LWW** | Last-Write-Wins — CRDT merge strategy where the most recent write (by HLC) takes precedence |
 | **MLS** | Messaging Layer Security (RFC 9420) — end-to-end encrypted group messaging protocol |
-| **Beckn** | Protocols, processes, workflows for environments for value exchange between people and businesses using digital infrastructure. |
+| **Beckn** | [Beckn](https://beckn.io/), [Protocols](https://github.com/beckn/protocol-specifications-v2), processes, workflows for environments for value exchange between people and businesses using digital infrastructure. |
 
 ---
 
