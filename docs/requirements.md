@@ -100,7 +100,7 @@ The following scope boundary is added to keep implementation decisions focused.
 
 The following are key personas. A single person or organisation may play multiple roles simultaneously.
 
-**Individual Service Provider.** Provides a service to others — e.g. plumber, photographer, consultant. May self-host or use a Provider Aggregator.
+**Individual Service Provider.** Provides a service to others — e.g. plumber, photographer, consultant. Or even supporting providers like logistics, warehouse, insurance, finance. May self-host or use a Provider Aggregator.
 
 **Self-hosted Service Provider.** A provider who hosts their own online services on hardware they control.
 
