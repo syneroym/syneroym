@@ -12,12 +12,13 @@
 7. [Layer 4 — SynApp Specifications](#7-layer-4--synapp-specifications)
 8. [Federation Architecture](#8-federation-architecture)
 9. [Consumer Experience Architecture](#9-consumer-experience-architecture)
-10. [Security Architecture](#10-security-architecture)
-11. [Resolved Architecture TBD Items](#11-resolved-architecture-tbd-items)
-12. [Consolidated Technology Stack](#12-consolidated-technology-stack)
-13. [MVP Phase 1 Scope & Acceptance Criteria](#13-mvp-phase-1-scope--acceptance-criteria)
-14. [Open Questions](#14-open-questions--recommendations)
-15. [Glossary](#15-glossary)
+10. [Observability Architecture](#10-observability-architecture)
+11. [Security Architecture](#11-security-architecture)
+12. [Resolved Architecture TBD Items](#12-resolved-architecture-tbd-items)
+13. [Consolidated Technology Stack](#13-consolidated-technology-stack)
+14. [MVP Phase 1 Scope & Acceptance Criteria](#14-mvp-phase-1-scope--acceptance-criteria)
+15. [Open Questions](#15-open-questions--recommendations)
+16. [Glossary](#16-glossary)
 
 ---
 
@@ -849,9 +850,115 @@ flowchart TD
 
 ---
 
-## 10. Security Architecture
+## 10. Observability Architecture
 
-### 10.1 Encryption at Every Layer
+### 10.1 Design Philosophy
+
+Observability in Syneroym serves two distinct audiences: **non-technical providers** who need to know if their business is running, and **support staff and developers** who need technical depth to diagnose problems. These are not the same product and must not be designed as one.
+
+The substrate ships **instrumentation primitives, not observability stacks**. Open-format signals are emitted everywhere; what consumes them is the operator's choice. No external observability service is required to run a substrate.
+
+### 10.2 Instrumentation Layer (All Tiers)
+
+All instrumentation is in-process, zero-cost when unused, and based on open facades:
+
+- **Tracing:** `tracing` crate (Rust). Structured spans and events at every component boundary, substrate hop, and async I/O point. A correlation `trace_id` generated at the PWA flows through every wRPC call, queue entry, and cross-substrate message — enabling full reconstruction of any user action across nodes.
+- **Metrics:** `metrics` crate facade. Key signals: order state transitions, queue depth and age, relay connection stability, merge conflict rate, component restart count. Default backend: in-process circular buffer. Operators attach external backends (Prometheus, VictoriaMetrics) by configuration.
+- **Logs:** `tracing-subscriber` emitting structured JSON to a rotating local file. Human-readable with `jq`; parseable by any log tool. No external sink by default.
+- **In-process ring buffer:** Retains the last N spans and metric snapshots in memory. Queryable via the substrate health API without any external tool. The primary observability interface for Tier 1 nodes.
+
+### 10.3 The `health-narrator` Component
+
+The translation layer between raw instrumentation and provider-facing experience. A lightweight WASM component deployed as part of the substrate core that:
+
+- Subscribes to the substrate event stream
+- Maintains a rolling 7-day **plain-language event timeline** in cr-sqlite — human-readable records generated from structured log events via templates (e.g. *"Order #47 confirmed"*, *"Connection to relay lost"*)
+- Evaluates a small set of health rules producing a simple `HealthState`: Connection / Payments / Sync — each Good, Degraded, or Offline with a plain-language explanation
+- Sends proactive alerts via the notification dispatcher when health degrades
+- Generates **diagnostic bundles** on demand: a signed, sanitized snapshot of recent timeline events, metric snapshots, substrate version and configuration — formatted for handoff to support staff
+
+### 10.4 Provider-Facing Status UI
+
+Built into the substrate's own HTTP server as a static HTML page (assets bundled into the binary, no external process). Accessible at `http://localhost:8080/admin`. Shows:
+
+- A single honest top-level status: *Your shop is open and reachable*
+- Last booking time and today's order counts — business-level signals, not technical ones
+- Three plain-language health indicators: Connection / Payments / Sync
+- Proactive alert banners with plain-language explanations and suggested actions
+- A **Get Help** button that generates and sends a diagnostic bundle to the provider's support contact via the substrate messaging layer — one tap, no technical knowledge required
+
+```mermaid
+flowchart TD
+    subgraph SUBSTRATE["Substrate (single process)"]
+        INSTR["Instrumentation Layer
+        tracing + metrics facades
+        in-process ring buffer"]
+
+        HN["health-narrator WASM component
+        Plain-language event timeline
+        Health rule evaluation
+        Diagnostic bundle generation"]
+
+        HTTP["Built-in HTTP Server
+        /admin  → Provider status UI
+        /health → Structured JSON API
+        /metrics → Prometheus scrape endpoint"]
+    end
+
+    subgraph PROVIDER_UI["Provider Experience"]
+        UI["Status Screen
+        Shop open or closed
+        Connection · Payments · Sync
+        Plain-language alerts"]
+        HELP["Get Help button
+        sends diagnostic bundle
+        via substrate messaging"]
+    end
+
+    subgraph SUPPORT["Support Staff"]
+        AGG["Aggregator console
+        or Syneroym support team"]
+    end
+
+    INSTR -->|event stream| HN
+    HN -->|HealthState + timeline| HTTP
+    HTTP --> UI
+    HELP -->|diagnostic bundle over substrate messaging| AGG
+
+    style SUBSTRATE fill:#f0f4f8,stroke:#1F4E79
+    style PROVIDER_UI fill:#E2EFDA,stroke:#548235
+    style SUPPORT fill:#FCE4D6,stroke:#C55A11
+```
+
+### 10.5 Tiered Observability Stack
+
+| Tier | What Ships | Notes |
+|---|---|---|
+| **Tier 1** — Mobile / RPi | In-process instrumentation + ring buffer + health-narrator + built-in HTML status UI | No external process; zero additional footprint |
+| **Tier 2** — Standard node | All of Tier 1 + optional bundled OCI stack | One-command enable; auto-profile selection based on hardware tier |
+| **Tier 3** — Distributed / Aggregator | All of Tier 2 + Tempo traces + support console + managed-node aggregation | Full stack; primary interface for support staff |
+
+**Bundled OCI stack (Tier 2+, disabled by default):** Grafana OSS + VictoriaMetrics + Loki + Promtail. All single binaries, self-hosted, low-resource. Enabled via `syneroym observability enable`. Pre-built Syneroym dashboard JSON for core substrate and SynApp metrics provisioned automatically on enable.
+
+**Aggregator as support console:** The aggregator's Grafana instance is the primary diagnostic tool for support staff. Diagnostic bundles from managed providers arrive via substrate messaging as structured reports. Deeper diagnostics can be pulled from any managed node with provider consent, enforced by ABAC policy.
+
+**Tier 1 under aggregator:** A mobile or RPi node operating under an aggregator forwards its metrics scrape endpoint and log stream to the aggregator's bundled stack. The provider gets full dashboard visibility via the aggregator without running any stack locally.
+
+### 10.6 Simulation Testing and CRDT Validation
+
+The substrate ships a **multi-node simulation harness** used during development and CI:
+
+- Runs N substrate instances in a single test binary with a controllable fake network
+- Induces partitions, delays, and node restarts deterministically
+- Every CRDT merge rule has a corresponding simulation scenario verifying the deterministic outcome
+- Property-based tests (`proptest`) verify CRDT correctness for arbitrary sequences of concurrent writes
+- Simulation output carries the same `trace_id` correlation used in production — failures are immediately diagnosable from the trace
+
+The harness is built during the walking skeleton stage and extended with each new component. It is the primary validation tool for offline and reconnect behavior before it reaches a real provider's device.
+
+## 11. Security Architecture
+
+### 11.1 Encryption at Every Layer
 
 ```mermaid
 flowchart TD
@@ -874,7 +981,7 @@ flowchart TD
     end
 ```
 
-### 10.2 Isolation Guarantees
+### 11.2 Isolation Guarantees
 
 ```mermaid
 flowchart TD
@@ -914,7 +1021,7 @@ flowchart TD
 
 ---
 
-## 11. Resolved Architecture TBD Items
+## 12. Resolved Architecture TBD Items
 
 This section is an index of every `[TBD]` marker in the requirements spec, that need to be revisited and finalized.
 
@@ -940,9 +1047,9 @@ This section is an index of every `[TBD]` marker in the requirements spec, that 
 
 ---
 
-## 12. Consolidated Technology Stack
+## 13. Consolidated Technology Stack
 
-### 12.1 Core Infrastructure & Substrate
+### 13.1 Core Infrastructure & Substrate
 
 | Layer / Concern | Technology | Notes |
 |---|---|---|
@@ -962,7 +1069,7 @@ This section is an index of every `[TBD]` marker in the requirements spec, that 
 | Observability | **OpenTelemetry** (OTLP) | Traces + metrics + logs; Grafana/Prometheus exporters |
 | Configuration | **TOML** + JSON Schema | Human-readable; validated |
 
-### 12.2 SynApp & Crypto Libraries
+### 13.2 SynApp & Crypto Libraries
 
 | Concern | Technology | Notes |
 |---|---|---|
@@ -974,7 +1081,7 @@ This section is an index of every `[TBD]` marker in the requirements spec, that 
 | DRM video | **Shaka Player** | Digital content delivery |
 | Payment (MVP) | **Stripe Connect SDK** + UPI deep links | Pluggable adapter |
 
-### 12.3 Consumer Frontend
+### 13.3 Consumer Frontend
 
 | Concern | Technology |
 |---|---|
@@ -984,7 +1091,7 @@ This section is an index of every `[TBD]` marker in the requirements spec, that 
 | Mobile wrapper | **Tauri** (Rust) — code sharing with substrate |
 | Client-side crypto | **libsignal-protocol-wasm** |
 
-### 12.4 Developer Toolchain
+### 13.4 Developer Toolchain
 
 | Tool | Purpose |
 |---|---|
@@ -998,9 +1105,9 @@ This section is an index of every `[TBD]` marker in the requirements spec, that 
 
 ---
 
-## 13. MVP Phase 1 Scope & Acceptance Criteria
+## 14. MVP Phase 1 Scope & Acceptance Criteria
 
-### 13.1 In Scope
+### 14.1 In Scope
 
 - Substrate: setup, keypair generation, relay registration, Wasmtime + Podman sandboxing
 - Identity + access control: Ed25519 identity, ABAC policy enforcement, UCAN delegation tokens
@@ -1012,14 +1119,14 @@ This section is an index of every `[TBD]` marker in the requirements spec, that 
 - Consumer PWA: discover, browse, order, pay
 - Data portability: `SynExport` format; export and import CLI commands
 
-### 13.2 Explicitly Out of Scope (MVP)
+### 14.2 Explicitly Out of Scope (MVP)
 
 - Syneroym-native coin or mutual credit
 - Advanced ad auction mechanics (ad boost field is present but auction engine is not)
 - Fully decentralised bootstrap replacement (DHT mirror is built; full replacement is not)
 - AI-assisted workflow synthesis
 
-### 13.3 Acceptance Criteria
+### 14.3 Acceptance Criteria
 
 1. A provider deploys SynApp 1 on a single node and creates a Space with catalog entries
 2. A consumer on a separate node discovers that Space via DHT and completes an order end-to-end including payment
@@ -1028,7 +1135,7 @@ This section is an index of every `[TBD]` marker in the requirements spec, that 
 5. ABAC policies prevent unauthorised reads/writes across at least two independent users and two services
 6. At least one trust signal (VC, vouch count, or reputation score) is visible to the consumer before payment confirmation
 
-### 13.4 Requirements Traceability (requirements.md -> architecture.md)
+### 14.4 Requirements Traceability (requirements.md -> architecture.md)
 
 | Requirement Theme | Architecture Coverage |
 |---|---|
@@ -1040,16 +1147,16 @@ This section is an index of every `[TBD]` marker in the requirements spec, that 
 | Sharded app deployment across hosts | §5.4(B) |
 | Identity, delegation, key lifecycle | §6.1 |
 | Discovery index partitioning + ranking transparency | §6.2 |
-| Messaging modes and E2E encryption | §6.3, §10.1 |
+| Messaging modes and E2E encryption | §6.3, §11.1 |
 | Trust layers and reputation portability | §6.4 |
 | Payment and escrow integration | §6.5 |
 | Consumer unified app model | §9.1 |
-| Multi-tenant isolation and access control | §10.2 |
-| Phase 1 acceptance criteria alignment | §13.3 |
+| Multi-tenant isolation and access control | §11.2 |
+| Phase 1 acceptance criteria alignment | §14.3 |
 
 ---
 
-## 14. Open Questions & Recommendations
+## 15. Open Questions & Recommendations
 
 | # | Question | Priority | Recommendation / Direction |
 |---|---|---|---|
@@ -1066,7 +1173,7 @@ This section is an index of every `[TBD]` marker in the requirements spec, that 
 
 ---
 
-## 15. Glossary
+## 16. Glossary
 
 | Term | Definition |
 |---|---|
