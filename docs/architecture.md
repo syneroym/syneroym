@@ -359,6 +359,17 @@ Example placement:
 - `order-engine` + `payment-adapter` on higher-availability node
 - `drm-content-server` on storage-optimised node
 
+### 5.5 Substrate API Surfaces
+
+The substrate is called by multiple caller types — WASM SynApp components, peer substrates over the network, the `syneroym` CLI, browser UIs, and external integrations. No single wire protocol serves all of these well.
+
+The substrate exposes **two API surfaces, both derived from the same WIT definitions**:
+
+- **wRPC surface** — for WASM SynApp components (intra-substrate) and peer substrates (cross-node over Iroh QUIC), CLI. WIT types are preserved end-to-end; zero serialization overhead.
+- **JSON-RPC 2.0 surface** — for browsers and third-party integrations, the provider status UI, and third-party integrations. Derived automatically from WIT; documented as an OpenRPC schema.
+
+The CLI is not a special case — it speaks JSON-RPC over a local Unix socket, the same surface as the browser. No embedded substrate library required.
+
 ---
 
 ## 6. Layer 3 — Shared Substrate Utilities
