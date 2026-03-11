@@ -213,6 +213,162 @@ flowchart TD
 
 ---
 
+### 4.4 Heterogeneous Transport Model
+
+#### 4.4.1 Motivation
+
+The networking model in §4.1–4.3 assumes IP connectivity. This covers the majority of Syneroym deployments but excludes providers in areas with intermittent or absent internet — where communication must traverse non-IP or infrastructure-free media such as LoRa radio, Bluetooth LE, or WiFi Direct.
+
+Syneroym is designed to support **heterogeneous multi-hop connectivity** — a packet may traverse a path spanning IP, LoRa, BLE, WiFi Direct, or any combination, with routing handled uniformly by the substrate regardless of the physical transports involved. The substrate addresses peers by NodeId (Ed25519 public key) and is unaware of what transports the path uses.
+
+> **LoRa implementation status:** LoRa operates in frequency bands that are not in India's deregulated spectrum as of this writing. LoRa transport is **designed but deferred** pending regulatory clearance. The architecture accommodates it fully; the `net-lora` driver will be implemented when the regulatory situation changes. BLE, WiFi Direct, and QUIC proceed as planned.
+
+---
+
+#### 4.4.2 Node Tiers (Extended)
+
+The hardware tier model from §2.2 extends with a new lowest tier for mesh relay agents:
+
+| Tier | Hardware | Transports | Role |
+|---|---|---|---|
+| **Tier 0** | ESP32, nRF52840 + radio module | LoRa, BLE | Mesh relay only — no substrate, no SynApp runtime |
+| **Tier 1** | RPi 4, Android phone | QUIC + BLE + WiFi Direct | Full substrate, typically single provider |
+| **Tier 2** | Old PC / mini PC | QUIC + BLE + WiFi Direct + LoRa | Full substrate + relay capability |
+| **Tier 3** | Multi-VM / server | QUIC | Aggregator, typically infrastructure provider |
+
+Tier 0 nodes run only a minimal relay agent firmware — no WASM runtime, no cr-sqlite. They exist to extend mesh coverage in constrained environments, running indefinitely on solar power at very low cost.
+
+---
+
+#### 4.4.3 Transport Abstraction Layer
+
+All transports present a uniform interface to the substrate. The routing layer selects which transport to use per packet based on the next-hop routing table entry. The substrate and SynApp components only ever address peers by NodeId.
+
+```mermaid
+flowchart TD
+    subgraph SUBSTRATE["SYN-SUBSTRATE"]
+        APP["SynApp Components\n(address peers by NodeId)"]
+        ROUTER["net-core\nRouting · Fragmentation · Flow Control"]
+    end
+
+    subgraph DRIVERS["Transport Drivers"]
+        QUIC["net-quic\nIroh QUIC\nHigh bandwidth"]
+        BLE["net-ble\nBluetooth LE\nLow bandwidth"]
+        WIFI["net-wifidirect\nWiFi Direct\nMedium bandwidth"]
+        LORA["net-lora\nLoRa radio\nVery low bandwidth\n⚠ deferred"]
+    end
+
+    APP --> ROUTER
+    ROUTER --> QUIC
+    ROUTER --> BLE
+    ROUTER --> WIFI
+    ROUTER --> LORA
+
+    QUIC --> NET1[("Internet / LAN")]
+    BLE  --> NET2[("BLE neighbourhood")]
+    WIFI --> NET3[("WiFi Direct group")]
+    LORA --> NET4[("Radio mesh\n(deferred)")]
+
+    style LORA fill:#f5f5f5,stroke:#999,color:#999
+    style NET4 fill:#f5f5f5,stroke:#999,color:#999
+    style SUBSTRATE fill:#f0f4f8,stroke:#1F4E79
+    style DRIVERS fill:#E2EFDA,stroke:#548235
+```
+
+A gateway node enabling QUIC alongside BLE or WiFi Direct automatically bridges between them — packets arriving on one transport and destined for a peer reachable via another are forwarded transparently by the routing layer.
+
+---
+
+#### 4.4.4 Node Addressing
+
+Every node is identified by its Ed25519 public key (32 bytes). This address is self-sovereign, portable, and cryptographically bound to identity — independent of physical location or transport.
+
+**On-wire address:** transmitting 32 bytes in every packet header is impractical on low-bandwidth transports. On-wire addresses are a 16-byte truncated SHA-256 of the full public key, following Reticulum's address design. This fits comfortably in a low-MTU packet header while providing sufficient collision resistance for any realistic deployment size.
+
+**LoRa physical layer:** LoRa is a broadcast radio modulation with no hardware addressing. Every node in range receives every transmission; destination filtering is done in software by reading the destination address from the packet header.
+
+**BLE physical layer:** BLE connections use 48-bit MAC addresses. These are managed locally by the BLE transport driver and never appear in routing tables or packet headers — the routing layer works exclusively in NodeId space.
+
+**WiFi Direct physical layer:** WiFi Direct uses standard 802.11 MAC addresses and forms a temporary IP subnet between the connected devices (one acts as a soft-AP group owner). The WiFi Direct transport driver manages group formation and IP assignment locally; above the driver, packets are delivered over a short-lived IP link and the routing layer sees the peer as a direct neighbour addressable by NodeId — identical to any other transport from the routing layer's perspective.
+
+---
+
+#### 4.4.5 Routing Construction
+
+Unlike IP, there is no underlying routing infrastructure for BLE, WiFi Direct, or LoRa in a mesh context. Syneroym builds routing tables dynamically through **announces** and **gossip**, closely following Reticulum's design.
+
+**Announces:** when a substrate comes online, it broadcasts a signed announce on all active transports. The announce carries the node's full public key and propagates outward hop by hop. Each intermediate node records a next-hop routing entry toward that destination and rebroadcasts the announce up to a maximum hop count. The path that delivers the announce fastest becomes the preferred path — no explicit metric needed. Announce bandwidth is capped to protect low-bandwidth transports.
+
+**Gossip:** nodes gossip route knowledge to their neighbours, enabling multi-hop path discovery beyond direct announce reception. Split-horizon prevents the most common routing loops. All packets carry a TTL field as a backstop.
+
+**Routing table:** each node stores only a next-hop entry per destination — not a full path. The full path is distributed across the routing tables of all intermediate nodes. No single node needs a global view of the network. Entries expire after a TTL and are rebuilt on demand via path requests when needed.
+
+**End-node path caching:** full substrate nodes (Tier 1+) additionally cache complete paths to regularly-contacted peers, persisted to cr-sqlite across restarts. On startup, cached paths are probed in the background — confirmed paths are usable within one RTT, eliminating cold-start convergence delay for established relationships.
+
+---
+
+#### 4.4.6 Relay — Revised Role
+
+The relay concept from §4.2 remains for QUIC/IP but now sits alongside two new relay roles:
+
+| Role | Tier | Function |
+|---|---|---|
+| **QUIC DERP relay** | Infrastructure | IP NAT traversal fallback for QUIC connections (§4.2, unchanged) |
+| **Microcontroller Unit (MCU) mesh relay** | Tier 0 | BLE/LoRa packet forwarding in constrained environments; store-and-forward buffering |
+| **Gateway node** | Tier 1/2 | Full substrate with multiple transports; bridges IP ↔ BLE ↔ WiFi Direct ↔ LoRa mesh automatically |
+
+A gateway node requires no special configuration beyond enabling multiple transport drivers — the routing layer handles cross-transport forwarding transparently.
+
+---
+
+#### 4.4.7 Deployment Example — Constrained Connectivity
+
+```mermaid
+flowchart TD
+    subgraph INTERNET["Internet"]
+        AGG["Tier 3 Aggregator\n(QUIC)"]
+    end
+
+    subgraph MARKET["Market area"]
+        GW["Gateway Node — Tier 2\nQUIC + BLE + WiFi Direct\n(provider's PC)"]
+    end
+
+    subgraph MESH["Local mesh — no internet needed"]
+        P1["Provider A — Tier 1\n(phone, BLE)"]
+        P2["Provider B — Tier 1\n(RPi, WiFi Direct)"]
+    end
+
+    AGG <-->|"QUIC"| GW
+    GW <-->|"BLE"| P1
+    GW <-->|"WiFi Direct"| P2
+    P1 <-->|"BLE"| P2
+
+    style INTERNET fill:#D6E4F0,stroke:#2E75B6
+    style MARKET fill:#E2EFDA,stroke:#548235
+    style MESH fill:#FFF2CC,stroke:#BF9000
+```
+
+Provider A's phone reaches the aggregator via BLE to the gateway node, then QUIC. Provider B's RPi connects via WiFi Direct. When internet is unavailable, providers reach each other directly over BLE or WiFi Direct with no change to application behaviour — state changes queue locally and sync when connectivity restores.
+
+---
+
+#### 4.4.8 Codebase Structure
+
+```
+crates/
+  net-proto/        # no_std — packet formats, WireAddr, RouteEntry; shared across all tiers
+  net-core/         # std    — routing, gossip, fragmentation, flow control
+  net-quic/         # std    — Iroh QUIC driver
+  net-ble/          # std    — BLE driver
+  net-wifidirect/   # std    — WiFi Direct driver
+  net-lora/         # std    — LoRa driver (deferred)
+  relay-agent/      # no_std — MCU firmware (Embassy); depends only on net-proto
+```
+
+`net-proto` is `no_std` compatible and compilable to MCU targets and full substrate targets alike. It is the protocol contract shared across all tiers — changes to it are breaking changes requiring a version bump.
+
+---
+
 ## 5. Layer 2 — Substrate Runtime
 
 ### 5.1 Substrate Internal Architecture
