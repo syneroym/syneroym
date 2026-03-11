@@ -368,8 +368,6 @@ The substrate exposes **two API surfaces, both derived from the same WIT definit
 - **wRPC surface** — for WASM SynApp components (intra-substrate) and peer substrates (cross-node over Iroh QUIC), CLI. WIT types are preserved end-to-end; zero serialization overhead.
 - **JSON-RPC 2.0 surface** — for browsers and third-party integrations, the provider status UI, and third-party integrations. Derived automatically from WIT; documented as an OpenRPC schema.
 
-The CLI is not a special case — it speaks JSON-RPC over a local Unix socket, the same surface as the browser. No embedded substrate library required.
-
 ---
 
 ## 6. Layer 3 — Shared Substrate Utilities
