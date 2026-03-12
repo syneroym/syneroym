@@ -1,4 +1,4 @@
-use ed25519_dalek::{SigningKey, VerifyingKey, Signer, Signature};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 
@@ -53,10 +53,6 @@ impl Identity {
         let pubkey_hex = hex::encode(pubkey_bytes);
         let id = format!("did:syn:{}", pubkey_hex);
 
-        IdentityDoc {
-            id,
-            pubkey_hex,
-            created_at,
-        }
+        IdentityDoc { id, pubkey_hex, created_at }
     }
 }
