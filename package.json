@@ -1,0 +1,7 @@
+{
+  "name": "syneroym-workspace",
+  "private": true,
+  "scripts": {
+    "test": "echo \"Run tests via specific workspaces\""
+  }
+}

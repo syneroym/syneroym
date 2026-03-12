@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/syneroym-interfaces",
+    "crates/net-proto",
+    "crates/net-core",
+    "crates/net-quic",
+    "crates/syneroym-bootstrap",
+    "crates/syneroym-relay",
+    "crates/syneroym-substrate",
+    "crates/roymctl", "crates/syneroym-identity",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["Syneroym Contributors"]
+license = "MIT" # or Apache-2.0, update as needed
+
+[workspace.dependencies]
+# Networking & Async
+tokio = { version = "1.0", features = ["full"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+
+# CLI
+clap = { version = "4.4", features = ["derive"] }
+
+# Common / Utils
+anyhow = "1.0"

@@ -1,0 +1,11 @@
+[tools]
+node = "24"
+# We can use Mise to manage Rust as well, but cargo/rustup usually uses rust-toolchain.toml.
+# Adding it here ensures users without rustup get it installed via Mise.
+rust = "stable"
+wasm-tools = "1.222.0"
+wit-bindgen = "0.36.0"
+cargo-component = "0.20.0"
+
+[settings]
+experimental = true

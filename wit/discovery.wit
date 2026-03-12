@@ -1,0 +1,21 @@
+package syneroym:core;
+
+interface discovery {
+    use identity.{node-id};
+
+    record index-entry {
+        space-id: string,
+        keywords: list<string>,
+        geo-lat: option<float64>,
+        geo-lng: option<float64>,
+    }
+
+    /// Publish an index entry to the network
+    publish: func(entry: index-entry) -> result<_, string>;
+
+    /// Search for index entries matching a query string
+    search: func(query: string) -> result<list<index-entry>, string>;
+
+    /// Lookup the contact information for a specific node
+    lookup-node: func(node: node-id) -> result<list<string>, string>;
+}

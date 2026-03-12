@@ -1,0 +1,20 @@
+package syneroym:core;
+
+interface identity {
+    /// A cryptographic public key representing a node or user.
+    type node-id = string;
+
+    /// The base identity document format
+    record identity-doc {
+        id: string,
+        pubkey: string,
+        created-at: u64,
+        endpoints: list<string>,
+    }
+
+    /// Retrieve the local node's identity document
+    get-local-identity: func() -> result<identity-doc, string>;
+
+    /// Verify a signature against a given node-id
+    verify-signature: func(node: node-id, payload: list<u8>, signature: list<u8>) -> result<bool, string>;
+}

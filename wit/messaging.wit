@@ -1,0 +1,19 @@
+package syneroym:core;
+
+interface messaging {
+    use identity.{node-id};
+
+    /// An envelope containing a message payload to be sent or received
+    record message-envelope {
+        sender: node-id,
+        recipient: node-id,
+        timestamp: u64,
+        payload: list<u8>,
+    }
+
+    /// Send a message to a specific node
+    send-message: func(recipient: node-id, payload: list<u8>) -> result<_, string>;
+
+    /// Fetch received messages (polling model for simplicity right now)
+    poll-messages: func() -> result<list<message-envelope>, string>;
+}

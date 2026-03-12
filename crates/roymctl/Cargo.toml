@@ -1,0 +1,16 @@
+[package]
+name = "roymctl"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+syneroym-identity = { version = "0.1.0", path = "../syneroym-identity" }
+serde_json = "1.0.149"
+
+[dev-dependencies]
+assert_cmd = "2.0"
+predicates = "3.1"
+tempfile = "3.10"
