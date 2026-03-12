@@ -15,13 +15,14 @@ central authorities or global consensus. The substrate is designed for
 intermittent connectivity, explicit trust boundaries, and portable execution.
 
 ## Repository Layout
-- `docs/` — Vision mapping, Product specs, other docs
-- `libs/` — Language-specific substrate libraries (identity, discovery, transport, execution)
+- `docs/` — Vision mapping, Product specs, architecture, and requirements docs
+- `crates/` — Rust crates for the core substrate, network protocols, identity, CLI, and relay
+- `wit/` — WebAssembly Interface Types for component interactions
 - `apps/` — User-facing applications (CLI, desktop/mobile shells, signaling surfaces)
 - `examples/` — Demo integrations and reference apps
 
 ## Scope Boundary: Substrate vs. Mini-Apps
-The `libs/` directory is the shared substrate library layer that applications use.
+The `crates/` directory contains the core substrate components and libraries that applications use.
 Mini-apps that run on top of the substrate are out of scope for this repo and are
 expected to be built independently (e.g., HTML/CSS/JS or WASM).
 
@@ -29,6 +30,7 @@ expected to be built independently (e.g., HTML/CSS/JS or WASM).
 This repo is being bootstrapped. For now:
 - Read the vision in `docs/VISION.md`
 - Read the requirement spec in `docs/requirements.md`
+- Read the architecture design in `docs/architecture.md`
 
 ## Contributing
 Contributions are welcome once the Phase 1 scope is locked. See
