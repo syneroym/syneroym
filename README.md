@@ -27,10 +27,56 @@ Mini-apps that run on top of the substrate are out of scope for this repo and ar
 expected to be built independently (e.g., HTML/CSS/JS or WASM).
 
 ## Getting Started
+
 This repo is being bootstrapped. For now:
 - Read the vision in `docs/VISION.md`
 - Read the requirement spec in `docs/requirements.md`
 - Read the architecture design in `docs/architecture.md`
+
+### Prerequisites
+
+We recommend using [mise](https://mise.jdx.dev/) to manage development tools.
+
+```bash
+# Install tools specified in mise.toml (Rust, Node, wasm-tools, etc.)
+mise install
+```
+
+Alternatively, you can manually install the required versions of [Rust](https://rustup.rs/) and [Node.js](https://nodejs.org/).
+
+### Building
+
+Install dependencies and build the project:
+
+```bash
+# Install Node/frontend dependencies
+pnpm install
+
+# Build all Rust crates
+cargo build
+```
+
+### Running
+
+You can run individual binaries using Cargo. For example, to run the CLI (`roymctl`):
+
+```bash
+cargo run --bin roymctl -- --help
+```
+
+To run the relay server:
+
+```bash
+cargo run --bin syneroym-relay
+```
+
+### Testing
+
+Run the Rust test suite:
+
+```bash
+cargo test
+```
 
 ## Contributing
 Contributions are welcome once the Phase 1 scope is locked. See
