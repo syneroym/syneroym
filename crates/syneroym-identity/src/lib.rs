@@ -1,5 +1,4 @@
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
-use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 
 /// Represents the cryptographic identity of a Syneroym node.
@@ -10,8 +9,9 @@ pub struct Identity {
 impl Identity {
     /// Generate a new random Ed25519 identity keypair.
     pub fn generate() -> Self {
-        let mut csprng = OsRng;
-        let signing_key = SigningKey::generate(&mut csprng);
+        let mut bytes = [0u8; 32];
+        getrandom::fill(&mut bytes).expect("Failed to generate random bytes");
+        let signing_key = SigningKey::from_bytes(&bytes);
         Self { signing_key }
     }
 

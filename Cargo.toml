@@ -18,6 +18,8 @@ authors = ["Syneroym Contributors"]
 license = "MIT" # or Apache-2.0, update as needed
 
 [workspace.dependencies]
+syneroym-identity = { path = "crates/syneroym-identity", version = "0.1.0" }
+
 # Networking & Async
 tokio = { version = "1.0", features = ["full"] }
 
