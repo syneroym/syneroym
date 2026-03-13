@@ -213,15 +213,15 @@ flowchart TD
 
 ---
 
-### 4.4 Heterogeneous Transport Model
+### 4.4 Toward a Heterogeneous Transport Model
 
 #### 4.4.1 Motivation
 
 The networking model in §4.1–4.3 assumes IP connectivity. This covers the majority of Syneroym deployments but excludes providers in areas with intermittent or absent internet — where communication must traverse non-IP or infrastructure-free media such as LoRa radio, Bluetooth LE, or WiFi Direct.
 
-Syneroym is designed to support **heterogeneous multi-hop connectivity** — a packet may traverse a path spanning IP, LoRa, BLE, WiFi Direct, or any combination, with routing handled uniformly by the substrate regardless of the physical transports involved. The substrate addresses peers by NodeId (Ed25519 public key) and is unaware of what transports the path uses.
+For that, the system needs to provide a **transport-agnostic overlay network** capable of operating across multiple heterogeneous communication technologies and routing models. It enables nodes connected through different network types—such as Wi-Fi, Wi-Fi Direct, BLE, LoRa, and IP networks—to participate in a unified logical network.
 
-> **LoRa implementation status:** LoRa operates in frequency bands that are not in India's deregulated spectrum as of this writing. LoRa transport is **designed but deferred** pending regulatory clearance. The architecture accommodates it fully; the `net-lora` driver will be implemented when the regulatory situation changes. BLE, WiFi Direct, and QUIC proceed as planned.
+The architecture should separate communication concerns into distinct layers, allowing diverse link technologies and routing strategies to coexist while presenting a consistent interface to applications.
 
 ---
 
@@ -240,42 +240,234 @@ Tier 0 nodes run only a minimal relay agent firmware — no WASM runtime, no cr-
 
 ---
 
-#### 4.4.3 Transport Abstraction Layer
+#### 4.4.3 Architectural Layers
 
-All transports present a uniform interface to the substrate. The routing layer selects which transport to use per packet based on the next-hop routing table entry. The substrate and SynApp components only ever address peers by NodeId.
+The networking stack is organized into the following layers:
 
-```mermaid
-flowchart TD
-    subgraph SUBSTRATE["SYN-SUBSTRATE"]
-        APP["SynApp Components\n(address peers by NodeId)"]
-        ROUTER["net-core\nRouting · Fragmentation · Flow Control"]
-    end
-
-    subgraph DRIVERS["Transport Drivers"]
-        QUIC["net-quic\nIroh QUIC\nHigh bandwidth"]
-        BLE["net-ble\nBluetooth LE\nLow bandwidth"]
-        WIFI["net-wifidirect\nWiFi Direct\nMedium bandwidth"]
-        LORA["net-lora\nLoRa radio\nVery low bandwidth\n⚠ deferred"]
-    end
-
-    APP --> ROUTER
-    ROUTER --> QUIC
-    ROUTER --> BLE
-    ROUTER --> WIFI
-    ROUTER --> LORA
-
-    QUIC --> NET1[("Internet / LAN")]
-    BLE  --> NET2[("BLE neighbourhood")]
-    WIFI --> NET3[("WiFi Direct group")]
-    LORA --> NET4[("Radio mesh\n(deferred)")]
-
-    style LORA fill:#f5f5f5,stroke:#999,color:#999
-    style NET4 fill:#f5f5f5,stroke:#999,color:#999
-    style SUBSTRATE fill:#f0f4f8,stroke:#1F4E79
-    style DRIVERS fill:#E2EFDA,stroke:#548235
+```text
+Application
+     ↓
+Overlay Network
+     ↓
+Routing Layer
+     ↓
+Session / Discovery Layer
+     ↓
+Transport Adapters
+     ↓
+Link Technologies
 ```
 
-A gateway node enabling QUIC alongside BLE or WiFi Direct automatically bridges between them — packets arriving on one transport and destined for a peer reachable via another are forwarded transparently by the routing layer.
+Each layer performs a specific role in enabling communication across heterogeneous networks.
+
+---
+
+##### Application Layer
+
+The application layer contains application-specific protocols and logic. Applications interact with the network through the overlay interface and remain independent of the underlying networking technologies.
+
+Applications do not need to know whether communication occurs over:
+
+* Wi-Fi
+* BLE
+* LoRa
+* IP networks
+* mesh routing
+* delay-tolerant links
+
+The application interacts only with logical nodes and messages.
+
+---
+
+##### Overlay Network
+
+The overlay network provides a **technology-independent logical network** spanning all participating nodes.
+
+Each node is identified using a **logical NodeID**, rather than transport-specific identifiers such as IP addresses, MAC addresses, or radio device identifiers.
+
+Applications communicate using simple primitives such as:
+
+* `send(node_id, message)`
+* `broadcast(message)`
+* `connect(node_id)`
+
+Messages are encapsulated in an overlay envelope that includes:
+
+* source NodeID
+* destination NodeID
+* routing metadata (TTL, hop count, etc.)
+* payload
+
+This abstraction allows the system to treat all nodes as part of a single logical network regardless of the underlying connectivity.
+
+---
+
+##### Routing Layer
+
+The routing layer determines how messages traverse the network between nodes.
+
+Because the system supports heterogeneous network segments, different routing strategies may be used simultaneously across different parts of the network.
+
+Supported routing models include:
+
+**Direct routing**
+
+Single-hop communication between directly connected peers.
+
+**IP routing**
+
+Standard routing using TCP or UDP over IP networks.
+
+**Mesh routing**
+
+Multi-hop routing where nodes forward packets to neighbors until the destination is reached.
+
+**Gateway routing**
+
+Nodes with multiple network interfaces act as bridges between network segments.
+
+**Delay-tolerant routing (DTN)**
+
+Messages are stored and forwarded across intermittent or high-latency networks, such as LoRa links.
+
+Routing decisions may consider factors such as:
+
+* reachability
+* link cost
+* latency
+* reliability
+* energy usage
+* bandwidth
+
+The routing layer may select different paths depending on available transports.
+
+---
+
+##### Session and Discovery Layer
+
+The session and discovery layer establishes communication channels between nodes before messages can be exchanged.
+
+This layer is responsible for:
+
+* peer discovery
+* capability exchange
+* connection negotiation
+* authentication or pairing
+* NAT traversal
+* link establishment
+
+Supported connection establishment mechanisms may include:
+
+* UDP hole punching
+* rendezvous servers
+* relay fallback
+* BLE advertisement and scanning
+* Wi-Fi Direct group formation
+* LoRa join procedures
+
+Example connection establishment flow:
+
+```
+Node A ─── rendezvous server ─── Node B
+   │                                 │
+   └────────── UDP hole punching ────┘
+             direct connection
+```
+
+Once a communication path is established, it is exposed as a transport channel that can be used by the routing layer.
+
+---
+
+##### Transport Adapters
+
+Transport adapters provide a uniform interface to underlying transport mechanisms.
+
+Each adapter converts overlay messages into the specific format required by the underlying transport.
+
+Typical transport adapters include:
+
+* TCP connections
+* UDP datagrams
+* BLE connections
+* Wi-Fi Direct sessions
+* LoRa messaging links
+
+Each transport adapter exposes common capabilities such as:
+
+* sending frames
+* receiving frames
+* maximum payload size
+* latency characteristics
+* reliability characteristics
+
+This abstraction allows the routing layer to operate independently of specific transport implementations.
+
+---
+
+##### Link Technologies
+
+The lowest layer represents the physical or link-layer technologies that provide connectivity between nodes.
+
+Supported link technologies may include:
+
+* Wi-Fi
+* Wi-Fi Direct
+* Bluetooth Low Energy (BLE)
+* LoRa
+* Ethernet
+
+Nodes may support **multiple link technologies simultaneously**, allowing them to act as bridges between different network segments.
+
+Such nodes are referred to as **multi-link nodes**.
+
+---
+
+##### Network Segments and Gateways
+
+The overall network may consist of several **transport domains** or segments, each using different communication technologies and routing strategies.
+
+Example topology:
+
+```
+Wi-Fi / IP Segment
+        │
+   Gateway Node
+        │
+     BLE Mesh
+        │
+   Gateway Node
+        │
+   LoRa DTN Network
+```
+
+Gateway nodes forward overlay messages between these segments, enabling end-to-end communication across heterogeneous networks.
+
+---
+
+##### Multi-Transport Routing
+
+When multiple transports are available, the routing layer selects the most suitable path for message delivery.
+
+Routing decisions may consider link characteristics such as:
+
+* bandwidth
+* latency
+* reliability
+* energy cost
+* reachability
+
+For example:
+
+* Wi-Fi may be preferred for high-throughput communication.
+* BLE may be used for nearby low-power communication.
+* LoRa may be used for long-distance communication when no other links are available.
+
+This capability enables adaptive routing across heterogeneous networks.
+
+---
+##### Result
+
+This architecture forms a **single logical overlay network spanning heterogeneous communication technologies**. Nodes connected through Wi-Fi, BLE, LoRa, or IP networks can communicate using a unified messaging interface, while the underlying system dynamically selects appropriate connection, routing, and transport mechanisms.
 
 ---
 
