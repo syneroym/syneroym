@@ -22,4 +22,4 @@ __pycache__/
 *.tmp
 *.swp
 
-**/notes.md
+**/scratch-notes*.md
