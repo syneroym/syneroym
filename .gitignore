@@ -25,4 +25,5 @@ __pycache__/
 **/scratch-notes*.md
 
 # AI
+.gemini
 GEMINI.md
