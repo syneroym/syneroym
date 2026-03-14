@@ -1,5 +1,5 @@
 [package]
-name = "roymctl"
+name = "syneroym-substrate"
 version = "0.1.0"
 edition = "2024"
 
@@ -8,7 +8,6 @@ clap = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true }
 syneroym-identity = { workspace = true }
-reqwest = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]

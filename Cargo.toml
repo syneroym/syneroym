@@ -1,29 +1,36 @@
 [workspace]
 resolver = "2"
-members = [
-    "crates/syneroym-interfaces",
-    "crates/syneroym-substrate",
-    "crates/roymctl", "crates/syneroym-identity",
-]
+members = ["crates/substrate", "crates/roymctl", "crates/identity"]
+
+[profile.dev]
+incremental = true # Compile your binary in smaller steps.
+
+[profile.release]
+codegen-units = 1 # Allows LLVM to perform better optimization.
+lto = true        # Enables link-time-optimizations.
+opt-level = "s"   # Prioritizes small binary size. Use `3` if you prefer speed.
+panic = "abort"   # Higher performance by disabling panic handlers.
+strip = true      # Ensures debug symbols are removed.
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
 authors = ["Syneroym Contributors"]
-license = "MIT" # or Apache-2.0, update as needed
+license = "MIT or Apache-2.0"
 
 [workspace.dependencies]
-syneroym-identity = { path = "crates/syneroym-identity", version = "0.1.0" }
+syneroym-identity = { path = "crates/identity", version = "0.1.0" }
 
 # Networking & Async
-tokio = { version = "1.0", features = ["full"] }
+tokio = { version = "1.50", features = ["full"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0" }
 
 # CLI
-clap = { version = "4.4", features = ["derive"] }
+clap = { version = "4.6", features = ["derive"] }
 
 # Common / Utils
 anyhow = "1.0"
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.13", features = ["json"] }

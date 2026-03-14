@@ -1,8 +1,0 @@
-[package]
-name = "syneroym-interfaces"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-anyhow.workspace = true
-syneroym-identity = { version = "0.1.0", path = "../syneroym-identity" }
