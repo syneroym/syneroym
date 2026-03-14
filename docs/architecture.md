@@ -130,6 +130,8 @@ erDiagram
 
 ### 4.1 P2P Networking: Iroh
 
+Note: In the initial phase, we will focus on connecting peers over IP. Later, we will enhance the system to support for more heteregenous networks and communication patterns. This is discussed in more detail in [Connectivity Substrate in Heterogenous networks](#17-connectivity-substrate-in-heteregenous-networks). 
+
 Direct QUIC (UDP) connections are attempted first. NAT/firewall fallback uses relay-mediated connections.
 
 ```mermaid
@@ -210,354 +212,6 @@ flowchart TD
     style DHT fill:#2E75B6,color:#fff
     style CACHE fill:#548235,color:#fff
 ```
-
----
-
-### 4.4 Toward a Heterogeneous Transport Model
-
-#### 4.4.1 Motivation
-
-The networking model in §4.1–4.3 assumes IP connectivity. This covers the majority of Syneroym deployments but excludes providers in areas with intermittent or absent internet — where communication must traverse non-IP or infrastructure-free media such as LoRa radio, Bluetooth LE, or WiFi Direct.
-
-For that, the system needs to provide a **transport-agnostic overlay network** capable of operating across multiple heterogeneous communication technologies and routing models. It enables nodes connected through different network types—such as Wi-Fi, Wi-Fi Direct, BLE, LoRa, and IP networks—to participate in a unified logical network.
-
-The architecture should separate communication concerns into distinct layers, allowing diverse link technologies and routing strategies to coexist while presenting a consistent interface to applications.
-
----
-
-#### 4.4.2 Node Tiers (Extended)
-
-The hardware tier model from §2.2 extends with a new lowest tier for mesh relay agents:
-
-| Tier | Hardware | Transports | Role |
-|---|---|---|---|
-| **Tier 0** | ESP32, nRF52840 + radio module | LoRa, BLE | Mesh relay only — no substrate, no SynApp runtime |
-| **Tier 1** | RPi 4, Android phone | QUIC + BLE + WiFi Direct | Full substrate, typically single provider |
-| **Tier 2** | Old PC / mini PC | QUIC + BLE + WiFi Direct + LoRa | Full substrate + relay capability |
-| **Tier 3** | Multi-VM / server | QUIC | Aggregator, typically infrastructure provider |
-
-Tier 0 nodes run only a minimal relay agent firmware — no WASM runtime, no cr-sqlite. They exist to extend mesh coverage in constrained environments, running indefinitely on solar power at very low cost.
-
----
-
-#### 4.4.3 Architectural Layers
-
-The networking stack is organized into the following layers:
-
-```text
-Application
-     ↓
-Overlay Network
-     ↓
-Routing Layer
-     ↓
-Session / Discovery Layer
-     ↓
-Transport Adapters
-     ↓
-Link Technologies
-```
-
-Each layer performs a specific role in enabling communication across heterogeneous networks.
-
----
-
-##### Application Layer
-
-The application layer contains application-specific protocols and logic. Applications interact with the network through the overlay interface and remain independent of the underlying networking technologies.
-
-Applications do not need to know whether communication occurs over:
-
-* Wi-Fi
-* BLE
-* LoRa
-* IP networks
-* mesh routing
-* delay-tolerant links
-
-The application interacts only with logical nodes and messages.
-
----
-
-##### Overlay Network
-
-The overlay network provides a **technology-independent logical network** spanning all participating nodes.
-
-Each node is identified using a **logical NodeID**, rather than transport-specific identifiers such as IP addresses, MAC addresses, or radio device identifiers.
-
-Applications communicate using simple primitives such as:
-
-* `send(node_id, message)`
-* `broadcast(message)`
-* `connect(node_id)`
-
-Messages are encapsulated in an overlay envelope that includes:
-
-* source NodeID
-* destination NodeID
-* routing metadata (TTL, hop count, etc.)
-* payload
-
-This abstraction allows the system to treat all nodes as part of a single logical network regardless of the underlying connectivity.
-
----
-
-##### Routing Layer
-
-The routing layer determines how messages traverse the network between nodes.
-
-Because the system supports heterogeneous network segments, different routing strategies may be used simultaneously across different parts of the network.
-
-Supported routing models include:
-
-**Direct routing**
-
-Single-hop communication between directly connected peers.
-
-**IP routing**
-
-Standard routing using TCP or UDP over IP networks.
-
-**Mesh routing**
-
-Multi-hop routing where nodes forward packets to neighbors until the destination is reached.
-
-**Gateway routing**
-
-Nodes with multiple network interfaces act as bridges between network segments.
-
-**Delay-tolerant routing (DTN)**
-
-Messages are stored and forwarded across intermittent or high-latency networks, such as LoRa links.
-
-Routing decisions may consider factors such as:
-
-* reachability
-* link cost
-* latency
-* reliability
-* energy usage
-* bandwidth
-
-The routing layer may select different paths depending on available transports.
-
----
-
-##### Session and Discovery Layer
-
-The session and discovery layer establishes communication channels between nodes before messages can be exchanged.
-
-This layer is responsible for:
-
-* peer discovery
-* capability exchange
-* connection negotiation
-* authentication or pairing
-* NAT traversal
-* link establishment
-
-Supported connection establishment mechanisms may include:
-
-* UDP hole punching
-* rendezvous servers
-* relay fallback
-* BLE advertisement and scanning
-* Wi-Fi Direct group formation
-* LoRa join procedures
-
-Example connection establishment flow:
-
-```
-Node A ─── rendezvous server ─── Node B
-   │                                 │
-   └────────── UDP hole punching ────┘
-             direct connection
-```
-
-Once a communication path is established, it is exposed as a transport channel that can be used by the routing layer.
-
----
-
-##### Transport Adapters
-
-Transport adapters provide a uniform interface to underlying transport mechanisms.
-
-Each adapter converts overlay messages into the specific format required by the underlying transport.
-
-Typical transport adapters include:
-
-* TCP connections
-* UDP datagrams
-* BLE connections
-* Wi-Fi Direct sessions
-* LoRa messaging links
-
-Each transport adapter exposes common capabilities such as:
-
-* sending frames
-* receiving frames
-* maximum payload size
-* latency characteristics
-* reliability characteristics
-
-This abstraction allows the routing layer to operate independently of specific transport implementations.
-
----
-
-##### Link Technologies
-
-The lowest layer represents the physical or link-layer technologies that provide connectivity between nodes.
-
-Supported link technologies may include:
-
-* Wi-Fi
-* Wi-Fi Direct
-* Bluetooth Low Energy (BLE)
-* LoRa
-* Ethernet
-
-Nodes may support **multiple link technologies simultaneously**, allowing them to act as bridges between different network segments.
-
-Such nodes are referred to as **multi-link nodes**.
-
----
-
-##### Network Segments and Gateways
-
-The overall network may consist of several **transport domains** or segments, each using different communication technologies and routing strategies.
-
-Example topology:
-
-```
-Wi-Fi / IP Segment
-        │
-   Gateway Node
-        │
-     BLE Mesh
-        │
-   Gateway Node
-        │
-   LoRa DTN Network
-```
-
-Gateway nodes forward overlay messages between these segments, enabling end-to-end communication across heterogeneous networks.
-
----
-
-##### Multi-Transport Routing
-
-When multiple transports are available, the routing layer selects the most suitable path for message delivery.
-
-Routing decisions may consider link characteristics such as:
-
-* bandwidth
-* latency
-* reliability
-* energy cost
-* reachability
-
-For example:
-
-* Wi-Fi may be preferred for high-throughput communication.
-* BLE may be used for nearby low-power communication.
-* LoRa may be used for long-distance communication when no other links are available.
-
-This capability enables adaptive routing across heterogeneous networks.
-
----
-##### Result
-
-This architecture forms a **single logical overlay network spanning heterogeneous communication technologies**. Nodes connected through Wi-Fi, BLE, LoRa, or IP networks can communicate using a unified messaging interface, while the underlying system dynamically selects appropriate connection, routing, and transport mechanisms.
-
----
-
-#### 4.4.4 Node Addressing
-
-Every node is identified by its Ed25519 public key (32 bytes). This address is self-sovereign, portable, and cryptographically bound to identity — independent of physical location or transport.
-
-**On-wire address:** transmitting 32 bytes in every packet header is impractical on low-bandwidth transports. On-wire addresses are a 16-byte truncated SHA-256 of the full public key, following Reticulum's address design. This fits comfortably in a low-MTU packet header while providing sufficient collision resistance for any realistic deployment size.
-
-**LoRa physical layer:** LoRa is a broadcast radio modulation with no hardware addressing. Every node in range receives every transmission; destination filtering is done in software by reading the destination address from the packet header.
-
-**BLE physical layer:** BLE connections use 48-bit MAC addresses. These are managed locally by the BLE transport driver and never appear in routing tables or packet headers — the routing layer works exclusively in NodeId space.
-
-**WiFi Direct physical layer:** WiFi Direct uses standard 802.11 MAC addresses and forms a temporary IP subnet between the connected devices (one acts as a soft-AP group owner). The WiFi Direct transport driver manages group formation and IP assignment locally; above the driver, packets are delivered over a short-lived IP link and the routing layer sees the peer as a direct neighbour addressable by NodeId — identical to any other transport from the routing layer's perspective.
-
----
-
-#### 4.4.5 Routing Construction
-
-Unlike IP, there is no underlying routing infrastructure for BLE, WiFi Direct, or LoRa in a mesh context. Syneroym builds routing tables dynamically through **announces** and **gossip**, closely following Reticulum's design.
-
-**Announces:** when a substrate comes online, it broadcasts a signed announce on all active transports. The announce carries the node's full public key and propagates outward hop by hop. Each intermediate node records a next-hop routing entry toward that destination and rebroadcasts the announce up to a maximum hop count. The path that delivers the announce fastest becomes the preferred path — no explicit metric needed. Announce bandwidth is capped to protect low-bandwidth transports.
-
-**Gossip:** nodes gossip route knowledge to their neighbours, enabling multi-hop path discovery beyond direct announce reception. Split-horizon prevents the most common routing loops. All packets carry a TTL field as a backstop.
-
-**Routing table:** each node stores only a next-hop entry per destination — not a full path. The full path is distributed across the routing tables of all intermediate nodes. No single node needs a global view of the network. Entries expire after a TTL and are rebuilt on demand via path requests when needed.
-
-**End-node path caching:** full substrate nodes (Tier 1+) additionally cache complete paths to regularly-contacted peers, persisted to cr-sqlite across restarts. On startup, cached paths are probed in the background — confirmed paths are usable within one RTT, eliminating cold-start convergence delay for established relationships.
-
----
-
-#### 4.4.6 Relay — Revised Role
-
-The relay concept from §4.2 remains for QUIC/IP but now sits alongside two new relay roles:
-
-| Role | Tier | Function |
-|---|---|---|
-| **QUIC DERP relay** | Infrastructure | IP NAT traversal fallback for QUIC connections (§4.2, unchanged) |
-| **Microcontroller Unit (MCU) mesh relay** | Tier 0 | BLE/LoRa packet forwarding in constrained environments; store-and-forward buffering |
-| **Gateway node** | Tier 1/2 | Full substrate with multiple transports; bridges IP ↔ BLE ↔ WiFi Direct ↔ LoRa mesh automatically |
-
-A gateway node requires no special configuration beyond enabling multiple transport drivers — the routing layer handles cross-transport forwarding transparently.
-
----
-
-#### 4.4.7 Deployment Example — Constrained Connectivity
-
-```mermaid
-flowchart TD
-    subgraph INTERNET["Internet"]
-        AGG["Tier 3 Aggregator\n(QUIC)"]
-    end
-
-    subgraph MARKET["Market area"]
-        GW["Gateway Node — Tier 2\nQUIC + BLE + WiFi Direct\n(provider's PC)"]
-    end
-
-    subgraph MESH["Local mesh — no internet needed"]
-        P1["Provider A — Tier 1\n(phone, BLE)"]
-        P2["Provider B — Tier 1\n(RPi, WiFi Direct)"]
-    end
-
-    AGG <-->|"QUIC"| GW
-    GW <-->|"BLE"| P1
-    GW <-->|"WiFi Direct"| P2
-    P1 <-->|"BLE"| P2
-
-    style INTERNET fill:#D6E4F0,stroke:#2E75B6
-    style MARKET fill:#E2EFDA,stroke:#548235
-    style MESH fill:#FFF2CC,stroke:#BF9000
-```
-
-Provider A's phone reaches the aggregator via BLE to the gateway node, then QUIC. Provider B's RPi connects via WiFi Direct. When internet is unavailable, providers reach each other directly over BLE or WiFi Direct with no change to application behaviour — state changes queue locally and sync when connectivity restores.
-
----
-
-#### 4.4.8 Codebase Structure
-
-```
-crates/
-  net-proto/        # no_std — packet formats, WireAddr, RouteEntry; shared across all tiers
-  net-core/         # std    — routing, gossip, fragmentation, flow control
-  net-quic/         # std    — Iroh QUIC driver
-  net-ble/          # std    — BLE driver
-  net-wifidirect/   # std    — WiFi Direct driver
-  net-lora/         # std    — LoRa driver (deferred)
-  relay-agent/      # no_std — MCU firmware (Embassy); depends only on net-proto
-```
-
-`net-proto` is `no_std` compatible and compilable to MCU targets and full substrate targets alike. It is the protocol contract shared across all tiers — changes to it are breaking changes requiring a version bump.
 
 ---
 
@@ -1555,4 +1209,466 @@ This section is an index of every `[TBD]` marker in the requirements spec, that 
 
 ---
 
-*Syneroym Architecture Design Document v0.1 — Internal & Confidential*
+## 17. Connectivity Substrate In Heteregenous networks
+
+### Overview
+
+The system provides a **connectivity substrate** that enables application services to communicate across heterogeneous networks as if they were directly connected. The substrate hides network complexity such as NAT traversal, relays, gateways, and transport differences.
+
+Applications interact with the substrate through a **socket-like interface**, while node runtimes handle discovery, path selection, transport establishment, and optional protocol adaptation.
+
+The design intentionally avoids creating a global overlay routing protocol. Instead, nodes expose **attachment points** that indicate how they can be reached. Routing inside constrained networks (e.g., BLE or LoRa meshes) is handled by gateway nodes responsible for those network domains.
+
+---
+
+### Identity Model
+
+Two decentralized identifiers (DIDs) are used.
+
+#### Node DID
+
+Represents a **node runtime instance** responsible for networking and connectivity.
+
+Example:
+
+```
+
+did:p2p:nodeA
+
+```
+
+Node responsibilities include:
+
+- discovery participation
+- connection establishment
+- path construction
+- transport management
+- protocol adaptation
+- hosting services
+
+Nodes may also expose **management endpoints** for runtime operations.
+
+---
+
+#### Service DID
+
+Represents a **service endpoint** running behind a node.
+
+Example:
+
+```
+
+did:p2p:svc123
+
+```
+
+Applications connect to services using their service DID.
+
+Service resolution maps a service DID to the node hosting that service.
+
+```
+
+Service DID → Node DID
+
+```
+
+The node runtime routes incoming connections to the correct service.
+
+---
+
+### Discovery
+
+Discovery uses **BEP-0044 mutable records** stored in a distributed hash table (DHT).
+
+BEP-0044 records have a **1000-byte value limit**, so records contain only minimal reachability information.
+
+Two record types exist:
+
+- Service records
+- Node records
+
+---
+
+#### Service Record
+
+Key:
+
+```
+
+hash(service_did)
+
+````
+
+Value example:
+
+```json
+{
+  "service_did": "did:p2p:svc123",
+  "node": "did:p2p:nodeA",
+  "protocols": ["wrpc"],
+  "seq": 42
+}
+````
+
+Purpose:
+
+* identify which node hosts a service
+* advertise supported application protocols
+
+---
+
+#### Node Record
+
+Key:
+
+```
+hash(node_did)
+```
+
+Node records advertise **attachment points** where the node can be reached.
+
+Example:
+
+```
+nodeA
+attachments:
+  q:34.10.1.5:4242
+  i:abc123
+  g:gw1:ble
+```
+
+Attachment types:
+
+| Prefix | Meaning                              |
+| ------ | ------------------------------------ |
+| `q`    | direct QUIC endpoint                 |
+| `i`    | Iroh relay/home node                 |
+| `g`    | gateway node responsible for routing |
+
+Example interpretation:
+
+* direct QUIC connectivity available
+* reachable via Iroh relay
+* reachable via BLE gateway `gw1`
+
+Gateway nodes publish their own node records.
+
+---
+
+### Node Runtime
+
+Every machine participating in the system runs a **node runtime** responsible for connectivity operations.
+
+Responsibilities include:
+
+* DHT discovery
+* endpoint/service registry
+* path construction
+* transport management
+* connection establishment
+* protocol adapter management
+
+Nodes may host multiple services.
+
+---
+
+### Application Interface
+
+Applications interact with the node runtime using a **socket-like API**.
+
+Server:
+
+```go
+listener := node.listen(service_did)
+
+conn := listener.accept()
+```
+
+Client:
+
+```go
+conn := node.connect(service_did)
+```
+
+Communication:
+
+Connections expose a standard byte-stream interface:
+
+```
+conn.read()
+conn.write()
+conn.close()
+```
+
+Application protocol libraries (HTTP, JSON-RPC, Kafka, etc.) operate on this stream.
+
+The substrate does not interpret or modify protocol data unless an adapter is explicitly configured.
+
+---
+
+### Transport Layer
+
+Transport adapters provide network connectivity.
+
+Examples include:
+
+* QUIC
+* TCP
+* Iroh (NAT traversal)
+* relay transports
+
+Transport interface:
+
+```
+dial(endpoint)
+listen(endpoint)
+capabilities()
+```
+
+Transports are selected dynamically based on node reachability information.
+
+---
+
+### Path Construction
+
+The **caller node runtime** constructs connection strategies after discovery.
+
+Inputs:
+
+* local node capabilities
+* remote node attachments
+* available transport adapters
+
+Output:
+
+* candidate connection strategies
+
+Example strategies:
+
+Direct QUIC:
+
+```
+strategy: direct_quic
+addr: 34.10.1.5:4242
+```
+
+Iroh Connectivity:
+
+```
+strategy: iroh_connect
+iroh_node: abc123
+```
+
+Gateway Route:
+
+```
+strategy: gateway
+gateway_node: gw1
+target_node: nodeA
+```
+
+Strategies are ranked by preference:
+
+```
+direct > hole punching > relay > gateway
+```
+
+A path represents a **connection strategy**, not a full hop list.
+
+---
+
+### Gateway Nodes
+
+Gateway nodes bridge constrained networks such as BLE or LoRa.
+
+Example topology:
+
+```
+Client Node
+   │
+Internet
+   │
+Gateway
+   │
+BLE Mesh
+   │
+Target Node
+```
+
+Gateway responsibilities include:
+
+* transport bridging
+* local network routing
+* connection forwarding
+
+Caller nodes connect to a gateway and request forwarding to a target node.
+
+Example gateway request:
+
+```
+CONNECT nodeA service svc123
+```
+
+Routing inside the constrained network is handled entirely by the gateway.
+
+---
+
+### Connection Establishment
+
+Connection establishment proceeds as follows.
+
+Resolve service:
+
+```
+service_record = DHT.get(service_did)
+```
+
+This returns the node hosting the service.
+
+Resolve node:
+
+```
+node_record = DHT.get(node_did)
+```
+
+Retrieve the node’s attachment points.
+
+Build candidate paths.
+
+Example:
+
+```
+1 direct_quic
+2 iroh_connect
+3 gateway_route
+```
+
+Attempt connection:
+
+```
+for path in paths:
+    conn = try_connect(path)
+    if success:
+        break
+```
+
+---
+
+### Protocol Negotiation
+
+During connection establishment the client runtime declares the intended protocol.
+
+Example handshake:
+
+```
+HELLO
+service = did:p2p:svc123
+protocol = jsonrpc
+```
+
+The server runtime checks whether the service supports the requested protocol.
+
+If the protocols differ, a compatible **protocol adapter** may be selected.
+
+---
+
+### Protocol Adaptation
+
+Protocol adapters allow interoperability between different application protocols.
+
+Example:
+
+```
+JSON-RPC client → wRPC service
+```
+
+Connection pipeline:
+
+```
+Client Application
+   │
+JSON-RPC
+   │
+Transport
+   │
+Server Node Runtime
+   │
+JSONRPC → wRPC Adapter
+   │
+wRPC
+   │
+Service
+```
+
+Adapters operate at the application protocol level and do not interact with transport logic.
+
+Adapters are typically deployed on the **server side** to keep clients simple.
+
+---
+
+### Connection Handling Logic
+
+Simplified runtime logic:
+
+```
+resolve service DID
+resolve node DID
+build candidate paths
+establish transport connection
+
+if client_protocol != server_protocol:
+    attach protocol adapter
+
+return connection to application
+```
+
+The runtime focuses solely on connectivity and optional protocol adaptation.
+
+---
+
+### Routing Model
+
+The architecture avoids global routing.
+
+Responsibilities are separated as follows:
+
+| Component    | Responsibility                |
+| ------------ | ----------------------------- |
+| Caller node  | select attachment strategy    |
+| Gateway node | perform local network routing |
+| Transport    | carry bytes                   |
+
+Discovery only exposes **network entry points**, not complete network paths.
+
+---
+
+### Minimal Initial Implementation
+
+The initial implementation includes:
+
+Discovery:
+
+* BEP-0044 DHT
+
+Transports:
+
+* direct QUIC
+* Iroh NAT traversal
+* TCP relay
+
+Protocol adaptation:
+
+* JSON-RPC → wRPC
+
+Application API:
+
+```
+listen(service_did)
+connect(service_did)
+read
+write
+```
+
+Additional transports, gateways, and protocol adapters can be added later without changing the core architecture.
+
+---

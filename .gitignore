@@ -23,3 +23,6 @@ __pycache__/
 *.swp
 
 **/scratch-notes*.md
+
+# AI
+GEMINI.md
