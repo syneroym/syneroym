@@ -2,11 +2,6 @@
 resolver = "2"
 members = [
     "crates/syneroym-interfaces",
-    "crates/net-proto",
-    "crates/net-core",
-    "crates/net-quic",
-    "crates/syneroym-bootstrap",
-    "crates/syneroym-relay",
     "crates/syneroym-substrate",
     "crates/roymctl", "crates/syneroym-identity",
 ]
@@ -31,3 +26,4 @@ clap = { version = "4.4", features = ["derive"] }
 
 # Common / Utils
 anyhow = "1.0"
+reqwest = { version = "0.12", features = ["json"] }
