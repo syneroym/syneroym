@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/substrate", "crates/roymctl", "crates/identity"]
+members = ["crates/syneroym", "crates/roymctl", "crates/identity"]
 
 [profile.dev]
 incremental = true # Compile your binary in smaller steps.

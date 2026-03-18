@@ -1,0 +1,85 @@
+# Syneroym Substrate Configuration
+# Typically this file is saved at {app_config_dir}/config.toml, where {app_config_dir} depends on the OS.
+
+# Config file version
+config_version = 1
+
+# Profile corresponds to set of roles this substrate is supposed to play. 
+# You can create custom profiles with a specific role list. But that profile and its roles should be specified in the file.
+profile = "full"
+
+# Base directories
+# These can be provided or omitted to use platform defaults. These are prepended to other relative paths as appropriate.
+# Config files
+config-dir = "./workdir/config"
+# Long term data storage
+app-local-data-dir = "./workdir/data"
+# Short term, or user specific storage
+app-data-dir = "./workdir/data"
+# Cache or temporary files
+app-cache-dir = "./workdir/cache"
+# Logs
+app-log-dir = "./workdir/logs"
+
+
+# Enable only the syneroym ecosystem http access service
+[profiles.enduser]
+roles = ["api"]
+
+# Enable all services. Useful in large deployments or dev, test, demos
+[profiles.full]
+roles = ["api", "app-sandbox", "tcp_relay", "gateway"]
+
+[substrate]
+# For database storage. If relative path is given, it will go under app-local-data-dir
+db_dir = "db"
+
+# Default location for large object or file storage is. If relative path is given, it will go under app-local-data-dir
+blobs_dir = "blobs"
+
+# Default log level if RUST_LOG is not set: "error", "warn", "info", "debug", "trace"
+log_level = "info"
+
+[services.api]
+# By default api access is allowed only from localhost. Discourage people to use substrate like a public proxy.
+remote-access = true
+# Default http and https ports are 7000 and 7443  
+http-port = 7000
+https-port = 7443
+
+# TLS configuration. Used only if remote-access is needed. If relative path is given, these go under config-dir
+cert-file = "tls/cert.pem"
+key-file = "tls/key.pem"
+
+
+# List of enabled communication interfaces
+enabled_comms = ["iroh", "webrtc"]
+
+# List of ALPN protocols to register.
+alpn_protocols = ["syneroym/1.0"]
+
+# Iroh communication configuration
+# Presence of this section enables Iroh P2P
+[comm_iroh]
+# Path to the secret key file. Remove or leave empty to use a transient/default key.
+# secret_key_path = "./.iroh-secret"
+relay_url = "http://localhost:3340"
+
+# Optional custom Relay URL.
+# relay_url = "https://relay.example.com"
+
+# WebRTC communication configuration
+[comm_webrtc]
+# signaling_server_url = "ws://localhost:8000"
+
+# Signaling Server configuration
+# This controls the built-in signaling server for WebRTC
+[signaling_server]
+enabled = true
+# port = 8000
+
+# Peer Gateway configuration
+# This controls the HTTP gateway for accessing peer resources
+[peer_gateway]
+enabled = true
+# port = 8001
