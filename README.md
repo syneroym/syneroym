@@ -58,17 +58,12 @@ cargo build
 
 ### Running
 
-You can run individual binaries using Cargo. For example, to run the CLI (`roymctl`):
+You can run individual binaries using Cargo. For example, to run the CLI (`syneroym`):
 
 ```bash
-cargo run --bin roymctl -- --help
+cargo run --bin syneroym -- --help
 ```
 
-To run the relay server:
-
-```bash
-cargo run --bin syneroym-relay
-```
 
 ### Testing
 
@@ -79,8 +74,7 @@ cargo test
 ```
 
 ## Contributing
-Contributions are welcome once the Phase 1 scope is locked. See
-`CONTRIBUTING.md` for guidelines.
+Contributions are welcome once the Phase 1 scope is locked. See `CONTRIBUTING.md` for guidelines.
 
 ## License
 MIT OR Apache-2.0

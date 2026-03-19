@@ -8,6 +8,8 @@ Thanks for your interest in Syneroym. The project is in early formation.
 - APIs are unstable and will change without notice.
 
 ## How To Contribute (Early Stage)
+We are currently working on getting the initial scoping and a base version out. Will welcome contributions once we reach there.
+ 
 1. Open an issue describing the problem or proposal.
 2. Keep scope small and specific.
 3. Avoid large refactors until Phase 1 scope is locked.
