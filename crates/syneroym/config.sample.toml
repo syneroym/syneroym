@@ -1,0 +1,141 @@
+# Syneroym Substrate Configuration
+# Typically this file is saved at {app_config_dir}/config.toml, where {app_config_dir} depends on the OS.
+
+# Config file version
+config_version = 1
+
+# Base directories
+# These can be provided or omitted to use platform defaults. These are prepended to other relative paths as appropriate.
+
+# Config files
+config_dir = "./workdir/config"
+# Long term data storage
+local_data_dir = "./workdir/data"
+# Short term, or user specific storage
+user_data_dir = "./workdir/data"
+# Cache or temporary files
+cache_dir = "./workdir/cache"
+# Logs
+log_dir = "./workdir/logs"
+
+# Profile corresponds to set of roles this substrate is supposed to play. 
+# Create custom profiles with a specific role list. Roles are configured in [role.rolename] sections
+profile = "full"
+
+[storage]
+# Currently only sqlite
+engine = "sqlite"
+# For database storage. If relative path is given, it will go under app_local_data_dir
+db_dir = "db"
+# Default location for large object or file storage is. If relative path is given, it will go under app_local_data_dir
+blobs_dir = "blobs"
+
+[logging]
+# Default log level if RUST_LOG is not set: "error", "warn", "info", "debug", "trace"
+level = "info"
+format = "json"   # json or pretty
+target = "stdout" # stdout or file
+
+# Coordination/Signalling and data relay
+[relay]
+# List of enabled communication interfaces. Later, "ble", "wifi-direct", "lora" and more.
+communication_interfaces = ["iroh", "webrtc"]
+
+[relay.iroh]
+enabled = true
+relay_url = "http://localhost:3340"
+
+# WebRTC communication configuration
+[relay.webrtc]
+enabled = true
+signaling_server_url = "ws://localhost:8000"
+bootstrap_page_url = "ws://localhost:8000"
+stun_servers = ["stun:stun.l.google.com:19302"]
+
+# Enable only the syneroym ecosystem http access service
+[profiles.enduser]
+roles = ["http_proxy", "observability"]
+
+# Enable all services. Useful in large deployments or dev, test, demos
+[profiles.full]
+roles = [
+    "app_sandbox",
+    "service_registry",
+    "coordinator",
+    "http_proxy",
+    "gateway",
+    "observability",
+]
+
+# ____ Role configs ____
+
+# Resources limits across all services in app sandbox
+[roles.app_sandbox]
+cpu_limit = 1
+memory_limit = "1Gi"
+
+# Service Registry
+[roles.service_registry]
+access = "everyone" # Later, more access restriction like list of dids
+
+# Coordinator/Rendezvous service for connection establishment
+[roles.coordinator]
+
+# TLS configuration for https endpoints of all coordinators
+[roles.coordinator.tls]
+cert_path = "tls/cert.pem"
+key_path = "tls/key.pem"
+
+[roles.coordinator.iroh]
+enabled = true
+http_bind_address = "0.0.0.0:7443"
+quic_bind_address = "0.0.0.0:7842"
+
+[roles.coordinator.webrtc]
+enabled = false
+signalling_bind_address = "0.0.0.0:7444"
+bootstrap_page_bind_address = "0.0.0.0:7002"
+
+# Relay for other peers who cannot connect directly with each other. Typically peers behind strict NATs.
+[roles.coordinator.data_relay]
+enabled = true
+access = "everyone"
+
+# Proxy service for easy access to syneroym ecosystem services by external clients like browsers. Only local access is allowed for substrate admin APIs
+[roles.http_proxy]
+http_port = 7000
+
+# Act as a Gateway acting on behalf of other peers who cannot directly access the network (firewalls, BLE-Wifidirect, LoRA)
+[roles.gateway]
+access = ["did1", "did2", "..."]
+# Only iroh supported for gateway currently. Later, "ble", "wifi-direct", "lora"
+communication_interfaces = ["iroh"]
+
+# ____ Observability ____
+[roles.observability]
+
+# ____ Health ____
+[roles.observability.health]
+enabled = true
+bind_address = "0.0.0.0:7081" # where /health is exposed
+endpoint = "/health"
+
+
+# ____ Metrics (Prometheus) ____
+[roles.observability.metrics]
+enabled = true
+bind_address = "0.0.0.0:7082" # where /metrics is exposed
+endpoint = "/metrics"
+
+# ____ Tracing (OpenTelemetry) ____
+[roles.observability.tracing]
+enabled = false
+service_name = "syneroym_substrate"
+
+[roles.observability.tracing.otlp]
+endpoint = "http://${OTEL_COLLECTOR_SVC_DID}"
+protocol = "http"                             # Currently there is only a HTTP adapter for third party tools
+
+[roles.observability.tracing.sampling]
+strategy = "parent_based"
+ratio = 0.1
