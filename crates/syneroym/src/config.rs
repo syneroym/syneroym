@@ -156,13 +156,12 @@ fn default_relay_url() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct IrohRelayConfig {
-    pub enabled: bool,
     pub relay_url: String,
 }
 
 impl Default for IrohRelayConfig {
     fn default() -> Self {
-        Self { enabled: true, relay_url: default_relay_url() }
+        Self { relay_url: default_relay_url() }
     }
 }
 
@@ -179,7 +178,6 @@ fn default_stun_servers() -> Vec<String> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WebRtcRelayConfig {
-    pub enabled: bool,
     pub signaling_server_url: String,
     pub bootstrap_page_url: String,
     pub stun_servers: Vec<String>,
@@ -188,7 +186,6 @@ pub struct WebRtcRelayConfig {
 impl Default for WebRtcRelayConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
             signaling_server_url: default_signaling_server_url(),
             bootstrap_page_url: default_bootstrap_page_url(),
             stun_servers: default_stun_servers(),
@@ -347,15 +344,10 @@ impl Default for CoordinatorWebRtcConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct TransportBridgeRole {
     pub access: AccessControl,
     pub translations: Vec<ProtocolTranslation>,
-}
-
-impl Default for TransportBridgeRole {
-    fn default() -> Self {
-        Self { access: Default::default(), translations: Default::default() }
-    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

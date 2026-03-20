@@ -41,12 +41,10 @@ target = "stdout" # stdout or file
 [relay]
 
 [relay.iroh]
-enabled = true
 relay_url = "http://localhost:3340"
 
 # WebRTC communication configuration
 [relay.webrtc]
-enabled = true
 signaling_server_url = "ws://localhost:7444"
 bootstrap_page_url = "ws://localhost:7002"
 stun_servers = ["stun:stun.l.google.com:19302"]
