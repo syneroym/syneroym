@@ -8,15 +8,15 @@ config_version = 1
 # These can be provided or omitted to use platform defaults. These are prepended to other relative paths as appropriate.
 
 # Config files
-config_dir = "./workdir/config"
+app_config_dir = "./workdir/config"
 # Long term data storage
-local_data_dir = "./workdir/data"
+app_local_data_dir = "./workdir/data"
 # Short term, or user specific storage
-user_data_dir = "./workdir/data"
+app_data_dir = "./workdir/data"
 # Cache or temporary files
-cache_dir = "./workdir/cache"
+app_cache_dir = "./workdir/cache"
 # Logs
-log_dir = "./workdir/logs"
+app_log_dir = "./workdir/logs"
 
 # Profile corresponds to set of roles this substrate is supposed to play. 
 # Create custom profiles with a specific role list. Roles are configured in [role.rolename] sections
@@ -36,10 +36,9 @@ level = "info"
 format = "json"   # json or pretty
 target = "stdout" # stdout or file
 
-# Coordination/Signalling and data relay
+# Coordination/Signalling and data relay.
+# Data relay could convert transport (e.g. iroh -> webrtcdatachannel or message/stream/MTU conversion)
 [relay]
-# List of enabled communication interfaces. Later, "ble", "wifi-direct", "lora" and more.
-communication_interfaces = ["iroh", "webrtc"]
 
 [relay.iroh]
 enabled = true
@@ -52,11 +51,23 @@ signaling_server_url = "ws://localhost:8000"
 bootstrap_page_url = "ws://localhost:8000"
 stun_servers = ["stun:stun.l.google.com:19302"]
 
-# Enable only the syneroym ecosystem http access service
+# A node that connect to the internet should configure uplink bridges to act as their gateway to the larger network
+# Note: Uplink-bridge functionality is WIP.
+[uplink]
+
+[uplink.ble]
+enabled = false
+bridge = "ble://A4:C1:38:12:34:56/some-service-uuid"
+
+[uplink.lora]
+enabled = false
+bridge = "lora://70B3D57ED0051234"
+
+# Profile to enable only the syneroym ecosystem http access service
 [profiles.enduser]
 roles = ["http_proxy", "observability"]
 
-# Enable all services. Useful in large deployments or dev, test, demos
+# Profile to enable all services. Useful in large deployments or dev, test, demos
 [profiles.full]
 roles = [
     "app_sandbox",
@@ -71,6 +82,9 @@ roles = [
 
 # Resources limits across all services in app sandbox
 [roles.app_sandbox]
+# List of enabled communication interfaces to channel traffic
+communication_interfaces = ["iroh", "webrtc"]
+wrpc_sandbox = true
 cpu_limit = 1
 memory_limit = "1Gi"
 
@@ -96,20 +110,16 @@ enabled = false
 signalling_bind_address = "0.0.0.0:7444"
 bootstrap_page_bind_address = "0.0.0.0:7002"
 
-# Relay for other peers who cannot connect directly with each other. Typically peers behind strict NATs.
-[roles.coordinator.data_relay]
+# Transport bridge for other peers who cannot connect directly with each other. Typically peers behind strict NATs.
+# Note: Uplink-bridge functionality is WIP.
+[roles.transport_bridge]
 enabled = true
-access = "everyone"
+access = "everyone"                                                             # Or for specific DIDs, access = ["did1", "did2", "..."]
+translations = [{ from = "quic", to = "lora" }, { from = "lora", to = "quic" }]
 
 # Proxy service for easy access to syneroym ecosystem services by external clients like browsers. Only local access is allowed for substrate admin APIs
 [roles.http_proxy]
 http_port = 7000
-
-# Act as a Gateway acting on behalf of other peers who cannot directly access the network (firewalls, BLE-Wifidirect, LoRA)
-[roles.gateway]
-access = ["did1", "did2", "..."]
-# Only iroh supported for gateway currently. Later, "ble", "wifi-direct", "lora"
-communication_interfaces = ["iroh"]
 
 # ____ Observability ____
 [roles.observability]
