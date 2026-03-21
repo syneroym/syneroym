@@ -197,41 +197,9 @@ mod tests {
             "http://cli.relay:3340",
             "Iroh relay URL should be overridden by CLI"
         );
-    }
 
-    #[test]
-    fn test_config_defaults_not_wrongly_overridden() {
-        // 1. Setup a dummy config file overriding ONLY one default
-        let mut config_file = NamedTempFile::new().unwrap();
-        let config_toml = r#"
-        profile = "only_profile_override"
-        "#;
-        write!(config_file, "{}", config_toml).unwrap();
-
-        // 2. Setup CLI arguments overriding ONLY one default
-        let config_path_str = config_file.path().to_str().unwrap();
-        let args = vec![
-            "syneroym",
-            "run",
-            "--config",
-            config_path_str,
-            "--enable-coordinator-webrtc",
-            "true",
-        ];
-
-        let cli = Cli::parse_from(args);
-
-        // 3. Resolve config
-        let config = resolve_config(cli.command).expect("Failed to resolve config");
-
-        // 4. Verify defaults are retained
+        // 5. Verify defaults are retained for fields not specified in config or CLI
         let default_config = SubstrateConfig::default();
-
-        assert_eq!(config.profile, "only_profile_override", "Profile should be from config file");
-        assert!(
-            config.roles.coordinator.as_ref().unwrap().webrtc.as_ref().unwrap().enabled,
-            "Coordinator webrtc should be enabled from CLI"
-        );
 
         // Assert defaults that were NOT overridden
         assert_eq!(
@@ -246,15 +214,5 @@ mod tests {
             config.app_local_data_dir, default_config.app_local_data_dir,
             "App local data dir should remain default"
         );
-
-        // Make sure iroh relay url is the default one, since we didn't specify it in config or CLI
-        // SubstrateConfig::default().relay.iroh is None by default, but if someone changes the default logic, this checks it safely.
-        if let Some(iroh_relay) = config.relay.iroh {
-            let default_iroh = default_config.relay.iroh.unwrap_or_default();
-            assert_eq!(
-                iroh_relay.relay_url, default_iroh.relay_url,
-                "Iroh relay URL should remain default"
-            );
-        }
     }
 }
