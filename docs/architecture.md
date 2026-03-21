@@ -3,26 +3,27 @@
 
 ## Table of Contents
 
-1. [Executive Summary](#1-executive-summary)
-2. [Architecture Goals & Constraints](#2-architecture-goals--constraints)
-3. [System Layers Overview](#3-system-layers-overview)
-4. [Layer 1 — Infrastructure](#4-layer-1--infrastructure)
-5. [Layer 2 — Substrate Runtime](#5-layer-2--substrate-runtime)
-6. [Layer 3 — Shared Substrate Utilities](#6-layer-3--shared-substrate-utilities)
-7. [Layer 4 — SynApp Specifications](#7-layer-4--synapp-specifications)
-8. [Federation Architecture](#8-federation-architecture)
-9. [Consumer Experience Architecture](#9-consumer-experience-architecture)
-10. [Observability Architecture](#10-observability-architecture)
-11. [Security Architecture](#11-security-architecture)
-12. [Resolved Architecture TBD Items](#12-resolved-architecture-tbd-items)
-13. [Consolidated Technology Stack](#13-consolidated-technology-stack)
-14. [MVP Phase 1 Scope & Acceptance Criteria](#14-mvp-phase-1-scope--acceptance-criteria)
-15. [Open Questions](#15-open-questions--recommendations)
-16. [Glossary](#16-glossary)
+- [Executive Summary](#executive-summary)
+- [Architecture Goals & Constraints](#architecture-goals--constraints)
+- [System Layers Overview](#system-layers-overview)
+- [Layer 1 — Infrastructure](#layer-1--infrastructure)
+- [Layer 2 — Substrate Runtime](#layer-2--substrate-runtime)
+- [Layer 3 — Shared Substrate Utilities](#layer-3--shared-substrate-utilities)
+- [Layer 4 — SynApp Specifications](#layer-4--synapp-specifications)
+- [Federation Architecture](#federation-architecture)
+- [Consumer Experience Architecture](#consumer-experience-architecture)
+- [Observability Architecture](#observability-architecture)
+- [Security Architecture](#security-architecture)
+- [Resolved Architecture TBD Items](#resolved-architecture-tbd-items)
+- [Consolidated Technology Stack](#consolidated-technology-stack)
+- [MVP Phase 1 Scope & Acceptance Criteria](#mvp-phase-1-scope--acceptance-criteria)
+- [Future: Heteregenous Networks](#connectivity-substrate-in-heteregenous-networks)
+- [Open Questions](#open-questions)
+- [Glossary](#glossary)
 
 ---
 
-## 1. Executive Summary
+## Executive Summary
 
 Syneroym is a federated, locality-first ecosystem for autonomous mini-applications (**SynApps**) that run on provider-controlled commodity hardware. It replicates the benefits of large consumer platforms — discovery, reputation, standardised transaction flows, institutional trust — while eliminating their drawbacks: vendor lock-in, data ownership loss, governance asymmetry, and opaque algorithms.
 
@@ -33,9 +34,9 @@ This document defines the architecture, technology stack, component design for:
 
 ---
 
-## 2. Architecture Goals & Constraints
+## Architecture Goals & Constraints
 
-### 2.1 Guiding Principles
+### Guiding Principles
 
 | Principle | Implication |
 |---|---|
@@ -46,7 +47,7 @@ This document defines the architecture, technology stack, component design for:
 | **Interoperability by convention** | SynApps cooperate via shared primitives; no central coordinator needed |
 | **Offline-first** | Graceful degradation under partition; queued and async workflows |
 
-### 2.2 Key Hardware Constraints
+### Key Hardware Constraints
 
 | Profile | Hardware | Typical Use |
 |---|---|---|
@@ -56,7 +57,7 @@ This document defines the architecture, technology stack, component design for:
 
 ---
 
-## 3. System Layers Overview
+## System Layers Overview
 
 The architecture is composed of four layers, each building on the one below.
 
@@ -89,7 +90,7 @@ block-beta
   end
 ```
 
-### 3.1 Conceptual Entity Model
+### Conceptual Entity Model
 
 ```mermaid
 ---
@@ -126,11 +127,11 @@ erDiagram
 
 ---
 
-## 4. Layer 1 — Infrastructure
+## Layer 1 — Infrastructure
 
-### 4.1 P2P Networking: Iroh
+### P2P Networking: Iroh
 
-Note: In the initial phase, we will focus on connecting peers over IP. Later, we will enhance the system to support for more heteregenous networks and communication patterns. This is discussed in more detail in [Connectivity Substrate in Heterogenous networks](#17-connectivity-substrate-in-heteregenous-networks). 
+Note: In the initial phase, we will focus on connecting peers over IP. Later, we will enhance the system to support for more heteregenous networks and communication patterns. This is discussed in more detail in [Connectivity Substrate in Heterogenous networks](#connectivity-substrate-in-heteregenous-networks). 
 
 Direct QUIC (UDP) connections are attempted first. NAT/firewall fallback uses relay-mediated connections.
 
@@ -161,7 +162,7 @@ flowchart TD
 
 **Technology:** `iroh` (Rust crate) — provides QUIC transport, NAT hole punching, DERP relay, and peer discovery in a single library. `webrtc-rs` for browser clients via WebRTC Data Channels.
 
-### 4.2 Relay Node Architecture
+### Relay Node Architecture
 
 ```mermaid
 flowchart LR
@@ -181,7 +182,7 @@ flowchart LR
 
 **Local DNS:** Each substrate caches relay hostname resolutions. This avoids hammering Bootstrap server for the large number of dynamically rotating relay nodes.
 
-### 4.3 Bootstrap Server & DHT Fallback
+### Bootstrap Server & DHT Fallback
 
 **Decentralised Bootstrap Fallback**
 
@@ -215,9 +216,9 @@ flowchart TD
 
 ---
 
-## 5. Layer 2 — Substrate Runtime
+## Layer 2 — Substrate Runtime
 
-### 5.1 Substrate Internal Architecture
+### Substrate Internal Architecture
 
 ```mermaid
 flowchart TD
@@ -273,7 +274,7 @@ flowchart TD
     style UTIL fill:#FCE4D6,stroke:#C55A11
 ```
 
-### 5.2 SynApp Packaging & API Pipeline
+### SynApp Packaging & API Pipeline
 
 **Packaging**
 
@@ -304,7 +305,7 @@ flowchart LR
 - Import validates the archive signature and replays into a fresh cr-sqlite instance
 - Litestream continuous replication can additionally keep a live replica on a secondary node
 
-### 5.3 Storage & CRDT Merge Semantics
+### Storage & CRDT Merge Semantics
 
 **CRDT merge semantics and conflict resolution**
 
@@ -336,7 +337,7 @@ flowchart TD
 | Reputation record | Append-only; signed by issuer; no merge | Records are immutable attestations |
 | Access control policy | Provider LWW; infrastructure provider cannot override | Data sovereignty |
 
-### 5.4 Multi-Device Sync and Sharded Deployment
+### Multi-Device Sync and Sharded Deployment
 
 This section covers two requirements from the high-level spec: app sync across provider secondary devices, and app sharding across multiple hosts.
 
@@ -345,7 +346,7 @@ This section covers two requirements from the high-level spec: app sync across p
 - Each provider device runs a local substrate instance with its own site ID.
 - App state changes are committed locally first in cr-sqlite, then replicated asynchronously.
 - If a secondary device is offline, it continues operating on local state and queues outbound updates.
-- On reconnection, peers exchange oplogs and converge using entity-specific merge rules from §5.3.
+- On reconnection, peers exchange oplogs and converge using entity-specific merge rules from [Storage & CRDT Merge Semantics](#storage--crdt-merge-semantics).
 - Operational ownership fields (for example, order lifecycle authority) remain deterministic across devices via signed identity roles.
 
 **B) Sharded SynApp deployment (single app across multiple hosts)**
@@ -361,7 +362,7 @@ Example placement:
 - `order-engine` + `payment-adapter` on higher-availability node
 - `drm-content-server` on storage-optimised node
 
-### 5.5 Substrate API Surfaces
+### Substrate API Surfaces
 
 The substrate is called by multiple caller types — WASM SynApp components, peer substrates over the network, the `syneroym` CLI, browser UIs, and external integrations. No single wire protocol serves all of these well.
 
@@ -372,9 +373,9 @@ The substrate exposes **two API surfaces, both derived from the same WIT definit
 
 ---
 
-## 6. Layer 3 — Shared Substrate Utilities
+## Layer 3 — Shared Substrate Utilities
 
-### 6.1 Identity
+### Identity
 
 Every entity has an **Ed25519** keypair. Identity documents are self-describing JSON-LD structures signed by the entity key.
 
@@ -408,7 +409,7 @@ flowchart TD
     end
 ```
 
-### 6.2 Discovery & DHT
+### Discovery & DHT
 Relays: For relay information storage, We use BEP 0044 Mainline DHT (via pkarr).
 For Searchable Catalog, we use Federated local indexes with gossip
     - Each substrate maintains a local SQLite FTS5 (full-text search) index of Spaces it knows about. Substrates in a cluster gossip new entries to peers. A consumer queries their local substrate's index; the substrate fans out to known peers if local results are thin. No global DHT for search — just epidemic propagation within clusters. This fits the locality-first principle very well.
@@ -463,7 +464,7 @@ flowchart TD
 
 **Consistency:** Eventual consistency; index entries carry an HLC timestamp. Stale entries expire after 72 hours unless refreshed by the provider substrate.
 
-### 6.3 Messaging
+### Messaging
 
 ```mermaid
 flowchart TD
@@ -494,7 +495,7 @@ flowchart TD
 
 **Libraries:** `libsignal-protocol-rust` for X3DH + Double Ratchet; `openmls` (Rust) for MLS group messaging.
 
-### 6.4 Trust & Reputation
+### Trust & Reputation
 
 Reputation: A mix of the following, instead of global rating. 
 
@@ -563,7 +564,7 @@ Default `decay_factor = 0.5`. Max effective depth: 3 hops (weight < 0.125 beyond
 
 **Reputation portability:** A provider migrating substrates republishes their `ReputationRecord` collection (each record is independently signed by both parties) to the DHT under their existing identity key. No loss of history.
 
-### 6.5 Payments
+### Payments
 
 **TBD**: Whether to include any kind of payment gateway like (stripe, razorpay, etc.) in MVP or handle payment out of system. Mostly, for MVP we will stay with redirection to UPI payment at max. All verifcation is offline-delayed. So we exclude payment gateway integrations for now. It is difficult to circumvent centralized payment operators for auto payment management. 
 
@@ -605,12 +606,12 @@ flowchart TD
 
 ---
 
-## 7. Layer 4 — SynApp Specifications
+## Layer 4 — SynApp Specifications
 
-### 7.1 SynApp 1: Business, Professional & Retail Spaces
+### SynApp 1: Business, Professional & Retail Spaces
 A lot of the domain related aspects like processes, protocols, workflows of this SynApp will try to leverage from [Beckn](https://beckn.io/) and tailor those to our p2p system. See protocol spec [here](https://github.com/beckn/protocol-specifications-v2)
 
-#### 7.1.1 Component Architecture
+#### Component Architecture
 
 ```mermaid
 flowchart TD
@@ -656,7 +657,7 @@ flowchart TD
     style PROVIDER_SUBSTRATE fill:#E2EFDA,stroke:#548235
 ```
 
-#### 7.1.2 Order State Machine
+#### Order State Machine
 
 **Order conflict resolution rules**
 
@@ -707,7 +708,7 @@ stateDiagram-v2
 - Provider CONFIRMED + Consumer CANCELLED in same HLC epoch → **Consumer wins** (consumer initiated the cancellation workflow first); no charge
 - Both parties IN_PROGRESS state with diverged sub-state → **merge by union** of completed steps; disputed steps require manual resolution
 
-#### 7.1.3 Consumer Transaction Flow
+#### Consumer Transaction Flow
 
 TBD: Whether payments will be handled post MVP.
 
@@ -764,7 +765,7 @@ sequenceDiagram
     GW->>OE: transition → REVIEWED
 ```
 
-#### 7.1.4 Recommendation Algorithm
+#### Recommendation Algorithm
 
 **Recommendation algorithm**
 
@@ -787,9 +788,9 @@ Consumer session context (query history, viewed items) is kept **only in PWA loc
 
 ---
 
-## 8. Federation Architecture
+## Federation Architecture
 
-### 8.1 Cross-Substrate Discovery Flow
+### Cross-Substrate Discovery Flow
 
 ```mermaid
 flowchart TD
@@ -818,7 +819,7 @@ flowchart TD
     SB1 -->|"publish index entries"| SHARD3
 ```
 
-### 8.2 Minimum Federation Contract
+### Minimum Federation Contract
 
 A third-party SynApp is federation-compatible if it implements:
 
@@ -832,9 +833,9 @@ No central coordinator is required — these are convention-based contracts enfo
 
 ---
 
-## 9. Consumer Experience Architecture
+## Consumer Experience Architecture
 
-### 9.1 Consumer App Architecture
+### Consumer App Architecture
 
 ```mermaid
 flowchart TD
@@ -861,15 +862,15 @@ flowchart TD
 
 ---
 
-## 10. Observability Architecture
+## Observability Architecture
 
-### 10.1 Design Philosophy
+### Design Philosophy
 
 Observability in Syneroym serves two distinct audiences: **non-technical providers** who need to know if their business is running, and **support staff and developers** who need technical depth to diagnose problems. These are not the same product and must not be designed as one.
 
 The substrate ships **instrumentation primitives, not observability stacks**. Open-format signals are emitted everywhere; what consumes them is the operator's choice. No external observability service is required to run a substrate.
 
-### 10.2 Instrumentation Layer (All Tiers)
+### Instrumentation Layer (All Tiers)
 
 All instrumentation is in-process, zero-cost when unused, and based on open facades:
 
@@ -878,7 +879,7 @@ All instrumentation is in-process, zero-cost when unused, and based on open faca
 - **Logs:** `tracing-subscriber` emitting structured JSON to a rotating local file. Human-readable with `jq`; parseable by any log tool. No external sink by default.
 - **In-process ring buffer:** Retains the last N spans and metric snapshots in memory. Queryable via the substrate health API without any external tool. The primary observability interface for Tier 1 nodes.
 
-### 10.3 The `health-narrator` Component
+### The `health-narrator` Component
 
 The translation layer between raw instrumentation and provider-facing experience. A lightweight WASM component deployed as part of the substrate core that:
 
@@ -888,7 +889,7 @@ The translation layer between raw instrumentation and provider-facing experience
 - Sends proactive alerts via the notification dispatcher when health degrades
 - Generates **diagnostic bundles** on demand: a signed, sanitized snapshot of recent timeline events, metric snapshots, substrate version and configuration — formatted for handoff to support staff
 
-### 10.4 Provider-Facing Status UI
+### Provider-Facing Status UI
 
 Built into the substrate's own HTTP server as a static HTML page (assets bundled into the binary, no external process). Accessible at `http://localhost:8080/admin`. Shows:
 
@@ -941,7 +942,7 @@ flowchart TD
     style SUPPORT fill:#FCE4D6,stroke:#C55A11
 ```
 
-### 10.5 Tiered Observability Stack
+### Tiered Observability Stack
 
 | Tier | What Ships | Notes |
 |---|---|---|
@@ -955,7 +956,7 @@ flowchart TD
 
 **Tier 1 under aggregator:** A mobile or RPi node operating under an aggregator forwards its metrics scrape endpoint and log stream to the aggregator's bundled stack. The provider gets full dashboard visibility via the aggregator without running any stack locally.
 
-### 10.6 Simulation Testing and CRDT Validation
+### Simulation Testing and CRDT Validation
 
 The substrate ships a **multi-node simulation harness** used during development and CI:
 
@@ -967,9 +968,9 @@ The substrate ships a **multi-node simulation harness** used during development 
 
 The harness is built during the walking skeleton stage and extended with each new component. It is the primary validation tool for offline and reconnect behavior before it reaches a real provider's device.
 
-## 11. Security Architecture
+## Security Architecture
 
-### 11.1 Encryption at Every Layer
+### Encryption at Every Layer
 
 ```mermaid
 flowchart TD
@@ -992,7 +993,7 @@ flowchart TD
     end
 ```
 
-### 11.2 Isolation Guarantees
+### Isolation Guarantees
 
 ```mermaid
 flowchart TD
@@ -1032,35 +1033,35 @@ flowchart TD
 
 ---
 
-## 12. Resolved Architecture TBD Items
+## Resolved Architecture TBD Items
 
 This section is an index of every `[TBD]` marker in the requirements spec, that need to be revisited and finalized.
 
 | # | TBD Item (from requirements spec) | Resolution | Section |
 |---|---|---|---|
-| 1 | Migration protocol | Signed `SynExport` archive; cr-sqlite snapshot + blob store + App Spec; `syneroym export/import` CLI | §5.2 |
-| 2 | Backup mechanism | Litestream WAL streaming to S3-compatible or peer node; continuous or on-demand | §5.2 |
-| 3 | CRDT merge semantics | cr-sqlite with HLC timestamps; LWW per field; entity-specific override rules defined | §5.3 |
-| 4 | Conflict resolution rules per entity type | Full merge rule table per entity type; order conflicts favour provider authority | §5.3 |
-| 5 | Vouching mechanics and weighting | Signed VouchRecord; weight = `base × 0.5^hops`; max depth 3; stake requirement for high-weight vouches | §6.4 |
-| 6 | Credential format and verification | W3C VC Data Model 2.0; `didkit` for issuance/verification; consumer configures trusted issuers | §6.4 |
-| 7 | Reputation portability mechanism | Both-party signed `ReputationRecord` anchored in DHT; portable by republishing under same identity key | §6.4 |
-| 8 | Propagation protocol (community moderation) | Signed block/trust lists; propagated via DHT with decay weight; aggregators are authoritative for their cluster | §6.4 |
-| 9 | Anti-gaming mechanisms | Bayesian reputation average; ad boost cap; TF-IDF keyword scoring; review bomb detection | §6.4 |
-| 10 | Sybil resistance | Stake requirement for vouching; rate limiting; both-party signature on reputation records | §6.4 |
-| 11 | Payment rails and escrow | Stripe Connect (MVP) + UPI; pluggable adapter pattern; centralised escrow via Stripe MVP | §6.5 |
-| 12 | Coin and mutual credit mechanics | Bilateral signed IOU ledger (post-MVP); Syneroym internal ledger token (post-MVP); no blockchain | §6.5 |
-| 13 | Recommendation algorithm | Client-side scoring formula; no consumer data transmitted; collaborative signals from anonymised aggregates | §7.1.4 |
-| 14 | Discovery partitioning and consistency model | Kademlia DHT; XOR-distance sharding; replication factor 3; eventual consistency; 72h TTL | §6.2 |
-| 15 | Discovery ranking algorithm | Transparent weighted formula (5 signals); ad boost capped at 0.3; formula published open-source | §6.2 |
-| 16 | Decentralised bootstrap fallback | pkarr signed packets mirrored to BitTorrent DHT; 24h local cache; community governance key | §4.3 |
-| 17 | Ad auction mechanics and placement limits | Ad boost is a `[0.0–0.3]` float in the index entry; no auction in MVP; elevated placement within local cluster only | §6.2 |
+| 1 | Migration protocol | Signed `SynExport` archive; cr-sqlite snapshot + blob store + App Spec; `syneroym export/import` CLI | [SynApp Packaging & API Pipeline](#synapp-packaging--api-pipeline) |
+| 2 | Backup mechanism | Litestream WAL streaming to S3-compatible or peer node; continuous or on-demand | [SynApp Packaging & API Pipeline](#synapp-packaging--api-pipeline) |
+| 3 | CRDT merge semantics | cr-sqlite with HLC timestamps; LWW per field; entity-specific override rules defined | [Storage & CRDT Merge Semantics](#storage--crdt-merge-semantics) |
+| 4 | Conflict resolution rules per entity type | Full merge rule table per entity type; order conflicts favour provider authority | [Storage & CRDT Merge Semantics](#storage--crdt-merge-semantics) |
+| 5 | Vouching mechanics and weighting | Signed VouchRecord; weight = `base × 0.5^hops`; max depth 3; stake requirement for high-weight vouches | [Trust & Reputation](#trust--reputation) |
+| 6 | Credential format and verification | W3C VC Data Model 2.0; `didkit` for issuance/verification; consumer configures trusted issuers | [Trust & Reputation](#trust--reputation) |
+| 7 | Reputation portability mechanism | Both-party signed `ReputationRecord` anchored in DHT; portable by republishing under same identity key | [Trust & Reputation](#trust--reputation) |
+| 8 | Propagation protocol (community moderation) | Signed block/trust lists; propagated via DHT with decay weight; aggregators are authoritative for their cluster | [Trust & Reputation](#trust--reputation) |
+| 9 | Anti-gaming mechanisms | Bayesian reputation average; ad boost cap; TF-IDF keyword scoring; review bomb detection | [Trust & Reputation](#trust--reputation) |
+| 10 | Sybil resistance | Stake requirement for vouching; rate limiting; both-party signature on reputation records | [Trust & Reputation](#trust--reputation) |
+| 11 | Payment rails and escrow | Stripe Connect (MVP) + UPI; pluggable adapter pattern; centralised escrow via Stripe MVP | [Payments](#payments) |
+| 12 | Coin and mutual credit mechanics | Bilateral signed IOU ledger (post-MVP); Syneroym internal ledger token (post-MVP); no blockchain | [Payments](#payments) |
+| 13 | Recommendation algorithm | Client-side scoring formula; no consumer data transmitted; collaborative signals from anonymised aggregates | [Recommendation Algorithm](#recommendation-algorithm) |
+| 14 | Discovery partitioning and consistency model | Kademlia DHT; XOR-distance sharding; replication factor 3; eventual consistency; 72h TTL | [Discovery & DHT](#discovery--dht) |
+| 15 | Discovery ranking algorithm | Transparent weighted formula (5 signals); ad boost capped at 0.3; formula published open-source | [Discovery & DHT](#discovery--dht) |
+| 16 | Decentralised bootstrap fallback | pkarr signed packets mirrored to BitTorrent DHT; 24h local cache; community governance key | [Bootstrap Server & DHT Fallback](#bootstrap-server--dht-fallback) |
+| 17 | Ad auction mechanics and placement limits | Ad boost is a `[0.0–0.3]` float in the index entry; no auction in MVP; elevated placement within local cluster only | [Discovery & DHT](#discovery--dht) |
 
 ---
 
-## 13. Consolidated Technology Stack
+## Consolidated Technology Stack
 
-### 13.1 Core Infrastructure & Substrate
+### Core Infrastructure & Substrate
 
 | Layer / Concern | Technology | Notes |
 |---|---|---|
@@ -1080,7 +1081,7 @@ This section is an index of every `[TBD]` marker in the requirements spec, that 
 | Observability | **OpenTelemetry** (OTLP) | Traces + metrics + logs; Grafana/Prometheus exporters |
 | Configuration | **TOML** + JSON Schema | Human-readable; validated |
 
-### 13.2 SynApp & Crypto Libraries
+### SynApp & Crypto Libraries
 
 | Concern | Technology | Notes |
 |---|---|---|
@@ -1092,7 +1093,7 @@ This section is an index of every `[TBD]` marker in the requirements spec, that 
 | DRM video | **Shaka Player** | Digital content delivery |
 | Payment (MVP) | **Stripe Connect SDK** + UPI deep links | Pluggable adapter |
 
-### 13.3 Consumer Frontend
+### Consumer Frontend
 
 | Concern | Technology |
 |---|---|
@@ -1102,7 +1103,7 @@ This section is an index of every `[TBD]` marker in the requirements spec, that 
 | Mobile wrapper | **Tauri** (Rust) — code sharing with substrate |
 | Client-side crypto | **libsignal-protocol-wasm** |
 
-### 13.4 Developer Toolchain
+### Developer Toolchain
 
 | Tool | Purpose |
 |---|---|
@@ -1116,9 +1117,9 @@ This section is an index of every `[TBD]` marker in the requirements spec, that 
 
 ---
 
-## 14. MVP Phase 1 Scope & Acceptance Criteria
+## MVP Phase 1 Scope & Acceptance Criteria
 
-### 14.1 In Scope
+### In Scope
 
 - Substrate: setup, keypair generation, relay registration, Wasmtime + Podman sandboxing
 - Identity + access control: Ed25519 identity, ABAC policy enforcement, UCAN delegation tokens
@@ -1130,14 +1131,14 @@ This section is an index of every `[TBD]` marker in the requirements spec, that 
 - Consumer PWA: discover, browse, order, pay
 - Data portability: `SynExport` format; export and import CLI commands
 
-### 14.2 Explicitly Out of Scope (MVP)
+### Explicitly Out of Scope (MVP)
 
 - Syneroym-native coin or mutual credit
 - Advanced ad auction mechanics (ad boost field is present but auction engine is not)
 - Fully decentralised bootstrap replacement (DHT mirror is built; full replacement is not)
 - AI-assisted workflow synthesis
 
-### 14.3 Acceptance Criteria
+### Acceptance Criteria
 
 1. A provider deploys SynApp 1 on a single node and creates a Space with catalog entries
 2. A consumer on a separate node discovers that Space via DHT and completes an order end-to-end including payment
@@ -1146,70 +1147,29 @@ This section is an index of every `[TBD]` marker in the requirements spec, that 
 5. ABAC policies prevent unauthorised reads/writes across at least two independent users and two services
 6. At least one trust signal (VC, vouch count, or reputation score) is visible to the consumer before payment confirmation
 
-### 14.4 Requirements Traceability (requirements.md -> architecture.md)
+### Requirements Traceability (requirements.md -> architecture.md)
 
 | Requirement Theme | Architecture Coverage |
 |---|---|
-| P2P-first with relay fallback | §4.1, §4.2 |
-| Bootstrap survivability | §4.3 |
-| Substrate lifecycle and service orchestration | §5.1, §5.2 |
-| Offline queue + deterministic reconciliation | §5.3 |
-| Multi-device app operation + reconnection sync | §5.4(A) |
-| Sharded app deployment across hosts | §5.4(B) |
-| Identity, delegation, key lifecycle | §6.1 |
-| Discovery index partitioning + ranking transparency | §6.2 |
-| Messaging modes and E2E encryption | §6.3, §11.1 |
-| Trust layers and reputation portability | §6.4 |
-| Payment and escrow integration | §6.5 |
-| Consumer unified app model | §9.1 |
-| Multi-tenant isolation and access control | §11.2 |
-| Phase 1 acceptance criteria alignment | §14.3 |
+| P2P-first with relay fallback | [P2P Networking: Iroh](#p2p-networking-iroh), [Relay Node Architecture](#relay-node-architecture) |
+| Bootstrap survivability | [Bootstrap Server & DHT Fallback](#bootstrap-server--dht-fallback) |
+| Substrate lifecycle and service orchestration | [Substrate Internal Architecture](#substrate-internal-architecture), [SynApp Packaging & API Pipeline](#synapp-packaging--api-pipeline) |
+| Offline queue + deterministic reconciliation | [Storage & CRDT Merge Semantics](#storage--crdt-merge-semantics) |
+| Multi-device app operation + reconnection sync | [Multi-Device Sync and Sharded Deployment](#multi-device-sync-and-sharded-deployment) |
+| Sharded app deployment across hosts | [Multi-Device Sync and Sharded Deployment](#multi-device-sync-and-sharded-deployment) |
+| Identity, delegation, key lifecycle | [Identity](#identity) |
+| Discovery index partitioning + ranking transparency | [Discovery & DHT](#discovery--dht) |
+| Messaging modes and E2E encryption | [Messaging](#messaging), [Encryption at Every Layer](#encryption-at-every-layer) |
+| Trust layers and reputation portability | [Trust & Reputation](#trust--reputation) |
+| Payment and escrow integration | [Payments](#payments) |
+| Consumer unified app model | [Consumer App Architecture](#consumer-app-architecture) |
+| Multi-tenant isolation and access control | [Isolation Guarantees](#isolation-guarantees) |
+| Phase 1 acceptance criteria alignment | [Acceptance Criteria](#acceptance-criteria) |
 
 ---
 
-## 15. Open Questions & Recommendations
 
-| # | Question | Priority | Recommendation / Direction |
-|---|---|---|---|
-| OQ-1 | **DHT implementation choice:** libp2p Kademlia vs custom BEP 0044. | High | **Custom BEP 0044 aligned with `pkarr`.** Keep DHT transport compatible with BEP 0044/mainline expectations; keep Iroh for peer transport and relay. Avoid mixed-stack coupling that breaks protocol compatibility. |
-| OQ-2 | **Consumer identity for non-self-hosters:** SLA and migration. | High | **Device-Bound Keys + Encrypted Cloud Backup.** Generate Ed25519 locally in browser. Encrypt state/keys symmetrically for multi-device sync, stored as opaque blobs on Syneroym/Aggregator storage. |
-| OQ-3 | **Bootstrap governance:** operations and funding. | High | **Consortium Model.** Major aggregators (e.g., Guilds, Meshes) form a non-profit consortium to share hosting costs of distributed bootstrap nodes, with DHT fallback ensuring network survival. |
-| OQ-4 | **Minimum federation contract:** WIT versioning. | Medium | **RFC Process for WIT Interfaces.** Establish `syneroym/core-interfaces`. Use Wasmtime adapter components to translate between versions (e.g., `v1` to `v2`) during deprecation periods. |
-| OQ-5 | **Aggregator accountability:** legal and operational obligations. | Medium | **Layer 3/4 Trust Mechanisms.** Aggregators issue Verifiable Credentials (VCs). If malicious, providers migrate via `SynExport`, drop bad VC, and acquire a new one from a trusted aggregator. |
-| OQ-6 | **Infrastructure Provider SLA:** formal guarantees. | Medium | **Substrate Uptime Proofs.** Substrates broadcast encrypted heartbeats to Provider PWAs. If SLA drops (e.g., < 99%), UI prompts provider to migrate Space using `SynExport`. |
-| OQ-7 | **Consumer UX ownership:** Consumer PWA governance. | Medium | **Reference Open-Source PWA.** Syneroym builds and open-sources a reference PWA (MIT/Apache). Aggregators fork and brand it, hardcoding their bootstrap nodes and tuning local discovery weights. |
-| OQ-8 | **Payment rail expansion:** cross-border, smart-contract escrow. | Low | Defer to Post-MVP. Evaluate based on initial adoption metrics. |
-| OQ-9 | **Regulatory review:** mutual credit and Syneroym coin in target markets. | Low | Defer to Post-MVP. Requires legal counsel engagement before implementation. |
-| OQ-10 | **AI-assisted workflow synthesis:** scope, integration, privacy. | Low | Defer to Post-MVP. Keep workflows manual for Phase 1. |
-
----
-
-## 16. Glossary
-
-| Term | Definition |
-|---|---|
-| **SynApp** | A composed set of SYN-SVCs that together implement a business application |
-| **SYN-SVC** | A running instance of a SYN-MOD; executes within a SVC-SANDBOX on a NODE |
-| **SYN-MOD** | A reusable, independently deployable unit of business logic (WASM component or OCI image) |
-| **SYN-SUBSTRATE** | The core runtime layer on a NODE; manages deployment, messaging, discovery, and access control |
-| **NODE** | A physical or virtual machine running one SUBSTRATE instance |
-| **HOME_RELAY** | A relay server providing connectivity for SUBSTRATEs behind NAT or firewall |
-| **Space** | A named, provider-configured business context within a SynApp (e.g. a plumber's booking page) |
-| **WIT** | WebAssembly Interface Types — the IDL used for all component interfaces |
-| **CRDT** | Conflict-free Replicated Data Type — data structure that merges deterministically without coordination |
-| **HLC** | Hybrid Logical Clock — combines physical and logical time; used for CRDT ordering in cr-sqlite |
-| **DERP** | Designated Encrypted Relay Protocol — Iroh's relay transport when QUIC direct connection fails |
-| **ABAC** | Attribute-Based Access Control — policy model used by the substrate access control engine |
-| **pkarr** | Public-Key Addressable Resource Records — DHT records signed by an Ed25519 key |
-| **UCAN** | User Controlled Authorization Networks — capability token standard used for delegation |
-| **wRPC** | WIT-native RPC — high-performance inter-component streaming calls within a node |
-| **LWW** | Last-Write-Wins — CRDT merge strategy where the most recent write (by HLC) takes precedence |
-| **MLS** | Messaging Layer Security (RFC 9420) — end-to-end encrypted group messaging protocol |
-| **Beckn** | [Beckn](https://beckn.io/), [Protocols](https://github.com/beckn/protocol-specifications-v2), processes, workflows for environments for value exchange between people and businesses using digital infrastructure. |
-
----
-
-## 17. Connectivity Substrate In Heteregenous networks
+## Connectivity Substrate In Heteregenous networks
 
 ### Overview
 
@@ -1672,3 +1632,46 @@ write
 Additional transports, gateways, and protocol adapters can be added later without changing the core architecture.
 
 ---
+
+## Open Questions & Recommendations
+
+| # | Question | Priority | Recommendation / Direction |
+|---|---|---|---|
+| OQ-1 | **DHT implementation choice:** libp2p Kademlia vs custom BEP 0044. | High | **Custom BEP 0044 aligned with `pkarr`.** Keep DHT transport compatible with BEP 0044/mainline expectations; keep Iroh for peer transport and relay. Avoid mixed-stack coupling that breaks protocol compatibility. |
+| OQ-2 | **Consumer identity for non-self-hosters:** SLA and migration. | High | **Device-Bound Keys + Encrypted Cloud Backup.** Generate Ed25519 locally in browser. Encrypt state/keys symmetrically for multi-device sync, stored as opaque blobs on Syneroym/Aggregator storage. |
+| OQ-3 | **Bootstrap governance:** operations and funding. | High | **Consortium Model.** Major aggregators (e.g., Guilds, Meshes) form a non-profit consortium to share hosting costs of distributed bootstrap nodes, with DHT fallback ensuring network survival. |
+| OQ-4 | **Minimum federation contract:** WIT versioning. | Medium | **RFC Process for WIT Interfaces.** Establish `syneroym/core-interfaces`. Use Wasmtime adapter components to translate between versions (e.g., `v1` to `v2`) during deprecation periods. |
+| OQ-5 | **Aggregator accountability:** legal and operational obligations. | Medium | **Layer 3/4 Trust Mechanisms.** Aggregators issue Verifiable Credentials (VCs). If malicious, providers migrate via `SynExport`, drop bad VC, and acquire a new one from a trusted aggregator. |
+| OQ-6 | **Infrastructure Provider SLA:** formal guarantees. | Medium | **Substrate Uptime Proofs.** Substrates broadcast encrypted heartbeats to Provider PWAs. If SLA drops (e.g., < 99%), UI prompts provider to migrate Space using `SynExport`. |
+| OQ-7 | **Consumer UX ownership:** Consumer PWA governance. | Medium | **Reference Open-Source PWA.** Syneroym builds and open-sources a reference PWA (MIT/Apache). Aggregators fork and brand it, hardcoding their bootstrap nodes and tuning local discovery weights. |
+| OQ-8 | **Payment rail expansion:** cross-border, smart-contract escrow. | Low | Defer to Post-MVP. Evaluate based on initial adoption metrics. |
+| OQ-9 | **Regulatory review:** mutual credit and Syneroym coin in target markets. | Low | Defer to Post-MVP. Requires legal counsel engagement before implementation. |
+| OQ-10 | **AI-assisted workflow synthesis:** scope, integration, privacy. | Low | Defer to Post-MVP. Keep workflows manual for Phase 1. |
+
+---
+
+## Glossary
+
+| Term | Definition |
+|---|---|
+| **SynApp** | A composed set of SYN-SVCs that together implement a business application |
+| **SYN-SVC** | A running instance of a SYN-MOD; executes within a SVC-SANDBOX on a NODE |
+| **SYN-MOD** | A reusable, independently deployable unit of business logic (WASM component or OCI image) |
+| **SYN-SUBSTRATE** | The core runtime layer on a NODE; manages deployment, messaging, discovery, and access control |
+| **NODE** | A physical or virtual machine running one SUBSTRATE instance |
+| **HOME_RELAY** | A relay server providing connectivity for SUBSTRATEs behind NAT or firewall |
+| **Space** | A named, provider-configured business context within a SynApp (e.g. a plumber's booking page) |
+| **WIT** | WebAssembly Interface Types — the IDL used for all component interfaces |
+| **CRDT** | Conflict-free Replicated Data Type — data structure that merges deterministically without coordination |
+| **HLC** | Hybrid Logical Clock — combines physical and logical time; used for CRDT ordering in cr-sqlite |
+| **DERP** | Designated Encrypted Relay Protocol — Iroh's relay transport when QUIC direct connection fails |
+| **ABAC** | Attribute-Based Access Control — policy model used by the substrate access control engine |
+| **pkarr** | Public-Key Addressable Resource Records — DHT records signed by an Ed25519 key |
+| **UCAN** | User Controlled Authorization Networks — capability token standard used for delegation |
+| **wRPC** | WIT-native RPC — high-performance inter-component streaming calls within a node |
+| **LWW** | Last-Write-Wins — CRDT merge strategy where the most recent write (by HLC) takes precedence |
+| **MLS** | Messaging Layer Security (RFC 9420) — end-to-end encrypted group messaging protocol |
+| **Beckn** | [Beckn](https://beckn.io/), [Protocols](https://github.com/beckn/protocol-specifications-v2), processes, workflows for environments for value exchange between people and businesses using digital infrastructure. |
+
+---
+
