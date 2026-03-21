@@ -72,7 +72,6 @@ roles = [
     "app_sandbox",
     "service_registry",
     "coordinator",
-    "transport_bridge",
     "http_proxy",
     "observability",
 ]
@@ -111,7 +110,7 @@ bootstrap_page_bind_address = "0.0.0.0:7002"
 
 # Transport bridge for other peers who cannot connect directly with each other. Typically peers behind strict NATs.
 # Note: Uplink-bridge functionality is WIP.
-[roles.transport_bridge]
+[roles.coordinator.transport_bridge]
 enabled = false
 access = "everyone"                                                             # Or for specific DIDs, access = ["did1", "did2", "..."]
 translations = [{ from = "quic", to = "lora" }, { from = "lora", to = "quic" }]

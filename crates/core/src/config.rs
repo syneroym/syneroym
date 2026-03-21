@@ -211,7 +211,6 @@ pub struct RolesConfig {
     pub app_sandbox: Option<AppSandboxRole>,
     pub service_registry: Option<ServiceRegistryRole>,
     pub coordinator: Option<CoordinatorRole>,
-    pub transport_bridge: Option<TransportBridgeRole>,
     pub http_proxy: Option<HttpProxyRole>,
     pub observability: Option<ObservabilityRole>,
 }
@@ -275,6 +274,7 @@ pub struct CoordinatorRole {
     pub tls: Option<TlsConfig>,
     pub iroh: Option<CoordinatorIrohConfig>,
     pub webrtc: Option<CoordinatorWebRtcConfig>,
+    pub transport_bridge: Option<TransportBridgeRole>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

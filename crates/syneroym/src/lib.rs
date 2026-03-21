@@ -11,7 +11,7 @@ pub async fn run(config: SubstrateConfig) -> anyhow::Result<()> {
     #[cfg(feature = "service_registry")]
     let mut service_registry = syneroym_service_registry::ServiceRegistryComponent::new(&config);
 
-    #[cfg(any(feature = "coordinator", feature = "transport_bridge"))]
+    #[cfg(feature = "coordinator")]
     let mut coordinator_bridge = syneroym_coordinator::CoordinatorBridgeComponent::new(&config);
 
     #[cfg(feature = "app_sandbox")]
@@ -27,8 +27,8 @@ pub async fn run(config: SubstrateConfig) -> anyhow::Result<()> {
         service_registry.init().await?;
     }
 
-    #[cfg(any(feature = "coordinator", feature = "transport_bridge"))]
-    if config.roles.coordinator.is_some() || config.roles.transport_bridge.is_some() {
+    #[cfg(feature = "coordinator")]
+    if config.roles.coordinator.is_some() {
         coordinator_bridge.init().await?;
     }
 
@@ -54,15 +54,15 @@ pub async fn run(config: SubstrateConfig) -> anyhow::Result<()> {
         #[cfg(not(feature = "service_registry"))]
         let mut registry_fut = std::pin::pin!(std::future::pending::<anyhow::Result<()>>());
 
-        #[cfg(any(feature = "coordinator", feature = "transport_bridge"))]
+        #[cfg(feature = "coordinator")]
         let mut coordinator_bridge_fut = std::pin::pin!(async {
-            if config.roles.coordinator.is_some() || config.roles.transport_bridge.is_some() {
+            if config.roles.coordinator.is_some() {
                 coordinator_bridge.run().await
             } else {
                 std::future::pending().await
             }
         });
-        #[cfg(not(any(feature = "coordinator", feature = "transport_bridge")))]
+        #[cfg(not(feature = "coordinator"))]
         let mut coordinator_bridge_fut =
             std::pin::pin!(std::future::pending::<anyhow::Result<()>>());
 
@@ -126,8 +126,8 @@ pub async fn run(config: SubstrateConfig) -> anyhow::Result<()> {
         eprintln!("Error shutting down app sandbox: {}", e);
     }
 
-    #[cfg(any(feature = "coordinator", feature = "transport_bridge"))]
-    if (config.roles.coordinator.is_some() || config.roles.transport_bridge.is_some())
+    #[cfg(feature = "coordinator")]
+    if config.roles.coordinator.is_some()
         && let Err(e) = coordinator_bridge.shutdown().await
     {
         eprintln!("Error shutting down coordinator/bridge: {}", e);

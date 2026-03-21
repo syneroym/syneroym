@@ -20,10 +20,10 @@ syneroym-app-sandbox = { path = "../app_sandbox", optional = true }
 syneroym-http-proxy = { path = "../http_proxy", optional = true }
 
 [features]
-default = []
+default = ["service_registry", "coordinator", "app_sandbox", "http_proxy"]
+minimal = ["app_sandbox", "http_proxy"]
 service_registry = ["dep:syneroym-service-registry"]
 coordinator = ["dep:syneroym-coordinator"]
-transport_bridge = ["dep:syneroym-coordinator"]
 app_sandbox = ["dep:syneroym-app-sandbox"]
 http_proxy = ["dep:syneroym-http-proxy"]
 
