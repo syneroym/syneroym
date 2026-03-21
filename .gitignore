@@ -11,9 +11,6 @@ dist/
 !.vscode/extensions.json
 .idea/
 
-# Rust
-Cargo.lock
-
 # Python
 __pycache__/
 *.pyc
