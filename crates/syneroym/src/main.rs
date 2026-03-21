@@ -84,10 +84,10 @@ pub(crate) fn resolve_config(command: Commands) -> Result<SubstrateConfig> {
             }
 
             if let Some(url) = iroh_relay_url {
-                if let Some(ref mut iroh) = config.relay.iroh {
+                if let Some(ref mut iroh) = config.uplink.iroh {
                     iroh.relay_url = url;
                 } else {
-                    config.relay.iroh =
+                    config.uplink.iroh =
                         Some(syneroym_substrate::config::IrohRelayConfig { relay_url: url });
                 }
             }
@@ -142,7 +142,7 @@ mod tests {
         let config_toml = r#"
         profile = "config_profile"
         
-        [relay.iroh]
+        [uplink.iroh]
         relay_url = "http://config.relay:3340"
         
         [roles.coordinator.iroh]
@@ -193,7 +193,7 @@ mod tests {
 
         // Assert: Value specified in CLI overriding config file
         assert_eq!(
-            config.relay.iroh.as_ref().unwrap().relay_url,
+            config.uplink.iroh.as_ref().unwrap().relay_url,
             "http://cli.relay:3340",
             "Iroh relay URL should be overridden by CLI"
         );

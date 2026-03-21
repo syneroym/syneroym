@@ -36,22 +36,20 @@ level = "info"
 format = "json"   # json or pretty
 target = "stdout" # stdout or file
 
-# Coordination/Signalling and data relay.
-# Data relay could convert transport (e.g. iroh -> webrtcdatachannel or message/stream/MTU conversion)
-[relay]
-
-[relay.iroh]
-relay_url = "http://localhost:3340"
-
-# WebRTC communication configuration
-[relay.webrtc]
-signaling_server_url = "ws://localhost:7444"
-bootstrap_page_url = "ws://localhost:7002"
-stun_servers = ["stun:stun.l.google.com:19302"]
-
 # A node that connect to the internet should configure uplink bridges to act as their gateway to the larger network
 # Note: Uplink-bridge functionality is WIP.
 [uplink]
+
+# Coordination/Signalling and data relay.
+# Data relay could convert transport (e.g. iroh -> webrtcdatachannel or message/stream/MTU conversion)
+[uplink.iroh]
+relay_url = "http://localhost:3340"
+
+# WebRTC communication configuration
+[uplink.webrtc]
+signaling_server_url = "ws://localhost:7444"
+bootstrap_page_url = "ws://localhost:7002"
+stun_servers = ["stun:stun.l.google.com:19302"]
 
 [uplink.ble]
 enabled = false

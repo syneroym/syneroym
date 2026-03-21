@@ -46,8 +46,6 @@ pub struct SubstrateConfig {
     pub storage: StorageConfig,
     pub logging: LoggingConfig,
 
-    pub relay: RelayConfig,
-
     pub uplink: UplinkConfig,
 
     pub profiles: HashMap<String, ProfileConfig>,
@@ -67,7 +65,6 @@ impl Default for SubstrateConfig {
             profile: default_profile(),
             storage: Default::default(),
             logging: Default::default(),
-            relay: Default::default(),
             uplink: Default::default(),
             profiles: Default::default(),
             roles: Default::default(),
@@ -142,13 +139,6 @@ pub enum LogTarget {
     File,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct RelayConfig {
-    pub iroh: Option<IrohRelayConfig>,
-    pub webrtc: Option<WebRtcRelayConfig>,
-}
-
 fn default_relay_url() -> String {
     "http://localhost:3340".to_string()
 }
@@ -196,6 +186,8 @@ impl Default for WebRtcRelayConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UplinkConfig {
+    pub iroh: Option<IrohRelayConfig>,
+    pub webrtc: Option<WebRtcRelayConfig>,
     pub ble: Option<BridgeConfig>,
     pub lora: Option<BridgeConfig>,
 }
