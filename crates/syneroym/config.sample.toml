@@ -20,7 +20,7 @@ app_log_dir = "./workdir/logs"
 
 # Profile corresponds to set of roles this substrate is supposed to play. 
 # Create custom profiles with a specific role list. Roles are configured in [role.rolename] sections
-profile = "full"
+profile = "app_sandbox"
 
 [storage]
 # Currently only sqlite
@@ -64,6 +64,9 @@ bridge = "lora://70B3D57ED0051234"
 # Profile to enable only the syneroym ecosystem http access service
 [profiles.enduser]
 roles = ["http_proxy", "observability"]
+
+[profiles.app_sandbox]
+roles = ["app_sandbox", "http_proxy", "observability"]
 
 # Profile to enable all services. Useful in large deployments or dev, test, demos
 [profiles.full]
