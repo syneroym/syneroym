@@ -43,6 +43,10 @@ pub async fn run(config: SubstrateConfig) -> anyhow::Result<()> {
     }
 
     {
+        // We use std::future::pending() for components that are disabled via
+        // compile-time features or not configured at runtime. This creates a future
+        // that never resolves, ensuring tokio::select! ignores these inactive branches
+        // and keeps running until an active component finishes or a shutdown signal is received.
         #[cfg(feature = "service_registry")]
         let mut registry_fut = std::pin::pin!(async {
             if config.roles.service_registry.is_some() {
