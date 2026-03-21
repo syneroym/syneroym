@@ -12,8 +12,23 @@ syneroym-identity = { workspace = true }
 serde_json = { workspace = true }
 dirs = "6.0.0"
 toml = "1.0.7"
+syneroym-core = { path = "../core" }
+syneroym-observability = { path = "../observability" }
+syneroym-service-registry = { path = "../service_registry", optional = true }
+syneroym-coordinator = { path = "../coordinator", optional = true }
+syneroym-app-sandbox = { path = "../app_sandbox", optional = true }
+syneroym-http-proxy = { path = "../http_proxy", optional = true }
+
+[features]
+default = []
+service_registry = ["dep:syneroym-service-registry"]
+coordinator = ["dep:syneroym-coordinator"]
+transport_bridge = ["dep:syneroym-coordinator"]
+app_sandbox = ["dep:syneroym-app-sandbox"]
+http_proxy = ["dep:syneroym-http-proxy"]
 
 [dev-dependencies]
 assert_cmd = "2.0"
+libc = "0.2.183"
 predicates = "3.1"
 tempfile = "3.10"

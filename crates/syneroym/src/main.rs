@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use syneroym_substrate::{config::SubstrateConfig, run};
+use syneroym_core::config::SubstrateConfig;
+use syneroym_substrate::run;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -65,15 +66,14 @@ pub(crate) fn resolve_config(command: Commands) -> Result<SubstrateConfig> {
                     if let Some(ref mut iroh) = coordinator.iroh {
                         iroh.enabled = enable;
                     } else {
-                        coordinator.iroh =
-                            Some(syneroym_substrate::config::CoordinatorIrohConfig {
-                                enabled: enable,
-                                ..Default::default()
-                            });
+                        coordinator.iroh = Some(syneroym_core::config::CoordinatorIrohConfig {
+                            enabled: enable,
+                            ..Default::default()
+                        });
                     }
                 } else {
-                    let coordinator = syneroym_substrate::config::CoordinatorRole {
-                        iroh: Some(syneroym_substrate::config::CoordinatorIrohConfig {
+                    let coordinator = syneroym_core::config::CoordinatorRole {
+                        iroh: Some(syneroym_core::config::CoordinatorIrohConfig {
                             enabled: enable,
                             ..Default::default()
                         }),
@@ -88,7 +88,7 @@ pub(crate) fn resolve_config(command: Commands) -> Result<SubstrateConfig> {
                     iroh.relay_url = url;
                 } else {
                     config.uplink.iroh =
-                        Some(syneroym_substrate::config::IrohRelayConfig { relay_url: url });
+                        Some(syneroym_core::config::IrohRelayConfig { relay_url: url });
                 }
             }
 
@@ -97,15 +97,14 @@ pub(crate) fn resolve_config(command: Commands) -> Result<SubstrateConfig> {
                     if let Some(ref mut webrtc) = coordinator.webrtc {
                         webrtc.enabled = enable;
                     } else {
-                        coordinator.webrtc =
-                            Some(syneroym_substrate::config::CoordinatorWebRtcConfig {
-                                enabled: enable,
-                                ..Default::default()
-                            });
+                        coordinator.webrtc = Some(syneroym_core::config::CoordinatorWebRtcConfig {
+                            enabled: enable,
+                            ..Default::default()
+                        });
                     }
                 } else {
-                    let coordinator = syneroym_substrate::config::CoordinatorRole {
-                        webrtc: Some(syneroym_substrate::config::CoordinatorWebRtcConfig {
+                    let coordinator = syneroym_core::config::CoordinatorRole {
+                        webrtc: Some(syneroym_core::config::CoordinatorWebRtcConfig {
                             enabled: enable,
                             ..Default::default()
                         }),
