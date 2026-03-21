@@ -72,8 +72,8 @@ roles = [
     "app_sandbox",
     "service_registry",
     "coordinator",
+    "transport_bridge",
     "http_proxy",
-    "gateway",
     "observability",
 ]
 
