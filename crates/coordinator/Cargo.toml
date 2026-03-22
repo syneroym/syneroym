@@ -7,3 +7,11 @@ edition = "2024"
 syneroym-core = { path = "../core" }
 anyhow = { workspace = true }
 tokio = { workspace = true }
+syneroym-coordinator-iroh = { path = "../coordinator_iroh", optional = true }
+syneroym-coordinator-webrtc = { path = "../coordinator_webrtc", optional = true }
+
+[features]
+default = ["iroh", "webrtc"]
+iroh = ["dep:syneroym-coordinator-iroh"]
+webrtc = ["dep:syneroym-coordinator-webrtc"]
+all = ["iroh", "webrtc"]

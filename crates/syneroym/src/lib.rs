@@ -12,7 +12,7 @@ pub async fn run(config: SubstrateConfig) -> anyhow::Result<()> {
     let mut service_registry = syneroym_service_registry::ServiceRegistryComponent::new(&config);
 
     #[cfg(feature = "coordinator")]
-    let mut coordinator_bridge = syneroym_coordinator::CoordinatorBridgeComponent::new(&config);
+    let mut coordinator_bridge = syneroym_coordinator::CoordinatorComponent::new(&config);
 
     #[cfg(feature = "app_sandbox")]
     let mut app_sandbox = syneroym_app_sandbox::AppSandboxComponent::new(&config);

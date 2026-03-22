@@ -2,15 +2,15 @@ use anyhow::Result;
 use syneroym_core::SubstrateComponent;
 use syneroym_core::config::SubstrateConfig;
 
-pub struct CoordinatorBridgeComponent {}
+pub struct CoordinatorComponent {}
 
-impl CoordinatorBridgeComponent {
+impl CoordinatorComponent {
     pub fn new(_config: &SubstrateConfig) -> Self {
         Self {}
     }
 }
 
-impl SubstrateComponent for CoordinatorBridgeComponent {
+impl SubstrateComponent for CoordinatorComponent {
     async fn init(&mut self) -> Result<()> {
         println!("Initializing Coordinator and Transport Bridge");
         Ok(())

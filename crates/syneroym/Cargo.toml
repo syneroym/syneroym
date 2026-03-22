@@ -15,17 +15,20 @@ toml = "1.0.7"
 syneroym-core = { path = "../core" }
 syneroym-observability = { path = "../observability" }
 syneroym-service-registry = { path = "../service_registry", optional = true }
-syneroym-coordinator = { path = "../coordinator", optional = true }
+syneroym-coordinator = { path = "../coordinator", optional = true, default-features = false }
 syneroym-app-sandbox = { path = "../app_sandbox", optional = true }
 syneroym-http-proxy = { path = "../http_proxy", optional = true }
 
 [features]
-default = ["service_registry", "coordinator", "app_sandbox", "http_proxy"]
+default = ["service_registry", "coordinator_all", "app_sandbox", "http_proxy"]
 minimal = ["app_sandbox", "http_proxy"]
 service_registry = ["dep:syneroym-service-registry"]
-coordinator = ["dep:syneroym-coordinator"]
 app_sandbox = ["dep:syneroym-app-sandbox"]
 http_proxy = ["dep:syneroym-http-proxy"]
+coordinator = ["dep:syneroym-coordinator"]
+coordinator_iroh = ["coordinator", "syneroym-coordinator/iroh"]
+coordinator_webrtc = ["coordinator", "syneroym-coordinator/webrtc"]
+coordinator_all = ["coordinator", "syneroym-coordinator/all"]
 
 [dev-dependencies]
 assert_cmd = "2.0"
