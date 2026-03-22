@@ -1743,10 +1743,20 @@ dependencies = [
 [[package]]
 name = "syneroym-coordinator-iroh"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "syneroym-core",
+ "tokio",
+]
 
 [[package]]
 name = "syneroym-coordinator-webrtc"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "syneroym-core",
+ "tokio",
+]
 
 [[package]]
 name = "syneroym-core"
