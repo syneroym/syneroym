@@ -1,3 +1,5 @@
+//! HTTP proxy component for routing external requests.
+
 use anyhow::Result;
 use syneroym_core::SubstrateComponent;
 use syneroym_core::config::SubstrateConfig;

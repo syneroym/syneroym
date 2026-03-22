@@ -1,3 +1,5 @@
+//! Observability component for metrics, logging, and tracing.
+
 use anyhow::Result;
 use syneroym_core::SubstrateComponent;
 use syneroym_core::config::SubstrateConfig;

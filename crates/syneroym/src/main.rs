@@ -1,3 +1,5 @@
+//! CLI entry point for running the Syneroym substrate.
+
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;

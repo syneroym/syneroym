@@ -1,3 +1,9 @@
+// Adapted from: https://github.com/n0-computer/iroh/blob/main/iroh-relay/src/main.rs
+// Original license: MIT OR Apache-2.0
+// Used under MIT OR Apache-2.0 License
+
+//! Iroh transport coordinator component.
+
 use anyhow::{Context, Result};
 use iroh_relay::server::{self as relay, QuicConfig, Server, ServerConfig};
 use rustls_pemfile::{certs, private_key};

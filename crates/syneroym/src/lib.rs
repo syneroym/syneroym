@@ -1,3 +1,5 @@
+//! Main library entry point for the Syneroym substrate.
+
 use syneroym_core::SubstrateComponent;
 use syneroym_core::config::SubstrateConfig;
 

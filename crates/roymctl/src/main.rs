@@ -1,3 +1,5 @@
+//! Command-line control interface for operations on, and through, a Syneroym node.
+
 use clap::{Parser, Subcommand};
 use std::fs;
 use std::path::PathBuf;

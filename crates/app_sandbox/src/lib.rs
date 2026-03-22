@@ -1,3 +1,5 @@
+//! Application sandbox component for isolating user applications.
+
 use anyhow::Result;
 use syneroym_core::SubstrateComponent;
 use syneroym_core::config::SubstrateConfig;

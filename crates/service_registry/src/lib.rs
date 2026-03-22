@@ -1,3 +1,5 @@
+//! Service registry component for discovering and managing services within a Syneroym ecosystem.
+
 use anyhow::Result;
 use syneroym_core::SubstrateComponent;
 use syneroym_core::config::SubstrateConfig;

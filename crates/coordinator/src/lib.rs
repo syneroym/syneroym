@@ -1,3 +1,5 @@
+//! Coordinator component that relays data and also bridges various transport protocols.
+
 use anyhow::Result;
 use syneroym_core::SubstrateComponent;
 use syneroym_core::config::SubstrateConfig;

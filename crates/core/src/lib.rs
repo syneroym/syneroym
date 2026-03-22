@@ -1,3 +1,5 @@
+//! Core traits and types for Syneroym.
+
 use anyhow::Result;
 
 pub mod config;
