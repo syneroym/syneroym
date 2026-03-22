@@ -92,6 +92,7 @@ access = "everyone" # Later, more access restriction like list of dids
 
 # Coordinator/Rendezvous service for connection establishment
 [roles.coordinator]
+access = "everyone"                                                             # Or for specific DIDs, access = ["did1", "did2", "..."]
 
 # TLS configuration for https endpoints of all coordinators
 [roles.coordinator.tls]
@@ -99,20 +100,20 @@ cert_path = "tls/cert.pem"
 key_path = "tls/key.pem"
 
 [roles.coordinator.iroh]
-enabled = false
+enable_signalling = false
+enable_relay = false
 http_bind_address = "0.0.0.0:7443"
 quic_bind_address = "0.0.0.0:7842"
 
 [roles.coordinator.webrtc]
-enabled = false
+enable_signalling = false
+enable_relay = false
 signalling_bind_address = "0.0.0.0:7444"
 bootstrap_page_bind_address = "0.0.0.0:7002"
 
 # Transport bridge for other peers who cannot connect directly with each other. Typically peers behind strict NATs.
 # Note: Uplink-bridge functionality is WIP.
 [roles.coordinator.transport_bridge]
-enabled = false
-access = "everyone"                                                             # Or for specific DIDs, access = ["did1", "did2", "..."]
 translations = [{ from = "quic", to = "lora" }, { from = "lora", to = "quic" }]
 
 # Proxy service for easy access to syneroym ecosystem services by external clients like browsers. Only local access is allowed for substrate admin APIs

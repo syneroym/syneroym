@@ -64,17 +64,20 @@ pub(crate) fn resolve_config(command: Commands) -> Result<SubstrateConfig> {
             if let Some(enable) = enable_coordinator_iroh {
                 if let Some(ref mut coordinator) = config.roles.coordinator {
                     if let Some(ref mut iroh) = coordinator.iroh {
-                        iroh.enabled = enable;
+                        iroh.enable_signalling = enable;
+                        iroh.enable_relay = enable;
                     } else {
                         coordinator.iroh = Some(syneroym_core::config::CoordinatorIrohConfig {
-                            enabled: enable,
+                            enable_signalling: enable,
+                            enable_relay: enable,
                             ..Default::default()
                         });
                     }
                 } else {
                     let coordinator = syneroym_core::config::CoordinatorRole {
                         iroh: Some(syneroym_core::config::CoordinatorIrohConfig {
-                            enabled: enable,
+                            enable_signalling: enable,
+                            enable_relay: enable,
                             ..Default::default()
                         }),
                         ..Default::default()
@@ -95,17 +98,20 @@ pub(crate) fn resolve_config(command: Commands) -> Result<SubstrateConfig> {
             if let Some(enable) = enable_coordinator_webrtc {
                 if let Some(ref mut coordinator) = config.roles.coordinator {
                     if let Some(ref mut webrtc) = coordinator.webrtc {
-                        webrtc.enabled = enable;
+                        webrtc.enable_signalling = enable;
+                        webrtc.enable_relay = enable;
                     } else {
                         coordinator.webrtc = Some(syneroym_core::config::CoordinatorWebRtcConfig {
-                            enabled: enable,
+                            enable_signalling: enable,
+                            enable_relay: enable,
                             ..Default::default()
                         });
                     }
                 } else {
                     let coordinator = syneroym_core::config::CoordinatorRole {
                         webrtc: Some(syneroym_core::config::CoordinatorWebRtcConfig {
-                            enabled: enable,
+                            enable_signalling: enable,
+                            enable_relay: enable,
                             ..Default::default()
                         }),
                         ..Default::default()
@@ -145,7 +151,8 @@ mod tests {
         relay_url = "http://config.relay:3340"
         
         [roles.coordinator.iroh]
-        enabled = true
+        enable_signalling = true
+        enable_relay = true
         http_bind_address = "0.0.0.0:8000"
         "#;
         write!(config_file, "{}", config_toml).unwrap();
@@ -175,7 +182,7 @@ mod tests {
         // Assert: Value specified in config file, but NOT overridden in CLI
         assert_eq!(config.profile, "config_profile", "Profile should be from config file");
         assert!(
-            config.roles.coordinator.as_ref().unwrap().iroh.as_ref().unwrap().enabled,
+            config.roles.coordinator.as_ref().unwrap().iroh.as_ref().unwrap().enable_signalling,
             "Coordinator iroh should be enabled from config"
         );
         assert_eq!(
@@ -186,7 +193,7 @@ mod tests {
 
         // Assert: Value specified in CLI overriding default (not in config)
         assert!(
-            config.roles.coordinator.as_ref().unwrap().webrtc.as_ref().unwrap().enabled,
+            config.roles.coordinator.as_ref().unwrap().webrtc.as_ref().unwrap().enable_signalling,
             "Coordinator webrtc should be enabled from CLI"
         );
 

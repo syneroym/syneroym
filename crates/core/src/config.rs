@@ -271,6 +271,7 @@ impl Default for AccessControl {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CoordinatorRole {
+    pub access: AccessControl,
     pub tls: Option<TlsConfig>,
     pub iroh: Option<CoordinatorIrohConfig>,
     pub webrtc: Option<CoordinatorWebRtcConfig>,
@@ -294,7 +295,8 @@ fn default_iroh_quic_bind_address() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CoordinatorIrohConfig {
-    pub enabled: bool,
+    pub enable_signalling: bool,
+    pub enable_relay: bool,
     pub http_bind_address: String,
     pub quic_bind_address: String,
 }
@@ -302,7 +304,8 @@ pub struct CoordinatorIrohConfig {
 impl Default for CoordinatorIrohConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enable_signalling: false,
+            enable_relay: false,
             http_bind_address: default_iroh_http_bind_address(),
             quic_bind_address: default_iroh_quic_bind_address(),
         }
@@ -319,7 +322,8 @@ fn default_webrtc_bootstrap_page_bind_address() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CoordinatorWebRtcConfig {
-    pub enabled: bool,
+    pub enable_signalling: bool,
+    pub enable_relay: bool,
     pub signalling_bind_address: String,
     pub bootstrap_page_bind_address: String,
 }
@@ -327,7 +331,8 @@ pub struct CoordinatorWebRtcConfig {
 impl Default for CoordinatorWebRtcConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enable_signalling: false,
+            enable_relay: false,
             signalling_bind_address: default_webrtc_signalling_bind_address(),
             bootstrap_page_bind_address: default_webrtc_bootstrap_page_bind_address(),
         }
@@ -338,7 +343,6 @@ impl Default for CoordinatorWebRtcConfig {
 #[serde(default)]
 #[derive(Default)]
 pub struct TransportBridgeRole {
-    pub access: AccessControl,
     pub translations: Vec<ProtocolTranslation>,
 }
 
