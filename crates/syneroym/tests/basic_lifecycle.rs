@@ -1,7 +1,7 @@
 use assert_cmd::assert::OutputAssertExt;
 use assert_cmd::cargo::CommandCargoExt;
-use std::process::Command;
-use std::time::Duration;
+use std::io::{BufRead, BufReader};
+use std::process::{Command, Stdio};
 
 #[test]
 fn substrate_integration_stub() {
@@ -16,11 +16,27 @@ fn substrate_integration_stub() {
 async fn test_run_finishes_on_ctrl_c() {
     let mut command = Command::cargo_bin("syneroym-substrate").unwrap();
 
-    // Spawn the substrate process
-    let mut child = command.arg("run").spawn().expect("Failed to spawn syneroym-substrate process");
+    // Spawn the substrate process with piped stdout
+    let mut child = command
+        .arg("run")
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn syneroym-substrate process");
 
-    // Wait a bit for the process to initialize and start listening for signals
-    tokio::time::sleep(Duration::from_millis(1000)).await;
+    // Wait for the process to initialize and start running by reading its stdout
+    let stdout = child.stdout.take().expect("Failed to capture stdout");
+    let mut reader = BufReader::new(stdout);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let bytes_read = reader.read_line(&mut line).expect("Failed to read from child stdout");
+        if bytes_read == 0 {
+            panic!("Process closed stdout before reaching running state");
+        }
+        if line.contains("Running Observability") {
+            break;
+        }
+    }
 
     // Send SIGINT (Ctrl-C) to the child process
     let pid = child.id() as i32;
