@@ -1,5 +1,7 @@
 //! Main library entry point for the Syneroym substrate.
 
+pub mod identity;
+
 use syneroym_core::SubstrateComponent;
 use syneroym_core::config::SubstrateConfig;
 
@@ -21,6 +23,10 @@ pub async fn run(config: SubstrateConfig) -> anyhow::Result<()> {
 
     #[cfg(feature = "http_proxy")]
     let mut http_proxy = syneroym_http_proxy::HttpProxyComponent::new(&config);
+
+    // Initialize Substrate Identity
+    let _substrate_identity_state =
+        identity::setup_substrate_identity(&config.identity, &config.app_data_dir)?;
 
     observability.init().await?;
 

@@ -36,6 +36,22 @@ enum Commands {
         /// Enable Coordinator WebRTC
         #[arg(long)]
         enable_coordinator_webrtc: Option<bool>,
+
+        /// Path to the node's private key
+        #[arg(long)]
+        key: Option<PathBuf>,
+
+        /// Controller DID
+        #[arg(long)]
+        controller_did: Option<String>,
+
+        /// Path to the ControllerAgreement JSON
+        #[arg(long)]
+        agreement: Option<PathBuf>,
+
+        /// Require a valid ControllerAgreement to start
+        #[arg(long, default_missing_value = "true", num_args = 0..=1)]
+        require_agreement: Option<bool>,
     },
 }
 
@@ -47,6 +63,10 @@ pub(crate) fn resolve_config(command: Commands) -> Result<SubstrateConfig> {
             enable_coordinator_iroh,
             iroh_relay_url,
             enable_coordinator_webrtc,
+            key,
+            controller_did,
+            agreement,
+            require_agreement,
         } => {
             // Load from file if provided, otherwise use defaults
             let mut config = if let Some(path) = config_path {
@@ -61,6 +81,32 @@ pub(crate) fn resolve_config(command: Commands) -> Result<SubstrateConfig> {
             // Override with CLI arguments
             if let Some(p) = profile {
                 config.profile = p;
+            }
+
+            if let Some(k) = key {
+                config.identity.key = Some(k);
+            }
+            if let Some(c) = controller_did {
+                config.identity.controller_did = Some(c);
+            }
+            if let Some(a) = agreement {
+                config.identity.agreement = Some(a);
+            }
+            if let Some(r) = require_agreement {
+                config.identity.require_agreement = r;
+            }
+
+            // Consistency checks for identity configuration
+            if config.identity.require_agreement && config.identity.agreement.is_none() {
+                anyhow::bail!(
+                    "Inconsistent configuration: `require_agreement` is true, but no `agreement` path is provided."
+                );
+            }
+
+            if config.identity.agreement.is_some() && config.identity.controller_did.is_some() {
+                anyhow::bail!(
+                    "Inconsistent configuration: Both `agreement` and `controller_did` are provided. Please provide only one."
+                );
             }
 
             if let Some(enable) = enable_coordinator_iroh {
@@ -221,6 +267,36 @@ mod tests {
         assert_eq!(
             config.app_local_data_dir, default_config.app_local_data_dir,
             "App local data dir should remain default"
+        );
+    }
+
+    #[test]
+    fn test_config_consistency_checks() {
+        // Test require_agreement without agreement
+        let args = vec!["syneroym", "run", "--require-agreement"];
+        let cli = Cli::parse_from(args);
+        let result = resolve_config(cli.command);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Inconsistent configuration: `require_agreement` is true, but no `agreement` path is provided."
+        );
+
+        // Test agreement and controller_did provided together
+        let args = vec![
+            "syneroym",
+            "run",
+            "--agreement",
+            "some/path.json",
+            "--controller-did",
+            "did:key:something",
+        ];
+        let cli = Cli::parse_from(args);
+        let result = resolve_config(cli.command);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Inconsistent configuration: Both `agreement` and `controller_did` are provided. Please provide only one."
         );
     }
 }

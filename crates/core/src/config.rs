@@ -45,6 +45,8 @@ pub struct SubstrateConfig {
 
     pub profile: String,
 
+    pub identity: IdentityConfig,
+
     pub storage: StorageConfig,
     pub logging: LoggingConfig,
 
@@ -65,6 +67,7 @@ impl Default for SubstrateConfig {
             app_cache_dir: default_app_cache_dir(),
             app_log_dir: default_app_log_dir(),
             profile: default_profile(),
+            identity: Default::default(),
             storage: Default::default(),
             logging: Default::default(),
             uplink: Default::default(),
@@ -72,6 +75,15 @@ impl Default for SubstrateConfig {
             roles: Default::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct IdentityConfig {
+    pub key: Option<PathBuf>,
+    pub controller_did: Option<String>,
+    pub agreement: Option<PathBuf>,
+    pub require_agreement: bool,
 }
 
 fn default_db_dir() -> PathBuf {

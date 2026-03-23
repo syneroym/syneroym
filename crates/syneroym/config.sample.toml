@@ -12,7 +12,7 @@ app_config_dir = "./workdir/config"
 # Long term data storage
 app_local_data_dir = "./workdir/data"
 # Short term, or user specific storage
-app_data_dir = "./workdir/data"
+app_data_dir = "./workdir/user_data"
 # Cache or temporary files
 app_cache_dir = "./workdir/cache"
 # Logs
@@ -21,6 +21,20 @@ app_log_dir = "./workdir/logs"
 # Profile corresponds to set of roles this substrate is supposed to play. 
 # Create custom profiles with a specific role list. Roles are configured in [role.rolename] sections
 profile = "app_sandbox"
+
+[identity]
+# Path to the node's private key. If it doesn't exist, one will be generated.
+# Used to derive the node's DID. Equivalent to CLI `--key <path>`
+key = ""
+# Candidate controller DID. Only used if agreement is not provided.
+# Must be treated as UNVERIFIED. Equivalent to CLI `--controller <did>`
+controller_did = ""
+# Path to ControllerAgreement JSON binding node DID to controller DID.
+# Equivalent to CLI `--agreement <path>`
+agreement = "substrate-controller-agreement.json"
+# If true, the node MUST NOT start without a valid ControllerAgreement.
+# Equivalent to CLI `--require-agreement`
+require_agreement = false
 
 [storage]
 # Currently only sqlite
@@ -92,7 +106,7 @@ access = "everyone" # Later, more access restriction like list of dids
 
 # Coordinator/Rendezvous service for connection establishment
 [roles.coordinator]
-access = "everyone"                                                             # Or for specific DIDs, access = ["did1", "did2", "..."]
+access = "everyone" # Or for specific DIDs, access = ["did1", "did2", "..."]
 
 # TLS configuration for https endpoints of all coordinators
 [roles.coordinator.tls]

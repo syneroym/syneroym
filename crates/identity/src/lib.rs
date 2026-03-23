@@ -1,5 +1,7 @@
 //! Cryptographic identity management for Syneroym nodes.
 
+pub mod substrate;
+
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
