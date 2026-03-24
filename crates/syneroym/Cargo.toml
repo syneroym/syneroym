@@ -4,12 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-serde = { workspace = true }
-clap = { workspace = true }
-anyhow = { workspace = true }
-tokio = { workspace = true }
-syneroym-identity = { workspace = true }
-serde_json = { workspace = true }
+serde.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+syneroym-identity.workspace = true
+serde_json.workspace = true
 dirs = "6.0.0"
 toml = "1.0.7"
 syneroym-core = { path = "../core" }
@@ -18,6 +18,7 @@ syneroym-service-registry = { path = "../service_registry", optional = true }
 syneroym-coordinator = { path = "../coordinator", optional = true, default-features = false }
 syneroym-app-sandbox = { path = "../app_sandbox", optional = true }
 syneroym-http-proxy = { path = "../http_proxy", optional = true }
+tracing.workspace = true
 
 [features]
 default = ["service_registry", "coordinator_all", "app_sandbox", "http_proxy"]

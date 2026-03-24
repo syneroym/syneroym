@@ -44,7 +44,7 @@ async fn test_run_finishes_on_ctrl_c() {
         if bytes_read == 0 {
             panic!("Process closed stdout before reaching running state");
         }
-        if line.contains("Running HTTP Proxy") {
+        if line.contains("running http proxy") {
             break;
         }
     }

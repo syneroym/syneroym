@@ -5,10 +5,11 @@ edition = "2024"
 
 [dependencies]
 syneroym-core = { path = "../core" }
-anyhow = { workspace = true }
-tokio = { workspace = true }
+anyhow.workspace = true
+tokio.workspace = true
 syneroym-coordinator-iroh = { path = "../coordinator_iroh", optional = true }
 syneroym-coordinator-webrtc = { path = "../coordinator_webrtc", optional = true }
+tracing.workspace = true
 
 [features]
 default = ["iroh", "webrtc"]

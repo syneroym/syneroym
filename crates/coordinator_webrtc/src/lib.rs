@@ -3,6 +3,7 @@
 use anyhow::Result;
 use syneroym_core::SubstrateSubsystem;
 use syneroym_core::config::SubstrateConfig;
+use tracing::info;
 
 pub struct CoordinatorWebRtc {}
 
@@ -14,18 +15,18 @@ impl CoordinatorWebRtc {
 
 impl SubstrateSubsystem for CoordinatorWebRtc {
     async fn init(&mut self) -> Result<()> {
-        println!("Initializing Coordinator WebRTC");
+        info!("initializing coordinator webrtc");
         Ok(())
     }
 
     async fn run(&mut self) -> Result<()> {
-        println!("Running Coordinator WebRTC");
+        info!("running coordinator webrtc");
         std::future::pending::<()>().await;
         Ok(())
     }
 
     async fn shutdown(&mut self) -> Result<()> {
-        println!("Shutting down Coordinator WebRTC");
+        info!("shutting down coordinator webrtc");
         Ok(())
     }
 }

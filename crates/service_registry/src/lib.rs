@@ -3,6 +3,7 @@
 use anyhow::Result;
 use syneroym_core::SubstrateSubsystem;
 use syneroym_core::config::SubstrateConfig;
+use tracing::info;
 
 pub struct ServiceRegistry {}
 
@@ -14,18 +15,18 @@ impl ServiceRegistry {
 
 impl SubstrateSubsystem for ServiceRegistry {
     async fn init(&mut self) -> Result<()> {
-        println!("Initializing Service Registry");
+        info!("initializing service registry");
         Ok(())
     }
 
     async fn run(&mut self) -> Result<()> {
-        println!("Running Service Registry");
+        info!("running service registry");
         std::future::pending::<()>().await;
         Ok(())
     }
 
     async fn shutdown(&mut self) -> Result<()> {
-        println!("Shutting down Service Registry");
+        info!("shutting down service registry");
         Ok(())
     }
 }

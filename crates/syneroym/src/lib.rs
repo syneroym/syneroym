@@ -4,13 +4,14 @@ pub mod identity;
 
 use syneroym_core::SubstrateSubsystem;
 use syneroym_core::config::SubstrateConfig;
+use tracing::{error, info, warn};
 
 /// Runs the substrate given the consolidated configuration.
 pub async fn run(config: SubstrateConfig) -> anyhow::Result<()> {
     // This is the main entry point for the substrate logic within the library.
-    println!("Starting Syneroym Substrate with profile '{}'", config.profile);
-
     let observability_engine = syneroym_observability::ObservabilityEngine::init(&config)?;
+
+    info!(profile = %config.profile, "starting syneroym substrate");
 
     #[cfg(feature = "service_registry")]
     let mut service_registry = syneroym_service_registry::ServiceRegistry::new(&config);
@@ -82,51 +83,60 @@ pub async fn run(config: SubstrateConfig) -> anyhow::Result<()> {
         #[cfg(not(feature = "http_proxy"))]
         let mut http_proxy_fut = std::pin::pin!(std::future::pending::<anyhow::Result<()>>());
 
-        println!("entering main select loop");
+        info!("entering main select loop");
         tokio::select! {
             res = &mut registry_fut => {
-                println!("Service registry component finished: {:?}", res);
+                match res {
+                    Ok(()) => info!("service registry component finished"),
+                    Err(error) => error!(error = %error, "service registry component finished with error"),
+                }
             }
             res = &mut coordinator_bridge_fut => {
-                println!("Coordinator/Bridge component finished: {:?}", res);
+                match res {
+                    Ok(()) => info!("coordinator component finished"),
+                    Err(error) => error!(error = %error, "coordinator component finished with error"),
+                }
             }
             res = &mut http_proxy_fut => {
-                println!("HTTP proxy component finished: {:?}", res);
+                match res {
+                    Ok(()) => info!("http proxy component finished"),
+                    Err(error) => error!(error = %error, "http proxy component finished with error"),
+                }
             }
             _ = tokio::signal::ctrl_c() => {
-                println!("Received ctrl-c signal");
+                warn!("received ctrl-c signal");
             }
         }
     }
 
-    println!("Shutting down components...");
+    info!("shutting down components");
 
     #[cfg(feature = "http_proxy")]
     if config.roles.http_proxy.is_some()
         && let Err(e) = http_proxy.shutdown().await
     {
-        eprintln!("Error shutting down HTTP proxy: {}", e);
+        error!(error = %e, "error shutting down http proxy");
     }
 
     #[cfg(feature = "coordinator")]
     if config.roles.coordinator.is_some()
         && let Err(e) = coordinator_bridge.shutdown().await
     {
-        eprintln!("Error shutting down coordinator/bridge: {}", e);
+        error!(error = %e, "error shutting down coordinator");
     }
 
     #[cfg(feature = "service_registry")]
     if config.roles.service_registry.is_some()
         && let Err(e) = service_registry.shutdown().await
     {
-        eprintln!("Error shutting down service registry: {}", e);
+        error!(error = %e, "error shutting down service registry");
     }
 
     if let Err(e) = observability_engine.shutdown().await {
-        eprintln!("Error flushing observability data: {}", e);
+        error!(error = %e, "error flushing observability data");
     }
 
-    println!("Shutdown complete.");
+    info!("shutdown complete");
 
     Ok(())
 }

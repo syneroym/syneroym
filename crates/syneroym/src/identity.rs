@@ -2,6 +2,7 @@ use std::fs;
 use syneroym_core::config::IdentityConfig;
 use syneroym_identity::Identity;
 use syneroym_identity::substrate::{ControllerAgreement, SubstrateIdentityState};
+use tracing::info;
 
 /// Setup and initialize the substrate's identity and controller state.
 pub fn setup_substrate_identity(
@@ -48,11 +49,11 @@ pub fn setup_substrate_identity(
         config.require_agreement,
     )?;
 
-    println!(
-        "Substrate identity initialized: DID {}, Controller: {:?}, Status: {:?}",
-        substrate_identity_state.did,
-        substrate_identity_state.controller,
-        substrate_identity_state.status
+    info!(
+        did = %substrate_identity_state.did,
+        controller = ?substrate_identity_state.controller,
+        status = ?substrate_identity_state.status,
+        "substrate identity initialized"
     );
 
     Ok(substrate_identity_state)

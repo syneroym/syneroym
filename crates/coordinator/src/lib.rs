@@ -3,6 +3,7 @@
 use anyhow::Result;
 use syneroym_core::SubstrateSubsystem;
 use syneroym_core::config::SubstrateConfig;
+use tracing::info;
 
 #[cfg(feature = "iroh")]
 use syneroym_coordinator_iroh::CoordinatorIroh;
@@ -43,7 +44,7 @@ impl CoordinatorSubsystem {
 
 impl SubstrateSubsystem for CoordinatorSubsystem {
     async fn init(&mut self) -> Result<()> {
-        println!("Initializing Coordinator and Transport Bridge");
+        info!("initializing coordinator and transport bridge");
 
         #[cfg(feature = "iroh")]
         if let Some(c) = &mut self.iroh_coordinator {
@@ -59,7 +60,7 @@ impl SubstrateSubsystem for CoordinatorSubsystem {
     }
 
     async fn run(&mut self) -> Result<()> {
-        println!("Running Coordinator and Transport Bridge");
+        info!("running coordinator and transport bridge");
 
         let mut _is_empty = true;
         #[cfg(feature = "iroh")]
@@ -111,7 +112,7 @@ impl SubstrateSubsystem for CoordinatorSubsystem {
     }
 
     async fn shutdown(&mut self) -> Result<()> {
-        println!("Shutting down Coordinator and Transport Bridge");
+        info!("shutting down coordinator and transport bridge");
 
         #[cfg(feature = "iroh")]
         if let Some(c) = &mut self.iroh_coordinator {
