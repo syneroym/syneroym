@@ -3498,7 +3498,7 @@ dependencies = [
  "anyhow",
  "bs58",
  "ed25519-dalek 2.2.0",
- "getrandom 0.3.4",
+ "getrandom 0.4.2",
  "hex",
  "serde",
  "serde_json",
