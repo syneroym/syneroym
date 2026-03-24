@@ -1,7 +1,7 @@
 //! WebRTC transport coordinator component.
 
 use anyhow::Result;
-use syneroym_core::SubstrateComponent;
+use syneroym_core::SubstrateSubsystem;
 use syneroym_core::config::SubstrateConfig;
 
 pub struct CoordinatorWebRtc {}
@@ -12,7 +12,7 @@ impl CoordinatorWebRtc {
     }
 }
 
-impl SubstrateComponent for CoordinatorWebRtc {
+impl SubstrateSubsystem for CoordinatorWebRtc {
     async fn init(&mut self) -> Result<()> {
         println!("Initializing Coordinator WebRTC");
         Ok(())

@@ -13,7 +13,7 @@ use std::io::BufReader;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
-use syneroym_core::SubstrateComponent;
+use syneroym_core::SubstrateSubsystem;
 use syneroym_core::config::{CoordinatorRole, SubstrateConfig};
 use tracing::{debug, info};
 
@@ -137,7 +137,7 @@ async fn build_relay_config(role: &CoordinatorRole) -> Result<ServerConfig<std::
     Ok(ServerConfig { relay: relay_config, quic: quic_config, metrics_addr: None })
 }
 
-impl SubstrateComponent for CoordinatorIroh {
+impl SubstrateSubsystem for CoordinatorIroh {
     async fn init(&mut self) -> Result<()> {
         info!("Initializing Coordinator IROH");
         if let Some(role) = &self.config {

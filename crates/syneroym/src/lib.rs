@@ -2,7 +2,7 @@
 
 pub mod identity;
 
-use syneroym_core::SubstrateComponent;
+use syneroym_core::SubstrateSubsystem;
 use syneroym_core::config::SubstrateConfig;
 
 /// Runs the substrate given the consolidated configuration.
@@ -10,25 +10,23 @@ pub async fn run(config: SubstrateConfig) -> anyhow::Result<()> {
     // This is the main entry point for the substrate logic within the library.
     println!("Starting Syneroym Substrate with profile '{}'", config.profile);
 
-    let mut observability = syneroym_observability::ObservabilityComponent::new(&config);
+    let observability_engine = syneroym_observability::ObservabilityEngine::init(&config)?;
 
     #[cfg(feature = "service_registry")]
-    let mut service_registry = syneroym_service_registry::ServiceRegistryComponent::new(&config);
+    let mut service_registry = syneroym_service_registry::ServiceRegistry::new(&config);
 
     #[cfg(feature = "coordinator")]
-    let mut coordinator_bridge = syneroym_coordinator::CoordinatorComponent::new(&config);
+    let mut coordinator_bridge = syneroym_coordinator::CoordinatorSubsystem::new(&config);
 
     #[cfg(feature = "app_sandbox")]
-    let mut app_sandbox = syneroym_app_sandbox::AppSandboxComponent::new(&config);
+    let _app_sandbox_engine = syneroym_app_sandbox::AppSandboxEngine::new(&config);
 
     #[cfg(feature = "http_proxy")]
-    let mut http_proxy = syneroym_http_proxy::HttpProxyComponent::new(&config);
+    let mut http_proxy = syneroym_http_proxy::LocalHttpProxy::new(&config);
 
     // Initialize Substrate Identity
     let _substrate_identity_state =
         identity::setup_substrate_identity(&config.identity, &config.app_data_dir)?;
-
-    observability.init().await?;
 
     #[cfg(feature = "service_registry")]
     if config.roles.service_registry.is_some() {
@@ -38,11 +36,6 @@ pub async fn run(config: SubstrateConfig) -> anyhow::Result<()> {
     #[cfg(feature = "coordinator")]
     if config.roles.coordinator.is_some() {
         coordinator_bridge.init().await?;
-    }
-
-    #[cfg(feature = "app_sandbox")]
-    if config.roles.app_sandbox.is_some() {
-        app_sandbox.init().await?;
     }
 
     #[cfg(feature = "http_proxy")]
@@ -78,17 +71,6 @@ pub async fn run(config: SubstrateConfig) -> anyhow::Result<()> {
         let mut coordinator_bridge_fut =
             std::pin::pin!(std::future::pending::<anyhow::Result<()>>());
 
-        #[cfg(feature = "app_sandbox")]
-        let mut app_sandbox_fut = std::pin::pin!(async {
-            if config.roles.app_sandbox.is_some() {
-                app_sandbox.run().await
-            } else {
-                std::future::pending().await
-            }
-        });
-        #[cfg(not(feature = "app_sandbox"))]
-        let mut app_sandbox_fut = std::pin::pin!(std::future::pending::<anyhow::Result<()>>());
-
         #[cfg(feature = "http_proxy")]
         let mut http_proxy_fut = std::pin::pin!(async {
             if config.roles.http_proxy.is_some() {
@@ -100,18 +82,13 @@ pub async fn run(config: SubstrateConfig) -> anyhow::Result<()> {
         #[cfg(not(feature = "http_proxy"))]
         let mut http_proxy_fut = std::pin::pin!(std::future::pending::<anyhow::Result<()>>());
 
+        println!("entering main select loop");
         tokio::select! {
-            res = observability.run() => {
-                println!("Observability component finished: {:?}", res);
-            }
             res = &mut registry_fut => {
                 println!("Service registry component finished: {:?}", res);
             }
             res = &mut coordinator_bridge_fut => {
                 println!("Coordinator/Bridge component finished: {:?}", res);
-            }
-            res = &mut app_sandbox_fut => {
-                println!("App sandbox component finished: {:?}", res);
             }
             res = &mut http_proxy_fut => {
                 println!("HTTP proxy component finished: {:?}", res);
@@ -131,13 +108,6 @@ pub async fn run(config: SubstrateConfig) -> anyhow::Result<()> {
         eprintln!("Error shutting down HTTP proxy: {}", e);
     }
 
-    #[cfg(feature = "app_sandbox")]
-    if config.roles.app_sandbox.is_some()
-        && let Err(e) = app_sandbox.shutdown().await
-    {
-        eprintln!("Error shutting down app sandbox: {}", e);
-    }
-
     #[cfg(feature = "coordinator")]
     if config.roles.coordinator.is_some()
         && let Err(e) = coordinator_bridge.shutdown().await
@@ -152,8 +122,8 @@ pub async fn run(config: SubstrateConfig) -> anyhow::Result<()> {
         eprintln!("Error shutting down service registry: {}", e);
     }
 
-    if let Err(e) = observability.shutdown().await {
-        eprintln!("Error shutting down observability: {}", e);
+    if let Err(e) = observability_engine.shutdown().await {
+        eprintln!("Error flushing observability data: {}", e);
     }
 
     println!("Shutdown complete.");

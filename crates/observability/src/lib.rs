@@ -1,33 +1,22 @@
 //! Observability component for metrics, logging, and tracing.
 
 use anyhow::Result;
-use syneroym_core::SubstrateComponent;
 use syneroym_core::config::SubstrateConfig;
 
-pub struct ObservabilityComponent {
-    // config: SubstrateConfig,
+pub struct ObservabilityEngine {
+    // State needed to flush traces/logs on shutdown could go here.
 }
 
-impl ObservabilityComponent {
-    pub fn new(_config: &SubstrateConfig) -> Self {
-        Self { /* config: config.clone() */ }
-    }
-}
-
-impl SubstrateComponent for ObservabilityComponent {
-    async fn init(&mut self) -> Result<()> {
-        println!("Initializing Observability");
-        Ok(())
+impl ObservabilityEngine {
+    /// Initializes global tracing subscribers and metrics registries.
+    pub fn init(_config: &SubstrateConfig) -> Result<Self> {
+        println!("Initializing Observability (Tracing, Metrics, Logs)");
+        Ok(Self {})
     }
 
-    async fn run(&mut self) -> Result<()> {
-        println!("Running Observability");
-        std::future::pending::<()>().await;
-        Ok(())
-    }
-
-    async fn shutdown(&mut self) -> Result<()> {
-        println!("Shutting down Observability");
+    /// Flushes remaining telemetry data before the application exits.
+    pub async fn shutdown(&self) -> Result<()> {
+        println!("Flushing Observability data...");
         Ok(())
     }
 }

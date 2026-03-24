@@ -1,7 +1,7 @@
 //! Coordinator component that relays data and also bridges various transport protocols.
 
 use anyhow::Result;
-use syneroym_core::SubstrateComponent;
+use syneroym_core::SubstrateSubsystem;
 use syneroym_core::config::SubstrateConfig;
 
 #[cfg(feature = "iroh")]
@@ -9,14 +9,14 @@ use syneroym_coordinator_iroh::CoordinatorIroh;
 #[cfg(feature = "webrtc")]
 use syneroym_coordinator_webrtc::CoordinatorWebRtc;
 
-pub struct CoordinatorComponent {
+pub struct CoordinatorSubsystem {
     #[cfg(feature = "iroh")]
     iroh_coordinator: Option<CoordinatorIroh>,
     #[cfg(feature = "webrtc")]
     webrtc_coordinator: Option<CoordinatorWebRtc>,
 }
 
-impl CoordinatorComponent {
+impl CoordinatorSubsystem {
     pub fn new(config: &SubstrateConfig) -> Self {
         #[cfg(feature = "iroh")]
         let iroh_coordinator = if let Some(role) = &config.roles.coordinator {
@@ -41,7 +41,7 @@ impl CoordinatorComponent {
     }
 }
 
-impl SubstrateComponent for CoordinatorComponent {
+impl SubstrateSubsystem for CoordinatorSubsystem {
     async fn init(&mut self) -> Result<()> {
         println!("Initializing Coordinator and Transport Bridge");
 
@@ -80,7 +80,7 @@ impl SubstrateComponent for CoordinatorComponent {
             return Ok(());
         }
 
-        let CoordinatorComponent {
+        let CoordinatorSubsystem {
             #[cfg(feature = "iroh")]
                 iroh_coordinator: iroh_component,
             #[cfg(feature = "webrtc")]

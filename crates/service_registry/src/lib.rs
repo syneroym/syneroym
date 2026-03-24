@@ -1,18 +1,18 @@
 //! Service registry component for discovering and managing services within a Syneroym ecosystem.
 
 use anyhow::Result;
-use syneroym_core::SubstrateComponent;
+use syneroym_core::SubstrateSubsystem;
 use syneroym_core::config::SubstrateConfig;
 
-pub struct ServiceRegistryComponent {}
+pub struct ServiceRegistry {}
 
-impl ServiceRegistryComponent {
+impl ServiceRegistry {
     pub fn new(_config: &SubstrateConfig) -> Self {
         Self {}
     }
 }
 
-impl SubstrateComponent for ServiceRegistryComponent {
+impl SubstrateSubsystem for ServiceRegistry {
     async fn init(&mut self) -> Result<()> {
         println!("Initializing Service Registry");
         Ok(())
