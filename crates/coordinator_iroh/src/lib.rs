@@ -6,10 +6,8 @@
 
 use anyhow::{Context, Result};
 use iroh_relay::server::{self as relay, QuicConfig, Server, ServerConfig};
-use rustls_pemfile::{certs, private_key};
+use rustls_pki_types::pem::PemObject;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
-use std::fs::File;
-use std::io::BufReader;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
@@ -29,20 +27,19 @@ impl CoordinatorIroh {
 }
 
 fn load_certs(filename: impl AsRef<Path>) -> Result<Vec<CertificateDer<'static>>> {
-    let file = File::open(filename.as_ref()).with_context(|| {
-        format!("failed to open certificate file at {}", filename.as_ref().display())
-    })?;
-    let mut reader = BufReader::new(file);
-    let certs: Vec<_> = certs(&mut reader).collect::<Result<Vec<_>, _>>()?;
+    let certs: Vec<_> = CertificateDer::pem_file_iter(filename.as_ref())
+        .with_context(|| {
+            format!("failed to open certificate file at {}", filename.as_ref().display())
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .context("failed to parse certificate")?;
     Ok(certs)
 }
 
 fn load_secret_key(filename: impl AsRef<Path>) -> Result<PrivateKeyDer<'static>> {
-    let file = File::open(filename.as_ref()).with_context(|| {
-        format!("failed to open private key file at {}", filename.as_ref().display())
+    let key = PrivateKeyDer::from_pem_file(filename.as_ref()).with_context(|| {
+        format!("failed to read or parse private key file at {}", filename.as_ref().display())
     })?;
-    let mut reader = BufReader::new(file);
-    let key = private_key(&mut reader)?.context("no private key found")?;
     Ok(key)
 }
 

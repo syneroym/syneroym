@@ -1,0 +1,6 @@
+[advisories]
+ignore = [
+    # atomic-polyfill is unmaintained, but deeply integrated in iroh-relay 0.97.0
+    # Can be removed once iroh-relay drops or replaces the dependency.
+    "RUSTSEC-2023-0089"
+]
