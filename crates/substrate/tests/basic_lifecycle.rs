@@ -16,10 +16,10 @@ fn substrate_integration_stub() {
 
 #[tokio::test]
 async fn test_run_finishes_on_ctrl_c() {
-    // Create a temporary config file to explicitly enable the http_proxy role
+    // Create a temporary config file to explicitly enable the client_gateway role
     let mut config_file = NamedTempFile::new().expect("Failed to create temp config file");
     let config_toml = r#"
-    [roles.http_proxy]
+    [roles.client_gateway]
     "#;
     write!(config_file, "{}", config_toml).expect("Failed to write to temp config file");
 
@@ -44,7 +44,8 @@ async fn test_run_finishes_on_ctrl_c() {
         if bytes_read == 0 {
             panic!("Process closed stdout before reaching running state");
         }
-        if line.contains("running http proxy") {
+        // Look for a reliable log line indicating the the process is running with reasonable confidence. Enough for sanity purpose.
+        if line.contains("running client gateway") {
             break;
         }
     }

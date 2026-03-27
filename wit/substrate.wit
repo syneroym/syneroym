@@ -1,0 +1,22 @@
+package syneroym:substrate;
+
+interface orchestrator {
+    /// Deploy a new service using a given manifest or WASM binary
+    deploy: func(service-id: string, manifest: list<u8>) -> result<_, string>;
+    
+    /// Stop a currently running service gracefully
+    stop: func(service-id: string) -> result<_, string>;
+    
+    /// Completely remove a stopped service and its resources
+    remove: func(service-id: string) -> result<_, string>;
+}
+
+interface health {
+    /// Ping the service to check its health
+    ping: func() -> result<string, string>;
+}
+
+world substrate-service {
+    export orchestrator;
+    export health;
+}

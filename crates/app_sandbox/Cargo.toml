@@ -7,3 +7,4 @@ edition = "2024"
 syneroym-core = { path = "../core" }
 anyhow.workspace = true
 tokio.workspace = true
+tracing.workspace = true

@@ -50,6 +50,11 @@ level = "info"
 format = "json"   # json or pretty
 target = "stdout" # stdout or file
 
+# Global substrate configuration
+[substrate]
+# List of enabled communication interfaces to channel traffic
+communication_interfaces = ["iroh", "webrtc"]
+
 # A node that connect to the internet should configure uplink bridges to act as their gateway to the larger network
 # Note: Uplink-bridge functionality is WIP.
 [uplink]
@@ -75,18 +80,18 @@ bridge = "lora://70B3D57ED0051234"
 
 # Profile to enable only the syneroym ecosystem http access service
 [profiles.enduser]
-roles = ["http_proxy", "observability"]
+roles = ["client_gateway", "observability"]
 
 [profiles.app_sandbox]
-roles = ["app_sandbox", "http_proxy", "observability"]
+roles = ["app_sandbox", "client_gateway", "observability"]
 
 # Profile to enable all services. Useful in large deployments or dev, test, demos
 [profiles.full]
 roles = [
     "app_sandbox",
-    "service_registry",
+    "ecosystem_registry",
     "coordinator",
-    "http_proxy",
+    "client_gateway",
     "observability",
 ]
 
@@ -94,14 +99,12 @@ roles = [
 
 # Resources limits across all services in app sandbox
 [roles.app_sandbox]
-# List of enabled communication interfaces to channel traffic
-communication_interfaces = ["iroh", "webrtc"]
 wrpc_sandbox = true
 cpu_limit = 1
 memory_limit = "1Gi"
 
 # Service Registry
-[roles.service_registry]
+[roles.ecosystem_registry]
 access = "everyone" # Later, more access restriction like list of dids
 
 # Coordinator/Rendezvous service for connection establishment
@@ -131,7 +134,7 @@ bootstrap_page_bind_address = "0.0.0.0:7002"
 translations = [{ from = "quic", to = "lora" }, { from = "lora", to = "quic" }]
 
 # Proxy service for easy access to syneroym ecosystem services by external clients like browsers. Only local access is allowed for substrate admin APIs
-[roles.http_proxy]
+[roles.client_gateway]
 http_port = 7000
 
 # ____ Observability ____

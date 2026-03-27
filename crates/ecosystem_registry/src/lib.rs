@@ -1,25 +1,25 @@
-//! WebRTC transport coordinator component.
+//! Service registry for discovering and managing services within a Syneroym ecosystem.
 
 use anyhow::Result;
 use syneroym_core::config::SubstrateConfig;
 use tracing::info;
 
-pub struct CoordinatorWebRtc {}
+pub struct EcosystemRegistry {}
 
-impl CoordinatorWebRtc {
+impl EcosystemRegistry {
     pub async fn init(_config: &SubstrateConfig) -> Result<Self> {
-        info!("initializing coordinator webrtc");
+        info!("initializing service registry");
         Ok(Self {})
     }
 
     pub async fn run(&mut self) -> Result<()> {
-        info!("running coordinator webrtc");
+        info!("running service registry");
         std::future::pending::<()>().await;
         Ok(())
     }
 
     pub async fn shutdown(&mut self) -> Result<()> {
-        info!("shutting down coordinator webrtc");
+        info!("shutting down service registry");
         Ok(())
     }
 }

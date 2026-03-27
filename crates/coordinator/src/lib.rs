@@ -1,7 +1,6 @@
-//! Coordinator component that relays data and also bridges various transport protocols.
+//! Coordinator that helps peers within ecosystem discover a channel to communicate and often help relay data.
 
 use anyhow::Result;
-use syneroym_core::SubstrateSubsystem;
 use syneroym_core::config::SubstrateConfig;
 use tracing::info;
 
@@ -10,56 +9,40 @@ use syneroym_coordinator_iroh::CoordinatorIroh;
 #[cfg(feature = "webrtc")]
 use syneroym_coordinator_webrtc::CoordinatorWebRtc;
 
-pub struct CoordinatorSubsystem {
+pub struct EcosystemCoordinator {
     #[cfg(feature = "iroh")]
     iroh_coordinator: Option<CoordinatorIroh>,
     #[cfg(feature = "webrtc")]
     webrtc_coordinator: Option<CoordinatorWebRtc>,
 }
 
-impl CoordinatorSubsystem {
-    pub fn new(config: &SubstrateConfig) -> Self {
+impl EcosystemCoordinator {
+    pub async fn init(config: &SubstrateConfig) -> Result<Self> {
+        info!("initializing coordinator and transport bridge");
+
         #[cfg(feature = "iroh")]
         let iroh_coordinator = if let Some(role) = &config.roles.coordinator {
-            if role.iroh.is_some() { Some(CoordinatorIroh::new(config)) } else { None }
+            if role.iroh.is_some() { Some(CoordinatorIroh::init(config).await?) } else { None }
         } else {
             None
         };
 
         #[cfg(feature = "webrtc")]
         let webrtc_coordinator = if let Some(role) = &config.roles.coordinator {
-            if role.webrtc.is_some() { Some(CoordinatorWebRtc::new(config)) } else { None }
+            if role.webrtc.is_some() { Some(CoordinatorWebRtc::init(config).await?) } else { None }
         } else {
             None
         };
 
-        Self {
+        Ok(Self {
             #[cfg(feature = "iroh")]
             iroh_coordinator,
             #[cfg(feature = "webrtc")]
             webrtc_coordinator,
-        }
-    }
-}
-
-impl SubstrateSubsystem for CoordinatorSubsystem {
-    async fn init(&mut self) -> Result<()> {
-        info!("initializing coordinator and transport bridge");
-
-        #[cfg(feature = "iroh")]
-        if let Some(c) = &mut self.iroh_coordinator {
-            c.init().await?;
-        }
-
-        #[cfg(feature = "webrtc")]
-        if let Some(c) = &mut self.webrtc_coordinator {
-            c.init().await?;
-        }
-
-        Ok(())
+        })
     }
 
-    async fn run(&mut self) -> Result<()> {
+    pub async fn run(&mut self) -> Result<()> {
         info!("running coordinator and transport bridge");
 
         let mut _is_empty = true;
@@ -81,7 +64,7 @@ impl SubstrateSubsystem for CoordinatorSubsystem {
             return Ok(());
         }
 
-        let CoordinatorSubsystem {
+        let EcosystemCoordinator {
             #[cfg(feature = "iroh")]
                 iroh_coordinator: iroh_component,
             #[cfg(feature = "webrtc")]
@@ -111,7 +94,7 @@ impl SubstrateSubsystem for CoordinatorSubsystem {
         Ok(())
     }
 
-    async fn shutdown(&mut self) -> Result<()> {
+    pub async fn shutdown(&mut self) -> Result<()> {
         info!("shutting down coordinator and transport bridge");
 
         #[cfg(feature = "iroh")]

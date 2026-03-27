@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+pub const DEFAULT_SUBSTRATE_KEY_FILE: &str = "substrate.key";
+
 fn default_app_config_dir() -> PathBuf {
     dirs::config_dir().unwrap_or_else(|| PathBuf::from(".")).join("syneroym")
 }
@@ -55,6 +57,7 @@ pub struct SubstrateConfig {
     pub profiles: HashMap<String, ProfileConfig>,
 
     pub roles: RolesConfig,
+    pub substrate: SubstrateGlobalConfig,
 }
 
 impl Default for SubstrateConfig {
@@ -73,6 +76,7 @@ impl Default for SubstrateConfig {
             uplink: Default::default(),
             profiles: Default::default(),
             roles: Default::default(),
+            substrate: Default::default(),
         }
     }
 }
@@ -223,9 +227,9 @@ pub struct ProfileConfig {
 #[serde(default)]
 pub struct RolesConfig {
     pub app_sandbox: Option<AppSandboxRole>,
-    pub service_registry: Option<ServiceRegistryRole>,
+    pub ecosystem_registry: Option<ServiceRegistryRole>,
     pub coordinator: Option<CoordinatorRole>,
-    pub http_proxy: Option<HttpProxyRole>,
+    pub client_gateway: Option<ClientGatewayRole>,
     pub observability: Option<ObservabilityRole>,
 }
 
@@ -245,7 +249,6 @@ fn default_memory_limit() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppSandboxRole {
-    pub communication_interfaces: Vec<String>,
     pub wrpc_sandbox: bool,
     pub cpu_limit: u32,
     pub memory_limit: String,
@@ -254,7 +257,6 @@ pub struct AppSandboxRole {
 impl Default for AppSandboxRole {
     fn default() -> Self {
         Self {
-            communication_interfaces: default_communication_interfaces(),
             wrpc_sandbox: default_wrpc_sandbox(),
             cpu_limit: default_cpu_limit(),
             memory_limit: default_memory_limit(),
@@ -373,11 +375,11 @@ fn default_http_port() -> u16 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct HttpProxyRole {
+pub struct ClientGatewayRole {
     pub http_port: u16,
 }
 
-impl Default for HttpProxyRole {
+impl Default for ClientGatewayRole {
     fn default() -> Self {
         Self { http_port: default_http_port() }
     }
@@ -471,4 +473,16 @@ pub enum SamplingStrategy {
     ParentBased,
     AlwaysOn,
     AlwaysOff,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SubstrateGlobalConfig {
+    pub communication_interfaces: Vec<String>,
+}
+
+impl Default for SubstrateGlobalConfig {
+    fn default() -> Self {
+        Self { communication_interfaces: default_communication_interfaces() }
+    }
 }

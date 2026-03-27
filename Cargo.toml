@@ -1,17 +1,18 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/syneroym",
+    "crates/substrate",
     "crates/roymctl",
     "crates/identity",
     "crates/core",
     "crates/observability",
-    "crates/service_registry",
+    "crates/ecosystem_registry",
     "crates/coordinator",
     "crates/coordinator_iroh",
     "crates/coordinator_webrtc",
     "crates/app_sandbox",
-    "crates/http_proxy",
+    "crates/client_gateway",
+    "crates/router",
 ]
 
 [profile.dev]
@@ -49,3 +50,8 @@ reqwest = { version = "0.13", features = ["json"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 tracing-appender = "0.2.3"
+
+# Iroh dependencies
+iroh-base = "0.97.0"
+iroh = "0.97.0"
+iroh-relay = { version = "0.97.0", features = ["server"] }

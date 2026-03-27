@@ -11,18 +11,51 @@ use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
-use syneroym_core::SubstrateSubsystem;
 use syneroym_core::config::{CoordinatorRole, SubstrateConfig};
 use tracing::{debug, info};
 
 pub struct CoordinatorIroh {
-    config: Option<CoordinatorRole>,
     server: Option<Server>,
 }
 
 impl CoordinatorIroh {
-    pub fn new(config: &SubstrateConfig) -> Self {
-        Self { config: config.roles.coordinator.clone(), server: None }
+    pub async fn init(config: &SubstrateConfig) -> Result<Self> {
+        info!("Initializing Coordinator IROH");
+        let config_roles = config.roles.coordinator.clone();
+        let mut server = None;
+        if let Some(role) = &config_roles {
+            // Start the server if relay is enabled or quic discovery (not strictly split here)
+            // Just init the server logic
+            let server_config = build_relay_config(role).await?;
+            debug!("Iroh Relay Config built: {:?}", server_config.relay.is_some());
+
+            // Initialize server.
+            // The Server struct has an internal task that handles requests
+            server = Some(
+                Server::spawn(server_config).await.context("failed to spawn iroh relay server")?,
+            );
+        }
+        Ok(Self { server })
+    }
+
+    pub async fn run(&mut self) -> Result<()> {
+        info!("Running Coordinator IROH");
+        if let Some(server) = &mut self.server {
+            // we await on the server's task_handle to keep it running
+            server.task_handle().await.context("iroh relay server task panicked")??;
+        } else {
+            // Just idle if not configured
+            std::future::pending::<()>().await;
+        }
+        Ok(())
+    }
+
+    pub async fn shutdown(&mut self) -> Result<()> {
+        info!("Shutting down Coordinator IROH");
+        if let Some(server) = self.server.take() {
+            server.shutdown().await.context("failed to cleanly shutdown iroh relay server")?;
+        }
+        Ok(())
     }
 }
 
@@ -134,44 +167,7 @@ async fn build_relay_config(role: &CoordinatorRole) -> Result<ServerConfig<std::
     Ok(ServerConfig { relay: relay_config, quic: quic_config, metrics_addr: None })
 }
 
-impl SubstrateSubsystem for CoordinatorIroh {
-    async fn init(&mut self) -> Result<()> {
-        info!("Initializing Coordinator IROH");
-        if let Some(role) = &self.config {
-            // Start the server if relay is enabled or quic discovery (not strictly split here)
-            // Just init the server logic
-            let server_config = build_relay_config(role).await?;
-            debug!("Iroh Relay Config built: {:?}", server_config.relay.is_some());
-
-            // Initialize server.
-            // The Server struct has an internal task that handles requests
-            let server =
-                Server::spawn(server_config).await.context("failed to spawn iroh relay server")?;
-            self.server = Some(server);
-        }
-        Ok(())
-    }
-
-    async fn run(&mut self) -> Result<()> {
-        info!("Running Coordinator IROH");
-        if let Some(server) = &mut self.server {
-            // we await on the server's task_handle to keep it running
-            server.task_handle().await.context("iroh relay server task panicked")??;
-        } else {
-            // Just idle if not configured
-            std::future::pending::<()>().await;
-        }
-        Ok(())
-    }
-
-    async fn shutdown(&mut self) -> Result<()> {
-        info!("Shutting down Coordinator IROH");
-        if let Some(server) = self.server.take() {
-            server.shutdown().await.context("failed to cleanly shutdown iroh relay server")?;
-        }
-        Ok(())
-    }
-}
+impl CoordinatorIroh {}
 
 #[cfg(test)]
 mod tests {
