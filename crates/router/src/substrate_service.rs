@@ -7,15 +7,16 @@ use syneroym_core::{
     config::SubstrateConfig,
     registry::{EndpointRegistry, SubstrateEndpoint},
 };
-use syneroym_router::{NativeInvocation, NativeResponse, NativeService};
 use tracing::{info, warn};
+
+use crate::{NativeInvocation, NativeResponse, NativeService};
 
 /// SubstrateService: Native deployable service that handles
 /// the `syneroym:substrate/substrate-service` WIT world capabilities.
 pub struct SubstrateService {
     pub(crate) service_id: String,
     sandbox_engine: Arc<AppSandboxEngine>,
-    registry: Arc<EndpointRegistry>,
+    registry: EndpointRegistry,
 }
 
 impl SubstrateService {
@@ -23,12 +24,7 @@ impl SubstrateService {
         &self.service_id
     }
 
-    pub fn new(
-        service_id: String,
-        config: &SubstrateConfig,
-        registry: Arc<EndpointRegistry>,
-    ) -> Self {
-        #[cfg(feature = "app_sandbox")]
+    pub fn new(service_id: String, config: &SubstrateConfig, registry: EndpointRegistry) -> Self {
         let sandbox_engine = Arc::new(syneroym_app_sandbox::AppSandboxEngine::new(config));
 
         Self { service_id, sandbox_engine, registry }
@@ -178,12 +174,10 @@ mod tests {
                 .await
                 .expect("in-memory storage"),
         );
-        let registry =
-            Arc::new(EndpointRegistry::new(endpoint_storage).await.expect("in-memory registry"));
         let service = Arc::new(SubstrateService::new(
             "substrate-test".to_string(),
             &SubstrateConfig::default(),
-            registry,
+            EndpointRegistry::new(endpoint_storage).await.expect("in-memory registry"),
         ));
 
         let invocation = NativeInvocation {

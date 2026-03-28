@@ -4426,6 +4426,7 @@ dependencies = [
  "iroh-relay",
  "serde",
  "serde_json",
+ "syneroym-app-sandbox",
  "syneroym-core",
  "tokio",
  "tracing",

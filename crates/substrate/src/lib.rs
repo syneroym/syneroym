@@ -1,9 +1,7 @@
 //! Main library entry point for the Syneroym substrate.
 
 pub mod identity;
-pub mod substrate_service;
 
-use std::sync::Arc;
 use syneroym_core::config::SubstrateConfig;
 use syneroym_core::registry::EndpointRegistry;
 use syneroym_core::registry::SubstrateEndpoint;
@@ -73,7 +71,7 @@ pub async fn run(config: SubstrateConfig) -> anyhow::Result<()> {
         #[cfg(not(feature = "client_gateway"))]
         let mut client_gateway_fut = std::pin::pin!(std::future::pending::<anyhow::Result<()>>());
 
-        let mut connection_router_fut = std::pin::pin!(connection_router.clone().run());
+        let mut connection_router_fut = std::pin::pin!(connection_router.run());
 
         info!(profile = %config.profile, "starting substrate components");
         tokio::select! {
@@ -145,9 +143,7 @@ pub async fn run(config: SubstrateConfig) -> anyhow::Result<()> {
 
 /// Sets up the connection router and its tightly coupled dependencies, including
 /// the substrate identity, data store, endpoint registry, and the native service.
-async fn setup_connection_router(
-    config: &SubstrateConfig,
-) -> anyhow::Result<Arc<ConnectionRouter>> {
+async fn setup_connection_router(config: &SubstrateConfig) -> anyhow::Result<ConnectionRouter> {
     // Initialize Substrate Identity
     let substrate_identity_state =
         identity::setup_substrate_identity(&config.identity, &config.app_data_dir)?;
@@ -156,26 +152,19 @@ async fn setup_connection_router(
 
     // Initialize the data store
     let data_store = syneroym_core::storage::init_store(config).await?;
-
     // Initialize Endpoint Registry (Internal Micro-Discovery)
-    let endpoint_registry = Arc::new(EndpointRegistry::new(data_store).await?);
-
-    let substrate_service = Arc::new(substrate_service::SubstrateService::new(
-        service_id.clone(),
-        config,
-        endpoint_registry.clone(),
-    ));
-
+    let endpoint_registry = EndpointRegistry::new(data_store).await?;
     // Register the native SubstrateService at startup in registry
-    // Then register the service instance with the ConnectionRouter for direct dispatch.
     info!("Registering native SubstrateService at {}", service_id);
     let endpoint = SubstrateEndpoint::NativeHostChannel { channel_id: service_id.clone() };
     endpoint_registry.register(service_id.clone(), endpoint).await?;
 
     // The Connection Router (The Data Plane)
-    let connection_router =
-        ConnectionRouter::init(endpoint_registry, config.clone(), substrate_secret_key).await?;
-    connection_router.register_native_service(service_id, substrate_service);
-
-    Ok(connection_router)
+    ConnectionRouter::init(
+        endpoint_registry,
+        config.clone(),
+        substrate_secret_key,
+        service_id.clone(),
+    )
+    .await
 }
