@@ -5,6 +5,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use syneroym_core::config::SubstrateConfig;
 use syneroym_substrate::run;
+use tokio::runtime::Builder;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -173,13 +174,19 @@ pub(crate) fn resolve_config(command: Commands) -> Result<SubstrateConfig> {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     let cli = Cli::parse();
     let config = resolve_config(cli.command)?;
-    // Run substrate
-    run(config).await?;
-    Ok(())
+
+    // Since all tokio tuning options are not available in the #[tokio::main] macro, configure it explicitly
+    Builder::new_multi_thread()
+        // More tokio tuning needed later, tune via config or environment variables.
+        //.worker_threads(4)
+        //.max_blocking_threads(16)
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(run(config))
 }
 
 #[cfg(test)]
