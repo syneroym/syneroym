@@ -10,5 +10,5 @@
     "editor.defaultFormatter": "rust-lang.rust-analyzer",
     "editor.formatOnSave": true
   },
-  "geminicodeassist.agentYoloMode": false
+  "geminicodeassist.agentYoloMode": true
 }

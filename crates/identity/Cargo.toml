@@ -12,4 +12,4 @@ getrandom = "0.4"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
-bs58 = "0.5.1"
+z32 = "1"

@@ -173,8 +173,13 @@ mod tests {
 
     #[tokio::test]
     async fn health_ping_dispatch_returns_pong() {
+        let endpoint_storage = Arc::new(
+            syneroym_core::storage::SqliteEndpointStorage::new("sqlite::memory:")
+                .await
+                .expect("in-memory storage"),
+        );
         let registry =
-            Arc::new(EndpointRegistry::new("sqlite::memory:").await.expect("in-memory registry"));
+            Arc::new(EndpointRegistry::new(endpoint_storage).await.expect("in-memory registry"));
         let service = Arc::new(SubstrateService::new(
             "substrate-test".to_string(),
             &SubstrateConfig::default(),

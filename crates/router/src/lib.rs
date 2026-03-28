@@ -8,10 +8,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fmt;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use syneroym_core::config::SubstrateConfig;
 use syneroym_core::registry::{EndpointRegistry, SubstrateEndpoint};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
-use tokio::sync::Mutex;
 use tracing::info;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -178,7 +178,7 @@ pub struct ConnectionRouter {
     protocol_converter: Arc<ProtocolConverter>,
     native_dispatch: DashMap<String, Arc<dyn NativeService>>,
     // Hold reference to the running Iroh router to keep it alive.
-    iroh_router: Mutex<Option<Router>>,
+    iroh_router: OnceLock<Router>,
     // The secret key for Iroh communication.
     iroh_secret_key: [u8; 32],
 }
@@ -205,7 +205,7 @@ impl ConnectionRouter {
             registry,
             protocol_converter: Arc::new(ProtocolConverter::new()),
             native_dispatch: DashMap::new(),
-            iroh_router: Mutex::new(None),
+            iroh_router: OnceLock::new(),
             iroh_secret_key,
         });
 
@@ -218,8 +218,7 @@ impl ConnectionRouter {
                         if let Some(iroh_router) =
                             net_iroh::init(iroh_config, iroh_secret_key, router.clone()).await?
                         {
-                            let mut lock = router.iroh_router.lock().await;
-                            *lock = Some(iroh_router);
+                            let _ = router.iroh_router.set(iroh_router);
                         }
                     }
                 }
@@ -239,15 +238,20 @@ impl ConnectionRouter {
 
     pub async fn run(self: Arc<Self>) -> Result<()> {
         info!("running connection router");
-        let endpoint = {
-            let router = self.iroh_router.lock().await;
-            router.as_ref().map(|router| router.endpoint().clone())
-        };
+        let endpoint = self.iroh_router.get().map(|router| router.endpoint().clone());
         if let Some(endpoint) = endpoint {
             endpoint.closed().await;
         } else {
             // If iroh is not configured, router has nothing to do and can pend forever.
             std::future::pending::<()>().await;
+        }
+        Ok(())
+    }
+
+    pub async fn shutdown(&self) -> Result<()> {
+        info!("shutting down connection router");
+        if let Some(router) = self.iroh_router.get() {
+            router.shutdown().await?;
         }
         Ok(())
     }

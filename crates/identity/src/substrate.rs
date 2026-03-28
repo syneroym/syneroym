@@ -59,16 +59,24 @@ pub fn derive_did_key(pubkey: &VerifyingKey) -> String {
     // multicodec ed25519-pub is 0xed01
     let mut bytes = vec![0xed, 0x01];
     bytes.extend_from_slice(pubkey.as_bytes());
-    format!("did:key:z{}", bs58::encode(bytes).into_string())
+    format!("did:key:h{}", z32::encode(&bytes))
+}
+
+/// Resolve a z-base-32 encoded string from a did:key.
+pub fn resolve_did_z32(did: &str) -> Result<&str> {
+    if !did.starts_with("did:key:h") {
+        return Err(anyhow!("DID is not a z-base-32 did:key: {}", did));
+    }
+    Ok(&did["did:key:h".len()..])
 }
 
 /// Resolve an ed25519 public key from a did:key.
 pub fn resolve_did_key(did: &str) -> Result<VerifyingKey> {
-    if !did.starts_with("did:key:z") {
-        return Err(anyhow!("DID is not a base58btc did:key: {}", did));
-    }
-    let b58_str = &did["did:key:z".len()..];
-    let bytes = bs58::decode(b58_str).into_vec()?;
+    let z32_str = resolve_did_z32(did)?;
+
+    // Decode z-base-32
+    let bytes =
+        z32::decode(z32_str.as_bytes()).map_err(|_| anyhow!("Invalid z-base-32 encoding"))?;
 
     // Check multicodec prefix
     if bytes.len() != 34 || bytes[0] != 0xed || bytes[1] != 0x01 {
@@ -98,7 +106,8 @@ fn verify_signature(
     // Simple serialization
     let payload = serde_json::to_string(&unsigned_agreement)?;
 
-    let sig_bytes = bs58::decode(&proof.proof_value).into_vec()?;
+    let sig_bytes = z32::decode(proof.proof_value.as_bytes())
+        .map_err(|_| anyhow!("Invalid z-base-32 signature encoding"))?;
     if sig_bytes.len() != 64 {
         return Err(anyhow!("Invalid signature length"));
     }
@@ -211,7 +220,7 @@ mod tests {
     #[test]
     fn test_substrate_identity_state_with_controller_flag_only() {
         let identity = Identity::generate();
-        let controller_did = "did:key:zExampleController";
+        let controller_did = "did:key:hybndrfg8ejkmcpqx";
         let state =
             SubstrateIdentityState::init(&identity, None, Some(controller_did), false).unwrap();
 
@@ -225,7 +234,7 @@ mod tests {
         let identity = Identity::generate();
         let did = derive_did_key(&identity.public_key());
 
-        assert!(did.starts_with("did:key:z"));
+        assert!(did.starts_with("did:key:h"));
 
         let resolved_pubkey = resolve_did_key(&did).expect("Failed to resolve generated did:key");
         assert_eq!(identity.public_key().as_bytes(), resolved_pubkey.as_bytes());
@@ -238,7 +247,27 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err().to_string(),
-            "DID is not a base58btc did:key: did:web:example.com"
+            "DID is not a z-base-32 did:key: did:web:example.com"
         );
+    }
+
+    #[test]
+    fn test_resolve_did_z32() {
+        let identity = Identity::generate();
+        let did = derive_did_key(&identity.public_key());
+        let z32_str = resolve_did_z32(&did).unwrap();
+
+        let mut bytes = vec![0xed, 0x01];
+        bytes.extend_from_slice(identity.public_key().as_bytes());
+        let expected_z32 = z32::encode(&bytes);
+
+        assert_eq!(z32_str, expected_z32);
+    }
+
+    #[test]
+    fn test_resolve_did_z32_invalid() {
+        let invalid_did = "did:web:example.com";
+        let result = resolve_did_z32(invalid_did);
+        assert!(result.is_err());
     }
 }

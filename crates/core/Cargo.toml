@@ -12,3 +12,4 @@ dashmap = "6.1.0"
 tracing.workspace = true
 sqlx = { version = "0.8.6", features = ["sqlite", "runtime-tokio-rustls"] }
 serde_json.workspace = true
+async-trait = "0.1.89"

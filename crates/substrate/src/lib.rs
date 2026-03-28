@@ -7,13 +7,14 @@ use std::sync::Arc;
 use syneroym_core::config::SubstrateConfig;
 use syneroym_core::registry::EndpointRegistry;
 use syneroym_core::registry::SubstrateEndpoint;
+use syneroym_identity::substrate::resolve_did_z32;
 use syneroym_router::ConnectionRouter;
 use tracing::{error, info, warn};
 
 /// Runs the substrate given the consolidated configuration.
 pub async fn run(config: SubstrateConfig) -> anyhow::Result<()> {
     // This is the main entry point for the substrate logic within the library.
-    info!(profile = %config.profile, "starting syneroym substrate");
+    info!(profile = %config.profile, "initializing substrate");
 
     let observability_engine = syneroym_observability::ObservabilityEngine::init(&config)?;
 
@@ -30,44 +31,10 @@ pub async fn run(config: SubstrateConfig) -> anyhow::Result<()> {
     #[cfg(feature = "client_gateway")]
     let mut client_gateway = syneroym_client_gateway::ClientGateway::init(&config).await?;
 
-    // Initialize Substrate Identity
-    let substrate_identity_state =
-        identity::setup_substrate_identity(&config.identity, &config.app_data_dir)?;
-    let iroh_secret_key = identity::get_secret(&config.identity, &config.app_data_dir)?;
-    let service_pubkey = substrate_identity_state.did.clone();
-
-    // The Endpoint Registry (Internal Micro-Discovery)
-    let db_path = config.app_local_data_dir.join(&config.storage.db_dir);
-    if !db_path.exists() {
-        std::fs::create_dir_all(&db_path)?;
-    }
-    let db_url = format!("sqlite://{}/endpoints.db?mode=rwc", db_path.to_string_lossy());
-    let endpoint_registry = Arc::new(EndpointRegistry::new(&db_url).await?);
-
-    // The Connection Router (The Data Plane)
-    let connection_router =
-        ConnectionRouter::init(endpoint_registry.clone(), config.clone(), iroh_secret_key).await?;
-
-    let substrate_service = Arc::new(substrate_service::SubstrateService::new(
-        service_pubkey.clone(),
-        &config,
-        endpoint_registry.clone(),
-    ));
-
-    // Register the native SubstrateService at startup
-    // The SubstrateService itself no longer handles its own registration.
-    // Instead, the main runtime registers it with the EndpointRegistry and
-    // registers the service instance with the ConnectionRouter for direct dispatch.
-    let service_id = substrate_service.service_id().to_string();
-    let endpoint = SubstrateEndpoint::NativeHostChannel { channel_id: service_id.clone() };
-
-    info!("Registering native SubstrateService at {}", service_id);
-    endpoint_registry.register(service_id.clone(), endpoint).await?;
-    connection_router.register_native_service(service_id, substrate_service);
+    // The Connection Router (The Data Plane) and associated tightly-coupled components
+    let connection_router = setup_connection_router(&config).await?;
 
     {
-        let mut connection_router_fut = std::pin::pin!(connection_router.clone().run());
-
         // We use std::future::pending() for components that are disabled via
         // compile-time features or not configured at runtime. This creates a future
         // that never resolves, ensuring tokio::select! ignores these inactive branches
@@ -106,7 +73,9 @@ pub async fn run(config: SubstrateConfig) -> anyhow::Result<()> {
         #[cfg(not(feature = "client_gateway"))]
         let mut client_gateway_fut = std::pin::pin!(std::future::pending::<anyhow::Result<()>>());
 
-        info!("entering main select loop");
+        let mut connection_router_fut = std::pin::pin!(connection_router.clone().run());
+
+        info!(profile = %config.profile, "starting substrate components");
         tokio::select! {
             res = &mut connection_router_fut => {
                 match res {
@@ -138,7 +107,7 @@ pub async fn run(config: SubstrateConfig) -> anyhow::Result<()> {
         }
     }
 
-    info!("shutting down components");
+    info!("shutting down substrate components");
 
     #[cfg(feature = "client_gateway")]
     if config.roles.client_gateway.is_some()
@@ -165,7 +134,48 @@ pub async fn run(config: SubstrateConfig) -> anyhow::Result<()> {
         error!(error = %e, "error flushing observability data");
     }
 
+    if let Err(e) = connection_router.shutdown().await {
+        error!(error = %e, "error shutting down connection router");
+    }
+
     info!("shutdown complete");
 
     Ok(())
+}
+
+/// Sets up the connection router and its tightly coupled dependencies, including
+/// the substrate identity, data store, endpoint registry, and the native service.
+async fn setup_connection_router(
+    config: &SubstrateConfig,
+) -> anyhow::Result<Arc<ConnectionRouter>> {
+    // Initialize Substrate Identity
+    let substrate_identity_state =
+        identity::setup_substrate_identity(&config.identity, &config.app_data_dir)?;
+    let substrate_secret_key = identity::get_secret(&config.identity, &config.app_data_dir)?;
+    let service_id = resolve_did_z32(&substrate_identity_state.did)?.to_string();
+
+    // Initialize the data store
+    let data_store = syneroym_core::storage::init_store(config).await?;
+
+    // Initialize Endpoint Registry (Internal Micro-Discovery)
+    let endpoint_registry = Arc::new(EndpointRegistry::new(data_store).await?);
+
+    let substrate_service = Arc::new(substrate_service::SubstrateService::new(
+        service_id.clone(),
+        config,
+        endpoint_registry.clone(),
+    ));
+
+    // Register the native SubstrateService at startup in registry
+    // Then register the service instance with the ConnectionRouter for direct dispatch.
+    info!("Registering native SubstrateService at {}", service_id);
+    let endpoint = SubstrateEndpoint::NativeHostChannel { channel_id: service_id.clone() };
+    endpoint_registry.register(service_id.clone(), endpoint).await?;
+
+    // The Connection Router (The Data Plane)
+    let connection_router =
+        ConnectionRouter::init(endpoint_registry, config.clone(), substrate_secret_key).await?;
+    connection_router.register_native_service(service_id, substrate_service);
+
+    Ok(connection_router)
 }
