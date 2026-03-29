@@ -2,7 +2,6 @@
 resolver = "2"
 members = [
     "crates/substrate",
-    "crates/roymctl",
     "crates/identity",
     "crates/core",
     "crates/observability",
@@ -13,6 +12,7 @@ members = [
     "crates/app_sandbox",
     "crates/client_gateway",
     "crates/router",
+    "apps/roymctl",
 ]
 
 [profile.dev]

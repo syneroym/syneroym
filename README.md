@@ -16,15 +16,15 @@ intermittent connectivity, explicit trust boundaries, and portable execution.
 
 ## Repository Layout
 - `docs/` — Vision mapping, Product specs, architecture, and requirements docs
-- `crates/` — Rust crates for the core substrate, network protocols, identity, CLI, and relay
-- `wit/` — WebAssembly Interface Types for component interactions
-- `apps/` — User-facing applications (CLI, desktop/mobile shells, signaling surfaces)
+- `crates/` — Rust crates for the core substrate, network protocols, identity, and relay
+    - `substrate/` — Entry point for the substrate
+- `apps/` — User-facing applications (CLI, desktop/mobile shells)
+    - `roymctl/` — CLI for accessing services of the local substrate as well as other ecosystem services
 - `examples/` — Demo integrations and reference apps
 
 ## Scope Boundary: Substrate vs. Mini-Apps
 The `crates/` directory contains the core substrate components and libraries that applications use.
-Mini-apps that run on top of the substrate are out of scope for this repo and are
-expected to be built independently (e.g., HTML/CSS/JS or WASM).
+Mini-apps that run on top of the substrate are out of scope for this repo and are expected to be built independently (e.g., HTML/CSS/JS or WASM).
 
 ## Getting Started
 
