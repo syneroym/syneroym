@@ -4327,6 +4327,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "syneroym-community-registry"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "syneroym-core",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "syneroym-coordinator"
 version = "0.1.0"
 dependencies = [
@@ -4376,16 +4386,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "syneroym-ecosystem-registry"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "syneroym-core",
  "tokio",
  "tracing",
 ]
@@ -4447,9 +4447,9 @@ dependencies = [
  "serde_json",
  "syneroym-app-sandbox",
  "syneroym-client-gateway",
+ "syneroym-community-registry",
  "syneroym-coordinator",
  "syneroym-core",
- "syneroym-ecosystem-registry",
  "syneroym-identity",
  "syneroym-observability",
  "syneroym-router",

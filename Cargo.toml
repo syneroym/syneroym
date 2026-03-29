@@ -6,7 +6,7 @@ members = [
     "crates/identity",
     "crates/core",
     "crates/observability",
-    "crates/ecosystem_registry",
+    "crates/community_registry",
     "crates/coordinator",
     "crates/coordinator_iroh",
     "crates/coordinator_webrtc",

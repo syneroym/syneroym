@@ -227,7 +227,7 @@ pub struct ProfileConfig {
 #[serde(default)]
 pub struct RolesConfig {
     pub app_sandbox: Option<AppSandboxRole>,
-    pub ecosystem_registry: Option<ServiceRegistryRole>,
+    pub community_registry: Option<ServiceRegistryRole>,
     pub coordinator: Option<CoordinatorRole>,
     pub client_gateway: Option<ClientGatewayRole>,
     pub observability: Option<ObservabilityRole>,

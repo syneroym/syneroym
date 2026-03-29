@@ -16,9 +16,9 @@ pub async fn run(config: SubstrateConfig) -> anyhow::Result<()> {
 
     let observability_engine = syneroym_observability::ObservabilityEngine::init(&config)?;
 
-    #[cfg(feature = "ecosystem_registry")]
-    let mut ecosystem_registry =
-        syneroym_ecosystem_registry::EcosystemRegistry::init(&config).await?;
+    #[cfg(feature = "community_registry")]
+    let mut community_registry =
+        syneroym_community_registry::EcosystemRegistry::init(&config).await?;
 
     #[cfg(feature = "coordinator")]
     let mut coordinator = syneroym_coordinator::EcosystemCoordinator::init(&config).await?;
@@ -37,15 +37,15 @@ pub async fn run(config: SubstrateConfig) -> anyhow::Result<()> {
         // compile-time features or not configured at runtime. This creates a future
         // that never resolves, ensuring tokio::select! ignores these inactive branches
         // and keeps running until an active component finishes or a shutdown signal is received.
-        #[cfg(feature = "ecosystem_registry")]
+        #[cfg(feature = "community_registry")]
         let mut registry_fut = std::pin::pin!(async {
-            if config.roles.ecosystem_registry.is_some() {
-                ecosystem_registry.run().await
+            if config.roles.community_registry.is_some() {
+                community_registry.run().await
             } else {
                 std::future::pending().await
             }
         });
-        #[cfg(not(feature = "ecosystem_registry"))]
+        #[cfg(not(feature = "community_registry"))]
         let mut registry_fut = std::pin::pin!(std::future::pending::<anyhow::Result<()>>());
 
         #[cfg(feature = "coordinator")]
@@ -121,9 +121,9 @@ pub async fn run(config: SubstrateConfig) -> anyhow::Result<()> {
         error!(error = %e, "error shutting down coordinator");
     }
 
-    #[cfg(feature = "ecosystem_registry")]
-    if config.roles.ecosystem_registry.is_some()
-        && let Err(e) = ecosystem_registry.shutdown().await
+    #[cfg(feature = "community_registry")]
+    if config.roles.community_registry.is_some()
+        && let Err(e) = community_registry.shutdown().await
     {
         error!(error = %e, "error shutting down service registry");
     }

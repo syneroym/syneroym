@@ -16,7 +16,7 @@ toml = "1.0.7"
 syneroym-core = { path = "../core" }
 syneroym-router = { path = "../router" }
 syneroym-observability = { path = "../observability" }
-syneroym-ecosystem-registry = { path = "../ecosystem_registry", optional = true }
+syneroym-community-registry = { path = "../community_registry", optional = true }
 syneroym-coordinator = { path = "../coordinator", optional = true, default-features = false }
 syneroym-app-sandbox = { path = "../app_sandbox", optional = true }
 syneroym-client-gateway = { path = "../client_gateway", optional = true }
@@ -24,13 +24,13 @@ tracing.workspace = true
 
 [features]
 default = [
-    "ecosystem_registry",
+    "community_registry",
     "coordinator_all",
     "app_sandbox",
     "client_gateway",
 ]
 minimal = ["app_sandbox", "client_gateway"]
-ecosystem_registry = ["dep:syneroym-ecosystem-registry"]
+community_registry = ["dep:syneroym-community-registry"]
 app_sandbox = ["dep:syneroym-app-sandbox"]
 client_gateway = ["dep:syneroym-client-gateway"]
 coordinator = ["dep:syneroym-coordinator"]
