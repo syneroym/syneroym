@@ -36,7 +36,7 @@ impl NativeService for SubstrateService {
     async fn dispatch(&self, invocation: NativeInvocation) -> Result<NativeResponse> {
         info!("Orchestrator received dispatch: {}.{}", invocation.interface, invocation.method);
 
-        // Here, you would parse the invocation and interact with the
+        // TODO: Here, we would parse the invocation and interact with the
         // AppSandboxEngine (e.g., Podman or Wasmtime) to deploy, stop,
         // or remove an application.
 
@@ -46,7 +46,11 @@ impl NativeService for SubstrateService {
         //     ("substrate", "remove") => Ok(NativeResponse { payload: serde_json::json!({"status": "ok"}) }),
         //     _ => Err(anyhow!("Unknown method for orchestrator service"))
         // }
-
-        Err(anyhow!("Orchestrator dispatch logic is not fully implemented yet."))
+        match (invocation.interface.as_str(), invocation.method.as_str()) {
+            ("substrate", "readyz") => {
+                return Ok(NativeResponse { payload: serde_json::json!({"status": "ok"}) });
+            }
+            _ => Err(anyhow!("Orchestrator dispatch logic is not fully implemented yet.")),
+        }
     }
 }

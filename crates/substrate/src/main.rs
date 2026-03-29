@@ -306,22 +306,4 @@ mod tests {
             "Inconsistent configuration: Both `agreement` and `controller_did` are provided. Please provide only one."
         );
     }
-
-    #[tokio::test(flavor = "current_thread")]
-    #[ignore] // This test is meant for manual debugging and not for automated test runs
-    async fn test_run() -> Result<(), anyhow::Error> {
-        let mut config_file = NamedTempFile::new().expect("Failed to create temp config file");
-        let config_toml = r#"
-    [roles.client_gateway]
-    "#;
-        write!(config_file, "{}", config_toml).expect("Failed to write to temp config file");
-        let config_path_str = config_file.path().to_str().unwrap();
-        let args = vec!["syneroym", "run", "--config", config_path_str];
-
-        let cli = Cli::parse_from(args);
-        let config = resolve_config(cli.command).expect("Failed to resolve config");
-
-        // Run substrate
-        run(config).await
-    }
 }
