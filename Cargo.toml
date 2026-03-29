@@ -1,9 +1,11 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/core",
     "crates/substrate",
     "crates/identity",
-    "crates/core",
+    "crates/control_plane",
+    "crates/rpc",
     "crates/observability",
     "crates/community_registry",
     "crates/coordinator",

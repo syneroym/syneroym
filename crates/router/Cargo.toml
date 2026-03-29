@@ -8,6 +8,8 @@ license.workspace = true
 [dependencies]
 syneroym-core = { path = "../core" }
 syneroym-app-sandbox = { path = "../app_sandbox" }
+syneroym-rpc = { path = "../rpc" }
+syneroym-control-plane = { path = "../control_plane" }
 anyhow.workspace = true
 async-trait = "0.1"
 dashmap = "6.1.0"

@@ -1,19 +1,16 @@
 pub mod net_iroh;
-pub mod substrate_service;
 
 use anyhow::{Result, anyhow};
-use async_trait::async_trait;
 use dashmap::DashMap;
 use iroh::endpoint::{Connection, presets};
 use iroh::protocol::{AcceptError, ProtocolHandler as IrohProtocolHandler, Router as IrohRouter};
 use iroh::{RelayMap, RelayMode, RelayUrl, SecretKey};
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::fmt;
 use std::sync::Arc;
-use syneroym_core::config::IrohRelayConfig;
-use syneroym_core::config::SubstrateConfig;
+use syneroym_control_plane::SubstrateService;
+use syneroym_core::config::{IrohRelayConfig, SubstrateConfig};
 use syneroym_core::registry::{EndpointRegistry, SubstrateEndpoint};
+use syneroym_rpc::{JsonRpcConverter, NativeService};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
 use tracing::debug;
@@ -138,11 +135,8 @@ impl RouteHandler {
     fn init(service_id: String, config: &SubstrateConfig, registry: EndpointRegistry) -> Self {
         let s = Self { registry: registry.clone(), native_dispatch: DashMap::new() };
 
-        let substrate_service = Arc::new(substrate_service::SubstrateService::new(
-            service_id.clone(),
-            config,
-            registry,
-        ));
+        let substrate_service =
+            Arc::new(SubstrateService::new(service_id.clone(), config, registry));
         s.register_native_service(service_id, substrate_service);
         s
     }
@@ -192,16 +186,12 @@ impl RouteHandler {
             }
             ("wrpc", SubstrateEndpoint::WasmChannel { channel_id }) => {
                 tracing::info!("Passthrough wRPC stream to Wasm channel: {}", channel_id);
-                let payload = ProtocolConverter::json_error(
-                    None,
-                    -32601,
-                    "wRPC passthrough backend is not implemented yet",
-                )?;
-                write_half.write_all(&payload).await?;
+                // Pass `reader` (the BufReader) instead of `read_half` to avoid use-after-move
+                self.handle_passthrough(reader, &mut write_half, &channel_id).await?;
             }
             ("json-rpc", SubstrateEndpoint::WasmChannel { channel_id }) => {
                 tracing::info!("Protocol conversion stream to Wasm channel: {}", channel_id);
-                let payload = ProtocolConverter::json_error(
+                let payload = JsonRpcConverter::json_error(
                     None,
                     -32601,
                     "JSON-RPC to wRPC component bridging is not implemented yet",
@@ -210,7 +200,7 @@ impl RouteHandler {
             }
             ("json-rpc", SubstrateEndpoint::PodmanSocket { socket_path }) => {
                 tracing::info!("Routing to Podman socket: {}", socket_path);
-                let payload = ProtocolConverter::json_error(
+                let payload = JsonRpcConverter::json_error(
                     None,
                     -32601,
                     "JSON-RPC to Podman backend bridging is not implemented yet",
@@ -225,6 +215,34 @@ impl RouteHandler {
         Ok(())
     }
 
+    /// Case 1: Direct Passthrough.
+    /// Establishes a connection to the target service and performs a zero-overhead
+    /// bidirectional stream copy.
+    async fn handle_passthrough<R, W>(
+        &self,
+        _client_read: R,
+        _client_write: &mut W,
+        _channel_id: &str,
+    ) -> Result<()>
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+        W: AsyncWrite + Unpin + Send,
+    {
+        // Pseudo-code: Resolve the actual socket or channel connection using the channel_id.
+        // let mut target_stream = self.channel_manager.connect(channel_id).await?;
+
+        // let (mut target_read, mut target_write) = tokio::io::split(target_stream);
+
+        // Perform a highly optimized bidirectional copy
+        // tokio::try_join!(
+        //     tokio::io::copy(&mut client_read, &mut target_write),
+        //     tokio::io::copy(&mut target_read, client_write),
+        // )?;
+
+        Err(anyhow!("Passthrough target connection logic not implemented yet"))
+    }
+
+    /// Case 4: Protocol Conversion + Native Dispatch
     /// Continuously identifies frames and builds the incoming JSON-RPC struct from bytes.
     /// Converts that to wRPC, calls the native service method, takes the output wRPC WIT,
     /// converts it back to JSON-RPC, and writes it back to the router bidirectional stream.
@@ -259,10 +277,10 @@ impl RouteHandler {
                 continue;
             }
 
-            let (request, invocation) = match ProtocolConverter::json_to_native(interface, &frame) {
+            let (request, invocation) = match JsonRpcConverter::json_to_native(interface, &frame) {
                 Ok(parsed) => parsed,
                 Err(error) => {
-                    let payload = ProtocolConverter::json_error(None, -32700, error.to_string())?;
+                    let payload = JsonRpcConverter::json_error(None, -32700, error.to_string())?;
                     writer.write_all(&payload).await?;
                     continue;
                 }
@@ -271,13 +289,13 @@ impl RouteHandler {
             match service.dispatch(invocation).await {
                 Ok(native_response) => {
                     let json_response =
-                        ProtocolConverter::native_to_json(&request, native_response)?;
+                        JsonRpcConverter::native_to_json(&request, native_response)?;
                     writer.write_all(&json_response).await?;
                 }
                 Err(e) => {
                     tracing::error!("Native service error: {}", e);
                     let error_payload =
-                        ProtocolConverter::json_error(request.id.clone(), -32603, e.to_string())?;
+                        JsonRpcConverter::json_error(request.id.clone(), -32603, e.to_string())?;
                     writer.write_all(&error_payload).await?;
                 }
             }
@@ -337,112 +355,6 @@ impl RoutePreamble {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JsonRpcRequest {
-    pub jsonrpc: String,
-    pub method: String,
-    #[serde(default)]
-    pub params: Option<Value>,
-    #[serde(default)]
-    pub id: Option<Value>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JsonRpcError {
-    pub code: i64,
-    pub message: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JsonRpcResponse {
-    pub jsonrpc: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub result: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<JsonRpcError>,
-    #[serde(default)]
-    pub id: Option<Value>,
-}
-
-impl JsonRpcResponse {
-    pub fn success(id: Option<Value>, result: Value) -> Self {
-        Self { jsonrpc: "2.0", result: Some(result), error: None, id }
-    }
-
-    pub fn error(id: Option<Value>, code: i64, message: impl Into<String>) -> Self {
-        Self {
-            jsonrpc: "2.0",
-            result: None,
-            error: Some(JsonRpcError { code, message: message.into() }),
-            id,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct NativeInvocation {
-    pub interface: String,
-    pub method: String,
-    pub params: Option<Value>,
-}
-
-#[derive(Debug, Clone)]
-pub struct NativeResponse {
-    pub result: Value,
-}
-
-/// The Protocol Converter
-/// Acts as the protocol adapter from framed bytes to typed substrate calls.
-#[derive(Debug, Clone)]
-pub struct ProtocolConverter {}
-
-impl ProtocolConverter {
-    pub fn json_to_native(
-        interface: &str,
-        frame: &[u8],
-    ) -> Result<(JsonRpcRequest, NativeInvocation)> {
-        let request: JsonRpcRequest = serde_json::from_slice(frame)?;
-        if request.jsonrpc != "2.0" {
-            return Err(anyhow!("Unsupported JSON-RPC version: {}", request.jsonrpc));
-        }
-
-        let method = request
-            .method
-            .rsplit_once('.')
-            .map(|(_, method)| method)
-            .unwrap_or(request.method.as_str())
-            .to_string();
-
-        Ok((
-            request.clone(),
-            NativeInvocation {
-                interface: interface.to_string(),
-                method,
-                params: request.params.clone(),
-            },
-        ))
-    }
-
-    pub fn native_to_json(request: &JsonRpcRequest, response: NativeResponse) -> Result<Vec<u8>> {
-        let payload = JsonRpcResponse::success(request.id.clone(), response.result);
-        let mut encoded = serde_json::to_vec(&payload)?;
-        encoded.push(b'\n');
-        Ok(encoded)
-    }
-
-    pub fn json_error(id: Option<Value>, code: i64, message: impl Into<String>) -> Result<Vec<u8>> {
-        let payload = JsonRpcResponse::error(id, code, message);
-        let mut encoded = serde_json::to_vec(&payload)?;
-        encoded.push(b'\n');
-        Ok(encoded)
-    }
-}
-
-#[async_trait]
-pub trait NativeService: Send + Sync {
-    async fn dispatch(&self, invocation: NativeInvocation) -> Result<NativeResponse>;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -453,14 +365,5 @@ mod tests {
         assert_eq!(parsed.protocol, "json-rpc");
         assert_eq!(parsed.interface, "health");
         assert_eq!(parsed.service_id, "substrate-123");
-    }
-
-    #[test]
-    fn converts_json_rpc_into_native_invocation() {
-        let frame = br#"{"jsonrpc":"2.0","id":1,"method":"health.ping"}"#;
-        let (_, invocation) = ProtocolConverter::json_to_native("health", frame).unwrap();
-        assert_eq!(invocation.interface, "health");
-        assert_eq!(invocation.method, "ping");
-        assert!(invocation.params.is_none());
     }
 }

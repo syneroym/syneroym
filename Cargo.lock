@@ -4337,6 +4337,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "syneroym-control-plane"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "syneroym-core",
+ "syneroym-rpc",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "syneroym-coordinator"
 version = "0.1.0"
 dependencies = [
@@ -4427,8 +4439,21 @@ dependencies = [
  "serde",
  "serde_json",
  "syneroym-app-sandbox",
+ "syneroym-control-plane",
  "syneroym-core",
+ "syneroym-rpc",
  "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "syneroym-rpc"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "serde",
+ "serde_json",
  "tracing",
 ]
 
