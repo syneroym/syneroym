@@ -93,14 +93,31 @@ async fn test_run_finishes_on_ctrl_c() {
     );
 }
 
-/// This in-process integration test starts a substrate,
-/// runs operations done over a typical substrate lifetime, finally shutting it down
 #[tokio::test]
 async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+
     // Construct the configuration programmatically.
     let mut config = SubstrateConfig::default();
     config.roles.client_gateway = Some(ClientGatewayRole::default());
     config.profile = "test-lifecycle".to_string();
+    config.app_data_dir = temp_dir.path().to_path_buf();
+    let iroh_config = syneroym_core::config::IrohRelayConfig { relay_url: "".to_string() };
+    config.uplink.iroh = Some(iroh_config);
+
+    // Generate identity beforehand so we know it
+    let substrate_identity_state = syneroym_substrate::identity::setup_substrate_identity(
+        &config.identity,
+        &config.app_data_dir,
+    )
+    .expect("Failed to setup identity");
+    let secret_key =
+        syneroym_substrate::identity::get_secret(&config.identity, &config.app_data_dir)
+            .expect("Failed to get secret");
+    let target_node = iroh::SecretKey::from_bytes(&secret_key).public();
+    let service_id = syneroym_identity::substrate::resolve_did_z32(&substrate_identity_state.did)
+        .expect("Failed to resolve did")
+        .to_string();
 
     // Spawn the entire substrate in a background task.
     let mut substrate_handle = tokio::spawn(async move {
@@ -110,9 +127,9 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
     // Give the substrate a moment to start up its components before we check for availability.
     sleep(Duration::from_millis(500)).await;
     abort_if_failed(
-        wait_for_substrate(),
+        wait_for_substrate(&service_id, target_node),
         &mut substrate_handle,
-        "Substrate did not become available within 1 second",
+        "Substrate did not become available within 5 seconds",
     )
     .await;
 
@@ -124,15 +141,74 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
     assert!(result.is_ok(), "Substrate task should shut down cleanly without panicking.");
 }
 
-async fn check_substrate_available() -> bool {
-    // TODO: Implement actual availability check (e.g., check an HTTP endpoint or native service)
-    true
+async fn check_substrate_available(service_id: &str, target_node: iroh::PublicKey) -> bool {
+    use tokio::io::AsyncBufReadExt;
+
+    // 1. Start an iroh client that connects to the substrate
+    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
+        .bind()
+        .await
+        .expect("Failed to bind iroh endpoint");
+
+    let conn: iroh::endpoint::Connection = match tokio::time::timeout(
+        Duration::from_millis(1500),
+        endpoint.connect(target_node, syneroym_router::SYNEROYM_ALPN),
+    )
+    .await
+    {
+        Ok(Ok(c)) => c,
+        _ => return false,
+    };
+
+    let (mut send, recv): (iroh::endpoint::SendStream, iroh::endpoint::RecvStream) =
+        match tokio::time::timeout(Duration::from_millis(1500), conn.open_bi()).await {
+            Ok(Ok(streams)) => streams,
+            _ => return false,
+        };
+
+    // 2. Send preamble
+    let preamble = format!("json-rpc://substrate.{}\n", service_id);
+    if send.write_all(preamble.as_bytes()).await.is_err() {
+        return false;
+    }
+
+    // 3. Send readyz JSON-RPC request
+    let request = syneroym_rpc::JsonRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        method: "readyz".to_string(),
+        params: serde_json::Value::Object(serde_json::Map::new()),
+        id: Some(serde_json::Value::Number(1.into())),
+    };
+    let mut req_bytes = serde_json::to_vec(&request).unwrap();
+    req_bytes.push(b'\n');
+    if send.write_all(&req_bytes).await.is_err() {
+        return false;
+    }
+
+    // Wait for response
+    let mut resp_buf = Vec::new();
+    let mut reader = tokio::io::BufReader::new(recv);
+    if tokio::time::timeout(Duration::from_millis(500), reader.read_until(b'\n', &mut resp_buf))
+        .await
+        .is_err()
+        || resp_buf.is_empty()
+    {
+        return false;
+    }
+
+    if let Ok(response) = serde_json::from_slice::<syneroym_rpc::JsonRpcResponse>(&resp_buf)
+        && response.result == serde_json::json!({"status": "ok"})
+    {
+        return true;
+    }
+
+    false
 }
 
-async fn wait_for_substrate() -> bool {
-    tokio::time::timeout(Duration::from_secs(1), async {
+async fn wait_for_substrate(service_id: &str, target_node: iroh::PublicKey) -> bool {
+    tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            if check_substrate_available().await {
+            if check_substrate_available(service_id, target_node).await {
                 return;
             }
             sleep(Duration::from_millis(100)).await;
