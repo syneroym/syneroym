@@ -38,9 +38,9 @@ fn substrate_integration_stub() {
     command.assert().success();
 }
 
-#[tokio::test]
 // Test basic binary execution and graceful shutdown on Ctrl-C.
 // This is a black-box test that runs the binary as a subprocess.
+#[tokio::test]
 async fn test_run_finishes_on_ctrl_c() {
     // Create a temporary config file to explicitly enable the client_gateway role
     let mut config_file = NamedTempFile::new().expect("Failed to create temp config file");
@@ -93,6 +93,8 @@ async fn test_run_finishes_on_ctrl_c() {
     );
 }
 
+/// This in-process integration test starts a substrate,
+/// runs operations done over a typical substrate lifetime, finally shutting it down
 #[tokio::test]
 async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
@@ -102,6 +104,13 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
     config.roles.client_gateway = Some(ClientGatewayRole::default());
     config.profile = "test-lifecycle".to_string();
     config.app_data_dir = temp_dir.path().to_path_buf();
+
+    // Since this test runs the substrate in-process, we can't rely on `cargo test` capturing stdout/stderr.
+    // So we configure the substrate to write logs to a temporary file and avoid large outputs while running tests.
+    // Comment temporarily for debugging purpose if needed.
+    config.app_log_dir = temp_dir.path().to_path_buf();
+    config.logging.target = syneroym_core::config::LogTarget::File;
+
     let iroh_config = syneroym_core::config::IrohRelayConfig { relay_url: "".to_string() };
     config.uplink.iroh = Some(iroh_config);
 
