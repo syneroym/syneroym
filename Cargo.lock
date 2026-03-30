@@ -4473,6 +4473,7 @@ dependencies = [
  "predicates",
  "serde",
  "serde_json",
+ "syneroym-app-sandbox",
  "syneroym-client-gateway",
  "syneroym-community-registry",
  "syneroym-coordinator",

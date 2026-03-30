@@ -96,6 +96,7 @@ async fn test_run_finishes_on_ctrl_c() {
 /// This in-process integration test starts a substrate,
 /// runs operations done over a typical substrate lifetime, finally shutting it down
 #[tokio::test]
+#[cfg(feature = "app_sandbox")]
 async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
 
@@ -133,8 +134,7 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
         syneroym_substrate::run(config).await.expect("Substrate failed to run");
     });
 
-    // Give the substrate a moment to start up its components before we check for availability.
-    sleep(Duration::from_millis(500)).await;
+    // Wait for the substrate to become fully available by polling its health check endpoint.
     abort_if_failed(
         wait_for_substrate(&service_id, target_node),
         &mut substrate_handle,
@@ -142,6 +142,19 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
     )
     .await;
 
+    // --- STEP 1: Deploy a test WASM application ---
+    // TODO: Send an RPC request to the substrate to deploy the WASM payload
+    // e.g., let deploy_res = send_json_rpc_request(&service_id, target_node, "deploy_app", serde_json::json!({ ... })).await;
+    // assert!(deploy_res.is_some());
+
+    // --- STEP 2: Wait for the deployed application to become available ---
+    // TODO: Poll the deployed app's readyz or status endpoint.
+
+    // --- STEP 3: Interact with the running WASM application ---
+    // TODO: Make RPC calls to your deployed app and assert the application logic.
+    // e.g., let app_res = send_json_rpc_request("deployed_app_id", target_node, "get_status", serde_json::json!({})).await;
+
+    // --- STEP 4: Teardown / Graceful Shutdown ---
     // Simulate a Ctrl-C (SIGINT) to trigger graceful shutdown.
     send_ctrl_c(std::process::id());
 
@@ -150,10 +163,34 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
     assert!(result.is_ok(), "Substrate task should shut down cleanly without panicking.");
 }
 
+// Helper used by `app_sandbox` feature tests; suppresses warning when feature is disabled.
+#[allow(dead_code)]
 async fn check_substrate_available(service_id: &str, target_node: iroh::PublicKey) -> bool {
+    if let Some(response) = send_json_rpc_request(
+        service_id,
+        target_node,
+        "readyz",
+        serde_json::Value::Object(serde_json::Map::new()),
+    )
+    .await
+        && response.result == serde_json::json!({"status": "ok"})
+    {
+        return true;
+    }
+    false
+}
+
+/// A reusable helper for sending JSON-RPC requests over Iroh Streams in E2E tests.
+// Helper used by `app_sandbox` feature tests; suppresses warning when feature is disabled.
+#[allow(dead_code)]
+async fn send_json_rpc_request(
+    service_id: &str,
+    target_node: iroh::PublicKey,
+    method: &str,
+    params: serde_json::Value,
+) -> Option<syneroym_rpc::JsonRpcResponse> {
     use tokio::io::AsyncBufReadExt;
 
-    // 1. Start an iroh client that connects to the substrate
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
         .bind()
         .await
@@ -166,35 +203,32 @@ async fn check_substrate_available(service_id: &str, target_node: iroh::PublicKe
     .await
     {
         Ok(Ok(c)) => c,
-        _ => return false,
+        _ => return None,
     };
 
     let (mut send, recv): (iroh::endpoint::SendStream, iroh::endpoint::RecvStream) =
         match tokio::time::timeout(Duration::from_millis(1500), conn.open_bi()).await {
             Ok(Ok(streams)) => streams,
-            _ => return false,
+            _ => return None,
         };
 
-    // 2. Send preamble
     let preamble = format!("json-rpc://substrate.{}\n", service_id);
     if send.write_all(preamble.as_bytes()).await.is_err() {
-        return false;
+        return None;
     }
 
-    // 3. Send readyz JSON-RPC request
     let request = syneroym_rpc::JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
-        method: "readyz".to_string(),
-        params: serde_json::Value::Object(serde_json::Map::new()),
+        method: method.to_string(),
+        params,
         id: Some(serde_json::Value::Number(1.into())),
     };
     let mut req_bytes = serde_json::to_vec(&request).unwrap();
     req_bytes.push(b'\n');
     if send.write_all(&req_bytes).await.is_err() {
-        return false;
+        return None;
     }
 
-    // Wait for response
     let mut resp_buf = Vec::new();
     let mut reader = tokio::io::BufReader::new(recv);
     if tokio::time::timeout(Duration::from_millis(500), reader.read_until(b'\n', &mut resp_buf))
@@ -202,18 +236,14 @@ async fn check_substrate_available(service_id: &str, target_node: iroh::PublicKe
         .is_err()
         || resp_buf.is_empty()
     {
-        return false;
+        return None;
     }
 
-    if let Ok(response) = serde_json::from_slice::<syneroym_rpc::JsonRpcResponse>(&resp_buf)
-        && response.result == serde_json::json!({"status": "ok"})
-    {
-        return true;
-    }
-
-    false
+    serde_json::from_slice::<syneroym_rpc::JsonRpcResponse>(&resp_buf).ok()
 }
 
+// Helper used by `app_sandbox` feature tests; suppresses warning when feature is disabled.
+#[allow(dead_code)]
 async fn wait_for_substrate(service_id: &str, target_node: iroh::PublicKey) -> bool {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
@@ -227,6 +257,8 @@ async fn wait_for_substrate(service_id: &str, target_node: iroh::PublicKey) -> b
     .is_ok()
 }
 
+// Helper used by `app_sandbox` feature tests; suppresses warning when feature is disabled.
+#[allow(dead_code)]
 async fn abort_if_failed<F>(step: F, handle: &mut tokio::task::JoinHandle<()>, msg: &str)
 where
     F: std::future::Future<Output = bool>,
@@ -236,6 +268,8 @@ where
     }
 }
 
+// Helper used by `app_sandbox` feature tests; suppresses warning when feature is disabled.
+#[allow(dead_code)]
 async fn abort_substrate(handle: &mut tokio::task::JoinHandle<()>, msg: &str) {
     send_ctrl_c(std::process::id());
     let _ = handle.await;
