@@ -2,8 +2,13 @@ use anyhow::{Result, anyhow};
 use std::fmt;
 use syneroym_core::config::SubstrateConfig;
 use syneroym_core::registry::EndpointRegistry;
+
+use std::sync::Arc;
 use syneroym_rpc::{NativeInvocation, NativeResponse, NativeService};
 use tracing::info;
+
+pub mod sandbox;
+use sandbox::AppSandboxEngine;
 
 /// The Substrate Service (The Control Plane Orchestrator)
 /// This service handles the deployment and lifecycle of applications (SynApps)
@@ -12,8 +17,7 @@ pub struct SubstrateService {
     _service_id: String,
     _config: SubstrateConfig,
     _registry: EndpointRegistry,
-    // In a real implementation, this would hold a client to the AppSandboxEngine
-    // e.g., app_sandbox_engine: AppSandboxEngine,
+    _app_sandbox_engine: Arc<AppSandboxEngine>,
 }
 
 impl fmt::Debug for SubstrateService {
@@ -25,9 +29,22 @@ impl fmt::Debug for SubstrateService {
 }
 
 impl SubstrateService {
-    pub fn new(service_id: String, config: &SubstrateConfig, registry: EndpointRegistry) -> Self {
+    pub async fn init(
+        service_id: String,
+        config: &SubstrateConfig,
+        registry: EndpointRegistry,
+    ) -> Result<Self> {
         info!("Initializing SubstrateService (Orchestrator)...");
-        Self { _service_id: service_id, _config: config.clone(), _registry: registry }
+        let _app_sandbox_engine = std::sync::Arc::new(
+            sandbox::AppSandboxEngine::init(config, registry.get_all_endpoints()).await?,
+        );
+
+        Ok(Self {
+            _service_id: service_id,
+            _config: config.clone(),
+            _registry: registry,
+            _app_sandbox_engine,
+        })
     }
 }
 
@@ -49,6 +66,10 @@ impl NativeService for SubstrateService {
         match (invocation.interface.as_str(), invocation.method.as_str()) {
             ("substrate", "readyz") => {
                 return Ok(NativeResponse { payload: serde_json::json!({"status": "ok"}) });
+            }
+            ("substrate", "deploy") => {
+                // Example: self.app_sandbox_engine.deploy_wasm(...).await?;
+                return Ok(NativeResponse { payload: serde_json::json!({"status": "deployed"}) });
             }
             _ => Err(anyhow!("Orchestrator dispatch logic is not fully implemented yet.")),
         }

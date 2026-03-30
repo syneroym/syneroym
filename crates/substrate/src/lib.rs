@@ -23,9 +23,6 @@ pub async fn run(config: SubstrateConfig) -> anyhow::Result<()> {
     #[cfg(feature = "coordinator")]
     let mut coordinator = syneroym_coordinator::EcosystemCoordinator::init(&config).await?;
 
-    #[cfg(feature = "app_sandbox")]
-    let _app_sandbox_engine = syneroym_app_sandbox::AppSandboxEngine::new(&config);
-
     #[cfg(feature = "client_gateway")]
     let mut client_gateway = syneroym_client_gateway::ClientGateway::init(&config).await?;
 
@@ -150,10 +147,10 @@ async fn setup_connection_router(config: &SubstrateConfig) -> anyhow::Result<Con
     let substrate_secret_key = identity::get_secret(&config.identity, &config.app_data_dir)?;
     let service_id = resolve_did_z32(&substrate_identity_state.did)?.to_string();
 
-    // Initialize the data store
+    // Initialize the data store and Endpoint Registry (Internal Micro-Discovery)
     let data_store = syneroym_core::storage::init_store(config).await?;
-    // Initialize Endpoint Registry (Internal Micro-Discovery)
     let endpoint_registry = EndpointRegistry::new(data_store).await?;
+
     // Register the native SubstrateService at startup in registry
     info!("Registering native SubstrateService at {}", service_id);
     let endpoint = SubstrateEndpoint::NativeHostChannel { channel_id: service_id.clone() };

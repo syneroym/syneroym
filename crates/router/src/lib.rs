@@ -47,7 +47,8 @@ impl ConnectionRouter {
                             .init_iroh(
                                 iroh_config,
                                 iroh::SecretKey::from_bytes(&iroh_secret_key),
-                                RouteHandler::init(service_id.clone(), &config, registry.clone()),
+                                RouteHandler::init(service_id.clone(), &config, registry.clone())
+                                    .await?,
                             )
                             .await?;
                         router.iroh_router = Some(iroh_router);
@@ -132,13 +133,17 @@ impl fmt::Debug for RouteHandler {
 }
 
 impl RouteHandler {
-    fn init(service_id: String, config: &SubstrateConfig, registry: EndpointRegistry) -> Self {
+    async fn init(
+        service_id: String,
+        config: &SubstrateConfig,
+        registry: EndpointRegistry,
+    ) -> Result<Self> {
         let s = Self { registry: registry.clone(), native_dispatch: DashMap::new() };
 
         let substrate_service =
-            Arc::new(SubstrateService::new(service_id.clone(), config, registry));
-        s.register_native_service(service_id, substrate_service);
-        s
+            SubstrateService::init(service_id.clone(), config, registry).await?;
+        s.register_native_service(service_id, Arc::new(substrate_service));
+        Ok(s)
     }
 
     /// Register a channel for a local native service

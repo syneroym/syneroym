@@ -71,4 +71,12 @@ impl EndpointRegistry {
         self.active_endpoints.remove(service_id);
         Ok(())
     }
+
+    /// Returns a list of all currently registered endpoints
+    pub fn get_all_endpoints(&self) -> Vec<(String, SubstrateEndpoint)> {
+        self.active_endpoints
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .collect()
+    }
 }

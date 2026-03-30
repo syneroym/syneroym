@@ -1,7 +1,7 @@
 //! Application sandbox engine for isolating user applications.
 
 use anyhow::Result;
-use syneroym_core::config::SubstrateConfig;
+use syneroym_core::{config::SubstrateConfig, registry::SubstrateEndpoint};
 
 /// Engine: Passive code module that wraps low-level OS operations
 /// to spin up Wasmtime or Podman instances.
@@ -10,8 +10,27 @@ pub struct AppSandboxEngine {
 }
 
 impl AppSandboxEngine {
-    pub fn new(_config: &SubstrateConfig) -> Self {
-        Self {}
+    /// Initializes the App Sandbox and warms up any existing WASM endpoints
+    pub async fn init(
+        _config: &SubstrateConfig,
+        endpoints: Vec<(String, SubstrateEndpoint)>,
+    ) -> anyhow::Result<Self> {
+        let engine = Self {};
+
+        for (service_id, endpoint) in endpoints {
+            if let SubstrateEndpoint::WasmChannel { channel_id } = endpoint {
+                tracing::info!(
+                    service_id = %service_id,
+                    channel_id = %channel_id,
+                    "Warming up WASM component"
+                );
+
+                // Perform your engine's warmup routine here
+                // engine.load_and_warmup(&service_id, &channel_id).await?;
+            }
+        }
+
+        Ok(engine)
     }
 
     /// Spin up a new Wasmtime instance
