@@ -60,9 +60,10 @@ impl RouteHandler {
         }
         let preamble = RoutePreamble::parse(&preamble)?;
 
-        let endpoint = self.registry.lookup(&preamble.service_id).ok_or_else(|| {
-            anyhow!("Service {} not found in local registry", preamble.service_id)
-        })?;
+        let endpoint =
+            self.registry.lookup(&preamble.service_id, &preamble.interface).ok_or_else(|| {
+                anyhow!("Service {} not found in local registry", preamble.service_id)
+            })?;
 
         tracing::info!(
             "Router handling stream: protocol={} interface={} service_id={}",
@@ -72,7 +73,7 @@ impl RouteHandler {
         );
 
         match (preamble.protocol.as_str(), endpoint) {
-            ("json-rpc", SubstrateEndpoint::NativeHostChannel { channel_id }) => {
+            ("json-rpc", SubstrateEndpoint::NativeHostChannel { channel_details: channel_id }) => {
                 self.handle_json_to_native(
                     reader,
                     &mut write_half,
@@ -81,11 +82,11 @@ impl RouteHandler {
                 )
                 .await?;
             }
-            ("wrpc", SubstrateEndpoint::WasmChannel { channel_id }) => {
+            ("wrpc", SubstrateEndpoint::WasmChannel { channel_details: channel_id }) => {
                 tracing::info!("Passthrough wRPC stream to Wasm channel: {}", channel_id);
                 self.handle_passthrough(reader, &mut write_half, &channel_id).await?;
             }
-            ("json-rpc", SubstrateEndpoint::WasmChannel { channel_id }) => {
+            ("json-rpc", SubstrateEndpoint::WasmChannel { channel_details: channel_id }) => {
                 tracing::info!("Protocol conversion stream to Wasm channel: {}", channel_id);
                 let payload = JsonRpcConverter::json_error(
                     None,

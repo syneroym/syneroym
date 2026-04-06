@@ -54,10 +54,10 @@ impl NativeService for SubstrateService {
         // AppSandboxEngine (e.g., Podman or Wasmtime) to deploy, stop,
         // or remove an application.
         match (invocation.interface.as_str(), invocation.method.as_str()) {
-            ("substrate", "readyz") => {
+            ("orchestrator", "readyz") => {
                 Ok(NativeResponse { payload: serde_json::json!({"status": "ok"}) })
             }
-            ("substrate", "deploy") => {
+            ("orchestrator", "deploy") => {
                 // Example: self.app_sandbox_engine.deploy_wasm(...).await?;
                 Ok(NativeResponse { payload: serde_json::json!({"status": "deployed"}) })
             }

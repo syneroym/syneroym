@@ -143,8 +143,8 @@ async fn setup_connection_router(config: &SubstrateConfig) -> anyhow::Result<Con
     let endpoint_registry = EndpointRegistry::new(data_store).await?;
 
     info!("Registering native SubstrateService at {}", service_id);
-    let endpoint = SubstrateEndpoint::NativeHostChannel { channel_id: service_id.clone() };
-    endpoint_registry.register(service_id.clone(), endpoint).await?;
+    let endpoint = SubstrateEndpoint::NativeHostChannel { channel_details: service_id.clone() };
+    endpoint_registry.register(service_id.clone(), "orchestrator".to_string(), endpoint).await?;
 
     ConnectionRouter::init(
         endpoint_registry,

@@ -11,12 +11,12 @@ impl AppSandboxEngine {
     /// Initializes the App Sandbox and warms up any existing WASM endpoints
     pub async fn init(
         _config: &SubstrateConfig,
-        endpoints: Vec<(String, SubstrateEndpoint)>,
+        endpoints: Vec<(String, String, SubstrateEndpoint)>,
     ) -> anyhow::Result<Self> {
         let engine = Self {};
 
-        for (service_id, endpoint) in endpoints {
-            if let SubstrateEndpoint::WasmChannel { channel_id } = endpoint {
+        for (service_id, _interface_name, endpoint) in endpoints {
+            if let SubstrateEndpoint::WasmChannel { channel_details: channel_id } = endpoint {
                 tracing::info!(
                     service_id = %service_id,
                     channel_id = %channel_id,
