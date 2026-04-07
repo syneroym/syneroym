@@ -2,3 +2,6 @@ max_width = 100
 edition = "2024"
 use_small_heuristics = "Max"
 newline_style = "Unix"
+
+# Ignore auto-generated files from cargo-component
+ignore = ["**/bindings.rs"]
