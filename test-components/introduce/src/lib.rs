@@ -1,4 +1,5 @@
 #[allow(warnings)]
+#[rustfmt::skip]
 mod bindings;
 
 use bindings::exports::component::introduce::introduce::{Guest, Person};
