@@ -44,7 +44,7 @@ coordinator_all = [
 
 [dev-dependencies]
 assert_cmd = "2.0"
-libc = "0.2.183"
+libc = "0.2.184"
 predicates = "3.1"
 tempfile = "3.10"
 iroh.workspace = true
