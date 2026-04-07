@@ -212,7 +212,7 @@ async fn send_json_rpc_request(
             _ => return None,
         };
 
-    let preamble = format!("json-rpc://substrate.{}\n", service_id);
+    let preamble = format!("json-rpc://orchestrator.{}\n", service_id);
     if send.write_all(preamble.as_bytes()).await.is_err() {
         return None;
     }
