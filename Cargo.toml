@@ -15,6 +15,7 @@ members = [
     "crates/client_gateway",
     "crates/router",
     "apps/roymctl",
+    "test-components/introduce",
 ]
 
 [profile.dev]
@@ -31,7 +32,7 @@ strip = true      # Ensures debug symbols are removed.
 version = "0.1.0"
 edition = "2024"
 authors = ["Syneroym Contributors"]
-license = "MIT or Apache-2.0"
+license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 syneroym-identity = { path = "crates/identity", version = "0.1.0" }

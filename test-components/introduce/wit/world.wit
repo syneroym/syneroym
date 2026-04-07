@@ -1,0 +1,14 @@
+package component:introduce;
+
+interface introduce {
+    record person {
+        name: string,
+        interests: list<string>,
+    }
+
+    greet: func(arg: person) -> string;
+}
+
+world example {
+    export introduce;
+}

@@ -20,11 +20,20 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
+          targets: wasm32-wasip1
           components: clippy, rustfmt
+
+      - name: Install cargo-component
+        uses: bytecodealliance/actions/cargo-component/setup@v1
+        with:
+          version: '0.21.1'
 
       - name: Setup Rust Cache
         uses: Swatinem/rust-cache@v2
         
+      - name: Build WASM Test Component
+        run: cd test-components/introduce && cargo component build
+
       - name: Check Formatting
         run: cargo fmt --all -- --check
         

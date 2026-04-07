@@ -1,0 +1,17 @@
+[package]
+name = "test-component-introduce"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+wit-bindgen-rt = { version = "0.41.0", features = ["bitflags"] }
+
+[lib]
+crate-type = ["cdylib"]
+
+[package.metadata.component]
+package = "component:introduce"
+
+[package.metadata.component.dependencies]
