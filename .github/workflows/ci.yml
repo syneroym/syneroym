@@ -24,9 +24,9 @@ jobs:
           components: clippy, rustfmt
 
       - name: Install cargo-component
-        uses: bytecodealliance/actions/cargo-component/setup@v1
+        uses: taiki-e/install-action@v2
         with:
-          version: '0.21.1'
+          tool: cargo-component@0.21.1
 
       - name: Setup Rust Cache
         uses: Swatinem/rust-cache@v2
