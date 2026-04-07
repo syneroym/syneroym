@@ -4,7 +4,7 @@ node = "24"
 # Adding it here ensures users without rustup get it installed via Mise.
 rust = "stable"
 "cargo:wasm-tools" = "latest"
-"cargo:cargo-component" = "0.20.0"
+"cargo:cargo-component" = "0.21"
 "cargo:cargo-audit" = "latest"
 
 [settings]

@@ -4,7 +4,7 @@ use iroh::endpoint::Connection;
 use iroh::protocol::{AcceptError, ProtocolHandler as IrohProtocolHandler};
 use std::fmt;
 use std::sync::Arc;
-use syneroym_control_plane::SubstrateService;
+use syneroym_control_plane::ControlPlaneService;
 use syneroym_core::config::SubstrateConfig;
 use syneroym_core::registry::{EndpointRegistry, SubstrateEndpoint};
 use syneroym_rpc::{JsonRpcConverter, NativeService};
@@ -37,7 +37,7 @@ impl RouteHandler {
         let s = Self { registry: registry.clone(), native_dispatch: DashMap::new() };
 
         let substrate_service =
-            SubstrateService::init(service_id.clone(), config, registry).await?;
+            ControlPlaneService::init(service_id.clone(), config, registry).await?;
         s.register_native_service(service_id, Arc::new(substrate_service));
         Ok(s)
     }

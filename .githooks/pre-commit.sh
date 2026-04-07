@@ -8,8 +8,8 @@ export PATH="$HOME/.cargo/bin:$PATH"
 
 # Ensure formatting is correct
 echo "Checking cargo fmt..."
-if ! cargo fmt --all -- --check; then
-    echo "❌ cargo fmt failed! Please format your code using 'cargo fmt'."
+if ! cargo +nightly fmt --all -- --check; then
+    echo "❌ cargo fmt failed! Please format your code using 'cargo +nightly fmt'."
     exit 1
 fi
 

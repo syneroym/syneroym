@@ -1,4 +1,4 @@
-package syneroym:substrate;
+package syneroym:control-plane;
 
 interface orchestrator {
     /// Deploy a new service using a given manifest or WASM binary
@@ -19,7 +19,7 @@ interface health {
     ping: func() -> result<string, string>;
 }
 
-world substrate-service {
+world control-plane-service {
     export orchestrator;
     export health;
 }

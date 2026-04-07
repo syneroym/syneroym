@@ -2,3 +2,9 @@ max_width = 100
 edition = "2024"
 use_small_heuristics = "Max"
 newline_style = "Unix"
+
+# Enable unstable features to use the 'ignore' configuration
+unstable_features = true
+
+# Ignore auto-generated files from cargo-component
+ignore = ["**/bindings.rs"]
