@@ -1,3 +1,5 @@
+use crate::control_plane_wit_bindings::exports::syneroym::control_plane::orchestrator::DeployManifest;
+use crate::dummy_sandbox::AppSandboxEngine;
 use anyhow::{Result, anyhow};
 use std::fmt;
 use std::sync::Arc;
@@ -5,8 +7,6 @@ use syneroym_core::config::SubstrateConfig;
 use syneroym_core::registry::EndpointRegistry;
 use syneroym_rpc::{NativeInvocation, NativeResponse, NativeService};
 use tracing::info;
-
-use crate::dummy_sandbox::AppSandboxEngine;
 
 /// The Substrate Service (The Control Plane Orchestrator)
 /// This service handles the deployment and lifecycle of applications (SynApps)
@@ -58,6 +58,7 @@ impl NativeService for ControlPlaneService {
                 Ok(NativeResponse { payload: serde_json::json!({"status": "ok"}) })
             }
             ("orchestrator", "deploy") => {
+                let _args: DeployManifest = serde_json::from_value(invocation.params)?;
                 // Example: self.app_sandbox_engine.deploy_wasm(...).await?;
                 Ok(NativeResponse { payload: serde_json::json!({"status": "deployed"}) })
             }

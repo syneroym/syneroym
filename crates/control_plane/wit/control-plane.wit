@@ -1,8 +1,59 @@
 package syneroym:control-plane;
 
 interface orchestrator {
-    /// Deploy a new service using a given manifest or WASM binary
-    deploy: func(service-id: string, manifest: list<u8>) -> result<_, string>;
+    /// Represents where a deployment artifact can be fetched from.
+    variant artifact-source {
+        /// A URL pointing to the artifact (e.g., OCI registry, HTTPS URL).
+        url(string),
+        /// The raw binary bytes of the artifact itself.
+        binary(list<u8>),
+    }
+
+    /// General configuration provided to the deployed service.
+    record service-config {
+        /// Environment variables represented as key-value pairs.
+        env: list<tuple<string, string>>,
+        /// Command-line arguments.
+        args: list<string>,
+        /// Arbitrary nested configuration (e.g., serialized JSON).
+        custom-config: option<string>,
+    }
+
+    /// Manifest details for a Wasm component deployment.
+    record wasm-manifest {
+        source: artifact-source,
+        hash: option<string>,
+    }
+
+    /// Manifest details for a container (Podman) deployment.
+    record container-manifest {
+        source: artifact-source,
+        hash: option<string>,
+    }
+
+    /// Manifest details for an existing TCP service.
+    record tcp-manifest {
+        host: string,
+        port: u16,
+    }
+
+    /// Defines the specific type of service and carries its specific payload.
+    variant service-type {
+        wasm(wasm-manifest),
+        container(container-manifest),
+        tcp(tcp-manifest),
+    }
+
+    /// A comprehensive manifest for deploying a service on the substrate.
+    record deploy-manifest {
+        /// Base configuration applied to the service
+        config: service-config,
+        /// Type and specific configurations for the service
+        service-type: service-type,
+    }
+
+    /// Deploy a new service using a deployment manifest
+    deploy: func(service-id: string, manifest: deploy-manifest) -> result<_, string>;
 
     /// Stop a currently running service gracefully
     stop: func(service-id: string) -> result<_, string>;
