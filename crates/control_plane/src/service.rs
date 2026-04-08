@@ -1,5 +1,5 @@
-use crate::control_plane_wit_bindings::exports::syneroym::control_plane::orchestrator::DeployManifest;
 use crate::dummy_sandbox::AppSandboxEngine;
+use crate::wit_bindings::exports::syneroym::control_plane::orchestrator::DeployManifest;
 use anyhow::{Result, anyhow};
 use std::fmt;
 use std::sync::Arc;
