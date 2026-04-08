@@ -1,0 +1,10 @@
+[package]
+name = "syneroym-bindings"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+wit-bindgen = "0.55.0"

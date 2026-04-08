@@ -20,7 +20,7 @@ checksum = "b169f7a6d4742236a0a00c541b845991d0ac43e546831af1249753ab4c3aa3a0"
 dependencies = [
  "cfg-if",
  "cipher",
- "cpufeatures",
+ "cpufeatures 0.2.17",
 ]
 
 [[package]]
@@ -331,16 +331,16 @@ dependencies = [
 
 [[package]]
 name = "blake3"
-version = "1.8.3"
+version = "1.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2468ef7d57b3fb7e16b576e8377cdbde2320c60e1491e961d11da40fc4f02a2d"
+checksum = "4d2d5991425dfd0785aed03aedcf0b321d61975c9b5b3689c774a2610ae0b51e"
 dependencies = [
  "arrayref",
  "arrayvec",
  "cc",
  "cfg-if",
  "constant_time_eq",
- "cpufeatures",
+ "cpufeatures 0.3.0",
 ]
 
 [[package]]
@@ -607,6 +607,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cpufeatures"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b2a41393f66f16b0823bb79094d54ac5fbd34ab292ddafb9a0456ac9f87d201"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "crc"
 version = "3.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -695,7 +704,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "97fb8b7c4503de7d6ae7b42ab72a5a59857b4c937ec27a3d4539dba95b5ab2be"
 dependencies = [
  "cfg-if",
- "cpufeatures",
+ "cpufeatures 0.2.17",
  "curve25519-dalek-derive",
  "digest 0.10.7",
  "fiat-crypto 0.2.9",
@@ -711,7 +720,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6f9200d1d13637f15a6acb71e758f64624048d85b31a5fdbfd8eca1e2687d0b7"
 dependencies = [
  "cfg-if",
- "cpufeatures",
+ "cpufeatures 0.2.17",
  "curve25519-dalek-derive",
  "digest 0.11.0-rc.10",
  "fiat-crypto 0.3.0",
@@ -3037,7 +3046,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9d1fe60d06143b2430aa532c94cfe9e29783047f06c0d7fd359a9a51b729fa25"
 dependencies = [
  "cfg-if",
- "cpufeatures",
+ "cpufeatures 0.2.17",
  "opaque-debug",
  "universal-hash",
 ]
@@ -3880,7 +3889,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3bf829a2d51ab4a5ddf1352d8470c140cadc8301b2ae1789db023f01cedd6ba"
 dependencies = [
  "cfg-if",
- "cpufeatures",
+ "cpufeatures 0.2.17",
  "digest 0.10.7",
 ]
 
@@ -3891,7 +3900,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9c777f0a122a53fddb0beb6e706771197000b8eb5c9f42b5b850f450ef48c788"
 dependencies = [
  "cfg-if",
- "cpufeatures",
+ "cpufeatures 0.2.17",
  "digest 0.11.0-rc.10",
 ]
 
@@ -3902,7 +3911,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
 dependencies = [
  "cfg-if",
- "cpufeatures",
+ "cpufeatures 0.2.17",
  "digest 0.10.7",
 ]
 
@@ -3913,7 +3922,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d1e3878ab0f98e35b2df35fe53201d088299b41a6bb63e3e34dada2ac4abd924"
 dependencies = [
  "cfg-if",
- "cpufeatures",
+ "cpufeatures 0.2.17",
  "digest 0.11.0-rc.10",
 ]
 
@@ -4321,9 +4330,21 @@ name = "syneroym-app-sandbox"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "hex",
+ "reqwest 0.13.2",
+ "sha2 0.10.9",
+ "syneroym-bindings",
  "syneroym-core",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "syneroym-bindings"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "wit-bindgen 0.55.0",
 ]
 
 [[package]]
@@ -4356,11 +4377,11 @@ dependencies = [
  "serde",
  "serde_json",
  "syneroym-app-sandbox",
+ "syneroym-bindings",
  "syneroym-core",
  "syneroym-rpc",
  "tokio",
  "tracing",
- "wit-bindgen 0.55.0",
 ]
 
 [[package]]
