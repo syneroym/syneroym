@@ -1,23 +1,6 @@
 [workspace]
 resolver = "2"
-members = [
-    "crates/core",
-    "crates/substrate",
-    "crates/identity",
-    "crates/control_plane",
-    "crates/rpc",
-    "crates/observability",
-    "crates/community_registry",
-    "crates/coordinator",
-    "crates/coordinator_iroh",
-    "crates/coordinator_webrtc",
-    "crates/app_sandbox",
-    "crates/client_gateway",
-    "crates/router",
-    "apps/roymctl",
-    "test-components/introduce",
-    "crates/bindings",
-]
+members = ["crates/*", "apps/*"]
 
 [profile.dev]
 incremental = true # Compile your binary in smaller steps.

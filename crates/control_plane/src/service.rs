@@ -2,7 +2,7 @@ use crate::dummy_sandbox::AppSandboxEngine;
 use anyhow::{Result, anyhow};
 use std::fmt;
 use std::sync::Arc;
-use syneroym_bindings::exports::syneroym::control_plane::orchestrator::{
+use syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::{
     DeployManifest, ServiceType,
 };
 use syneroym_core::config::SubstrateConfig;

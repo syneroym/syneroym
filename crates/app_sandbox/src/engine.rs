@@ -1,14 +1,47 @@
 use anyhow::{Context, Result};
+use dashmap::DashMap;
 use std::path::PathBuf;
-use syneroym_bindings::exports::syneroym::control_plane::orchestrator::{
+use syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, DeployManifest, ServiceType,
 };
 use syneroym_core::{config::SubstrateConfig, registry::SubstrateEndpoint};
+use wasmtime::component::{Component, Linker};
+use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxView};
+
+/// Host state instantiated per-request for WASM components
+pub struct HostState {
+    pub wasi: WasiCtx,
+    pub table: ResourceTable,
+    // Custom state
+    pub component_id: String,
+    pub request_ctx: Option<String>,
+}
+
+impl wasmtime_wasi::WasiView for HostState {
+    fn ctx(&mut self) -> WasiCtxView<'_> {
+        WasiCtxView { ctx: &mut self.wasi, table: &mut self.table }
+    }
+}
+
+impl syneroym_bindings::host::syneroym::host::context::Host for HostState {
+    async fn get_test_context(&mut self, request_ctx: String) -> String {
+        let component_ctx = format!("Component: {}", self.component_id);
+        if let Some(existing) = &self.request_ctx {
+            format!("{} | {} | {}", component_ctx, existing, request_ctx)
+        } else {
+            format!("{} | {}", component_ctx, request_ctx)
+        }
+    }
+}
 
 /// Engine: Passive code module that wraps low-level OS operations
 /// to spin up Wasmtime or Podman instances.
 pub struct AppSandboxEngine {
     blobs_dir: PathBuf,
+    engine: wasmtime::Engine,
+    linker: Linker<HostState>,
+    // Cache of compiled components for fast instantiation
+    components: DashMap<String, Component>,
 }
 
 impl AppSandboxEngine {
@@ -24,7 +57,41 @@ impl AppSandboxEngine {
             tokio::fs::create_dir_all(&blobs_dir).await?;
         }
 
-        let engine = Self { blobs_dir };
+        // Configure Wasmtime engine with optimizations
+        let mut wasmtime_config = wasmtime::Config::new();
+        wasmtime_config.wasm_component_model(true);
+        wasmtime_config.memory_init_cow(true);
+
+        // Configure pooling allocation for per-request isolation
+        let mut pooling_config = wasmtime::PoolingAllocationConfig::default();
+
+        // TODO: In the future, read these limits from `config` based on the hardware tier
+        // Restrict the maximum number of concurrent WASM instances
+        pooling_config.total_component_instances(10);
+        // Restrict each WASM instance to a maximum of 128MB of linear memory
+        pooling_config.max_memory_size(128 * 1024 * 1024);
+
+        wasmtime_config
+            .allocation_strategy(wasmtime::InstanceAllocationStrategy::Pooling(pooling_config));
+
+        let engine = wasmtime::Engine::new(&wasmtime_config)?;
+
+        // Initialize linker
+        let mut linker = Linker::new(&engine);
+
+        // Add WASI capabilities
+        wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
+
+        // Add custom host capabilities
+        syneroym_bindings::host::syneroym::host::context::add_to_linker::<
+            _,
+            wasmtime::component::HasSelf<HostState>,
+        >(&mut linker, |state| state)?;
+
+        // Component cache
+        let components = DashMap::new();
+
+        let engine = Self { blobs_dir, engine, linker, components };
 
         for (service_id, _interface_name, endpoint) in endpoints {
             if let SubstrateEndpoint::WasmChannel { channel_details: channel_id } = endpoint {
@@ -34,8 +101,9 @@ impl AppSandboxEngine {
                     "Warming up WASM component"
                 );
 
-                // Perform your engine's warmup routine here
-                // engine.load_and_warmup(&service_id, &channel_id).await?;
+                if let Err(e) = engine.load_cached_wasm(&service_id).await {
+                    tracing::error!("Failed to warm up WASM component {}: {}", service_id, e);
+                }
             }
         }
 
@@ -93,10 +161,61 @@ impl AppSandboxEngine {
 
         tracing::info!("WASM binary stored at {:?}", file_path);
 
-        // 4. Register in Wasmtime (stubbed for now since no Wasmtime engine in AppSandboxEngine)
-        // ...
+        // 4. Compile and cache the component
+        self.compile_and_cache_wasm(service_id, &bytes)?;
 
         Ok(())
+    }
+
+    /// Execute a WASM component for a given service
+    pub async fn execute_wasm(
+        &self,
+        service_id: &str,
+        component_id: &str,
+        request_ctx: Option<String>,
+    ) -> Result<String> {
+        // Look up the compiled component
+        let component = self
+            .components
+            .get(service_id)
+            .ok_or_else(|| anyhow::anyhow!("Component not found for service {}", service_id))?;
+
+        // Create new WASI context and table for per-request isolation
+        let wasi = WasiCtx::builder().inherit_stderr().inherit_stdout().build();
+        let table = ResourceTable::new();
+
+        // Create host state
+        let host_state =
+            HostState { wasi, table, component_id: component_id.to_string(), request_ctx };
+
+        // Create a new store
+        let mut store = wasmtime::Store::new(&self.engine, host_state);
+
+        // Instantiate the component using generated HostEnvironment
+        let env = syneroym_bindings::host::HostEnvironment::instantiate_async(
+            &mut store,
+            &component,
+            &self.linker,
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to instantiate component: {}", e))?;
+
+        // Call the run function
+        let result = env.syneroym_host_app().call_run(&mut store).await?;
+
+        // Store is dropped here, enforcing cleanup
+
+        Ok(result)
+    }
+
+    /// Simple test function to invoke test context
+    pub async fn invoke_test_context(
+        &self,
+        service_id: &str,
+        component_id: &str,
+        request_ctx: &str,
+    ) -> Result<String> {
+        self.execute_wasm(service_id, component_id, Some(request_ctx.to_string())).await
     }
 
     /// Stop a running Wasm component
@@ -108,6 +227,30 @@ impl AppSandboxEngine {
     /// Remove a stopped Wasm component
     pub async fn remove_wasm(&self, _service_id: &str) -> Result<()> {
         tracing::info!("AppSandboxEngine: Removing Wasm component for {}", _service_id);
+        Ok(())
+    }
+
+    /// Helper to load a cached WASM component from disk and compile it
+    async fn load_cached_wasm(&self, service_id: &str) -> Result<()> {
+        let file_path = self.blobs_dir.join(format!("{}.wasm", service_id));
+        if file_path.exists() {
+            let bytes = tokio::fs::read(&file_path)
+                .await
+                .context(format!("Failed to read WASM file {:?}", file_path))?;
+            self.compile_and_cache_wasm(service_id, &bytes)?;
+        } else {
+            tracing::warn!("WASM file not found on disk for service: {:?}", file_path);
+        }
+        Ok(())
+    }
+
+    /// Helper to compile a WASM binary and store it in the cache
+    fn compile_and_cache_wasm(&self, service_id: &str, bytes: &[u8]) -> Result<()> {
+        let component = Component::new(&self.engine, bytes)
+            .map_err(|e| anyhow::anyhow!("Failed to compile WASM component: {}", e))?;
+
+        self.components.insert(service_id.to_string(), component);
+        tracing::info!("WASM component compiled and cached for {}", service_id);
         Ok(())
     }
 

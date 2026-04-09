@@ -1,9 +1,11 @@
 [package]
 name = "test-component-introduce"
-version.workspace = true
-edition.workspace = true
-authors.workspace = true
-license.workspace = true
+version = "0.1.0"
+edition = "2024"
+authors = ["Syneroym Contributors"]
+license = "MIT OR Apache-2.0"
+
+[workspace]
 
 [dependencies]
 wit-bindgen-rt = { version = "0.41.0", features = ["bitflags"] }
