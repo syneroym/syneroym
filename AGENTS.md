@@ -28,7 +28,7 @@
 - **Security and Dependencies**: Do not exfiltrate secrets. Use minimal, pinned, widely-used libraries. Update manifests appropriately.
 
 ## Repository Structure and Key Components
-- **Workspace Layout**: This is a Rust workspace with multiple crates in `crates/`, apps in `apps/`, documentation in `docs/`, and test components in `test-components/`. Key files include `Cargo.toml` (workspace config), `mise.toml` (tool versions), and `pnpm-workspace.yaml` (for any JS components).
+- **Workspace Layout**: This is a Rust workspace with multiple crates in `crates/`, apps in `apps/`, documentation in `docs/`, and test components in `test-components/`. Key files include `Cargo.toml` (workspace config) and `mise.toml` (tool versions).
 - **Core Crates**:
   - `core/`: Fundamental types and utilities.
   - `coordinator/`: Coordination logic, with variants like `coordinator_iroh/` and `coordinator_webrtc/`.

@@ -24,7 +24,7 @@ intermittent connectivity, explicit trust boundaries, and portable execution.
 
 ## Scope Boundary: Substrate vs. Mini-Apps
 The `crates/` directory contains the core substrate components and libraries that applications use.
-Mini-apps that run on top of the substrate are out of scope for this repo and are expected to be built independently (e.g., HTML/CSS/JS or WASM).
+Mini-apps that run on top of the substrate are out of scope for this repo and are expected to be built independently (e.g., WASM components for backend logic, and HTML/CSS/JS loaded in WebViews for frontend UI).
 
 ## Getting Started
 
@@ -38,7 +38,7 @@ This repo is being bootstrapped. For now:
 We recommend using [mise](https://mise.jdx.dev/) to manage development tools.
 
 ```bash
-# Install tools specified in mise.toml (Rust, Node, wasm-tools, etc.)
+# Install tools specified in mise.toml (Rust, wasm-tools, etc.)
 mise install
 ```
 

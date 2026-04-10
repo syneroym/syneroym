@@ -779,10 +779,9 @@ score(item, consumer_context) =
   + 0.1 × recency                  // freshness of catalog entry
 ```
 
-Consumer session context (query history, viewed items) is kept **only in PWA local storage**, never transmitted. Collaborative signals are computed from **aggregate anonymised counts** published by the provider substrate — no individual consumer data leaves their device.
+Consumer session context (query history, viewed items) is kept **only in local app storage**, never transmitted. Collaborative signals are computed from **aggregate anonymised counts** published by the provider substrate — no individual consumer data leaves their device.
 
 **Key differences from SynApp 1:**
-- Catalog schema includes `available_until` (time-bounded perishables) and `preparation_time_minutes`
 - Adds `delivery-engine` and `tracking-service` components
 - Order state machine includes `PREPARING`, `OUT_FOR_DELIVERY`, `DELIVERED` sub-states within `IN_PROGRESS`
 
@@ -839,12 +838,12 @@ No central coordinator is required — these are convention-based contracts enfo
 
 ```mermaid
 flowchart TD
-    subgraph PWA["Consumer PWA (SolidJS/React + TypeScript + Vite)"]
-        UI[UI Components Tailwind CSS]
-        STATE[Local State Zustand / React Query / SolidJS]
-        CRYPTO_CLIENT[Client-side Crypto libsignal-protocol-wasm]
-        STORAGE_CLIENT[Local Storage IndexedDB]
-        CONN[Connection Manager WebSocket / WebRTC]
+    subgraph CLIENT["Consumer App (Tauri Desktop / Native Mobile / PWA)"]
+        UI[Native Shell + WebView for dynamic SynApp UIs]
+        STATE[Local State Management]
+        CRYPTO_CLIENT[Client-side Crypto libsignal / native bindings]
+        STORAGE_CLIENT[Local Storage / SQLite / CoreData]
+        CONN[Connection Manager FFI / WebSocket / WebRTC]
     end
 
     subgraph IDENTITY_OPT["Consumer Identity Options"]
@@ -853,10 +852,10 @@ flowchart TD
         OPT_C[Option C: Guest browse-only no history]
     end
 
-    PWA <-->|"JSON-RPC WebSocket or WebRTC"| PROVIDER_GW[Provider Substrate Gateway]
-    PWA -->|"identity ops"| IDENTITY_OPT
+    CLIENT <-->|"JSON-RPC / wRPC via FFI, WebSocket, or WebRTC"| PROVIDER_GW[Provider Substrate Gateway]
+    CLIENT -->|"identity ops"| IDENTITY_OPT
 
-    style PWA fill:#D6E4F0,stroke:#2E75B6
+    style CLIENT fill:#D6E4F0,stroke:#2E75B6
     style IDENTITY_OPT fill:#E2EFDA,stroke:#548235
 ```
 
@@ -874,7 +873,7 @@ The substrate ships **instrumentation primitives, not observability stacks**. Op
 
 All instrumentation is in-process, zero-cost when unused, and based on open facades:
 
-- **Tracing:** `tracing` crate (Rust). Structured spans and events at every component boundary, substrate hop, and async I/O point. A correlation `trace_id` generated at the PWA flows through every wRPC call, queue entry, and cross-substrate message — enabling full reconstruction of any user action across nodes.
+- **Tracing:** `tracing` crate (Rust). Structured spans and events at every component boundary, substrate hop, and async I/O point. A correlation `trace_id` generated at the client app flows through every wRPC call, queue entry, and cross-substrate message — enabling full reconstruction of any user action across nodes.
 - **Metrics:** `metrics` crate facade. Key signals: order state transitions, queue depth and age, relay connection stability, merge conflict rate, component restart count. Default backend: in-process circular buffer. Operators attach external backends (Prometheus, VictoriaMetrics) by configuration.
 - **Logs:** `tracing-subscriber` emitting structured JSON to a rotating local file. Human-readable with `jq`; parseable by any log tool. No external sink by default.
 - **In-process ring buffer:** Retains the last N spans and metric snapshots in memory. Queryable via the substrate health API without any external tool. The primary observability interface for Tier 1 nodes.
@@ -1097,11 +1096,9 @@ This section is an index of every `[TBD]` marker in the requirements spec, that 
 
 | Concern | Technology |
 |---|---|
-| Framework | **React/SolidJS** (TypeScript) + **Vite** |
-| Styling | **Tailwind CSS** |
-| State management | **Zustand** + **React Query** |
-| Mobile wrapper | **Tauri** (Rust) — code sharing with substrate |
-| Client-side crypto | **libsignal-protocol-wasm** |
+| Shell / Core | **Native (SwiftUI / Jetpack Compose / Tauri)** — embedding the substrate for robust background execution |
+| Mini-App UI | **HTML/CSS/JS (Web App)** — loaded dynamically inside a native **WebView** |
+| Client-side crypto | Native bindings for `libsignal` (mobile) / WASM bindings (desktop) |
 
 ### Developer Toolchain
 
@@ -1128,7 +1125,7 @@ This section is an index of every `[TBD]` marker in the requirements spec, that 
 - Messaging: 1-to-1 E2E encrypted chat; structured service messages
 - Storage: cr-sqlite; Litestream backup; offline queue with deterministic replay
 - SynApp 1 MVP: Space setup, catalog browse, full order state machine (DRAFT → COMPLETE), Stripe payment integration
-- Consumer PWA: discover, browse, order, pay
+- Consumer App: discover, browse, order, pay
 - Data portability: `SynExport` format; export and import CLI commands
 
 ### Explicitly Out of Scope (MVP)
@@ -1642,8 +1639,8 @@ Additional transports, gateways, and protocol adapters can be added later withou
 | OQ-3 | **Bootstrap governance:** operations and funding. | High | **Consortium Model.** Major aggregators (e.g., Guilds, Meshes) form a non-profit consortium to share hosting costs of distributed bootstrap nodes, with DHT fallback ensuring network survival. |
 | OQ-4 | **Minimum federation contract:** WIT versioning. | Medium | **RFC Process for WIT Interfaces.** Establish `syneroym/core-interfaces`. Use Wasmtime adapter components to translate between versions (e.g., `v1` to `v2`) during deprecation periods. |
 | OQ-5 | **Aggregator accountability:** legal and operational obligations. | Medium | **Layer 3/4 Trust Mechanisms.** Aggregators issue Verifiable Credentials (VCs). If malicious, providers migrate via `SynExport`, drop bad VC, and acquire a new one from a trusted aggregator. |
-| OQ-6 | **Infrastructure Provider SLA:** formal guarantees. | Medium | **Substrate Uptime Proofs.** Substrates broadcast encrypted heartbeats to Provider PWAs. If SLA drops (e.g., < 99%), UI prompts provider to migrate Space using `SynExport`. |
-| OQ-7 | **Consumer UX ownership:** Consumer PWA governance. | Medium | **Reference Open-Source PWA.** Syneroym builds and open-sources a reference PWA (MIT/Apache). Aggregators fork and brand it, hardcoding their bootstrap nodes and tuning local discovery weights. |
+| OQ-6 | **Infrastructure Provider SLA:** formal guarantees. | Medium | **Substrate Uptime Proofs.** Substrates broadcast encrypted heartbeats to Provider Apps. If SLA drops (e.g., < 99%), UI prompts provider to migrate Space using `SynExport`. |
+| OQ-7 | **Consumer UX ownership:** Consumer App governance. | Medium | **Reference Open-Source Apps.** Syneroym builds and open-sources reference apps (Native mobile, Tauri desktop). Aggregators fork and brand it, hardcoding their bootstrap nodes and tuning local discovery weights. |
 | OQ-8 | **Payment rail expansion:** cross-border, smart-contract escrow. | Low | Defer to Post-MVP. Evaluate based on initial adoption metrics. |
 | OQ-9 | **Regulatory review:** mutual credit and Syneroym coin in target markets. | Low | Defer to Post-MVP. Requires legal counsel engagement before implementation. |
 | OQ-10 | **AI-assisted workflow synthesis:** scope, integration, privacy. | Low | Defer to Post-MVP. Keep workflows manual for Phase 1. |
@@ -1674,4 +1671,3 @@ Additional transports, gateways, and protocol adapters can be added later withou
 | **Beckn** | [Beckn](https://beckn.io/), [Protocols](https://github.com/beckn/protocol-specifications-v2), processes, workflows for environments for value exchange between people and businesses using digital infrastructure. |
 
 ---
-
