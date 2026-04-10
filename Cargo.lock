@@ -547,8 +547,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c673075a2e0e5f4a1dde27ce9dee1ea4558c7ffe648f576438a20ca1d2acc4b0"
 dependencies = [
  "iana-time-zone",
+ "js-sys",
  "num-traits",
  "serde",
+ "wasm-bindgen",
  "windows-link",
 ]
 
@@ -5066,6 +5068,7 @@ name = "syneroym-identity"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "ed25519-dalek 2.2.0",
  "getrandom 0.4.2",
  "hex",

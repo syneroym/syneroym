@@ -65,11 +65,17 @@ impl AppSandboxEngine {
         // Configure pooling allocation for per-request isolation
         let mut pooling_config = wasmtime::PoolingAllocationConfig::default();
 
-        // TODO: In the future, read these limits from `config` based on the hardware tier
+        // Read these limits from `config` based on the hardware tier
+        let (max_instances, max_memory) = if let Some(sandbox_config) = &config.roles.app_sandbox {
+            (sandbox_config.max_concurrent_instances, sandbox_config.memory_limit_bytes() as usize)
+        } else {
+            (10, 128 * 1024 * 1024)
+        };
+
         // Restrict the maximum number of concurrent WASM instances
-        pooling_config.total_component_instances(10);
-        // Restrict each WASM instance to a maximum of 128MB of linear memory
-        pooling_config.max_memory_size(128 * 1024 * 1024);
+        pooling_config.total_component_instances(max_instances);
+        // Restrict each WASM instance to a maximum linear memory
+        pooling_config.max_memory_size(max_memory);
 
         wasmtime_config
             .allocation_strategy(wasmtime::InstanceAllocationStrategy::Pooling(pooling_config));
@@ -114,9 +120,8 @@ impl AppSandboxEngine {
     pub async fn deploy_wasm(&self, service_id: &str, manifest: &DeployManifest) -> Result<()> {
         tracing::info!("AppSandboxEngine: Deploying Wasm component for {}", service_id);
 
-        let wasm_manifest = match &manifest.service_type {
-            ServiceType::Wasm(w) => w,
-            _ => return Err(anyhow::anyhow!("Expected Wasm manifest")),
+        let ServiceType::Wasm(wasm_manifest) = &manifest.service_type else {
+            return Err(anyhow::anyhow!("Expected Wasm manifest"));
         };
 
         // 1. Fetch bytes

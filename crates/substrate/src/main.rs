@@ -111,62 +111,22 @@ pub(crate) fn resolve_config(command: Commands) -> Result<SubstrateConfig> {
             }
 
             if let Some(enable) = enable_coordinator_iroh {
-                if let Some(ref mut coordinator) = config.roles.coordinator {
-                    if let Some(ref mut iroh) = coordinator.iroh {
-                        iroh.enable_signalling = enable;
-                        iroh.enable_relay = enable;
-                    } else {
-                        coordinator.iroh = Some(syneroym_core::config::CoordinatorIrohConfig {
-                            enable_signalling: enable,
-                            enable_relay: enable,
-                            ..Default::default()
-                        });
-                    }
-                } else {
-                    let coordinator = syneroym_core::config::CoordinatorRole {
-                        iroh: Some(syneroym_core::config::CoordinatorIrohConfig {
-                            enable_signalling: enable,
-                            enable_relay: enable,
-                            ..Default::default()
-                        }),
-                        ..Default::default()
-                    };
-                    config.roles.coordinator = Some(coordinator);
-                }
+                let coordinator = config.roles.coordinator.get_or_insert_with(Default::default);
+                let iroh = coordinator.iroh.get_or_insert_with(Default::default);
+                iroh.enable_signalling = enable;
+                iroh.enable_relay = enable;
             }
 
             if let Some(url) = iroh_relay_url {
-                if let Some(ref mut iroh) = config.uplink.iroh {
-                    iroh.relay_url = url;
-                } else {
-                    config.uplink.iroh =
-                        Some(syneroym_core::config::IrohRelayConfig { relay_url: url });
-                }
+                let iroh = config.uplink.iroh.get_or_insert_with(Default::default);
+                iroh.relay_url = url;
             }
 
             if let Some(enable) = enable_coordinator_webrtc {
-                if let Some(ref mut coordinator) = config.roles.coordinator {
-                    if let Some(ref mut webrtc) = coordinator.webrtc {
-                        webrtc.enable_signalling = enable;
-                        webrtc.enable_relay = enable;
-                    } else {
-                        coordinator.webrtc = Some(syneroym_core::config::CoordinatorWebRtcConfig {
-                            enable_signalling: enable,
-                            enable_relay: enable,
-                            ..Default::default()
-                        });
-                    }
-                } else {
-                    let coordinator = syneroym_core::config::CoordinatorRole {
-                        webrtc: Some(syneroym_core::config::CoordinatorWebRtcConfig {
-                            enable_signalling: enable,
-                            enable_relay: enable,
-                            ..Default::default()
-                        }),
-                        ..Default::default()
-                    };
-                    config.roles.coordinator = Some(coordinator);
-                }
+                let coordinator = config.roles.coordinator.get_or_insert_with(Default::default);
+                let webrtc = coordinator.webrtc.get_or_insert_with(Default::default);
+                webrtc.enable_signalling = enable;
+                webrtc.enable_relay = enable;
             }
 
             Ok(config)

@@ -172,7 +172,20 @@ impl SubstrateIdentityState {
             }
 
             if controller_valid && substrate_valid {
-                // TODO: Ignore expiresAt for now (requires parsing dates)
+                if let Some(expires_at) = &agr.expires_at
+                    && let Ok(dt) = chrono::DateTime::parse_from_rfc3339(expires_at)
+                    && dt < chrono::Utc::now()
+                {
+                    if require_agreement {
+                        return Err(anyhow!("Agreement expired"));
+                    }
+                    return Ok(Self {
+                        did: substrate_did,
+                        controller: Some(agr.controller.clone()),
+                        status: SubstrateIdentityStatus::Unverified,
+                    });
+                }
+
                 return Ok(Self {
                     did: substrate_did,
                     controller: Some(agr.controller.clone()),

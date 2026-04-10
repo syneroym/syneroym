@@ -21,7 +21,7 @@ pub(crate) struct RouteHandler {
 
 impl fmt::Debug for RouteHandler {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ConnectionRouter")
+        f.debug_struct("RouteHandler")
             .field("registry", &self.registry)
             .field("native_dispatch_len", &self.native_dispatch.len())
             .finish_non_exhaustive()

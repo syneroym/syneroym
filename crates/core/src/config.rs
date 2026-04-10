@@ -245,6 +245,9 @@ fn default_cpu_limit() -> u32 {
 fn default_memory_limit() -> String {
     "1Gi".to_string()
 }
+fn default_max_concurrent_instances() -> u32 {
+    10
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -252,6 +255,13 @@ pub struct AppSandboxRole {
     pub wrpc_sandbox: bool,
     pub cpu_limit: u32,
     pub memory_limit: String,
+    pub max_concurrent_instances: u32,
+}
+
+impl AppSandboxRole {
+    pub fn memory_limit_bytes(&self) -> u64 {
+        crate::util::parse_size_string(&self.memory_limit, 128 * 1024 * 1024)
+    }
 }
 
 impl Default for AppSandboxRole {
@@ -260,6 +270,7 @@ impl Default for AppSandboxRole {
             wrpc_sandbox: default_wrpc_sandbox(),
             cpu_limit: default_cpu_limit(),
             memory_limit: default_memory_limit(),
+            max_concurrent_instances: default_max_concurrent_instances(),
         }
     }
 }
