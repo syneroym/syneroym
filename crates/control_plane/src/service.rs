@@ -10,20 +10,21 @@ use syneroym_core::registry::{EndpointRegistry, SubstrateEndpoint};
 use syneroym_rpc::{NativeInvocation, NativeResponse, NativeService};
 use tracing::info;
 
+const ORCHESTRATOR_INTERFACE: &str = "orchestrator";
+
 /// The Substrate Service (The Control Plane Orchestrator)
 /// This service handles the deployment and lifecycle of applications (SynApps)
 /// within the substrate. It interacts with sandbox environments like Podman or Wasmtime.
 pub struct ControlPlaneService {
-    _service_id: String,
-    _config: SubstrateConfig,
-    _registry: EndpointRegistry,
-    _app_sandbox_engine: Arc<AppSandboxEngine>,
+    service_id: String,
+    registry: EndpointRegistry,
+    app_sandbox_engine: Arc<AppSandboxEngine>,
 }
 
 impl fmt::Debug for ControlPlaneService {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ControlPlaneService")
-            .field("service_id", &self._service_id)
+            .field("service_id", &self.service_id)
             .finish_non_exhaustive()
     }
 }
@@ -35,15 +36,10 @@ impl ControlPlaneService {
         registry: EndpointRegistry,
     ) -> Result<Self> {
         info!("Initializing ControlPlaneService (Orchestrator)...");
-        let _app_sandbox_engine =
+        let app_sandbox_engine =
             Arc::new(AppSandboxEngine::init(config, registry.get_all_endpoints()).await?);
 
-        Ok(Self {
-            _service_id: service_id,
-            _config: config.clone(),
-            _registry: registry,
-            _app_sandbox_engine,
-        })
+        Ok(Self { service_id, registry, app_sandbox_engine })
     }
 }
 
@@ -53,37 +49,40 @@ impl NativeService for ControlPlaneService {
         info!("Orchestrator received dispatch: {}.{}", invocation.interface, invocation.method);
 
         match (invocation.interface.as_str(), invocation.method.as_str()) {
-            ("orchestrator", "readyz") => {
-                Ok(NativeResponse { payload: serde_json::json!({"status": "ok"}) })
-            }
-            ("orchestrator", "deploy") => {
-                // Parse arguments: [service_id, manifest]
-                let args: (String, DeployManifest) = serde_json::from_value(invocation.params)?;
-                let (service_id, manifest) = args;
-
-                match &manifest.service_type {
-                    ServiceType::Wasm(_) => {
-                        self._app_sandbox_engine.deploy_wasm(&service_id, &manifest).await?;
-
-                        // Register the service endpoint
-                        self._registry
-                            .register(
-                                service_id.clone(),
-                                "orchestrator".to_string(), // Adjust if necessary, probably 'default' or similar
-                                SubstrateEndpoint::WasmChannel {
-                                    channel_details: service_id.clone(),
-                                },
-                            )
-                            .await?;
-                    }
-                    _ => {
-                        return Err(anyhow!("Unsupported service type for deployment"));
-                    }
-                }
-
-                Ok(NativeResponse { payload: serde_json::json!({"status": "deployed"}) })
-            }
+            (ORCHESTRATOR_INTERFACE, "readyz") => Ok(ready_response()),
+            (ORCHESTRATOR_INTERFACE, "deploy") => self.deploy(invocation.params).await,
             _ => Err(anyhow!("Orchestrator dispatch logic is not fully implemented yet.")),
         }
     }
+}
+
+impl ControlPlaneService {
+    async fn deploy(&self, params: serde_json::Value) -> Result<NativeResponse> {
+        let (service_id, manifest): (String, DeployManifest) = serde_json::from_value(params)?;
+
+        match &manifest.service_type {
+            ServiceType::Wasm(_) => {
+                self.app_sandbox_engine.deploy_wasm(&service_id, &manifest).await?;
+                self.register_wasm_endpoint(&service_id).await?;
+            }
+            _ => return Err(anyhow!("Unsupported service type for deployment")),
+        }
+
+        Ok(NativeResponse { payload: serde_json::json!({"status": "deployed"}) })
+    }
+
+    async fn register_wasm_endpoint(&self, service_id: &str) -> Result<()> {
+        // Deployed WASM services are currently exposed as wRPC-capable pass-through targets.
+        self.registry
+            .register(
+                service_id.to_string(),
+                ORCHESTRATOR_INTERFACE.to_string(),
+                SubstrateEndpoint::WasmChannel { channel_details: service_id.to_string() },
+            )
+            .await
+    }
+}
+
+fn ready_response() -> NativeResponse {
+    NativeResponse { payload: serde_json::json!({"status": "ok"}) }
 }

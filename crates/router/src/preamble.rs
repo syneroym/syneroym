@@ -1,8 +1,39 @@
 use anyhow::{Result, anyhow};
+use std::fmt;
+use std::str::FromStr;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RouteProtocol {
+    JsonRpc,
+    Wrpc,
+    Other(String),
+}
+
+impl FromStr for RouteProtocol {
+    type Err = std::convert::Infallible;
+
+    fn from_str(raw: &str) -> std::result::Result<Self, Self::Err> {
+        Ok(match raw {
+            "json-rpc" => Self::JsonRpc,
+            "wrpc" => Self::Wrpc,
+            other => Self::Other(other.to_string()),
+        })
+    }
+}
+
+impl fmt::Display for RouteProtocol {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::JsonRpc => write!(f, "json-rpc"),
+            Self::Wrpc => write!(f, "wrpc"),
+            Self::Other(value) => write!(f, "{}", value),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoutePreamble {
-    pub protocol: String,
+    pub protocol: RouteProtocol,
     pub interface: String,
     pub service_id: String,
 }
@@ -22,7 +53,7 @@ impl RoutePreamble {
         }
 
         Ok(Self {
-            protocol: protocol.to_string(),
+            protocol: protocol.parse().unwrap(),
             interface: interface.to_string(),
             service_id: service_id.to_string(),
         })
@@ -36,7 +67,7 @@ mod tests {
     #[test]
     fn parses_route_preamble() {
         let parsed = RoutePreamble::parse("json-rpc://health.substrate-123\n").unwrap();
-        assert_eq!(parsed.protocol, "json-rpc");
+        assert_eq!(parsed.protocol, RouteProtocol::JsonRpc);
         assert_eq!(parsed.interface, "health");
         assert_eq!(parsed.service_id, "substrate-123");
     }

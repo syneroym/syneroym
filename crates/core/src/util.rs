@@ -42,7 +42,7 @@ mod tests {
         assert_eq!(parse_size_string("1024", 128), 1024);
         assert_eq!(parse_size_string("1K", 128), 1000);
         assert_eq!(parse_size_string("1Ki", 128), 1024);
-        assert_eq!(parse_size_string("2 M", 128), 2000000); // Note: "2 M" is handled with trim inside if we add it, but right now suffix matching is exact. Wait!
+        assert_eq!(parse_size_string("2 M", 128), 2000000);
         assert_eq!(parse_size_string("500Mi", 128), 500 * 1024 * 1024);
         assert_eq!(parse_size_string("invalidGi", 128), 128 * 1024 * 1024 * 1024);
     }

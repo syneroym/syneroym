@@ -9,10 +9,11 @@ use syneroym_core::config::SubstrateConfig;
 use syneroym_core::registry::{EndpointRegistry, SubstrateEndpoint};
 use syneroym_rpc::{JsonRpcConverter, NativeService};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
-use tracing::{debug, error};
+use tracing::{debug, error, info, warn};
 
 use crate::net_iroh::IrohStream;
-use crate::preamble::RoutePreamble;
+use crate::preamble::{RoutePreamble, RouteProtocol};
+use crate::routing::{DeliveryMode, ProtocolAdapter, ResolvedRoute, RouteExecution, RoutingPlan};
 
 pub(crate) struct RouteHandler {
     registry: EndpointRegistry,
@@ -53,63 +54,83 @@ impl RouteHandler {
         let (read_half, mut write_half) = tokio::io::split(stream);
         let mut reader = BufReader::new(read_half);
 
-        let mut preamble = String::new();
-        let read = reader.read_line(&mut preamble).await?;
-        if read == 0 {
-            return Err(anyhow!("Stream closed before reading preamble"));
-        }
-        let preamble = RoutePreamble::parse(&preamble)?;
+        let resolved_route = self.resolve_route(read_preamble(&mut reader).await?)?;
+        let routing_plan = self.plan_route(&resolved_route);
+        log_route(&resolved_route, &routing_plan);
 
+        match &routing_plan.execution {
+            RouteExecution::NativeJsonRpc { channel_id } => {
+                self.handle_json_to_native(
+                    reader,
+                    &mut write_half,
+                    &resolved_route.request.interface,
+                    channel_id,
+                )
+                .await?;
+            }
+            RouteExecution::WasmWrpcPassthrough { channel_id } => {
+                info!("Passthrough wRPC stream to Wasm channel: {}", channel_id);
+                self.handle_passthrough(reader, &mut write_half, channel_id).await?;
+            }
+            RouteExecution::Adapted { adapter } => {
+                let message = adapter_not_implemented_message(*adapter);
+                let payload = JsonRpcConverter::json_error(None, -32601, message)?;
+                write_half.write_all(&payload).await?;
+            }
+            RouteExecution::Unsupported => {
+                warn!(
+                    protocol = %resolved_route.request.protocol,
+                    interface = resolved_route.request.interface.as_str(),
+                    service_id = resolved_route.request.service_id.as_str(),
+                    delivery_mode = ?routing_plan.delivery_mode,
+                    endpoint = ?resolved_route.endpoint,
+                    "unsupported routing combination"
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    fn resolve_route(&self, preamble: RoutePreamble) -> Result<ResolvedRoute> {
         let endpoint =
             self.registry.lookup(&preamble.service_id, &preamble.interface).ok_or_else(|| {
                 anyhow!("Service {} not found in local registry", preamble.service_id)
             })?;
 
-        tracing::info!(
-            "Router handling stream: protocol={} interface={} service_id={}",
-            preamble.protocol,
-            preamble.interface,
-            preamble.service_id
-        );
+        Ok(ResolvedRoute { request: preamble, endpoint })
+    }
 
-        match (preamble.protocol.as_str(), endpoint) {
-            ("json-rpc", SubstrateEndpoint::NativeHostChannel { channel_details: channel_id }) => {
-                self.handle_json_to_native(
-                    reader,
-                    &mut write_half,
-                    &preamble.interface,
-                    &channel_id,
-                )
-                .await?;
-            }
-            ("wrpc", SubstrateEndpoint::WasmChannel { channel_details: channel_id }) => {
-                tracing::info!("Passthrough wRPC stream to Wasm channel: {}", channel_id);
-                self.handle_passthrough(reader, &mut write_half, &channel_id).await?;
-            }
-            ("json-rpc", SubstrateEndpoint::WasmChannel { channel_details: channel_id }) => {
-                tracing::info!("Protocol conversion stream to Wasm channel: {}", channel_id);
-                let payload = JsonRpcConverter::json_error(
-                    None,
-                    -32601,
-                    "JSON-RPC to wRPC component bridging is not implemented yet",
-                )?;
-                write_half.write_all(&payload).await?;
-            }
-            ("json-rpc", SubstrateEndpoint::PodmanSocket { socket_path }) => {
-                tracing::info!("Routing to Podman socket: {}", socket_path);
-                let payload = JsonRpcConverter::json_error(
-                    None,
-                    -32601,
-                    "JSON-RPC to Podman backend bridging is not implemented yet",
-                )?;
-                write_half.write_all(&payload).await?;
-            }
-            (proto, endpoint) => {
-                tracing::warn!("Unsupported routing combination: {} to {:?}", proto, endpoint);
-            }
+    fn plan_route(&self, route: &ResolvedRoute) -> RoutingPlan {
+        // Keep this mapping intentionally direct and easy to revise.
+        // The current plan categories are only a readable description of the
+        // request handling paths we know about today; they are not intended as
+        // a final statement on how routing must work forever.
+        match (&route.request.protocol, &route.endpoint) {
+            (
+                RouteProtocol::JsonRpc,
+                SubstrateEndpoint::NativeHostChannel { channel_details: channel_id },
+            ) => RoutingPlan {
+                delivery_mode: DeliveryMode::Broker,
+                execution: RouteExecution::NativeJsonRpc { channel_id: channel_id.clone() },
+            },
+            (
+                RouteProtocol::Wrpc,
+                SubstrateEndpoint::WasmChannel { channel_details: channel_id },
+            ) => RoutingPlan {
+                delivery_mode: DeliveryMode::PassThrough,
+                execution: RouteExecution::WasmWrpcPassthrough { channel_id: channel_id.clone() },
+            },
+            (RouteProtocol::JsonRpc, SubstrateEndpoint::WasmChannel { .. }) => RoutingPlan {
+                delivery_mode: DeliveryMode::Adapt,
+                execution: RouteExecution::Adapted { adapter: ProtocolAdapter::JsonRpcToWrpc },
+            },
+            (RouteProtocol::JsonRpc, SubstrateEndpoint::PodmanSocket { .. }) => RoutingPlan {
+                delivery_mode: DeliveryMode::Adapt,
+                execution: RouteExecution::Adapted { adapter: ProtocolAdapter::JsonRpcToPodman },
+            },
+            _ => RoutingPlan::unsupported(),
         }
-
-        Ok(())
     }
 
     async fn handle_passthrough<R, W>(
@@ -199,5 +220,41 @@ impl IrohProtocolHandler for RouteHandler {
         connection.closed().await;
 
         Ok(())
+    }
+}
+
+async fn read_preamble<R>(reader: &mut BufReader<R>) -> Result<RoutePreamble>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut raw_preamble = String::new();
+    let read = reader.read_line(&mut raw_preamble).await?;
+    if read == 0 {
+        return Err(anyhow!("Stream closed before reading preamble"));
+    }
+
+    RoutePreamble::parse(&raw_preamble)
+}
+
+fn log_route(route: &ResolvedRoute, plan: &RoutingPlan) {
+    info!(
+        protocol = %route.request.protocol,
+        interface = route.request.interface.as_str(),
+        service_id = route.request.service_id.as_str(),
+        delivery_mode = ?plan.delivery_mode,
+        execution = ?plan.execution,
+        endpoint = ?route.endpoint,
+        "router planned stream handling"
+    );
+}
+
+fn adapter_not_implemented_message(adapter: ProtocolAdapter) -> &'static str {
+    match adapter {
+        ProtocolAdapter::JsonRpcToWrpc => {
+            "JSON-RPC to wRPC component bridging is not implemented yet"
+        }
+        ProtocolAdapter::JsonRpcToPodman => {
+            "JSON-RPC to Podman backend bridging is not implemented yet"
+        }
     }
 }

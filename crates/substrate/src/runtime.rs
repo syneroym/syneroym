@@ -11,112 +11,12 @@ pub async fn run(config: SubstrateConfig) -> anyhow::Result<()> {
     info!(profile = %config.profile, "initializing substrate");
 
     let observability_engine = syneroym_observability::ObservabilityEngine::init(&config)?;
-
-    #[cfg(feature = "community_registry")]
-    let mut community_registry =
-        syneroym_community_registry::EcosystemRegistry::init(&config).await?;
-
-    #[cfg(feature = "coordinator")]
-    let mut coordinator = syneroym_coordinator::EcosystemCoordinator::init(&config).await?;
-
-    #[cfg(feature = "client_gateway")]
-    let mut client_gateway = syneroym_client_gateway::ClientGateway::init(&config).await?;
-
+    let mut services = RuntimeServices::init(&config).await?;
     let connection_router = setup_connection_router(&config).await?;
-
-    {
-        // Disabled components use pending futures so the select loop only reacts
-        // to active services or an external shutdown signal.
-        #[cfg(feature = "community_registry")]
-        let mut registry_fut = std::pin::pin!(async {
-            if config.roles.community_registry.is_some() {
-                community_registry.run().await
-            } else {
-                std::future::pending().await
-            }
-        });
-        #[cfg(not(feature = "community_registry"))]
-        let mut registry_fut = std::pin::pin!(std::future::pending::<anyhow::Result<()>>());
-
-        #[cfg(feature = "coordinator")]
-        let mut coordinator_bridge_fut = std::pin::pin!(async {
-            if config.roles.coordinator.is_some() {
-                coordinator.run().await
-            } else {
-                std::future::pending().await
-            }
-        });
-        #[cfg(not(feature = "coordinator"))]
-        let mut coordinator_bridge_fut =
-            std::pin::pin!(std::future::pending::<anyhow::Result<()>>());
-
-        #[cfg(feature = "client_gateway")]
-        let mut client_gateway_fut = std::pin::pin!(async {
-            if config.roles.client_gateway.is_some() {
-                client_gateway.run().await
-            } else {
-                std::future::pending().await
-            }
-        });
-        #[cfg(not(feature = "client_gateway"))]
-        let mut client_gateway_fut = std::pin::pin!(std::future::pending::<anyhow::Result<()>>());
-
-        let mut connection_router_fut = std::pin::pin!(connection_router.run());
-
-        info!(profile = %config.profile, "starting substrate components");
-        tokio::select! {
-            res = &mut connection_router_fut => {
-                match res {
-                    Ok(()) => info!("connection router component finished"),
-                    Err(error) => error!(error = %error, "connection router component finished with error"),
-                }
-            }
-            res = &mut registry_fut => {
-                match res {
-                    Ok(()) => info!("service registry component finished"),
-                    Err(error) => error!(error = %error, "service registry component finished with error"),
-                }
-            }
-            res = &mut coordinator_bridge_fut => {
-                match res {
-                    Ok(()) => info!("coordinator component finished"),
-                    Err(error) => error!(error = %error, "coordinator component finished with error"),
-                }
-            }
-            res = &mut client_gateway_fut => {
-                match res {
-                    Ok(()) => info!("http proxy component finished"),
-                    Err(error) => error!(error = %error, "http proxy component finished with error"),
-                }
-            }
-            _ = tokio::signal::ctrl_c() => {
-                warn!("received ctrl-c signal");
-            }
-        }
-    }
+    services.run_until_shutdown(&config.profile, &connection_router).await;
 
     info!("shutting down substrate components");
-
-    #[cfg(feature = "client_gateway")]
-    if config.roles.client_gateway.is_some()
-        && let Err(e) = client_gateway.shutdown().await
-    {
-        error!(error = %e, "error shutting down http proxy");
-    }
-
-    #[cfg(feature = "coordinator")]
-    if config.roles.coordinator.is_some()
-        && let Err(e) = coordinator.shutdown().await
-    {
-        error!(error = %e, "error shutting down coordinator");
-    }
-
-    #[cfg(feature = "community_registry")]
-    if config.roles.community_registry.is_some()
-        && let Err(e) = community_registry.shutdown().await
-    {
-        error!(error = %e, "error shutting down service registry");
-    }
+    services.shutdown().await;
 
     if let Err(e) = observability_engine.shutdown().await {
         error!(error = %e, "error flushing observability data");
@@ -129,6 +29,119 @@ pub async fn run(config: SubstrateConfig) -> anyhow::Result<()> {
     info!("shutdown complete");
 
     Ok(())
+}
+
+struct RuntimeServices {
+    #[cfg(feature = "community_registry")]
+    community_registry: Option<syneroym_community_registry::EcosystemRegistry>,
+    #[cfg(feature = "coordinator")]
+    coordinator: Option<syneroym_coordinator::EcosystemCoordinator>,
+    #[cfg(feature = "client_gateway")]
+    client_gateway: Option<syneroym_client_gateway::ClientGateway>,
+}
+
+impl RuntimeServices {
+    async fn init(config: &SubstrateConfig) -> anyhow::Result<Self> {
+        Ok(Self {
+            #[cfg(feature = "community_registry")]
+            community_registry: if config.roles.community_registry.is_some() {
+                Some(syneroym_community_registry::EcosystemRegistry::init(config).await?)
+            } else {
+                None
+            },
+            #[cfg(feature = "coordinator")]
+            coordinator: if config.roles.coordinator.is_some() {
+                Some(syneroym_coordinator::EcosystemCoordinator::init(config).await?)
+            } else {
+                None
+            },
+            #[cfg(feature = "client_gateway")]
+            client_gateway: if config.roles.client_gateway.is_some() {
+                Some(syneroym_client_gateway::ClientGateway::init(config).await?)
+            } else {
+                None
+            },
+        })
+    }
+
+    async fn run_until_shutdown(&mut self, profile: &str, connection_router: &ConnectionRouter) {
+        #[cfg(feature = "community_registry")]
+        let mut registry_fut = std::pin::pin!(async {
+            match self.community_registry.as_mut() {
+                Some(service) => service.run().await,
+                None => pending_component().await,
+            }
+        });
+        #[cfg(not(feature = "community_registry"))]
+        let mut registry_fut = std::pin::pin!(pending_component());
+
+        #[cfg(feature = "coordinator")]
+        let mut coordinator_fut = std::pin::pin!(async {
+            match self.coordinator.as_mut() {
+                Some(service) => service.run().await,
+                None => pending_component().await,
+            }
+        });
+        #[cfg(not(feature = "coordinator"))]
+        let mut coordinator_fut = std::pin::pin!(pending_component());
+
+        #[cfg(feature = "client_gateway")]
+        let mut client_gateway_fut = std::pin::pin!(async {
+            match self.client_gateway.as_mut() {
+                Some(service) => service.run().await,
+                None => pending_component().await,
+            }
+        });
+        #[cfg(not(feature = "client_gateway"))]
+        let mut client_gateway_fut = std::pin::pin!(pending_component());
+
+        let mut connection_router_fut = std::pin::pin!(connection_router.run());
+
+        info!(profile = %profile, "starting substrate components");
+        tokio::select! {
+            res = &mut connection_router_fut => log_component_exit("connection router", res),
+            res = &mut registry_fut => log_component_exit("service registry", res),
+            res = &mut coordinator_fut => log_component_exit("coordinator", res),
+            res = &mut client_gateway_fut => log_component_exit("http proxy", res),
+            _ = tokio::signal::ctrl_c() => warn!("received ctrl-c signal"),
+        }
+    }
+
+    async fn shutdown(&mut self) {
+        #[cfg(feature = "client_gateway")]
+        if let Some(service) = self.client_gateway.as_mut()
+            && let Err(error) = service.shutdown().await
+        {
+            error!(error = %error, "error shutting down http proxy");
+        }
+
+        #[cfg(feature = "coordinator")]
+        if let Some(service) = self.coordinator.as_mut()
+            && let Err(error) = service.shutdown().await
+        {
+            error!(error = %error, "error shutting down coordinator");
+        }
+
+        #[cfg(feature = "community_registry")]
+        if let Some(service) = self.community_registry.as_mut()
+            && let Err(error) = service.shutdown().await
+        {
+            error!(error = %error, "error shutting down service registry");
+        }
+    }
+}
+
+async fn pending_component() -> anyhow::Result<()> {
+    std::future::pending().await
+}
+
+fn log_component_exit(component: &str, result: anyhow::Result<()>) {
+    match result {
+        Ok(()) => info!(component = component, "component finished"),
+        Err(error) => {
+            error!(component = component, error = %error, "component finished with error")
+        }
+    }
 }
 
 /// Sets up the connection router and its tightly coupled dependencies, including
