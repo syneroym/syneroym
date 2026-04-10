@@ -21,3 +21,22 @@
 - The [requirements](docs/requirements.md) contains high-level function requirements
 - The [architecture](docs/architecture.md) contains high-level architecture
 - The above docs are starting points for the implementation. It is likely that during implementation we deviate and improvise from those, and later get them in sync.
+
+## AI Agent Guidelines
+- **Interaction Style**: Respond concisely and directly. Use structured markdown for outputs, including code blocks, lists, and links to files/lines. Avoid verbose explanations unless requested.
+- **Output Quality**: Ensure responses are accurate, idiomatic Rust code. Link to relevant files using workspace-relative paths (e.g., [src/main.rs](src/main.rs#L10)). Provide runnable code snippets with minimal setup instructions.
+- **Security and Dependencies**: Do not exfiltrate secrets. Use minimal, pinned, widely-used libraries. Update manifests appropriately.
+
+## Repository Structure and Key Components
+- **Workspace Layout**: This is a Rust workspace with multiple crates in `crates/`, apps in `apps/`, documentation in `docs/`, and test components in `test-components/`. Key files include `Cargo.toml` (workspace config), `mise.toml` (tool versions), and `pnpm-workspace.yaml` (for any JS components).
+- **Core Crates**:
+  - `core/`: Fundamental types and utilities.
+  - `coordinator/`: Coordination logic, with variants like `coordinator_iroh/` and `coordinator_webrtc/`.
+  - `router/`: Routing functionality.
+  - `rpc/`: Remote procedure calls.
+  - `identity/`: Identity management.
+  - `substrate/`: Substrate-related code, including WASM bindings.
+  - `bindings/`: WASM/WebAssembly interfaces.
+- **Apps**: `roymctl/`: Command-line tool.
+- **Other**: `observability/`, `control_plane/`, `client_gateway/`, etc., for monitoring, control, and client interactions.
+- **Build and Test**: Use `cargo` for Rust builds. WASM targets (`wasm32-wasip1`) require special handling. Ensure `cargo fmt`, `clippy`, and `test` pass before completion.

@@ -23,6 +23,7 @@ __pycache__/
 
 # AI
 .gemini
+GEMINI.md
 
 # Code Coverage
 coverage/
