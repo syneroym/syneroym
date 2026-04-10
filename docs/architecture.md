@@ -17,7 +17,7 @@
 - [Resolved Architecture TBD Items](#resolved-architecture-tbd-items)
 - [Consolidated Technology Stack](#consolidated-technology-stack)
 - [MVP Phase 1 Scope & Acceptance Criteria](#mvp-phase-1-scope--acceptance-criteria)
-- [Future: Heteregenous Networks](#connectivity-substrate-in-heteregenous-networks)
+- [Future: Heterogeneous Networks](#connectivity-substrate-in-heterogeneous-networks)
 - [Open Questions](#open-questions)
 - [Glossary](#glossary)
 
@@ -131,7 +131,7 @@ erDiagram
 
 ### P2P Networking: Iroh
 
-Note: In the initial phase, we will focus on connecting peers over IP. Later, we will enhance the system to support for more heteregenous networks and communication patterns. This is discussed in more detail in [Connectivity Substrate in Heterogenous networks](#connectivity-substrate-in-heteregenous-networks). 
+*Note: MVP focuses on connecting peers over IP. Future enhancements for heterogeneous networks (BLE, LoRa) are detailed in the [Connectivity Substrate](#connectivity-substrate-in-heterogeneous-networks) section.*
 
 Direct QUIC (UDP) connections are attempted first. NAT/firewall fallback uses relay-mediated connections.
 
@@ -339,7 +339,7 @@ flowchart TD
 
 ### Multi-Device Sync and Sharded Deployment
 
-This section covers two requirements from the high-level spec: app sync across provider secondary devices, and app sharding across multiple hosts.
+This section addresses two requirements: app sync across secondary provider devices and app sharding across multiple hosts.
 
 **A) Multi-device sync (primary + secondary provider devices)**
 
@@ -364,9 +364,7 @@ Example placement:
 
 ### Substrate API Surfaces
 
-The substrate is called by multiple caller types — WASM SynApp components, peer substrates over the network, the `syneroym` CLI, browser UIs, and external integrations. No single wire protocol serves all of these well.
-
-The substrate exposes **two API surfaces, both derived from the same WIT definitions**:
+To support diverse caller types (WASM components, peer substrates, CLI, browsers, external integrations), the substrate exposes **two API surfaces, both derived from identical WIT definitions**:
 
 - **wRPC surface** — for WASM SynApp components (intra-substrate) and peer substrates (cross-node over Iroh QUIC), CLI. WIT types are preserved end-to-end; zero serialization overhead.
 - **JSON-RPC 2.0 surface** — for browsers and third-party integrations, the provider status UI, and third-party integrations. Derived automatically from WIT; documented as an OpenRPC schema.
@@ -410,9 +408,14 @@ flowchart TD
 ```
 
 ### Discovery & DHT
-Relays: For relay information storage, We use BEP 0044 Mainline DHT (via pkarr).
-For Searchable Catalog, we use Federated local indexes with gossip
-    - Each substrate maintains a local SQLite FTS5 (full-text search) index of Spaces it knows about. Substrates in a cluster gossip new entries to peers. A consumer queries their local substrate's index; the substrate fans out to known peers if local results are thin. No global DHT for search — just epidemic propagation within clusters. This fits the locality-first principle very well.
+
+**Relay Discovery:** BEP 0044 Mainline DHT (via `pkarr`) is used for relay information storage.
+
+**Searchable Catalog:** Federated local indexes with gossip propagation.
+- Substrates maintain a local SQLite FTS5 (full-text search) index of known Spaces.
+- Substrates gossip new entries to peers within their cluster.
+- Consumer queries hit the local index first, fanning out to known peers if results are insufficient.
+- No global DHT is used for search; epidemic propagation within clusters aligns with the locality-first principle.
 
 **Partitioning, consistency model, and ranking algorithm**
 
@@ -497,11 +500,10 @@ flowchart TD
 
 ### Trust & Reputation
 
-Reputation: A mix of the following, instead of global rating. 
+**Reputation:** Replaces global average ratings with network-gated trust signals and transactional proofs.
 
-- A provider's rating is only visible to a consumer if there's a trust path between them in the vouch graph. No globally averaged star rating is shown to strangers — instead you see: "3 people in your network have transacted with this provider" and their assessments. This is how reputation works in real communities. Much harder to game (you can't buy fake reviews from strangers if strangers' reviews are invisible to your target audience). Downside: cold start problem for new consumers with thin networks.
-- Transactional proof without rating content
-Show only verified transaction count and repeat customer rate — no subjective rating at all. "47 completed jobs, 68% are repeat customers" is a strong signal that's nearly impossible to fake (both parties must sign the transaction record) and doesn't suffer from rating inflation.
+- **Network-Gated Ratings:** A provider's rating is only visible to consumers sharing a trust path in the vouch graph. This prevents rating inflation and fake reviews from strangers, reflecting real-world community trust. (Note: May present a cold-start challenge for consumers with thin networks).
+- **Transactional Proof:** Displays verified transaction counts and repeat customer rates instead of subjective ratings. Both parties must sign the transaction record, providing a strong, verifiable signal.
 
 **Trust, vouching, credentials, reputation portability, and anti-gaming**
 
@@ -566,7 +568,7 @@ Default `decay_factor = 0.5`. Max effective depth: 3 hops (weight < 0.125 beyond
 
 ### Payments
 
-**TBD**: Whether to include any kind of payment gateway like (stripe, razorpay, etc.) in MVP or handle payment out of system. Mostly, for MVP we will stay with redirection to UPI payment at max. All verifcation is offline-delayed. So we exclude payment gateway integrations for now. It is difficult to circumvent centralized payment operators for auto payment management. 
+**Payment Strategy (MVP):** MVP focuses on redirection to external payment flows (e.g., UPI deep links) or out-of-band settlement. Verification is offline-delayed. Fully integrated payment gateways are evaluated for post-MVP phases to minimize centralized dependencies initially.
 
 **Payment rails, escrow, and post-MVP credit/coin direction**
 
@@ -583,14 +585,14 @@ flowchart TD
     subgraph ADAPTERS["Payment Adapters (pluggable)"]
         STRIPE[Stripe Connect Adapter]
         UPI[UPI Deep Link Adapter]
-        ESCROW[Centralised Escrow Stripe — MVP]
+        ESCROW[Centralised Escrow — Post-MVP]
         CREDIT[Mutual Credit Post-MVP]
         COIN[Syneroym Coin Post-MVP]
     end
 
     subgraph ESCROW_FLOW["Escrow Flow (MVP)"]
         direction LR
-        C[Consumer pays] -->|"funds held"| E[Stripe Escrow]
+        C[Consumer pays] -->|"funds held"| E[Centralised Escrow]
         E -->|"service confirmed complete"| P[Provider receives minus platform fee]
         E -->|"dispute raised"| D[Dispute resolution manual or automated]
         D -->|"resolved"| BOTH[Appropriate party receives funds]
@@ -609,7 +611,7 @@ flowchart TD
 ## Layer 4 — SynApp Specifications
 
 ### SynApp 1: Business, Professional & Retail Spaces
-A lot of the domain related aspects like processes, protocols, workflows of this SynApp will try to leverage from [Beckn](https://beckn.io/) and tailor those to our p2p system. See protocol spec [here](https://github.com/beckn/protocol-specifications-v2)
+Domain processes, protocols, and workflows for this SynApp are adapted from the Beckn Protocol for a peer-to-peer topology. Reference the protocol specifications here.
 
 #### Component Architecture
 
@@ -709,8 +711,6 @@ stateDiagram-v2
 - Both parties IN_PROGRESS state with diverged sub-state → **merge by union** of completed steps; disputed steps require manual resolution
 
 #### Consumer Transaction Flow
-
-TBD: Whether payments will be handled post MVP.
 
 ```mermaid
 sequenceDiagram
@@ -865,9 +865,9 @@ flowchart TD
 
 ### Design Philosophy
 
-Observability in Syneroym serves two distinct audiences: **non-technical providers** who need to know if their business is running, and **support staff and developers** who need technical depth to diagnose problems. These are not the same product and must not be designed as one.
+Observability in Syneroym is tailored for two audiences: **non-technical providers** (business health) and **support staff/developers** (technical diagnostics).
 
-The substrate ships **instrumentation primitives, not observability stacks**. Open-format signals are emitted everywhere; what consumes them is the operator's choice. No external observability service is required to run a substrate.
+The substrate provides **instrumentation primitives, not bundled observability stacks**. It emits open-format signals that operators can route to their chosen backends. No external observability service is required to operate a substrate.
 
 ### Instrumentation Layer (All Tiers)
 
@@ -1048,7 +1048,7 @@ This section is an index of every `[TBD]` marker in the requirements spec, that 
 | 8 | Propagation protocol (community moderation) | Signed block/trust lists; propagated via DHT with decay weight; aggregators are authoritative for their cluster | [Trust & Reputation](#trust--reputation) |
 | 9 | Anti-gaming mechanisms | Bayesian reputation average; ad boost cap; TF-IDF keyword scoring; review bomb detection | [Trust & Reputation](#trust--reputation) |
 | 10 | Sybil resistance | Stake requirement for vouching; rate limiting; both-party signature on reputation records | [Trust & Reputation](#trust--reputation) |
-| 11 | Payment rails and escrow | Stripe Connect (MVP) + UPI; pluggable adapter pattern; centralised escrow via Stripe MVP | [Payments](#payments) |
+| 11 | Payment rails and escrow | Out-of-band settlement / UPI redirection (MVP); pluggable adapter pattern evaluated post-MVP | [Payments](#payments) |
 | 12 | Coin and mutual credit mechanics | Bilateral signed IOU ledger (post-MVP); Syneroym internal ledger token (post-MVP); no blockchain | [Payments](#payments) |
 | 13 | Recommendation algorithm | Client-side scoring formula; no consumer data transmitted; collaborative signals from anonymised aggregates | [Recommendation Algorithm](#recommendation-algorithm) |
 | 14 | Discovery partitioning and consistency model | Kademlia DHT; XOR-distance sharding; replication factor 3; eventual consistency; 72h TTL | [Discovery & DHT](#discovery--dht) |
@@ -1668,6 +1668,6 @@ Additional transports, gateways, and protocol adapters can be added later withou
 | **wRPC** | WIT-native RPC — high-performance inter-component streaming calls within a node |
 | **LWW** | Last-Write-Wins — CRDT merge strategy where the most recent write (by HLC) takes precedence |
 | **MLS** | Messaging Layer Security (RFC 9420) — end-to-end encrypted group messaging protocol |
-| **Beckn** | [Beckn](https://beckn.io/), [Protocols](https://github.com/beckn/protocol-specifications-v2), processes, workflows for environments for value exchange between people and businesses using digital infrastructure. |
+| **Beckn** | Beckn Protocols — open protocol for value exchange between people and businesses using digital infrastructure. |
 
 ---
