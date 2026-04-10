@@ -6,6 +6,7 @@ rust = "stable"
 "cargo:wasm-tools" = "latest"
 "cargo:cargo-component" = "0.21"
 "cargo:cargo-audit" = "latest"
+"cargo:cargo-llvm-cov" = "latest"
 
 [settings]
 experimental = true
