@@ -7,7 +7,7 @@ use std::sync::Arc;
 use syneroym_control_plane::ControlPlaneService;
 use syneroym_core::config::SubstrateConfig;
 use syneroym_core::registry::{EndpointRegistry, SubstrateEndpoint};
-use syneroym_rpc::{JsonRpcConverter, NativeService};
+use syneroym_rpc::{JsonRpcConverter, JsonRpcRequest, JsonRpcResponse, NativeService};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tracing::{debug, error, info, warn};
 
@@ -15,9 +15,12 @@ use crate::net_iroh::IrohStream;
 use crate::preamble::{RoutePreamble, RouteProtocol};
 use crate::routing::{DeliveryMode, ProtocolAdapter, ResolvedRoute, RouteExecution, RoutingPlan};
 
+use syneroym_app_sandbox::AppSandboxEngine;
+
 pub(crate) struct RouteHandler {
     registry: EndpointRegistry,
     native_dispatch: DashMap<String, Arc<dyn NativeService>>,
+    app_sandbox_engine: Arc<AppSandboxEngine>,
 }
 
 impl fmt::Debug for RouteHandler {
@@ -35,10 +38,17 @@ impl RouteHandler {
         config: &SubstrateConfig,
         registry: EndpointRegistry,
     ) -> Result<Self> {
-        let s = Self { registry: registry.clone(), native_dispatch: DashMap::new() };
+        let app_sandbox_engine =
+            Arc::new(AppSandboxEngine::init(config, registry.get_all_endpoints()).await?);
+
+        let s = Self {
+            registry: registry.clone(),
+            native_dispatch: DashMap::new(),
+            app_sandbox_engine: app_sandbox_engine.clone(),
+        };
 
         let substrate_service =
-            ControlPlaneService::init(service_id.clone(), config, registry).await?;
+            ControlPlaneService::init(service_id.clone(), app_sandbox_engine, registry).await?;
         s.register_native_service(service_id, Arc::new(substrate_service));
         Ok(s)
     }
@@ -67,6 +77,9 @@ impl RouteHandler {
                     channel_id,
                 )
                 .await?;
+            }
+            RouteExecution::ExecuteWasm { channel_id } => {
+                self.handle_json_to_wasm(reader, &mut write_half, channel_id).await?;
             }
             RouteExecution::WasmWrpcPassthrough { channel_id } => {
                 info!("Passthrough wRPC stream to Wasm channel: {}", channel_id);
@@ -121,9 +134,12 @@ impl RouteHandler {
                 delivery_mode: DeliveryMode::PassThrough,
                 execution: RouteExecution::WasmWrpcPassthrough { channel_id: channel_id.clone() },
             },
-            (RouteProtocol::JsonRpc, SubstrateEndpoint::WasmChannel { .. }) => RoutingPlan {
-                delivery_mode: DeliveryMode::Adapt,
-                execution: RouteExecution::Adapted { adapter: ProtocolAdapter::JsonRpcToWrpc },
+            (
+                RouteProtocol::JsonRpc,
+                SubstrateEndpoint::WasmChannel { channel_details: channel_id },
+            ) => RoutingPlan {
+                delivery_mode: DeliveryMode::Broker,
+                execution: RouteExecution::ExecuteWasm { channel_id: channel_id.clone() },
             },
             (RouteProtocol::JsonRpc, SubstrateEndpoint::PodmanSocket { .. }) => RoutingPlan {
                 delivery_mode: DeliveryMode::Adapt,
@@ -146,23 +162,16 @@ impl RouteHandler {
         Err(anyhow!("Passthrough target connection logic not implemented yet"))
     }
 
-    async fn handle_json_to_native<R, W>(
+    async fn handle_json_to_wasm<R, W>(
         &self,
         mut reader: BufReader<R>,
         writer: &mut W,
-        interface: &str,
         channel_id: &str,
     ) -> Result<()>
     where
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send,
     {
-        let service = self
-            .native_dispatch
-            .get(channel_id)
-            .map(|s| s.clone())
-            .ok_or_else(|| anyhow!("Native service not found for {}", channel_id))?;
-
         loop {
             let mut frame = Vec::new();
             let read = reader.read_until(b'\n', &mut frame).await?;
@@ -177,7 +186,7 @@ impl RouteHandler {
                 continue;
             }
 
-            let (request, invocation) = match JsonRpcConverter::json_to_native(interface, &frame) {
+            let request: JsonRpcRequest = match serde_json::from_slice(&frame) {
                 Ok(parsed) => parsed,
                 Err(error) => {
                     let payload = JsonRpcConverter::json_error(None, -32700, error.to_string())?;
@@ -186,8 +195,83 @@ impl RouteHandler {
                 }
             };
 
+            let request_ctx = serde_json::to_string(&request).unwrap_or_default();
+            match self
+                .app_sandbox_engine
+                .execute_wasm(channel_id, channel_id, Some(request_ctx))
+                .await
+            {
+                Ok(wasm_result) => {
+                    let json_response = JsonRpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        result: serde_json::Value::String(wasm_result),
+                        id: request.id.clone(),
+                    };
+                    let mut payload = serde_json::to_vec(&json_response)?;
+                    payload.push(b'\n');
+                    writer.write_all(&payload).await?;
+                }
+                Err(e) => {
+                    error!("WASM execution error: {}", e);
+                    let error_payload =
+                        JsonRpcConverter::json_error(request.id.clone(), -32603, e.to_string())?;
+                    writer.write_all(&error_payload).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_json_to_native<R, W>(
+        &self,
+        mut reader: BufReader<R>,
+        writer: &mut W,
+        interface: &str,
+        channel_id: &str,
+    ) -> Result<()>
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+        W: AsyncWrite + Unpin + Send,
+    {
+        info!(">>> Entered handle_json_to_native for channel: {}", channel_id);
+        let service = self
+            .native_dispatch
+            .get(channel_id)
+            .map(|s| s.clone())
+            .ok_or_else(|| anyhow!("Native service not found for {}", channel_id))?;
+
+        loop {
+            let mut frame = Vec::new();
+            info!(">>> Waiting to read frame...");
+            let read = reader.read_until(b'\n', &mut frame).await?;
+            info!(">>> Read frame of {} bytes", read);
+            if read == 0 {
+                info!(">>> Reached EOF");
+                break;
+            }
+
+            while frame.last() == Some(&b'\n') || frame.last() == Some(&b'\r') {
+                frame.pop();
+            }
+            if frame.is_empty() {
+                continue;
+            }
+
+            info!(">>> Parsing JSON frame...");
+            let (request, invocation) = match JsonRpcConverter::json_to_native(interface, &frame) {
+                Ok(parsed) => parsed,
+                Err(error) => {
+                    info!(">>> JSON parse error: {}", error);
+                    let payload = JsonRpcConverter::json_error(None, -32700, error.to_string())?;
+                    writer.write_all(&payload).await?;
+                    continue;
+                }
+            };
+            info!(">>> Dispatched to native service...");
+
             match service.dispatch(invocation).await {
                 Ok(native_response) => {
+                    info!(">>> Native service succeeded");
                     let json_response =
                         JsonRpcConverter::native_to_json(&request, native_response)?;
                     writer.write_all(&json_response).await?;

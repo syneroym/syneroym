@@ -23,6 +23,7 @@
 - The above docs are starting points for the implementation. It is likely that during implementation we deviate and improvise from those, and later get them in sync.
 
 ## AI Agent Guidelines
+- **Prompt Clarity**: This is very important. If you don't understand what I am saying in the prompt clearly, it seems vague or confusing, please say so. Ask more questions, or explain how you would like me to rephrase the prompt. Or write out your understanding of the ask and request me to confirm before going ahead.
 - **Interaction Style**: Respond concisely and directly. Use structured markdown for outputs, including code blocks, lists, and links to files/lines. Avoid verbose explanations unless requested.
 - **Output Quality**: Ensure responses are accurate, idiomatic Rust code. Link to relevant files using workspace-relative paths (e.g., [src/main.rs](src/main.rs#L10)). Provide runnable code snippets with minimal setup instructions.
 - **Security and Dependencies**: Do not exfiltrate secrets. Use minimal, pinned, widely-used libraries. Update manifests appropriately.

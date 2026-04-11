@@ -49,6 +49,7 @@ pub enum RouteExecution {
     NativeJsonRpc { channel_id: String },
     WasmWrpcPassthrough { channel_id: String },
     Adapted { adapter: ProtocolAdapter },
+    ExecuteWasm { channel_id: String },
     Unsupported,
 }
 

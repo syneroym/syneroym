@@ -50,7 +50,7 @@ impl AppSandboxEngine {
         config: &SubstrateConfig,
         endpoints: Vec<(String, String, SubstrateEndpoint)>,
     ) -> anyhow::Result<Self> {
-        let blobs_dir = config.storage.blobs_dir.clone();
+        let blobs_dir = config.app_local_data_dir.join(&config.storage.blobs_dir);
 
         // Ensure blobs directory exists
         if !blobs_dir.exists() {

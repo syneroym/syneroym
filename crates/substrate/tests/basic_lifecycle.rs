@@ -3,6 +3,9 @@ use assert_cmd::cargo::CommandCargoExt;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::time::Duration;
+use syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::{
+    ArtifactSource, DeployManifest, ServiceConfig, ServiceType, WasmManifest,
+};
 use syneroym_core::config::{ClientGatewayRole, SubstrateConfig};
 use tempfile::NamedTempFile;
 use tokio::time::sleep;
@@ -104,12 +107,16 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
     let mut config = SubstrateConfig::default();
     config.roles.client_gateway = Some(ClientGatewayRole::default());
     config.profile = "test-lifecycle".to_string();
-    config.app_data_dir = temp_dir.path().to_path_buf();
+
+    let base_path = temp_dir.path();
+    config.app_local_data_dir = base_path.join("data");
+    config.app_data_dir = base_path.join("user_data");
+    config.app_cache_dir = base_path.join("cache");
+    config.app_log_dir = base_path.join("logs");
 
     // Since this test runs the substrate in-process, we can't rely on `cargo test` capturing stdout/stderr.
     // So we configure the substrate to write logs to a temporary file and avoid large outputs while running tests.
-    // Comment temporarily for debugging purpose if needed.
-    config.app_log_dir = temp_dir.path().to_path_buf();
+    // NOTE: Comment for debugging purpose uncomment otherwise.
     config.logging.target = syneroym_core::config::LogTarget::File;
 
     let iroh_config = syneroym_core::config::IrohRelayConfig { relay_url: "".to_string() };
@@ -121,38 +128,70 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
         &config.app_data_dir,
     )
     .expect("Failed to setup identity");
-    let secret_key =
-        syneroym_substrate::identity::get_secret(&config.identity, &config.app_data_dir)
-            .expect("Failed to get secret");
-    let target_node = iroh::SecretKey::from_bytes(&secret_key).public();
     let service_id = syneroym_identity::substrate::resolve_did_z32(&substrate_identity_state.did)
         .expect("Failed to resolve did")
         .to_string();
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
 
     // Spawn the entire substrate in a background task.
     let mut substrate_handle = tokio::spawn(async move {
-        syneroym_substrate::run(config).await.expect("Substrate failed to run");
+        syneroym_substrate::run_with_ready_signal(config, Some(ready_tx))
+            .await
+            .expect("Substrate failed to run");
     });
+    let target_addr = ready_rx.await.expect("Failed to receive substrate endpoint address");
 
     // Wait for the substrate to become fully available by polling its health check endpoint.
     abort_if_failed(
-        wait_for_substrate(&service_id, target_node),
+        wait_for_substrate(&service_id, &target_addr),
         &mut substrate_handle,
         "Substrate did not become available within 5 seconds",
     )
     .await;
 
     // --- STEP 1: Deploy a test WASM application ---
-    // TODO: Send an RPC request to the substrate to deploy the WASM payload
-    // e.g., let deploy_res = send_json_rpc_request(&service_id, target_node, "deploy_app", serde_json::json!({ ... })).await;
-    // assert!(deploy_res.is_some());
+    println!(">>> Starting STEP 1: Deploy");
+    let wasm_bytes = std::fs::read(
+        "../../test-components/introduce/target/wasm32-wasip1/debug/test_component_introduce.wasm",
+    )
+    .expect("Failed to read compiled test WASM component");
+    let deploy_params = serde_json::to_value((
+        "introduce-service".to_string(),
+        DeployManifest {
+            config: ServiceConfig { env: vec![], args: vec![], custom_config: None },
+            service_type: ServiceType::Wasm(WasmManifest {
+                source: ArtifactSource::Binary(wasm_bytes),
+                hash: None,
+            }),
+        },
+    ))
+    .expect("Failed to serialize deploy params");
+    let deploy_res = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        send_json_rpc_request(&service_id, &target_addr, "deploy", deploy_params),
+    )
+    .await
+    .expect("deploy request timed out");
+    assert!(deploy_res.is_some(), "Deploy request failed");
+    let deploy_res = deploy_res.unwrap();
+    assert_eq!(deploy_res.result, serde_json::json!({"status": "deployed"}));
+    println!(">>> Finished STEP 1: Deploy");
 
     // --- STEP 2: Wait for the deployed application to become available ---
-    // TODO: Poll the deployed app's readyz or status endpoint.
+    // The successful deploy response in Step 1 serves as confirmation for now.
 
     // --- STEP 3: Interact with the running WASM application ---
-    // TODO: Make RPC calls to your deployed app and assert the application logic.
-    // e.g., let app_res = send_json_rpc_request("deployed_app_id", target_node, "get_status", serde_json::json!({})).await;
+    println!(">>> Starting STEP 3: Run");
+    let app_res = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        send_json_rpc_request("introduce-service", &target_addr, "run", serde_json::json!([])),
+    )
+    .await
+    .expect("app run request timed out");
+    assert!(app_res.is_some(), "App request failed");
+    let app_res = app_res.unwrap();
+    assert_eq!(app_res.result, serde_json::json!("hello from introduce component"));
+    println!(">>> Finished STEP 3: Run");
 
     // --- STEP 4: Teardown / Graceful Shutdown ---
     // Simulate a Ctrl-C (SIGINT) to trigger graceful shutdown.
@@ -165,10 +204,10 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
 
 // Helper used by `app_sandbox` feature tests; suppresses warning when feature is disabled.
 #[allow(dead_code)]
-async fn check_substrate_available(service_id: &str, target_node: iroh::PublicKey) -> bool {
+async fn check_substrate_available(service_id: &str, target_addr: &iroh::EndpointAddr) -> bool {
     if let Some(response) = send_json_rpc_request(
         service_id,
-        target_node,
+        target_addr,
         "readyz",
         serde_json::Value::Object(serde_json::Map::new()),
     )
@@ -185,31 +224,52 @@ async fn check_substrate_available(service_id: &str, target_node: iroh::PublicKe
 #[allow(dead_code)]
 async fn send_json_rpc_request(
     service_id: &str,
-    target_node: iroh::PublicKey,
+    target_addr: &iroh::EndpointAddr,
     method: &str,
     params: serde_json::Value,
 ) -> Option<syneroym_rpc::JsonRpcResponse> {
     use tokio::io::AsyncBufReadExt;
 
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
+        .relay_mode(iroh::RelayMode::Disabled)
         .bind()
         .await
         .expect("Failed to bind iroh endpoint");
 
     let conn: iroh::endpoint::Connection = match tokio::time::timeout(
         Duration::from_millis(1500),
-        endpoint.connect(target_node, syneroym_router::SYNEROYM_ALPN),
+        endpoint.connect(target_addr.clone(), syneroym_router::SYNEROYM_ALPN),
     )
     .await
     {
         Ok(Ok(c)) => c,
-        _ => return None,
+        Ok(Err(error)) => {
+            println!(">>> Failed to connect to target node for method {method}: {error}");
+            endpoint.close().await;
+            return None;
+        }
+        Err(_) => {
+            println!(">>> Timed out connecting to target node for method {method}");
+            endpoint.close().await;
+            return None;
+        }
     };
 
     let (mut send, recv): (iroh::endpoint::SendStream, iroh::endpoint::RecvStream) =
         match tokio::time::timeout(Duration::from_millis(1500), conn.open_bi()).await {
             Ok(Ok(streams)) => streams,
-            _ => return None,
+            Ok(Err(error)) => {
+                println!(">>> Failed to open stream for method {method}: {error}");
+                conn.close(0u8.into(), b"open_bi_failed");
+                endpoint.close().await;
+                return None;
+            }
+            Err(_) => {
+                println!(">>> Timed out opening stream for method {method}");
+                conn.close(0u8.into(), b"open_bi_timeout");
+                endpoint.close().await;
+                return None;
+            }
         };
 
     let preamble = format!("json-rpc://orchestrator.{}\n", service_id);
@@ -228,26 +288,34 @@ async fn send_json_rpc_request(
     if send.write_all(&req_bytes).await.is_err() {
         return None;
     }
+    println!(">>> Wrote request for method: {}", method);
+    let _ = send.finish();
 
     let mut resp_buf = Vec::new();
     let mut reader = tokio::io::BufReader::new(recv);
-    if tokio::time::timeout(Duration::from_millis(500), reader.read_until(b'\n', &mut resp_buf))
-        .await
-        .is_err()
-        || resp_buf.is_empty()
-    {
-        return None;
-    }
-
-    serde_json::from_slice::<syneroym_rpc::JsonRpcResponse>(&resp_buf).ok()
+    let res =
+        if tokio::time::timeout(Duration::from_secs(15), reader.read_until(b'\n', &mut resp_buf))
+            .await
+            .is_err()
+            || resp_buf.is_empty()
+        {
+            println!(">>> Timed out waiting for response to method: {}", method);
+            None
+        } else {
+            serde_json::from_slice::<syneroym_rpc::JsonRpcResponse>(&resp_buf).ok()
+        };
+    drop(send);
+    conn.close(0u8.into(), b"done");
+    endpoint.close().await;
+    res
 }
 
 // Helper used by `app_sandbox` feature tests; suppresses warning when feature is disabled.
 #[allow(dead_code)]
-async fn wait_for_substrate(service_id: &str, target_node: iroh::PublicKey) -> bool {
+async fn wait_for_substrate(service_id: &str, target_addr: &iroh::EndpointAddr) -> bool {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            if check_substrate_available(service_id, target_node).await {
+            if check_substrate_available(service_id, target_addr).await {
                 return;
             }
             sleep(Duration::from_millis(100)).await;

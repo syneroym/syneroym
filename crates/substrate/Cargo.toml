@@ -21,6 +21,7 @@ syneroym-coordinator = { path = "../coordinator", optional = true, default-featu
 syneroym-client-gateway = { path = "../client_gateway", optional = true }
 syneroym-app-sandbox = { path = "../app_sandbox", optional = true }
 tracing.workspace = true
+iroh.workspace = true
 
 [features]
 default = [
@@ -47,5 +48,5 @@ assert_cmd = "2.0"
 libc = "0.2.184"
 predicates = "3.1"
 tempfile = "3.10"
-iroh.workspace = true
 syneroym-rpc = { path = "../rpc" }
+syneroym-bindings = { path = "../bindings" }

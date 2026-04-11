@@ -1,15 +1,18 @@
 #[allow(warnings)]
 #[rustfmt::skip]
-mod bindings;
 
-use bindings::exports::component::introduce::introduce::{Guest, Person};
+wit_bindgen::generate!({
+    world: "host-environment",
+});
+
+use exports::syneroym::host::app::Guest;
 
 struct Component;
 
 impl Guest for Component {
-    fn greet(arg: Person) -> String {
-        format!("hello {}, you are interested in {} topics", arg.name, arg.interests.len())
+    fn run() -> String {
+        "hello from introduce component".to_string()
     }
 }
 
-bindings::export!(Component with_types_in bindings);
+export!(Component);

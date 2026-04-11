@@ -4806,6 +4806,7 @@ dependencies = [
  "serde",
  "serde_json",
  "syneroym-app-sandbox",
+ "syneroym-bindings",
  "syneroym-client-gateway",
  "syneroym-community-registry",
  "syneroym-coordinator",

@@ -5,7 +5,6 @@ use std::sync::Arc;
 use syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::{
     DeployManifest, ServiceType,
 };
-use syneroym_core::config::SubstrateConfig;
 use syneroym_core::registry::{EndpointRegistry, SubstrateEndpoint};
 use syneroym_rpc::{NativeInvocation, NativeResponse, NativeService};
 use tracing::info;
@@ -32,12 +31,10 @@ impl fmt::Debug for ControlPlaneService {
 impl ControlPlaneService {
     pub async fn init(
         service_id: String,
-        config: &SubstrateConfig,
+        app_sandbox_engine: Arc<AppSandboxEngine>,
         registry: EndpointRegistry,
     ) -> Result<Self> {
         info!("Initializing ControlPlaneService (Orchestrator)...");
-        let app_sandbox_engine =
-            Arc::new(AppSandboxEngine::init(config, registry.get_all_endpoints()).await?);
 
         Ok(Self { service_id, registry, app_sandbox_engine })
     }
