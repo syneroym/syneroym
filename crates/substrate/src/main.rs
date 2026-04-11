@@ -129,6 +129,9 @@ pub(crate) fn resolve_config(command: Commands) -> Result<SubstrateConfig> {
                 webrtc.enable_relay = enable;
             }
 
+            // Resolve relative paths against base directories
+            config.resolve_paths();
+
             Ok(config)
         }
     }

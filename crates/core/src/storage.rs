@@ -26,9 +26,9 @@ pub trait EndpointStorage: Send + Sync {
 }
 
 pub async fn init_store(config: &SubstrateConfig) -> Result<Arc<dyn EndpointStorage>> {
-    let db_path = config.app_local_data_dir.join(&config.storage.db_dir);
+    let db_path = &config.storage.db_dir;
     if !db_path.exists() {
-        std::fs::create_dir_all(&db_path)?;
+        std::fs::create_dir_all(db_path)?;
     }
     let db_file = db_path.join("endpoints.db");
     Ok(Arc::new(SqliteEndpointStorage::new(&db_file).await?))

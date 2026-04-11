@@ -60,6 +60,20 @@ pub struct SubstrateConfig {
     pub substrate: SubstrateGlobalConfig,
 }
 
+/// Useful helper functions
+impl SubstrateConfig {
+    /// Resolves relative storage paths by prepending `app_local_data_dir`.
+    pub fn resolve_paths(&mut self) {
+        if self.storage.db_dir.is_relative() {
+            self.storage.db_dir = self.app_local_data_dir.join(&self.storage.db_dir);
+        }
+
+        if self.storage.blobs_dir.is_relative() {
+            self.storage.blobs_dir = self.app_local_data_dir.join(&self.storage.blobs_dir);
+        }
+    }
+}
+
 impl Default for SubstrateConfig {
     fn default() -> Self {
         Self {

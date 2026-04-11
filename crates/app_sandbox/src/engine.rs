@@ -50,11 +50,11 @@ impl AppSandboxEngine {
         config: &SubstrateConfig,
         endpoints: Vec<(String, String, SubstrateEndpoint)>,
     ) -> anyhow::Result<Self> {
-        let blobs_dir = config.app_local_data_dir.join(&config.storage.blobs_dir);
+        let component_dir = config.storage.blobs_dir.join("app_sandbox");
 
         // Ensure blobs directory exists
-        if !blobs_dir.exists() {
-            tokio::fs::create_dir_all(&blobs_dir).await?;
+        if !component_dir.exists() {
+            tokio::fs::create_dir_all(&component_dir).await?;
         }
 
         // Configure Wasmtime engine with optimizations
@@ -97,7 +97,7 @@ impl AppSandboxEngine {
         // Component cache
         let components = DashMap::new();
 
-        let engine = Self { blobs_dir, engine, linker, components };
+        let engine = Self { blobs_dir: component_dir, engine, linker, components };
 
         for (service_id, _interface_name, endpoint) in endpoints {
             if let SubstrateEndpoint::WasmChannel { channel_details: channel_id } = endpoint {

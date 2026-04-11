@@ -113,6 +113,7 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
     config.app_data_dir = base_path.join("user_data");
     config.app_cache_dir = base_path.join("cache");
     config.app_log_dir = base_path.join("logs");
+    config.resolve_paths();
 
     // Since this test runs the substrate in-process, we can't rely on `cargo test` capturing stdout/stderr.
     // So we configure the substrate to write logs to a temporary file and avoid large outputs while running tests.
