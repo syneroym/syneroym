@@ -4625,9 +4625,11 @@ dependencies = [
  "dashmap",
  "hex",
  "reqwest 0.13.2",
+ "serde_json",
  "sha2 0.10.9",
  "syneroym-bindings",
  "syneroym-core",
+ "syneroym-rpc",
  "tokio",
  "tracing",
  "wasmtime",
@@ -4778,6 +4780,7 @@ dependencies = [
  "syneroym-rpc",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

@@ -63,14 +63,11 @@ impl ConnectionRouter {
     ) -> Result<IrohRouter> {
         debug!("Initializing Iroh communication...");
 
-        let ep_bldr = if config.relay_url.is_empty() {
-            iroh::Endpoint::builder(presets::N0).relay_mode(RelayMode::Disabled)
-        } else if let Ok(relay_url) = config.relay_url.parse::<RelayUrl>() {
-            iroh::Endpoint::builder(presets::N0)
-                .relay_mode(RelayMode::Custom(RelayMap::from(relay_url)))
-        } else {
-            iroh::Endpoint::builder(presets::N0)
-        };
+        let mut ep_bldr = iroh::Endpoint::builder(presets::N0);
+        if let Ok(relay_url) = config.relay_url.parse::<RelayUrl>() {
+            ep_bldr = iroh::Endpoint::empty_builder()
+                .relay_mode(RelayMode::Custom(RelayMap::from(relay_url)));
+        }
 
         let ep_bldr = ep_bldr.secret_key(secret_key);
         let ep = ep_bldr.bind().await?;

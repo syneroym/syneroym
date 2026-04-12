@@ -8,23 +8,11 @@ use crate::identity;
 
 /// Runs the substrate given the consolidated configuration.
 pub async fn run(config: SubstrateConfig) -> anyhow::Result<()> {
-    run_with_ready_signal(config, None).await
-}
-
-/// Runs the substrate and optionally reports the local router endpoint address
-/// once the connection router has been initialized.
-pub async fn run_with_ready_signal(
-    config: SubstrateConfig,
-    ready_signal: Option<tokio::sync::oneshot::Sender<iroh::EndpointAddr>>,
-) -> anyhow::Result<()> {
     info!(profile = %config.profile, "initializing substrate");
 
     let observability_engine = syneroym_observability::ObservabilityEngine::init(&config)?;
     let mut services = RuntimeServices::init(&config).await?;
     let connection_router = setup_connection_router(&config).await?;
-    if let (Some(sender), Some(endpoint_addr)) = (ready_signal, connection_router.endpoint_addr()) {
-        let _ = sender.send(endpoint_addr);
-    }
     services.run_until_shutdown(&config.profile, &connection_router).await;
 
     info!("shutting down substrate components");

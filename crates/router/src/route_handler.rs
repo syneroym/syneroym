@@ -9,7 +9,7 @@ use syneroym_core::config::SubstrateConfig;
 use syneroym_core::registry::{EndpointRegistry, SubstrateEndpoint};
 use syneroym_rpc::{JsonRpcConverter, JsonRpcRequest, JsonRpcResponse, NativeService};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 use crate::net_iroh::IrohStream;
 use crate::preamble::{RoutePreamble, RouteProtocol};
@@ -79,10 +79,16 @@ impl RouteHandler {
                 .await?;
             }
             RouteExecution::ExecuteWasm { channel_id } => {
-                self.handle_json_to_wasm(reader, &mut write_half, channel_id).await?;
+                self.handle_json_to_wasm(
+                    reader,
+                    &mut write_half,
+                    resolved_route.request.interface,
+                    channel_id,
+                )
+                .await?;
             }
             RouteExecution::WasmWrpcPassthrough { channel_id } => {
-                info!("Passthrough wRPC stream to Wasm channel: {}", channel_id);
+                debug!("Passthrough wRPC stream to Wasm channel: {}", channel_id);
                 self.handle_passthrough(reader, &mut write_half, channel_id).await?;
             }
             RouteExecution::Adapted { adapter } => {
@@ -166,6 +172,7 @@ impl RouteHandler {
         &self,
         mut reader: BufReader<R>,
         writer: &mut W,
+        interface: String,
         channel_id: &str,
     ) -> Result<()>
     where
@@ -195,12 +202,7 @@ impl RouteHandler {
                 }
             };
 
-            let request_ctx = serde_json::to_string(&request).unwrap_or_default();
-            match self
-                .app_sandbox_engine
-                .execute_wasm(channel_id, channel_id, Some(request_ctx))
-                .await
-            {
+            match self.app_sandbox_engine.execute_wasm(channel_id, &interface, &request).await {
                 Ok(wasm_result) => {
                     let json_response = JsonRpcResponse {
                         jsonrpc: "2.0".to_string(),
@@ -233,7 +235,7 @@ impl RouteHandler {
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send,
     {
-        info!(">>> Entered handle_json_to_native for channel: {}", channel_id);
+        debug!(">>> Entered handle_json_to_native for channel: {}", channel_id);
         let service = self
             .native_dispatch
             .get(channel_id)
@@ -242,11 +244,11 @@ impl RouteHandler {
 
         loop {
             let mut frame = Vec::new();
-            info!(">>> Waiting to read frame...");
+            debug!(">>> Waiting to read frame...");
             let read = reader.read_until(b'\n', &mut frame).await?;
-            info!(">>> Read frame of {} bytes", read);
+            debug!(">>> Read frame of {} bytes", read);
             if read == 0 {
-                info!(">>> Reached EOF");
+                debug!(">>> Reached EOF");
                 break;
             }
 
@@ -257,21 +259,21 @@ impl RouteHandler {
                 continue;
             }
 
-            info!(">>> Parsing JSON frame...");
+            debug!(">>> Parsing JSON frame...");
             let (request, invocation) = match JsonRpcConverter::json_to_native(interface, &frame) {
                 Ok(parsed) => parsed,
                 Err(error) => {
-                    info!(">>> JSON parse error: {}", error);
+                    debug!(">>> JSON parse error: {}", error);
                     let payload = JsonRpcConverter::json_error(None, -32700, error.to_string())?;
                     writer.write_all(&payload).await?;
                     continue;
                 }
             };
-            info!(">>> Dispatched to native service...");
+            debug!(">>> Dispatched to native service...");
 
             match service.dispatch(invocation).await {
                 Ok(native_response) => {
-                    info!(">>> Native service succeeded");
+                    debug!(">>> Native service succeeded");
                     let json_response =
                         JsonRpcConverter::native_to_json(&request, native_response)?;
                     writer.write_all(&json_response).await?;
@@ -321,7 +323,7 @@ where
 }
 
 fn log_route(route: &ResolvedRoute, plan: &RoutingPlan) {
-    info!(
+    debug!(
         protocol = %route.request.protocol,
         interface = route.request.interface.as_str(),
         service_id = route.request.service_id.as_str(),

@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/*", "apps/*"]
+exclude = ["test-components/introducer"]
 
 [profile.dev]
 incremental = true # Compile your binary in smaller steps.
@@ -34,6 +35,7 @@ clap = { version = "4.6", features = ["derive"] }
 # Common / Utils
 anyhow = "1.0"
 reqwest = { version = "0.13", features = ["json"] }
+uuid = { version = "1.12.0", features = ["v4"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 tracing-appender = "0.2.3"

@@ -5,6 +5,7 @@ use syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestr
     ArtifactSource, DeployManifest, ServiceType,
 };
 use syneroym_core::{config::SubstrateConfig, registry::SubstrateEndpoint};
+use syneroym_rpc::JsonRpcRequest;
 use wasmtime::component::{Component, Linker};
 use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxView};
 
@@ -176,8 +177,8 @@ impl AppSandboxEngine {
     pub async fn execute_wasm(
         &self,
         service_id: &str,
-        component_id: &str,
-        request_ctx: Option<String>,
+        interface_name: &str,
+        request: &JsonRpcRequest,
     ) -> Result<String> {
         // Look up the compiled component
         let component = self
@@ -191,26 +192,111 @@ impl AppSandboxEngine {
 
         // Create host state
         let host_state =
-            HostState { wasi, table, component_id: component_id.to_string(), request_ctx };
+            HostState { wasi, table, component_id: service_id.to_string(), request_ctx: None };
 
         // Create a new store
         let mut store = wasmtime::Store::new(&self.engine, host_state);
 
-        // Instantiate the component using generated HostEnvironment
-        let env = syneroym_bindings::host::HostEnvironment::instantiate_async(
-            &mut store,
-            &component,
-            &self.linker,
-        )
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to instantiate component: {}", e))?;
+        let instance = self.linker.instantiate_async(&mut store, &component).await?;
 
-        // Call the run function
-        let result = env.syneroym_host_app().call_run(&mut store).await?;
+        // Extract the interface export index
+        let (_, instance_idx) = instance
+            .get_export(&mut store, None, interface_name)
+            .ok_or_else(|| anyhow::anyhow!("Interface '{}' not found", interface_name))?;
 
-        // Store is dropped here, enforcing cleanup
+        // Extract the method export index
+        let (item, func_idx) = instance
+            .get_export(&mut store, Some(&instance_idx), &request.method)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Method '{}' not found in interface '{}'",
+                    request.method,
+                    interface_name
+                )
+            })?;
 
-        Ok(result)
+        let func = instance
+            .get_func(&mut store, func_idx)
+            .ok_or_else(|| anyhow::anyhow!("Method is not a function"))?;
+
+        // Parse parameters based on ComponentFunc signature
+        let params_iter = match &item {
+            wasmtime::component::types::ComponentItem::ComponentFunc(f) => f.params(),
+            _ => return Err(anyhow::anyhow!("Expected a function item")),
+        };
+
+        let mut wasm_params = Vec::new();
+        // Dynamic parameter resolution
+        // The jsonrpcrequest.params is a single JSON value. If the component expects a string,
+        // we serialize it or pass the exact string. If it expects a primitive, we convert it.
+        // We will take a simplistic approach for now, assuming the first param is either String or maps from JSON.
+        // If the method expects multiple params, we assume request.params is a JSON array.
+        let json_params = match &request.params {
+            serde_json::Value::Array(arr) => arr.clone(),
+            other => vec![other.clone()],
+        };
+
+        for (i, (_param_name, ty)) in params_iter.enumerate() {
+            let val = json_params.get(i).unwrap_or(&serde_json::Value::Null);
+            use wasmtime::component::Val;
+            use wasmtime::component::types::Type;
+            match ty {
+                Type::String => {
+                    let s: String = match val {
+                        serde_json::Value::String(s) => s.clone(),
+                        _ => val.to_string(),
+                    };
+                    wasm_params.push(Val::String(s));
+                }
+                Type::U32 => {
+                    let n = val.as_u64().unwrap_or(0) as u32;
+                    wasm_params.push(Val::U32(n));
+                }
+                Type::Bool => {
+                    let b = val.as_bool().unwrap_or(false);
+                    wasm_params.push(Val::Bool(b));
+                }
+                // Handle basic cases
+                _ => {
+                    return Err(anyhow::anyhow!(
+                        "Unsupported parameter type in Wasm component. Add conversion logic."
+                    ));
+                }
+            }
+        }
+
+        // Setup results slice. We assume single result (usually string)
+        let results_len = match &item {
+            wasmtime::component::types::ComponentItem::ComponentFunc(f) => f.results().len(),
+            _ => 0,
+        };
+        let mut wasm_results = vec![wasmtime::component::Val::Bool(false); results_len];
+
+        func.call_async(&mut store, &wasm_params, &mut wasm_results).await?;
+
+        // Convert the result to String
+        if wasm_results.is_empty() {
+            Ok(String::new())
+        } else {
+            match &wasm_results[0] {
+                wasmtime::component::Val::String(s) => Ok(s.to_string()),
+                wasmtime::component::Val::Result(Ok(Some(v))) => {
+                    // Try to dig out a string from an Ok(Val)
+                    match &**v {
+                        wasmtime::component::Val::String(s) => Ok(s.to_string()),
+                        _ => Ok(format!("{:?}", v)), // Fallback
+                    }
+                }
+                wasmtime::component::Val::Result(Ok(None)) => Ok(String::new()),
+                wasmtime::component::Val::Result(Err(Some(e))) => {
+                    Err(anyhow::anyhow!("Component returned error: {:?}", e))
+                }
+                wasmtime::component::Val::Result(Err(None)) => {
+                    Err(anyhow::anyhow!("Component returned empty error"))
+                }
+                other => Ok(format!("{:?}", other)),
+            }
+        }
     }
 
     /// Simple test function to invoke test context
@@ -220,7 +306,13 @@ impl AppSandboxEngine {
         component_id: &str,
         request_ctx: &str,
     ) -> Result<String> {
-        self.execute_wasm(service_id, component_id, Some(request_ctx.to_string())).await
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "run".to_string(), // Default method for test
+            params: serde_json::Value::String(request_ctx.to_string()),
+            id: None,
+        };
+        self.execute_wasm(service_id, component_id, &request).await
     }
 
     /// Stop a running Wasm component
