@@ -188,7 +188,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "syneroym-test-introducer"
+name = "syneroym-test-greeter"
 version = "0.1.0"
 dependencies = [
  "wit-bindgen",

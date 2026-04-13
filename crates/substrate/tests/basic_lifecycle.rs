@@ -154,11 +154,11 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
     // --- STEP 1: Deploy a test WASM application ---
     debug!(">>> Starting STEP 1: Deploy");
     let wasm_bytes = std::fs::read(
-        "../../test-components/introducer/target/wasm32-wasip1/debug/syneroym_test_introducer.wasm",
+        "../../test-components/greeter/target/wasm32-wasip1/debug/syneroym_test_greeter.wasm",
     )
     .expect("Failed to read compiled test WASM component");
     let deploy_params = serde_json::to_value((
-        "introducer-service".to_string(),
+        "greeter-service".to_string(),
         DeployManifest {
             config: ServiceConfig { env: vec![], args: vec![], custom_config: None },
             service_type: ServiceType::Wasm(WasmManifest {
@@ -184,7 +184,7 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
     let app_res = tokio::time::timeout(
         std::time::Duration::from_secs(30),
         send_json_rpc_request(
-            "introducer-service",
+            "greeter-service",
             "greet",
             target_node,
             "greet",
@@ -197,7 +197,7 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
     let app_res = app_res.unwrap();
     assert_eq!(
         app_res.result,
-        serde_json::json!({"response": "Hello, tester! Greetings from the introducer component"})
+        serde_json::json!({"response": "Hello, tester! Greetings from the greeter component"})
     );
     debug!(">>> Finished STEP 3: Run");
 

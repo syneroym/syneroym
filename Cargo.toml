@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/*", "apps/*"]
-exclude = ["test-components/introducer"]
+exclude = ["test-components/greeter"]
 
 [profile.dev]
 incremental = true # Compile your binary in smaller steps.

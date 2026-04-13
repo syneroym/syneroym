@@ -10,7 +10,7 @@ fn main() {
     }
 
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
-    let component_dir = PathBuf::from(manifest_dir).join("../../test-components/introducer");
+    let component_dir = PathBuf::from(manifest_dir).join("../../test-components/greeter");
 
     // Tell Cargo to re-run this script if the component's source changes
     println!("cargo:rerun-if-changed={}", component_dir.join("src").display());

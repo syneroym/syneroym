@@ -5,14 +5,14 @@ mod bindings {
     });
 
     // In the lines below we use the generated `export!()` macro re-use and
-    use super::IntroducerComponent;
-    export!(IntroducerComponent);
+    use super::GreeterComponent;
+    export!(GreeterComponent);
 }
 
-struct IntroducerComponent;
+struct GreeterComponent;
 
-impl bindings::exports::syneroym_test::introducer::greet::Guest for IntroducerComponent {
+impl bindings::exports::syneroym_test::greeter::greet::Guest for GreeterComponent {
     fn greet(name: String) -> String {
-        format!("hello, {}! Greetings from the introducer component", name)
+        format!("hello, {}! Greetings from the greeter component", name)
     }
 }
