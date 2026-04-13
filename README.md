@@ -1,10 +1,8 @@
 # Syneroym
 
-> Status: Early-stage, under active development
+> ⚠️ **Status: Exploratory / Unstable**
 >
-> This repository is the primary product build for Syneroym. It is **not
-> production-ready**. Expect breaking changes, incomplete features, and
-> evolving architecture.
+> This project is **WORK IN PROGRESS** and is under active exploration and development. The features, architecture, APIs, data models, and overall direction are subject to frequent change. Nothing here should be considered stable or production-ready at this stage. The repository is public for transparency and ease of sharing, not as an invitation for general use or contribution at this time.
 
 For a look at the earlier feasibility work and verification, check out the [Syneroym Prototype](https://github.com/syneroym/syneroym-prototype) repository.
 
