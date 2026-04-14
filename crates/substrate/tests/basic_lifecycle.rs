@@ -123,7 +123,7 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
     // Since this test runs the substrate in-process, we can't rely on `cargo test` capturing stdout/stderr.
     // So we configure the substrate to write logs to a temporary file and avoid large outputs while running tests.
     // NOTE: Comment for debugging purpose uncomment otherwise.
-    // config.logging.target = syneroym_core::config::LogTarget::File;
+    config.logging.target = syneroym_core::config::LogTarget::File;
 
     let iroh_config =
         syneroym_core::config::IrohRelayConfig { relay_url: IROH_RELAY_URL.to_string() };
