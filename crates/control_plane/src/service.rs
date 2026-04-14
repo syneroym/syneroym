@@ -55,12 +55,13 @@ impl NativeService for ControlPlaneService {
 
 impl ControlPlaneService {
     async fn deploy(&self, params: serde_json::Value) -> Result<NativeResponse> {
-        let (service_id, manifest): (String, DeployManifest) = serde_json::from_value(params)?;
+        let (service_id, interfaces, manifest): (String, Vec<String>, DeployManifest) =
+            serde_json::from_value(params)?;
 
         match &manifest.service_type {
             ServiceType::Wasm(_) => {
                 self.app_sandbox_engine.deploy_wasm(&service_id, &manifest).await?;
-                self.register_wasm_endpoint(&service_id).await?;
+                self.register_wasm_endpoints(&service_id, interfaces).await?;
             }
             _ => return Err(anyhow!("Unsupported service type for deployment")),
         }
@@ -68,15 +69,21 @@ impl ControlPlaneService {
         Ok(NativeResponse { payload: serde_json::json!({"status": "deployed"}) })
     }
 
-    async fn register_wasm_endpoint(&self, service_id: &str) -> Result<()> {
-        // Deployed WASM services are currently exposed as wRPC-capable pass-through targets.
-        self.registry
-            .register(
-                service_id.to_string(),
-                ORCHESTRATOR_INTERFACE.to_string(),
-                SubstrateEndpoint::WasmChannel { channel_details: service_id.to_string() },
-            )
-            .await
+    async fn register_wasm_endpoints(
+        &self,
+        service_id: &str,
+        interfaces: Vec<String>,
+    ) -> Result<()> {
+        for interface in interfaces {
+            self.registry
+                .register(
+                    service_id.to_string(),
+                    interface,
+                    SubstrateEndpoint::WasmChannel { channel_details: service_id.to_string() },
+                )
+                .await?;
+        }
+        Ok(())
     }
 }
 

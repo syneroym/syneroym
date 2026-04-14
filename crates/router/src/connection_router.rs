@@ -65,7 +65,7 @@ impl ConnectionRouter {
 
         let mut ep_bldr = iroh::Endpoint::builder(presets::N0);
         if let Ok(relay_url) = config.relay_url.parse::<RelayUrl>() {
-            ep_bldr = iroh::Endpoint::empty_builder()
+            ep_bldr = iroh::Endpoint::builder(presets::N0DisableRelay)
                 .relay_mode(RelayMode::Custom(RelayMap::from(relay_url)));
         }
 

@@ -13,5 +13,8 @@
     "editor.defaultFormatter": "rust-lang.rust-analyzer",
     "editor.formatOnSave": true
   },
+  "rust-analyzer.runnables.extraEnv": {
+    "RUST_LOG": "syneroym=debug"
+  },
   "geminicodeassist.agentYoloMode": true,
 }

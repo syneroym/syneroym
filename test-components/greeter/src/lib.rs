@@ -13,6 +13,6 @@ struct GreeterComponent;
 
 impl bindings::exports::syneroym_test::greeter::greet::Guest for GreeterComponent {
     fn greet(name: String) -> String {
-        format!("hello, {}! Greetings from the greeter component", name)
+        format!("Hello, {}! Greetings from greeter::greet::greet", name)
     }
 }

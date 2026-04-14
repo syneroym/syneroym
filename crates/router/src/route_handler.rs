@@ -86,6 +86,7 @@ impl RouteHandler {
                     channel_id,
                 )
                 .await?;
+                debug!("ExecuteWasm done");
             }
             RouteExecution::WasmWrpcPassthrough { channel_id } => {
                 debug!("Passthrough wRPC stream to Wasm channel: {}", channel_id);
@@ -211,7 +212,9 @@ impl RouteHandler {
                     };
                     let mut payload = serde_json::to_vec(&json_response)?;
                     payload.push(b'\n');
+                    debug!("writing wasm response");
                     writer.write_all(&payload).await?;
+                    debug!("writing wasm response");
                 }
                 Err(e) => {
                     error!("WASM execution error: {}", e);
@@ -302,8 +305,10 @@ impl IrohProtocolHandler for RouteHandler {
         if let Err(e) = self.handle_stream(iroh_stream).await {
             error!("Error handling Iroh stream: {}", e);
         }
+        debug!("handled stream");
 
         connection.closed().await;
+        debug!("connection closed");
 
         Ok(())
     }

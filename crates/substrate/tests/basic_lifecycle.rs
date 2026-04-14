@@ -1,5 +1,7 @@
 use assert_cmd::assert::OutputAssertExt;
 use assert_cmd::cargo::CommandCargoExt;
+use iroh::endpoint::presets::N0DisableRelay;
+use iroh::{RelayMap, RelayMode, RelayUrl};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -8,7 +10,6 @@ use syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestr
 };
 use syneroym_core::config::{ClientGatewayRole, SubstrateConfig};
 use tempfile::NamedTempFile;
-use tokio::time::sleep;
 use tracing::{debug, error};
 
 fn send_ctrl_c(#[allow(unused_variables)] pid: u32) {
@@ -97,9 +98,12 @@ async fn test_run_finishes_on_ctrl_c() {
     );
 }
 
+const IROH_RELAY_URL: &str = "http://localhost:3340";
+
 /// This in-process integration test starts a substrate,
 /// runs operations done over a typical substrate lifetime, finally shutting it down
 #[tokio::test]
+//#[ignore = "This e2e test uses a locally running iroh relay. Wewe don't want to use iroh's public relay for testing. Will have our own relay in the test itself, later"]
 #[cfg(feature = "app_sandbox")]
 async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
@@ -119,9 +123,10 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
     // Since this test runs the substrate in-process, we can't rely on `cargo test` capturing stdout/stderr.
     // So we configure the substrate to write logs to a temporary file and avoid large outputs while running tests.
     // NOTE: Comment for debugging purpose uncomment otherwise.
-    config.logging.target = syneroym_core::config::LogTarget::File;
+    // config.logging.target = syneroym_core::config::LogTarget::File;
 
-    let iroh_config = syneroym_core::config::IrohRelayConfig { relay_url: "".to_string() };
+    let iroh_config =
+        syneroym_core::config::IrohRelayConfig { relay_url: IROH_RELAY_URL.to_string() };
     config.uplink.iroh = Some(iroh_config);
 
     // Generate identity beforehand so we know it
@@ -134,19 +139,27 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
         syneroym_substrate::identity::get_secret(&config.identity, &config.app_data_dir)
             .expect("Failed to get secret");
     let target_node = iroh::SecretKey::from_bytes(&secret_key).public();
-    let service_id = syneroym_identity::substrate::resolve_did_z32(&substrate_identity_state.did)
-        .expect("Failed to resolve did")
-        .to_string();
+    let native_service_id =
+        syneroym_identity::substrate::resolve_did_z32(&substrate_identity_state.did)
+            .expect("Failed to resolve did")
+            .to_string();
+
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
 
     // Spawn the entire substrate in a background task.
     let mut substrate_handle = tokio::spawn(async move {
-        syneroym_substrate::run(config).await.expect("Substrate failed to run");
+        syneroym_substrate::run_with_signal(config, async {
+            let _ = shutdown_rx.recv().await;
+        })
+        .await
+        .expect("Substrate failed to run");
     });
 
     // Wait for the substrate to become fully available by polling its health check endpoint.
     abort_if_failed(
-        wait_for_substrate(&service_id, target_node),
+        wait_for_substrate(&native_service_id, target_node),
         &mut substrate_handle,
+        &shutdown_tx,
         "Substrate did not become available within 5 seconds",
     )
     .await;
@@ -159,6 +172,7 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
     .expect("Failed to read compiled test WASM component");
     let deploy_params = serde_json::to_value((
         "greeter-service".to_string(),
+        vec!["syneroym-test:greeter/greet@0.1.0"],
         DeployManifest {
             config: ServiceConfig { env: vec![], args: vec![], custom_config: None },
             service_type: ServiceType::Wasm(WasmManifest {
@@ -170,7 +184,7 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
     .expect("Failed to serialize deploy params");
     let deploy_res = tokio::time::timeout(
         std::time::Duration::from_secs(30),
-        send_native_json_rpc_request(&service_id, target_node, "deploy", deploy_params),
+        send_native_json_rpc_request(&native_service_id, target_node, "deploy", deploy_params),
     )
     .await
     .expect("deploy request timed out");
@@ -185,10 +199,10 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
         std::time::Duration::from_secs(30),
         send_json_rpc_request(
             "greeter-service",
-            "greet",
+            "syneroym-test:greeter/greet@0.1.0",
             target_node,
             "greet",
-            serde_json::json!([{"name": "tester"}]),
+            serde_json::json!(["tester"]),
         ),
     )
     .await
@@ -197,17 +211,59 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
     let app_res = app_res.unwrap();
     assert_eq!(
         app_res.result,
-        serde_json::json!({"response": "Hello, tester! Greetings from the greeter component"})
+        serde_json::json!("Hello, tester! Greetings from greeter::greet::greet")
     );
-    debug!(">>> Finished STEP 3: Run");
+    debug!(">>> Finished STEP 2: Run");
 
-    // --- STEP 4: Teardown / Graceful Shutdown ---
-    // Simulate a Ctrl-C (SIGINT) to trigger graceful shutdown.
-    send_ctrl_c(std::process::id());
+    // --- STEP 3: Teardown / Graceful Shutdown ---
+    // Trigger graceful shutdown.
+    let _ = shutdown_tx.send(()).await;
 
     // Await the substrate handle to ensure it shuts down cleanly.
     let result = substrate_handle.await;
     assert!(result.is_ok(), "Substrate task should shut down cleanly without panicking.");
+}
+
+// Helper used by `app_sandbox` feature tests; suppresses warning when feature is disabled.
+#[allow(dead_code)]
+async fn abort_if_failed<F>(
+    step: F,
+    handle: &mut tokio::task::JoinHandle<()>,
+    shutdown_tx: &tokio::sync::mpsc::Sender<()>,
+    msg: &str,
+) where
+    F: std::future::Future<Output = bool>,
+{
+    if !step.await {
+        abort_substrate(handle, shutdown_tx, msg).await;
+    }
+}
+
+// Helper used by `app_sandbox` feature tests; suppresses warning when feature is disabled.
+#[allow(dead_code)]
+async fn abort_substrate(
+    handle: &mut tokio::task::JoinHandle<()>,
+    shutdown_tx: &tokio::sync::mpsc::Sender<()>,
+    msg: &str,
+) {
+    let _ = shutdown_tx.send(()).await;
+    let _ = handle.await;
+    panic!("{}", msg);
+}
+
+// Helper used by `app_sandbox` feature tests; suppresses warning when feature is disabled.
+#[allow(dead_code)]
+async fn wait_for_substrate(service_id: &str, target_node: iroh::PublicKey) -> bool {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if check_substrate_available(service_id, target_node).await {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .is_ok()
 }
 
 // Helper used by `app_sandbox` feature tests; suppresses warning when feature is disabled.
@@ -247,10 +303,11 @@ async fn send_json_rpc_request(
 ) -> Option<syneroym_rpc::JsonRpcResponse> {
     use tokio::io::AsyncBufReadExt;
 
-    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
-        .bind()
-        .await
-        .expect("Failed to bind iroh endpoint");
+    let ep_bldr = iroh::Endpoint::builder(N0DisableRelay).relay_mode(RelayMode::Custom(
+        RelayMap::from(IROH_RELAY_URL.to_string().parse::<RelayUrl>().unwrap()),
+    ));
+
+    let endpoint = ep_bldr.bind().await.expect("Failed to bind iroh endpoint");
 
     let conn: iroh::endpoint::Connection = match tokio::time::timeout(
         Duration::from_millis(1500),
@@ -310,7 +367,7 @@ async fn send_json_rpc_request(
     let mut resp_buf = Vec::new();
     let mut reader = tokio::io::BufReader::new(recv);
     let res =
-        if tokio::time::timeout(Duration::from_secs(5), reader.read_until(b'\n', &mut resp_buf))
+        if tokio::time::timeout(Duration::from_secs(30), reader.read_until(b'\n', &mut resp_buf))
             .await
             .is_err()
             || resp_buf.is_empty()
@@ -320,42 +377,9 @@ async fn send_json_rpc_request(
         } else {
             serde_json::from_slice::<syneroym_rpc::JsonRpcResponse>(&resp_buf).ok()
         };
+    debug!("got json response for method: {}: {:?}", method, res);
     drop(send);
     conn.close(0u8.into(), b"done");
     endpoint.close().await;
     res
-}
-
-// Helper used by `app_sandbox` feature tests; suppresses warning when feature is disabled.
-#[allow(dead_code)]
-async fn wait_for_substrate(service_id: &str, target_node: iroh::PublicKey) -> bool {
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            if check_substrate_available(service_id, target_node).await {
-                return;
-            }
-            sleep(Duration::from_millis(100)).await;
-        }
-    })
-    .await
-    .is_ok()
-}
-
-// Helper used by `app_sandbox` feature tests; suppresses warning when feature is disabled.
-#[allow(dead_code)]
-async fn abort_if_failed<F>(step: F, handle: &mut tokio::task::JoinHandle<()>, msg: &str)
-where
-    F: std::future::Future<Output = bool>,
-{
-    if !step.await {
-        abort_substrate(handle, msg).await;
-    }
-}
-
-// Helper used by `app_sandbox` feature tests; suppresses warning when feature is disabled.
-#[allow(dead_code)]
-async fn abort_substrate(handle: &mut tokio::task::JoinHandle<()>, msg: &str) {
-    send_ctrl_c(std::process::id());
-    let _ = handle.await;
-    panic!("{}", msg);
 }

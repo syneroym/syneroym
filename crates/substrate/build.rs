@@ -20,6 +20,8 @@ fn main() {
     let status = Command::new(env!("CARGO"))
         .arg("component")
         .arg("build")
+        .arg("--target")
+        .arg("wasm32-wasip2")
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .env_remove("CARGO_MAKEFLAGS")
         .env("CARGO_TARGET_DIR", component_dir.join("target"))

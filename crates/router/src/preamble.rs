@@ -44,11 +44,10 @@ impl RoutePreamble {
             .trim()
             .split_once("://")
             .ok_or_else(|| anyhow!("Invalid preamble format: {raw}"))?;
-        let (interface, service_id) = target
-            .split_once('.')
-            .ok_or_else(|| anyhow!("Invalid preamble target format: {target}"))?;
 
-        if protocol.is_empty() || interface.is_empty() || service_id.is_empty() {
+        let (interface, service_id) = target.rsplit_once('.').unwrap_or(("", target));
+
+        if protocol.is_empty() || service_id.is_empty() {
             return Err(anyhow!("Incomplete preamble: {raw}"));
         }
 
@@ -69,6 +68,22 @@ mod tests {
         let parsed = RoutePreamble::parse("json-rpc://health.substrate-123\n").unwrap();
         assert_eq!(parsed.protocol, RouteProtocol::JsonRpc);
         assert_eq!(parsed.interface, "health");
+        assert_eq!(parsed.service_id, "substrate-123");
+    }
+
+    #[test]
+    fn parses_route_preamble_no_interface() {
+        let parsed = RoutePreamble::parse("json-rpc://substrate-123\n").unwrap();
+        assert_eq!(parsed.protocol, RouteProtocol::JsonRpc);
+        assert_eq!(parsed.interface, "");
+        assert_eq!(parsed.service_id, "substrate-123");
+    }
+
+    #[test]
+    fn parses_route_preamble_multiple_dots() {
+        let parsed = RoutePreamble::parse("json-rpc://com.example.health.substrate-123\n").unwrap();
+        assert_eq!(parsed.protocol, RouteProtocol::JsonRpc);
+        assert_eq!(parsed.interface, "com.example.health");
         assert_eq!(parsed.service_id, "substrate-123");
     }
 }

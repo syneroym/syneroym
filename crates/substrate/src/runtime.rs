@@ -2,18 +2,29 @@ use syneroym_core::config::SubstrateConfig;
 use syneroym_core::registry::{EndpointRegistry, SubstrateEndpoint};
 use syneroym_identity::substrate::resolve_did_z32;
 use syneroym_router::ConnectionRouter;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::identity;
 
-/// Runs the substrate given the consolidated configuration.
+/// Runs the substrate given the consolidated configuration, using the default ctrl-c shutdown signal.
 pub async fn run(config: SubstrateConfig) -> anyhow::Result<()> {
+    run_with_signal(config, async {
+        let _ = tokio::signal::ctrl_c().await;
+    })
+    .await
+}
+
+/// Runs the substrate given the consolidated configuration and a custom shutdown signal.
+pub async fn run_with_signal<F>(config: SubstrateConfig, shutdown_signal: F) -> anyhow::Result<()>
+where
+    F: std::future::Future<Output = ()>,
+{
     info!(profile = %config.profile, "initializing substrate");
 
     let observability_engine = syneroym_observability::ObservabilityEngine::init(&config)?;
     let mut services = RuntimeServices::init(&config).await?;
     let connection_router = setup_connection_router(&config).await?;
-    services.run_until_shutdown(&config.profile, &connection_router).await;
+    services.run_until_shutdown(&config.profile, &connection_router, shutdown_signal).await;
 
     info!("shutting down substrate components");
     services.shutdown().await;
@@ -63,7 +74,14 @@ impl RuntimeServices {
         })
     }
 
-    async fn run_until_shutdown(&mut self, profile: &str, connection_router: &ConnectionRouter) {
+    async fn run_until_shutdown<F>(
+        &mut self,
+        profile: &str,
+        connection_router: &ConnectionRouter,
+        shutdown_signal: F,
+    ) where
+        F: std::future::Future<Output = ()>,
+    {
         #[cfg(feature = "community_registry")]
         let mut registry_fut = std::pin::pin!(async {
             match self.community_registry.as_mut() {
@@ -95,6 +113,7 @@ impl RuntimeServices {
         let mut client_gateway_fut = std::pin::pin!(pending_component());
 
         let mut connection_router_fut = std::pin::pin!(connection_router.run());
+        let mut shutdown_signal = std::pin::pin!(shutdown_signal);
 
         info!(profile = %profile, "starting substrate components");
         tokio::select! {
@@ -102,7 +121,7 @@ impl RuntimeServices {
             res = &mut registry_fut => log_component_exit("service registry", res),
             res = &mut coordinator_fut => log_component_exit("coordinator", res),
             res = &mut client_gateway_fut => log_component_exit("http proxy", res),
-            _ = tokio::signal::ctrl_c() => warn!("received ctrl-c signal"),
+            _ = &mut shutdown_signal => warn!("received shutdown signal"),
         }
     }
 
@@ -154,7 +173,7 @@ async fn setup_connection_router(config: &SubstrateConfig) -> anyhow::Result<Con
     let data_store = syneroym_core::storage::init_store(config).await?;
     let endpoint_registry = EndpointRegistry::new(data_store).await?;
 
-    info!("Registering native SubstrateService at {}", service_id);
+    debug!("Registering native SubstrateService at {}", service_id);
     let endpoint = SubstrateEndpoint::NativeHostChannel { channel_details: service_id.clone() };
     endpoint_registry.register(service_id.clone(), "orchestrator".to_string(), endpoint).await?;
 

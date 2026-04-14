@@ -6,6 +6,7 @@ use syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestr
 };
 use syneroym_core::{config::SubstrateConfig, registry::SubstrateEndpoint};
 use syneroym_rpc::JsonRpcRequest;
+use tracing::debug;
 use wasmtime::component::{Component, Linker};
 use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxView};
 
@@ -180,11 +181,14 @@ impl AppSandboxEngine {
         interface_name: &str,
         request: &JsonRpcRequest,
     ) -> Result<String> {
+        debug!("starting to execute wasm");
+
         // Look up the compiled component
         let component = self
             .components
             .get(service_id)
             .ok_or_else(|| anyhow::anyhow!("Component not found for service {}", service_id))?;
+        debug!("looked up component");
 
         // Create new WASI context and table for per-request isolation
         let wasi = WasiCtx::builder().inherit_stderr().inherit_stdout().build();
@@ -194,10 +198,14 @@ impl AppSandboxEngine {
         let host_state =
             HostState { wasi, table, component_id: service_id.to_string(), request_ctx: None };
 
+        debug!("created wasi ctx and host state");
+
         // Create a new store
         let mut store = wasmtime::Store::new(&self.engine, host_state);
 
         let instance = self.linker.instantiate_async(&mut store, &component).await?;
+
+        debug!("instantiated store and instance");
 
         // Extract the interface export index
         let (_, instance_idx) = instance
@@ -215,6 +223,8 @@ impl AppSandboxEngine {
                 )
             })?;
 
+        debug!("extracted the interface and method export indices");
+
         let func = instance
             .get_func(&mut store, func_idx)
             .ok_or_else(|| anyhow::anyhow!("Method is not a function"))?;
@@ -224,6 +234,8 @@ impl AppSandboxEngine {
             wasmtime::component::types::ComponentItem::ComponentFunc(f) => f.params(),
             _ => return Err(anyhow::anyhow!("Expected a function item")),
         };
+
+        debug!("extracted the function and parameter iter");
 
         let mut wasm_params = Vec::new();
         // Dynamic parameter resolution
@@ -265,14 +277,19 @@ impl AppSandboxEngine {
             }
         }
 
+        debug!("created input types");
+
         // Setup results slice. We assume single result (usually string)
         let results_len = match &item {
             wasmtime::component::types::ComponentItem::ComponentFunc(f) => f.results().len(),
             _ => 0,
         };
         let mut wasm_results = vec![wasmtime::component::Val::Bool(false); results_len];
+        debug!("created result types");
 
         func.call_async(&mut store, &wasm_params, &mut wasm_results).await?;
+
+        debug!("called wasm function, processing results");
 
         // Convert the result to String
         if wasm_results.is_empty() {
@@ -355,5 +372,108 @@ impl AppSandboxEngine {
     pub async fn deploy_podman(&self, _service_id: &str, _manifest: &[u8]) -> Result<()> {
         tracing::info!("AppSandboxEngine: Deploying Podman container for {}", _service_id);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use wasmtime::component::{Component, Linker};
+    use wasmtime::{Config, Engine};
+    use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxView};
+
+    #[test]
+    #[ignore = "For dev testing currently, yet to convert to a formal unit test"]
+    fn test_list_interfaces() {
+        pub struct HostState {
+            pub wasi: WasiCtx,
+            pub table: ResourceTable,
+        }
+
+        impl wasmtime_wasi::WasiView for HostState {
+            fn ctx(&mut self) -> WasiCtxView<'_> {
+                WasiCtxView { ctx: &mut self.wasi, table: &mut self.table }
+            }
+        }
+
+        let mut config = Config::new();
+        config.wasm_component_model(true);
+        let engine = Engine::new(&config).unwrap();
+
+        // Initialize linker
+        let mut linker = Linker::<HostState>::new(&engine);
+        wasmtime_wasi::p2::add_to_linker_sync(&mut linker).unwrap();
+
+        // Create new WASI context and table for per-request isolation
+        let wasi = WasiCtx::builder().inherit_stderr().inherit_stdout().build();
+        let table = ResourceTable::new();
+
+        // Create a new store
+        let mut store = wasmtime::Store::new(&engine, HostState { wasi, table });
+
+        // Attempt to read the test WASM component from relative paths
+        let wasm_bytes = std::fs::read(
+            "../../test-components/greeter/target/wasm32-wasip2/debug/syneroym_test_greeter.wasm",
+        )
+        .unwrap_or_else(|_| {
+            std::fs::read(
+                "test-components/greeter/target/wasm32-wasip2/debug/syneroym_test_greeter.wasm",
+            )
+            .expect("Failed to read compiled test WASM component")
+        });
+
+        let component: Component =
+            Component::new(&engine, &wasm_bytes).expect("Failed to compile WASM component");
+        for interface in component.component_type().exports(&engine) {
+            println!("Listing interface: {:?}", interface);
+        }
+
+        match linker.instantiate(&mut store, &component) {
+            Ok(instance) => {
+                let interface = instance
+                    .get_export(&mut store, None, "syneroym-test:greeter/greet@0.1.0")
+                    .unwrap();
+                println!("Interface export: {:?}", interface);
+
+                // Extract the method export index
+                let (item, func_idx) = instance
+                    .get_export(&mut store, Some(&interface.1), "greet")
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "Method '{}' not found in interface '{:?}'",
+                            "greet",
+                            &interface.0
+                        )
+                    })
+                    .unwrap();
+                println!("Method export index: {:?}", func_idx);
+
+                // Setup results slice. We assume single result (usually string)
+                let results_len = match &item {
+                    wasmtime::component::types::ComponentItem::ComponentFunc(f) => {
+                        f.results().len()
+                    }
+                    _ => 0,
+                };
+                let mut wasm_results = vec![wasmtime::component::Val::Bool(false); results_len];
+
+                let func = instance
+                    .get_func(&mut store, func_idx)
+                    .ok_or_else(|| anyhow::anyhow!("Method is not a function"))
+                    .unwrap();
+                println!("Function export: {:?}", func);
+
+                let result = func
+                    .call(
+                        &mut store,
+                        &[wasmtime::component::Val::String("TestUser".to_string())],
+                        &mut wasm_results,
+                    )
+                    .map_err(|e| anyhow::anyhow!("Failed to call function: {}", e));
+                println!("Function call result: {:?} is {:?}", result, wasm_results);
+            }
+            Err(err) => {
+                println!("Error instantiating component: {}", err);
+            }
+        }
     }
 }
