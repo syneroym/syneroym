@@ -103,7 +103,7 @@ const IROH_RELAY_URL: &str = "http://localhost:3340";
 /// This in-process integration test starts a substrate,
 /// runs operations done over a typical substrate lifetime, finally shutting it down
 #[tokio::test]
-//#[ignore = "This e2e test uses a locally running iroh relay. Wewe don't want to use iroh's public relay for testing. Will have our own relay in the test itself, later"]
+#[ignore = "This e2e test uses a locally running iroh relay. Wewe don't want to use iroh's public relay for testing. Will have our own relay in the test itself, later"]
 #[cfg(feature = "app_sandbox")]
 async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
