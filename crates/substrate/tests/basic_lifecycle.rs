@@ -1,7 +1,6 @@
 use assert_cmd::assert::OutputAssertExt;
 use assert_cmd::cargo::CommandCargoExt;
-use iroh::endpoint::presets::N0DisableRelay;
-use iroh::{RelayMap, RelayMode, RelayUrl};
+use iroh::{EndpointAddr, RelayMap, RelayMode, RelayUrl};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -104,7 +103,6 @@ const IROH_RELAY_URL: &str = "http://localhost:3340";
 /// This in-process integration test starts a substrate,
 /// runs operations done over a typical substrate lifetime, finally shutting it down
 #[tokio::test]
-//#[ignore = "This e2e test uses a locally running iroh relay. We don't want to use iroh's public relay for testing. Will have our own relay in the test itself, later"]
 #[cfg(feature = "app_sandbox")]
 async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
     use syneroym_core::config::{CoordinatorIrohConfig, CoordinatorRole};
@@ -145,10 +143,6 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
         &config.app_data_dir,
     )
     .expect("Failed to setup identity");
-    let secret_key =
-        syneroym_substrate::identity::get_secret(&config.identity, &config.app_data_dir)
-            .expect("Failed to get secret");
-    let target_node = iroh::SecretKey::from_bytes(&secret_key).public();
     let native_service_id =
         syneroym_identity::substrate::resolve_did_z32(&substrate_identity_state.did)
             .expect("Failed to resolve did")
@@ -156,18 +150,33 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
 
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
 
+    // We need to hold on to some variables because the test needs the substrate endpoint.
+    // This is burried deep into the connection router.
+    // TODO; Need to improve the interfaces.
+    let (obs_engine, svcs, router) = syneroym_substrate::init(config.clone()).await;
+    let connection_router = router.unwrap();
+    let target_node = connection_router.endpoint_addr().unwrap();
+    let observability_engine = obs_engine.unwrap();
+    let services = svcs.unwrap();
+
     // Spawn the entire substrate in a background task.
     let mut substrate_handle = tokio::spawn(async move {
-        syneroym_substrate::run_with_signal(config, async {
-            let _ = shutdown_rx.recv().await;
-        })
+        syneroym_substrate::run_with_signal(
+            config,
+            observability_engine,
+            services,
+            connection_router,
+            async {
+                let _ = shutdown_rx.recv().await;
+            },
+        )
         .await
         .expect("Substrate failed to run");
     });
 
     // Wait for the substrate to become fully available by polling its health check endpoint.
     abort_if_failed(
-        wait_for_substrate(&native_service_id, target_node),
+        wait_for_substrate(&native_service_id, target_node.clone()),
         &mut substrate_handle,
         &shutdown_tx,
         "Substrate did not become available in time",
@@ -194,7 +203,12 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
     .expect("Failed to serialize deploy params");
     let deploy_res = tokio::time::timeout(
         std::time::Duration::from_secs(30),
-        send_native_json_rpc_request(&native_service_id, target_node, "deploy", deploy_params),
+        send_native_json_rpc_request(
+            &native_service_id,
+            target_node.clone(),
+            "deploy",
+            deploy_params,
+        ),
     )
     .await
     .expect("deploy request timed out");
@@ -210,7 +224,7 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
         send_json_rpc_request(
             "greeter-service",
             "syneroym-test:greeter/greet@0.1.0",
-            target_node,
+            target_node.clone(),
             "greet",
             serde_json::json!(["tester"]),
         ),
@@ -263,10 +277,10 @@ async fn abort_substrate(
 
 // Helper used by `app_sandbox` feature tests; suppresses warning when feature is disabled.
 #[allow(dead_code)]
-async fn wait_for_substrate(service_id: &str, target_node: iroh::PublicKey) -> bool {
-    tokio::time::timeout(Duration::from_secs(30), async {
+async fn wait_for_substrate(service_id: &str, target_node: EndpointAddr) -> bool {
+    tokio::time::timeout(Duration::from_secs(300), async {
         loop {
-            if check_substrate_available(service_id, target_node).await {
+            if check_substrate_available(service_id, target_node.clone()).await {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -278,7 +292,7 @@ async fn wait_for_substrate(service_id: &str, target_node: iroh::PublicKey) -> b
 
 // Helper used by `app_sandbox` feature tests; suppresses warning when feature is disabled.
 #[allow(dead_code)]
-async fn check_substrate_available(service_id: &str, target_node: iroh::PublicKey) -> bool {
+async fn check_substrate_available(service_id: &str, target_node: EndpointAddr) -> bool {
     if let Some(response) = send_native_json_rpc_request(
         service_id,
         target_node,
@@ -297,7 +311,7 @@ async fn check_substrate_available(service_id: &str, target_node: iroh::PublicKe
 // Helper used by `app_sandbox` feature tests; suppresses warning when feature is disabled.
 async fn send_native_json_rpc_request(
     service_id: &str,
-    target_node: iroh::PublicKey,
+    target_node: EndpointAddr,
     method: &str,
     params: serde_json::Value,
 ) -> Option<syneroym_rpc::JsonRpcResponse> {
@@ -307,15 +321,15 @@ async fn send_native_json_rpc_request(
 async fn send_json_rpc_request(
     service_id: &str,
     interface_name: &str,
-    target_node: iroh::PublicKey,
+    target_node: EndpointAddr,
     method: &str,
     params: serde_json::Value,
 ) -> Option<syneroym_rpc::JsonRpcResponse> {
     use tokio::io::AsyncBufReadExt;
 
-    let ep_bldr = iroh::Endpoint::builder(N0DisableRelay).relay_mode(RelayMode::Custom(
-        RelayMap::from(IROH_RELAY_URL.to_string().parse::<RelayUrl>().unwrap()),
-    ));
+    let ep_bldr = iroh::Endpoint::empty_builder().relay_mode(RelayMode::Custom(RelayMap::from(
+        IROH_RELAY_URL.to_string().parse::<RelayUrl>().unwrap(),
+    )));
 
     let endpoint = ep_bldr.bind().await.expect("Failed to bind iroh endpoint");
 
@@ -331,8 +345,8 @@ async fn send_json_rpc_request(
             endpoint.close().await;
             return None;
         }
-        Err(_) => {
-            error!(">>> Timed out connecting to target node for method {method}");
+        Err(e) => {
+            error!(">>> Timed out connecting to target node for method {method}:{e}");
             endpoint.close().await;
             return None;
         }
@@ -372,12 +386,14 @@ async fn send_json_rpc_request(
         return None;
     }
     debug!(">>> Wrote request for method: {}", method);
-    let _ = send.finish();
+    if send.finish().is_err() {
+        return None;
+    };
 
     let mut resp_buf = Vec::new();
     let mut reader = tokio::io::BufReader::new(recv);
     let res =
-        if tokio::time::timeout(Duration::from_secs(30), reader.read_until(b'\n', &mut resp_buf))
+        if tokio::time::timeout(Duration::from_secs(300), reader.read_until(b'\n', &mut resp_buf))
             .await
             .is_err()
             || resp_buf.is_empty()

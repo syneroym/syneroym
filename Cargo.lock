@@ -4804,6 +4804,7 @@ dependencies = [
  "dirs",
  "iroh",
  "libc",
+ "n0-error",
  "predicates",
  "serde",
  "serde_json",
@@ -4821,6 +4822,7 @@ dependencies = [
  "tokio",
  "toml 1.1.2+spec-1.1.0",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

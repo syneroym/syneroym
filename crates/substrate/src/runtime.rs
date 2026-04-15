@@ -1,6 +1,7 @@
 use syneroym_core::config::SubstrateConfig;
 use syneroym_core::registry::{EndpointRegistry, SubstrateEndpoint};
 use syneroym_identity::substrate::resolve_did_z32;
+use syneroym_observability::ObservabilityEngine;
 use syneroym_router::ConnectionRouter;
 use tracing::{debug, error, info, warn};
 
@@ -8,22 +9,39 @@ use crate::identity;
 
 /// Runs the substrate given the consolidated configuration, using the default ctrl-c shutdown signal.
 pub async fn run(config: SubstrateConfig) -> anyhow::Result<()> {
-    run_with_signal(config, async {
+    init_and_run_with_signal(config, async {
         let _ = tokio::signal::ctrl_c().await;
     })
     .await
 }
 
 /// Runs the substrate given the consolidated configuration and a custom shutdown signal.
-pub async fn run_with_signal<F>(config: SubstrateConfig, shutdown_signal: F) -> anyhow::Result<()>
+pub async fn init_and_run_with_signal<F>(
+    config: SubstrateConfig,
+    shutdown_signal: F,
+) -> anyhow::Result<()>
 where
     F: std::future::Future<Output = ()>,
 {
-    info!(profile = %config.profile, "initializing substrate");
+    let (obs_engine, svcs, router) = init(config.clone()).await;
+    let connection_router = router?;
+    let observability_engine = obs_engine?;
+    let services = svcs?;
+    run_with_signal(config, observability_engine, services, connection_router, shutdown_signal)
+        .await
+}
 
-    let observability_engine = syneroym_observability::ObservabilityEngine::init(&config)?;
-    let mut services = RuntimeServices::init(&config).await?;
-    let connection_router = setup_connection_router(&config).await?;
+/// Runs the substrate given the consolidated configuration and a custom shutdown signal.
+pub async fn run_with_signal<F>(
+    config: SubstrateConfig,
+    observability_engine: ObservabilityEngine,
+    mut services: RuntimeServices,
+    connection_router: ConnectionRouter,
+    shutdown_signal: F,
+) -> anyhow::Result<()>
+where
+    F: std::future::Future<Output = ()>,
+{
     services.run_until_shutdown(&config.profile, &connection_router, shutdown_signal).await;
 
     info!("shutting down substrate components");
@@ -41,7 +59,22 @@ where
     Ok(())
 }
 
-struct RuntimeServices {
+/// Runs the substrate given the consolidated configuration and a custom shutdown signal.
+pub async fn init(
+    config: SubstrateConfig,
+) -> (
+    anyhow::Result<ObservabilityEngine>,
+    anyhow::Result<RuntimeServices>,
+    anyhow::Result<ConnectionRouter>,
+) {
+    info!(profile = %config.profile, "initializing substrate");
+
+    let observability_engine = syneroym_observability::ObservabilityEngine::init(&config);
+    let services = RuntimeServices::init(&config).await;
+    (observability_engine, services, setup_connection_router(&config).await)
+}
+
+pub struct RuntimeServices {
     #[cfg(feature = "community_registry")]
     community_registry: Option<syneroym_community_registry::EcosystemRegistry>,
     #[cfg(feature = "coordinator")]

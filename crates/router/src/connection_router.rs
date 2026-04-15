@@ -65,7 +65,7 @@ impl ConnectionRouter {
 
         let mut ep_bldr = iroh::Endpoint::builder(presets::N0);
         if let Ok(relay_url) = config.relay_url.parse::<RelayUrl>() {
-            ep_bldr = iroh::Endpoint::builder(presets::N0DisableRelay)
+            ep_bldr = iroh::Endpoint::empty_builder()
                 .relay_mode(RelayMode::Custom(RelayMap::from(relay_url)));
         }
 
@@ -74,6 +74,7 @@ impl ConnectionRouter {
 
         let iroh_router: IrohRouter =
             IrohRouter::builder(ep).accept(SYNEROYM_ALPN, route_handler).spawn();
+        iroh_router.endpoint().online().await;
 
         info!("Iroh listening on ALPN: {:?}", std::str::from_utf8(SYNEROYM_ALPN).unwrap());
 
