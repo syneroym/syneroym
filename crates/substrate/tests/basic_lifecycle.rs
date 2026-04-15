@@ -8,7 +8,7 @@ use std::time::Duration;
 use syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, DeployManifest, ServiceConfig, ServiceType, WasmManifest,
 };
-use syneroym_core::config::{ClientGatewayRole, SubstrateConfig};
+use syneroym_core::config::SubstrateConfig;
 use tempfile::NamedTempFile;
 use tracing::{debug, error};
 
@@ -98,26 +98,29 @@ async fn test_run_finishes_on_ctrl_c() {
     );
 }
 
+const IROH_PORT: u16 = 3340;
 const IROH_RELAY_URL: &str = "http://localhost:3340";
 
 /// This in-process integration test starts a substrate,
 /// runs operations done over a typical substrate lifetime, finally shutting it down
 #[tokio::test]
-#[ignore = "This e2e test uses a locally running iroh relay. Wewe don't want to use iroh's public relay for testing. Will have our own relay in the test itself, later"]
+//#[ignore = "This e2e test uses a locally running iroh relay. We don't want to use iroh's public relay for testing. Will have our own relay in the test itself, later"]
 #[cfg(feature = "app_sandbox")]
 async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
+    use syneroym_core::config::{CoordinatorIrohConfig, CoordinatorRole};
+
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-
-    // Construct the configuration programmatically.
-    let mut config = SubstrateConfig::default();
-    config.roles.client_gateway = Some(ClientGatewayRole::default());
-    config.profile = "test-lifecycle".to_string();
-
     let base_path = temp_dir.path();
-    config.app_local_data_dir = base_path.join("data");
-    config.app_data_dir = base_path.join("user_data");
-    config.app_cache_dir = base_path.join("cache");
-    config.app_log_dir = base_path.join("logs");
+    // Construct the configuration programmatically.
+    let mut config = SubstrateConfig {
+        app_local_data_dir: base_path.join("data"),
+        app_data_dir: base_path.join("user_data"),
+        app_cache_dir: base_path.join("cache"),
+        app_log_dir: base_path.join("logs"),
+
+        profile: "full".to_string(),
+        ..SubstrateConfig::default()
+    };
     config.resolve_paths();
 
     // Since this test runs the substrate in-process, we can't rely on `cargo test` capturing stdout/stderr.
@@ -125,9 +128,16 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
     // NOTE: Comment for debugging purpose uncomment otherwise.
     config.logging.target = syneroym_core::config::LogTarget::File;
 
-    let iroh_config =
-        syneroym_core::config::IrohRelayConfig { relay_url: IROH_RELAY_URL.to_string() };
-    config.uplink.iroh = Some(iroh_config);
+    config.roles.coordinator = Some(CoordinatorRole {
+        iroh: Some(CoordinatorIrohConfig {
+            enable_relay: true,
+            http_bind_address: format!("0.0.0.0:{}", IROH_PORT),
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    config.uplink.iroh =
+        Some(syneroym_core::config::IrohRelayConfig { relay_url: IROH_RELAY_URL.to_string() });
 
     // Generate identity beforehand so we know it
     let substrate_identity_state = syneroym_substrate::identity::setup_substrate_identity(
@@ -160,7 +170,7 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
         wait_for_substrate(&native_service_id, target_node),
         &mut substrate_handle,
         &shutdown_tx,
-        "Substrate did not become available within 5 seconds",
+        "Substrate did not become available in time",
     )
     .await;
 
