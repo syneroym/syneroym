@@ -44,6 +44,9 @@ jobs:
       - name: Install wasm32-wasip2 target
         run: rustup target add wasm32-wasip2
 
+      - name: Build WASM Test Component
+        run: cd test-components/greeter && cargo component build --release --target wasm32-wasip2
+
       - name: Check Formatting
         run: cargo fmt --all -- --check
         
