@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [ "main" ]
   workflow_dispatch:
+    inputs:
+      coverage:
+        description: "Run code coverage and upload the report to Codecov"
+        required: false
+        type: boolean
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -28,6 +34,10 @@ jobs:
         with:
           tool: cargo-component@0.21.1
 
+      - name: Install cargo-llvm-cov
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.coverage }}
+        uses: taiki-e/install-action@cargo-llvm-cov
+
       - name: Setup Rust Cache
         uses: Swatinem/rust-cache@v2
         
@@ -44,7 +54,19 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
         
       - name: Run Tests
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.coverage) }}
         run: cargo test --workspace --all-targets --all-features
+
+      - name: Generate Code Coverage
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.coverage }}
+        run: cargo llvm-cov --workspace --all-targets --all-features --lcov --output-path lcov.info
+
+      - name: Upload coverage to Codecov
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.coverage }}
+        uses: codecov/codecov-action@v4
+        with:
+          files: lcov.info
+          token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Security Audit
         uses: rustsec/audit-check@v2.0.0
