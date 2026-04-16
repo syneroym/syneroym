@@ -1,6 +1,7 @@
 package syneroym:host;
 
 interface context {
+    // TODO: Currently a placeholder for context managed by host. Enhance later
     /// Returns a string incorporating the component context and request context.
     get-test-context: func(request-ctx: string) -> string;
 }

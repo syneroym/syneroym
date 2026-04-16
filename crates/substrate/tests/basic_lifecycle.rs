@@ -178,7 +178,7 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
     // Deploy a test WASM application
     debug!(">>> Starting STEP 1: Deploy");
     let wasm_bytes = std::fs::read(
-        "../../test-components/greeter/target/wasm32-wasip1/debug/syneroym_test_greeter.wasm",
+        "../../test-components/greeter/target/wasm32-wasip2/release/syneroym_test_greeter.wasm",
     )
     .expect("Failed to read compiled test WASM component");
     let deploy_params = serde_json::to_value((
@@ -355,12 +355,10 @@ async fn send_json_rpc_request_over_stream(
     service_id: &str,
     interface_name: &str,
     mut send: iroh::endpoint::SendStream,
-    recv: iroh::endpoint::RecvStream,
+    mut recv: iroh::endpoint::RecvStream,
     method: &str,
     params: serde_json::Value,
 ) -> Option<syneroym_rpc::JsonRpcResponse> {
-    use tokio::io::AsyncBufReadExt;
-
     let preamble = format!("json-rpc://{}.{}\n", interface_name, service_id);
     if send.write_all(preamble.as_bytes()).await.is_err() {
         return None;
@@ -372,9 +370,8 @@ async fn send_json_rpc_request_over_stream(
         params,
         id: Some(serde_json::Value::Number(1.into())),
     };
-    let mut req_bytes = serde_json::to_vec(&request).unwrap();
-    req_bytes.push(b'\n');
-    if send.write_all(&req_bytes).await.is_err() {
+    let req_bytes = serde_json::to_vec(&request).unwrap();
+    if syneroym_rpc::framing::write_frame(&mut send, &req_bytes).await.is_err() {
         return None;
     }
     debug!(">>> Wrote request for method: {}", method);
@@ -382,19 +379,18 @@ async fn send_json_rpc_request_over_stream(
         return None;
     };
 
-    let mut resp_buf = Vec::new();
-    let mut reader = tokio::io::BufReader::new(recv);
-    let res =
-        if tokio::time::timeout(Duration::from_secs(300), reader.read_until(b'\n', &mut resp_buf))
-            .await
-            .is_err()
-            || resp_buf.is_empty()
-        {
+    let res = match tokio::time::timeout(
+        Duration::from_secs(300),
+        syneroym_rpc::framing::read_frame(&mut recv),
+    )
+    .await
+    {
+        Ok(Ok(frame)) if !frame.is_empty() => serde_json::from_slice(&frame).ok(),
+        _ => {
             error!(">>> Timed out waiting for response to method: {}", method);
             None
-        } else {
-            serde_json::from_slice::<syneroym_rpc::JsonRpcResponse>(&resp_buf).ok()
-        };
+        }
+    };
     debug!("got json response for method: {}: {:?}", method, res);
     drop(send);
     res

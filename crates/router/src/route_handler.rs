@@ -7,8 +7,9 @@ use std::sync::Arc;
 use syneroym_control_plane::ControlPlaneService;
 use syneroym_core::config::SubstrateConfig;
 use syneroym_core::registry::{EndpointRegistry, SubstrateEndpoint};
+use syneroym_rpc::framing;
 use syneroym_rpc::{JsonRpcConverter, JsonRpcRequest, JsonRpcResponse, NativeService};
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
 use tracing::{debug, error, warn};
 
 use crate::net_iroh::IrohStream;
@@ -95,7 +96,7 @@ impl RouteHandler {
             RouteExecution::Adapted { adapter } => {
                 let message = adapter_not_implemented_message(*adapter);
                 let payload = JsonRpcConverter::json_error(None, -32601, message)?;
-                write_half.write_all(&payload).await?;
+                framing::write_frame(&mut write_half, &payload).await?;
             }
             RouteExecution::Unsupported => {
                 warn!(
@@ -181,24 +182,16 @@ impl RouteHandler {
         W: AsyncWrite + Unpin + Send,
     {
         loop {
-            let mut frame = Vec::new();
-            let read = reader.read_until(b'\n', &mut frame).await?;
-            if read == 0 {
-                break;
-            }
-
-            while frame.last() == Some(&b'\n') || frame.last() == Some(&b'\r') {
-                frame.pop();
-            }
+            let frame = framing::read_frame(&mut reader).await?;
             if frame.is_empty() {
-                continue;
+                break;
             }
 
             let request: JsonRpcRequest = match serde_json::from_slice(&frame) {
                 Ok(parsed) => parsed,
                 Err(error) => {
                     let payload = JsonRpcConverter::json_error(None, -32700, error.to_string())?;
-                    writer.write_all(&payload).await?;
+                    framing::write_frame(writer, &payload).await?;
                     continue;
                 }
             };
@@ -210,17 +203,16 @@ impl RouteHandler {
                         result: serde_json::Value::String(wasm_result),
                         id: request.id.clone(),
                     };
-                    let mut payload = serde_json::to_vec(&json_response)?;
-                    payload.push(b'\n');
+                    let payload = serde_json::to_vec(&json_response)?;
                     debug!("writing wasm response");
-                    writer.write_all(&payload).await?;
-                    debug!("writing wasm response");
+                    framing::write_frame(writer, &payload).await?;
+                    debug!("wrote wasm response");
                 }
                 Err(e) => {
                     error!("WASM execution error: {}", e);
                     let error_payload =
                         JsonRpcConverter::json_error(request.id.clone(), -32603, e.to_string())?;
-                    writer.write_all(&error_payload).await?;
+                    framing::write_frame(writer, &error_payload).await?;
                 }
             }
         }
@@ -246,20 +238,10 @@ impl RouteHandler {
             .ok_or_else(|| anyhow!("Native service not found for {}", channel_id))?;
 
         loop {
-            let mut frame = Vec::new();
-            debug!(">>> Waiting to read frame...");
-            let read = reader.read_until(b'\n', &mut frame).await?;
-            debug!(">>> Read frame of {} bytes", read);
-            if read == 0 {
+            let frame = framing::read_frame(&mut reader).await?;
+            if frame.is_empty() {
                 debug!(">>> Reached EOF");
                 break;
-            }
-
-            while frame.last() == Some(&b'\n') || frame.last() == Some(&b'\r') {
-                frame.pop();
-            }
-            if frame.is_empty() {
-                continue;
             }
 
             debug!(">>> Parsing JSON frame...");
@@ -268,7 +250,7 @@ impl RouteHandler {
                 Err(error) => {
                     debug!(">>> JSON parse error: {}", error);
                     let payload = JsonRpcConverter::json_error(None, -32700, error.to_string())?;
-                    writer.write_all(&payload).await?;
+                    framing::write_frame(writer, &payload).await?;
                     continue;
                 }
             };
@@ -279,13 +261,13 @@ impl RouteHandler {
                     debug!(">>> Native service succeeded");
                     let json_response =
                         JsonRpcConverter::native_to_json(&request, native_response)?;
-                    writer.write_all(&json_response).await?;
+                    framing::write_frame(writer, &json_response).await?;
                 }
                 Err(e) => {
                     error!("Native service error: {}", e);
                     let error_payload =
                         JsonRpcConverter::json_error(request.id.clone(), -32603, e.to_string())?;
-                    writer.write_all(&error_payload).await?;
+                    framing::write_frame(writer, &error_payload).await?;
                 }
             }
         }

@@ -20,6 +20,7 @@ fn main() {
     let status = Command::new(env!("CARGO"))
         .arg("component")
         .arg("build")
+        .arg("--release")
         .arg("--target")
         .arg("wasm32-wasip2")
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
