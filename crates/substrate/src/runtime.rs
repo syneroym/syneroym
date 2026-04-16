@@ -15,6 +15,12 @@ pub async fn run(config: SubstrateConfig) -> anyhow::Result<()> {
     .await
 }
 
+pub struct InitializedRuntime {
+    pub observability: ObservabilityEngine,
+    pub services: RuntimeServices,
+    pub connection_router: ConnectionRouter,
+}
+
 /// Runs the substrate given the consolidated configuration and a custom shutdown signal.
 pub async fn init_and_run_with_signal<F>(
     config: SubstrateConfig,
@@ -23,36 +29,33 @@ pub async fn init_and_run_with_signal<F>(
 where
     F: std::future::Future<Output = ()>,
 {
-    let (obs_engine, svcs, router) = init(config.clone()).await;
-    let connection_router = router?;
-    let observability_engine = obs_engine?;
-    let services = svcs?;
-    run_with_signal(config, observability_engine, services, connection_router, shutdown_signal)
-        .await
+    let runtime = init(config.clone()).await?;
+    run_with_signal(config, runtime, shutdown_signal).await
 }
 
 /// Runs the substrate given the consolidated configuration and a custom shutdown signal.
 pub async fn run_with_signal<F>(
     config: SubstrateConfig,
-    observability_engine: ObservabilityEngine,
-    mut services: RuntimeServices,
-    connection_router: ConnectionRouter,
+    mut runtime: InitializedRuntime,
     shutdown_signal: F,
 ) -> anyhow::Result<()>
 where
     F: std::future::Future<Output = ()>,
 {
-    services.run_until_shutdown(&config.profile, &connection_router, shutdown_signal).await;
+    runtime
+        .services
+        .run_until_shutdown(&config.profile, &runtime.connection_router, shutdown_signal)
+        .await;
 
     info!("shutting down substrate components");
-    services.shutdown().await;
+    runtime.services.shutdown().await;
 
-    if let Err(e) = observability_engine.shutdown().await {
-        error!(error = %e, "error flushing observability data");
+    if let Err(error) = runtime.observability.shutdown().await {
+        error!(error = %error, "error flushing observability data");
     }
 
-    if let Err(e) = connection_router.shutdown().await {
-        error!(error = %e, "error shutting down connection router");
+    if let Err(error) = runtime.connection_router.shutdown().await {
+        error!(error = %error, "error shutting down connection router");
     }
 
     info!("shutdown complete");
@@ -60,18 +63,14 @@ where
 }
 
 /// Runs the substrate given the consolidated configuration and a custom shutdown signal.
-pub async fn init(
-    config: SubstrateConfig,
-) -> (
-    anyhow::Result<ObservabilityEngine>,
-    anyhow::Result<RuntimeServices>,
-    anyhow::Result<ConnectionRouter>,
-) {
+pub async fn init(config: SubstrateConfig) -> anyhow::Result<InitializedRuntime> {
     info!(profile = %config.profile, "initializing substrate");
 
-    let observability_engine = syneroym_observability::ObservabilityEngine::init(&config);
-    let services = RuntimeServices::init(&config).await;
-    (observability_engine, services, setup_connection_router(&config).await)
+    Ok(InitializedRuntime {
+        observability: syneroym_observability::ObservabilityEngine::init(&config)?,
+        services: RuntimeServices::init(&config).await?,
+        connection_router: setup_connection_router(&config).await?,
+    })
 }
 
 pub struct RuntimeServices {

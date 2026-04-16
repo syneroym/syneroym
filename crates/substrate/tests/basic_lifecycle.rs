@@ -143,40 +143,32 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
         &config.app_data_dir,
     )
     .expect("Failed to setup identity");
-    let native_service_id =
+    let substrate_service_id =
         syneroym_identity::substrate::resolve_did_z32(&substrate_identity_state.did)
             .expect("Failed to resolve did")
             .to_string();
 
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
 
-    // We need to hold on to some variables because the test needs the substrate endpoint.
-    // This is burried deep into the connection router.
-    // TODO; Need to improve the interfaces.
-    let (obs_engine, svcs, router) = syneroym_substrate::init(config.clone()).await;
-    let connection_router = router.unwrap();
-    let target_node = connection_router.endpoint_addr().unwrap();
-    let observability_engine = obs_engine.unwrap();
-    let services = svcs.unwrap();
+    let runtime =
+        syneroym_substrate::init(config.clone()).await.expect("Failed to initialize runtime");
+    let endpoint_addr = runtime
+        .connection_router
+        .endpoint_addr()
+        .expect("Runtime did not expose an endpoint address");
 
     // Spawn the entire substrate in a background task.
     let mut substrate_handle = tokio::spawn(async move {
-        syneroym_substrate::run_with_signal(
-            config,
-            observability_engine,
-            services,
-            connection_router,
-            async {
-                let _ = shutdown_rx.recv().await;
-            },
-        )
+        syneroym_substrate::run_with_signal(config, runtime, async {
+            let _ = shutdown_rx.recv().await;
+        })
         .await
         .expect("Substrate failed to run");
     });
 
     // Wait for the substrate to become fully available by polling its health check endpoint.
     abort_if_failed(
-        wait_for_substrate(&native_service_id, target_node.clone()),
+        wait_for_substrate(&substrate_service_id, endpoint_addr.clone()),
         &mut substrate_handle,
         &shutdown_tx,
         "Substrate did not become available in time",
@@ -204,8 +196,8 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
     let deploy_res = tokio::time::timeout(
         std::time::Duration::from_secs(30),
         send_native_json_rpc_request(
-            &native_service_id,
-            target_node.clone(),
+            &substrate_service_id,
+            endpoint_addr.clone(),
             "deploy",
             deploy_params,
         ),
@@ -224,7 +216,7 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
         send_json_rpc_request(
             "greeter-service",
             "syneroym-test:greeter/greet@0.1.0",
-            target_node.clone(),
+            endpoint_addr,
             "greet",
             serde_json::json!(["tester"]),
         ),
@@ -277,10 +269,10 @@ async fn abort_substrate(
 
 // Helper used by `app_sandbox` feature tests; suppresses warning when feature is disabled.
 #[allow(dead_code)]
-async fn wait_for_substrate(service_id: &str, target_node: EndpointAddr) -> bool {
+async fn wait_for_substrate(service_id: &str, endpoint_addr: EndpointAddr) -> bool {
     tokio::time::timeout(Duration::from_secs(300), async {
         loop {
-            if check_substrate_available(service_id, target_node.clone()).await {
+            if check_substrate_available(service_id, endpoint_addr.clone()).await {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -292,10 +284,10 @@ async fn wait_for_substrate(service_id: &str, target_node: EndpointAddr) -> bool
 
 // Helper used by `app_sandbox` feature tests; suppresses warning when feature is disabled.
 #[allow(dead_code)]
-async fn check_substrate_available(service_id: &str, target_node: EndpointAddr) -> bool {
+async fn check_substrate_available(service_id: &str, endpoint_addr: EndpointAddr) -> bool {
     if let Some(response) = send_native_json_rpc_request(
         service_id,
-        target_node,
+        endpoint_addr,
         "readyz",
         serde_json::Value::Object(serde_json::Map::new()),
     )
@@ -311,17 +303,17 @@ async fn check_substrate_available(service_id: &str, target_node: EndpointAddr) 
 // Helper used by `app_sandbox` feature tests; suppresses warning when feature is disabled.
 async fn send_native_json_rpc_request(
     service_id: &str,
-    target_node: EndpointAddr,
+    endpoint_addr: EndpointAddr,
     method: &str,
     params: serde_json::Value,
 ) -> Option<syneroym_rpc::JsonRpcResponse> {
-    send_json_rpc_request(service_id, "orchestrator", target_node, method, params).await
+    send_json_rpc_request(service_id, "orchestrator", endpoint_addr, method, params).await
 }
 
 async fn send_json_rpc_request(
     service_id: &str,
     interface_name: &str,
-    target_node: EndpointAddr,
+    endpoint_addr: EndpointAddr,
     method: &str,
     params: serde_json::Value,
 ) -> Option<syneroym_rpc::JsonRpcResponse> {
@@ -335,7 +327,7 @@ async fn send_json_rpc_request(
 
     let conn: iroh::endpoint::Connection = match tokio::time::timeout(
         Duration::from_millis(1500),
-        endpoint.connect(target_node, syneroym_router::SYNEROYM_ALPN),
+        endpoint.connect(endpoint_addr, syneroym_router::SYNEROYM_ALPN),
     )
     .await
     {
