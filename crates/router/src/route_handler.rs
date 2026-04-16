@@ -299,13 +299,22 @@ impl IrohProtocolHandler for RouteHandler {
         let endpoint_id = connection.remote_id();
         debug!("accepted connection from {endpoint_id}");
 
-        let (send, recv) = connection.accept_bi().await?;
-
-        let iroh_stream = IrohStream::new(send, recv);
-        if let Err(e) = self.handle_stream(iroh_stream).await {
-            error!("Error handling Iroh stream: {}", e);
+        // There could be multiple streams on the same connection
+        loop {
+            match connection.accept_bi().await {
+                Ok((send, recv)) => {
+                    let iroh_stream = IrohStream::new(send, recv);
+                    if let Err(e) = self.handle_stream(iroh_stream).await {
+                        error!("Error handling Iroh stream: {}", e);
+                    }
+                    debug!("handled stream");
+                }
+                Err(e) => {
+                    debug!("Connection {endpoint_id} closed or error: {e}");
+                    break;
+                }
+            }
         }
-        debug!("handled stream");
 
         connection.closed().await;
         debug!("connection closed");
