@@ -388,14 +388,10 @@ mod tests {
         let mut store = wasmtime::Store::new(&engine, host_state);
 
         // Attempt to read the test WASM component from relative paths
-        let wasm_bytes = std::fs::read(
-            "../../test-components/greeter/target/wasm32-wasip2/debug/syneroym_test_greeter.wasm",
-        )
-        .unwrap_or_else(|_| {
-            std::fs::read(
-                "test-components/greeter/target/wasm32-wasip2/debug/syneroym_test_greeter.wasm",
-            )
-            .expect("Failed to read compiled test WASM component")
+        let component_path =
+            "../../test-components/greeter/target/wasm32-wasip2/release/syneroym_test_greeter.wasm";
+        let wasm_bytes = std::fs::read(component_path).unwrap_or_else(|_| {
+            std::fs::read(component_path).expect("Failed to read compiled test WASM component")
         });
 
         let component: Component =
