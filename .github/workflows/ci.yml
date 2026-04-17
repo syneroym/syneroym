@@ -63,7 +63,7 @@ jobs:
 
       - name: Upload coverage to Codecov
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.coverage }}
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v6
         with:
           files: lcov.info
           token: ${{ secrets.GITHUB_TOKEN }}
