@@ -1,3 +1,4 @@
+use anyhow::Context;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 
 use crate::IdentityDoc;
@@ -9,11 +10,15 @@ pub struct Identity {
 
 impl Identity {
     /// Generate a new random Ed25519 identity keypair.
-    pub fn generate() -> Self {
+    ///
+    /// # Errors
+    /// Returns an error if the system's random number generator fails (e.g., in sandboxed environments).
+    pub fn generate() -> anyhow::Result<Self> {
         let mut bytes = [0u8; 32];
-        getrandom::fill(&mut bytes).expect("Failed to generate random bytes");
+        getrandom::fill(&mut bytes)
+            .context("Failed to generate random bytes for Ed25519 keypair")?;
         let signing_key = SigningKey::from_bytes(&bytes);
-        Self { signing_key }
+        Ok(Self { signing_key })
     }
 
     /// Load an identity from a 32-byte secret key slice.

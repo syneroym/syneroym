@@ -165,7 +165,7 @@ async fn main() -> anyhow::Result<()> {
                     fs::create_dir_all(&dir)?;
                 }
 
-                let identity = Identity::generate();
+                let identity = Identity::generate()?;
                 let identity_bytes = identity.to_bytes();
 
                 let key_path = dir.join("identity.key");

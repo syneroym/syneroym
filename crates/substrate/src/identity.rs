@@ -25,7 +25,7 @@ pub fn setup_substrate_identity(
         key_arr[..copy_len].copy_from_slice(&key_bytes[..copy_len]);
         Identity::from_bytes(&key_arr)
     } else {
-        let id = Identity::generate();
+        let id = Identity::generate()?;
         fs::write(&key_path, id.to_bytes())?;
         id
     };

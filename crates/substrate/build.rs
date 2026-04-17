@@ -9,14 +9,16 @@ fn main() {
         return;
     }
 
-    let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
-    let component_dir = PathBuf::from(manifest_dir).join("../../test-components/greeter");
+    let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
+    let component_dir = PathBuf::from(&manifest_dir).join("../../test-components/greeter");
 
     // Tell Cargo to re-run this script if the component's source changes
     println!("cargo:rerun-if-changed={}", component_dir.join("src").display());
     println!("cargo:rerun-if-changed={}", component_dir.join("wit").display());
     println!("cargo:rerun-if-changed={}", component_dir.join("Cargo.toml").display());
 
+    // Build WASM component. Failure is non-fatal: print a warning and continue.
+    // This allows builds to succeed on environments without cargo-component installed.
     let status = Command::new(env!("CARGO"))
         .arg("component")
         .arg("build")
@@ -27,10 +29,27 @@ fn main() {
         .env_remove("CARGO_MAKEFLAGS")
         .env("CARGO_TARGET_DIR", component_dir.join("target"))
         .current_dir(&component_dir)
-        .status()
-        .expect("Failed to execute cargo component build");
+        .status();
 
-    if !status.success() {
-        panic!("Failed to build the WASM component in {:?}", component_dir);
+    match status {
+        Ok(s) if s.success() => {
+            println!("cargo:info=WASM component built successfully");
+        }
+        Ok(s) => {
+            println!(
+                "cargo:warning=Failed to build WASM component in {:?} : {}. \
+                 Install cargo-component to rebuild: `cargo install cargo-component`. \
+                 Continuing build without updated WASM component.",
+                component_dir, s
+            );
+        }
+        Err(e) => {
+            println!(
+                "cargo:warning=Failed to execute WASM component build: {}. \
+                 Ensure 'cargo' is available and cargo-component is installed. \
+                 Continuing build without WASM component.",
+                e
+            );
+        }
     }
 }

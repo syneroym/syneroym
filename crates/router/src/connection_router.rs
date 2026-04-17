@@ -76,7 +76,10 @@ impl ConnectionRouter {
             IrohRouter::builder(ep).accept(SYNEROYM_ALPN, route_handler).spawn();
         iroh_router.endpoint().online().await;
 
-        info!("Iroh listening on ALPN: {:?}", std::str::from_utf8(SYNEROYM_ALPN).unwrap());
+        info!(
+            "Iroh listening on ALPN: {:?}",
+            std::str::from_utf8(SYNEROYM_ALPN).unwrap_or("<invalid utf8>")
+        );
 
         Ok(iroh_router)
     }

@@ -83,7 +83,7 @@ impl RoutePreamble {
         }
 
         Ok(Self {
-            protocol: protocol.parse().unwrap(),
+            protocol: protocol.parse().map_err(|_| anyhow!("Invalid protocol: {}", protocol))?,
             interface: interface.to_string(),
             service_id: service_id.to_string(),
         })

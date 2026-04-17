@@ -14,6 +14,11 @@ use tracing::{debug, error};
 fn send_ctrl_c(#[allow(unused_variables)] pid: u32) {
     #[cfg(unix)]
     {
+        // SAFETY: libc::kill() is called with:
+        // - pid: a valid process ID from std::process::Child::id()
+        // - signal: libc::SIGINT, a standard signal supported on Unix systems
+        // The function is safe when PID is valid (which it is from Child::id())
+        // and the signal number is correct. No memory is modified by this call.
         unsafe {
             libc::kill(pid as i32, libc::SIGINT);
         }
@@ -21,12 +26,15 @@ fn send_ctrl_c(#[allow(unused_variables)] pid: u32) {
     #[cfg(windows)]
     {
         // On Windows, there is no direct equivalent to sending SIGINT to a specific PID.
+        // GenerateConsoleCtrlEvent sends a Ctrl+C event to the console group.
         #[link(name = "kernel32")]
         extern "system" {
             fn GenerateConsoleCtrlEvent(dwCtrlEvent: u32, dwProcessGroupId: u32) -> i32;
         }
+        // SAFETY: GenerateConsoleCtrlEvent is a stable Windows API that only sends a console event.
+        // Parameters: 0 = CTRL_C_EVENT, 0 = broadcast to all processes in current console group.
+        // No memory access or modification occurs. Function is thread-safe.
         unsafe {
-            // 0 = CTRL_C_EVENT
             GenerateConsoleCtrlEvent(0, 0);
         }
     }

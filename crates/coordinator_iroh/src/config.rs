@@ -51,7 +51,7 @@ pub(crate) async fn build_relay_config(
             rustls::crypto::ring::default_provider(),
         ))
         .with_safe_default_protocol_versions()
-        .expect("protocols supported by ring")
+        .map_err(|e| anyhow::anyhow!("protocols supported by ring: {}", e))?
         .with_no_client_auth()
         .with_single_cert(certs.clone(), private_key)
         .context("failed to create rustls ServerConfig")?;

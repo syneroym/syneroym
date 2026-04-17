@@ -148,7 +148,7 @@ fn main() -> Result<()> {
         //.max_blocking_threads(16)
         .enable_all()
         .build()
-        .unwrap()
+        .context("Failed to build tokio runtime")?
         .block_on(run(config))
 }
 
@@ -161,7 +161,7 @@ mod tests {
     #[test]
     fn test_config_precedence() {
         // 1. Setup a dummy config file overriding some defaults
-        let mut config_file = NamedTempFile::new().unwrap();
+        let mut config_file = NamedTempFile::new().expect("Failed to create temp config file");
         let config_toml = r#"
         profile = "config_profile"
         
@@ -173,12 +173,13 @@ mod tests {
         enable_relay = true
         http_bind_address = "0.0.0.0:8000"
         "#;
-        write!(config_file, "{}", config_toml).unwrap();
+        write!(config_file, "{}", config_toml).expect("Failed to write config file");
 
         // 2. Setup CLI arguments overriding some config file values and some defaults
         // - Override config file: iroh_relay_url ("http://cli.relay:3340" vs "http://config.relay:3340")
         // - Override default (not in config): enable_coordinator_webrtc (true vs default false)
-        let config_path_str = config_file.path().to_str().unwrap();
+        let config_path_str =
+            config_file.path().to_str().expect("Failed to convert config path to string");
         let args = vec![
             "syneroym",
             "run",

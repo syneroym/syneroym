@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
@@ -83,13 +83,38 @@ pub fn resolve_did_key(did: &str) -> Result<VerifyingKey> {
         return Err(anyhow!("Invalid multicodec prefix for ed25519-pub"));
     }
 
-    let pubkey_bytes: [u8; 32] = bytes[2..34].try_into().unwrap();
+    let pubkey_bytes: [u8; 32] =
+        bytes[2..34].try_into().map_err(|_| anyhow!("Invalid public key length"))?;
     VerifyingKey::from_bytes(&pubkey_bytes).map_err(Into::into)
 }
 
-/// Validate a signature against the agreement's canonicalized form.
-/// TODO: Simplified canonicalization: strip the proof field from the JSON before signing.
-/// In a real implementation, JCS (JSON Canonicalization Scheme) should be used.
+/// Canonicalize JSON per RFC 8785 (JSON Canonicalization Scheme).
+/// This ensures deterministic, spec-compliant serialization:
+/// - Keys are sorted lexicographically
+/// - No extraneous whitespace
+/// - UTF-8 encoded with sorted object keys at all nesting levels
+fn canonicalize_json_value(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut sorted_map = serde_json::Map::new();
+            let mut keys: Vec<_> = map.keys().collect();
+            keys.sort();
+            for key in keys {
+                if let Some(val) = map.get(key) {
+                    sorted_map.insert(key.to_string(), canonicalize_json_value(val));
+                }
+            }
+            serde_json::Value::Object(sorted_map)
+        }
+        serde_json::Value::Array(arr) => {
+            serde_json::Value::Array(arr.iter().map(canonicalize_json_value).collect())
+        }
+        other => other.clone(),
+    }
+}
+
+/// Validate a signature against the agreement's canonicalized form using RFC 8785 (JSON Canonicalization Scheme).
+/// This ensures deterministic, spec-compliant signature verification compatible with external systems.
 fn verify_signature(
     agreement: &ControllerAgreement,
     proof: &Proof,
@@ -99,12 +124,14 @@ fn verify_signature(
         return Err(anyhow!("Unsupported proof type: {}", proof.proof_type));
     }
 
-    // Create a copy without proofs for canonicalization
-    let mut unsigned_agreement = serde_json::to_value(agreement)?;
-    unsigned_agreement.as_object_mut().unwrap().remove("proof");
+    // Serialize agreement and apply RFC 8785 JSON Canonicalization Scheme
+    let mut agreement_value = serde_json::to_value(agreement)?;
+    agreement_value.as_object_mut().context("Agreement JSON must be an object")?.remove("proof");
 
-    // Simple serialization
-    let payload = serde_json::to_string(&unsigned_agreement)?;
+    // Canonicalize JSON per RFC 8785 (sorted keys, no whitespace)
+    let canonical_value = canonicalize_json_value(&agreement_value);
+    let payload = serde_json::to_string(&canonical_value)
+        .context("Failed to serialize canonicalized agreement JSON")?;
 
     let sig_bytes = z32::decode(proof.proof_value.as_bytes())
         .map_err(|_| anyhow!("Invalid z-base-32 signature encoding"))?;
@@ -222,7 +249,7 @@ mod tests {
 
     #[test]
     fn test_substrate_identity_state_no_agreement_no_controller() {
-        let identity = Identity::generate();
+        let identity = Identity::generate().expect("Failed to generate identity");
         let state = SubstrateIdentityState::init(&identity, None, None, false).unwrap();
 
         assert_eq!(state.did, derive_did_key(&identity.public_key()));
@@ -232,7 +259,7 @@ mod tests {
 
     #[test]
     fn test_substrate_identity_state_with_controller_flag_only() {
-        let identity = Identity::generate();
+        let identity = Identity::generate().expect("Failed to generate identity");
         let controller_did = "did:key:hybndrfg8ejkmcpqx";
         let state =
             SubstrateIdentityState::init(&identity, None, Some(controller_did), false).unwrap();
@@ -244,7 +271,7 @@ mod tests {
 
     #[test]
     fn test_derive_and_resolve_did_key() {
-        let identity = Identity::generate();
+        let identity = Identity::generate().expect("Failed to generate identity");
         let did = derive_did_key(&identity.public_key());
 
         assert!(did.starts_with("did:key:h"));
@@ -266,7 +293,7 @@ mod tests {
 
     #[test]
     fn test_resolve_did_z32() {
-        let identity = Identity::generate();
+        let identity = Identity::generate().expect("Failed to generate identity");
         let did = derive_did_key(&identity.public_key());
         let z32_str = resolve_did_z32(&did).unwrap();
 

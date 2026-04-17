@@ -69,7 +69,7 @@ impl EndpointStorage for SqliteEndpointStorage {
     async fn load_all(&self) -> Result<Vec<(String, String, SubstrateEndpoint)>> {
         let conn_arc = self.conn.clone();
         tokio::task::spawn_blocking(move || -> Result<Vec<(String, String, SubstrateEndpoint)>> {
-            let conn = conn_arc.lock().unwrap();
+            let conn = conn_arc.lock().map_err(|e| anyhow::anyhow!("Database connection mutex poisoned: {}", e))?;
             let mut stmt = conn.prepare("SELECT service_id, interface_name, endpoint_type, endpoint_data FROM local_endpoints")?;
 
             let endpoint_iter = stmt.query_map([], |row| {
@@ -116,7 +116,7 @@ impl EndpointStorage for SqliteEndpointStorage {
         let iname = interface_name.to_string();
 
         tokio::task::spawn_blocking(move || -> Result<()> {
-            let conn = conn_arc.lock().unwrap();
+            let conn = conn_arc.lock().map_err(|e| anyhow::anyhow!("Database connection mutex poisoned: {}", e))?;
             conn.execute(
                 "INSERT INTO local_endpoints (service_id, interface_name, endpoint_type, endpoint_data)
                  VALUES (?1, ?2, ?3, ?4)
@@ -136,7 +136,9 @@ impl EndpointStorage for SqliteEndpointStorage {
         let iname = interface_name.to_string();
 
         tokio::task::spawn_blocking(move || -> Result<()> {
-            let conn = conn_arc.lock().unwrap();
+            let conn = conn_arc
+                .lock()
+                .map_err(|e| anyhow::anyhow!("Database connection mutex poisoned: {}", e))?;
             conn.execute(
                 "DELETE FROM local_endpoints WHERE service_id = ?1 AND interface_name = ?2",
                 params![sid, iname],
