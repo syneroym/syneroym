@@ -9,7 +9,6 @@ anyhow.workspace = true
 tokio.workspace = true
 dirs = "6.0.0"
 dashmap = "6.1.0"
-tracing.workspace = true
 rusqlite = { version = "0.39", features = ["bundled", "modern-full"] }
 serde_json.workspace = true
 async-trait = "0.1.89"

@@ -9,4 +9,3 @@ anyhow.workspace = true
 async-trait = "0.1"
 serde = { workspace = true, features = ["derive"] }
 tokio.workspace = true
-tracing = "0.1"

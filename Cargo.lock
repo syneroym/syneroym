@@ -3963,10 +3963,8 @@ dependencies = [
  "assert_cmd",
  "clap",
  "predicates",
- "reqwest 0.13.2",
  "serde_json",
  "syneroym-identity",
- "tempfile",
  "tokio",
 ]
 
@@ -4641,7 +4639,6 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "wasmtime",
- "wasmtime-wasi",
  "wit-bindgen 0.55.0",
 ]
 
@@ -4701,13 +4698,11 @@ dependencies = [
  "anyhow",
  "iroh-base",
  "iroh-relay",
- "reqwest 0.13.2",
  "rustls",
  "rustls-pki-types",
  "syneroym-core",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "url",
 ]
 
@@ -4733,7 +4728,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -4791,7 +4785,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "tracing",
 ]
 
 [[package]]
