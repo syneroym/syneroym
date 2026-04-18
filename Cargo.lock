@@ -4696,13 +4696,17 @@ name = "syneroym-coordinator-iroh"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "iroh",
  "iroh-base",
  "iroh-relay",
+ "n0-error",
  "rustls",
  "rustls-pki-types",
  "syneroym-core",
+ "tempfile",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "url",
 ]
 
@@ -4798,7 +4802,6 @@ dependencies = [
  "dirs",
  "iroh",
  "libc",
- "n0-error",
  "predicates",
  "serde",
  "serde_json",

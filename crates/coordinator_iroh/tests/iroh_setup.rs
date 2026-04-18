@@ -16,6 +16,8 @@ use iroh::{
     protocol::{AcceptError, ProtocolHandler, Router},
 };
 use n0_error::{Result, StdResultExt};
+use syneroym_coordinator_iroh::CoordinatorIroh;
+use syneroym_core::config::SubstrateConfig;
 
 /// Each protocol is identified by its ALPN string.
 ///
@@ -23,23 +25,70 @@ use n0_error::{Result, StdResultExt};
 /// and the connection is aborted unless both endpoints pass the same bytestring.
 const ALPN: &[u8] = b"iroh-example/echo/0";
 
+const IROH_PORT: u16 = 3340;
 const IROH_RELAY_URL: &str = "http://localhost:3340";
 
 #[tokio::test]
-#[ignore = "not a syneroym test, just a handy iroh sample to try out small things"]
-async fn test_echo() -> Result<()> {
+#[ignore = "not a required test, just a handy iroh sample for small experiments"]
+async fn test_echo() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
-    let router = start_accept_side().await?;
 
-    // wait for the endpoint to be online
-    router.endpoint().online().await;
+    use syneroym_core::config::{CoordinatorIrohConfig, CoordinatorRole};
 
-    connect_side(router.endpoint().addr()).await?;
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let base_path = temp_dir.path();
+    // Construct the configuration programmatically.
+    let mut config = SubstrateConfig {
+        app_local_data_dir: base_path.join("data"),
+        app_data_dir: base_path.join("user_data"),
+        app_cache_dir: base_path.join("cache"),
+        app_log_dir: base_path.join("logs"),
 
-    println!("Started endpoint: {:?}", router.endpoint().addr());
+        profile: "full".to_string(),
+        ..SubstrateConfig::default()
+    };
+    config.resolve_paths();
 
-    // This makes sure the endpoint in the router is closed properly and connections close gracefully
-    router.shutdown().await.anyerr()?;
+    // Since this test runs the substrate in-process, we can't rely on `cargo test` capturing stdout/stderr.
+    // So we configure the substrate to write logs to a temporary file and avoid large outputs while running tests.
+    // NOTE: Comment for debugging purpose uncomment otherwise.
+    config.logging.target = syneroym_core::config::LogTarget::File;
+
+    config.roles.coordinator = Some(CoordinatorRole {
+        iroh: Some(CoordinatorIrohConfig {
+            enable_relay: true,
+            http_bind_address: format!("0.0.0.0:{}", IROH_PORT),
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+
+    let mut coord = CoordinatorIroh::init(&config).await?;
+
+    tokio::select! {
+        res = coord.run() => {
+            res?;
+        }
+        res = async {
+            let router = start_accept_side().await?;
+
+            // wait for the endpoint to be online
+            router.endpoint().online().await;
+
+            connect_side(router.endpoint().addr()).await?;
+
+            println!("Started endpoint: {:?}", router.endpoint().addr());
+
+            // This makes sure the endpoint in the router is closed properly and connections close gracefully
+            router.shutdown().await.anyerr()?;
+
+            Ok::<(), anyhow::Error>(())
+        } => {
+            res?;
+        }
+    }
+
+    coord.shutdown().await?;
 
     Ok(())
 }

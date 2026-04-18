@@ -13,3 +13,9 @@ tracing.workspace = true
 url = "2.5.8"
 rustls-pki-types = "1.14.0"
 rustls = { version = "0.23.37", features = ["ring"] }
+
+[dev-dependencies]
+iroh.workspace = true
+n0-error = "0.1"
+tracing-subscriber.workspace = true
+tempfile = "3.10"
