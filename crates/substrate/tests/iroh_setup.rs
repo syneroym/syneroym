@@ -1,3 +1,7 @@
+// From: https://github.com/n0-computer/iroh/blob/main/iroh/examples/echo.rs
+// Original license: MIT OR Apache-2.0
+// Used under MIT OR Apache-2.0 License
+
 //! Very basic example to showcase how to use iroh's APIs.
 //!
 //! This example implements a simple protocol that echos any data sent to it in the first stream.
