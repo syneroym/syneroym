@@ -41,6 +41,6 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 tracing-appender = "0.2.3"
 
 # Iroh dependencies
-iroh-base = "0.97.0"
+iroh-base = "0.98.0"
 iroh = "0.97.0"
 iroh-relay = { version = "0.97.0", features = ["server"] }
