@@ -17,7 +17,7 @@ hex = "0.4.3"
 syneroym-bindings = { path = "../bindings" }
 syneroym-rpc = { path = "../rpc" }
 wasmtime = { version = "43", features = ["component-model"] }
-wasmtime-wasi = "43"
+wasmtime-wasi = "44"
 dashmap = "6"
 async-trait = "0.1.89"
 serde_json.workspace = true
