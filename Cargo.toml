@@ -23,7 +23,7 @@ license = "MIT OR Apache-2.0"
 syneroym-identity = { path = "crates/identity", version = "0.1.0" }
 
 # Networking & Async
-tokio = { version = "1.50", features = ["full"] }
+tokio = { version = "1.52", features = ["full"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
