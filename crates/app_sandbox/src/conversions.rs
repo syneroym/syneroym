@@ -8,6 +8,7 @@ pub fn json_to_wasm_params<'a>(
 ) -> Result<Vec<Val>> {
     let mut wasm_params = Vec::new();
 
+    // TODO: Instead of positional params, better to use named params. Since we use WIT, the names should be available in the loaded component
     for (i, (_param_name, ty)) in params_iter.enumerate() {
         let val = json_params.get(i).unwrap_or(&serde_json::Value::Null);
         match ty {

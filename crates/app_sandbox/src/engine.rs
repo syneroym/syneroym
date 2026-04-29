@@ -228,6 +228,7 @@ impl AppSandboxEngine {
     ) -> Result<String> {
         debug!("starting to execute wasm");
 
+        // TODO: Later optimize this by caching things like function parameter details on first execution, so we don't have to do the same lookups every time.
         let (mut store, func, results_len, item) =
             self.prepare_wasm_execution(service_id, interface_name, &request.method).await?;
 
