@@ -21,6 +21,8 @@ syneroym-coordinator = { path = "../coordinator", optional = true, default-featu
 syneroym-client-gateway = { path = "../client_gateway", optional = true }
 syneroym-app-sandbox = { path = "../app_sandbox", optional = true }
 tracing.workspace = true
+reqwest.workspace = true
+z32 = "1.3.0"
 
 [features]
 default = [

@@ -93,7 +93,7 @@ pub fn resolve_did_key(did: &str) -> Result<VerifyingKey> {
 /// - Keys are sorted lexicographically
 /// - No extraneous whitespace
 /// - UTF-8 encoded with sorted object keys at all nesting levels
-fn canonicalize_json_value(value: &serde_json::Value) -> serde_json::Value {
+pub fn canonicalize_json_value(value: &serde_json::Value) -> serde_json::Value {
     match value {
         serde_json::Value::Object(map) => {
             let mut sorted_map = serde_json::Map::new();

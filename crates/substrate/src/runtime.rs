@@ -1,6 +1,5 @@
 use syneroym_core::config::SubstrateConfig;
 use syneroym_core::registry::{EndpointRegistry, SubstrateEndpoint};
-use syneroym_identity::substrate::resolve_did_z32;
 use syneroym_observability::ObservabilityEngine;
 use syneroym_router::ConnectionRouter;
 use tracing::{debug, error, info, warn};
@@ -200,7 +199,7 @@ async fn setup_connection_router(config: &SubstrateConfig) -> anyhow::Result<Con
     let substrate_identity_state =
         identity::setup_substrate_identity(&config.identity, &config.app_data_dir)?;
     let substrate_secret_key = identity::get_secret(&config.identity, &config.app_data_dir)?;
-    let service_id = resolve_did_z32(&substrate_identity_state.did)?.to_string();
+    let service_id = substrate_identity_state.did.clone();
 
     let data_store = syneroym_core::storage::init_store(config).await?;
     let endpoint_registry = EndpointRegistry::new(data_store).await?;
@@ -209,11 +208,90 @@ async fn setup_connection_router(config: &SubstrateConfig) -> anyhow::Result<Con
     let endpoint = SubstrateEndpoint::NativeHostChannel { channel_details: service_id.clone() };
     endpoint_registry.register(service_id.clone(), "orchestrator".to_string(), endpoint).await?;
 
-    ConnectionRouter::init(
+    let router = ConnectionRouter::init(
         endpoint_registry,
         config.clone(),
         substrate_secret_key,
         service_id.clone(),
     )
-    .await
+    .await?;
+
+    if let Some(registry_url) = &config.substrate.registry_url
+        && let Some(endpoint_addr) = router.endpoint_addr()
+    {
+        let relay_url = endpoint_addr.relay_urls().next().map(|u| u.to_string());
+        let registry_url = registry_url.clone();
+        let service_id = service_id.clone();
+
+        tokio::spawn(async move {
+            let mut attempts = 0;
+            while attempts < 30 {
+                if let Err(e) = register_substrate_endpoint(
+                    &registry_url,
+                    &service_id,
+                    &endpoint_addr,
+                    relay_url.clone(),
+                    &substrate_secret_key,
+                )
+                .await
+                {
+                    warn!("Failed to register endpoint (attempt {}): {}", attempts + 1, e);
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    attempts += 1;
+                } else {
+                    break;
+                }
+            }
+        });
+    }
+
+    Ok(router)
+}
+
+async fn register_substrate_endpoint<E: serde::Serialize>(
+    registry_url: &str,
+    service_id: &str,
+    endpoint_addr: &E,
+    relay_url: Option<String>,
+    secret_key: &[u8; 32],
+) -> anyhow::Result<()> {
+    debug!("Registering substrate endpoint with registry at {}", registry_url);
+
+    let endpoint_addr_bytes = serde_json::to_vec(endpoint_addr)
+        .map_err(|e| anyhow::anyhow!("Failed to serialize endpoint addr: {}", e))?;
+
+    let info = syneroym_core::community_registry::EndpointInfo {
+        service_id: service_id.to_string(),
+        substrate_id: service_id.to_string(),
+        endpoint_type: syneroym_core::community_registry::EndpointType::Substrate,
+        relay_url,
+        endpoint_addr_bytes,
+    };
+
+    let info_value = serde_json::to_value(&info)?;
+    let canonical_value = syneroym_identity::substrate::canonicalize_json_value(&info_value);
+    let canonical_string = serde_json::to_string(&canonical_value)?;
+
+    let signature =
+        syneroym_identity::Identity::from_bytes(secret_key).sign(canonical_string.as_bytes());
+    let signature_z32 = z32::encode(&signature.to_bytes());
+
+    let signed_info =
+        syneroym_core::community_registry::SignedEndpointInfo { info, signature: signature_z32 };
+
+    let client = reqwest::Client::new();
+    let url = format!("{}/register", registry_url);
+    let res = client.post(&url).json(&signed_info).send().await;
+    match res {
+        Ok(resp) if resp.status().is_success() => {
+            info!("Successfully registered substrate endpoint with registry");
+        }
+        Ok(resp) => {
+            warn!("Failed to register with registry. Status: {}", resp.status());
+        }
+        Err(e) => {
+            warn!("Failed to reach registry: {}", e);
+        }
+    }
+    Ok(())
 }

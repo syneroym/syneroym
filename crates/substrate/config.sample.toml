@@ -106,6 +106,8 @@ memory_limit = "1Gi"
 # Service Registry
 [roles.community_registry]
 access = "everyone" # Later, more access restriction like list of dids
+# Registry bind address
+http_bind_address = "0.0.0.0:8080"
 
 # Coordinator/Rendezvous service for connection establishment
 [roles.coordinator]

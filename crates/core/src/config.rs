@@ -289,10 +289,21 @@ impl Default for AppSandboxRole {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+fn default_registry_http_bind_address() -> String {
+    "0.0.0.0:8080".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ServiceRegistryRole {
     pub access: AccessControl,
+    pub http_bind_address: String,
+}
+
+impl Default for ServiceRegistryRole {
+    fn default() -> Self {
+        Self { access: Default::default(), http_bind_address: default_registry_http_bind_address() }
+    }
 }
 
 /// Represents configurations like `access = "everyone"` OR `access = ["did1", "did2"]`
@@ -504,10 +515,11 @@ pub enum SamplingStrategy {
 #[serde(default)]
 pub struct SubstrateGlobalConfig {
     pub communication_interfaces: Vec<String>,
+    pub registry_url: Option<String>,
 }
 
 impl Default for SubstrateGlobalConfig {
     fn default() -> Self {
-        Self { communication_interfaces: default_communication_interfaces() }
+        Self { communication_interfaces: default_communication_interfaces(), registry_url: None }
     }
 }

@@ -113,7 +113,7 @@ const IROH_RELAY_URL: &str = "http://localhost:3340";
 #[tokio::test]
 #[cfg(feature = "app_sandbox")]
 async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
-    use syneroym_core::config::{CoordinatorIrohConfig, CoordinatorRole};
+    use syneroym_core::config::{CoordinatorIrohConfig, CoordinatorRole, ServiceRegistryRole};
 
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
     let base_path = temp_dir.path();
@@ -131,8 +131,7 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
 
     // Since this test runs the substrate in-process, we can't rely on `cargo test` capturing stdout/stderr.
     // So we configure the substrate to write logs to a temporary file and avoid large outputs while running tests.
-    // NOTE: Comment for debugging purpose uncomment otherwise.
-    config.logging.target = syneroym_core::config::LogTarget::File;
+    config.logging.target = syneroym_core::config::LogTarget::Stdout;
 
     config.roles.coordinator = Some(CoordinatorRole {
         iroh: Some(CoordinatorIrohConfig {
@@ -142,6 +141,8 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
         }),
         ..Default::default()
     });
+    config.roles.community_registry = Some(ServiceRegistryRole { ..Default::default() });
+    config.substrate.registry_url = Some("http://localhost:8080".to_string());
     config.uplink.iroh =
         Some(syneroym_core::config::IrohRelayConfig { relay_url: IROH_RELAY_URL.to_string() });
 
@@ -151,19 +152,12 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
         &config.app_data_dir,
     )
     .expect("Failed to setup identity");
-    let substrate_service_id =
-        syneroym_identity::substrate::resolve_did_z32(&substrate_identity_state.did)
-            .expect("Failed to resolve did")
-            .to_string();
+    let substrate_service_id = substrate_identity_state.did.clone();
 
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
 
     let runtime =
         syneroym_substrate::init(config.clone()).await.expect("Failed to initialize runtime");
-    let iroh_endpoint_addr = runtime
-        .connection_router
-        .endpoint_addr()
-        .expect("Runtime did not expose an endpoint address");
 
     // Spawn the entire substrate in a background task.
     let mut substrate_handle = tokio::spawn(async move {
@@ -173,6 +167,15 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
         .await
         .expect("Substrate failed to run");
     });
+
+    // Wait for the registry to start up and lookup the endpoint
+    let registry_res = wait_for_registry("http://localhost:8080", &substrate_service_id)
+        .await
+        .expect("Failed to look up endpoint from registry within 3 seconds");
+
+    let iroh_endpoint_addr: EndpointAddr =
+        serde_json::from_slice(&registry_res.info.endpoint_addr_bytes)
+            .expect("Failed to deserialize EndpointAddr");
 
     // Wait for the substrate to become fully available by polling its health check endpoint.
     let (endpoint, conn) = abort_if_failed(
@@ -244,6 +247,32 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
     // Await the substrate handle to ensure it shuts down cleanly.
     let result = substrate_handle.await;
     assert!(result.is_ok(), "Substrate task should shut down cleanly without panicking.");
+}
+
+/// Polls the community registry until the given `service_id` is found or the attempt
+/// budget is exhausted. Returns `None` if the registry does not respond within the
+/// allotted retries.
+// Helper used by `app_sandbox` feature tests; suppresses warning when feature is disabled.
+#[allow(dead_code)]
+async fn wait_for_registry(
+    registry_base_url: &str,
+    service_id: &str,
+) -> Option<syneroym_core::community_registry::SignedEndpointInfo> {
+    let client = reqwest::Client::new();
+    let url = format!("{}/lookup/{}", registry_base_url, service_id);
+    for _ in 0..30 {
+        if let Ok(response) = client.get(&url).send().await
+            && response.status().is_success()
+        {
+            return response
+                .json::<syneroym_core::community_registry::SignedEndpointInfo>()
+                .await
+                .ok();
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    None
 }
 
 // Helper used by `app_sandbox` feature tests; suppresses warning when feature is disabled.
