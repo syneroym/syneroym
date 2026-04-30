@@ -8,4 +8,4 @@ license.workspace = true
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
 wit-bindgen = "0.55.0"
-wasmtime = { version = "43", features = ["component-model"] }
+wasmtime = { version = "44", features = ["component-model"] }

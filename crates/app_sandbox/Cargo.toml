@@ -16,7 +16,7 @@ sha2 = "0.10"
 hex = "0.4.3"
 syneroym-bindings = { path = "../bindings" }
 syneroym-rpc = { path = "../rpc" }
-wasmtime = { version = "43", features = ["component-model"] }
+wasmtime = { version = "44", features = ["component-model"] }
 wasmtime-wasi = "43"
 dashmap = "6"
 async-trait = "0.1.89"
