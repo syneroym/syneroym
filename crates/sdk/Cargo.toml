@@ -1,0 +1,18 @@
+[package]
+name = "syneroym-sdk"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+syneroym-core = { path = "../core" }
+syneroym-rpc = { path = "../rpc" }
+syneroym-router = { path = "../router" }
+
+anyhow.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+tracing.workspace = true
+iroh.workspace = true
+async-trait = "0.1.89"

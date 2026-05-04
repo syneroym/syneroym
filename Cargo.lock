@@ -4937,6 +4937,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "syneroym-sdk"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "iroh",
+ "reqwest 0.13.3",
+ "serde",
+ "serde_json",
+ "syneroym-core",
+ "syneroym-router",
+ "syneroym-rpc",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "syneroym-substrate"
 version = "0.1.0"
 dependencies = [
@@ -4961,6 +4978,7 @@ dependencies = [
  "syneroym-observability",
  "syneroym-router",
  "syneroym-rpc",
+ "syneroym-sdk",
  "tempfile",
  "tokio",
  "toml 1.1.2+spec-1.1.0",

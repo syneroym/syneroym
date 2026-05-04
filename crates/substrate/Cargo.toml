@@ -53,3 +53,4 @@ iroh.workspace = true
 tracing-subscriber.workspace = true
 syneroym-rpc = { path = "../rpc" }
 syneroym-bindings = { path = "../bindings" }
+syneroym-sdk = { path = "../sdk" }

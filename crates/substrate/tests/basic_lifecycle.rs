@@ -1,6 +1,5 @@
 use assert_cmd::assert::OutputAssertExt;
 use assert_cmd::cargo::CommandCargoExt;
-use iroh::{EndpointAddr, RelayMap, RelayMode, RelayUrl};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -9,7 +8,7 @@ use syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestr
 };
 use syneroym_core::config::SubstrateConfig;
 use tempfile::NamedTempFile;
-use tracing::{debug, error};
+use tracing::debug;
 
 fn send_ctrl_c(#[allow(unused_variables)] pid: u32) {
     #[cfg(unix)]
@@ -160,7 +159,7 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
         syneroym_substrate::init(config.clone()).await.expect("Failed to initialize runtime");
 
     // Spawn the entire substrate in a background task.
-    let mut substrate_handle = tokio::spawn(async move {
+    let substrate_handle = tokio::spawn(async move {
         syneroym_substrate::run_with_signal(config, runtime, async {
             let _ = shutdown_rx.recv().await;
         })
@@ -168,23 +167,15 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
         .expect("Substrate failed to run");
     });
 
-    // Wait for the registry to start up and lookup the endpoint
-    let registry_res = wait_for_registry("http://localhost:8080", &substrate_service_id)
+    let mut substrate_client = syneroym_sdk::SyneroymClient::new(
+        substrate_service_id.clone(),
+        "http://localhost:8080".to_string(),
+    );
+
+    substrate_client
+        .wait_for_ready(Duration::from_secs(30))
         .await
-        .expect("Failed to look up endpoint from registry within 3 seconds");
-
-    let iroh_endpoint_addr: EndpointAddr =
-        serde_json::from_slice(&registry_res.info.endpoint_addr_bytes)
-            .expect("Failed to deserialize EndpointAddr");
-
-    // Wait for the substrate to become fully available by polling its health check endpoint.
-    let (endpoint, conn) = abort_if_failed(
-        wait_for_substrate(&substrate_service_id, iroh_endpoint_addr.clone()),
-        &mut substrate_handle,
-        &shutdown_tx,
-        "Substrate did not become available in time",
-    )
-    .await;
+        .expect("Substrate did not become available in time");
 
     // Deploy a test WASM application
     debug!(">>> Starting STEP 1: Deploy");
@@ -204,42 +195,47 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
         },
     ))
     .expect("Failed to serialize deploy params");
+
     let deploy_res = tokio::time::timeout(
         std::time::Duration::from_secs(30),
-        send_native_json_rpc_request(&substrate_service_id, &conn, "deploy", deploy_params),
+        substrate_client.request("orchestrator", "deploy", deploy_params),
     )
     .await
-    .expect("deploy request timed out");
-    assert!(deploy_res.is_some(), "Deploy request failed");
-    let deploy_res = deploy_res.unwrap();
+    .expect("deploy request timed out")
+    .expect("Deploy request failed");
+
     assert_eq!(deploy_res.result, serde_json::json!({"status": "deployed"}));
     debug!(">>> Finished STEP 1: Deploy");
 
     // Interact with the running WASM application
     debug!(">>> Starting STEP 2: Run");
+    let substrate_info =
+        substrate_client.lookup().await.expect("Failed to lookup substrate info from registry");
+    let substrate_mechanisms = substrate_info.info.mechanisms;
+
+    let mut app_client = syneroym_sdk::SyneroymClient::new_with_mechanisms(
+        "greeter-service".to_string(),
+        substrate_mechanisms,
+    );
+    app_client.connect().await.expect("Failed to connect to app on substrate");
+
     let app_res = tokio::time::timeout(
         std::time::Duration::from_secs(30),
-        send_json_rpc_request(
-            "greeter-service",
+        app_client.request(
             "syneroym-test:greeter/greet@0.1.0",
-            &conn,
             "greet",
             serde_json::json!(["tester"]),
         ),
     )
     .await
-    .expect("app run request timed out");
-    assert!(app_res.is_some(), "App request failed");
-    let app_res = app_res.unwrap();
+    .expect("app run request timed out")
+    .expect("App request failed");
+
     assert_eq!(
         app_res.result,
         serde_json::json!("Hello, tester! Greetings from greeter::greet::greet")
     );
     debug!(">>> Finished STEP 2: Run");
-
-    // Teardown / Graceful Shutdown ---
-    conn.close(0u8.into(), b"done");
-    endpoint.close().await;
 
     // Trigger graceful shutdown.
     let _ = shutdown_tx.send(()).await;
@@ -247,188 +243,4 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
     // Await the substrate handle to ensure it shuts down cleanly.
     let result = substrate_handle.await;
     assert!(result.is_ok(), "Substrate task should shut down cleanly without panicking.");
-}
-
-/// Polls the community registry until the given `service_id` is found or the attempt
-/// budget is exhausted. Returns `None` if the registry does not respond within the
-/// allotted retries.
-// Helper used by `app_sandbox` feature tests; suppresses warning when feature is disabled.
-#[allow(dead_code)]
-async fn wait_for_registry(
-    registry_base_url: &str,
-    service_id: &str,
-) -> Option<syneroym_core::community_registry::SignedEndpointInfo> {
-    let client = reqwest::Client::new();
-    let url = format!("{}/lookup/{}", registry_base_url, service_id);
-    for _ in 0..30 {
-        if let Ok(response) = client.get(&url).send().await
-            && response.status().is_success()
-        {
-            return response
-                .json::<syneroym_core::community_registry::SignedEndpointInfo>()
-                .await
-                .ok();
-        }
-
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    None
-}
-
-// Helper used by `app_sandbox` feature tests; suppresses warning when feature is disabled.
-#[allow(dead_code)]
-async fn abort_if_failed<F, T>(
-    step: F,
-    handle: &mut tokio::task::JoinHandle<()>,
-    shutdown_tx: &tokio::sync::mpsc::Sender<()>,
-    msg: &str,
-) -> T
-where
-    F: std::future::Future<Output = Option<T>>,
-{
-    if let Some(res) = step.await {
-        res
-    } else {
-        abort_substrate(handle, shutdown_tx, msg).await;
-        unreachable!()
-    }
-}
-
-// Helper used by `app_sandbox` feature tests; suppresses warning when feature is disabled.
-#[allow(dead_code)]
-async fn abort_substrate(
-    handle: &mut tokio::task::JoinHandle<()>,
-    shutdown_tx: &tokio::sync::mpsc::Sender<()>,
-    msg: &str,
-) {
-    let _ = shutdown_tx.send(()).await;
-    let _ = handle.await;
-    panic!("{}", msg);
-}
-
-// Helper used by `app_sandbox` feature tests; suppresses warning when feature is disabled.
-#[allow(dead_code)]
-async fn wait_for_substrate(
-    service_id: &str,
-    endpoint_addr: EndpointAddr,
-) -> Option<(iroh::Endpoint, iroh::endpoint::Connection)> {
-    let ep_bldr = iroh::Endpoint::empty_builder().relay_mode(RelayMode::Custom(RelayMap::from(
-        IROH_RELAY_URL.to_string().parse::<RelayUrl>().unwrap(),
-    )));
-
-    let endpoint = ep_bldr.bind().await.ok()?;
-
-    tokio::time::timeout(Duration::from_secs(300), async {
-        loop {
-            if let Ok(Ok(conn)) = tokio::time::timeout(
-                Duration::from_millis(1500),
-                endpoint.connect(endpoint_addr.clone(), syneroym_router::SYNEROYM_ALPN),
-            )
-            .await
-                && check_substrate_available(service_id, &conn).await
-            {
-                return Some((endpoint, conn));
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    })
-    .await
-    .ok()
-    .flatten()
-}
-
-// Helper used by `app_sandbox` feature tests; suppresses warning when feature is disabled.
-#[allow(dead_code)]
-async fn check_substrate_available(service_id: &str, conn: &iroh::endpoint::Connection) -> bool {
-    if let Some(response) = send_native_json_rpc_request(
-        service_id,
-        conn,
-        "readyz",
-        serde_json::Value::Object(serde_json::Map::new()),
-    )
-    .await
-        && response.result == serde_json::json!({"status": "ok"})
-    {
-        return true;
-    }
-    false
-}
-
-/// A reusable helper for sending JSON-RPC requests over Iroh Streams in E2E tests.
-// Helper used by `app_sandbox` feature tests; suppresses warning when feature is disabled.
-async fn send_native_json_rpc_request(
-    service_id: &str,
-    conn: &iroh::endpoint::Connection,
-    method: &str,
-    params: serde_json::Value,
-) -> Option<syneroym_rpc::JsonRpcResponse> {
-    send_json_rpc_request(service_id, "orchestrator", conn, method, params).await
-}
-
-async fn send_json_rpc_request(
-    service_id: &str,
-    interface_name: &str,
-    conn: &iroh::endpoint::Connection,
-    method: &str,
-    params: serde_json::Value,
-) -> Option<syneroym_rpc::JsonRpcResponse> {
-    let (send, recv): (iroh::endpoint::SendStream, iroh::endpoint::RecvStream) =
-        match tokio::time::timeout(Duration::from_millis(1500), conn.open_bi()).await {
-            Ok(Ok(streams)) => streams,
-            Ok(Err(error)) => {
-                error!(">>> Failed to open stream for method {method}: {error}");
-                return None;
-            }
-            Err(_) => {
-                error!(">>> Timed out opening stream for method {method}");
-                return None;
-            }
-        };
-
-    send_json_rpc_request_over_stream(service_id, interface_name, send, recv, method, params).await
-}
-
-async fn send_json_rpc_request_over_stream(
-    service_id: &str,
-    interface_name: &str,
-    mut send: iroh::endpoint::SendStream,
-    mut recv: iroh::endpoint::RecvStream,
-    method: &str,
-    params: serde_json::Value,
-) -> Option<syneroym_rpc::JsonRpcResponse> {
-    let preamble = format!("json-rpc://{}.{}\n", interface_name, service_id);
-    if send.write_all(preamble.as_bytes()).await.is_err() {
-        return None;
-    }
-
-    let request = syneroym_rpc::JsonRpcRequest {
-        jsonrpc: "2.0".to_string(),
-        method: method.to_string(),
-        params,
-        id: Some(serde_json::Value::Number(1.into())),
-    };
-    let req_bytes = serde_json::to_vec(&request).unwrap();
-    if syneroym_rpc::framing::write_frame(&mut send, &req_bytes).await.is_err() {
-        return None;
-    }
-    debug!(">>> Wrote request for method: {}", method);
-    if send.finish().is_err() {
-        return None;
-    };
-
-    let res = match tokio::time::timeout(
-        Duration::from_secs(300),
-        syneroym_rpc::framing::read_frame(&mut recv),
-    )
-    .await
-    {
-        Ok(Ok(frame)) if !frame.is_empty() => serde_json::from_slice(&frame).ok(),
-        _ => {
-            error!(">>> Timed out waiting for response to method: {}", method);
-            None
-        }
-    };
-    debug!("got json response for method: {}: {:?}", method, res);
-    drop(send);
-    res
 }

@@ -264,8 +264,10 @@ async fn register_substrate_endpoint<E: serde::Serialize>(
         service_id: service_id.to_string(),
         substrate_id: service_id.to_string(),
         endpoint_type: syneroym_core::community_registry::EndpointType::Substrate,
-        relay_url,
-        endpoint_addr_bytes,
+        mechanisms: vec![syneroym_core::community_registry::EndpointMechanism::Iroh {
+            endpoint_addr_bytes,
+            relay_url,
+        }],
     };
 
     let info_value = serde_json::to_value(&info)?;

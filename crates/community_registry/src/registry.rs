@@ -154,7 +154,7 @@ async fn lookup_endpoint(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use syneroym_core::community_registry::EndpointInfo;
+    use syneroym_core::community_registry::{EndpointInfo, EndpointMechanism};
     use syneroym_identity::Identity;
     use syneroym_identity::substrate::derive_did_key;
 
@@ -179,8 +179,10 @@ mod tests {
             service_id: did.clone(),
             substrate_id: did.clone(),
             endpoint_type: EndpointType::Substrate,
-            relay_url: Some("http://relay.example.com".to_string()),
-            endpoint_addr_bytes: vec![1, 2, 3],
+            mechanisms: vec![EndpointMechanism::Iroh {
+                endpoint_addr_bytes: vec![1, 2, 3],
+                relay_url: Some("http://relay.example.com".to_string()),
+            }],
         };
 
         let signed_info = create_signed_info(&identity, info);
@@ -208,8 +210,7 @@ mod tests {
             service_id: did.clone(),
             substrate_id: did.clone(),
             endpoint_type: EndpointType::Substrate,
-            relay_url: None,
-            endpoint_addr_bytes: vec![],
+            mechanisms: vec![],
         };
 
         // Sign with OTHER identity
@@ -229,8 +230,7 @@ mod tests {
             service_id: "invalid-did".to_string(),
             substrate_id: "invalid-did".to_string(),
             endpoint_type: EndpointType::Substrate,
-            relay_url: None,
-            endpoint_addr_bytes: vec![],
+            mechanisms: vec![],
         };
 
         let signed_info = create_signed_info(&identity, info);
@@ -252,8 +252,10 @@ mod tests {
                 service_id: substrate_id.to_string(),
                 substrate_id: substrate_id.to_string(),
                 endpoint_type: EndpointType::Substrate,
-                relay_url: None,
-                endpoint_addr_bytes: vec![42],
+                mechanisms: vec![EndpointMechanism::Iroh {
+                    endpoint_addr_bytes: vec![42],
+                    relay_url: None,
+                }],
             },
             signature: "mock-sig".to_string(),
         };
@@ -265,8 +267,7 @@ mod tests {
                 service_id: service_id.to_string(),
                 substrate_id: substrate_id.to_string(),
                 endpoint_type: EndpointType::Service,
-                relay_url: None,
-                endpoint_addr_bytes: vec![],
+                mechanisms: vec![],
             },
             signature: "mock-sig".to_string(),
         };
@@ -282,7 +283,10 @@ mod tests {
 
         let Json(retrieved) = lookup_res.unwrap();
         assert_eq!(retrieved.info.service_id, substrate_id);
-        assert_eq!(retrieved.info.endpoint_addr_bytes, vec![42]);
+        assert_eq!(
+            retrieved.info.mechanisms[0],
+            EndpointMechanism::Iroh { endpoint_addr_bytes: vec![42], relay_url: None }
+        );
 
         // Lookup service with resolve=false
         let lookup_res_no_resolve = lookup_endpoint(
