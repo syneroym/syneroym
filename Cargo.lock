@@ -4859,7 +4859,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bytes",
  "dashmap",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "iroh",
  "iroh-relay",
  "serde",

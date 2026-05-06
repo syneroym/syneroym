@@ -12,7 +12,11 @@ syneroym-rpc = { path = "../rpc" }
 syneroym-control-plane = { path = "../control_plane" }
 anyhow.workspace = true
 async-trait = "0.1"
+bytes.workspace = true
 dashmap = "6.1.0"
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
