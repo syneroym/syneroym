@@ -5,5 +5,5 @@ mod route_handler;
 mod routing;
 
 pub use connection_router::{ConnectionRouter, SYNEROYM_ALPN};
-pub use preamble::{RoutePreamble, RouteProtocol};
+pub use preamble::{RoutePreamble, RouteProtocol, RouteTransport};
 pub use routing::{DeliveryMode, ProtocolAdapter, ResolvedRoute, RouteExecution, RoutingPlan};

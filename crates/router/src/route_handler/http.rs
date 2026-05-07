@@ -1,0 +1,118 @@
+use anyhow::{Result, anyhow};
+use bytes::Bytes;
+use http_body_util::Full;
+use hyper::body::Incoming;
+use hyper::{Request, Response, StatusCode};
+use hyper_util::rt::TokioIo;
+use hyper_util::server::conn::auto::Builder as AutoBuilder;
+use std::sync::Arc;
+use tokio::io::{AsyncRead, AsyncWrite};
+use tracing::error;
+
+use super::RouteHandler;
+use crate::preamble::RoutePreamble;
+
+/// A handler for HTTP-based JSON-RPC requests.
+///
+/// It wraps a `RouteHandler` and a connection-level `RoutePreamble`.
+pub struct HttpHandler {
+    pub route_handler: RouteHandler,
+    pub preamble: RoutePreamble,
+}
+
+impl RouteHandler {
+    /// Upgrades a raw stream to an HTTP server and handles incoming requests.
+    ///
+    /// This uses `hyper` to serve JSON-RPC over HTTP/1.1.
+    pub async fn handle_http_stream<I>(self, io: TokioIo<I>, preamble: RoutePreamble) -> Result<()>
+    where
+        I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        let handler = Arc::new(HttpHandler { route_handler: self, preamble });
+
+        AutoBuilder::new(hyper_util::rt::TokioExecutor::new())
+            .serve_connection(
+                io,
+                hyper::service::service_fn(move |req| {
+                    let h = handler.clone();
+                    async move { h.handle_http_request(req).await }
+                }),
+            )
+            .await
+            .map_err(|e| anyhow!("HTTP connection error: {e}"))
+    }
+}
+
+impl HttpHandler {
+    /// The entry point for a single HTTP request.
+    ///
+    /// This is called by `hyper` for every incoming request on the stream.
+    pub async fn handle_http_request(
+        &self,
+        req: Request<Incoming>,
+    ) -> std::result::Result<Response<Full<Bytes>>, std::convert::Infallible> {
+        let response = self.try_handle_http_request(req).await.unwrap_or_else(|e| {
+            error!("HTTP JSON-RPC handler error: {e}");
+            http_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+        });
+        Ok(response)
+    }
+
+    async fn try_handle_http_request(
+        &self,
+        req: Request<Incoming>,
+    ) -> Result<Response<Full<Bytes>>> {
+        if req.method() != hyper::Method::POST {
+            return Ok(http_error(StatusCode::METHOD_NOT_ALLOWED, "Only POST is supported".into()));
+        }
+
+        let content_type = req
+            .headers()
+            .get(hyper::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if !content_type.starts_with("application/json") {
+            return Ok(http_error(
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "Content-Type must be application/json".into(),
+            ));
+        }
+
+        let resolved = match self.route_handler.resolve_route(self.preamble.clone()) {
+            Ok(r) => r,
+            Err(e) => {
+                return Ok(http_error(StatusCode::NOT_FOUND, e.to_string()));
+            }
+        };
+        let plan = self.route_handler.plan_route(&resolved);
+        super::dispatch::log_route(&resolved, &plan);
+
+        use http_body_util::BodyExt;
+        let body_bytes =
+            req.collect().await.map_err(|e| anyhow!("Failed to read HTTP body: {e}"))?.to_bytes();
+
+        if body_bytes.is_empty() {
+            return Ok(http_error(StatusCode::BAD_REQUEST, "Empty request body".into()));
+        }
+
+        match self.route_handler.dispatch_json_rpc_once(&resolved, &plan, &body_bytes).await {
+            Ok(payload) => Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header(hyper::header::CONTENT_TYPE, "application/json")
+                .body(Full::new(Bytes::from(payload)))
+                .expect("valid response")),
+            Err(e) => Ok(http_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+        }
+    }
+}
+
+/// Formats a JSON-RPC error response within an HTTP response.
+pub fn http_error(status: StatusCode, message: String) -> Response<Full<Bytes>> {
+    let body =
+        format!(r#"{{"jsonrpc":"2.0","error":{{"code":-32603,"message":{message:?}}},"id":null}}"#);
+    Response::builder()
+        .status(status)
+        .header(hyper::header::CONTENT_TYPE, "application/json")
+        .body(Full::new(Bytes::from(body)))
+        .expect("valid error response")
+}

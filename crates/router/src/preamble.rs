@@ -17,9 +17,9 @@ use std::str::FromStr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RouteTransport {
-    /// Binary framing (length-prefixed frames)
+    /// Binary framing (length-prefixed frames).
     Binary,
-    /// HTTP framing
+    /// HTTP/1.1 framing.
     Http,
 }
 
@@ -46,11 +46,11 @@ impl fmt::Display for RouteTransport {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RouteProtocol {
-    /// JSON-RPC protocol
+    /// JSON-RPC 2.0 protocol.
     JsonRpc,
-    /// WebRPC (wRPC) protocol
+    /// WebRPC (wRPC) protocol.
     Wrpc,
-    /// Custom or extension protocol
+    /// Custom or extension protocol.
     Other(String),
 }
 
@@ -160,6 +160,13 @@ impl RoutePreamble {
             interface: interface.to_string(),
             service_id: service_id.to_string(),
         })
+    }
+
+    /// Returns the preamble as a newline-terminated string, suitable for sending over the wire.
+    ///
+    /// This is used by clients to prefix their streams so the router knows how to handle them.
+    pub fn to_preamble_line(&self) -> String {
+        format!("{}\n", self)
     }
 }
 

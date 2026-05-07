@@ -2,6 +2,7 @@ use anyhow::Result;
 use iroh::endpoint::presets;
 use iroh::protocol::Router as IrohRouter;
 use iroh::{EndpointAddr, RelayMap, RelayMode, RelayUrl, SecretKey};
+use std::sync::Arc;
 use syneroym_core::config::{IrohRelayConfig, SubstrateConfig};
 use syneroym_core::registry::EndpointRegistry;
 use tracing::{debug, info};
@@ -73,7 +74,7 @@ impl ConnectionRouter {
         let ep = ep_bldr.bind().await?;
 
         let iroh_router: IrohRouter =
-            IrohRouter::builder(ep).accept(SYNEROYM_ALPN, route_handler).spawn();
+            IrohRouter::builder(ep).accept(SYNEROYM_ALPN, Arc::new(route_handler)).spawn();
         iroh_router.endpoint().online().await;
 
         info!(

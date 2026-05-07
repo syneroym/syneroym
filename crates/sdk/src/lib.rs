@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use iroh::endpoint::Connection;
 use std::time::Duration;
 use syneroym_core::community_registry::{EndpointMechanism, SignedEndpointInfo};
+use syneroym_router::{RoutePreamble, RouteProtocol, RouteTransport};
 use syneroym_rpc::JsonRpcResponse;
 use tracing::debug;
 
@@ -146,16 +147,14 @@ impl SyneroymClient {
             TransportConnection::Iroh { conn, .. } => {
                 let (mut send, mut recv) = conn.open_bi().await?;
 
-                let preamble = if interface_name.is_empty() {
-                    format!("json-rpc://{}\n", self.service_id)
-                } else {
-                    format!(
-                        "json-rpc://{}{}{}\n",
-                        interface_name,
-                        syneroym_core::constants::PREAMBLE_SEPARATOR,
-                        self.service_id
-                    )
-                };
+                // Every stream must start with a RoutePreamble identifying the target service.
+                let preamble = RoutePreamble {
+                    transport: RouteTransport::Binary,
+                    protocol: RouteProtocol::JsonRpc,
+                    interface: interface_name.to_string(),
+                    service_id: self.service_id.clone(),
+                }
+                .to_preamble_line();
                 send.write_all(preamble.as_bytes()).await?;
 
                 let req_bytes = serde_json::to_vec(&request)?;
@@ -188,16 +187,14 @@ impl SyneroymClient {
             TransportConnection::Iroh { conn, .. } => {
                 let (mut send, mut recv) = conn.open_bi().await?;
 
-                let preamble = if interface_name.is_empty() {
-                    format!("http://{}\n", self.service_id)
-                } else {
-                    format!(
-                        "http://{}{}{}\n",
-                        interface_name,
-                        syneroym_core::constants::PREAMBLE_SEPARATOR,
-                        self.service_id
-                    )
-                };
+                // Use HTTP transport for passthrough of raw requests.
+                let preamble = RoutePreamble {
+                    transport: RouteTransport::Http,
+                    protocol: RouteProtocol::JsonRpc,
+                    interface: interface_name.to_string(),
+                    service_id: self.service_id.clone(),
+                }
+                .to_preamble_line();
                 send.write_all(preamble.as_bytes()).await?;
 
                 send.write_all(initial_bytes).await?;
