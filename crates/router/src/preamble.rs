@@ -107,18 +107,21 @@ impl RoutePreamble {
             .split_once("://")
             .ok_or_else(|| anyhow!("Invalid preamble format: {raw}"))?;
 
+        // Scheme mapping: well-known aliases take precedence over the combined-scheme
+        // splitter so that `json-rpc` and `wrpc` are never mistakenly split on their dash.
         let (transport, protocol) = match scheme {
-            // Defaults/Aliased schemes
             "http" => (RouteTransport::Http, RouteProtocol::JsonRpc),
             "json-rpc" => (RouteTransport::Binary, RouteProtocol::JsonRpc),
             "wrpc" => (RouteTransport::Binary, RouteProtocol::Wrpc),
-            // Combined schemes (e.g., http-wrpc)
-            s if s.contains('-') => {
-                let (t_str, p_str) = s.split_once('-').unwrap();
-                (t_str.parse()?, p_str.parse().unwrap())
+            // Combined schemes such as `http-wrpc`: split on the first `-` that separates
+            // a valid transport from a protocol identifier.
+            s => {
+                if let Some((t_str, p_str)) = s.split_once('-') {
+                    (t_str.parse()?, p_str.parse().unwrap())
+                } else {
+                    (RouteTransport::Binary, RouteProtocol::Other(s.to_string()))
+                }
             }
-            // Fallback
-            other => (RouteTransport::Binary, RouteProtocol::Other(other.to_string())),
         };
 
         let (interface, service_id) = target
@@ -135,6 +138,20 @@ impl RoutePreamble {
             interface: interface.to_string(),
             service_id: service_id.to_string(),
         })
+    }
+
+    /// Constructs a preamble for the canonical binary JSON-RPC case.
+    ///
+    /// This is the default transport used by `SyneroymClient::request_raw`. Using this
+    /// constructor ensures that the framing choice is defined in one place and callers
+    /// don't need to know the internal defaults.
+    pub fn binary_json_rpc(service_id: impl Into<String>, interface: impl Into<String>) -> Self {
+        Self {
+            transport: RouteTransport::Binary,
+            protocol: RouteProtocol::JsonRpc,
+            service_id: service_id.into(),
+            interface: interface.into(),
+        }
     }
 
     /// Parses a preamble from an HTTP request path of the form `/v1/{service_id}/{interface}`.

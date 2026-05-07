@@ -60,6 +60,7 @@ url = "2.5"
 rustls-pki-types = "1.10"
 rustls = { version = "0.23", features = ["ring"] }
 n0-error = "0.1"
+thiserror = "2.0"
 
 # Iroh dependencies
 iroh-base = "0.97"
@@ -72,7 +73,7 @@ wasmtime-wasi = "44"
 wit-bindgen = "0.57"
 
 # Test / Dev
-tempfile = "3.27"
+tempfile = "3.10"
 assert_cmd = "2.0"
 predicates = "3.1"
 libc = "0.2"

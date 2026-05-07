@@ -24,3 +24,6 @@ tracing.workspace = true
 uuid.workspace = true
 iroh.workspace = true
 iroh-relay.workspace = true
+
+[dev-dependencies]
+syneroym-core = { path = "../core", features = ["test-utils"] }

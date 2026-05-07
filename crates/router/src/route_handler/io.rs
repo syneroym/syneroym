@@ -72,6 +72,7 @@ impl RouteHandler {
     {
         let (read_half, write_half) = tokio::io::split(stream);
         let mut reader = BufReader::new(read_half);
+        let mut writer = write_half;
 
         // All streams now start with a preamble identifying transport and protocol.
         let preamble = read_preamble(&mut reader).await?;
@@ -79,7 +80,7 @@ impl RouteHandler {
         match preamble.transport {
             RouteTransport::Http => {
                 // Reunite reader + writer into a single I/O type for hyper.
-                let io = TokioIo::new(ReaderWriter { reader, writer: write_half });
+                let io = TokioIo::new(ReaderWriter { reader, writer });
                 return self.handle_http_stream(io, preamble).await;
             }
             RouteTransport::Binary => {
@@ -94,15 +95,19 @@ impl RouteHandler {
                     | RouteExecution::Adapted { .. } => {
                         self.handle_json_rpc_loop(
                             reader,
-                            &mut { write_half },
+                            &mut writer,
                             &resolved_route,
                             &routing_plan,
                         )
                         .await?;
                     }
                     RouteExecution::WasmWrpcPassthrough { channel_id } => {
+                        // wRPC passthrough is not yet implemented; log and continue.
                         debug!("Passthrough wRPC stream to Wasm channel: {}", channel_id);
-                        self.handle_passthrough(reader, &mut { write_half }, channel_id).await?;
+                        tracing::warn!(
+                            channel_id = %channel_id,
+                            "wRPC passthrough not yet implemented; dropping stream"
+                        );
                     }
                     RouteExecution::Unsupported => {
                         tracing::warn!(

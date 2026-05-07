@@ -76,7 +76,10 @@ async fn handle_connection(
     mut stream: tokio::net::TcpStream,
     state: Arc<GatewayState>,
 ) -> Result<()> {
-    let mut buf = [0u8; 4096];
+    // Limit header reads to 8 KB — the conventional maximum for HTTP/1.1 headers.
+    // Requests with larger headers (e.g. very large JWTs) will receive a 400 response.
+    const MAX_HEADER_BYTES: usize = 8 * 1024;
+    let mut buf = [0u8; MAX_HEADER_BYTES];
     let mut bytes_read = 0;
 
     // Read enough to find the end of the HTTP headers
@@ -86,7 +89,7 @@ async fn handle_connection(
             return Err(anyhow::anyhow!("Connection closed before headers finished"));
         }
         bytes_read += n;
-        tracing::debug!("gateway read {} bytes, total {}", n, bytes_read);
+        debug!("gateway read {} bytes, total {}", n, bytes_read);
 
         let mut headers = [httparse::EMPTY_HEADER; 64];
         let mut req = httparse::Request::new(&mut headers);
@@ -113,7 +116,12 @@ async fn handle_connection(
                 let (interface, service_id) = match host_base.rsplit_once("--") {
                     Some((i, s)) => (i, s),
                     None => {
-                        return write_bad_request(&mut stream, "Invalid Host header format").await;
+                        return write_json_rpc_error(
+                            &mut stream,
+                            400,
+                            "Invalid Host header format",
+                        )
+                        .await;
                     }
                 };
 
@@ -133,42 +141,55 @@ async fn handle_connection(
                     })
                     .clone();
 
-                let mut client = client_arc.lock().await;
+                // Hold the mutex only long enough to establish the connection.
+                // passthrough() takes &self so concurrent requests don't block each other.
+                {
+                    let mut client = client_arc.lock().await;
+                    if let Err(e) = client.connect().await {
+                        error!("Gateway failed to connect to service {}: {}", service_id, e);
+                        return write_json_rpc_error(&mut stream, 502, "Bad Gateway").await;
+                    }
+                } // mutex released here — passthrough runs without contention
 
-                if let Err(e) = client.connect().await {
-                    error!("Gateway failed to connect to service {}: {}", service_id, e);
-                    return write_bad_gateway(&mut stream).await;
-                }
-
-                // Call SDK passthrough logic
-                client.passthrough(&interface, &buf[..bytes_read], &mut stream).await?;
+                // Safety: connect() succeeded above; passthrough() only reads self.connection
+                client_arc
+                    .lock()
+                    .await
+                    .passthrough(&interface, &buf[..bytes_read], &mut stream)
+                    .await?;
                 return Ok(());
             }
             Ok(httparse::Status::Partial) => {
                 if bytes_read >= buf.len() {
-                    return write_bad_request(&mut stream, "Headers too large").await;
+                    return write_json_rpc_error(&mut stream, 400, "Headers too large").await;
                 }
                 continue;
             }
             Err(e) => {
-                return write_bad_request(&mut stream, &format!("Invalid HTTP request: {}", e))
-                    .await;
+                return write_json_rpc_error(
+                    &mut stream,
+                    400,
+                    &format!("Invalid HTTP request: {}", e),
+                )
+                .await;
             }
         }
     }
 }
 
-async fn write_bad_request(stream: &mut tokio::net::TcpStream, msg: &str) -> Result<()> {
-    let response =
-        format!("HTTP/1.1 400 Bad Request\r\nContent-Length: {}\r\n\r\n{}", msg.len(), msg);
-    stream.write_all(response.as_bytes()).await?;
-    Ok(())
-}
-
-async fn write_bad_gateway(stream: &mut tokio::net::TcpStream) -> Result<()> {
-    let msg = "Bad Gateway";
-    let response =
-        format!("HTTP/1.1 502 Bad Gateway\r\nContent-Length: {}\r\n\r\n{}", msg.len(), msg);
+/// Writes a JSON-RPC error response as an HTTP response.
+async fn write_json_rpc_error(
+    stream: &mut tokio::net::TcpStream,
+    status: u16,
+    message: &str,
+) -> Result<()> {
+    let body =
+        format!(r#"{{"jsonrpc":"2.0","error":{{"code":-32603,"message":{message:?}}},"id":null}}"#);
+    let response = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+        body.len(),
+        body
+    );
     stream.write_all(response.as_bytes()).await?;
     Ok(())
 }

@@ -14,7 +14,12 @@ pub struct SyneroymClient {
 }
 
 enum TransportConnection {
-    Iroh { _endpoint: iroh::Endpoint, conn: Connection },
+    Iroh {
+        /// The endpoint must be kept alive for the duration of the connection.
+        /// Dropping it closes the underlying QUIC socket, terminating all streams.
+        _endpoint: iroh::Endpoint,
+        conn: Connection,
+    },
 }
 
 impl SyneroymClient {
@@ -123,7 +128,7 @@ impl SyneroymClient {
     }
 
     pub async fn request(
-        &mut self,
+        &self,
         interface: &str,
         method: &str,
         params: serde_json::Value,
@@ -138,24 +143,18 @@ impl SyneroymClient {
     }
 
     pub async fn request_raw(
-        &mut self,
+        &self,
         interface_name: &str,
         request: syneroym_rpc::JsonRpcRequest,
     ) -> Result<JsonRpcResponse> {
-        let conn_wrapper = self.connection.as_mut().context("Not connected")?;
+        let conn_wrapper = self.connection.as_ref().context("Not connected")?;
         match conn_wrapper {
             TransportConnection::Iroh { conn, .. } => {
                 let (mut send, mut recv) = conn.open_bi().await?;
 
                 // Every stream must start with a RoutePreamble identifying the target service.
-                let preamble = RoutePreamble {
-                    transport: RouteTransport::Binary,
-                    protocol: RouteProtocol::JsonRpc,
-                    interface: interface_name.to_string(),
-                    service_id: self.service_id.clone(),
-                }
-                .to_preamble_line();
-                send.write_all(preamble.as_bytes()).await?;
+                let preamble = RoutePreamble::binary_json_rpc(&self.service_id, interface_name);
+                send.write_all(preamble.to_preamble_line().as_bytes()).await?;
 
                 let req_bytes = serde_json::to_vec(&request)?;
                 syneroym_rpc::framing::write_frame(&mut send, &req_bytes).await?;
@@ -177,12 +176,12 @@ impl SyneroymClient {
     }
 
     pub async fn passthrough(
-        &mut self,
+        &self,
         interface_name: &str,
         initial_bytes: &[u8],
         tcp_stream: &mut tokio::net::TcpStream,
     ) -> Result<()> {
-        let conn_wrapper = self.connection.as_mut().context("Not connected")?;
+        let conn_wrapper = self.connection.as_ref().context("Not connected")?;
         match conn_wrapper {
             TransportConnection::Iroh { conn, .. } => {
                 let (mut send, mut recv) = conn.open_bi().await?;

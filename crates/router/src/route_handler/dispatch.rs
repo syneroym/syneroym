@@ -2,13 +2,19 @@ use super::RouteHandler;
 use crate::preamble::RouteProtocol;
 use crate::routing::{DeliveryMode, ProtocolAdapter, ResolvedRoute, RouteExecution, RoutingPlan};
 use anyhow::{Result, anyhow};
+use std::sync::Arc;
 use syneroym_core::registry::SubstrateEndpoint;
 use syneroym_rpc::framing;
-use syneroym_rpc::{JsonRpcConverter, JsonRpcRequest, JsonRpcResponse};
+use syneroym_rpc::{JsonRpcConverter, JsonRpcRequest, JsonRpcResponse, NativeService};
 use tokio::io::{AsyncRead, AsyncWrite, BufReader};
 use tracing::{debug, error};
 
 impl RouteHandler {
+    /// Looks up a native service by its channel ID.
+    fn native_service(&self, channel_id: &str) -> Option<Arc<dyn NativeService>> {
+        self.inner.native_dispatch.get(channel_id).as_deref().cloned()
+    }
+
     /// Dispatches a single JSON-RPC request based on the provided routing plan.
     ///
     /// This handles Native, Wasm, and Adapted execution modes.
@@ -21,10 +27,7 @@ impl RouteHandler {
         match &plan.execution {
             RouteExecution::NativeJsonRpc { channel_id } => {
                 let service = self
-                    .inner
-                    .native_dispatch
-                    .get(channel_id.as_str())
-                    .map(|s| s.clone())
+                    .native_service(channel_id)
                     .ok_or_else(|| anyhow!("Native service not found for {}", channel_id))?;
 
                 let (request, invocation) =
@@ -37,7 +40,7 @@ impl RouteHandler {
                     }
                     Err(e) => {
                         error!("Native service error: {}", e);
-                        JsonRpcConverter::json_error(request.id.clone(), -32603, e.to_string())
+                        JsonRpcConverter::json_error(request.id.clone(), e.code(), e.to_string())
                     }
                 }
             }
@@ -93,25 +96,25 @@ impl RouteHandler {
         match (&route.request.protocol, &route.endpoint) {
             (
                 RouteProtocol::JsonRpc,
-                SubstrateEndpoint::NativeHostChannel { channel_details: channel_id },
+                SubstrateEndpoint::NativeHostChannel { service_id: channel_id },
             ) => RoutingPlan {
                 delivery_mode: DeliveryMode::Broker,
                 execution: RouteExecution::NativeJsonRpc { channel_id: channel_id.clone() },
             },
-            (
-                RouteProtocol::Wrpc,
-                SubstrateEndpoint::WasmChannel { channel_details: channel_id },
-            ) => RoutingPlan {
-                delivery_mode: DeliveryMode::PassThrough,
-                execution: RouteExecution::WasmWrpcPassthrough { channel_id: channel_id.clone() },
-            },
-            (
-                RouteProtocol::JsonRpc,
-                SubstrateEndpoint::WasmChannel { channel_details: channel_id },
-            ) => RoutingPlan {
-                delivery_mode: DeliveryMode::Broker,
-                execution: RouteExecution::ExecuteWasm { channel_id: channel_id.clone() },
-            },
+            (RouteProtocol::Wrpc, SubstrateEndpoint::WasmChannel { service_id: channel_id }) => {
+                RoutingPlan {
+                    delivery_mode: DeliveryMode::PassThrough,
+                    execution: RouteExecution::WasmWrpcPassthrough {
+                        channel_id: channel_id.clone(),
+                    },
+                }
+            }
+            (RouteProtocol::JsonRpc, SubstrateEndpoint::WasmChannel { service_id: channel_id }) => {
+                RoutingPlan {
+                    delivery_mode: DeliveryMode::Broker,
+                    execution: RouteExecution::ExecuteWasm { channel_id: channel_id.clone() },
+                }
+            }
             (RouteProtocol::JsonRpc, SubstrateEndpoint::PodmanSocket { .. }) => RoutingPlan {
                 delivery_mode: DeliveryMode::Adapt,
                 execution: RouteExecution::Adapted { adapter: ProtocolAdapter::JsonRpcToPodman },
@@ -121,6 +124,11 @@ impl RouteHandler {
     }
 
     /// Handles a passthrough stream (e.g., wRPC) to a target channel.
+    ///
+    /// # Note
+    /// Full wRPC stream passthrough is not yet implemented. Callers should treat
+    /// `WasmWrpcPassthrough` as an unsupported path until this is filled in.
+    #[allow(dead_code)]
     pub async fn handle_passthrough<R, W>(
         &self,
         _client_read: R,
@@ -131,6 +139,7 @@ impl RouteHandler {
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send,
     {
+        // TODO: implement wRPC stream proxying once the transport layer matures.
         Err(anyhow!("Passthrough target connection logic not implemented yet"))
     }
 

@@ -7,5 +7,6 @@ edition = "2024"
 serde_json.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
+thiserror.workspace = true
 serde = { workspace = true, features = ["derive"] }
 tokio.workspace = true

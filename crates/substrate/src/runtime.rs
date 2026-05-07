@@ -196,56 +196,80 @@ fn log_component_exit(component: &str, result: anyhow::Result<()>) {
 /// Sets up the connection router and its tightly coupled dependencies, including
 /// the substrate identity, data store, endpoint registry, and the native service.
 async fn setup_connection_router(config: &SubstrateConfig) -> anyhow::Result<ConnectionRouter> {
-    let substrate_identity_state =
-        identity::setup_substrate_identity(&config.identity, &config.app_data_dir)?;
-    let substrate_secret_key = identity::get_secret(&config.identity, &config.app_data_dir)?;
-    let service_id = substrate_identity_state.did.clone();
+    let (service_id, secret_key) = setup_identity_and_storage(config).await?;
 
-    let data_store = syneroym_core::storage::init_store(config).await?;
-    let endpoint_registry = EndpointRegistry::new(data_store).await?;
-
-    debug!("Registering native SubstrateService at {}", service_id);
-    let endpoint = SubstrateEndpoint::NativeHostChannel { channel_details: service_id.clone() };
-    endpoint_registry.register(service_id.clone(), "orchestrator".to_string(), endpoint).await?;
-
-    let router = ConnectionRouter::init(
-        endpoint_registry,
-        config.clone(),
-        substrate_secret_key,
-        service_id.clone(),
-    )
-    .await?;
+    let router = setup_router(config, &service_id, secret_key).await?;
 
     if let Some(registry_url) = &config.substrate.registry_url
         && let Some(endpoint_addr) = router.endpoint_addr()
     {
-        let relay_url = endpoint_addr.relay_urls().next().map(|u| u.to_string());
-        let registry_url = registry_url.clone();
-        let service_id = service_id.clone();
-
-        tokio::spawn(async move {
-            let mut attempts = 0;
-            while attempts < 30 {
-                if let Err(e) = register_substrate_endpoint(
-                    &registry_url,
-                    &service_id,
-                    &endpoint_addr,
-                    relay_url.clone(),
-                    &substrate_secret_key,
-                )
-                .await
-                {
-                    warn!("Failed to register endpoint (attempt {}): {}", attempts + 1, e);
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                    attempts += 1;
-                } else {
-                    break;
-                }
-            }
-        });
+        publish_to_community_registry(registry_url.clone(), service_id, endpoint_addr, secret_key);
     }
 
     Ok(router)
+}
+
+async fn setup_identity_and_storage(
+    config: &SubstrateConfig,
+) -> anyhow::Result<(String, [u8; 32])> {
+    let substrate_identity_state =
+        identity::setup_substrate_identity(&config.identity, &config.app_data_dir)?;
+    let substrate_secret_key = identity::get_secret(&config.identity, &config.app_data_dir)?;
+    let _data_store = syneroym_core::storage::init_store(config).await?;
+    Ok((substrate_identity_state.did, substrate_secret_key))
+}
+
+async fn setup_router(
+    config: &SubstrateConfig,
+    service_id: &str,
+    secret_key: [u8; 32],
+) -> anyhow::Result<ConnectionRouter> {
+    let data_store = syneroym_core::storage::init_store(config).await?;
+    let endpoint_registry = EndpointRegistry::new(data_store).await?;
+
+    debug!("Registering native SubstrateService at {}", service_id);
+    let endpoint = SubstrateEndpoint::NativeHostChannel { service_id: service_id.to_string() };
+    endpoint_registry
+        .register(service_id.to_string(), "orchestrator".to_string(), endpoint)
+        .await?;
+
+    ConnectionRouter::init(endpoint_registry, config.clone(), secret_key, service_id.to_string())
+        .await
+}
+
+fn publish_to_community_registry<E: serde::Serialize + Send + Sync + 'static>(
+    registry_url: String,
+    service_id: String,
+    endpoint_addr: E,
+    secret_key: [u8; 32],
+) {
+    tokio::spawn(async move {
+        let mut attempts = 0;
+        let relay_url = None; // TODO: extract relay URL from endpoint_addr if needed
+
+        while attempts < 30 {
+            if let Err(e) = register_substrate_endpoint(
+                &registry_url,
+                &service_id,
+                &endpoint_addr,
+                relay_url.clone(),
+                &secret_key,
+            )
+            .await
+            {
+                warn!("Failed to register endpoint (attempt {}): {}", attempts + 1, e);
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                attempts += 1;
+            } else {
+                return;
+            }
+        }
+        warn!(
+            service_id = %service_id,
+            registry_url = %registry_url,
+            "Exhausted registration retries. Substrate may be unreachable via community discovery."
+        );
+    });
 }
 
 async fn register_substrate_endpoint<E: serde::Serialize>(

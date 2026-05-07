@@ -1,6 +1,7 @@
-use anyhow::Result;
 use serde_json::Value;
 use std::fmt::Debug;
+
+use crate::RpcResult;
 
 /// Represents a parsed and validated request ready for dispatch to a native service.
 #[derive(Debug)]
@@ -18,5 +19,5 @@ pub struct NativeResponse {
 
 #[async_trait::async_trait]
 pub trait NativeService: Send + Sync + Debug {
-    async fn dispatch(&self, invocation: NativeInvocation) -> Result<NativeResponse>;
+    async fn dispatch(&self, invocation: NativeInvocation) -> RpcResult<NativeResponse>;
 }

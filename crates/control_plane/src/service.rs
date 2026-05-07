@@ -1,12 +1,12 @@
 use crate::dummy_sandbox::AppSandboxEngine;
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use std::fmt;
 use std::sync::Arc;
 use syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::{
     DeployManifest, ServiceType,
 };
 use syneroym_core::registry::{EndpointRegistry, SubstrateEndpoint};
-use syneroym_rpc::{NativeInvocation, NativeResponse, NativeService};
+use syneroym_rpc::{NativeInvocation, NativeResponse, NativeService, RpcError, RpcResult};
 use tracing::info;
 
 const ORCHESTRATOR_INTERFACE: &str = "orchestrator";
@@ -42,28 +42,50 @@ impl ControlPlaneService {
 
 #[async_trait::async_trait]
 impl NativeService for ControlPlaneService {
-    async fn dispatch(&self, invocation: NativeInvocation) -> Result<NativeResponse> {
+    async fn dispatch(&self, invocation: NativeInvocation) -> RpcResult<NativeResponse> {
         info!("Orchestrator received dispatch: {}.{}", invocation.interface, invocation.method);
 
         match (invocation.interface.as_str(), invocation.method.as_str()) {
             (ORCHESTRATOR_INTERFACE, "readyz") => Ok(ready_response()),
             (ORCHESTRATOR_INTERFACE, "deploy") => self.deploy(invocation.params).await,
-            _ => Err(anyhow!("Orchestrator dispatch logic is not fully implemented yet.")),
+            (ORCHESTRATOR_INTERFACE, _) => {
+                Err(RpcError::MethodNotFound(invocation.method.to_string()))
+            }
+            _ => Err(RpcError::InternalError(format!(
+                "Interface {} not handled by orchestrator",
+                invocation.interface
+            ))),
         }
     }
 }
 
 impl ControlPlaneService {
-    async fn deploy(&self, params: serde_json::Value) -> Result<NativeResponse> {
+    async fn deploy(&self, params: serde_json::Value) -> RpcResult<NativeResponse> {
+        // NOTE: We use a positional tuple for parameters here because WASM component-model
+        // metadata often strips argument names during compilation, making named parameter
+        // matching unreliable for cross-platform toolchains. Positional parameters ensure
+        // consistent behavior across all guest environments.
         let (service_id, interfaces, manifest): (String, Vec<String>, DeployManifest) =
-            serde_json::from_value(params)?;
+            serde_json::from_value(params).map_err(|e| {
+                RpcError::InvalidParams(format!("Failed to parse deploy params: {e}"))
+            })?;
 
         match &manifest.service_type {
             ServiceType::Wasm(_) => {
-                self.app_sandbox_engine.deploy_wasm(&service_id, &manifest).await?;
-                self.register_wasm_endpoints(&service_id, interfaces).await?;
+                self.app_sandbox_engine
+                    .deploy_wasm(&service_id, &manifest)
+                    .await
+                    .map_err(|e| RpcError::InternalError(format!("WASM deployment failed: {e}")))?;
+
+                self.register_wasm_endpoints(&service_id, interfaces).await.map_err(|e| {
+                    RpcError::InternalError(format!("Endpoint registration failed: {e}"))
+                })?;
             }
-            _ => return Err(anyhow!("Unsupported service type for deployment")),
+            _ => {
+                return Err(RpcError::InvalidParams(
+                    "Unsupported service type for deployment".to_string(),
+                ));
+            }
         }
 
         Ok(NativeResponse { payload: serde_json::json!({"status": "deployed"}) })
@@ -79,7 +101,7 @@ impl ControlPlaneService {
                 .register(
                     service_id.to_string(),
                     interface,
-                    SubstrateEndpoint::WasmChannel { channel_details: service_id.to_string() },
+                    SubstrateEndpoint::WasmChannel { service_id: service_id.to_string() },
                 )
                 .await?;
         }

@@ -7,11 +7,11 @@ use std::sync::Arc;
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum SubstrateEndpoint {
     /// A WASM component communicating via wRPC channels
-    WasmChannel { channel_details: String },
+    WasmChannel { service_id: String },
     /// A containerized service running via Podman
     PodmanSocket { socket_path: String },
     /// A native Rust host capability or service (e.g. SubstrateService)
-    NativeHostChannel { channel_details: String },
+    NativeHostChannel { service_id: String },
 }
 
 /// The Endpoint Registry tracks where local Services are currently executing.
@@ -88,5 +88,44 @@ impl EndpointRegistry {
                 (service_id, interface_name, entry.value().clone())
             })
             .collect()
+    }
+
+    /// Creates a mock registry with in-memory storage for testing.
+    pub fn new_mock(storage: Arc<crate::storage::MockStorage>) -> Self {
+        Self { active_endpoints: Arc::new(DashMap::new()), storage }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::MockStorage;
+
+    #[tokio::test]
+    async fn test_registry_lifecycle() {
+        let storage = Arc::new(MockStorage::new());
+        let registry = EndpointRegistry::new(storage.clone()).await.unwrap();
+
+        // 1. Register
+        let service = "test-service".to_string();
+        let iface = "health".to_string();
+        let endpoint = SubstrateEndpoint::WasmChannel { service_id: service.clone() };
+
+        registry.register(service.clone(), iface.clone(), endpoint.clone()).await.unwrap();
+
+        // 2. Lookup
+        let found = registry.lookup(&service, &iface).unwrap();
+        match found {
+            SubstrateEndpoint::WasmChannel { service_id } => assert_eq!(service_id, service),
+            _ => panic!("Wrong endpoint type"),
+        }
+
+        // 3. Persistence check (new registry instance with same storage)
+        let registry2 = EndpointRegistry::new(storage).await.unwrap();
+        assert!(registry2.lookup(&service, &iface).is_some());
+
+        // 4. Remove
+        registry2.remove(&service, &iface).await.unwrap();
+        assert!(registry2.lookup(&service, &iface).is_none());
     }
 }

@@ -11,6 +11,7 @@ use tracing::error;
 
 use super::RouteHandler;
 use crate::preamble::RoutePreamble;
+use syneroym_rpc::{JsonRpcError, JsonRpcErrorResponse};
 
 /// A handler for HTTP-based JSON-RPC requests.
 ///
@@ -108,11 +109,15 @@ impl HttpHandler {
 
 /// Formats a JSON-RPC error response within an HTTP response.
 pub fn http_error(status: StatusCode, message: String) -> Response<Full<Bytes>> {
-    let body =
-        format!(r#"{{"jsonrpc":"2.0","error":{{"code":-32603,"message":{message:?}}},"id":null}}"#);
+    let body = JsonRpcErrorResponse {
+        jsonrpc: "2.0".to_string(),
+        error: JsonRpcError { code: -32603, message, data: None },
+        id: None,
+    };
+    let body_bytes = serde_json::to_vec(&body).unwrap_or_else(|_| b"{}".to_vec());
     Response::builder()
         .status(status)
         .header(hyper::header::CONTENT_TYPE, "application/json")
-        .body(Full::new(Bytes::from(body)))
+        .body(Full::new(Bytes::from(body_bytes)))
         .expect("valid error response")
 }
