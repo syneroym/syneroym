@@ -121,7 +121,9 @@ impl RoutePreamble {
             other => (RouteTransport::Binary, RouteProtocol::Other(other.to_string())),
         };
 
-        let (interface, service_id) = target.rsplit_once('.').unwrap_or(("", target));
+        let (interface, service_id) = target
+            .rsplit_once(syneroym_core::constants::PREAMBLE_SEPARATOR)
+            .unwrap_or(("", target));
 
         if service_id.is_empty() {
             return Err(anyhow!("Incomplete preamble (missing service_id): {raw}"));
@@ -174,7 +176,14 @@ impl fmt::Display for RoutePreamble {
         if self.interface.is_empty() {
             write!(f, "{}://{}", scheme, self.service_id)
         } else {
-            write!(f, "{}://{}.{}", scheme, self.interface, self.service_id)
+            write!(
+                f,
+                "{}://{}{}{}",
+                scheme,
+                self.interface,
+                syneroym_core::constants::PREAMBLE_SEPARATOR,
+                self.service_id
+            )
         }
     }
 }
@@ -185,7 +194,7 @@ mod tests {
 
     #[test]
     fn parses_route_preamble() {
-        let parsed = RoutePreamble::parse("json-rpc://health.substrate-123\n").unwrap();
+        let parsed = RoutePreamble::parse("json-rpc://health|substrate-123\n").unwrap();
         assert_eq!(parsed.transport, RouteTransport::Binary);
         assert_eq!(parsed.protocol, RouteProtocol::JsonRpc);
         assert_eq!(parsed.interface, "health");
@@ -194,14 +203,14 @@ mod tests {
 
     #[test]
     fn parses_http_scheme() {
-        let parsed = RoutePreamble::parse("http://health.substrate-123\n").unwrap();
+        let parsed = RoutePreamble::parse("http://health|substrate-123\n").unwrap();
         assert_eq!(parsed.transport, RouteTransport::Http);
         assert_eq!(parsed.protocol, RouteProtocol::JsonRpc);
     }
 
     #[test]
     fn parses_combined_scheme() {
-        let parsed = RoutePreamble::parse("http-wrpc://health.substrate-123\n").unwrap();
+        let parsed = RoutePreamble::parse("http-wrpc://health|substrate-123\n").unwrap();
         assert_eq!(parsed.transport, RouteTransport::Http);
         assert_eq!(parsed.protocol, RouteProtocol::Wrpc);
     }
@@ -242,8 +251,8 @@ mod tests {
 
     #[test]
     fn test_display() {
-        let p1 = RoutePreamble::parse("http://health.substrate-123").unwrap();
-        assert_eq!(p1.to_string(), "http://health.substrate-123");
+        let p1 = RoutePreamble::parse("http://health|substrate-123").unwrap();
+        assert_eq!(p1.to_string(), "http://health|substrate-123");
 
         let p2 = RoutePreamble::parse("json-rpc://substrate-123").unwrap();
         assert_eq!(p2.to_string(), "json-rpc://substrate-123");
@@ -251,7 +260,7 @@ mod tests {
         let p3 = RoutePreamble::parse("http-wrpc://my-service").unwrap();
         assert_eq!(p3.to_string(), "http-wrpc://my-service");
 
-        let p4 = RoutePreamble::parse("wrpc://my-interface.my-service").unwrap();
-        assert_eq!(p4.to_string(), "wrpc://my-interface.my-service");
+        let p4 = RoutePreamble::parse("wrpc://my-interface|my-service").unwrap();
+        assert_eq!(p4.to_string(), "wrpc://my-interface|my-service");
     }
 }

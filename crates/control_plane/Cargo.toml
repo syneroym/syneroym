@@ -8,8 +8,8 @@ default = ["app_sandbox"]
 app_sandbox = ["dep:syneroym-app-sandbox"]
 
 [dependencies]
-anyhow = "1.0"
-async-trait = "0.1"
+anyhow.workspace = true
+async-trait.workspace = true
 syneroym-core = { path = "../core" }
 syneroym-rpc = { path = "../rpc" }
 syneroym-app-sandbox = { path = "../app_sandbox", optional = true }

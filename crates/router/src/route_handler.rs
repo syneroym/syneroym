@@ -429,26 +429,9 @@ impl HttpHandler {
             ));
         }
 
-        // Check consistency with the stream-level preamble.
-        // We log a warning if they differ, but the stream-level preamble remains the source of truth.
-        if let Ok(path_preamble) = RoutePreamble::from_http_path(req.uri().path()) {
-            if path_preamble.service_id != self.preamble.service_id
-                || path_preamble.interface != self.preamble.interface
-            {
-                warn!(
-                    path = req.uri().path(),
-                    stream_preamble = %self.preamble,
-                    "HTTP path target differs from stream preamble; using stream preamble"
-                );
-            }
-        } else {
-            // If the path doesn't even look like a Syneroym route, we should probably reject it
-            // as we are strictly versioned at /v1/...
-            return Ok(http_error(
-                StatusCode::NOT_FOUND,
-                format!("Invalid Syneroym route path: {}", req.uri().path()),
-            ));
-        }
+        // The stream-level preamble is the definitive source of routing truth.
+        // We no longer validate against the HTTP path, allowing this router to be placed behind
+        // transparent proxies that don't rewrite URLs.
 
         // ALWAYS use the stream-level preamble for routing decisions.
         let resolved = match route_handler.resolve_route(self.preamble.clone()) {

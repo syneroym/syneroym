@@ -5,7 +5,11 @@ edition = "2024"
 
 [dependencies]
 syneroym-core = { path = "../core" }
+syneroym-sdk = { path = "../sdk" }
+syneroym-rpc = { path = "../rpc" }
 anyhow.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 serde_json.workspace = true
+dashmap.workspace = true
+httparse.workspace = true

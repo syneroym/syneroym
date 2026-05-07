@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use iroh::endpoint::{Connection, RecvStream, SendStream};
+use iroh::endpoint::Connection;
 use std::time::Duration;
 use syneroym_core::community_registry::{EndpointMechanism, SignedEndpointInfo};
 use syneroym_rpc::JsonRpcResponse;
@@ -31,6 +31,10 @@ impl SyneroymClient {
     }
 
     pub async fn connect(&mut self) -> Result<()> {
+        if self.connection.is_some() {
+            return Ok(());
+        }
+
         debug!("Connecting to {} via registry or provided mechanisms", self.service_id);
 
         let mechanisms = if let Some(m) = &self.provided_mechanisms {
@@ -123,48 +127,102 @@ impl SyneroymClient {
         method: &str,
         params: serde_json::Value,
     ) -> Result<JsonRpcResponse> {
-        let conn_wrapper = self.connection.as_mut().context("Not connected")?;
-        match conn_wrapper {
-            TransportConnection::Iroh { conn, .. } => {
-                let (mut send, mut recv) = conn.open_bi().await?;
-                self.send_json_rpc_request_over_stream(
-                    interface, &mut send, &mut recv, method, params,
-                )
-                .await
-            }
-        }
-    }
-
-    async fn send_json_rpc_request_over_stream(
-        &self,
-        interface_name: &str,
-        send: &mut SendStream,
-        recv: &mut RecvStream,
-        method: &str,
-        params: serde_json::Value,
-    ) -> Result<JsonRpcResponse> {
-        // The preamble uses the interface name and the service_id this client was initialized with.
-        let preamble = format!("json-rpc://{}.{}\n", interface_name, self.service_id);
-        send.write_all(preamble.as_bytes()).await?;
-
         let request = syneroym_rpc::JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             method: method.to_string(),
             params,
             id: Some(serde_json::Value::Number(1.into())),
         };
-        let req_bytes = serde_json::to_vec(&request)?;
-        syneroym_rpc::framing::write_frame(send, &req_bytes).await?;
-        debug!(">>> Wrote request for method: {} to {}", method, self.service_id);
-        send.finish()?;
+        self.request_raw(interface, request).await
+    }
 
-        let frame = syneroym_rpc::framing::read_frame(recv).await?;
-        if frame.is_empty() {
-            return Err(anyhow::anyhow!("Empty response from stream for method {}", method));
+    pub async fn request_raw(
+        &mut self,
+        interface_name: &str,
+        request: syneroym_rpc::JsonRpcRequest,
+    ) -> Result<JsonRpcResponse> {
+        let conn_wrapper = self.connection.as_mut().context("Not connected")?;
+        match conn_wrapper {
+            TransportConnection::Iroh { conn, .. } => {
+                let (mut send, mut recv) = conn.open_bi().await?;
+
+                let preamble = if interface_name.is_empty() {
+                    format!("json-rpc://{}\n", self.service_id)
+                } else {
+                    format!(
+                        "json-rpc://{}{}{}\n",
+                        interface_name,
+                        syneroym_core::constants::PREAMBLE_SEPARATOR,
+                        self.service_id
+                    )
+                };
+                send.write_all(preamble.as_bytes()).await?;
+
+                let req_bytes = serde_json::to_vec(&request)?;
+                syneroym_rpc::framing::write_frame(&mut send, &req_bytes).await?;
+                debug!(">>> Wrote request for method: {} to {}", request.method, self.service_id);
+                send.finish()?;
+
+                let frame = syneroym_rpc::framing::read_frame(&mut recv).await?;
+                if frame.is_empty() {
+                    return Err(anyhow::anyhow!(
+                        "Empty response from stream for method {}",
+                        request.method
+                    ));
+                }
+                let res: JsonRpcResponse = serde_json::from_slice(&frame)?;
+                debug!("got json response for method: {}: {:?}", request.method, res);
+                Ok(res)
+            }
         }
-        let res: JsonRpcResponse = serde_json::from_slice(&frame)?;
-        debug!("got json response for method: {}: {:?}", method, res);
-        Ok(res)
+    }
+
+    pub async fn passthrough(
+        &mut self,
+        interface_name: &str,
+        initial_bytes: &[u8],
+        tcp_stream: &mut tokio::net::TcpStream,
+    ) -> Result<()> {
+        let conn_wrapper = self.connection.as_mut().context("Not connected")?;
+        match conn_wrapper {
+            TransportConnection::Iroh { conn, .. } => {
+                let (mut send, mut recv) = conn.open_bi().await?;
+
+                let preamble = if interface_name.is_empty() {
+                    format!("http://{}\n", self.service_id)
+                } else {
+                    format!(
+                        "http://{}{}{}\n",
+                        interface_name,
+                        syneroym_core::constants::PREAMBLE_SEPARATOR,
+                        self.service_id
+                    )
+                };
+                send.write_all(preamble.as_bytes()).await?;
+
+                send.write_all(initial_bytes).await?;
+
+                let (mut tcp_read, mut tcp_write) = tcp_stream.split();
+
+                let send_task = tokio::io::copy(&mut tcp_read, &mut send);
+                let recv_task = tokio::io::copy(&mut recv, &mut tcp_write);
+
+                tokio::select! {
+                    res = send_task => {
+                        if let Err(e) = res {
+                            debug!("Error copying from TCP to Iroh: {}", e);
+                        }
+                    }
+                    res = recv_task => {
+                        if let Err(e) = res {
+                            debug!("Error copying from Iroh to TCP: {}", e);
+                        }
+                    }
+                }
+
+                Ok(())
+            }
+        }
     }
 
     async fn lookup_registry(&self) -> Result<SignedEndpointInfo> {

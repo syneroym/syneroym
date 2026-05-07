@@ -10,12 +10,12 @@ tokio.workspace = true
 iroh-relay.workspace = true
 iroh-base.workspace = true
 tracing.workspace = true
-url = "2.5.8"
-rustls-pki-types = "1.14.0"
-rustls = { version = "0.23.37", features = ["ring"] }
+url.workspace = true
+rustls-pki-types.workspace = true
+rustls.workspace = true
 
 [dev-dependencies]
 iroh.workspace = true
-n0-error = "0.1"
+n0-error.workspace = true
 tracing-subscriber.workspace = true
-tempfile = "3.10"
+tempfile.workspace = true

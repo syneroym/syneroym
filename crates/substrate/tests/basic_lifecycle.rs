@@ -145,6 +145,10 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
     config.uplink.iroh =
         Some(syneroym_core::config::IrohRelayConfig { relay_url: IROH_RELAY_URL.to_string() });
 
+    let gateway_port = 9090;
+    config.roles.client_gateway =
+        Some(syneroym_core::config::ClientGatewayRole { http_port: gateway_port });
+
     // Generate identity beforehand so we know it
     let substrate_identity_state = syneroym_substrate::identity::setup_substrate_identity(
         &config.identity,
@@ -183,8 +187,18 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
         "../../test-components/greeter/target/wasm32-wasip2/release/syneroym_test_greeter.wasm",
     )
     .expect("Failed to read compiled test WASM component");
+    // Interact with the running WASM application
+    debug!(">>> Starting STEP 2: Run");
+    let substrate_info =
+        substrate_client.lookup().await.expect("Failed to lookup substrate info from registry");
+    let substrate_mechanisms = substrate_info.info.mechanisms;
+
+    // Generate a valid DID for the app and deploy it
+    let app_identity = syneroym_identity::Identity::generate().unwrap();
+    let app_service_id = syneroym_identity::substrate::derive_did_key(&app_identity.public_key());
+
     let deploy_params = serde_json::to_value((
-        "greeter-service".to_string(),
+        app_service_id.clone(),
         vec!["syneroym-test:greeter/greet@0.1.0"],
         DeployManifest {
             config: ServiceConfig { env: vec![], args: vec![], custom_config: None },
@@ -207,15 +221,9 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
     assert_eq!(deploy_res.result, serde_json::json!({"status": "deployed"}));
     debug!(">>> Finished STEP 1: Deploy");
 
-    // Interact with the running WASM application
-    debug!(">>> Starting STEP 2: Run");
-    let substrate_info =
-        substrate_client.lookup().await.expect("Failed to lookup substrate info from registry");
-    let substrate_mechanisms = substrate_info.info.mechanisms;
-
     let mut app_client = syneroym_sdk::SyneroymClient::new_with_mechanisms(
-        "greeter-service".to_string(),
-        substrate_mechanisms,
+        app_service_id.clone(),
+        substrate_mechanisms.clone(),
     );
     app_client.connect().await.expect("Failed to connect to app on substrate");
 
@@ -237,10 +245,87 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
     );
     debug!(">>> Finished STEP 2: Run");
 
+    debug!(">>> Starting STEP 3: Run via HTTP Proxy");
+    register_app_in_registry(
+        app_service_id.clone(),
+        substrate_service_id.clone(),
+        substrate_mechanisms.clone(),
+        &app_identity,
+        "http://localhost:8080",
+    )
+    .await;
+
+    test_http_proxy_invocation(&app_service_id, gateway_port).await;
+    debug!(">>> Finished STEP 3: Run via HTTP Proxy");
+
     // Trigger graceful shutdown.
     let _ = shutdown_tx.send(()).await;
 
     // Await the substrate handle to ensure it shuts down cleanly.
     let result = substrate_handle.await;
     assert!(result.is_ok(), "Substrate task should shut down cleanly without panicking.");
+}
+
+async fn register_app_in_registry(
+    app_service_id: String,
+    substrate_service_id: String,
+    substrate_mechanisms: Vec<syneroym_core::community_registry::EndpointMechanism>,
+    app_identity: &syneroym_identity::Identity,
+    registry_url: &str,
+) {
+    let req_client = reqwest::Client::new();
+    let info = syneroym_core::community_registry::EndpointInfo {
+        service_id: app_service_id,
+        substrate_id: substrate_service_id,
+        endpoint_type: syneroym_core::community_registry::EndpointType::Service,
+        mechanisms: substrate_mechanisms,
+    };
+    let info_value = serde_json::to_value(&info).unwrap();
+    let canonical_value = syneroym_identity::substrate::canonicalize_json_value(&info_value);
+    let canonical_string = serde_json::to_string(&canonical_value).unwrap();
+    let signature = app_identity.sign(canonical_string.as_bytes());
+
+    let signed_info = syneroym_core::community_registry::SignedEndpointInfo {
+        info,
+        signature: z32::encode(&signature.to_bytes()),
+    };
+    let res = req_client
+        .post(format!("{}/register", registry_url))
+        .json(&signed_info)
+        .send()
+        .await
+        .expect("Failed to register app_service_id in HTTP registry");
+    if !res.status().is_success() {
+        let err = res.text().await.unwrap();
+        panic!("Registry registration failed: {}", err);
+    }
+}
+
+async fn test_http_proxy_invocation(app_service_id: &str, gateway_port: u16) {
+    let json_req = syneroym_rpc::JsonRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        method: "greet".to_string(),
+        params: serde_json::json!(["proxy-tester"]),
+        id: Some(serde_json::Value::Number(42.into())),
+    };
+
+    let req_client = reqwest::Client::new();
+    let url = format!("http://127.0.0.1:{}/", gateway_port);
+    let host_header = format!("syneroym-test:greeter/greet@0.1.0--{}.localhost", app_service_id);
+
+    let proxy_res = req_client
+        .post(&url)
+        .header("Host", host_header)
+        .json(&json_req)
+        .send()
+        .await
+        .expect("Failed to send request to client gateway");
+
+    assert!(proxy_res.status().is_success(), "Expected 200 OK, got {}", proxy_res.status());
+
+    let proxy_json: syneroym_rpc::JsonRpcResponse = proxy_res.json().await.unwrap();
+    assert_eq!(
+        proxy_json.result,
+        serde_json::json!("Hello, proxy-tester! Greetings from greeter::greet::greet")
+    );
 }

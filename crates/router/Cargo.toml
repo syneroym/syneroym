@@ -11,9 +11,9 @@ syneroym-app-sandbox = { path = "../app_sandbox" }
 syneroym-rpc = { path = "../rpc" }
 syneroym-control-plane = { path = "../control_plane" }
 anyhow.workspace = true
-async-trait = "0.1"
+async-trait.workspace = true
 bytes.workspace = true
-dashmap = "6.1.0"
+dashmap.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
