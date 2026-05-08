@@ -33,6 +33,16 @@ pub fn parse_size_string(s: &str, default_if_unparseable: u64) -> u64 {
     num_str.trim().parse::<u64>().unwrap_or(default_if_unparseable) * multiplier
 }
 
+/// Generates a short z32-encoded hash from the given data.
+/// It uses SHA256 and takes the first 5 bytes, resulting in an 8-character string.
+pub fn short_hash(data: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(data.as_bytes());
+    let result = hasher.finalize();
+    z32::encode(&result[..5])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

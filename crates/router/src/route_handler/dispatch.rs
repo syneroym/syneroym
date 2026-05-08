@@ -82,11 +82,18 @@ impl RouteHandler {
     }
 
     /// Resolves a `RoutePreamble` to a `ResolvedRoute` by looking up the service in the registry.
-    pub fn resolve_route(&self, preamble: crate::preamble::RoutePreamble) -> Result<ResolvedRoute> {
-        let endpoint =
-            self.inner.registry.lookup(&preamble.service_id, &preamble.interface).ok_or_else(
-                || anyhow!("Service {} not found in local registry", preamble.service_id),
-            )?;
+    pub fn resolve_route(
+        &self,
+        mut preamble: crate::preamble::RoutePreamble,
+    ) -> Result<ResolvedRoute> {
+        let (endpoint, canonical_interface) = self
+            .inner
+            .registry
+            .lookup(&preamble.service_id, &preamble.interface)
+            .ok_or_else(|| anyhow!("Interface '{}' not found", preamble.interface))?;
+
+        // Normalize the interface to the canonical name (full name, not short hash)
+        preamble.interface = canonical_interface;
 
         Ok(ResolvedRoute { request: preamble, endpoint })
     }

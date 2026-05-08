@@ -20,6 +20,8 @@ pub struct EndpointInfo {
     pub substrate_id: String, // For substrate itself, it's the same as service_id
     pub endpoint_type: EndpointType,
     pub mechanisms: Vec<EndpointMechanism>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nickname: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -112,23 +112,44 @@ async fn handle_connection(
                 }
                 let host_base = host.strip_suffix(".localhost").unwrap_or(host);
 
-                // We split by the last '--' because interface might have '-'
-                let (interface, service_id) = match host_base.rsplit_once("--") {
-                    Some((i, s)) => (i, s),
-                    None => {
-                        return write_json_rpc_error(
-                            &mut stream,
-                            400,
-                            "Invalid Host header format",
-                        )
-                        .await;
-                    }
+                // Parse host_base according to `<nickname>-p<pubkeyhash>-i<interfacehash>` or `<nickname>-p<pubkeyhash>`
+                // Split by '-' and parse from the right to support nicknames with dashes
+                let mut parts: Vec<&str> = host_base.split('-').collect();
+
+                let mut interfacehash = None;
+                if let Some(last) = parts.last()
+                    && last.starts_with('i')
+                    && last.len() > 1
+                {
+                    interfacehash = Some(&last[1..]);
+                    parts.pop();
+                }
+
+                let mut pubkeyhash = None;
+                if let Some(last) = parts.last()
+                    && last.starts_with('p')
+                    && last.len() > 1
+                {
+                    pubkeyhash = Some(&last[1..]);
+                    parts.pop();
+                }
+
+                let nickname = if !parts.is_empty() { Some(parts.join("-")) } else { None };
+
+                let lookup_alias = if let Some(n) = nickname {
+                    format!("{n}-p{}", pubkeyhash.unwrap_or_default())
+                } else {
+                    format!("p{}", pubkeyhash.unwrap_or_default())
                 };
 
-                let service_id = service_id.to_string();
-                let interface = interface.to_string();
+                // The interface is now the short hash, fallback to "default" if omitted
+                let interface = interfacehash.unwrap_or("default").to_string();
+                let service_id = lookup_alias;
 
-                debug!("Proxying to interface: {}, service_id: {}", interface, service_id);
+                debug!(
+                    "Proxying to interface (hash): {}, service_id (alias): {}",
+                    interface, service_id
+                );
 
                 let client_arc = state
                     .clients

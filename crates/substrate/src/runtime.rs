@@ -288,6 +288,7 @@ async fn register_substrate_endpoint<E: serde::Serialize>(
         service_id: service_id.to_string(),
         substrate_id: service_id.to_string(),
         endpoint_type: syneroym_core::community_registry::EndpointType::Substrate,
+        nickname: None,
         mechanisms: vec![syneroym_core::community_registry::EndpointMechanism::Iroh {
             endpoint_addr_bytes,
             relay_url,

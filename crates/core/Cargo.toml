@@ -12,6 +12,8 @@ dashmap.workspace = true
 rusqlite.workspace = true
 serde_json.workspace = true
 async-trait.workspace = true
+sha2.workspace = true
+z32.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

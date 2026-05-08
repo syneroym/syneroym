@@ -46,7 +46,10 @@ impl SyneroymClient {
         let mechanisms = if let Some(m) = &self.provided_mechanisms {
             m.clone()
         } else if !self.registry_url.is_empty() {
-            self.lookup_registry().await?.info.mechanisms
+            let info = self.lookup_registry().await?.info;
+            // The lookup might have been done by an alias. Update service_id to the canonical DID.
+            self.service_id = info.service_id;
+            info.mechanisms
         } else {
             return Err(anyhow::anyhow!("No registry URL or mechanisms provided"));
         };

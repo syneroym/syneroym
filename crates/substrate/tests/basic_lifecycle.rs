@@ -278,6 +278,7 @@ async fn register_app_in_registry(
         service_id: app_service_id,
         substrate_id: substrate_service_id,
         endpoint_type: syneroym_core::community_registry::EndpointType::Service,
+        nickname: Some("app".to_string()),
         mechanisms: substrate_mechanisms,
     };
     let info_value = serde_json::to_value(&info).unwrap();
@@ -311,7 +312,9 @@ async fn test_http_proxy_invocation(app_service_id: &str, gateway_port: u16) {
 
     let req_client = reqwest::Client::new();
     let url = format!("http://127.0.0.1:{}/", gateway_port);
-    let host_header = format!("syneroym-test:greeter/greet@0.1.0--{}.localhost", app_service_id);
+    let interface_hash = syneroym_core::util::short_hash("syneroym-test:greeter/greet@0.1.0");
+    let pubkeyhash = syneroym_core::util::short_hash(app_service_id);
+    let host_header = format!("app-p{}-i{}.localhost", pubkeyhash, interface_hash);
 
     let proxy_res = req_client
         .post(&url)

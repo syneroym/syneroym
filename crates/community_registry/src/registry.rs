@@ -25,6 +25,8 @@ pub struct EcosystemRegistry {
 struct RegistryState {
     // Map of service_id -> SignedEndpointInfo
     endpoints: DashMap<String, SignedEndpointInfo>,
+    // Map of alias -> service_id
+    aliases: DashMap<String, String>,
 }
 
 impl EcosystemRegistry {
@@ -41,7 +43,7 @@ impl EcosystemRegistry {
 
         Ok(Self {
             bind_address,
-            state: Arc::new(RegistryState { endpoints: DashMap::new() }),
+            state: Arc::new(RegistryState { endpoints: DashMap::new(), aliases: DashMap::new() }),
             shutdown_tx: None,
             server_handle: None,
         })
@@ -124,7 +126,29 @@ async fn register_endpoint(
         return Err((StatusCode::UNAUTHORIZED, "Signature verification failed".to_string()));
     }
 
+    let service_hash = syneroym_core::util::short_hash(service_id);
+    let alias = payload
+        .info
+        .nickname
+        .as_ref()
+        .map(|n| format!("{n}-p{service_hash}"))
+        .unwrap_or_else(|| format!("p{service_hash}"));
+
+    if let Some(existing_id) = state.aliases.get(&alias)
+        && *existing_id != *service_id
+    {
+        return Err((
+            StatusCode::CONFLICT,
+            "Alias collision: this nickname-shorthash is already in use by a different service"
+                .to_string(),
+        ));
+    }
+
+    // Remove any previous aliases associated with this service_id
+    state.aliases.retain(|_, id| *id != *service_id);
+
     // Store in DashMap
+    state.aliases.insert(alias, service_id.clone());
     state.endpoints.insert(service_id.clone(), payload);
     Ok(StatusCode::OK)
 }
@@ -139,13 +163,19 @@ async fn lookup_endpoint(
     Query(query): Query<LookupQuery>,
     State(state): State<Arc<RegistryState>>,
 ) -> Result<Json<SignedEndpointInfo>, StatusCode> {
-    let mut entry = state.endpoints.get(&service_id).map(|e| e.clone());
+    let resolved_id = state.aliases.get(&service_id).map(|e| e.clone()).unwrap_or(service_id);
+    let mut entry = state.endpoints.get(&resolved_id).map(|e| e.clone());
 
     if query.resolve.unwrap_or(false)
-        && let Some(record) = &entry
+        && let Some(mut record) = entry.clone()
         && record.info.endpoint_type == EndpointType::Service
     {
-        entry = state.endpoints.get(&record.info.substrate_id).map(|e| e.clone());
+        if let Some(substrate_entry) = state.endpoints.get(&record.info.substrate_id) {
+            record.info.mechanisms = substrate_entry.info.mechanisms.clone();
+            entry = Some(record);
+        } else {
+            return Err(StatusCode::NOT_FOUND);
+        }
     }
 
     if let Some(entry) = entry { Ok(Json(entry)) } else { Err(StatusCode::NOT_FOUND) }
@@ -171,7 +201,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_register_and_lookup_success() {
-        let state = Arc::new(RegistryState { endpoints: DashMap::new() });
+        let state = Arc::new(RegistryState { endpoints: DashMap::new(), aliases: DashMap::new() });
         let identity = Identity::generate().unwrap();
         let did = derive_did_key(&identity.public_key());
 
@@ -179,6 +209,7 @@ mod tests {
             service_id: did.clone(),
             substrate_id: did.clone(),
             endpoint_type: EndpointType::Substrate,
+            nickname: Some("alice".to_string()),
             mechanisms: vec![EndpointMechanism::Iroh {
                 endpoint_addr_bytes: vec![1, 2, 3],
                 relay_url: Some("http://relay.example.com".to_string()),
@@ -191,9 +222,11 @@ mod tests {
         let res = register_endpoint(State(state.clone()), Json(signed_info.clone())).await;
         assert_eq!(res.unwrap(), StatusCode::OK);
 
-        // Lookup
+        // Lookup by alias
+        let service_hash = syneroym_core::util::short_hash(&did);
+        let alias = format!("alice-p{service_hash}");
         let lookup_res =
-            lookup_endpoint(Path(did), Query(LookupQuery { resolve: None }), State(state)).await;
+            lookup_endpoint(Path(alias), Query(LookupQuery { resolve: None }), State(state)).await;
 
         let Json(retrieved) = lookup_res.unwrap();
         assert_eq!(retrieved.info.service_id, signed_info.info.service_id);
@@ -201,7 +234,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_register_invalid_signature() {
-        let state = Arc::new(RegistryState { endpoints: DashMap::new() });
+        let state = Arc::new(RegistryState { endpoints: DashMap::new(), aliases: DashMap::new() });
         let identity = Identity::generate().unwrap();
         let other_identity = Identity::generate().unwrap();
         let did = derive_did_key(&identity.public_key());
@@ -210,6 +243,7 @@ mod tests {
             service_id: did.clone(),
             substrate_id: did.clone(),
             endpoint_type: EndpointType::Substrate,
+            nickname: None,
             mechanisms: vec![],
         };
 
@@ -223,13 +257,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_register_invalid_did() {
-        let state = Arc::new(RegistryState { endpoints: DashMap::new() });
+        let state = Arc::new(RegistryState { endpoints: DashMap::new(), aliases: DashMap::new() });
         let identity = Identity::generate().unwrap();
 
         let info = EndpointInfo {
             service_id: "invalid-did".to_string(),
             substrate_id: "invalid-did".to_string(),
             endpoint_type: EndpointType::Substrate,
+            nickname: None,
             mechanisms: vec![],
         };
 
@@ -242,7 +277,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_indirect_lookup() {
-        let state = Arc::new(RegistryState { endpoints: DashMap::new() });
+        let state = Arc::new(RegistryState { endpoints: DashMap::new(), aliases: DashMap::new() });
         let substrate_id = "did:key:hsubstrate";
         let service_id = "did:key:hservice";
 
@@ -252,6 +287,7 @@ mod tests {
                 service_id: substrate_id.to_string(),
                 substrate_id: substrate_id.to_string(),
                 endpoint_type: EndpointType::Substrate,
+                nickname: None,
                 mechanisms: vec![EndpointMechanism::Iroh {
                     endpoint_addr_bytes: vec![42],
                     relay_url: None,
@@ -267,6 +303,7 @@ mod tests {
                 service_id: service_id.to_string(),
                 substrate_id: substrate_id.to_string(),
                 endpoint_type: EndpointType::Service,
+                nickname: None,
                 mechanisms: vec![],
             },
             signature: "mock-sig".to_string(),
@@ -282,7 +319,7 @@ mod tests {
         .await;
 
         let Json(retrieved) = lookup_res.unwrap();
-        assert_eq!(retrieved.info.service_id, substrate_id);
+        assert_eq!(retrieved.info.service_id, service_id);
         assert_eq!(
             retrieved.info.mechanisms[0],
             EndpointMechanism::Iroh { endpoint_addr_bytes: vec![42], relay_url: None }
@@ -302,7 +339,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_lookup_not_found() {
-        let state = Arc::new(RegistryState { endpoints: DashMap::new() });
+        let state = Arc::new(RegistryState { endpoints: DashMap::new(), aliases: DashMap::new() });
         let res = lookup_endpoint(
             Path("non-existent".to_string()),
             Query(LookupQuery { resolve: None }),
