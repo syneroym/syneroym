@@ -403,6 +403,57 @@ async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
     assert!(!comments.as_array().unwrap().is_empty());
     assert_eq!(comments[0]["text"], "test comment");
 
+    // 4. WebSocket Echo Test
+    debug!(">>> TCP Scenario: WebSocket Echo Test");
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::{connect_async, tungstenite::client::IntoClientRequest};
+
+    let ws_url = format!("ws://localhost:{}/ws", ctx.gateway_port);
+    let mut request = ws_url.into_client_request().unwrap();
+    request.headers_mut().insert("Host", host_header.parse().unwrap());
+
+    let (mut ws_stream, _) = connect_async(request).await.expect("Failed to connect to websocket");
+
+    let test_msg = "hello from websocket";
+    ws_stream
+        .send(tokio_tungstenite::tungstenite::Message::Text(test_msg.into()))
+        .await
+        .expect("Failed to send websocket message");
+
+    let response =
+        ws_stream.next().await.expect("No response from websocket").expect("Websocket error");
+
+    if let tokio_tungstenite::tungstenite::Message::Text(text) = response {
+        let ws_resp: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert!(ws_resp["recdMsg"].as_str().unwrap().contains(test_msg));
+    } else {
+        panic!("Expected text message, got {:?}", response);
+    }
+
+    // 5. WebSocket Broadcast Test (comment update)
+    debug!(">>> TCP Scenario: WebSocket Broadcast Test");
+    let comment_req = serde_json::json!({"text": "broadcast test comment"});
+    req_client
+        .post(format!("{}api/comments", url))
+        .header("Host", &host_header)
+        .json(&comment_req)
+        .send()
+        .await
+        .expect("POST /api/comments failed for broadcast test");
+
+    let response = ws_stream
+        .next()
+        .await
+        .expect("No broadcast message from websocket")
+        .expect("Websocket error");
+
+    if let tokio_tungstenite::tungstenite::Message::Text(text) = response {
+        let ws_resp: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert!(ws_resp["commentUpdateTimestamp"].is_string());
+    } else {
+        panic!("Expected text message, got {:?}", response);
+    }
+
     // Shutdown app
     let _ = app_shutdown_tx.send(()).await;
     let _ = app_handle.await;

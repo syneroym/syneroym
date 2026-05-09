@@ -13,7 +13,8 @@ pub struct SyneroymClient {
     connection: Option<TransportConnection>,
 }
 
-enum TransportConnection {
+#[derive(Clone)]
+pub enum TransportConnection {
     Iroh {
         /// The endpoint must be kept alive for the duration of the connection.
         /// Dropping it closes the underlying QUIC socket, terminating all streams.
@@ -130,6 +131,14 @@ impl SyneroymClient {
         Err(anyhow::anyhow!("Timed out waiting for {} to become ready", self.service_id))
     }
 
+    pub fn service_id(&self) -> &str {
+        &self.service_id
+    }
+
+    pub fn connection(&self) -> Option<TransportConnection> {
+        self.connection.clone()
+    }
+
     pub async fn request(
         &self,
         interface: &str,
@@ -184,7 +193,24 @@ impl SyneroymClient {
         initial_bytes: &[u8],
         tcp_stream: &mut tokio::net::TcpStream,
     ) -> Result<()> {
-        let conn_wrapper = self.connection.as_ref().context("Not connected")?;
+        let conn_wrapper = self.connection.as_ref().context("Not connected")?.clone();
+        Self::passthrough_with_conn(
+            conn_wrapper,
+            &self.service_id,
+            interface_name,
+            initial_bytes,
+            tcp_stream,
+        )
+        .await
+    }
+
+    pub async fn passthrough_with_conn(
+        conn_wrapper: TransportConnection,
+        service_id: &str,
+        interface_name: &str,
+        initial_bytes: &[u8],
+        tcp_stream: &mut tokio::net::TcpStream,
+    ) -> Result<()> {
         match conn_wrapper {
             TransportConnection::Iroh { conn, .. } => {
                 let (mut send, mut recv) = conn.open_bi().await?;
@@ -194,7 +220,7 @@ impl SyneroymClient {
                     transport: RouteTransport::Http,
                     protocol: RouteProtocol::JsonRpc,
                     interface: interface_name.to_string(),
-                    service_id: self.service_id.clone(),
+                    service_id: service_id.to_string(),
                 }
                 .to_preamble_line();
                 send.write_all(preamble.as_bytes()).await?;

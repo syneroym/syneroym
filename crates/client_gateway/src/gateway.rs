@@ -162,22 +162,26 @@ async fn handle_connection(
                     })
                     .clone();
 
-                // Hold the mutex only long enough to establish the connection.
-                // passthrough() takes &self so concurrent requests don't block each other.
-                {
+                let (conn, service_id) = {
                     let mut client = client_arc.lock().await;
                     if let Err(e) = client.connect().await {
                         error!("Gateway failed to connect to service {}: {}", service_id, e);
                         return write_json_rpc_error(&mut stream, 502, "Bad Gateway").await;
                     }
-                } // mutex released here — passthrough runs without contention
+                    (
+                        client.connection().ok_or_else(|| anyhow::anyhow!("Connection lost"))?,
+                        client.service_id().to_string(),
+                    )
+                };
 
-                // Safety: connect() succeeded above; passthrough() only reads self.connection
-                client_arc
-                    .lock()
-                    .await
-                    .passthrough(&interface, &buf[..bytes_read], &mut stream)
-                    .await?;
+                SyneroymClient::passthrough_with_conn(
+                    conn,
+                    &service_id,
+                    &interface,
+                    &buf[..bytes_read],
+                    &mut stream,
+                )
+                .await?;
                 return Ok(());
             }
             Ok(httparse::Status::Partial) => {
