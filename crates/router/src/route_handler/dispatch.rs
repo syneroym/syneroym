@@ -72,12 +72,12 @@ impl RouteHandler {
                 let message = adapter_not_implemented_message(*adapter);
                 JsonRpcConverter::json_error(None, -32601, message)
             }
-            RouteExecution::WasmWrpcPassthrough { .. } | RouteExecution::Unsupported => {
-                Err(anyhow!(
-                    "Execution plan {:?} not supported in request-response mode",
-                    plan.execution
-                ))
-            }
+            RouteExecution::WasmWrpcPassthrough { .. }
+            | RouteExecution::TcpPassthrough { .. }
+            | RouteExecution::Unsupported => Err(anyhow!(
+                "Execution plan {:?} not supported in request-response mode",
+                plan.execution
+            )),
         }
     }
 
@@ -125,6 +125,10 @@ impl RouteHandler {
             (RouteProtocol::JsonRpc, SubstrateEndpoint::PodmanSocket { .. }) => RoutingPlan {
                 delivery_mode: DeliveryMode::Adapt,
                 execution: RouteExecution::Adapted { adapter: ProtocolAdapter::JsonRpcToPodman },
+            },
+            (_, SubstrateEndpoint::TcpHostPort { host, port }) => RoutingPlan {
+                delivery_mode: DeliveryMode::PassThrough,
+                execution: RouteExecution::TcpPassthrough { host: host.clone(), port: *port },
             },
             _ => RoutingPlan::unsupported(),
         }

@@ -4,7 +4,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 use syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::{
-    ArtifactSource, DeployManifest, ServiceConfig, ServiceType, WasmManifest,
+    ArtifactSource, DeployManifest, ServiceConfig, ServiceType, TcpManifest, WasmManifest,
 };
 use syneroym_core::config::SubstrateConfig;
 use tempfile::NamedTempFile;
@@ -252,6 +252,7 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
         substrate_mechanisms.clone(),
         &app_identity,
         "http://localhost:8080",
+        "app",
     )
     .await;
 
@@ -266,19 +267,182 @@ async fn test_in_process_lifecycle_shutdown_on_ctrl_c() {
     assert!(result.is_ok(), "Substrate task should shut down cleanly without panicking.");
 }
 
+#[tokio::test]
+async fn test_tcp_service_lifecycle() {
+    use syneroym_core::config::{CoordinatorIrohConfig, CoordinatorRole, ServiceRegistryRole};
+
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let base_path = temp_dir.path();
+    let mut config = SubstrateConfig {
+        app_local_data_dir: base_path.join("data"),
+        app_data_dir: base_path.join("user_data"),
+        app_cache_dir: base_path.join("cache"),
+        app_log_dir: base_path.join("logs"),
+        profile: "full".to_string(),
+        ..SubstrateConfig::default()
+    };
+    config.resolve_paths();
+    config.logging.target = syneroym_core::config::LogTarget::Stdout;
+
+    config.roles.coordinator = Some(CoordinatorRole {
+        iroh: Some(CoordinatorIrohConfig {
+            enable_relay: true,
+            http_bind_address: "0.0.0.0:3351".to_string(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    config.roles.community_registry = Some(ServiceRegistryRole {
+        http_bind_address: "0.0.0.0:8081".to_string(),
+        ..Default::default()
+    });
+    config.substrate.registry_url = Some("http://localhost:8081".to_string());
+    config.uplink.iroh = Some(syneroym_core::config::IrohRelayConfig {
+        relay_url: "http://localhost:3351".to_string(),
+    });
+
+    let gateway_port = 9091;
+    config.roles.client_gateway =
+        Some(syneroym_core::config::ClientGatewayRole { http_port: gateway_port });
+
+    let substrate_identity_state = syneroym_substrate::identity::setup_substrate_identity(
+        &config.identity,
+        &config.app_data_dir,
+    )
+    .expect("Failed to setup identity");
+    let substrate_service_id = substrate_identity_state.did.clone();
+
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
+    let runtime =
+        syneroym_substrate::init(config.clone()).await.expect("Failed to initialize runtime");
+
+    let substrate_handle = tokio::spawn(async move {
+        syneroym_substrate::run_with_signal(config, runtime, async {
+            let _ = shutdown_rx.recv().await;
+        })
+        .await
+        .expect("Substrate failed to run");
+    });
+
+    let mut substrate_client = syneroym_sdk::SyneroymClient::new(
+        substrate_service_id.clone(),
+        "http://localhost:8081".to_string(),
+    );
+
+    substrate_client
+        .wait_for_ready(Duration::from_secs(30))
+        .await
+        .expect("Substrate did not become available in time");
+
+    // Start miniapp-demo1-web on a random port
+    let app_port = 30001;
+    let app_addr = std::net::SocketAddr::from(([127, 0, 0, 1], app_port));
+    let (app_shutdown_tx, mut app_shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
+
+    let app_data_dir = base_path.join("app_data").to_string_lossy().to_string();
+    let app_handle = tokio::spawn(async move {
+        let args = miniapp_demo1_web::Args {
+            service_name: "tcp-demo-app".to_string(),
+            port: app_port,
+            data_dir: app_data_dir,
+        };
+        miniapp_demo1_web::run_server(args, app_addr, async move {
+            let _ = app_shutdown_rx.recv().await;
+        })
+        .await
+        .expect("App failed to run");
+    });
+
+    // Deploy the app as a "tcp" service
+    let app_identity = syneroym_identity::Identity::generate().unwrap();
+    let app_service_id = syneroym_identity::substrate::derive_did_key(&app_identity.public_key());
+
+    let deploy_params = serde_json::to_value((
+        app_service_id.clone(),
+        vec!["default"],
+        DeployManifest {
+            config: ServiceConfig { env: vec![], args: vec![], custom_config: None },
+            service_type: ServiceType::Tcp(TcpManifest {
+                host: "127.0.0.1".to_string(),
+                port: app_port,
+            }),
+        },
+    ))
+    .expect("Failed to serialize deploy params");
+
+    substrate_client
+        .request("orchestrator", "deploy", deploy_params)
+        .await
+        .expect("Deploy request failed");
+
+    // Register in community registry
+    let substrate_info = substrate_client.lookup().await.unwrap();
+    register_app_in_registry(
+        app_service_id.clone(),
+        substrate_service_id,
+        substrate_info.info.mechanisms,
+        &app_identity,
+        "http://localhost:8081",
+        "tcp-demo-app",
+    )
+    .await;
+
+    // Test HTTP requests through client_gateway
+    let req_client = reqwest::Client::new();
+    let url = format!("http://127.0.0.1:{}/", gateway_port);
+    let interface_hash = syneroym_core::util::short_hash("default");
+    let pubkeyhash = syneroym_core::util::short_hash(&app_service_id);
+    let host_header = format!("tcp-demo-app-p{}-i{}.localhost", pubkeyhash, interface_hash);
+
+    // 1. GET /
+    let res = req_client.get(&url).header("Host", &host_header).send().await.expect("GET / failed");
+    assert!(res.status().is_success());
+    let text = res.text().await.unwrap();
+    assert!(text.contains("Hello world from tcp-demo-app"));
+
+    // 2. POST /api/comments
+    let comment_req = serde_json::json!({"text": "test comment"});
+    let res = req_client
+        .post(format!("{}api/comments", url))
+        .header("Host", &host_header)
+        .json(&comment_req)
+        .send()
+        .await
+        .expect("POST /api/comments failed");
+    assert_eq!(res.status(), reqwest::StatusCode::CREATED);
+
+    // 3. GET /api/comments
+    let res = req_client
+        .get(format!("{}api/comments", url))
+        .header("Host", &host_header)
+        .send()
+        .await
+        .expect("GET /api/comments failed");
+    assert!(res.status().is_success());
+    let comments: serde_json::Value = res.json().await.unwrap();
+    assert!(!comments.as_array().unwrap().is_empty());
+    assert_eq!(comments[0]["text"], "test comment");
+
+    // Shutdown
+    let _ = app_shutdown_tx.send(()).await;
+    let _ = shutdown_tx.send(()).await;
+    let _ = tokio::join!(app_handle, substrate_handle);
+}
+
 async fn register_app_in_registry(
     app_service_id: String,
     substrate_service_id: String,
     substrate_mechanisms: Vec<syneroym_core::community_registry::EndpointMechanism>,
     app_identity: &syneroym_identity::Identity,
     registry_url: &str,
+    nickname: &str,
 ) {
     let req_client = reqwest::Client::new();
     let info = syneroym_core::community_registry::EndpointInfo {
         service_id: app_service_id,
         substrate_id: substrate_service_id,
         endpoint_type: syneroym_core::community_registry::EndpointType::Service,
-        nickname: Some("app".to_string()),
+        nickname: Some(nickname.to_string()),
         mechanisms: substrate_mechanisms,
     };
     let info_value = serde_json::to_value(&info).unwrap();

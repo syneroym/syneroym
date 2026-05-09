@@ -54,3 +54,4 @@ tracing-subscriber.workspace = true
 syneroym-rpc = { path = "../rpc" }
 syneroym-bindings = { path = "../bindings" }
 syneroym-sdk = { path = "../sdk" }
+miniapp-demo1-web = { path = "../../test-components/miniapp-demo1-web" }

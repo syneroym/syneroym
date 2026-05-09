@@ -19,7 +19,11 @@ impl ObservabilityEngine {
             LogTarget::Stdout => {
                 let subscriber =
                     tracing_subscriber::registry().with(filter).with(stdout_layer(config));
-                subscriber.try_init().context("failed to initialize stdout tracing subscriber")?;
+                if let Err(e) = subscriber.try_init() {
+                    // TODO: Handle process-global tracing initialization more cleanly.
+                    // This often fails in tests when multiple substrate instances are initialized in the same process.
+                    eprintln!("Warning: Failed to initialize stdout tracing subscriber: {}", e);
+                }
                 None
             }
             LogTarget::File => {
@@ -32,7 +36,11 @@ impl ObservabilityEngine {
                 let (writer, guard) = tracing_appender::non_blocking(file_appender);
                 let subscriber =
                     tracing_subscriber::registry().with(filter).with(file_layer(config, writer));
-                subscriber.try_init().context("failed to initialize file tracing subscriber")?;
+                if let Err(e) = subscriber.try_init() {
+                    // TODO: Handle process-global tracing initialization more cleanly.
+                    // This often fails in tests when multiple substrate instances are initialized in the same process.
+                    eprintln!("Warning: Failed to initialize file tracing subscriber: {}", e);
+                }
                 Some(guard)
             }
         };

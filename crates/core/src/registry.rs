@@ -12,6 +12,8 @@ pub enum SubstrateEndpoint {
     PodmanSocket { socket_path: String },
     /// A native Rust host capability or service (e.g. SubstrateService)
     NativeHostChannel { service_id: String },
+    /// An already existing TCP service running on a host:port
+    TcpHostPort { host: String, port: u16 },
 }
 
 /// The Endpoint Registry tracks where local Services are currently executing.

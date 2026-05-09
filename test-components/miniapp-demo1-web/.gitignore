@@ -1,0 +1,8 @@
+# Build artifacts
+static/dist/
+
+# Dependencies (redundant if root .gitignore has it, but good practice for standalone projects)
+client/node_modules/
+
+# Data dir
+data

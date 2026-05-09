@@ -50,6 +50,7 @@ pub enum RouteExecution {
     WasmWrpcPassthrough { channel_id: String },
     Adapted { adapter: ProtocolAdapter },
     ExecuteWasm { channel_id: String },
+    TcpPassthrough { host: String, port: u16 },
     Unsupported,
 }
 

@@ -77,47 +77,83 @@ impl RouteHandler {
         // All streams now start with a preamble identifying transport and protocol.
         let preamble = read_preamble(&mut reader).await?;
 
-        match preamble.transport {
+        let resolved_route = self.resolve_route(preamble)?;
+        let routing_plan = self.plan_route(&resolved_route);
+        super::dispatch::log_route(&resolved_route, &routing_plan);
+
+        use crate::routing::{DeliveryMode, RouteExecution};
+
+        // Handle Passthrough delivery first, regardless of transport.
+        // This is used for raw TCP proxying and wRPC passthrough.
+        if routing_plan.delivery_mode == DeliveryMode::PassThrough {
+            match &routing_plan.execution {
+                RouteExecution::TcpPassthrough { host, port } => {
+                    debug!("Proxying raw TCP stream to {}:{}", host, port);
+                    let mut target = tokio::net::TcpStream::connect(format!("{}:{}", host, port))
+                        .await
+                        .map_err(|e| {
+                            anyhow!("Failed to connect to TCP target {host}:{port}: {e}")
+                        })?;
+
+                    let mut client = ReaderWriter { reader, writer };
+                    tokio::io::copy_bidirectional(&mut client, &mut target).await.map_err(|e| {
+                        anyhow!("Error in bidirectional copy for {host}:{port}: {e}")
+                    })?;
+                    return Ok(());
+                }
+                RouteExecution::WasmWrpcPassthrough { channel_id } => {
+                    // wRPC passthrough is not yet implemented; log and continue.
+                    debug!("Passthrough wRPC stream to Wasm channel: {}", channel_id);
+                    tracing::warn!(
+                        channel_id = %channel_id,
+                        "wRPC passthrough not yet implemented; dropping stream"
+                    );
+                    return Ok(());
+                }
+                _ => {
+                    return Err(anyhow!(
+                        "Invalid execution plan for PassThrough delivery: {:?}",
+                        routing_plan.execution
+                    ));
+                }
+            }
+        }
+
+        match resolved_route.request.transport {
             RouteTransport::Http => {
                 // Reunite reader + writer into a single I/O type for hyper.
                 let io = TokioIo::new(ReaderWriter { reader, writer });
-                return self.handle_http_stream(io, preamble).await;
+                return self.handle_http_stream(io, resolved_route.request).await;
             }
-            RouteTransport::Binary => {
-                let resolved_route = self.resolve_route(preamble)?;
-                let routing_plan = self.plan_route(&resolved_route);
-                super::dispatch::log_route(&resolved_route, &routing_plan);
-
-                use crate::routing::RouteExecution;
-                match &routing_plan.execution {
-                    RouteExecution::NativeJsonRpc { .. }
-                    | RouteExecution::ExecuteWasm { .. }
-                    | RouteExecution::Adapted { .. } => {
-                        self.handle_json_rpc_loop(
-                            reader,
-                            &mut writer,
-                            &resolved_route,
-                            &routing_plan,
-                        )
+            RouteTransport::Binary => match &routing_plan.execution {
+                RouteExecution::NativeJsonRpc { .. }
+                | RouteExecution::ExecuteWasm { .. }
+                | RouteExecution::Adapted { .. } => {
+                    self.handle_json_rpc_loop(reader, &mut writer, &resolved_route, &routing_plan)
                         .await?;
-                    }
-                    RouteExecution::WasmWrpcPassthrough { channel_id } => {
-                        // wRPC passthrough is not yet implemented; log and continue.
-                        debug!("Passthrough wRPC stream to Wasm channel: {}", channel_id);
-                        tracing::warn!(
-                            channel_id = %channel_id,
-                            "wRPC passthrough not yet implemented; dropping stream"
-                        );
-                    }
-                    RouteExecution::Unsupported => {
-                        tracing::warn!(
-                            protocol = %resolved_route.request.protocol,
-                            interface = resolved_route.request.interface.as_str(),
-                            service_id = resolved_route.request.service_id.as_str(),
-                            "unsupported routing combination"
-                        );
-                    }
                 }
+                RouteExecution::Unsupported => {
+                    tracing::warn!(
+                        protocol = %resolved_route.request.protocol,
+                        interface = resolved_route.request.interface.as_str(),
+                        service_id = resolved_route.request.service_id.as_str(),
+                        "unsupported routing combination"
+                    );
+                }
+                _ => {
+                    return Err(anyhow!(
+                        "Execution plan {:?} not supported for Binary transport",
+                        routing_plan.execution
+                    ));
+                }
+            },
+            RouteTransport::Raw => {
+                // We should have handled PassThrough above. If we're here with Raw transport
+                // but not PassThrough, something is misconfigured.
+                return Err(anyhow!(
+                    "Raw transport requires PassThrough delivery, but plan has {:?}",
+                    routing_plan.delivery_mode
+                ));
             }
         }
 

@@ -81,15 +81,17 @@ impl SubstrateEndpoint {
             Self::WasmChannel { .. } => "wasm",
             Self::PodmanSocket { .. } => "podman",
             Self::NativeHostChannel { .. } => "native",
+            Self::TcpHostPort { .. } => "tcp",
         }
     }
 
     /// Returns the data payload stored alongside the key.
-    fn storage_data(&self) -> &str {
+    fn storage_data(&self) -> String {
         match self {
-            Self::WasmChannel { service_id } => service_id,
-            Self::PodmanSocket { socket_path } => socket_path,
-            Self::NativeHostChannel { service_id } => service_id,
+            Self::WasmChannel { service_id } => service_id.clone(),
+            Self::PodmanSocket { socket_path } => socket_path.clone(),
+            Self::NativeHostChannel { service_id } => service_id.clone(),
+            Self::TcpHostPort { host, port } => format!("{}:{}", host, port),
         }
     }
 }
@@ -102,6 +104,15 @@ impl TryFrom<(&str, String)> for SubstrateEndpoint {
             "wasm" => Ok(Self::WasmChannel { service_id: data }),
             "podman" => Ok(Self::PodmanSocket { socket_path: data }),
             "native" => Ok(Self::NativeHostChannel { service_id: data }),
+            "tcp" => {
+                let (host, port_str) = data
+                    .split_once(':')
+                    .ok_or_else(|| anyhow::anyhow!("Invalid TCP endpoint data: {}", data))?;
+                let port = port_str.parse().map_err(|e| {
+                    anyhow::anyhow!("Invalid port in TCP endpoint data: {} ({})", data, e)
+                })?;
+                Ok(Self::TcpHostPort { host: host.to_string(), port })
+            }
             other => Err(anyhow::anyhow!("Unknown endpoint type in storage: {}", other)),
         }
     }

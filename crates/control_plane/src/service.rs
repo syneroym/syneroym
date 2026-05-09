@@ -81,6 +81,24 @@ impl ControlPlaneService {
                     RpcError::InternalError(format!("Endpoint registration failed: {e}"))
                 })?;
             }
+            ServiceType::Tcp(manifest) => {
+                info!("Deploying TCP service {}: {}:{}", service_id, manifest.host, manifest.port);
+                for interface in interfaces {
+                    self.registry
+                        .register(
+                            service_id.clone(),
+                            interface,
+                            SubstrateEndpoint::TcpHostPort {
+                                host: manifest.host.clone(),
+                                port: manifest.port,
+                            },
+                        )
+                        .await
+                        .map_err(|e| {
+                            RpcError::InternalError(format!("Endpoint registration failed: {e}"))
+                        })?;
+                }
+            }
             _ => {
                 return Err(RpcError::InvalidParams(
                     "Unsupported service type for deployment".to_string(),

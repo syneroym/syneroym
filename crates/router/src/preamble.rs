@@ -21,6 +21,8 @@ pub enum RouteTransport {
     Binary,
     /// HTTP/1.1 framing.
     Http,
+    /// Raw bidirectional bytes (no framing).
+    Raw,
 }
 
 impl FromStr for RouteTransport {
@@ -30,6 +32,7 @@ impl FromStr for RouteTransport {
         match raw {
             "binary" => Ok(Self::Binary),
             "http" => Ok(Self::Http),
+            "raw" => Ok(Self::Raw),
             _ => Err(anyhow!("Invalid transport: {}", raw)),
         }
     }
@@ -40,6 +43,7 @@ impl fmt::Display for RouteTransport {
         match self {
             Self::Binary => write!(f, "binary"),
             Self::Http => write!(f, "http"),
+            Self::Raw => write!(f, "raw"),
         }
     }
 }
@@ -50,6 +54,8 @@ pub enum RouteProtocol {
     JsonRpc,
     /// WebRPC (wRPC) protocol.
     Wrpc,
+    /// Raw bytes (no application-level protocol).
+    Raw,
     /// Custom or extension protocol.
     Other(String),
 }
@@ -61,6 +67,7 @@ impl FromStr for RouteProtocol {
         Ok(match raw {
             "json-rpc" => Self::JsonRpc,
             "wrpc" => Self::Wrpc,
+            "raw" => Self::Raw,
             other => Self::Other(other.to_string()),
         })
     }
@@ -71,6 +78,7 @@ impl fmt::Display for RouteProtocol {
         match self {
             Self::JsonRpc => write!(f, "json-rpc"),
             Self::Wrpc => write!(f, "wrpc"),
+            Self::Raw => write!(f, "raw"),
             Self::Other(value) => write!(f, "{}", value),
         }
     }
@@ -113,6 +121,7 @@ impl RoutePreamble {
             "http" => (RouteTransport::Http, RouteProtocol::JsonRpc),
             "json-rpc" => (RouteTransport::Binary, RouteProtocol::JsonRpc),
             "wrpc" => (RouteTransport::Binary, RouteProtocol::Wrpc),
+            "raw" => (RouteTransport::Raw, RouteProtocol::Raw),
             // Combined schemes such as `http-wrpc`: split on the first `-` that separates
             // a valid transport from a protocol identifier.
             s => {
@@ -195,6 +204,8 @@ impl fmt::Display for RoutePreamble {
             (RouteTransport::Binary, RouteProtocol::JsonRpc) => "json-rpc".to_string(),
             (RouteTransport::Binary, RouteProtocol::Wrpc) => "wrpc".to_string(),
             (RouteTransport::Binary, p) => p.to_string(),
+            (RouteTransport::Raw, RouteProtocol::Raw) => "raw".to_string(),
+            (RouteTransport::Raw, p) => format!("raw-{}", p),
         };
 
         if self.interface.is_empty() {
