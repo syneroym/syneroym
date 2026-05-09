@@ -110,6 +110,15 @@ impl EndpointRegistry {
         None
     }
 
+    /// Lookup all endpoints for a given service_id.
+    pub fn lookup_by_service(&self, service_id: &str) -> Vec<(String, SubstrateEndpoint)> {
+        self.active_endpoints
+            .iter()
+            .filter(|entry| entry.key().0 == service_id)
+            .map(|entry| (entry.key().1.clone(), entry.value().clone()))
+            .collect()
+    }
+
     /// Remove a service from registry
     pub async fn remove(&self, service_id: &str, interface_name: &str) -> Result<()> {
         self.storage.remove(service_id, interface_name).await?;

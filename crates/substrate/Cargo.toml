@@ -57,3 +57,7 @@ syneroym-sdk = { path = "../sdk" }
 miniapp-demo1-web = { path = "../../test-components/miniapp-demo1-web" }
 tokio-tungstenite.workspace = true
 futures-util.workspace = true
+futures.workspace = true
+webrtc.workspace = true
+syneroym-coordinator-webrtc = { path = "../coordinator_webrtc" }
+rustls.workspace = true

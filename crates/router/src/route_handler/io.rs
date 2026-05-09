@@ -159,4 +159,56 @@ impl RouteHandler {
 
         Ok(())
     }
+
+    /// Dispatches a stream with a pre-parsed preamble.
+    pub async fn dispatch<S>(self, stream: S, preamble: RoutePreamble) -> Result<()>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        let (read_half, write_half) = tokio::io::split(stream);
+        let reader = BufReader::new(read_half);
+        let mut writer = write_half;
+
+        let resolved_route = self.resolve_route(preamble)?;
+        let routing_plan = self.plan_route(&resolved_route);
+        super::dispatch::log_route(&resolved_route, &routing_plan);
+
+        use crate::routing::{DeliveryMode, RouteExecution};
+
+        if routing_plan.delivery_mode == DeliveryMode::PassThrough {
+            match &routing_plan.execution {
+                RouteExecution::TcpPassthrough { host, port } => {
+                    debug!("Proxying raw TCP stream to {}:{}", host, port);
+                    let mut target = tokio::net::TcpStream::connect(format!("{}:{}", host, port))
+                        .await
+                        .map_err(|e| {
+                            anyhow!("Failed to connect to TCP target {host}:{port}: {e}")
+                        })?;
+
+                    let mut client = ReaderWriter { reader, writer };
+                    tokio::io::copy_bidirectional(&mut client, &mut target).await.map_err(|e| {
+                        anyhow!("Error in bidirectional copy for {host}:{port}: {e}")
+                    })?;
+                    return Ok(());
+                }
+                _ => return Err(anyhow!("Unsupported PassThrough execution in dispatch")),
+            }
+        }
+
+        match resolved_route.request.transport {
+            RouteTransport::Http => {
+                let io = TokioIo::new(ReaderWriter { reader, writer });
+                return self.handle_http_stream(io, resolved_route.request).await;
+            }
+            RouteTransport::Binary => {
+                self.handle_json_rpc_loop(reader, &mut writer, &resolved_route, &routing_plan)
+                    .await?;
+            }
+            RouteTransport::Raw => {
+                return Err(anyhow!("Raw transport not supported in dispatch yet"));
+            }
+        }
+
+        Ok(())
+    }
 }

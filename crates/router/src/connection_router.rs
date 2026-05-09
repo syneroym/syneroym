@@ -1,12 +1,26 @@
 use anyhow::Result;
+use futures::{SinkExt, StreamExt};
 use iroh::endpoint::presets;
 use iroh::protocol::Router as IrohRouter;
 use iroh::{EndpointAddr, RelayMap, RelayMode, RelayUrl, SecretKey};
 use std::sync::Arc;
-use syneroym_core::config::{IrohRelayConfig, SubstrateConfig};
+use syneroym_core::config::{IrohRelayConfig, SubstrateConfig, WebRtcRelayConfig};
 use syneroym_core::registry::EndpointRegistry;
-use tracing::{debug, info};
+use tokio::io::AsyncReadExt;
+use tracing::{debug, error, info};
+use webrtc::api::APIBuilder;
+use webrtc::api::interceptor_registry::register_default_interceptors;
+use webrtc::api::media_engine::MediaEngine;
+use webrtc::api::setting_engine::SettingEngine;
+use webrtc::data_channel::RTCDataChannel;
+use webrtc::ice::mdns::MulticastDnsMode;
+use webrtc::interceptor::registry::Registry;
+use webrtc::peer_connection::configuration::RTCConfiguration;
+use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
+use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
+use crate::net_webrtc::WebRTCStream;
+use crate::preamble::{RoutePreamble, RouteProtocol, RouteTransport};
 use crate::route_handler::RouteHandler;
 
 pub const SYNEROYM_ALPN: &[u8] = b"syneroym/0.1";
@@ -27,6 +41,8 @@ impl ConnectionRouter {
         service_id: String,
     ) -> Result<Self> {
         let mut router = Self { iroh_router: None };
+        let route_handler =
+            Arc::new(RouteHandler::init(service_id.clone(), &config, registry.clone()).await?);
 
         for comm in &config.substrate.communication_interfaces {
             match comm.as_str() {
@@ -37,15 +53,19 @@ impl ConnectionRouter {
                             .init_iroh(
                                 iroh_config,
                                 iroh::SecretKey::from_bytes(&iroh_secret_key),
-                                RouteHandler::init(service_id.clone(), &config, registry.clone())
-                                    .await?,
+                                route_handler.clone(),
                             )
                             .await?;
                         router.iroh_router = Some(iroh_router);
                     }
                 }
                 "webrtc" => {
-                    info!("WebRTC interface initialization not yet implemented in Router.");
+                    if let Some(webrtc_config) = config.uplink.webrtc.as_ref() {
+                        info!("Initializing WebRTC interface for Router...");
+                        router
+                            .init_webrtc(webrtc_config, service_id.clone(), route_handler.clone())
+                            .await?;
+                    }
                 }
                 _ => {
                     info!("Unknown or unimplemented communication interface: {}", comm);
@@ -60,7 +80,7 @@ impl ConnectionRouter {
         &self,
         config: &IrohRelayConfig,
         secret_key: SecretKey,
-        route_handler: RouteHandler,
+        route_handler: Arc<RouteHandler>,
     ) -> Result<IrohRouter> {
         debug!("Initializing Iroh communication...");
 
@@ -74,7 +94,7 @@ impl ConnectionRouter {
         let ep = ep_bldr.bind().await?;
 
         let iroh_router: IrohRouter =
-            IrohRouter::builder(ep).accept(SYNEROYM_ALPN, Arc::new(route_handler)).spawn();
+            IrohRouter::builder(ep).accept(SYNEROYM_ALPN, route_handler).spawn();
         iroh_router.endpoint().online().await;
 
         info!(
@@ -83,6 +103,58 @@ impl ConnectionRouter {
         );
 
         Ok(iroh_router)
+    }
+
+    async fn init_webrtc(
+        &self,
+        config: &WebRtcRelayConfig,
+        service_id: String,
+        route_handler: Arc<RouteHandler>,
+    ) -> Result<()> {
+        let signaling_url = config.signaling_server_url.clone();
+
+        // 2. Initialize WebRTC API
+        let mut m = MediaEngine::default();
+        m.register_default_codecs()?;
+
+        let mut registry = Registry::new();
+        registry = register_default_interceptors(registry, &mut m)?;
+
+        let mut s = SettingEngine::default();
+        s.detach_data_channels();
+        s.set_ice_multicast_dns_mode(MulticastDnsMode::Disabled);
+
+        let api = APIBuilder::new()
+            .with_media_engine(m)
+            .with_interceptor_registry(registry)
+            .with_setting_engine(s)
+            .build();
+
+        let rtc_config = RTCConfiguration {
+            ice_servers: config
+                .stun_servers
+                .iter()
+                .map(|url| webrtc::ice_transport::ice_server::RTCIceServer {
+                    urls: vec![url.clone()],
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+
+        // 3. Connect to Signaling Server and handle incoming connections
+        let api = Arc::new(api);
+        let rtc_config = rtc_config.clone();
+
+        tokio::spawn(async move {
+            if let Err(e) =
+                connect_signaling(service_id, signaling_url, api, rtc_config, route_handler).await
+            {
+                error!("WebRTC Signaling client error: {:?}", e);
+            }
+        });
+
+        Ok(())
     }
 
     pub async fn run(&self) -> Result<()> {
@@ -107,4 +179,186 @@ impl ConnectionRouter {
         }
         Ok(())
     }
+}
+
+async fn connect_signaling(
+    peer_id: String,
+    url: String,
+    api: Arc<webrtc::api::API>,
+    config: RTCConfiguration,
+    route_handler: Arc<RouteHandler>,
+) -> Result<()> {
+    info!("Connecting to signaling server at {}", url);
+    let (ws_stream, _) = tokio_tungstenite::connect_async(&url).await?;
+    let (mut write, mut read) = ws_stream.split();
+
+    // Register
+    let register_msg = serde_json::json!({
+        "type": "register",
+        "id": peer_id
+    });
+    write
+        .send(tokio_tungstenite::tungstenite::Message::Text(register_msg.to_string().into()))
+        .await?;
+    info!("Registered with signaling server as {}", peer_id);
+
+    while let Some(msg) = read.next().await {
+        let msg = match msg {
+            Ok(m) => m,
+            Err(e) => {
+                error!("WebSocket error: {:?}", e);
+                break;
+            }
+        };
+
+        if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
+            let v: serde_json::Value = match serde_json::from_str(&text) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+
+            let type_str = match v["type"].as_str() {
+                Some(s) => s,
+                None => continue,
+            };
+
+            match type_str {
+                "offer" => {
+                    debug!("Received Offer from {:?}", v["sender"]);
+                    let sdp = match v["sdp"].as_str() {
+                        Some(s) => s,
+                        None => continue,
+                    };
+
+                    let sender_id = v["sender"].as_str().unwrap_or("unknown").to_string();
+                    let peer_id = peer_id.clone();
+                    let api = api.clone();
+                    let config = config.clone();
+                    let route_handler = route_handler.clone();
+
+                    // Create new PeerConnection
+                    let pc = Arc::new(api.new_peer_connection(config.clone()).await?);
+
+                    // Set Data Channel handler
+                    let rh = route_handler.clone();
+                    pc.on_data_channel(Box::new(move |d: Arc<RTCDataChannel>| {
+                        let rh = rh.clone();
+                        Box::pin(async move {
+                            handle_data_channel(d, rh).await;
+                        })
+                    }));
+
+                    let pc_clone = pc.clone();
+                    pc.on_peer_connection_state_change(Box::new(
+                        move |s: RTCPeerConnectionState| {
+                            info!("WebRTC Peer Connection State has changed: {}", s);
+                            if s == RTCPeerConnectionState::Failed
+                                || s == RTCPeerConnectionState::Disconnected
+                            {
+                                let pc = pc_clone.clone();
+                                Box::pin(async move {
+                                    if let Err(e) = pc.close().await {
+                                        error!("Failed to close PeerConnection: {}", e);
+                                    }
+                                })
+                            } else {
+                                Box::pin(async {})
+                            }
+                        },
+                    ));
+
+                    // Set Remote Description
+                    let desc = RTCSessionDescription::offer(sdp.to_string())?;
+                    pc.set_remote_description(desc).await?;
+
+                    // Create Answer
+                    let answer = pc.create_answer(None).await?;
+                    pc.set_local_description(answer.clone()).await?;
+
+                    // Send Answer back
+                    let answer_msg = serde_json::json!({
+                        "type": "answer",
+                        "target": sender_id,
+                        "sender": peer_id,
+                        "sdp": answer.sdp
+                    });
+                    write
+                        .send(tokio_tungstenite::tungstenite::Message::Text(
+                            answer_msg.to_string().into(),
+                        ))
+                        .await?;
+                    info!("Sent Answer to {}", sender_id);
+                }
+                _ => {
+                    debug!("Unhandled signaling message: {}", type_str);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn handle_data_channel(d: Arc<RTCDataChannel>, route_handler: Arc<RouteHandler>) {
+    let d_label = d.label().to_owned();
+    info!("New DataChannel {}", d_label);
+
+    let d2 = d.clone();
+    d.on_open(Box::new(move || {
+        let d = d2.clone();
+        let d_label = d_label.clone();
+        let rh = route_handler.clone();
+        Box::pin(async move {
+            info!("DataChannel '{}' open", d_label);
+
+            match d.detach().await {
+                Ok(rtc_detached) => {
+                    debug!("DataChannel '{}' detached successfully", d_label);
+                    let mut rtc_stream = WebRTCStream::new(rtc_detached);
+
+                    // 1. Read Preamble: [1 byte len]
+                    let service_name_len = match rtc_stream.read_u8().await {
+                        Ok(n) => n as usize,
+                        Err(e) => {
+                            error!("Failed to read service name length from DC: {}", e);
+                            return;
+                        }
+                    };
+
+                    // 2. Read Service Name
+                    let mut name_buf = vec![0u8; service_name_len];
+                    if let Err(e) = rtc_stream.read_exact(&mut name_buf).await {
+                        error!("Failed to read service name from DC: {}", e);
+                        return;
+                    }
+
+                    let service_name = String::from_utf8_lossy(&name_buf).to_string();
+                    let (service_id, interface) = if service_name.contains(':') {
+                        let mut parts = service_name.splitn(2, ':');
+                        (parts.next().unwrap().to_string(), parts.next().unwrap().to_string())
+                    } else {
+                        (service_name, "health".to_string())
+                    };
+
+                    debug!("Service request for: {} (interface: {})", service_id, interface);
+
+                    let preamble = RoutePreamble {
+                        transport: RouteTransport::Http,
+                        protocol: RouteProtocol::JsonRpc,
+                        interface,
+                        service_id,
+                    };
+
+                    if let Err(e) =
+                        rh.as_ref().clone().dispatch(Box::pin(rtc_stream), preamble).await
+                    {
+                        error!("Failed to dispatch WebRTC stream: {}", e);
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to detach DataChannel '{}': {}", d_label, e);
+                }
+            }
+        })
+    }));
 }

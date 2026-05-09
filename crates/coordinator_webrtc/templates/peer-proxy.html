@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Bootstrapping peer...</title>
+    <script>
+        const SIGNALING_SERVER_URL = "{{ signaling_server_url }}";
+        const TARGET_PEER_ID = "{{ target_peer_id }}";
+        const HTTP_VERSION = "{{ http_version }}";
+        const MY_ID = "gateway-" + Math.random().toString(36).substr(2, 9);
+
+        let peerConnection;
+        let ws;
+        let isConnected = false;
+        let connectionPromise = null;
+
+        async function init() {
+            if (!('serviceWorker' in navigator)) {
+                document.body.innerText = "Service Workers not supported.";
+                return;
+            }
+
+            // Listen for requests from the Service Worker
+            navigator.serviceWorker.addEventListener('message', (event) => {
+                if (event.data.type === 'REQ_HEAD') {
+                    handleSWRequest(event.data, event.ports[0]);
+                }
+            });
+            navigator.serviceWorker.startMessages();
+
+            try {
+                // Register the Service Worker
+                const reg = await navigator.serviceWorker.register('/__syneroym/sw.js', { scope: '/' });
+                console.debug('[Page] SW Registered:', reg.scope);
+
+                // Start WebRTC Connection
+                bootstrap().catch(err => {
+                    console.error("WebRTC Bootstrap failed:", err);
+                    document.body.innerText = "Connection Failed: " + err.message;
+                });
+
+                if (navigator.serviceWorker.controller) {
+                    console.debug('[Page] SW already controlling.');
+                } else {
+                    console.debug('[Page] Waiting for SW control...');
+                    navigator.serviceWorker.addEventListener('controllerchange', () => {
+                        console.debug('[Page] SW took control.');
+                    });
+                }
+            } catch (err) {
+                console.error('[Page] SW Registration Failed:', err);
+                document.body.innerText = "Initialization Failed.";
+            }
+        }
+
+        async function bootstrap() {
+            if (isConnected) return;
+            if (connectionPromise) return connectionPromise;
+
+            connectionPromise = new Promise((resolve, reject) => {
+                console.debug("[Page] Connecting to Signaling Server:", SIGNALING_SERVER_URL);
+                ws = new WebSocket(SIGNALING_SERVER_URL);
+
+                ws.onopen = () => {
+                    console.debug("[Page] WS Open. Registering as:", MY_ID);
+                    ws.send(JSON.stringify({ type: "register", id: MY_ID }));
+                    startWebRTC(resolve, reject);
+                };
+
+                ws.onmessage = async (event) => {
+                    const msg = JSON.parse(event.data);
+                    handleSignalingMessage(msg);
+                };
+
+                ws.onerror = (e) => {
+                    console.error("[Page] WS Error:", e);
+                    reject(e);
+                };
+
+                ws.onclose = () => {
+                    console.debug("[Page] WS Closed");
+                };
+            });
+
+            return connectionPromise.catch(e => {
+                console.error("[Page] Bootstrap failed:", e);
+                connectionPromise = null;
+                isConnected = false;
+                throw e;
+            });
+        }
+
+        async function startWebRTC(resolve, reject) {
+            console.debug("[Page] Starting WebRTC...");
+            const config = {
+                iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+            };
+
+            peerConnection = new RTCPeerConnection(config);
+
+            // Create a placeholder data channel to ensure the offer includes m=application (SCTP)
+            peerConnection.createDataChannel("_init");
+
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    // TODO Vanilla ICE for now, improve later.
+                }
+            };
+
+            peerConnection.onconnectionstatechange = () => {
+                console.debug("[Page] Connection State:", peerConnection.connectionState);
+                if (peerConnection.connectionState === 'connected') {
+                    isConnected = true;
+                    reloadContent();
+                    resolve();
+                } else if (peerConnection.connectionState === 'failed' || peerConnection.connectionState === 'closed') {
+                    isConnected = false;
+                    reject(new Error("WebRTC connection state: " + peerConnection.connectionState));
+                }
+            };
+
+            const offer = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(offer);
+
+            if (peerConnection.iceGatheringState !== 'complete') {
+                await new Promise(resolve => {
+                    const checkState = () => {
+                        if (peerConnection.iceGatheringState === 'complete') {
+                            peerConnection.removeEventListener('icegatheringstatechange', checkState);
+                            resolve();
+                        }
+                    };
+                    peerConnection.addEventListener('icegatheringstatechange', checkState);
+                });
+            }
+
+            console.debug("[Page] Sending Offer to:", TARGET_PEER_ID);
+            ws.send(JSON.stringify({
+                type: "offer",
+                target: TARGET_PEER_ID,
+                sender: MY_ID,
+                sdp: peerConnection.localDescription.sdp
+            }));
+        }
+
+        async function handleSignalingMessage(msg) {
+            switch (msg.type) {
+                case "answer":
+                    await peerConnection.setRemoteDescription(new RTCSessionDescription({
+                        type: "answer",
+                        sdp: msg.sdp
+                    }));
+                    break;
+                case "candidate":
+                    if (msg.candidate) {
+                        await peerConnection.addIceCandidate(msg.candidate);
+                    }
+                    break;
+            }
+        }
+
+        async function handleSWRequest(reqData, port) {
+            try {
+                await bootstrap();
+
+                const url = new URL(reqData.url);
+                const hostname = url.hostname;
+                const parts = hostname.split('.');
+                let serviceName = parts.length > 0 ? parts[0] : "default";
+
+                console.debug(`[Page] Proxying ${reqData.method} ${url.pathname} to ${serviceName}`);
+
+                // Create a dedicated DataChannel for this request
+                const dcLabel = "req-" + Math.random().toString(36).substr(2, 5);
+                const dc = peerConnection.createDataChannel(dcLabel);
+
+                let responseState = {
+                    buffer: [],
+                    headersParsed: false,
+                    contentLength: -1,
+                    bytesReceived: 0
+                };
+
+                let useChunkedEncoding = false;
+
+                // Connection Timeout Safety
+                const timeoutId = setTimeout(() => {
+                    if (dc.readyState !== 'open' && dc.readyState !== 'closing' && dc.readyState !== 'closed') {
+                        console.error("[Page] DC Connection Timeout", dcLabel);
+                        dc.close();
+                        port.postMessage({ type: 'ERROR', message: "Connection Timeout" });
+                    }
+                }, 10000);
+
+                dc.onopen = () => {
+                    clearTimeout(timeoutId);
+                    console.debug("[Page] DC Open:", dcLabel);
+
+                    // 1. Send Preamble (Service Name)
+                    const serviceBytes = new TextEncoder().encode(serviceName);
+                    const preamble = new Uint8Array(1 + serviceBytes.length);
+                    preamble[0] = serviceBytes.length;
+                    preamble.set(serviceBytes, 1);
+                    dc.send(preamble);
+
+                    // 2. Send Request Headers
+                    const headersMap = new Map(reqData.headers.map(h => [h[0].toLowerCase(), h[1]]));
+                    console.debug(`[Page] Request Headers got from SW:\n${reqData.headers}`);
+
+                    if (reqData.hasBody && !headersMap.has('content-length')) {
+                        headersMap.set('transfer-encoding', 'chunked');
+                        useChunkedEncoding = true;
+                    }
+
+                    const headers = [];
+                    headersMap.forEach((v, k) => headers.push(`${k}: ${v}`));
+
+                    let reqStr = `${reqData.method} ${url.pathname + url.search} ${HTTP_VERSION}\r\n`;
+                    reqStr += headers.join('\r\n') + '\r\n\r\n';
+                    console.debug(`[Page] Sending Request Headers:\n${reqStr}`);
+                    dc.send(new TextEncoder().encode(reqStr));
+
+                    // 3. Signal SW to start streaming body (Backpressure release)
+                    if (reqData.hasBody) {
+                        port.postMessage({ type: 'REQ_BODY_START' });
+                    }
+                };
+
+                dc.onmessage = (event) => {
+                    const chunk = new Uint8Array(event.data);
+
+                    if (responseState.headersParsed) {
+                        const len = chunk.length;
+                        port.postMessage({ type: 'RESPONSE_CHUNK', chunk }, [chunk.buffer]);
+                        responseState.bytesReceived += len;
+                        checkDone();
+                    } else {
+                        responseState.buffer.push(...chunk);
+                        const endpoint = findDoubleCRLF(responseState.buffer);
+                        if (endpoint !== -1) {
+                            const headerBytes = new Uint8Array(responseState.buffer.slice(0, endpoint));
+                            const bodyBytes = new Uint8Array(responseState.buffer.slice(endpoint + 4));
+
+                            const headerStr = new TextDecoder().decode(headerBytes);
+                            const { status, headers } = parseHeaders(headerStr);
+
+                            const cl = headers.get('content-length');
+                            if (cl) responseState.contentLength = parseInt(cl, 10);
+
+                            // Send Head
+                            const headerList = [];
+                            headers.forEach((v, k) => headerList.push([k, v]));
+                            port.postMessage({ type: 'RESPONSE_HEAD', status, headers: headerList });
+
+                            responseState.headersParsed = true;
+
+                            if (bodyBytes.length > 0) {
+                                const len = bodyBytes.length;
+                                port.postMessage({ type: 'RESPONSE_CHUNK', chunk: bodyBytes }, [bodyBytes.buffer]);
+                                responseState.bytesReceived += len;
+                            }
+                            responseState.buffer = []; // Clear buffer
+                            checkDone();
+                        }
+                    }
+
+                    function checkDone() {
+                        if (responseState.contentLength !== -1 && responseState.bytesReceived >= responseState.contentLength) {
+                            port.postMessage({ type: 'RESPONSE_END' });
+                            dc.close();
+                        }
+                    }
+                };
+
+                dc.onerror = (e) => {
+                    console.error("DC Error", e);
+                    port.postMessage({ type: 'ERROR', message: "DataChannel Error" });
+                    dc.close();
+                };
+
+                dc.onclose = () => {
+                    console.debug("[Page] DC Closed", dcLabel);
+                    // Ensure the client knows we are done, even if abrupt
+                    port.postMessage({ type: 'RESPONSE_END' });
+                };
+
+                // Handle Request Body chunks from SW
+                port.onmessage = (evt) => {
+                    const msg = evt.data;
+                    if (msg.type === 'REQ_BODY_CHUNK') {
+                        // We only get these after we sent REQ_BODY_START, so DC should be open.
+                        if (dc.readyState === 'open') {
+                            if (useChunkedEncoding) {
+                                const len = msg.chunk.byteLength.toString(16);
+                                dc.send(new TextEncoder().encode(`${len}\r\n`));
+                                dc.send(msg.chunk);
+                                dc.send(new TextEncoder().encode('\r\n'));
+                            } else {
+                                dc.send(msg.chunk);
+                            }
+                        }
+                    } else if (msg.type === 'REQ_BODY_END') {
+                        if (msg.chunk && dc.readyState === 'open') {
+                            if (useChunkedEncoding) {
+                                const len = msg.chunk.byteLength.toString(16);
+                                dc.send(new TextEncoder().encode(`${len}\r\n`));
+                                dc.send(msg.chunk);
+                                dc.send(new TextEncoder().encode('\r\n'));
+                            } else {
+                                dc.send(msg.chunk);
+                            }
+                        }
+                        if (useChunkedEncoding && dc.readyState === 'open') {
+                            dc.send(new TextEncoder().encode('0\r\n\r\n'));
+                        }
+                        // Request sent completely.
+                    }
+                };
+
+            } catch (e) {
+                console.error("Handle Request Error", e);
+                port.postMessage({ type: 'ERROR', message: e.toString() });
+            }
+        }
+
+        async function reloadContent() {
+            console.debug('[Page] Fetching actual content...');
+            const controller = new AbortController();
+            try {
+                // Fetch the current URL. The Service Worker should intercept this
+                // and proxy it through the now-established WebRTC connection.
+                const response = await fetch(window.location.href, {
+                    headers: { 'X-Peer-Proxy': 'true' },
+                    signal: controller.signal
+                });
+
+                console.debug('[Page] Fetched content with status:', response.status);
+
+                if (!response.ok) {
+                    throw new Error(`Fetch failed with status ${response.statusText} (${response.status})`);
+                }
+
+                const contentType = response.headers.get('content-type') || '';
+
+                if (contentType.includes('text/html')) {
+                    console.debug('[Page] Got html content, updating current page');
+                    const html = await response.text();
+                    const parser = new DOMParser();
+                    const newDoc = parser.parseFromString(html, 'text/html');
+
+                    // 1. Merge <head> elements
+                    document.title = newDoc.title;
+
+                    // Copy all nodes from new head to existing head
+                    Array.from(newDoc.head.childNodes).forEach(node => {
+                        if (node.tagName === 'SCRIPT') {
+                            const newScript = document.createElement('script');
+                            Array.from(node.attributes).forEach(attr => {
+                                newScript.setAttribute(attr.name, attr.value);
+                            });
+                            if (node.textContent) {
+                                newScript.textContent = node.textContent;
+                            }
+                            document.head.appendChild(newScript);
+                        } else {
+                            document.head.appendChild(node.cloneNode(true));
+                        }
+                    });
+
+                    // 2. Replace body content
+                    document.body.innerHTML = newDoc.body.innerHTML;
+
+                    // 3. Re-execute scripts from the new body
+                    const scripts = Array.from(document.body.querySelectorAll('script'));
+                    for (const oldScript of scripts) {
+                        const newScript = document.createElement('script');
+                        for (const attr of oldScript.attributes) {
+                            newScript.setAttribute(attr.name, attr.value);
+                        }
+                        if (oldScript.textContent) {
+                            newScript.textContent = oldScript.textContent;
+                        }
+                        oldScript.parentNode.replaceChild(newScript, oldScript);
+                    }
+                } else {
+                    // Handle non-HTML content (images, videos, PDFs)
+                    console.debug('Got html content, updating in iframe');
+                    const contentLength = response.headers.get('content-length');
+                    const length = contentLength ? parseInt(contentLength, 10) : -1;
+                    let url;
+
+                    // If content is small (< 1MB), read it directly to avoid re-fetch overhead.
+                    // This check is better than just checking for "chunked" (missing Content-Length)
+                    // because it also protects against loading large files (e.g. 500MB videos) into memory
+                    // even if they have a known Content-Length.
+                    if (length !== -1 && length < 1024 * 1024) {
+                        const blob = await response.blob();
+                        url = URL.createObjectURL(blob);
+                    } else {
+                        // For large or unknown content, abort the initial fetch to save bandwidth
+                        // and let the iframe trigger a new streaming request handled by the SW.
+                        controller.abort();
+                        url = window.location.href;
+                    }
+
+                    document.body.innerHTML = '';
+                    const iframe = document.createElement('iframe');
+                    iframe.src = url;
+                    iframe.style.cssText = 'position:fixed; top:0; left:0; width:100%; height:100%; border:none;';
+                    document.body.appendChild(iframe);
+                }
+            } catch (err) {
+                if (err.name === 'AbortError') return;
+                console.error('[Page] Content Load Failed:', err);
+                document.body.innerHTML = `<h3>Connection Failed</h3><p>Failed to load content from peer.</p><p>${err.message}</p>`;
+            }
+        }
+
+        function findDoubleCRLF(buffer) {
+            for (let i = 0; i < buffer.length - 3; i++) {
+                if (buffer[i] === 13 && buffer[i + 1] === 10 && buffer[i + 2] === 13 && buffer[i + 3] === 10) {
+                    return i;
+                }
+            }
+            return -1;
+        }
+
+        function parseHeaders(headerStr) {
+            const lines = headerStr.split('\r\n');
+            const statusLine = lines[0];
+            const statusMatch = statusLine.match(/^HTTP\/[0-9.]+\s+(\d+)\s+(.+)$/);
+            const status = statusMatch ? parseInt(statusMatch[1]) : 200;
+
+            const headers = new Headers();
+            for (let i = 1; i < lines.length; i++) {
+                const line = lines[i];
+                if (!line) continue;
+                const colon = line.indexOf(':');
+                if (colon > 0) {
+                    headers.append(line.substring(0, colon).trim(), line.substring(colon + 1).trim());
+                }
+            }
+            return { status, headers };
+        }
+
+        // Initialize on load
+        window.onload = init;
+    </script>
+</head>
+
+<body>
+    Bootstrapping peer...
+</body>
+
+</html>
