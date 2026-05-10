@@ -10,7 +10,6 @@ use axum::{
 use futures::{sink::SinkExt, stream::StreamExt};
 use std::{
     collections::HashMap,
-    net::SocketAddr,
     sync::{Arc, Mutex},
 };
 use tokio::sync::broadcast;
@@ -21,15 +20,13 @@ struct SignallingState {
     peers: Mutex<HashMap<String, broadcast::Sender<String>>>,
 }
 
-pub async fn start(port: u16) -> anyhow::Result<()> {
+pub async fn start(listener: tokio::net::TcpListener) -> anyhow::Result<()> {
     let state = Arc::new(SignallingState { peers: Mutex::new(HashMap::new()) });
 
     let app = Router::new().route("/ws", get(ws_handler)).with_state(state);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    info!("Signaling server listening on {}", addr);
+    info!("Signaling server listening on {}", listener.local_addr()?);
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
 }

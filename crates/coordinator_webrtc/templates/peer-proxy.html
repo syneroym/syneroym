@@ -9,6 +9,28 @@
         const TARGET_PEER_ID = "{{ target_peer_id }}";
         const HTTP_VERSION = "{{ http_version }}";
         const MY_ID = "gateway-" + Math.random().toString(36).substr(2, 9);
+        window.logs = [];
+        const originalLog = console.log;
+        console.log = function(...args) {
+            window.logs.push(args.map(a => String(a)).join(' '));
+            originalLog.apply(console, args);
+        };
+        const originalDebug = console.debug;
+        console.debug = function(...args) {
+            window.logs.push('[DEBUG] ' + args.map(a => String(a)).join(' '));
+            originalDebug.apply(console, args);
+        };
+        const originalError = console.error;
+        console.error = function(...args) {
+            window.logs.push('[ERROR] ' + args.map(a => String(a)).join(' '));
+            originalError.apply(console, args);
+        };
+        window.addEventListener('error', (event) => {
+            window.logs.push('[JS ERROR] ' + event.message + ' at ' + event.filename + ':' + event.lineno);
+        });
+        window.addEventListener('unhandledrejection', (event) => {
+            window.logs.push('[JS UNHANDLED REJECTION] ' + event.reason);
+        });
 
         let peerConnection;
         let ws;
@@ -16,6 +38,8 @@
         let connectionPromise = null;
 
         async function init() {
+            window.initCalled = true;
+            console.log("[Page] init() started");
             if (!('serviceWorker' in navigator)) {
                 document.body.innerText = "Service Workers not supported.";
                 return;
@@ -31,7 +55,7 @@
 
             try {
                 // Register the Service Worker
-                const reg = await navigator.serviceWorker.register('/__syneroym/sw.js', { scope: '/' });
+                const reg = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
                 console.debug('[Page] SW Registered:', reg.scope);
 
                 // Start WebRTC Connection

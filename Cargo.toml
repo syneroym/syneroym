@@ -87,3 +87,5 @@ libc = "0.2"
 tokio-tungstenite = "0.26"
 futures-util = "0.3"
 futures = "0.3"
+chromiumoxide = { version = "0.9" }
+tokio-stream = "0.1"

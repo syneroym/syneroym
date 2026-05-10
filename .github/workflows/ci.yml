@@ -23,6 +23,14 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       
+      # - name: Install Chrome (required for browser automation tests)
+      #   uses: browser-actions/setup-chrome@v1
+      #   id: setup-chrome
+      #   with:
+      #     chrome-version: stable
+      # - name: Set Chrome Path
+      #   run: echo "CHROME_PATH=${{ steps.setup-chrome.outputs.chrome-path }}" >> $GITHUB_ENV
+      
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:

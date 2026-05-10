@@ -1,11 +1,8 @@
 use anyhow::{Result, anyhow};
 use askama::Template;
 use iroh::Endpoint;
-use std::net::SocketAddr;
 use std::sync::Arc;
-use syneroym_core::protocol_utils::{
-    extract_host_from_http, extract_service_from_host, extract_sni, is_tls_client_hello,
-};
+use syneroym_core::protocol_utils::{extract_service_from_host, extract_sni, is_tls_client_hello};
 use syneroym_core::registry::EndpointRegistry;
 use syneroym_router::SYNEROYM_ALPN;
 use syneroym_router::net_iroh::IrohStream;
@@ -27,10 +24,8 @@ struct PeerProxyTemplate<'a> {
     http_version: &'a str,
 }
 
-pub async fn start(port: u16, state: Arc<BootstrapState>) -> Result<()> {
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    let listener = TcpListener::bind(addr).await?;
-    info!("Bootstrap server listening on http://{}", addr);
+pub async fn start(listener: TcpListener, state: Arc<BootstrapState>) -> Result<()> {
+    info!("Bootstrap server listening on http://{}", listener.local_addr()?);
 
     loop {
         let (stream, peer_addr) = listener.accept().await?;
@@ -50,18 +45,58 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<BootstrapState>) ->
         return Ok(());
     }
 
-    let svc_name = if is_tls_client_hello(&buf[..n]) {
+    let (svc_name, path) = if is_tls_client_hello(&buf[..n]) {
         let sni = match extract_sni(&buf[..n]) {
             Ok(s) => s,
             Err(e) => return Err(anyhow!("Failed to extract SNI: {}", e)),
         };
-        extract_service_from_host(&sni)?
+        (extract_service_from_host(&sni)?, None)
     } else {
-        let host = extract_host_from_http(&buf[..n])?;
-        extract_service_from_host(&host)?
+        let mut headers = [httparse::EMPTY_HEADER; 64];
+        let mut req = httparse::Request::new(&mut headers);
+        req.parse(&buf[..n])?;
+        let host = req
+            .headers
+            .iter()
+            .find(|h| h.name.eq_ignore_ascii_case("Host"))
+            .map(|h| String::from_utf8_lossy(h.value).to_string())
+            .ok_or_else(|| anyhow!("Host header not found"))?;
+        let mut svc_name = extract_service_from_host(&host)?;
+        let path_str = req.path.map(|p| p.to_string());
+
+        // Fallback for localhost testing: if host is localhost, use first path segment as service name
+        if (svc_name == "localhost" || svc_name == "127.0.0.1")
+            && let Some(ref p) = path_str
+        {
+            let segments: Vec<&str> = p.split('/').filter(|s| !s.is_empty()).collect();
+            if !segments.is_empty()
+                && segments[0] != "__syneroym"
+                && segments[0] != "sw.js"
+                && segments[0] != "favicon.ico"
+            {
+                svc_name = segments[0].to_string();
+            }
+        }
+        (svc_name, path_str)
     };
 
-    debug!("Bootstrap request for service: {}", svc_name);
+    debug!("Bootstrap request for service: {} (path: {:?})", svc_name, path);
+
+    // Serve the Service Worker
+    if let Some(p) = path
+        && (p == "/__syneroym/sw.js" || p == "/sw.js")
+    {
+        info!("Serving sw.js to client");
+        let sw_js = include_str!("../templates/sw.js");
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/javascript\r\nContent-Length: {}\r\nService-Worker-Allowed: /\r\nConnection: close\r\n\r\n{}",
+            sw_js.len(),
+            sw_js
+        );
+        stream.write_all(response.as_bytes()).await?;
+        stream.flush().await?;
+        return Ok(());
+    }
 
     // If it's a WebSocket upgrade, we tunnel to Iroh
     if is_websocket_upgrade(&buf[..n]) {

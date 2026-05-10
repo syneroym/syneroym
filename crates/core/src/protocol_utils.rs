@@ -56,6 +56,11 @@ pub fn extract_host_from_http(buf: &[u8]) -> Result<String> {
 
 pub fn extract_service_from_host(host: &str) -> Result<String> {
     let hostname = host.split(':').next().unwrap_or(host);
+
+    if hostname == "localhost" || hostname == "127.0.0.1" {
+        return Ok(hostname.to_string());
+    }
+
     // Expected format: <alias-servicehash-interfacehash>.<domain>
     match hostname.split_once('.') {
         Some((service, _)) => Ok(service.to_string()),
