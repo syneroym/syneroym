@@ -8,6 +8,8 @@ clap.workspace = true
 anyhow.workspace = true
 tokio.workspace = true
 syneroym-identity.workspace = true
+syneroym-sdk = { path = "../../crates/sdk" }
+syneroym-core = { path = "../../crates/core" }
 serde_json.workspace = true
 
 [dev-dependencies]

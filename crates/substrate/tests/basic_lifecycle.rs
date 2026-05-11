@@ -3,9 +3,6 @@ use assert_cmd::cargo::CommandCargoExt;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::time::Duration;
-use syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::{
-    ArtifactSource, DeployManifest, ServiceConfig, ServiceType, TcpManifest, WasmManifest,
-};
 use syneroym_core::config::SubstrateConfig;
 use tempfile::NamedTempFile;
 use tracing::debug;
@@ -56,7 +53,17 @@ async fn test_run_finishes_on_ctrl_c() {
     // Create a temporary config file to explicitly enable the client_gateway role
     let mut config_file = NamedTempFile::new().expect("Failed to create temp config file");
     let config_toml = r#"
+    profile = "enduser"
     [roles.client_gateway]
+    http_port = 0
+    [roles.observability.health]
+    enabled = false
+    bind_address = "0.0.0.0:0"
+    endpoint = "/health"
+    [roles.observability.metrics]
+    enabled = false
+    bind_address = "0.0.0.0:0"
+    endpoint = "/metrics"
     "#;
     write!(config_file, "{}", config_toml).expect("Failed to write to temp config file");
 
@@ -68,22 +75,32 @@ async fn test_run_finishes_on_ctrl_c() {
         .arg("--config")
         .arg(config_file.path())
         .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .expect("Failed to spawn syneroym-substrate process");
 
     // Wait for the process to initialize and start running by reading its stdout
     let stdout = child.stdout.take().expect("Failed to capture stdout");
+    let stderr = child.stderr.take().expect("Failed to capture stderr");
     let mut reader = BufReader::new(stdout);
     let mut line = String::new();
     loop {
         line.clear();
-        let bytes_read = reader.read_line(&mut line).expect("Failed to read from child stdout");
-        if bytes_read == 0 {
-            panic!("Process closed stdout before reaching running state");
-        }
-        // Look for a reliable log line indicating the the process is running with reasonable confidence. Enough for sanity purpose.
-        if line.contains("running client gateway") {
-            break;
+        match reader.read_line(&mut line) {
+            Ok(0) => {
+                let mut err_output = String::new();
+                std::io::Read::read_to_string(&mut BufReader::new(stderr), &mut err_output).ok();
+                panic!(
+                    "Process closed stdout before reaching running state. Stderr:\n{}",
+                    err_output
+                );
+            }
+            Ok(_) => {
+                if line.contains("running client gateway") {
+                    break;
+                }
+            }
+            Err(e) => panic!("Failed to read from child stdout: {}", e),
         }
     }
 
@@ -104,9 +121,9 @@ async fn test_run_finishes_on_ctrl_c() {
     );
 }
 
-const IROH_PORT: u16 = 3350;
-const REGISTRY_PORT: u16 = 8090;
-const GATEWAY_PORT: u16 = 9190;
+const IROH_PORT: u16 = 7994;
+const REGISTRY_PORT: u16 = 7991;
+const GATEWAY_PORT: u16 = 7990;
 const MOCK_APP_PORT: u16 = 30001;
 
 /// This in-process integration test context manages the lifecycle of a substrate
@@ -246,29 +263,23 @@ async fn test_wasm_app_scenario(ctx: &SubstrateTestContext) {
     let app_identity = syneroym_identity::Identity::generate().unwrap();
     let app_service_id = syneroym_identity::substrate::derive_did_key(&app_identity.public_key());
 
-    let deploy_params = serde_json::to_value((
-        app_service_id.clone(),
-        vec!["syneroym-test:greeter/greet@0.1.0"],
-        DeployManifest {
-            config: ServiceConfig { env: vec![], args: vec![], custom_config: None },
-            service_type: ServiceType::Wasm(WasmManifest {
-                source: ArtifactSource::Binary(wasm_bytes),
-                hash: None,
-            }),
-        },
-    ))
-    .expect("Failed to serialize deploy params");
+    ctx.substrate_client
+        .deploy_wasm(
+            app_service_id.clone(),
+            vec!["syneroym-test:greeter/greet@0.1.0".to_string()],
+            wasm_bytes,
+        )
+        .await
+        .expect("SDK Deploy request failed");
 
-    let deploy_res = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        ctx.substrate_client.request("orchestrator", "deploy", deploy_params),
-    )
-    .await
-    .expect("deploy request timed out")
-    .expect("Deploy request failed");
-
-    assert_eq!(deploy_res.result, serde_json::json!({"status": "deployed"}));
     debug!(">>> Finished WASM Scenario: Deploy");
+
+    // Verify listing
+    let services = ctx.substrate_client.list_services().await.expect("SDK list_services failed");
+    assert!(services.iter().any(|s| s.service_id == app_service_id));
+    let svc = services.iter().find(|s| s.service_id == app_service_id).unwrap();
+    assert_eq!(svc.endpoint_type, "wasm");
+    assert!(svc.interfaces.contains(&"syneroym-test:greeter/greet@0.1.0".to_string()));
 
     // Interact with the running WASM application via RPC
     debug!(">>> Starting WASM Scenario: Run RPC");
@@ -338,23 +349,21 @@ async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
     let app_identity = syneroym_identity::Identity::generate().unwrap();
     let app_service_id = syneroym_identity::substrate::derive_did_key(&app_identity.public_key());
 
-    let deploy_params = serde_json::to_value((
-        app_service_id.clone(),
-        vec!["default"],
-        DeployManifest {
-            config: ServiceConfig { env: vec![], args: vec![], custom_config: None },
-            service_type: ServiceType::Tcp(TcpManifest {
-                host: "localhost".to_string(),
-                port: app_port,
-            }),
-        },
-    ))
-    .expect("Failed to serialize deploy params");
-
     ctx.substrate_client
-        .request("orchestrator", "deploy", deploy_params)
+        .deploy_tcp(
+            app_service_id.clone(),
+            vec!["default".to_string()],
+            "localhost".to_string(),
+            app_port,
+        )
         .await
-        .expect("Deploy request failed");
+        .expect("SDK Deploy TCP request failed");
+
+    // Verify listing
+    let services = ctx.substrate_client.list_services().await.expect("SDK list_services failed");
+    assert!(services.iter().any(|s| s.service_id == app_service_id));
+    let svc = services.iter().find(|s| s.service_id == app_service_id).unwrap();
+    assert_eq!(svc.endpoint_type, "tcp");
 
     // Register in community registry
     register_app_in_registry(

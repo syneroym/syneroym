@@ -5,8 +5,8 @@ use std::fs;
 use std::path::PathBuf;
 use syneroym_identity::Identity;
 
-/// Default API endpoint for the local Substrate Daemon
-const DEFAULT_API_URL: &str = "http://localhost:3000";
+/// Default API endpoint for the Community Registry
+const DEFAULT_API_URL: &str = "http://localhost:7961";
 
 #[derive(Parser)]
 #[command(name = "roymctl")]
@@ -15,9 +15,13 @@ struct Cli {
     #[command(subcommand)]
     command: Commands,
 
-    /// The base URL of the Syneroym Substrate API
+    /// The base URL of the Syneroym Community Registry
     #[arg(global = true, long, default_value = DEFAULT_API_URL)]
     api_url: String,
+
+    /// The DID of the target substrate to control
+    #[arg(global = true, long)]
+    substrate: Option<String>,
 
     /// Local directory for configuration and offline identities (defaults to current dir)
     #[arg(global = true, long, default_value = ".")]
@@ -60,12 +64,20 @@ enum NodeCommands {
 
 #[derive(Subcommand)]
 enum AppCommands {
-    /// Deploy a new SynApp (WASM component) via API
+    /// Deploy a new SynApp via API
     Deploy {
+        /// The DID-key for the application
         #[arg(long)]
         app_id: String,
+        /// Comma-separated list of interfaces to register
         #[arg(long)]
-        manifest: PathBuf,
+        interfaces: String,
+        /// Path to the WASM component binary
+        #[arg(long)]
+        wasm: Option<PathBuf>,
+        /// TCP host:port for an existing service (e.g. "localhost:8080")
+        #[arg(long)]
+        tcp: Option<String>,
     },
     /// Remove an installed SynApp via API
     Remove {
@@ -74,12 +86,12 @@ enum AppCommands {
     },
     /// List installed SynApps via API
     List,
-    /// Start an installed SynApp via API
+    /// Start an installed SynApp via API (warm up)
     Start {
         #[arg(long)]
         app_id: String,
     },
-    /// Stop a running SynApp via API
+    /// Stop a running SynApp via API (evict from cache)
     Stop {
         #[arg(long)]
         app_id: String,
@@ -120,104 +132,108 @@ enum IdentityCommands {
     },
 }
 
-/// A mock API client for the CLI to interact with the Substrate Daemon.
-/// In the future, this will use `reqwest::Client` to make actual HTTP calls.
-struct ApiClient {
-    base_url: String,
-    // client: reqwest::Client,
-}
-
-impl ApiClient {
-    fn new(base_url: String) -> Self {
-        Self { base_url }
-    }
-
-    async fn get(&self, path: &str) -> anyhow::Result<()> {
-        // let url = format!("{}{}", self.base_url, path);
-        // let res = self.client.get(&url).send().await?;
-        // println!("{}", res.text().await?);
-        println!("--> [API Mock] GET {}{}", self.base_url, path);
-        Ok(())
-    }
-
-    async fn post(&self, path: &str, body_stub: &str) -> anyhow::Result<()> {
-        println!("--> [API Mock] POST {}{} with body: {}", self.base_url, path, body_stub);
-        Ok(())
-    }
-
-    async fn delete(&self, path: &str) -> anyhow::Result<()> {
-        println!("--> [API Mock] DELETE {}{}", self.base_url, path);
-        Ok(())
-    }
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let dir = cli.dir;
-    let api = ApiClient::new(cli.api_url);
 
     match &cli.command {
         Commands::Node { command } => match command {
             NodeCommands::Init => {
-                // Initialize local files without API calls.
                 if !dir.exists() {
                     fs::create_dir_all(&dir)?;
                 }
-
                 let identity = Identity::generate()?;
                 let identity_bytes = identity.to_bytes();
-
                 let key_path = dir.join("identity.key");
                 fs::write(&key_path, identity_bytes)?;
-
                 println!("Initialized node local configuration at {}", dir.display());
             }
             NodeCommands::Status => {
-                api.get("/api/v1/node/status").await?;
+                println!("Node status command is not yet fully implemented with SDK.");
             }
             NodeCommands::Config => {
-                api.get("/api/v1/node/config").await?;
+                println!("Node config command is not yet fully implemented with SDK.");
             }
         },
-        Commands::App { command } => match command {
-            AppCommands::Deploy { app_id, manifest } => {
-                let body = format!(
-                    "{{ \"app_id\": \"{}\", \"manifest\": \"{}\" }}",
-                    app_id,
-                    manifest.display()
-                );
-                api.post("/api/v1/apps", &body).await?;
+        Commands::App { command } => {
+            let substrate_did = cli.substrate.clone().or_else(|| {
+                // Try to load local substrate DID from key file if it exists
+                let key_path = dir.join("substrate.key");
+                if key_path.exists() {
+                    let bytes = fs::read(key_path).ok()?;
+                    let bytes_array: [u8; 32] = bytes.try_into().ok()?;
+                    let identity = Identity::from_bytes(&bytes_array);
+                    Some(syneroym_identity::substrate::derive_did_key(&identity.public_key()))
+                } else {
+                    None
+                }
+            }).ok_or_else(|| anyhow::anyhow!("Substrate DID not provided and substrate.key not found. Use --substrate <did>"))?;
+
+            let mut client =
+                syneroym_sdk::SyneroymClient::new(substrate_did.clone(), cli.api_url.clone());
+            client.wait_for_ready(std::time::Duration::from_secs(5)).await?;
+
+            match command {
+                AppCommands::Deploy { app_id, interfaces, wasm, tcp } => {
+                    let ifaces: Vec<String> =
+                        interfaces.split(',').map(|s| s.trim().to_string()).collect();
+
+                    if let Some(wasm_path) = wasm {
+                        let wasm_bytes = fs::read(wasm_path)?;
+                        client.deploy_wasm(app_id.clone(), ifaces, wasm_bytes).await?;
+                        println!("Successfully deployed WASM app {}", app_id);
+                    } else if let Some(tcp_addr) = tcp {
+                        let parts: Vec<&str> = tcp_addr.split(':').collect();
+                        if parts.len() != 2 {
+                            anyhow::bail!("Invalid TCP address format. Expected host:port");
+                        }
+                        let host = parts[0].to_string();
+                        let port = parts[1].parse::<u16>()?;
+                        client.deploy_tcp(app_id.clone(), ifaces, host, port).await?;
+                        println!("Successfully deployed TCP service {}", app_id);
+                    } else {
+                        anyhow::bail!("Either --wasm or --tcp must be provided for deployment");
+                    }
+                }
+                AppCommands::Remove { app_id } => {
+                    client
+                        .request("orchestrator", "remove", serde_json::json!({ "app_id": app_id }))
+                        .await?;
+                    println!("Successfully removed app {}", app_id);
+                }
+                AppCommands::List => {
+                    let services = client.list_services().await?;
+                    println!("{:<50} {:<10} {:<50}", "SERVICE ID", "TYPE", "INTERFACES");
+                    println!("{:-<110}", "");
+                    for svc in services {
+                        println!(
+                            "{:<50} {:<10} {:<50}",
+                            svc.service_id,
+                            svc.endpoint_type,
+                            svc.interfaces.join(", ")
+                        );
+                    }
+                }
+                AppCommands::Start { app_id } => {
+                    client
+                        .request("orchestrator", "start", serde_json::json!({ "app_id": app_id }))
+                        .await?;
+                    println!("Successfully started app {}", app_id);
+                }
+                AppCommands::Stop { app_id } => {
+                    client
+                        .request("orchestrator", "stop", serde_json::json!({ "app_id": app_id }))
+                        .await?;
+                    println!("Successfully stopped app {}", app_id);
+                }
             }
-            AppCommands::Remove { app_id } => {
-                api.delete(&format!("/api/v1/apps/{}", app_id)).await?;
-            }
-            AppCommands::List => {
-                api.get("/api/v1/apps").await?;
-            }
-            AppCommands::Start { app_id } => {
-                api.post(&format!("/api/v1/apps/{}/start", app_id), "{}").await?;
-            }
-            AppCommands::Stop { app_id } => {
-                api.post(&format!("/api/v1/apps/{}/stop", app_id), "{}").await?;
-            }
-        },
-        Commands::Peer { command } => match command {
-            PeerCommands::List => {
-                api.get("/api/v1/peers").await?;
-            }
-            PeerCommands::Connect { peer_id, address } => {
-                let body =
-                    format!("{{ \"peer_id\": \"{}\", \"address\": {:?} }}", peer_id, address);
-                api.post("/api/v1/peers/connect", &body).await?;
-            }
-            PeerCommands::Disconnect { peer_id } => {
-                api.post(&format!("/api/v1/peers/{}/disconnect", peer_id), "{}").await?;
-            }
-        },
+        }
+        Commands::Peer { .. } => {
+            println!("Peer management via SDK is not yet implemented in roymctl.");
+        }
         Commands::Identity { command } => match command {
             IdentityCommands::Create { name } => {
-                // Keep identity management local to the CLI keystore
                 println!("Created new local identity: {}", name);
             }
             IdentityCommands::List => {
@@ -228,6 +244,5 @@ async fn main() -> anyhow::Result<()> {
             }
         },
     }
-
     Ok(())
 }

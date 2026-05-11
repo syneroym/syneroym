@@ -7,6 +7,8 @@ edition = "2024"
 syneroym-core = { path = "../core" }
 syneroym-rpc = { path = "../rpc" }
 syneroym-router = { path = "../router" }
+syneroym-bindings = { path = "../bindings" }
+syneroym-identity = { path = "../identity" }
 
 anyhow.workspace = true
 tokio.workspace = true

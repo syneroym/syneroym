@@ -158,8 +158,8 @@ pub enum LogLevel {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LogFormat {
-    #[default]
     Json,
+    #[default]
     Pretty,
 }
 
@@ -172,7 +172,7 @@ pub enum LogTarget {
 }
 
 fn default_relay_url() -> String {
-    "http://localhost:3340".to_string()
+    "http://localhost:7964".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -188,10 +188,10 @@ impl Default for IrohRelayConfig {
 }
 
 fn default_signaling_server_url() -> String {
-    "ws://localhost:7444".to_string()
+    "ws://localhost:7963".to_string()
 }
 fn default_bootstrap_page_url() -> String {
-    "ws://localhost:7002".to_string()
+    "ws://localhost:7962".to_string()
 }
 fn default_stun_servers() -> Vec<String> {
     vec!["stun:stun.l.google.com:19302".to_string()]
@@ -290,7 +290,7 @@ impl Default for AppSandboxRole {
 }
 
 fn default_registry_http_bind_address() -> String {
-    "0.0.0.0:8080".to_string()
+    "0.0.0.0:7961".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -338,10 +338,10 @@ pub struct TlsConfig {
 }
 
 fn default_iroh_http_bind_address() -> String {
-    "0.0.0.0:7443".to_string()
+    "0.0.0.0:7964".to_string()
 }
 fn default_iroh_quic_bind_address() -> String {
-    "0.0.0.0:7842".to_string()
+    "0.0.0.0:7965".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -365,10 +365,10 @@ impl Default for CoordinatorIrohConfig {
 }
 
 fn default_webrtc_signalling_bind_address() -> String {
-    "0.0.0.0:7444".to_string()
+    "0.0.0.0:7963".to_string()
 }
 fn default_webrtc_bootstrap_page_bind_address() -> String {
-    "0.0.0.0:7002".to_string()
+    "0.0.0.0:7962".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -406,7 +406,7 @@ pub struct ProtocolTranslation {
 }
 
 fn default_http_port() -> u16 {
-    7000
+    7960
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

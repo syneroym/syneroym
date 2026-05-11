@@ -48,6 +48,7 @@ impl NativeService for ControlPlaneService {
         match (invocation.interface.as_str(), invocation.method.as_str()) {
             (ORCHESTRATOR_INTERFACE, "readyz") => Ok(ready_response()),
             (ORCHESTRATOR_INTERFACE, "deploy") => self.deploy(invocation.params).await,
+            (ORCHESTRATOR_INTERFACE, "list") => self.list().await,
             (ORCHESTRATOR_INTERFACE, _) => {
                 Err(RpcError::MethodNotFound(invocation.method.to_string()))
             }
@@ -125,6 +126,38 @@ impl ControlPlaneService {
         }
         Ok(())
     }
+
+    async fn list(&self) -> RpcResult<NativeResponse> {
+        let endpoints = self.registry.get_all_endpoints();
+        let mut services: std::collections::HashMap<String, DeployedService> =
+            std::collections::HashMap::new();
+
+        for (service_id, interface, endpoint) in endpoints {
+            let entry = services.entry(service_id.clone()).or_insert_with(|| DeployedService {
+                service_id: service_id.clone(),
+                interfaces: Vec::new(),
+                endpoint_type: match endpoint {
+                    SubstrateEndpoint::WasmChannel { .. } => "wasm".to_string(),
+                    SubstrateEndpoint::PodmanSocket { .. } => "podman".to_string(),
+                    SubstrateEndpoint::NativeHostChannel { .. } => "native".to_string(),
+                    SubstrateEndpoint::TcpHostPort { .. } => "tcp".to_string(),
+                },
+            });
+            entry.interfaces.push(interface);
+        }
+
+        let mut result: Vec<DeployedService> = services.into_values().collect();
+        result.sort_by(|a, b| a.service_id.cmp(&b.service_id));
+
+        Ok(NativeResponse { payload: serde_json::to_value(result).unwrap() })
+    }
+}
+
+#[derive(serde::Serialize)]
+struct DeployedService {
+    service_id: String,
+    interfaces: Vec<String>,
+    endpoint_type: String,
 }
 
 fn ready_response() -> NativeResponse {

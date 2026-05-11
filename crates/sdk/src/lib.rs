@@ -1,10 +1,20 @@
 use anyhow::{Context, Result};
 use iroh::endpoint::Connection;
 use std::time::Duration;
+use syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::{
+    ArtifactSource, DeployManifest, ServiceConfig, ServiceType, TcpManifest, WasmManifest,
+};
 use syneroym_core::community_registry::{EndpointMechanism, SignedEndpointInfo};
 use syneroym_router::{RoutePreamble, RouteProtocol, RouteTransport};
 use syneroym_rpc::JsonRpcResponse;
 use tracing::debug;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DeployedService {
+    pub service_id: String,
+    pub interfaces: Vec<String>,
+    pub endpoint_type: String,
+}
 
 pub struct SyneroymClient {
     service_id: String,
@@ -185,6 +195,54 @@ impl SyneroymClient {
                 Ok(res)
             }
         }
+    }
+
+    pub async fn deploy_wasm(
+        &self,
+        service_id: String,
+        interfaces: Vec<String>,
+        wasm_bytes: Vec<u8>,
+    ) -> Result<()> {
+        let manifest = DeployManifest {
+            config: ServiceConfig { env: vec![], args: vec![], custom_config: None },
+            service_type: ServiceType::Wasm(WasmManifest {
+                source: ArtifactSource::Binary(wasm_bytes),
+                hash: None,
+            }),
+        };
+        let params = serde_json::to_value((service_id, interfaces, manifest))?;
+        let res = self.request("orchestrator", "deploy", params).await?;
+        if res.result == serde_json::json!({"status": "deployed"}) {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Deployment failed: {:?}", res.result))
+        }
+    }
+
+    pub async fn deploy_tcp(
+        &self,
+        service_id: String,
+        interfaces: Vec<String>,
+        host: String,
+        port: u16,
+    ) -> Result<()> {
+        let manifest = DeployManifest {
+            config: ServiceConfig { env: vec![], args: vec![], custom_config: None },
+            service_type: ServiceType::Tcp(TcpManifest { host, port }),
+        };
+        let params = serde_json::to_value((service_id, interfaces, manifest))?;
+        let res = self.request("orchestrator", "deploy", params).await?;
+        if res.result == serde_json::json!({"status": "deployed"}) {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Deployment failed: {:?}", res.result))
+        }
+    }
+
+    pub async fn list_services(&self) -> Result<Vec<DeployedService>> {
+        let res = self.request("orchestrator", "list", serde_json::json!({})).await?;
+        let services: Vec<DeployedService> = serde_json::from_value(res.result)?;
+        Ok(services)
     }
 
     pub async fn passthrough(

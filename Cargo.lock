@@ -4807,7 +4807,9 @@ dependencies = [
  "clap",
  "predicates",
  "serde_json",
+ "syneroym-core",
  "syneroym-identity",
+ "syneroym-sdk",
  "tokio",
 ]
 
@@ -5870,7 +5872,9 @@ dependencies = [
  "reqwest 0.13.3",
  "serde",
  "serde_json",
+ "syneroym-bindings",
  "syneroym-core",
+ "syneroym-identity",
  "syneroym-router",
  "syneroym-rpc",
  "tokio",

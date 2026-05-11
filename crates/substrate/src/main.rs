@@ -76,7 +76,7 @@ pub(crate) fn resolve_config(command: Commands) -> Result<SubstrateConfig> {
                 toml::from_str(&content)
                     .with_context(|| format!("Failed to parse config file at {:?}", path))?
             } else {
-                SubstrateConfig::default()
+                dev_mode_config()
             };
 
             // Override with CLI arguments
@@ -150,6 +150,50 @@ fn main() -> Result<()> {
         .build()
         .context("Failed to build tokio runtime")?
         .block_on(run(config))
+}
+
+/// Returns a default configuration suitable for local development.
+/// This enables all core roles and points to a local registry.
+fn dev_mode_config() -> SubstrateConfig {
+    let mut c = SubstrateConfig::default();
+    // Enable all roles for local development by default
+    c.roles.app_sandbox = Some(Default::default());
+    c.roles.community_registry = Some(Default::default());
+
+    c.roles.coordinator = Some(syneroym_core::config::CoordinatorRole {
+        iroh: Some(syneroym_core::config::CoordinatorIrohConfig {
+            enable_signalling: true,
+            enable_relay: true,
+            ..Default::default()
+        }),
+        webrtc: Some(syneroym_core::config::CoordinatorWebRtcConfig {
+            enable_signalling: true,
+            enable_relay: true,
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+
+    c.roles.client_gateway = Some(Default::default());
+
+    // Enable observability by default in dev mode
+    c.roles.observability = Some(syneroym_core::config::ObservabilityRole {
+        health: Some(syneroym_core::config::EndpointConfig {
+            enabled: true,
+            bind_address: "0.0.0.0:7966".to_string(),
+            endpoint: "/health".to_string(),
+        }),
+        metrics: Some(syneroym_core::config::EndpointConfig {
+            enabled: true,
+            bind_address: "0.0.0.0:7967".to_string(),
+            endpoint: "/metrics".to_string(),
+        }),
+        tracing: Some(Default::default()),
+    });
+
+    // Default to local registry
+    c.substrate.registry_url = Some("http://localhost:7961".to_string());
+    c
 }
 
 #[cfg(test)]

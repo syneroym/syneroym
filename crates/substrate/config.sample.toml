@@ -7,27 +7,28 @@ config_version = 1
 # Base directories
 # These can be provided or omitted to use platform defaults. These are prepended to other relative paths as appropriate.
 
-# Config files
+# Config files directory
 app_config_dir = "./workdir/config"
-# Long term data storage
+# Long term data storage (database, etc.)
 app_local_data_dir = "./workdir/data"
-# Short term, or user specific storage
+# Short term, or user specific storage (identity keys, etc.)
 app_data_dir = "./workdir/user_data"
 # Cache or temporary files
 app_cache_dir = "./workdir/cache"
-# Logs
+# Logs directory
 app_log_dir = "./workdir/logs"
 
 # Profile corresponds to set of roles this substrate is supposed to play. 
-# Create custom profiles with a specific role list. Roles are configured in [role.rolename] sections
-profile = "app_sandbox"
+# Create custom profiles with a specific role list. Roles are configured in [roles.rolename] sections.
+# Common values: "full" (all roles), "enduser" (gateway + observability), "app_sandbox" (sandbox + gateway)
+profile = "full"
 
 [identity]
 # Path to the node's private key. If it doesn't exist, one will be generated.
 # Used to derive the node's DID. Equivalent to CLI `--key <path>`
-key = ""
+key = "substrate.key"
 # Candidate controller DID. Only used if agreement is not provided.
-# Must be treated as UNVERIFIED. Equivalent to CLI `--controller <did>`
+# Must be treated as UNVERIFIED until an agreement is established. Equivalent to CLI `--controller <did>`
 controller_did = ""
 # Path to ControllerAgreement JSON binding node DID to controller DID.
 # Equivalent to CLI `--agreement <path>`
@@ -37,37 +38,44 @@ agreement = "substrate-controller-agreement.json"
 require_agreement = false
 
 [storage]
-# Currently only sqlite
+# Currently only "sqlite" is supported
 engine = "sqlite"
-# For database storage. If relative path is given, it will go under app_local_data_dir
+# For database storage. If relative path is given, it will go under app_local_data_dir.
 db_dir = "db"
-# Default location for large object or file storage is. If relative path is given, it will go under app_local_data_dir
+# Default location for large object or file storage (e.g. WASM binaries). If relative path is given, it will go under app_local_data_dir.
 blobs_dir = "blobs"
 
 [logging]
-# Default log level if RUST_LOG is not set: "error", "warn", "info", "debug", "trace"
+# Default log level: "error", "warn", "info", "debug", "trace"
 level = "info"
-format = "json"   # json or pretty
-target = "stdout" # stdout or file
+# Log format: "json" or "pretty"
+format = "pretty"
+# Log target: "stdout" or "file"
+target = "stdout"
 
 # Global substrate configuration
 [substrate]
-# List of enabled communication interfaces to channel traffic
+# List of enabled communication interfaces to channel traffic. Supported: ["iroh", "webrtc"]
 communication_interfaces = ["iroh", "webrtc"]
+# Optional URL of a community registry to publish this substrate's endpoint to.
+registry_url = "http://localhost:7961"
 
 # A node that connect to the internet should configure uplink bridges to act as their gateway to the larger network
 # Note: Uplink-bridge functionality is WIP.
 [uplink]
 
-# Coordination/Signalling and data relay.
-# Data relay could convert transport (e.g. iroh -> webrtcdatachannel or message/stream/MTU conversion)
+# Iroh communication configuration for uplink/signaling
 [uplink.iroh]
-relay_url = "http://localhost:3340"
+# The relay/signaling URL for Iroh connections.
+relay_url = "http://localhost:7964"
 
 # WebRTC communication configuration
 [uplink.webrtc]
-signaling_server_url = "ws://localhost:7444"
-bootstrap_page_url = "ws://localhost:7002"
+# The signaling server URL for establishing WebRTC peer-to-peer connections.
+signaling_server_url = "ws://localhost:7963"
+# The bootstrap page URL for WebRTC clients.
+bootstrap_page_url = "ws://localhost:7962"
+# List of STUN servers to use for NAT traversal.
 stun_servers = ["stun:stun.l.google.com:19302"]
 
 [uplink.ble]
@@ -78,14 +86,14 @@ bridge = "ble://A4:C1:38:12:34:56/some-service-uuid"
 enabled = false
 bridge = "lora://70B3D57ED0051234"
 
-# Profile to enable only the syneroym ecosystem http access service
+# Profile definitions: allow group roles into named profiles
 [profiles.enduser]
 roles = ["client_gateway", "observability"]
 
 [profiles.app_sandbox]
 roles = ["app_sandbox", "client_gateway", "observability"]
 
-# Profile to enable all services. Useful in large deployments or dev, test, demos
+# Profile to enable all services. Useful in large deployments or dev, test, demos.
 [profiles.full]
 roles = [
     "app_sandbox",
@@ -97,73 +105,97 @@ roles = [
 
 # ____ Role configs ____
 
-# Resources limits across all services in app sandbox
+# Resources limits across all services in the application sandbox
 [roles.app_sandbox]
+# Use wRPC sandbox for WASM components
 wrpc_sandbox = true
+# CPU core limit for the sandbox
 cpu_limit = 1
+# Memory limit for the sandbox (e.g. "1Gi", "512Mi")
 memory_limit = "1Gi"
+# Maximum number of concurrent WASM instances
+max_concurrent_instances = 10
 
-# Service Registry
+# Service Registry: allows services to be discovered within the ecosystem
 [roles.community_registry]
-access = "everyone" # Later, more access restriction like list of dids
-# Registry bind address
-http_bind_address = "0.0.0.0:8080"
+# Access control: "everyone" or a list of DIDs [ "did:key:...", ... ]
+access = "everyone"
+# Registry HTTP bind address
+http_bind_address = "0.0.0.0:7961"
 
-# Coordinator/Rendezvous service for connection establishment
+# Coordinator: Rendezvous and relay service for peer-to-peer connection establishment
 [roles.coordinator]
-access = "everyone" # Or for specific DIDs, access = ["did1", "did2", "..."]
+# Access control for the coordinator service
+access = "everyone"
 
-# TLS configuration for https endpoints of all coordinators
-[roles.coordinator.tls]
-cert_path = "tls/cert.pem"
-key_path = "tls/key.pem"
+# TLS configuration for coordinator HTTPS/WSS endpoints
+# [roles.coordinator.tls]
+# cert_path = "tls/cert.pem"
+# key_path = "tls/key.pem"
 
+# Iroh coordinator configuration
 [roles.coordinator.iroh]
-enable_signalling = false
-enable_relay = false
-http_bind_address = "0.0.0.0:7443"
-quic_bind_address = "0.0.0.0:7842"
+# Enable Iroh signaling (HTTP)
+enable_signalling = true
+# Enable Iroh relaying (QUIC)
+enable_relay = true
+# HTTP signaling bind address
+http_bind_address = "0.0.0.0:7964"
+# QUIC relay bind address
+quic_bind_address = "0.0.0.0:7965"
 
+# WebRTC coordinator configuration
 [roles.coordinator.webrtc]
-enable_signalling = false
-enable_relay = false
-signalling_bind_address = "0.0.0.0:7444"
-bootstrap_page_bind_address = "0.0.0.0:7002"
+# Enable WebRTC signaling (WebSocket)
+enable_signalling = true
+# Enable WebRTC relaying
+enable_relay = true
+# Signaling WebSocket bind address
+signalling_bind_address = "0.0.0.0:7963"
+# Bootstrap page HTTP bind address
+bootstrap_page_bind_address = "0.0.0.0:7962"
 
-# Transport bridge for other peers who cannot connect directly with each other. Typically peers behind strict NATs.
-# Note: Uplink-bridge functionality is WIP.
-[roles.coordinator.transport_bridge]
-translations = [{ from = "quic", to = "lora" }, { from = "lora", to = "quic" }]
+# Transport bridge for peers who cannot connect directly (e.g. strict NAT traversal)
+# [roles.coordinator.transport_bridge]
+# translations = [{ from = "quic", to = "lora" }, { from = "lora", to = "quic" }]
 
-# Proxy service for easy access to syneroym ecosystem services by external clients like browsers. Only local access is allowed for substrate admin APIs
+# Client Gateway: Reverse proxy for external HTTP/JSON-RPC access to internal services
 [roles.client_gateway]
-http_port = 7000
+# HTTP port for the gateway
+http_port = 7960
 
-# ____ Observability ____
+# Observability: Health checks, metrics, and tracing
 [roles.observability]
 
-# ____ Health ____
+# Health check endpoint configuration
 [roles.observability.health]
 enabled = true
-bind_address = "0.0.0.0:7081" # where /health is exposed
+# Address to bind the health check server
+bind_address = "0.0.0.0:7966"
+# HTTP path for health checks
 endpoint = "/health"
 
-
-# ____ Metrics (Prometheus) ____
+# Metrics (Prometheus) configuration
 [roles.observability.metrics]
 enabled = true
-bind_address = "0.0.0.0:7082" # where /metrics is exposed
+# Address to bind the metrics server
+bind_address = "0.0.0.0:7967"
+# HTTP path for metrics scraping
 endpoint = "/metrics"
 
-# ____ Tracing (OpenTelemetry) ____
+# Tracing (OpenTelemetry) configuration
 [roles.observability.tracing]
+# Enable tracing
 enabled = false
+# Service name for traces
 service_name = "syneroym_substrate"
 
-[roles.observability.tracing.otlp]
-endpoint = "http://${OTEL_COLLECTOR_SVC_DID}"
-protocol = "http"                             # Currently there is only a HTTP adapter for third party tools
+# [roles.observability.tracing.otlp]
+# endpoint = "http://localhost:4318"
+# protocol = "http"
 
 [roles.observability.tracing.sampling]
+# Sampling strategy: "parent_based", "always_on", "always_off"
 strategy = "parent_based"
+# Sampling ratio (0.0 to 1.0)
 ratio = 0.1
