@@ -11,6 +11,7 @@ syneroym-identity.workspace = true
 syneroym-sdk = { path = "../../crates/sdk" }
 syneroym-core = { path = "../../crates/core" }
 serde_json.workspace = true
+reqwest = { workspace = true, features = ["json"] }
 
 [dev-dependencies]
 assert_cmd.workspace = true

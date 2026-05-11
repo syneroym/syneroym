@@ -11,6 +11,42 @@ This document provides examples of how to interact with the Syneroym substrate u
 - **7964**: Iroh Coordinator (HTTP Signaling)
 - **7965**: Iroh Coordinator (QUIC Data)
 
+### Identifying your Substrate
+
+To interact with services, you need your Substrate's **Short Hash**. You can compute it from your DID using this command:
+
+```bash
+roymctl shorthash "<DID>"
+```
+
+### Managing Identities
+
+Before registering a service, you need to create a local identity (private key) that will be used to sign the registration.
+
+```bash
+# Create a new identity named 'my-service'
+roymctl identity create --name my-service
+```
+
+### Registering a Service in the Community Registry
+
+Once you have an identity, you can register it against a substrate DID. This links your service DID to the substrate that hosts it.
+
+```bash
+# Register 'my-service' against a substrate DID with an optional nickname
+roymctl registry register \
+  --identity my-service \
+  --substrate "did:key:h..." \
+  --nickname "alice"
+```
+
+You can verify the registration using the lookup command:
+
+```bash
+# Look up by DID or alias (nickname + shorthash)
+roymctl registry lookup "alice-p<SERVICE_DID_SHORTHASH>"
+```
+
 ---
 
 ## 1. Discovering Services
@@ -29,9 +65,9 @@ The Orchestrator is a native service running inside the substrate. You can inter
 
 ### List Deployed Services
 ```bash
-# Replace <SUBSTRATE_DID_HASH> with the short hash of your substrate's DID
+# Replace <NICKNAME> and <SUBSTRATE_DID_SHORTHASH>
 curl -X POST http://localhost:7960/ \
-  -H "Host: orchestrator-p<SUBSTRATE_DID_HASH>.localhost" \
+  -H "Host: <NICKNAME>-p<SUBSTRATE_DID_SHORTHASH>-iorchestrator.localhost" \
   -H "Content-Type: application/json" \
   -d '{
     "jsonrpc": "2.0",
@@ -45,7 +81,7 @@ curl -X POST http://localhost:7960/ \
 ```bash
 # Note: WASM binary bytes are usually sent as a base64-encoded array or via a URL.
 curl -X POST http://localhost:7960/ \
-  -H "Host: orchestrator-p<SUBSTRATE_DID_HASH>.localhost" \
+  -H "Host: <NICKNAME>-p<SUBSTRATE_DID_SHORTHASH>-iorchestrator.localhost" \
   -H "Content-Type: application/json" \
   -d '{
     "jsonrpc": "2.0",
@@ -70,7 +106,7 @@ curl -X POST http://localhost:7960/ \
 ### Deploy a TCP Service (Passthrough)
 ```bash
 curl -X POST http://localhost:7960/ \
-  -H "Host: orchestrator-p<SUBSTRATE_DID_HASH>.localhost" \
+  -H "Host: <NICKNAME>-p<SUBSTRATE_DID_SHORTHASH>-iorchestrator.localhost" \
   -H "Content-Type: application/json" \
   -d '{
     "jsonrpc": "2.0",
@@ -97,6 +133,11 @@ curl -X POST http://localhost:7960/ \
 ## 3. Interacting with Applications
 
 ### Call a JSON-RPC method on a WASM app via HTTP Proxy
+
+> [!TIP]
+> You can use `roymctl alias --nickname <NICKNAME> <APP_DID>` to get the first part of the Host header.
+> You can use `roymctl shorthash <INTERFACE_NAME>` to get the interface hash.
+
 ```bash
 # Host header format: <NICKNAME>-p<APP_DID_HASH>-i<INTERFACE_HASH>.localhost
 curl -X POST http://localhost:7960/ \

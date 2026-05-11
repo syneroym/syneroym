@@ -3,6 +3,7 @@
 use clap::{Parser, Subcommand};
 use std::fs;
 use std::path::PathBuf;
+use syneroym_core::community_registry::{EndpointInfo, EndpointType, SignedEndpointInfo};
 use syneroym_identity::Identity;
 
 /// Default API endpoint for the Community Registry
@@ -49,6 +50,48 @@ enum Commands {
     Identity {
         #[command(subcommand)]
         command: IdentityCommands,
+    },
+    /// Compute the 8-character short hash of an input string
+    Shorthash {
+        /// The input string to hash (e.g. DID or interface name)
+        input: String,
+    },
+    /// Generate a consistent alias for a service ID and optional nickname
+    Alias {
+        /// The service ID (DID)
+        service_id: String,
+        /// Optional nickname
+        #[arg(long)]
+        nickname: Option<String>,
+    },
+    /// Manage entries in the community registry
+    Registry {
+        #[command(subcommand)]
+        command: RegistryCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum RegistryCommands {
+    /// Register a service DID against a substrate DID
+    Register {
+        /// The name of the local identity to register (from identities/ directory)
+        #[arg(long)]
+        identity: String,
+        /// The DID of the substrate that hosts this service
+        #[arg(long)]
+        substrate: String,
+        /// Optional nickname for the service
+        #[arg(long)]
+        nickname: Option<String>,
+    },
+    /// Look up an entry in the community registry
+    Lookup {
+        /// The service ID or alias to look up
+        service_id: String,
+        /// Resolve mechanisms from the substrate (default: true)
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        resolve: bool,
     },
 }
 
@@ -234,13 +277,136 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Identity { command } => match command {
             IdentityCommands::Create { name } => {
+                let identities_dir = dir.join("identities");
+                if !identities_dir.exists() {
+                    fs::create_dir_all(&identities_dir)?;
+                }
+                let key_path = identities_dir.join(format!("{}.key", name));
+                if key_path.exists() {
+                    anyhow::bail!("Identity '{}' already exists at {}", name, key_path.display());
+                }
+
+                let identity = Identity::generate()?;
+                let identity_bytes = identity.to_bytes();
+                fs::write(&key_path, identity_bytes)?;
+
+                let did = syneroym_identity::substrate::derive_did_key(&identity.public_key());
+
                 println!("Created new local identity: {}", name);
+                println!("DID: {}", did);
+                println!("Key stored at: {}", key_path.display());
             }
             IdentityCommands::List => {
-                println!("Local Identities:\n  - default\n  - alice");
+                let identities_dir = dir.join("identities");
+                if !identities_dir.exists() {
+                    println!(
+                        "No identities found (directory {} does not exist)",
+                        identities_dir.display()
+                    );
+                    return Ok(());
+                }
+
+                println!("{:<20} {:<60}", "NAME", "DID");
+                println!("{:-<80}", "");
+
+                for entry in fs::read_dir(identities_dir)? {
+                    let entry = entry?;
+                    let path = entry.path();
+                    if path.extension().is_some_and(|ext| ext == "key")
+                        && let Some(name) = path.file_stem().and_then(|s| s.to_str())
+                    {
+                        let bytes = fs::read(&path)?;
+                        if let Ok(bytes_array) = bytes.try_into() {
+                            let identity = Identity::from_bytes(&bytes_array);
+                            let did = syneroym_identity::substrate::derive_did_key(
+                                &identity.public_key(),
+                            );
+                            println!("{:<20} {:<60}", name, did);
+                        } else {
+                            println!("{:<20} {:<60}", name, "[Invalid Key File]");
+                        }
+                    }
+                }
             }
             IdentityCommands::Show { name } => {
-                println!("Identity '{}': did:syneroym:{}", name, name);
+                let key_path = dir.join("identities").join(format!("{}.key", name));
+                if !key_path.exists() {
+                    anyhow::bail!("Identity '{}' not found at {}", name, key_path.display());
+                }
+
+                let bytes = fs::read(&key_path)?;
+                let bytes_array: [u8; 32] =
+                    bytes.try_into().map_err(|_| anyhow::anyhow!("Invalid key file size"))?;
+                let identity = Identity::from_bytes(&bytes_array);
+                let did = syneroym_identity::substrate::derive_did_key(&identity.public_key());
+
+                println!("Identity: {}", name);
+                println!("DID:      {}", did);
+                println!("Path:     {}", key_path.display());
+            }
+        },
+        Commands::Shorthash { input } => {
+            let hash = syneroym_core::util::short_hash(input);
+            println!("{}", hash);
+        }
+        Commands::Alias { service_id, nickname } => {
+            let alias = syneroym_core::util::generate_alias(nickname.as_deref(), service_id);
+            println!("{}", alias);
+        }
+        Commands::Registry { command } => match command {
+            RegistryCommands::Register { identity: name, substrate, nickname } => {
+                let key_path = dir.join("identities").join(format!("{}.key", name));
+                if !key_path.exists() {
+                    anyhow::bail!("Identity '{}' not found at {}", name, key_path.display());
+                }
+
+                let bytes = fs::read(&key_path)?;
+                let bytes_array: [u8; 32] =
+                    bytes.try_into().map_err(|_| anyhow::anyhow!("Invalid key file size"))?;
+                let identity = Identity::from_bytes(&bytes_array);
+                let service_id =
+                    syneroym_identity::substrate::derive_did_key(&identity.public_key());
+
+                let info = EndpointInfo {
+                    service_id: service_id.clone(),
+                    substrate_id: substrate.clone(),
+                    endpoint_type: EndpointType::Service,
+                    mechanisms: vec![], // Services resolved via substrate don't need mechanisms here
+                    nickname: nickname.clone(),
+                };
+
+                let signature = identity.sign_json(&serde_json::to_value(&info)?)?;
+                let signed_info = SignedEndpointInfo { info, signature };
+
+                let client = reqwest::Client::new();
+                let url = format!("{}/register", cli.api_url);
+                let response = client.post(&url).json(&signed_info).send().await?;
+
+                if response.status().is_success() {
+                    println!(
+                        "Successfully registered service {} against substrate {}",
+                        service_id, substrate
+                    );
+                    if let Some(n) = nickname {
+                        let alias = syneroym_core::util::generate_alias(Some(n), &service_id);
+                        println!("Alias: {}", alias);
+                    }
+                } else {
+                    let error_text = response.text().await?;
+                    anyhow::bail!("Registry registration failed ({}): {}", url, error_text);
+                }
+            }
+            RegistryCommands::Lookup { service_id, resolve } => {
+                let client = reqwest::Client::new();
+                let url = format!("{}/lookup/{}?resolve={}", cli.api_url, service_id, resolve);
+                let response = client.get(&url).send().await?;
+
+                if response.status().is_success() {
+                    let signed_info: SignedEndpointInfo = response.json().await?;
+                    println!("{:#?}", signed_info);
+                } else {
+                    anyhow::bail!("Registry lookup failed ({}): {}", url, response.status());
+                }
             }
         },
     }
