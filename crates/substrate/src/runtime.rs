@@ -203,7 +203,13 @@ async fn setup_connection_router(config: &SubstrateConfig) -> anyhow::Result<Con
     if let Some(registry_url) = &config.substrate.registry_url
         && let Some(endpoint_addr) = router.endpoint_addr()
     {
-        publish_to_community_registry(registry_url.clone(), service_id, endpoint_addr, secret_key);
+        publish_to_community_registry(
+            registry_url.clone(),
+            service_id,
+            endpoint_addr,
+            secret_key,
+            config.identity.nickname.clone(),
+        );
     }
 
     Ok(router)
@@ -242,6 +248,7 @@ fn publish_to_community_registry<E: serde::Serialize + Send + Sync + 'static>(
     service_id: String,
     endpoint_addr: E,
     secret_key: [u8; 32],
+    nickname: Option<String>,
 ) {
     tokio::spawn(async move {
         let mut attempts = 0;
@@ -254,6 +261,7 @@ fn publish_to_community_registry<E: serde::Serialize + Send + Sync + 'static>(
                 &endpoint_addr,
                 relay_url.clone(),
                 &secret_key,
+                nickname.clone(),
             )
             .await
             {
@@ -278,9 +286,34 @@ async fn register_substrate_endpoint<E: serde::Serialize>(
     endpoint_addr: &E,
     relay_url: Option<String>,
     secret_key: &[u8; 32],
+    nickname: Option<String>,
 ) -> anyhow::Result<()> {
     debug!("Registering substrate endpoint with registry at {}", registry_url);
 
+    let signed_info = build_signed_endpoint_info(
+        service_id,
+        endpoint_addr,
+        relay_url,
+        secret_key,
+        nickname.clone(),
+    )?;
+
+    let client = reqwest::Client::new();
+    let url = format!("{}/register", registry_url);
+    let res = client.post(&url).json(&signed_info).send().await;
+
+    log_registration_status(res, service_id, nickname.as_deref());
+
+    Ok(())
+}
+
+fn build_signed_endpoint_info<E: serde::Serialize>(
+    service_id: &str,
+    endpoint_addr: &E,
+    relay_url: Option<String>,
+    secret_key: &[u8; 32],
+    nickname: Option<String>,
+) -> anyhow::Result<syneroym_core::community_registry::SignedEndpointInfo> {
     let endpoint_addr_bytes = serde_json::to_vec(endpoint_addr)
         .map_err(|e| anyhow::anyhow!("Failed to serialize endpoint addr: {}", e))?;
 
@@ -288,37 +321,49 @@ async fn register_substrate_endpoint<E: serde::Serialize>(
         service_id: service_id.to_string(),
         substrate_id: service_id.to_string(),
         endpoint_type: syneroym_core::community_registry::EndpointType::Substrate,
-        nickname: None,
+        nickname,
         mechanisms: vec![syneroym_core::community_registry::EndpointMechanism::Iroh {
             endpoint_addr_bytes,
             relay_url,
         }],
     };
 
-    let info_value = serde_json::to_value(&info)?;
-    let canonical_value = syneroym_identity::substrate::canonicalize_json_value(&info_value);
-    let canonical_string = serde_json::to_string(&canonical_value)?;
+    let identity = syneroym_identity::Identity::from_bytes(secret_key);
+    let signature_z32 = identity.sign_json(&serde_json::to_value(&info)?)?;
 
-    let signature =
-        syneroym_identity::Identity::from_bytes(secret_key).sign(canonical_string.as_bytes());
-    let signature_z32 = z32::encode(&signature.to_bytes());
+    Ok(syneroym_core::community_registry::SignedEndpointInfo { info, signature: signature_z32 })
+}
 
-    let signed_info =
-        syneroym_core::community_registry::SignedEndpointInfo { info, signature: signature_z32 };
+fn log_registration_status(
+    res: Result<reqwest::Response, reqwest::Error>,
+    service_id: &str,
+    nickname: Option<&str>,
+) {
+    let alias = syneroym_core::util::generate_alias(nickname, service_id);
 
-    let client = reqwest::Client::new();
-    let url = format!("{}/register", registry_url);
-    let res = client.post(&url).json(&signed_info).send().await;
     match res {
         Ok(resp) if resp.status().is_success() => {
-            info!("Successfully registered substrate endpoint with registry");
+            info!(
+                service_id = %service_id,
+                alias = %alias,
+                "Successfully registered substrate endpoint with registry"
+            );
         }
         Ok(resp) => {
-            warn!("Failed to register with registry. Status: {}", resp.status());
+            warn!(
+                service_id = %service_id,
+                alias = %alias,
+                status = %resp.status(),
+                "Failed to register with registry"
+            );
         }
         Err(e) => {
-            warn!("Failed to reach registry: {}", e);
+            warn!(
+                service_id = %service_id,
+                alias = %alias,
+                error = %e,
+                "Failed to reach registry"
+            );
         }
     }
-    Ok(())
 }

@@ -126,13 +126,7 @@ async fn register_endpoint(
         return Err((StatusCode::UNAUTHORIZED, "Signature verification failed".to_string()));
     }
 
-    let service_hash = syneroym_core::util::short_hash(service_id);
-    let alias = payload
-        .info
-        .nickname
-        .as_ref()
-        .map(|n| format!("{n}-p{service_hash}"))
-        .unwrap_or_else(|| format!("p{service_hash}"));
+    let alias = syneroym_core::util::generate_alias(payload.info.nickname.as_deref(), service_id);
 
     if let Some(existing_id) = state.aliases.get(&alias)
         && *existing_id != *service_id
@@ -335,6 +329,61 @@ mod tests {
 
         let Json(retrieved_no_resolve) = lookup_res_no_resolve.unwrap();
         assert_eq!(retrieved_no_resolve.info.service_id, service_id);
+    }
+
+    #[tokio::test]
+    async fn test_lookup_by_shorthash_no_nickname() {
+        let state = Arc::new(RegistryState { endpoints: DashMap::new(), aliases: DashMap::new() });
+        let identity = Identity::generate().unwrap();
+        let did = derive_did_key(&identity.public_key());
+
+        let info = EndpointInfo {
+            service_id: did.clone(),
+            substrate_id: did.clone(),
+            endpoint_type: EndpointType::Substrate,
+            nickname: None, // No nickname
+            mechanisms: vec![],
+        };
+
+        let signed_info = create_signed_info(&identity, info);
+        register_endpoint(State(state.clone()), Json(signed_info)).await.unwrap();
+
+        // Lookup by shorthash (p{hash}) should work
+        let service_hash = syneroym_core::util::short_hash(&did);
+        let alias = format!("p{service_hash}");
+        let lookup_res =
+            lookup_endpoint(Path(alias), Query(LookupQuery { resolve: None }), State(state)).await;
+
+        assert!(lookup_res.is_ok());
+        let Json(retrieved) = lookup_res.unwrap();
+        assert_eq!(retrieved.info.service_id, did);
+    }
+
+    #[tokio::test]
+    async fn test_lookup_by_shorthash_fails_if_nickname_present() {
+        let state = Arc::new(RegistryState { endpoints: DashMap::new(), aliases: DashMap::new() });
+        let identity = Identity::generate().unwrap();
+        let did = derive_did_key(&identity.public_key());
+
+        let info = EndpointInfo {
+            service_id: did.clone(),
+            substrate_id: did.clone(),
+            endpoint_type: EndpointType::Substrate,
+            nickname: Some("alice".to_string()),
+            mechanisms: vec![],
+        };
+
+        let signed_info = create_signed_info(&identity, info);
+        register_endpoint(State(state.clone()), Json(signed_info)).await.unwrap();
+
+        // Lookup by shorthash-only (p{hash}) should FAIL because nickname was provided
+        let service_hash = syneroym_core::util::short_hash(&did);
+        let alias = format!("p{service_hash}");
+        let lookup_res =
+            lookup_endpoint(Path(alias), Query(LookupQuery { resolve: None }), State(state)).await;
+
+        assert!(lookup_res.is_err());
+        assert_eq!(lookup_res.unwrap_err(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

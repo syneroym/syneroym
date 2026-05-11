@@ -43,6 +43,16 @@ pub fn short_hash(data: &str) -> String {
     z32::encode(&result[..5])
 }
 
+/// Generates a consistent alias for a service ID and optional nickname.
+/// Format: {nickname}-p{shorthash} or p{shorthash} if nickname is None.
+pub fn generate_alias(nickname: Option<&str>, service_id: &str) -> String {
+    let service_hash = short_hash(service_id);
+    match nickname {
+        Some(n) => format!("{n}-p{service_hash}"),
+        None => format!("p{service_hash}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

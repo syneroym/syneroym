@@ -43,6 +43,15 @@ impl Identity {
         self.signing_key.sign(message)
     }
 
+    /// Sign a JSON value using RFC 8785 (JSON Canonicalization Scheme).
+    /// Returns a z-base-32 encoded signature.
+    pub fn sign_json(&self, value: &serde_json::Value) -> anyhow::Result<String> {
+        let canonical_value = crate::substrate::canonicalize_json_value(value);
+        let canonical_string = serde_json::to_string(&canonical_value)?;
+        let signature = self.sign(canonical_string.as_bytes());
+        Ok(z32::encode(&signature.to_bytes()))
+    }
+
     /// Generate a public `IdentityDoc` for this node.
     pub fn to_doc(&self, created_at: u64) -> IdentityDoc {
         let pubkey_bytes = self.public_key().to_bytes();
@@ -50,5 +59,31 @@ impl Identity {
         let id = format!("did:syn:{}", pubkey_hex);
 
         IdentityDoc { id, pubkey_hex, created_at }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_sign_json_deterministic() {
+        let identity = Identity::generate().unwrap();
+        let v1 = json!({"a": 1, "b": 2});
+        let v2 = json!({"b": 2, "a": 1}); // Different key order
+
+        let s1 = identity.sign_json(&v1).unwrap();
+        let s2 = identity.sign_json(&v2).unwrap();
+
+        assert_eq!(s1, s2, "Signatures should be identical due to canonicalization");
+    }
+
+    #[test]
+    fn test_sign_json_nested() {
+        let identity = Identity::generate().unwrap();
+        let v1 = json!({"x": {"b": 2, "a": 1}, "y": [3, 2, 1]});
+        let s1 = identity.sign_json(&v1).unwrap();
+        assert!(!s1.is_empty());
     }
 }

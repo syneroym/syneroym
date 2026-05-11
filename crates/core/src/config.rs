@@ -71,6 +71,29 @@ impl SubstrateConfig {
         if self.storage.blobs_dir.is_relative() {
             self.storage.blobs_dir = self.app_local_data_dir.join(&self.storage.blobs_dir);
         }
+
+        if let Some(key) = &self.identity.key
+            && key.is_relative()
+        {
+            self.identity.key = Some(self.app_data_dir.join(key));
+        }
+
+        if let Some(agreement) = &self.identity.agreement
+            && agreement.is_relative()
+        {
+            self.identity.agreement = Some(self.app_data_dir.join(agreement));
+        }
+
+        if let Some(coordinator) = &mut self.roles.coordinator
+            && let Some(tls) = &mut coordinator.tls
+        {
+            if tls.cert_path.is_relative() {
+                tls.cert_path = self.app_config_dir.join(&tls.cert_path);
+            }
+            if tls.key_path.is_relative() {
+                tls.key_path = self.app_config_dir.join(&tls.key_path);
+            }
+        }
     }
 }
 
@@ -102,6 +125,7 @@ pub struct IdentityConfig {
     pub controller_did: Option<String>,
     pub agreement: Option<PathBuf>,
     pub require_agreement: bool,
+    pub nickname: Option<String>,
 }
 
 fn default_db_dir() -> PathBuf {
@@ -521,5 +545,55 @@ pub struct SubstrateGlobalConfig {
 impl Default for SubstrateGlobalConfig {
     fn default() -> Self {
         Self { communication_interfaces: default_communication_interfaces(), registry_url: None }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn test_resolve_paths() {
+        let mut config = SubstrateConfig {
+            app_data_dir: PathBuf::from("/tmp/app_data"),
+            app_local_data_dir: PathBuf::from("/tmp/local_data"),
+            app_config_dir: PathBuf::from("/tmp/config"),
+            ..Default::default()
+        };
+
+        config.identity.key = Some(PathBuf::from("substrate.key"));
+        config.identity.agreement = Some(PathBuf::from("agreement.json"));
+        config.storage.db_dir = PathBuf::from("db");
+
+        config.roles.coordinator = Some(CoordinatorRole {
+            tls: Some(TlsConfig {
+                cert_path: PathBuf::from("cert.pem"),
+                key_path: PathBuf::from("key.pem"),
+            }),
+            ..Default::default()
+        });
+
+        config.resolve_paths();
+
+        assert_eq!(config.identity.key.unwrap(), Path::new("/tmp/app_data/substrate.key"));
+        assert_eq!(config.identity.agreement.unwrap(), Path::new("/tmp/app_data/agreement.json"));
+        assert_eq!(config.storage.db_dir, Path::new("/tmp/local_data/db"));
+
+        let tls = config.roles.coordinator.unwrap().tls.unwrap();
+        assert_eq!(tls.cert_path, Path::new("/tmp/config/cert.pem"));
+        assert_eq!(tls.key_path, Path::new("/tmp/config/key.pem"));
+    }
+
+    #[test]
+    fn test_resolve_paths_absolute_untouched() {
+        let mut config =
+            SubstrateConfig { app_data_dir: PathBuf::from("/tmp/app_data"), ..Default::default() };
+        let abs_path = if cfg!(windows) { "C:\\abs\\key" } else { "/abs/key" };
+        config.identity.key = Some(PathBuf::from(abs_path));
+
+        config.resolve_paths();
+
+        assert_eq!(config.identity.key.unwrap(), Path::new(abs_path));
     }
 }

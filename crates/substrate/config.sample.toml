@@ -36,6 +36,8 @@ agreement = "substrate-controller-agreement.json"
 # If true, the node MUST NOT start without a valid ControllerAgreement.
 # Equivalent to CLI `--require-agreement`
 require_agreement = false
+# Optional nickname for this substrate to be used in the community registry.
+# nickname = ""
 
 [storage]
 # Currently only "sqlite" is supported

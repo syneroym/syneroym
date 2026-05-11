@@ -228,7 +228,8 @@ impl SubstrateTestContext {
         }
     }
 
-    async fn teardown(self) {
+    async fn teardown(mut self) {
+        let _ = self.substrate_client.shutdown().await;
         let _ = self.shutdown_tx.send(()).await;
         let _ = self.substrate_handle.await;
     }
@@ -305,6 +306,7 @@ async fn test_wasm_app_scenario(ctx: &SubstrateTestContext) {
         app_res.result,
         serde_json::json!("Hello, tester! Greetings from greeter::greet::greet")
     );
+    app_client.shutdown().await.ok();
     debug!(">>> Finished WASM Scenario: Run RPC");
 
     // Register in registry and call via HTTP Proxy

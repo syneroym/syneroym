@@ -175,7 +175,9 @@ impl ConnectionRouter {
     pub async fn shutdown(&self) -> Result<()> {
         info!("shutting down connection router");
         if let Some(router) = self.iroh_router.as_ref() {
+            let ep = router.endpoint().clone();
             router.shutdown().await?;
+            ep.close().await;
         }
         Ok(())
     }

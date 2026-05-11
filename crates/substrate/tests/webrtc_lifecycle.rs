@@ -44,6 +44,7 @@ async fn test_webrtc_lifecycle() -> anyhow::Result<()> {
     });
 
     let mut coordinator = CoordinatorWebRtc::init(&config).await?;
+    let coordinator_endpoint = coordinator.endpoint();
     let coord_handle = tokio::spawn(async move {
         coordinator.run().await.expect("Coordinator failed");
     });
@@ -177,6 +178,8 @@ async fn test_webrtc_lifecycle() -> anyhow::Result<()> {
     assert!(resp_text.contains("HTTP/1.1"));
 
     // Cleanup
+    let _ = router.shutdown().await;
+    coordinator_endpoint.close().await;
     coord_handle.abort();
     router_handle.abort();
 
@@ -218,6 +221,7 @@ async fn test_webrtc_browser_automation() -> anyhow::Result<()> {
     });
 
     let mut coordinator = CoordinatorWebRtc::init(&config).await?;
+    let coordinator_endpoint = coordinator.endpoint();
     // We need to know the actual ports assigned
     let actual_signalling_port = coordinator.signalling_port();
     let actual_bootstrap_port = coordinator.bootstrap_port();
@@ -369,6 +373,7 @@ async fn test_webrtc_browser_automation() -> anyhow::Result<()> {
     // Cleanup
     browser.close().await?;
     handle.await?;
+    coordinator_endpoint.close().await;
     coord_handle.abort();
     router_handle.abort();
     mock_handle.abort();

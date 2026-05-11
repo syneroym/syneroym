@@ -68,6 +68,13 @@ impl ClientGateway {
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(());
         }
+
+        // Shutdown all cached clients to close their Iroh endpoints gracefully
+        for entry in self.state.clients.iter() {
+            let mut client = entry.value().lock().await;
+            let _ = client.shutdown().await;
+        }
+
         Ok(())
     }
 }

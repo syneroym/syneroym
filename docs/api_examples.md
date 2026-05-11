@@ -15,11 +15,6 @@ This document provides examples of how to interact with the Syneroym substrate u
 
 ## 1. Discovering Services
 
-### List all registered endpoints in the local Community Registry
-```bash
-curl http://localhost:7961/endpoints
-```
-
 ### Lookup a specific service by its DID
 ```bash
 # Returns signed endpoint info

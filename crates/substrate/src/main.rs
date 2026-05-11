@@ -53,6 +53,10 @@ enum Commands {
         /// Require a valid ControllerAgreement to start
         #[arg(long, default_missing_value = "true", num_args = 0..=1)]
         require_agreement: Option<bool>,
+
+        /// Optional nickname for the substrate
+        #[arg(long)]
+        nickname: Option<String>,
     },
 }
 
@@ -68,6 +72,7 @@ pub(crate) fn resolve_config(command: Commands) -> Result<SubstrateConfig> {
             controller_did,
             agreement,
             require_agreement,
+            nickname,
         } => {
             // Load from file if provided, otherwise use defaults
             let mut config = if let Some(path) = config_path {
@@ -95,6 +100,9 @@ pub(crate) fn resolve_config(command: Commands) -> Result<SubstrateConfig> {
             }
             if let Some(r) = require_agreement {
                 config.identity.require_agreement = r;
+            }
+            if let Some(n) = nickname {
+                config.identity.nickname = Some(n);
             }
 
             // Consistency checks for identity configuration

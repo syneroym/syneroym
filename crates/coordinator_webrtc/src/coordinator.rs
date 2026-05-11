@@ -66,6 +66,10 @@ impl CoordinatorWebRtc {
             .unwrap_or(0)
     }
 
+    pub fn endpoint(&self) -> iroh::Endpoint {
+        self.bootstrap_state.iroh.clone()
+    }
+
     pub async fn run(&mut self) -> Result<()> {
         info!("Running coordinator webrtc");
 
@@ -88,6 +92,7 @@ impl CoordinatorWebRtc {
 
     pub async fn shutdown(&mut self) -> Result<()> {
         info!("Shutting down coordinator webrtc");
+        self.bootstrap_state.iroh.close().await;
         Ok(())
     }
 }

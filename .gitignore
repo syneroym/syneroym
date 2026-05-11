@@ -21,6 +21,10 @@ __pycache__/
 
 **/scratch-notes*.md
 
+crates/substrate/config.dev.toml
+
+workdir/
+
 # AI
 .gemini
 GEMINI.md
@@ -30,3 +34,4 @@ coverage/
 *.profraw
 *.profdata
 lcov.info
+

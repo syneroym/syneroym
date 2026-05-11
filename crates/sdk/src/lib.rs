@@ -28,7 +28,7 @@ pub enum TransportConnection {
     Iroh {
         /// The endpoint must be kept alive for the duration of the connection.
         /// Dropping it closes the underlying QUIC socket, terminating all streams.
-        _endpoint: iroh::Endpoint,
+        endpoint: iroh::Endpoint,
         conn: Connection,
     },
 }
@@ -91,7 +91,7 @@ impl SyneroymClient {
                     let conn =
                         endpoint.connect(endpoint_addr, syneroym_router::SYNEROYM_ALPN).await?;
 
-                    self.connection = Some(TransportConnection::Iroh { _endpoint: endpoint, conn });
+                    self.connection = Some(TransportConnection::Iroh { endpoint, conn });
                     return Ok(());
                 }
                 EndpointMechanism::WebRtc { .. } => {
@@ -139,6 +139,13 @@ impl SyneroymClient {
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
         Err(anyhow::anyhow!("Timed out waiting for {} to become ready", self.service_id))
+    }
+
+    pub async fn shutdown(&mut self) -> Result<()> {
+        if let Some(TransportConnection::Iroh { endpoint, .. }) = self.connection.take() {
+            endpoint.close().await;
+        }
+        Ok(())
     }
 
     pub fn service_id(&self) -> &str {
@@ -308,7 +315,7 @@ impl SyneroymClient {
         }
     }
 
-    async fn lookup_registry(&self) -> Result<SignedEndpointInfo> {
+    pub async fn lookup_registry(&self) -> Result<SignedEndpointInfo> {
         let client = reqwest::Client::new();
         // Use resolve=true to handle services hosted on substrates
         let url = format!("{}/lookup/{}?resolve=true", self.registry_url, self.service_id);
