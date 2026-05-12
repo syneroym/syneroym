@@ -38,7 +38,8 @@ impl ClientGateway {
         info!("running client gateway on port {}", self.port);
         let state = self.state.clone();
 
-        let addr = format!("0.0.0.0:{}", self.port);
+        // TODO: For now, basic security via access from local machine only instead of 0.0.0.0 interface
+        let addr = format!("127.0.0.1:{}", self.port);
         let listener = TcpListener::bind(&addr).await?;
 
         let (tx, mut rx) = tokio::sync::oneshot::channel();

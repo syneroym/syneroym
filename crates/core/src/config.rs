@@ -212,7 +212,7 @@ impl Default for IrohRelayConfig {
 }
 
 fn default_signaling_server_url() -> String {
-    "ws://localhost:7963".to_string()
+    "ws://localhost:7963/ws".to_string()
 }
 fn default_bootstrap_page_url() -> String {
     "ws://localhost:7962".to_string()
@@ -402,6 +402,7 @@ pub struct CoordinatorWebRtcConfig {
     pub enable_relay: bool,
     pub signalling_bind_address: String,
     pub bootstrap_page_bind_address: String,
+    pub external_host: Option<String>,
 }
 
 impl Default for CoordinatorWebRtcConfig {
@@ -411,6 +412,7 @@ impl Default for CoordinatorWebRtcConfig {
             enable_relay: false,
             signalling_bind_address: default_webrtc_signalling_bind_address(),
             bootstrap_page_bind_address: default_webrtc_bootstrap_page_bind_address(),
+            external_host: None,
         }
     }
 }

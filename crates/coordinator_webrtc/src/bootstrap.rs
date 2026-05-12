@@ -12,7 +12,8 @@ use tracing::{debug, error, info};
 
 pub struct BootstrapState {
     pub iroh: Endpoint,
-    pub signaling_server_url: String,
+    pub external_host: Option<String>,
+    pub signaling_port: u16,
     pub registry: EndpointRegistry,
 }
 
@@ -20,7 +21,7 @@ pub struct BootstrapState {
 #[template(path = "peer-proxy.html")]
 struct PeerProxyTemplate<'a> {
     target_peer_id: &'a str,
-    signaling_server_url: &'a str,
+    signaling_server_url: String,
     http_version: &'a str,
 }
 
@@ -45,12 +46,12 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<BootstrapState>) ->
         return Ok(());
     }
 
-    let (svc_name, path) = if is_tls_client_hello(&buf[..n]) {
+    let (is_tls, host, path) = if is_tls_client_hello(&buf[..n]) {
         let sni = match extract_sni(&buf[..n]) {
             Ok(s) => s,
             Err(e) => return Err(anyhow!("Failed to extract SNI: {}", e)),
         };
-        (extract_service_from_host(&sni)?, None)
+        (true, sni.clone(), None)
     } else {
         let mut headers = [httparse::EMPTY_HEADER; 64];
         let mut req = httparse::Request::new(&mut headers);
@@ -61,29 +62,37 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<BootstrapState>) ->
             .find(|h| h.name.eq_ignore_ascii_case("Host"))
             .map(|h| String::from_utf8_lossy(h.value).to_string())
             .ok_or_else(|| anyhow!("Host header not found"))?;
-        let mut svc_name = extract_service_from_host(&host)?;
-        let path_str = req.path.map(|p| p.to_string());
 
-        // Fallback for localhost testing: if host is localhost, use first path segment as service name
-        if (svc_name == "localhost" || svc_name == "127.0.0.1")
-            && let Some(ref p) = path_str
-        {
-            let segments: Vec<&str> = p.split('/').filter(|s| !s.is_empty()).collect();
-            if !segments.is_empty()
-                && segments[0] != "__syneroym"
-                && segments[0] != "sw.js"
-                && segments[0] != "favicon.ico"
-            {
-                svc_name = segments[0].to_string();
-            }
-        }
-        (svc_name, path_str)
+        let is_https = req
+            .headers
+            .iter()
+            .find(|h| h.name.eq_ignore_ascii_case("X-Forwarded-Proto"))
+            .map(|h| String::from_utf8_lossy(h.value).eq_ignore_ascii_case("https"))
+            .unwrap_or(false);
+
+        (is_https, host, req.path.map(|p| p.to_string()))
     };
+
+    let mut svc_name = extract_service_from_host(&host)?;
+
+    // Fallback for localhost testing: if host is localhost, use first path segment as service name
+    if (svc_name == "localhost" || svc_name == "127.0.0.1")
+        && let Some(ref p) = path
+    {
+        let segments: Vec<&str> = p.split('/').filter(|s| !s.is_empty()).collect();
+        if !segments.is_empty()
+            && segments[0] != "__syneroym"
+            && segments[0] != "sw.js"
+            && segments[0] != "favicon.ico"
+        {
+            svc_name = segments[0].to_string();
+        }
+    }
 
     debug!("Bootstrap request for service: {} (path: {:?})", svc_name, path);
 
     // Serve the Service Worker
-    if let Some(p) = path
+    if let Some(ref p) = path
         && (p == "/__syneroym/sw.js" || p == "/sw.js")
     {
         info!("Serving sw.js to client");
@@ -104,12 +113,14 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<BootstrapState>) ->
         return tunnel_to_iroh(stream, state, svc_name).await;
     }
 
+    // Construct signaling server URL
+    let scheme = if is_tls { "wss" } else { "ws" };
+    let signaling_server_url =
+        construct_signaling_url(scheme, &host, &state.external_host, state.signaling_port);
+
     // Serve the bootstrap page
-    let tpl = PeerProxyTemplate {
-        target_peer_id: &svc_name,
-        signaling_server_url: &state.signaling_server_url,
-        http_version: "1.1",
-    };
+    let tpl =
+        PeerProxyTemplate { target_peer_id: &svc_name, signaling_server_url, http_version: "1.1" };
     let html = tpl.render()?;
 
     let response = format!(
@@ -121,6 +132,22 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<BootstrapState>) ->
     stream.write_all(response.as_bytes()).await?;
     stream.flush().await?;
     Ok(())
+}
+
+fn construct_signaling_url(
+    scheme: &str,
+    host: &str,
+    external_host: &Option<String>,
+    signaling_port: u16,
+) -> String {
+    let signaling_host = if let Some(h) = external_host {
+        h.clone()
+    } else {
+        // Strip port from Host header if present
+        host.split(':').next().unwrap_or("localhost").to_string()
+    };
+
+    format!("{}://{}:{}/ws", scheme, signaling_host, signaling_port)
 }
 
 fn is_websocket_upgrade(buf: &[u8]) -> bool {
@@ -160,4 +187,36 @@ async fn tunnel_to_iroh(
 
     tokio::io::copy_bidirectional(&mut stream, &mut iroh_stream).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_construct_signaling_url() {
+        // Case 1: No external host, simple hostname
+        assert_eq!(
+            construct_signaling_url("ws", "localhost", &None, 7963),
+            "ws://localhost:7963/ws"
+        );
+
+        // Case 2: No external host, hostname with port
+        assert_eq!(
+            construct_signaling_url("ws", "192.168.1.10:7962", &None, 7963),
+            "ws://192.168.1.10:7963/ws"
+        );
+
+        // Case 3: External host override
+        assert_eq!(
+            construct_signaling_url("wss", "localhost", &Some("syneroym.io".to_string()), 443),
+            "wss://syneroym.io:443/ws"
+        );
+
+        // Case 4: No external host, complex domain
+        assert_eq!(
+            construct_signaling_url("ws", "coordinator.local:7962", &None, 7963),
+            "ws://coordinator.local:7963/ws"
+        );
+    }
 }

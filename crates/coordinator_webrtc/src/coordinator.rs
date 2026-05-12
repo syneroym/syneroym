@@ -39,7 +39,8 @@ impl CoordinatorWebRtc {
 
         let bootstrap_state = Arc::new(BootstrapState {
             iroh: endpoint,
-            signaling_server_url: format!("ws://localhost:{}", actual_signalling_port), // TODO: Use domain from config
+            external_host: webrtc_config.external_host.clone(),
+            signaling_port: actual_signalling_port,
             registry,
         });
 

@@ -57,6 +57,10 @@ enum Commands {
         /// Optional nickname for the substrate
         #[arg(long)]
         nickname: Option<String>,
+
+        /// Optional external host for the WebRTC coordinator
+        #[arg(long)]
+        external_host: Option<String>,
     },
 }
 
@@ -73,6 +77,7 @@ pub(crate) fn resolve_config(command: Commands) -> Result<SubstrateConfig> {
             agreement,
             require_agreement,
             nickname,
+            external_host,
         } => {
             // Load from file if provided, otherwise use defaults
             let mut config = if let Some(path) = config_path {
@@ -135,6 +140,12 @@ pub(crate) fn resolve_config(command: Commands) -> Result<SubstrateConfig> {
                 let webrtc = coordinator.webrtc.get_or_insert_with(Default::default);
                 webrtc.enable_signalling = enable;
                 webrtc.enable_relay = enable;
+            }
+
+            if let Some(host) = external_host {
+                let coordinator = config.roles.coordinator.get_or_insert_with(Default::default);
+                let webrtc = coordinator.webrtc.get_or_insert_with(Default::default);
+                webrtc.external_host = Some(host);
             }
 
             // Resolve relative paths against base directories
