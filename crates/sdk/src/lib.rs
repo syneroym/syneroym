@@ -57,7 +57,13 @@ impl SyneroymClient {
         let mechanisms = if let Some(m) = &self.provided_mechanisms {
             m.clone()
         } else if !self.registry_url.is_empty() {
-            let info = self.lookup_registry().await?.info;
+            let info = syneroym_core::community_registry::RegistryClient::lookup(
+                &self.registry_url,
+                &self.service_id,
+                true,
+            )
+            .await?
+            .info;
             // The lookup might have been done by an alias. Update service_id to the canonical DID.
             self.service_id = info.service_id;
             info.mechanisms
@@ -316,18 +322,11 @@ impl SyneroymClient {
     }
 
     pub async fn lookup_registry(&self) -> Result<SignedEndpointInfo> {
-        let client = reqwest::Client::new();
-        // Use resolve=true to handle services hosted on substrates
-        let url = format!("{}/lookup/{}?resolve=true", self.registry_url, self.service_id);
-        let response = client.get(&url).send().await?;
-        if !response.status().is_success() {
-            return Err(anyhow::anyhow!(
-                "Registry lookup failed with status: {} for URL: {}",
-                response.status(),
-                url
-            ));
-        }
-        let info = response.json::<SignedEndpointInfo>().await?;
-        Ok(info)
+        syneroym_core::community_registry::RegistryClient::lookup(
+            &self.registry_url,
+            &self.service_id,
+            true,
+        )
+        .await
     }
 }

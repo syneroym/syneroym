@@ -6,7 +6,6 @@ use iroh::{EndpointAddr, RelayMap, RelayMode, RelayUrl, SecretKey};
 use std::sync::Arc;
 use syneroym_core::config::{IrohRelayConfig, SubstrateConfig, WebRtcRelayConfig};
 use syneroym_core::registry::EndpointRegistry;
-use tokio::io::AsyncReadExt;
 use tracing::{debug, error, info};
 use webrtc::api::APIBuilder;
 use webrtc::api::interceptor_registry::register_default_interceptors;
@@ -20,7 +19,6 @@ use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
 use crate::net_webrtc::WebRTCStream;
-use crate::preamble::{RoutePreamble, RouteProtocol, RouteTransport};
 use crate::route_handler::RouteHandler;
 
 pub const SYNEROYM_ALPN: &[u8] = b"syneroym/0.1";
@@ -42,7 +40,7 @@ impl ConnectionRouter {
     ) -> Result<Self> {
         let mut router = Self { iroh_router: None };
         let route_handler =
-            Arc::new(RouteHandler::init(service_id.clone(), &config, registry.clone()).await?);
+            RouteHandler::init(service_id.clone(), &config, registry.clone()).await?;
 
         for comm in &config.substrate.communication_interfaces {
             match comm.as_str() {
@@ -80,7 +78,7 @@ impl ConnectionRouter {
         &self,
         config: &IrohRelayConfig,
         secret_key: SecretKey,
-        route_handler: Arc<RouteHandler>,
+        route_handler: RouteHandler,
     ) -> Result<IrohRouter> {
         debug!("Initializing Iroh communication...");
 
@@ -109,7 +107,7 @@ impl ConnectionRouter {
         &self,
         config: &WebRtcRelayConfig,
         service_id: String,
-        route_handler: Arc<RouteHandler>,
+        route_handler: RouteHandler,
     ) -> Result<()> {
         let signaling_url = config.signaling_server_url.clone();
 
@@ -148,9 +146,9 @@ impl ConnectionRouter {
 
         tokio::spawn(async move {
             if let Err(e) =
-                connect_signaling(service_id, signaling_url, api, rtc_config, route_handler).await
+                connect_signaling(service_id, &signaling_url, api, rtc_config, route_handler).await
             {
-                error!("WebRTC Signaling client error: {:?}", e);
+                error!("WebRTC Signaling client error connectiong to {}: {:?}", signaling_url, e);
             }
         });
 
@@ -185,13 +183,13 @@ impl ConnectionRouter {
 
 async fn connect_signaling(
     peer_id: String,
-    url: String,
+    url: &String,
     api: Arc<webrtc::api::API>,
     config: RTCConfiguration,
-    route_handler: Arc<RouteHandler>,
+    route_handler: RouteHandler,
 ) -> Result<()> {
     info!("Connecting to signaling server at {}", url);
-    let (ws_stream, _) = tokio_tungstenite::connect_async(&url).await?;
+    let (ws_stream, _) = tokio_tungstenite::connect_async(url).await?;
     let (mut write, mut read) = ws_stream.split();
 
     // Register
@@ -301,7 +299,7 @@ async fn connect_signaling(
     Ok(())
 }
 
-async fn handle_data_channel(d: Arc<RTCDataChannel>, route_handler: Arc<RouteHandler>) {
+async fn handle_data_channel(d: Arc<RTCDataChannel>, route_handler: RouteHandler) {
     let d_label = d.label().to_owned();
     info!("New DataChannel {}", d_label);
 
@@ -316,45 +314,10 @@ async fn handle_data_channel(d: Arc<RTCDataChannel>, route_handler: Arc<RouteHan
             match d.detach().await {
                 Ok(rtc_detached) => {
                     debug!("DataChannel '{}' detached successfully", d_label);
-                    let mut rtc_stream = WebRTCStream::new(rtc_detached);
+                    let rtc_stream = WebRTCStream::new(rtc_detached);
 
-                    // 1. Read Preamble: [1 byte len]
-                    let service_name_len = match rtc_stream.read_u8().await {
-                        Ok(n) => n as usize,
-                        Err(e) => {
-                            error!("Failed to read service name length from DC: {}", e);
-                            return;
-                        }
-                    };
-
-                    // 2. Read Service Name
-                    let mut name_buf = vec![0u8; service_name_len];
-                    if let Err(e) = rtc_stream.read_exact(&mut name_buf).await {
-                        error!("Failed to read service name from DC: {}", e);
-                        return;
-                    }
-
-                    let service_name = String::from_utf8_lossy(&name_buf).to_string();
-                    let (service_id, interface) = if service_name.contains(':') {
-                        let mut parts = service_name.splitn(2, ':');
-                        (parts.next().unwrap().to_string(), parts.next().unwrap().to_string())
-                    } else {
-                        (service_name, "health".to_string())
-                    };
-
-                    debug!("Service request for: {} (interface: {})", service_id, interface);
-
-                    let preamble = RoutePreamble {
-                        transport: RouteTransport::Http,
-                        protocol: RouteProtocol::JsonRpc,
-                        interface,
-                        service_id,
-                    };
-
-                    if let Err(e) =
-                        rh.as_ref().clone().dispatch(Box::pin(rtc_stream), preamble).await
-                    {
-                        error!("Failed to dispatch WebRTC stream: {}", e);
+                    if let Err(e) = rh.handle_stream(rtc_stream).await {
+                        error!("Error handling WebRTC stream on '{}': {}", d_label, e);
                     }
                 }
                 Err(e) => {

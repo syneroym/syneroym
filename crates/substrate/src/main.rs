@@ -157,6 +157,10 @@ pub(crate) fn resolve_config(command: Commands) -> Result<SubstrateConfig> {
 }
 
 fn main() -> Result<()> {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install rustls default crypto provider");
+
     let cli = Cli::parse();
     let config = resolve_config(cli.command)?;
 

@@ -159,11 +159,9 @@ async fn test_webrtc_lifecycle() -> anyhow::Result<()> {
     let detached_dc = dc.detach().await?;
     let mut dc_stream = WebRTCStream::new(detached_dc);
 
-    // Send Preamble: [1 byte len][service name]
-    let target_service = "orchestrator";
-    let svc_bytes = target_service.as_bytes();
-    dc_stream.write_u8(svc_bytes.len() as u8).await?;
-    dc_stream.write_all(svc_bytes).await?;
+    // Send Preamble: http://interface|service_id\n
+    let preamble = "http://health|orchestrator\n";
+    dc_stream.write_all(preamble.as_bytes()).await?;
 
     // Send HTTP Request
     let req = "POST /v1/orchestrator/health HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}";

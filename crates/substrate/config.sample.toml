@@ -32,7 +32,7 @@ key = "substrate.key"
 controller_did = ""
 # Path to ControllerAgreement JSON binding node DID to controller DID.
 # Equivalent to CLI `--agreement <path>`
-agreement = "substrate-controller-agreement.json"
+# agreement = "substrate-controller-agreement.json"
 # If true, the node MUST NOT start without a valid ControllerAgreement.
 # Equivalent to CLI `--require-agreement`
 require_agreement = false

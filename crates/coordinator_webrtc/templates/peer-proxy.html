@@ -7,21 +7,22 @@
     <script>
         const SIGNALING_SERVER_URL = "{{ signaling_server_url }}";
         const TARGET_PEER_ID = "{{ target_peer_id }}";
+        const TARGET_SERVICE_ID = "{{ target_service_id }}";
         const HTTP_VERSION = "{{ http_version }}";
         const MY_ID = "gateway-" + Math.random().toString(36).substr(2, 9);
         window.logs = [];
         const originalLog = console.log;
-        console.log = function(...args) {
+        console.log = function (...args) {
             window.logs.push(args.map(a => String(a)).join(' '));
             originalLog.apply(console, args);
         };
         const originalDebug = console.debug;
-        console.debug = function(...args) {
+        console.debug = function (...args) {
             window.logs.push('[DEBUG] ' + args.map(a => String(a)).join(' '));
             originalDebug.apply(console, args);
         };
         const originalError = console.error;
-        console.error = function(...args) {
+        console.error = function (...args) {
             window.logs.push('[ERROR] ' + args.map(a => String(a)).join(' '));
             originalError.apply(console, args);
         };
@@ -190,10 +191,17 @@
 
                 const url = new URL(reqData.url);
                 const hostname = url.hostname;
-                const parts = hostname.split('.');
-                let serviceName = parts.length > 0 ? parts[0] : "default";
+                let hostBase = hostname.endsWith('.localhost') ? hostname.slice(0, -10) : hostname;
 
-                console.debug(`[Page] Proxying ${reqData.method} ${url.pathname} to ${serviceName}`);
+                // Parse interface and serviceId from hostname (e.g. service-ihealth.localhost)
+                let parts = hostBase.split('-');
+                let interface = '';
+                if (parts.length > 1 && parts[parts.length - 1].startsWith('i') && parts[parts.length - 1].length > 1) {
+                    interface = parts.pop().substring(1);
+                }
+                let serviceId = TARGET_SERVICE_ID;
+
+                console.debug(`[Page] Proxying ${reqData.method} ${url.pathname} to ${serviceId} (interface: ${interface})`);
 
                 // Create a dedicated DataChannel for this request
                 const dcLabel = "req-" + Math.random().toString(36).substr(2, 5);
@@ -221,12 +229,10 @@
                     clearTimeout(timeoutId);
                     console.debug("[Page] DC Open:", dcLabel);
 
-                    // 1. Send Preamble (Service Name)
-                    const serviceBytes = new TextEncoder().encode(serviceName);
-                    const preamble = new Uint8Array(1 + serviceBytes.length);
-                    preamble[0] = serviceBytes.length;
-                    preamble.set(serviceBytes, 1);
-                    dc.send(preamble);
+                    // 1. Send Preamble (Standardized Format)
+                    const preamble = `http://${interface}|${serviceId}\n`;
+                    console.debug(`[Page] Sending Preamble: ${preamble.trim()}`);
+                    dc.send(new TextEncoder().encode(preamble));
 
                     // 2. Send Request Headers
                     const headersMap = new Map(reqData.headers.map(h => [h[0].toLowerCase(), h[1]]));

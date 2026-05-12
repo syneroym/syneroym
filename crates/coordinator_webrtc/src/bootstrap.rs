@@ -15,12 +15,14 @@ pub struct BootstrapState {
     pub external_host: Option<String>,
     pub signaling_port: u16,
     pub registry: EndpointRegistry,
+    pub registry_url: Option<String>,
 }
 
 #[derive(Template)]
 #[template(path = "peer-proxy.html")]
 struct PeerProxyTemplate<'a> {
     target_peer_id: &'a str,
+    target_service_id: &'a str,
     signaling_server_url: String,
     http_version: &'a str,
 }
@@ -89,7 +91,52 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<BootstrapState>) ->
         }
     }
 
-    debug!("Bootstrap request for service: {} (path: {:?})", svc_name, path);
+    let mut requested_interface = None;
+    let mut parts: Vec<&str> = svc_name.split('-').collect();
+    if parts.len() > 1
+        && let Some(last) = parts.last()
+        && last.starts_with('i')
+        && last.len() > 1
+    {
+        requested_interface = Some(last[1..].to_string());
+        parts.pop();
+        svc_name = parts.join("-");
+    }
+
+    debug!(
+        "Bootstrap request for service: {} (iface: {:?}, path: {:?})",
+        svc_name, requested_interface, path
+    );
+
+    // Resolve alias to canonical DID if possible
+    let mut target_peer_id = svc_name.clone();
+    let mut target_service_id = svc_name.clone();
+
+    if let Some(registry_url) = &state.registry_url {
+        debug!("Attempting to resolve alias: {}", svc_name);
+        match syneroym_core::community_registry::RegistryClient::lookup(
+            registry_url,
+            &svc_name,
+            true,
+        )
+        .await
+        {
+            Ok(info) => {
+                info!(
+                    "Resolved service alias '{}' to substrate DID '{}' and service DID '{}'",
+                    svc_name, info.info.substrate_id, info.info.service_id
+                );
+                target_peer_id = info.info.substrate_id;
+                target_service_id = info.info.service_id;
+            }
+            Err(e) => {
+                debug!(
+                    "Failed to resolve alias '{}' (might be a DID or not registered): {}",
+                    svc_name, e
+                );
+            }
+        }
+    }
 
     // Serve the Service Worker
     if let Some(ref p) = path
@@ -110,7 +157,14 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<BootstrapState>) ->
     // If it's a WebSocket upgrade, we tunnel to Iroh
     if is_websocket_upgrade(&buf[..n]) {
         debug!("WebSocket upgrade detected, tunneling to Iroh for {}", svc_name);
-        return tunnel_to_iroh(stream, state, svc_name).await;
+        return tunnel_to_iroh(
+            stream,
+            state,
+            target_peer_id,
+            target_service_id,
+            requested_interface,
+        )
+        .await;
     }
 
     // Construct signaling server URL
@@ -119,8 +173,12 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<BootstrapState>) ->
         construct_signaling_url(scheme, &host, &state.external_host, state.signaling_port);
 
     // Serve the bootstrap page
-    let tpl =
-        PeerProxyTemplate { target_peer_id: &svc_name, signaling_server_url, http_version: "1.1" };
+    let tpl = PeerProxyTemplate {
+        target_peer_id: &target_peer_id,
+        target_service_id: &target_service_id,
+        signaling_server_url,
+        http_version: "1.1",
+    };
     let html = tpl.render()?;
 
     let response = format!(
@@ -164,15 +222,24 @@ fn is_websocket_upgrade(buf: &[u8]) -> bool {
 async fn tunnel_to_iroh(
     mut stream: TcpStream,
     state: Arc<BootstrapState>,
-    svc_name: String,
+    peer_id: String,
+    service_id: String,
+    requested_interface: Option<String>,
 ) -> Result<()> {
-    let endpoints = state.registry.lookup_by_service(&svc_name);
-    let (iface, _endpoint) =
-        endpoints.first().ok_or_else(|| anyhow!("Service not found in registry: {}", svc_name))?;
+    let iface = if let Some(req_iface) = requested_interface {
+        req_iface
+    } else {
+        let endpoints = state.registry.lookup_by_service(&service_id);
+        endpoints
+            .first()
+            .ok_or_else(|| anyhow!("Service not found in registry: {}", service_id))?
+            .0
+            .clone()
+    };
 
     // In 0.97, NodeId is PublicKey.
     let node_id =
-        svc_name.parse::<iroh::PublicKey>().map_err(|_| anyhow!("Invalid NodeId: {}", svc_name))?;
+        peer_id.parse::<iroh::PublicKey>().map_err(|_| anyhow!("Invalid NodeId: {}", peer_id))?;
 
     // In 0.97, connect takes an EndpointAddr and alpn.
     let endpoint_addr = iroh::EndpointAddr::from(node_id);
@@ -182,7 +249,7 @@ async fn tunnel_to_iroh(
     let mut iroh_stream = IrohStream::new(send, recv);
 
     // Send preamble to Iroh
-    let preamble = format!("http://{}|{}\n", iface, svc_name);
+    let preamble = format!("http://{}|{}\n", iface, service_id);
     iroh_stream.write_all(preamble.as_bytes()).await?;
 
     tokio::io::copy_bidirectional(&mut stream, &mut iroh_stream).await?;
@@ -218,5 +285,39 @@ mod tests {
             construct_signaling_url("ws", "coordinator.local:7962", &None, 7963),
             "ws://coordinator.local:7963/ws"
         );
+    }
+
+    #[test]
+    fn test_svc_name_interface_splitting() {
+        let cases = vec![
+            ("myapp-p1234-i80", "myapp-p1234", Some("80")),
+            ("myapp-i80", "myapp", Some("80")),
+            ("my-app-i80", "my-app", Some("80")),
+            ("myapp-p1234", "myapp-p1234", None),
+            ("my-i-80", "my-i-80", None), // last part 80 doesn't start with i
+            ("i80", "i80", None),         // parts.len() == 1
+        ];
+
+        for (input, expected_svc, expected_iface) in cases {
+            let mut svc_name = input.to_string();
+            let mut requested_interface = None;
+            let mut parts: Vec<&str> = svc_name.split('-').collect();
+            if parts.len() > 1
+                && let Some(last) = parts.last()
+                && last.starts_with('i')
+                && last.len() > 1
+            {
+                requested_interface = Some(last[1..].to_string());
+                parts.pop();
+                svc_name = parts.join("-");
+            }
+            assert_eq!(svc_name, expected_svc, "Failed for input: {}", input);
+            assert_eq!(
+                requested_interface.as_deref(),
+                expected_iface,
+                "Failed for input: {}",
+                input
+            );
+        }
     }
 }

@@ -150,8 +150,8 @@ async fn handle_connection(
                     format!("p{}", pubkeyhash.unwrap_or_default())
                 };
 
-                // The interface is now the short hash, fallback to "default" if omitted
-                let interface = interfacehash.unwrap_or("default").to_string();
+                // The interface is now the short hash, fallback to empty if omitted
+                let interface = interfacehash.unwrap_or("").to_string();
                 let service_id = lookup_alias;
 
                 debug!(

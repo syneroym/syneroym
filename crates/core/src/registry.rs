@@ -183,4 +183,22 @@ mod tests {
         registry2.remove(&service, &iface).await.unwrap();
         assert!(registry2.lookup(&service, &iface).is_none());
     }
+    #[tokio::test]
+    async fn test_registry_empty_interface() {
+        let storage = Arc::new(MockStorage::new());
+        let registry = EndpointRegistry::new(storage).await.unwrap();
+
+        let service = "empty-iface-service".to_string();
+        let iface = "".to_string();
+        let endpoint = SubstrateEndpoint::WasmChannel { service_id: service.clone() };
+
+        registry.register(service.clone(), iface.clone(), endpoint.clone()).await.unwrap();
+
+        let (found, canonical) = registry.lookup(&service, &iface).unwrap();
+        assert_eq!(canonical, "");
+        match found {
+            SubstrateEndpoint::WasmChannel { service_id } => assert_eq!(service_id, service),
+            _ => panic!("Wrong endpoint type"),
+        }
+    }
 }

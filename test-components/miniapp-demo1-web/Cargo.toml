@@ -18,3 +18,4 @@ chrono = { workspace = true, features = ["serde"] }
 rusqlite = { workspace = true, features = ["bundled"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+rustls.workspace = true

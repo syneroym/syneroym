@@ -3405,6 +3405,7 @@ dependencies = [
  "mime_guess",
  "rusqlite",
  "rust-embed",
+ "rustls",
  "serde",
  "serde_json",
  "tokio",
@@ -4807,6 +4808,7 @@ dependencies = [
  "clap",
  "predicates",
  "reqwest 0.13.3",
+ "rustls",
  "serde_json",
  "syneroym-core",
  "syneroym-identity",
@@ -5767,16 +5769,19 @@ dependencies = [
  "iroh",
  "rand 0.8.6",
  "rand_core 0.6.4",
+ "reqwest 0.13.3",
  "serde",
  "serde_json",
  "syneroym-core",
  "syneroym-router",
+ "tempfile",
  "tls-parser",
  "tokio",
  "tokio-tungstenite 0.26.2",
  "tower",
  "tower-http",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -5788,6 +5793,7 @@ dependencies = [
  "dashmap",
  "dirs",
  "httparse",
+ "reqwest 0.13.3",
  "rusqlite",
  "serde",
  "serde_json",
@@ -5795,6 +5801,8 @@ dependencies = [
  "tempfile",
  "tls-parser",
  "tokio",
+ "tracing",
+ "url",
  "z32",
 ]
 

@@ -63,6 +63,9 @@ enum Commands {
         /// Optional nickname
         #[arg(long)]
         nickname: Option<String>,
+        /// Optional interface name to include in the alias (outputs full hostname)
+        #[arg(long)]
+        interface: Option<String>,
     },
     /// Manage entries in the community registry
     Registry {
@@ -177,6 +180,10 @@ enum IdentityCommands {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install rustls default crypto provider");
+
     let cli = Cli::parse();
     let dir = cli.dir;
 
@@ -349,9 +356,14 @@ async fn main() -> anyhow::Result<()> {
             let hash = syneroym_core::util::short_hash(input);
             println!("{}", hash);
         }
-        Commands::Alias { service_id, nickname } => {
+        Commands::Alias { service_id, nickname, interface } => {
             let alias = syneroym_core::util::generate_alias(nickname.as_deref(), service_id);
-            println!("{}", alias);
+            if let Some(iface) = interface {
+                let iface_hash = syneroym_core::util::short_hash(iface);
+                println!("{}-i{}.localhost", alias, iface_hash);
+            } else {
+                println!("{}", alias);
+            }
         }
         Commands::Registry { command } => match command {
             RegistryCommands::Register { identity: name, substrate, nickname } => {

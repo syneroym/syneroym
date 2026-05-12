@@ -23,6 +23,7 @@ syneroym-app-sandbox = { path = "../app_sandbox", optional = true }
 tracing.workspace = true
 reqwest.workspace = true
 z32.workspace = true
+rustls.workspace = true
 
 [features]
 default = [
@@ -60,7 +61,6 @@ futures-util.workspace = true
 futures.workspace = true
 webrtc.workspace = true
 syneroym-coordinator-webrtc = { path = "../coordinator_webrtc" }
-rustls.workspace = true
 chromiumoxide.workspace = true
 tokio-stream.workspace = true
 axum.workspace = true

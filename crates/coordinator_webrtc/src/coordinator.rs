@@ -42,6 +42,7 @@ impl CoordinatorWebRtc {
             external_host: webrtc_config.external_host.clone(),
             signaling_port: actual_signalling_port,
             registry,
+            registry_url: config.substrate.registry_url.clone(),
         });
 
         Ok(Self {

@@ -135,13 +135,12 @@ curl -X POST http://localhost:7960/ \
 ### Call a JSON-RPC method on a WASM app via HTTP Proxy
 
 > [!TIP]
-> You can use `roymctl alias --nickname <NICKNAME> <APP_DID>` to get the first part of the Host header.
-> You can use `roymctl shorthash <INTERFACE_NAME>` to get the interface hash.
+> You can use `roymctl alias <APP_DID> --nickname <NICKNAME> --interface <INTERFACE_NAME>` to get the full Host header.
 
 ```bash
 # Host header format: <NICKNAME>-p<APP_DID_HASH>-i<INTERFACE_HASH>.localhost
 curl -X POST http://localhost:7960/ \
-  -H "Host: my-app-p<APP_DID_HASH>-i<INTERFACE_HASH>.localhost" \
+  -H "Host: $(roymctl alias <APP_DID> --nickname <NICKNAME> --interface <INTERFACE_NAME>)" \
   -H "Content-Type: application/json" \
   -d '{
     "jsonrpc": "2.0",
