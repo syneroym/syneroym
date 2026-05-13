@@ -8,7 +8,7 @@ use syneroym_router::SYNEROYM_ALPN;
 use syneroym_router::net_iroh::IrohStream;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 pub struct BootstrapState {
     pub iroh: Endpoint,
@@ -130,7 +130,7 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<BootstrapState>) ->
                 target_service_id = info.info.service_id;
             }
             Err(e) => {
-                debug!(
+                warn!(
                     "Failed to resolve alias '{}' (might be a DID or not registered): {}",
                     svc_name, e
                 );
