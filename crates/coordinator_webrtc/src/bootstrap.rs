@@ -1,5 +1,16 @@
-use anyhow::{Result, anyhow};
+use anyhow::anyhow;
 use askama::Template;
+use axum::{
+    Router,
+    body::Body,
+    extract::State,
+    http::{Request, StatusCode, header},
+    response::{Html, IntoResponse},
+    routing::get,
+};
+use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::server::conn::auto::Builder;
+use hyper_util::service::TowerToHyperService;
 use iroh::Endpoint;
 use std::sync::Arc;
 use syneroym_core::community_registry::EndpointMechanism;
@@ -10,7 +21,7 @@ use syneroym_router::SYNEROYM_ALPN;
 use syneroym_router::net_iroh::IrohStream;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 pub struct BootstrapState {
     pub iroh: Endpoint,
@@ -22,82 +33,173 @@ pub struct BootstrapState {
 
 #[derive(Template)]
 #[template(path = "peer-proxy.html")]
-struct PeerProxyTemplate<'a> {
-    target_peer_id: &'a str,
-    target_service_id: &'a str,
+struct PeerProxyTemplate {
+    target_peer_id: String,
+    target_service_id: String,
     signaling_server_url: String,
-    http_version: &'a str,
+    http_version: String,
 }
 
-pub async fn start(listener: TcpListener, state: Arc<BootstrapState>) -> Result<()> {
+pub async fn start(listener: TcpListener, state: Arc<BootstrapState>) -> anyhow::Result<()> {
     info!("Bootstrap server listening on http://{}", listener.local_addr()?);
+
+    let app = app(state.clone());
 
     loop {
         let (stream, peer_addr) = listener.accept().await?;
         let state = state.clone();
+        let app = app.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(stream, state).await {
+            if let Err(e) = handle_connection(stream, state, app).await {
                 error!("Error handling bootstrap connection from {}: {}", peer_addr, e);
             }
         });
     }
 }
 
-async fn handle_connection(mut stream: TcpStream, state: Arc<BootstrapState>) -> Result<()> {
-    let mut buf = vec![0u8; 8192];
+fn app(state: Arc<BootstrapState>) -> Router {
+    Router::new()
+        .route("/sw.js", get(handle_sw))
+        .route("/__syneroym/sw.js", get(handle_sw))
+        .fallback(handle_bootstrap)
+        .with_state(state)
+}
+
+async fn handle_sw() -> impl IntoResponse {
+    info!("Serving sw.js to client");
+    let sw_js = include_str!("../templates/sw.js");
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/javascript"),
+            (header::HeaderName::from_static("service-worker-allowed"), "/"),
+        ],
+        sw_js,
+    )
+}
+
+async fn handle_bootstrap(
+    State(state): State<Arc<BootstrapState>>,
+    req: Request<Body>,
+) -> impl IntoResponse {
+    let host = req
+        .headers()
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("localhost")
+        .to_string();
+    let path = req.uri().path();
+    if path == "/favicon.ico" {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
+    let mut svc_name = match extract_service_from_host(&host) {
+        Ok(name) => name,
+        Err(_) => host.clone(),
+    };
+
+    let mut parts: Vec<&str> = svc_name.split('-').collect();
+    if parts.len() > 1
+        && let Some(last) = parts.last()
+        && last.starts_with('i')
+        && last.len() > 1
+    {
+        parts.pop();
+        svc_name = parts.join("-");
+    }
+
+    // Resolve alias to canonical DID if possible
+    let mut target_peer_id = svc_name.clone();
+    let mut target_service_id = svc_name.clone();
+
+    if let Some(registry_url) = &state.registry_url {
+        debug!("Attempting to resolve alias: {}", svc_name);
+        if let Ok(info) =
+            syneroym_core::community_registry::RegistryClient::lookup(registry_url, &svc_name, true)
+                .await
+        {
+            info!(
+                "Resolved service alias '{}' to substrate DID '{}' and service DID '{}'",
+                svc_name, info.info.substrate_id, info.info.service_id
+            );
+            target_peer_id = info.info.substrate_id;
+            target_service_id = info.info.service_id;
+        }
+    }
+
+    let signaling_server_url =
+        construct_signaling_url("ws", &host, &state.external_host, state.signaling_port);
+
+    let tpl = PeerProxyTemplate {
+        target_peer_id,
+        target_service_id,
+        signaling_server_url,
+        http_version: "HTTP/1.1".to_string(),
+    };
+
+    match tpl.render() {
+        Ok(html) => Html(html).into_response(),
+        Err(e) => {
+            error!("Failed to render template: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+async fn handle_connection(
+    stream: TcpStream,
+    state: Arc<BootstrapState>,
+    app: Router,
+) -> anyhow::Result<()> {
+    let mut buf = [0u8; 8192];
     let n = stream.peek(&mut buf).await?;
     if n == 0 {
         return Ok(());
     }
 
-    let (is_tls, host, path) = if is_tls_client_hello(&buf[..n]) {
+    // Hybrid Dispatch:
+    // 1. Check for TLS (SNI sniffing)
+    if is_tls_client_hello(&buf[..n]) {
         let host = extract_sni(&buf[..n])?;
-        (true, host, None)
-    } else {
-        let mut headers = [httparse::EMPTY_HEADER; 64];
-        let mut req = httparse::Request::new(&mut headers);
-        req.parse(&buf[..n])?;
-
-        let host_header = req
-            .headers
-            .iter()
-            .find(|h| h.name.eq_ignore_ascii_case("host"))
-            .map(|h| std::str::from_utf8(h.value).unwrap_or(""))
-            .unwrap_or("");
-
-        (false, host_header.to_string(), req.path.map(|p| p.to_string()))
-    };
-
-    // Serve the Service Worker or handle other special paths immediately
-    if let Some(ref p) = path {
-        if p == "/__syneroym/sw.js" || p == "/sw.js" {
-            info!("Serving sw.js to client");
-            let sw_js = include_str!("../templates/sw.js");
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/javascript\r\nContent-Length: {}\r\nService-Worker-Allowed: /\r\nConnection: close\r\n\r\n{}",
-                sw_js.len(),
-                sw_js
-            );
-            stream.write_all(response.as_bytes()).await?;
-            stream.flush().await?;
-            return Ok(());
-        }
-        if p == "/favicon.ico" {
-            return Ok(());
-        }
+        return handle_raw_tls_tunnel(stream, state, host).await;
     }
 
+    // 2. Check for WebSocket upgrade (Raw Tunneling)
+    if is_websocket_upgrade(&buf[..n]) {
+        let host = syneroym_core::protocol_utils::extract_host_from_http(&buf[..n])?;
+        let path = extract_path_from_http(&buf[..n]).unwrap_or_else(|| "/".to_string());
+
+        debug!("WebSocket upgrade detected, tunneling to Iroh for {}", host);
+        return handle_ws_tunnel(stream, state, host, path).await;
+    }
+
+    // 3. Otherwise, pass to Axum
+    let service = TowerToHyperService::new(app);
+    Builder::new(TokioExecutor::new())
+        .serve_connection(TokioIo::new(stream), service)
+        .await
+        .map_err(|e| anyhow::anyhow!("Axum serve error: {}", e))
+}
+
+async fn handle_raw_tls_tunnel(
+    _stream: TcpStream,
+    _state: Arc<BootstrapState>,
+    host: String,
+) -> anyhow::Result<()> {
+    // Current implementation doesn't actually have a TLS tunnel target,
+    // but we keep the logic structure for future use or to avoid breaking SNI sniffing tests.
+    debug!("TLS SNI detected: {}, but raw TLS tunneling is not yet implemented", host);
+    Ok(())
+}
+
+async fn handle_ws_tunnel(
+    stream: TcpStream,
+    state: Arc<BootstrapState>,
+    host: String,
+    _path: String,
+) -> anyhow::Result<()> {
     let mut svc_name = extract_service_from_host(&host)?;
     let mut requested_interface = None;
-
-    if (svc_name == "localhost" || svc_name == "127.0.0.1")
-        && let Some(ref p) = path
-    {
-        let segments: Vec<&str> = p.split('/').filter(|s| !s.is_empty()).collect();
-        if !segments.is_empty() {
-            svc_name = segments[0].to_string();
-        }
-    }
 
     let mut parts: Vec<&str> = svc_name.split('-').collect();
     if parts.len() > 1
@@ -110,85 +212,45 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<BootstrapState>) ->
         svc_name = parts.join("-");
     }
 
-    // Resolve alias to canonical DID if possible
     let mut target_peer_id = svc_name.clone();
     let mut target_service_id = svc_name.clone();
     let mut target_iroh_addr = None;
 
-    if let Some(registry_url) = &state.registry_url {
-        debug!("Attempting to resolve alias: {}", svc_name);
-        match syneroym_core::community_registry::RegistryClient::lookup(
-            registry_url,
-            &svc_name,
-            true,
-        )
-        .await
-        {
-            Ok(info) => {
-                info!(
-                    "Resolved service alias '{}' to substrate DID '{}' and service DID '{}'",
-                    svc_name, info.info.substrate_id, info.info.service_id
-                );
-                target_peer_id = info.info.substrate_id;
-                target_service_id = info.info.service_id;
-
-                // Capture Iroh mechanism for direct connection
-                for mechanism in info.info.mechanisms {
-                    if let EndpointMechanism::Iroh { endpoint_addr_bytes, .. } = mechanism
-                        && let Ok(addr) =
-                            serde_json::from_slice::<iroh::EndpointAddr>(&endpoint_addr_bytes)
-                    {
-                        target_iroh_addr = Some(addr);
-                        break;
-                    }
-                }
-            }
-            Err(e) => {
-                warn!(
-                    "Failed to resolve alias '{}' (might be a DID or not registered): {}",
-                    svc_name, e
-                );
+    if let Some(registry_url) = &state.registry_url
+        && let Ok(info) =
+            syneroym_core::community_registry::RegistryClient::lookup(registry_url, &svc_name, true)
+                .await
+    {
+        target_peer_id = info.info.substrate_id;
+        target_service_id = info.info.service_id;
+        for mechanism in info.info.mechanisms {
+            if let EndpointMechanism::Iroh { endpoint_addr_bytes, .. } = mechanism
+                && let Ok(addr) = serde_json::from_slice::<iroh::EndpointAddr>(&endpoint_addr_bytes)
+            {
+                target_iroh_addr = Some(addr);
+                break;
             }
         }
     }
 
-    // If it's a WebSocket upgrade, we tunnel to Iroh
-    if is_websocket_upgrade(&buf[..n]) {
-        debug!("WebSocket upgrade detected, tunneling to Iroh for {}", svc_name);
-        return tunnel_to_iroh(
-            stream,
-            state,
-            target_peer_id,
-            target_service_id,
-            requested_interface,
-            target_iroh_addr,
-        )
-        .await;
+    tunnel_to_iroh(
+        stream,
+        state,
+        target_peer_id,
+        target_service_id,
+        requested_interface,
+        target_iroh_addr,
+    )
+    .await
+}
+
+fn extract_path_from_http(buf: &[u8]) -> Option<String> {
+    let mut headers = [httparse::EMPTY_HEADER; 64];
+    let mut req = httparse::Request::new(&mut headers);
+    if let Ok(httparse::Status::Complete(_)) = req.parse(buf) {
+        return req.path.map(|p| p.to_string());
     }
-
-    // Construct signaling server URL
-    let scheme = if is_tls { "wss" } else { "ws" };
-    let signaling_server_url =
-        construct_signaling_url(scheme, &host, &state.external_host, state.signaling_port);
-
-    // Serve the bootstrap page
-    let tpl = PeerProxyTemplate {
-        target_peer_id: &target_peer_id,
-        target_service_id: &target_service_id,
-        signaling_server_url,
-        http_version: "HTTP/1.1",
-    };
-    let html = tpl.render()?;
-
-    let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        html.len(),
-        html
-    );
-
-    stream.write_all(response.as_bytes()).await?;
-    stream.flush().await?;
-    Ok(())
+    None
 }
 
 fn construct_signaling_url(
@@ -234,7 +296,7 @@ async fn tunnel_to_iroh(
     service_id: String,
     requested_interface: Option<String>,
     iroh_addr: Option<iroh::EndpointAddr>,
-) -> Result<()> {
+) -> anyhow::Result<()> {
     let iface = if let Some(req_iface) = requested_interface {
         req_iface
     } else {
