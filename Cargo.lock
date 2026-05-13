@@ -5764,6 +5764,7 @@ dependencies = [
  "askama_axum",
  "axum",
  "bytes",
+ "ed25519-dalek 2.2.0",
  "futures",
  "httparse",
  "iroh",
@@ -5773,6 +5774,7 @@ dependencies = [
  "serde",
  "serde_json",
  "syneroym-core",
+ "syneroym-identity",
  "syneroym-router",
  "tempfile",
  "tls-parser",
@@ -5782,6 +5784,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "z32",
 ]
 
 [[package]]

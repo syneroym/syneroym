@@ -235,19 +235,33 @@
                     dc.send(new TextEncoder().encode(preamble));
 
                     // 2. Send Request Headers
-                    const headersMap = new Map(reqData.headers.map(h => [h[0].toLowerCase(), h[1]]));
-                    console.debug(`[Page] Request Headers got from SW:\n${reqData.headers}`);
+                    const headersMap = new Map();
+                    for (const [k, v] of reqData.headers) {
+                        const lowK = k.toLowerCase();
+                        // Filter out HTTP/2 pseudo-headers if they somehow leaked in
+                        if (lowK.startsWith(':')) continue;
+                        headersMap.set(lowK, v);
+                    }
 
                     if (reqData.hasBody && !headersMap.has('content-length')) {
                         headersMap.set('transfer-encoding', 'chunked');
                         useChunkedEncoding = true;
                     }
 
-                    const headers = [];
-                    headersMap.forEach((v, k) => headers.push(`${k}: ${v}`));
+                    // Ensure Host header is present (Axum/Hyper requires it for HTTP/1.1)
+                    if (!headersMap.has('host')) {
+                        headersMap.set('host', url.host);
+                    }
+
+                    // Force Connection: close for now to avoid keep-alive issues on proxied streams
+                    headersMap.set('connection', 'close');
 
                     let reqStr = `${reqData.method} ${url.pathname + url.search} ${HTTP_VERSION}\r\n`;
-                    reqStr += headers.join('\r\n') + '\r\n\r\n';
+                    for (const [k, v] of headersMap) {
+                        reqStr += `${k}: ${v}\r\n`;
+                    }
+                    reqStr += '\r\n';
+
                     console.debug(`[Page] Sending Request Headers:\n${reqStr}`);
                     dc.send(new TextEncoder().encode(reqStr));
 
