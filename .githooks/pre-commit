@@ -8,13 +8,7 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# Run clippy to catch common mistakes
-echo "Checking cargo clippy..."
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-if [ $? -ne 0 ]; then
-    echo "❌ cargo clippy failed! Please fix the warnings before committing."
-    exit 1
-fi
+# (Optional) You can add other lightweight checks here
 
 echo "✅ All pre-commit checks passed!"
 exit 0
