@@ -1,5 +1,3 @@
-use chromiumoxide::browser::{Browser, BrowserConfig};
-use chromiumoxide::handler::viewport::Viewport;
 use futures::{SinkExt, StreamExt};
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,7 +8,7 @@ use syneroym_router::ConnectionRouter;
 use syneroym_router::net_webrtc::WebRTCStream;
 use tempfile::tempdir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tracing::{debug, info};
+use tracing::debug;
 use webrtc::api::APIBuilder;
 use webrtc::api::setting_engine::SettingEngine;
 use webrtc::peer_connection::configuration::RTCConfiguration;
