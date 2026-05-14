@@ -1,0 +1,13 @@
+{
+  "name": "syneroym-e2e-webrtc",
+  "version": "1.0.0",
+  "description": "Playwright end-to-end tests for Syneroym WebRTC Substrate",
+  "scripts": {
+    "test": "playwright test",
+    "test:debug": "playwright test --debug"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.40.0",
+    "@types/node": "^20.0.0"
+  }
+}

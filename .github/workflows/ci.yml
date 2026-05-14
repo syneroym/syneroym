@@ -12,6 +12,11 @@ on:
         required: false
         type: boolean
         default: false
+      e2e:
+        description: "Run Playwright E2E integration tests, WIP as of now"
+        required: false
+        type: boolean
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -75,6 +80,20 @@ jobs:
         with:
           files: lcov.info
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.e2e }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run Playwright E2E Tests
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.e2e }}
+        run: |
+          cd crates/substrate/tests/e2e
+          npm ci
+          npx playwright install --with-deps chromium
+          npm run test
 
       - name: Security Audit
         uses: rustsec/audit-check@v2.0.0

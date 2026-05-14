@@ -6,6 +6,7 @@ rust = "stable"
 "cargo:cargo-component" = "0.21"
 "cargo:cargo-audit" = "latest"
 "cargo:cargo-llvm-cov" = "latest"
+node = "20"
 
 [settings]
 experimental = true
