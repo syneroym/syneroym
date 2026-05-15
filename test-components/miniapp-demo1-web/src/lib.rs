@@ -28,6 +28,10 @@ pub struct Args {
     #[arg(long, default_value_t = 3000)]
     pub port: u16,
 
+    /// HTTPS port to listen on
+    #[arg(long, default_value_t = 3001)]
+    pub https_port: u16,
+
     /// Data directory
     #[arg(long, default_value = "data")]
     pub data_dir: String,
@@ -327,9 +331,91 @@ pub async fn run_server(
         .with_state(state);
 
     info!("listening on http://{}", addr);
+    let http_listener = tokio::net::TcpListener::bind(addr).await?;
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).with_graceful_shutdown(shutdown).await?;
+    // HTTPS Setup
+    let https_addr = SocketAddr::from(([127, 0, 0, 1], args.https_port));
+    info!("listening on https://{}", https_addr);
+    let https_listener = tokio::net::TcpListener::bind(https_addr).await?;
+
+    let cert_pem = include_str!("test_cert.pem");
+    let key_pem = include_str!("test_key.pem");
+
+    let mut cert_reader = std::io::Cursor::new(cert_pem);
+    let mut key_reader = std::io::Cursor::new(key_pem);
+
+    use rustls_pki_types::pem::PemObject;
+
+    let certs: Vec<rustls_pki_types::CertificateDer> =
+        rustls_pki_types::CertificateDer::pem_reader_iter(&mut cert_reader)
+            .collect::<Result<Vec<_>, _>>()?;
+    let key = rustls_pki_types::PrivateKeyDer::from_pem_reader(&mut key_reader)
+        .map_err(|e| format!("no private key found in test_key.pem: {}", e))?;
+
+    let tls_config = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .map_err(|e| format!("invalid certificate: {}", e))?;
+
+    let tls_acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(tls_config));
+
+    let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+    let mut http_shutdown_rx = shutdown_tx.subscribe();
+    let mut https_shutdown_rx = shutdown_tx.subscribe();
+
+    let http_app = app.clone();
+    let http_server = tokio::spawn(async move {
+        axum::serve(http_listener, http_app)
+            .with_graceful_shutdown(async move {
+                let _ = http_shutdown_rx.recv().await;
+            })
+            .await
+            .unwrap();
+    });
+
+    let https_app = app;
+    let https_server = tokio::spawn(async move {
+        use hyper_util::rt::{TokioExecutor, TokioIo};
+        use tower_service::Service;
+
+        loop {
+            let (tcp_stream, _remote_addr) = tokio::select! {
+                res = https_listener.accept() => res.unwrap(),
+                _ = https_shutdown_rx.recv() => break,
+            };
+
+            let tls_acceptor = tls_acceptor.clone();
+            let app = https_app.clone();
+
+            tokio::spawn(async move {
+                let tls_stream = match tls_acceptor.accept(tcp_stream).await {
+                    Ok(tls_stream) => tls_stream,
+                    Err(err) => {
+                        eprintln!("failed to perform tls handshake: {err:#}");
+                        return;
+                    }
+                };
+
+                let io = TokioIo::new(tls_stream);
+                let hyper_service = hyper::service::service_fn(
+                    move |request: hyper::Request<hyper::body::Incoming>| app.clone().call(request),
+                );
+
+                if let Err(err) = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new())
+                    .serve_connection_with_upgrades(io, hyper_service)
+                    .await
+                {
+                    eprintln!("failed to serve connection: {err:#}");
+                }
+            });
+        }
+    });
+
+    // Wait for shutdown signal
+    shutdown.await;
+    let _ = shutdown_tx.send(());
+
+    let _ = tokio::join!(http_server, https_server);
 
     Ok(())
 }

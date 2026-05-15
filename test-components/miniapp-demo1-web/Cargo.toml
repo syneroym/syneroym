@@ -19,3 +19,9 @@ rusqlite = { workspace = true, features = ["bundled"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 rustls.workspace = true
+rustls-pki-types = { workspace = true }
+tokio-rustls = "0.26"
+hyper = { workspace = true, features = ["server", "http1", "http2"] }
+hyper-util = { workspace = true, features = ["server", "server-auto", "tokio"] }
+tower = { workspace = true }
+tower-service = { workspace = true }

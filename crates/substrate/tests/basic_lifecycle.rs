@@ -125,6 +125,7 @@ const IROH_PORT: u16 = 7994;
 const REGISTRY_PORT: u16 = 7991;
 const GATEWAY_PORT: u16 = 7990;
 const MOCK_APP_PORT: u16 = 30001;
+const MOCK_APP_HTTPS_PORT: u16 = 30002;
 
 /// This in-process integration test context manages the lifecycle of a substrate
 /// for testing purposes.
@@ -238,6 +239,8 @@ impl SubstrateTestContext {
 #[tokio::test]
 #[cfg(feature = "app_sandbox")]
 async fn test_substrate_lifecycle_scenarios() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     // We use a single substrate instance to run multiple scenarios.
     // Use non-standard ports to avoid conflicts with other tests.
     let ctx = SubstrateTestContext::setup(IROH_PORT, REGISTRY_PORT, GATEWAY_PORT).await;
@@ -338,6 +341,7 @@ async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
         let args = miniapp_demo1_web::Args {
             service_name: "tcp-demo-app".to_string(),
             port: app_port,
+            https_port: MOCK_APP_HTTPS_PORT,
             data_dir: app_data_dir,
         };
         miniapp_demo1_web::run_server(args, app_addr, async move {
@@ -464,6 +468,46 @@ async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
     } else {
         panic!("Expected text message, got {:?}", response);
     }
+
+    // 6. HTTPS Test
+    debug!(">>> TCP Scenario: HTTPS Test");
+    let https_port = MOCK_APP_HTTPS_PORT;
+    let https_app_identity = syneroym_identity::Identity::generate().unwrap();
+    let https_app_service_id =
+        syneroym_identity::substrate::derive_did_key(&https_app_identity.public_key());
+
+    ctx.substrate_client
+        .deploy_tcp(
+            https_app_service_id.clone(),
+            vec!["default".to_string()],
+            "localhost".to_string(),
+            https_port,
+        )
+        .await
+        .expect("SDK Deploy TCP (HTTPS) request failed");
+
+    register_app_in_registry(
+        https_app_service_id.clone(),
+        ctx.substrate_service_id.clone(),
+        ctx.substrate_mechanisms.clone(),
+        &https_app_identity,
+        &ctx.registry_url,
+        "tcp-https-app",
+    )
+    .await;
+
+    // Use a client that accepts invalid certs (since we use a self-signed cert)
+    let https_req_client =
+        reqwest::Client::builder().danger_accept_invalid_certs(true).build().unwrap();
+
+    // Note: The gateway currently only supports plain HTTP/WS proxying via Host header.
+    // For now, we test the HTTPS endpoint directly to ensure it works.
+    let app_https_url = format!("https://localhost:{}", https_port);
+    let res = https_req_client.get(&app_https_url).send().await.expect("HTTPS GET / failed");
+
+    assert!(res.status().is_success());
+    let text = res.text().await.unwrap();
+    assert!(text.contains("Hello world from tcp-demo-app"));
 
     // Shutdown app
     let _ = app_shutdown_tx.send(()).await;
