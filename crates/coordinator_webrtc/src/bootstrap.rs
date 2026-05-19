@@ -193,10 +193,8 @@ async fn handle_blind_tunnel(socket: WebSocket, state: Arc<BootstrapState>) {
         preamble.enc
     );
 
-    // Resolve the Iroh endpoint for the substrate hosting this service.
-    // The packet is directed at preamble.service_id, but the Iroh connection is always
-    // made to the substrate — substrate_id is always populated in the registry entry.
-    // An explicit Iroh mechanism can override the DID-derived address if needed.
+    // Resolve Iroh endpoint for the substrate hosting this service.
+    // Connection is made to the substrate_id resolved from registry.
     let registry_url = match &state.registry_url {
         Some(url) => url,
         None => {
@@ -315,66 +313,56 @@ async fn handle_blind_tunnel(socket: WebSocket, state: Arc<BootstrapState>) {
     let (mut iroh_read, mut iroh_write) = tokio::io::split(iroh_stream);
 
     let ws_to_iroh = async move {
-        let mut total = 0usize;
         while let Some(msg_res) = ws_receiver.next().await {
             match msg_res {
                 Ok(Message::Binary(bin)) => {
-                    let n = bin.len();
-                    debug!("[BlindTunnel][WS->Iroh] {} bytes", n);
-                    if iroh_write.write_all(&bin).await.is_err() {
+                    if let Err(e) = iroh_write.write_all(&bin).await {
+                        error!("[BlindTunnel][WS->Iroh] Failed to write binary data to Iroh: {e}");
                         break;
                     }
-                    total += n;
                 }
                 Ok(Message::Text(txt)) => {
-                    let n = txt.len();
-                    debug!("[BlindTunnel][WS->Iroh] {} bytes (text)", n);
-                    if iroh_write.write_all(txt.as_bytes()).await.is_err() {
+                    if let Err(e) = iroh_write.write_all(txt.as_bytes()).await {
+                        error!("[BlindTunnel][WS->Iroh] Failed to write text data to Iroh: {e}");
                         break;
                     }
-                    total += n;
                 }
                 Ok(Message::Close(_)) => {
-                    debug!("[BlindTunnel][WS->Iroh] WS close frame received");
+                    break;
+                }
+                Err(e) => {
+                    error!("[BlindTunnel][WS->Iroh] WS reader error: {e}");
                     break;
                 }
                 _ => {}
             }
         }
-        debug!("[BlindTunnel][WS->Iroh] Done; total={} bytes", total);
         let _ = iroh_write.shutdown().await;
     };
 
     let iroh_to_ws = async move {
         let mut buf = vec![0u8; 16384];
-        let mut total = 0usize;
         loop {
             match iroh_read.read(&mut buf).await {
-                Ok(0) => {
-                    debug!("[BlindTunnel][Iroh->WS] EOF from Iroh");
-                    break;
-                }
+                Ok(0) => break,
                 Ok(n) => {
-                    debug!("[BlindTunnel][Iroh->WS] {} bytes", n);
                     let chunk = buf[..n].to_vec();
-                    if ws_sender.send(Message::Binary(chunk.into())).await.is_err() {
-                        debug!("[BlindTunnel][Iroh->WS] WS send failed");
+                    if let Err(e) = ws_sender.send(Message::Binary(chunk.into())).await {
+                        error!("[BlindTunnel][Iroh->WS] Failed to send WebSocket message: {e}");
                         break;
                     }
-                    total += n;
                 }
                 Err(e) => {
-                    debug!("[BlindTunnel][Iroh->WS] Read error: {e}");
+                    error!("[BlindTunnel][Iroh->WS] Iroh stream read error: {e}");
                     break;
                 }
             }
         }
-        debug!("[BlindTunnel][Iroh->WS] Done; total={} bytes", total);
     };
 
     tokio::select! {
-        _ = ws_to_iroh => { debug!("[BlindTunnel] WS->Iroh half finished first"); }
-        _ = iroh_to_ws => { debug!("[BlindTunnel] Iroh->WS half finished first"); }
+        _ = ws_to_iroh => {}
+        _ = iroh_to_ws => {}
     }
     debug!("[BlindTunnel] Tunnel closed for service '{}'", preamble.service_id);
 }

@@ -9,7 +9,7 @@
         const TARGET_PEER_ID = "{{ target_peer_id }}";
         const TARGET_SERVICE_ID = "{{ target_service_id }}";
         const HTTP_VERSION = "{{ http_version }}";
-        const FORCE_TUNNEL = false; //localStorage.getItem('syneroym_force_tunnel') === '1';
+        const FORCE_TUNNEL = false;
         const MY_ID = "gateway-" + Math.random().toString(36).substr(2, 9);
         window.logs = [];
         const originalLog = console.log;
@@ -307,7 +307,6 @@
                     tunnelWS.onmessage = async (event) => {
                         if (closed) return;
                         const bytes = new Uint8Array(event.data);
-                        console.debug(`[Page][BlindTunnel] Incoming WS message: ${bytes.length} bytes (sharedSecret=${!!sharedSecret})`);
 
                         if (clientKeyPair && !sharedSecret) {
                             const combined = new Uint8Array(serverKeyBytes.length + bytes.length);
@@ -566,9 +565,7 @@
 
                 const startBootstrap = () => {
                     bootstrap().catch(err => {
-                        // WebRTC failed (e.g. symmetric NAT, UDP blocked). Fall back to the
-                        // blind tunnel path: isConnected stays false so connectTunnel will
-                        // automatically use the WebSocket tunnel for all subsequent requests.
+                        // WebRTC failed; fallback to secure blind tunnel
                         console.warn("[Page] WebRTC bootstrap failed, falling back to blind tunnel:", err.message);
                         reloadContent();
                     });
