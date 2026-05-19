@@ -292,6 +292,8 @@ impl SyneroymClient {
                     protocol: RouteProtocol::JsonRpc,
                     interface: interface_name.to_string(),
                     service_id: service_id.to_string(),
+                    enc: None,
+                    pubkey: None,
                 }
                 .to_preamble_line();
                 send.write_all(preamble.as_bytes()).await?;

@@ -66,6 +66,11 @@ impl WebRTCStream {
                         }
                     }
                 }
+                // Explicitly close the DataChannel so the browser-side dc.onclose fires.
+                // Without this, the TransformStream body is never closed and response.text() hangs.
+                if let Err(e) = channel_write.close().await {
+                    debug!("WebRTCStream bridge: DataChannel close error: {}", e);
+                }
             });
 
             let _ = tokio::join!(inbound, outbound);

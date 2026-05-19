@@ -94,12 +94,16 @@ pub struct RoutePreamble {
     pub interface: String,
     /// The unique service identifier
     pub service_id: String,
+    /// Encryption protocol (e.g., ecdh-p256)
+    pub enc: Option<String>,
+    /// Ephemeral client public key (hex)
+    pub pubkey: Option<String>,
 }
 
 impl RoutePreamble {
     /// Parses a preamble string into structured route information.
     ///
-    /// The preamble format is: `protocol://[interface.]service_id`
+    /// The preamble format is: `protocol://[interface.]service_id[?query]`
     ///
     /// # Examples
     ///
@@ -133,9 +137,26 @@ impl RoutePreamble {
             }
         };
 
-        let (interface, service_id) = target
+        let (target_clean, query) =
+            if let Some((t, q)) = target.split_once('?') { (t, Some(q)) } else { (target, None) };
+
+        let mut enc = None;
+        let mut pubkey = None;
+        if let Some(q) = query {
+            for part in q.split('&') {
+                if let Some((k, v)) = part.split_once('=') {
+                    if k == "enc" {
+                        enc = Some(v.to_string());
+                    } else if k == "pubkey" {
+                        pubkey = Some(v.to_string());
+                    }
+                }
+            }
+        }
+
+        let (interface, service_id) = target_clean
             .rsplit_once(syneroym_core::constants::PREAMBLE_SEPARATOR)
-            .unwrap_or(("", target));
+            .unwrap_or(("", target_clean));
 
         if service_id.is_empty() {
             return Err(anyhow!("Incomplete preamble (missing service_id): {raw}"));
@@ -146,6 +167,8 @@ impl RoutePreamble {
             protocol,
             interface: interface.to_string(),
             service_id: service_id.to_string(),
+            enc,
+            pubkey,
         })
     }
 
@@ -160,6 +183,8 @@ impl RoutePreamble {
             protocol: RouteProtocol::JsonRpc,
             service_id: service_id.into(),
             interface: interface.into(),
+            enc: None,
+            pubkey: None,
         }
     }
 
@@ -185,6 +210,8 @@ impl RoutePreamble {
             protocol: RouteProtocol::JsonRpc,
             interface: interface.to_string(),
             service_id: service_id.to_string(),
+            enc: None,
+            pubkey: None,
         })
     }
 
@@ -208,18 +235,23 @@ impl fmt::Display for RoutePreamble {
             (RouteTransport::Raw, p) => format!("raw-{}", p),
         };
 
-        if self.interface.is_empty() {
-            write!(f, "{}://{}", scheme, self.service_id)
+        let mut base = if self.interface.is_empty() {
+            format!("{}://{}", scheme, self.service_id)
         } else {
-            write!(
-                f,
+            format!(
                 "{}://{}{}{}",
                 scheme,
                 self.interface,
                 syneroym_core::constants::PREAMBLE_SEPARATOR,
                 self.service_id
             )
+        };
+
+        if let (Some(enc), Some(pubkey)) = (&self.enc, &self.pubkey) {
+            base = format!("{}?enc={}&pubkey={}", base, enc, pubkey);
         }
+
+        write!(f, "{}", base)
     }
 }
 
@@ -285,6 +317,19 @@ mod tests {
     }
 
     #[test]
+    fn parses_with_query_params() {
+        let parsed =
+            RoutePreamble::parse("raw://health|substrate-123?enc=ecdh-p256&pubkey=abc123\n")
+                .unwrap();
+        assert_eq!(parsed.transport, RouteTransport::Raw);
+        assert_eq!(parsed.protocol, RouteProtocol::Raw);
+        assert_eq!(parsed.interface, "health");
+        assert_eq!(parsed.service_id, "substrate-123");
+        assert_eq!(parsed.enc, Some("ecdh-p256".to_string()));
+        assert_eq!(parsed.pubkey, Some("abc123".to_string()));
+    }
+
+    #[test]
     fn test_display() {
         let p1 = RoutePreamble::parse("http://health|substrate-123").unwrap();
         assert_eq!(p1.to_string(), "http://health|substrate-123");
@@ -297,5 +342,9 @@ mod tests {
 
         let p4 = RoutePreamble::parse("wrpc://my-interface|my-service").unwrap();
         assert_eq!(p4.to_string(), "wrpc://my-interface|my-service");
+
+        let p5 = RoutePreamble::parse("raw://health|substrate-123?enc=ecdh-p256&pubkey=abc123\n")
+            .unwrap();
+        assert_eq!(p5.to_string(), "raw://health|substrate-123?enc=ecdh-p256&pubkey=abc123");
     }
 }

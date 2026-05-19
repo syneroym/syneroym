@@ -68,29 +68,35 @@ impl RouteHandler {
 impl IrohProtocolHandler for RouteHandler {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         let endpoint_id = connection.remote_id();
-        debug!("accepted connection from {endpoint_id}");
+        debug!("[Router] Accepted Iroh connection from {endpoint_id}");
 
         loop {
             match connection.accept_bi().await {
                 Ok((send, recv)) => {
+                    debug!(
+                        "[Router] New bi-directional stream from {endpoint_id}; spawning handler"
+                    );
                     let iroh_stream = IrohStream::new(send, recv);
                     let handler = self.clone();
                     tokio::spawn(async move {
                         if let Err(e) = handler.handle_stream(iroh_stream).await {
-                            error!("Error handling Iroh stream: {}", e);
+                            error!(
+                                "[Router] Error handling Iroh stream from {}: {}",
+                                endpoint_id, e
+                            );
                         }
-                        debug!("handled stream");
+                        debug!("[Router] Stream from {} completed", endpoint_id);
                     });
                 }
                 Err(e) => {
-                    debug!("Connection {endpoint_id} closed or error: {e}");
+                    debug!("[Router] Connection {endpoint_id} closed or error: {e}");
                     break;
                 }
             }
         }
 
         connection.closed().await;
-        debug!("connection closed");
+        debug!("[Router] Iroh connection from {endpoint_id} fully closed");
 
         Ok(())
     }

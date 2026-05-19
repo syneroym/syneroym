@@ -301,6 +301,10 @@ async fn connect_signaling(
 
 async fn handle_data_channel(d: Arc<RTCDataChannel>, route_handler: RouteHandler) {
     let d_label = d.label().to_owned();
+    if d_label == "_init" {
+        debug!("dummy WebRTC DataChannel '_init'");
+        return;
+    }
     info!("New DataChannel {}", d_label);
 
     let d2 = d.clone();

@@ -27,6 +27,12 @@ iroh-relay.workspace = true
 webrtc.workspace = true
 tokio-tungstenite.workspace = true
 futures.workspace = true
+aes-gcm.workspace = true
+p256.workspace = true
+rand.workspace = true
+hex.workspace = true
+
+
 
 [dev-dependencies]
 syneroym-core = { path = "../core", features = ["test-utils"] }

@@ -1,26 +1,26 @@
-use anyhow::anyhow;
 use askama::Template;
 use axum::{
     Router,
     body::Body,
-    extract::State,
+    extract::{
+        State,
+        ws::{Message, WebSocket, WebSocketUpgrade},
+    },
     http::{Request, StatusCode, header},
     response::{Html, IntoResponse},
-    routing::get,
+    routing::{any, get},
 };
-use hyper_util::rt::{TokioExecutor, TokioIo};
-use hyper_util::server::conn::auto::Builder;
-use hyper_util::service::TowerToHyperService;
+use futures::{SinkExt, StreamExt};
 use iroh::Endpoint;
 use std::sync::Arc;
 use syneroym_core::community_registry::EndpointMechanism;
-use syneroym_core::protocol_utils::{extract_service_from_host, extract_sni, is_tls_client_hello};
+use syneroym_core::protocol_utils::extract_service_from_host;
 use syneroym_core::registry::EndpointRegistry;
 use syneroym_identity::substrate::resolve_did_key;
 use syneroym_router::SYNEROYM_ALPN;
 use syneroym_router::net_iroh::IrohStream;
-use tokio::io::AsyncWriteExt;
-use tokio::net::{TcpListener, TcpStream};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 use tracing::{debug, error, info};
 
 pub struct BootstrapState {
@@ -44,23 +44,15 @@ pub async fn start(listener: TcpListener, state: Arc<BootstrapState>) -> anyhow:
     info!("Bootstrap server listening on http://{}", listener.local_addr()?);
 
     let app = app(state.clone());
-
-    loop {
-        let (stream, peer_addr) = listener.accept().await?;
-        let state = state.clone();
-        let app = app.clone();
-        tokio::spawn(async move {
-            if let Err(e) = handle_connection(stream, state, app).await {
-                error!("Error handling bootstrap connection from {}: {}", peer_addr, e);
-            }
-        });
-    }
+    axum::serve(listener, app).await?;
+    Ok(())
 }
 
 fn app(state: Arc<BootstrapState>) -> Router {
     Router::new()
         .route("/sw.js", get(handle_sw))
         .route("/__syneroym/sw.js", get(handle_sw))
+        .route("/__syneroym/tunnel", any(handle_tunnel_upgrade))
         .fallback(handle_bootstrap)
         .with_state(state)
 }
@@ -146,111 +138,245 @@ async fn handle_bootstrap(
     }
 }
 
-async fn handle_connection(
-    stream: TcpStream,
-    state: Arc<BootstrapState>,
-    app: Router,
-) -> anyhow::Result<()> {
-    let mut buf = [0u8; 8192];
-    let n = stream.peek(&mut buf).await?;
-    if n == 0 {
-        return Ok(());
-    }
-
-    // Hybrid Dispatch:
-    // 1. Check for TLS (SNI sniffing)
-    if is_tls_client_hello(&buf[..n]) {
-        let host = extract_sni(&buf[..n])?;
-        return handle_raw_tls_tunnel(stream, state, host).await;
-    }
-
-    // 2. Check for WebSocket upgrade (Raw Tunneling)
-    if is_websocket_upgrade(&buf[..n]) {
-        let host = syneroym_core::protocol_utils::extract_host_from_http(&buf[..n])?;
-        let path = extract_path_from_http(&buf[..n]).unwrap_or_else(|| "/".to_string());
-
-        debug!("WebSocket upgrade detected, tunneling to Iroh for {}", host);
-        return handle_ws_tunnel(stream, state, host, path).await;
-    }
-
-    // 3. Otherwise, pass to Axum
-    let service = TowerToHyperService::new(app);
-    Builder::new(TokioExecutor::new())
-        .serve_connection(TokioIo::new(stream), service)
-        .await
-        .map_err(|e| anyhow::anyhow!("Axum serve error: {}", e))
+async fn handle_tunnel_upgrade(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<BootstrapState>>,
+) -> impl IntoResponse {
+    debug!("[BlindTunnel] WebSocket upgrade request; upgrading connection");
+    ws.on_upgrade(move |socket| handle_blind_tunnel(socket, state))
 }
 
-async fn handle_raw_tls_tunnel(
-    _stream: TcpStream,
-    _state: Arc<BootstrapState>,
-    host: String,
-) -> anyhow::Result<()> {
-    // Current implementation doesn't actually have a TLS tunnel target,
-    // but we keep the logic structure for future use or to avoid breaking SNI sniffing tests.
-    debug!("TLS SNI detected: {}, but raw TLS tunneling is not yet implemented", host);
-    Ok(())
-}
+async fn handle_blind_tunnel(socket: WebSocket, state: Arc<BootstrapState>) {
+    debug!("[BlindTunnel] Connection upgraded; waiting for preamble message");
+    let (mut ws_sender, mut ws_receiver) = socket.split();
 
-async fn handle_ws_tunnel(
-    stream: TcpStream,
-    state: Arc<BootstrapState>,
-    host: String,
-    _path: String,
-) -> anyhow::Result<()> {
-    let mut svc_name = extract_service_from_host(&host)?;
-    let mut requested_interface = None;
+    // 1. Read first message which contains the preamble
+    let msg = match ws_receiver.next().await {
+        Some(Ok(Message::Binary(bin))) => {
+            debug!("[BlindTunnel] Received binary preamble ({} bytes)", bin.len());
+            bin.to_vec()
+        }
+        Some(Ok(Message::Text(txt))) => {
+            debug!("[BlindTunnel] Received text preamble ({} bytes)", txt.len());
+            txt.as_bytes().to_vec()
+        }
+        _ => {
+            error!("[BlindTunnel] Failed to read preamble; closing tunnel");
+            return;
+        }
+    };
 
-    let mut parts: Vec<&str> = svc_name.split('-').collect();
-    if parts.len() > 1
-        && let Some(last) = parts.last()
-        && last.starts_with('i')
-        && last.len() > 1
+    let preamble_str = match String::from_utf8(msg) {
+        Ok(s) => s,
+        Err(e) => {
+            error!("[BlindTunnel] Invalid UTF-8 preamble: {e}");
+            return;
+        }
+    };
+
+    debug!("[BlindTunnel] Raw preamble: {:?}", preamble_str.trim());
+
+    let preamble = match syneroym_router::RoutePreamble::parse(&preamble_str) {
+        Ok(p) => p,
+        Err(e) => {
+            error!("[BlindTunnel] Failed to parse preamble '{}': {e}", preamble_str.trim());
+            return;
+        }
+    };
+
+    debug!(
+        "[BlindTunnel] Preamble parsed: transport={:?} protocol={:?} interface='{}' service_id='{}' enc={:?}",
+        preamble.transport,
+        preamble.protocol,
+        preamble.interface,
+        preamble.service_id,
+        preamble.enc
+    );
+
+    // Resolve the Iroh endpoint for the substrate hosting this service.
+    // The packet is directed at preamble.service_id, but the Iroh connection is always
+    // made to the substrate — substrate_id is always populated in the registry entry.
+    // An explicit Iroh mechanism can override the DID-derived address if needed.
+    let registry_url = match &state.registry_url {
+        Some(url) => url,
+        None => {
+            error!("[BlindTunnel] No community registry configured; cannot resolve substrate");
+            return;
+        }
+    };
+
+    debug!(
+        "[BlindTunnel] Looking up service '{}' in registry at '{}'",
+        preamble.service_id, registry_url
+    );
+    let info = match syneroym_core::community_registry::RegistryClient::lookup(
+        registry_url,
+        &preamble.service_id,
+        true,
+    )
+    .await
     {
-        requested_interface = Some(last[1..].to_string());
-        parts.pop();
-        svc_name = parts.join("-");
-    }
+        Ok(i) => {
+            debug!(
+                "[BlindTunnel] Registry OK: substrate_id='{}' service_id='{}' mechanisms={}",
+                i.info.substrate_id,
+                i.info.service_id,
+                i.info.mechanisms.len()
+            );
+            i
+        }
+        Err(e) => {
+            error!("[BlindTunnel] Registry lookup failed for '{}': {e}", preamble.service_id);
+            return;
+        }
+    };
 
-    let mut target_peer_id = svc_name.clone();
-    let mut target_service_id = svc_name.clone();
-    let mut target_iroh_addr = None;
-
-    if let Some(registry_url) = &state.registry_url
-        && let Ok(info) =
-            syneroym_core::community_registry::RegistryClient::lookup(registry_url, &svc_name, true)
-                .await
-    {
-        target_peer_id = info.info.substrate_id;
-        target_service_id = info.info.service_id;
-        for mechanism in info.info.mechanisms {
-            if let EndpointMechanism::Iroh { endpoint_addr_bytes, .. } = mechanism
-                && let Ok(addr) = serde_json::from_slice::<iroh::EndpointAddr>(&endpoint_addr_bytes)
-            {
-                target_iroh_addr = Some(addr);
-                break;
-            }
+    // Prefer an explicit Iroh mechanism; fall back to deriving from the substrate DID.
+    let mut iroh_addr_from_mechanism = None;
+    for mechanism in &info.info.mechanisms {
+        if let EndpointMechanism::Iroh { endpoint_addr_bytes, .. } = mechanism
+            && let Ok(addr) = serde_json::from_slice::<iroh::EndpointAddr>(endpoint_addr_bytes)
+        {
+            iroh_addr_from_mechanism = Some(addr);
+            break;
         }
     }
 
-    tunnel_to_iroh(
-        stream,
-        state,
-        target_peer_id,
-        target_service_id,
-        requested_interface,
-        target_iroh_addr,
-    )
-    .await
-}
+    let endpoint_addr = match iroh_addr_from_mechanism {
+        Some(addr) => {
+            debug!("[BlindTunnel] Using explicit Iroh mechanism from registry: {:?}", addr);
+            addr
+        }
+        None => {
+            debug!(
+                "[BlindTunnel] No explicit Iroh mechanism; deriving from substrate DID '{}'",
+                info.info.substrate_id
+            );
+            match resolve_did_key(&info.info.substrate_id) {
+                Ok(pubkey) => match iroh::PublicKey::from_bytes(pubkey.as_bytes()) {
+                    Ok(pk) => {
+                        let addr = iroh::EndpointAddr::from(pk);
+                        debug!("[BlindTunnel] Derived Iroh endpoint addr: {:?}", addr);
+                        addr
+                    }
+                    Err(e) => {
+                        error!("[BlindTunnel] Invalid substrate public key bytes: {e}");
+                        return;
+                    }
+                },
+                Err(e) => {
+                    error!(
+                        "[BlindTunnel] Failed to resolve substrate DID '{}': {e}",
+                        info.info.substrate_id
+                    );
+                    return;
+                }
+            }
+        }
+    };
 
-fn extract_path_from_http(buf: &[u8]) -> Option<String> {
-    let mut headers = [httparse::EMPTY_HEADER; 64];
-    let mut req = httparse::Request::new(&mut headers);
-    if let Ok(httparse::Status::Complete(_)) = req.parse(buf) {
-        return req.path.map(|p| p.to_string());
+    debug!("[BlindTunnel] Connecting to Iroh node: {:?}", endpoint_addr);
+    let connection = match state.iroh.connect(endpoint_addr, SYNEROYM_ALPN).await {
+        Ok(c) => {
+            debug!(
+                "[BlindTunnel] Iroh connection established (ALPN={})",
+                std::str::from_utf8(SYNEROYM_ALPN).unwrap_or("<invalid>")
+            );
+            c
+        }
+        Err(e) => {
+            error!("[BlindTunnel] Failed to connect to Iroh node: {e}");
+            return;
+        }
+    };
+
+    let (send, recv) = match connection.open_bi().await {
+        Ok(streams) => {
+            debug!("[BlindTunnel] Bi-directional Iroh stream opened");
+            streams
+        }
+        Err(e) => {
+            error!("[BlindTunnel] Failed to open bi-directional stream: {e}");
+            return;
+        }
+    };
+
+    let mut iroh_stream = IrohStream::new(send, recv);
+
+    // Forward the preamble to the Iroh stream
+    debug!("[BlindTunnel] Forwarding preamble to Iroh ({} bytes)", preamble_str.len());
+    if let Err(e) = iroh_stream.write_all(preamble_str.as_bytes()).await {
+        error!("[BlindTunnel] Failed to write preamble to Iroh stream: {e}");
+        return;
     }
-    None
+    debug!("[BlindTunnel] Preamble sent; starting bidirectional pipe WS<->Iroh");
+
+    // Now, pipe the WebSocket messages bidirectionally to/from the Iroh stream!
+    let (mut iroh_read, mut iroh_write) = tokio::io::split(iroh_stream);
+
+    let ws_to_iroh = async move {
+        let mut total = 0usize;
+        while let Some(msg_res) = ws_receiver.next().await {
+            match msg_res {
+                Ok(Message::Binary(bin)) => {
+                    let n = bin.len();
+                    debug!("[BlindTunnel][WS->Iroh] {} bytes", n);
+                    if iroh_write.write_all(&bin).await.is_err() {
+                        break;
+                    }
+                    total += n;
+                }
+                Ok(Message::Text(txt)) => {
+                    let n = txt.len();
+                    debug!("[BlindTunnel][WS->Iroh] {} bytes (text)", n);
+                    if iroh_write.write_all(txt.as_bytes()).await.is_err() {
+                        break;
+                    }
+                    total += n;
+                }
+                Ok(Message::Close(_)) => {
+                    debug!("[BlindTunnel][WS->Iroh] WS close frame received");
+                    break;
+                }
+                _ => {}
+            }
+        }
+        debug!("[BlindTunnel][WS->Iroh] Done; total={} bytes", total);
+        let _ = iroh_write.shutdown().await;
+    };
+
+    let iroh_to_ws = async move {
+        let mut buf = vec![0u8; 16384];
+        let mut total = 0usize;
+        loop {
+            match iroh_read.read(&mut buf).await {
+                Ok(0) => {
+                    debug!("[BlindTunnel][Iroh->WS] EOF from Iroh");
+                    break;
+                }
+                Ok(n) => {
+                    debug!("[BlindTunnel][Iroh->WS] {} bytes", n);
+                    let chunk = buf[..n].to_vec();
+                    if ws_sender.send(Message::Binary(chunk.into())).await.is_err() {
+                        debug!("[BlindTunnel][Iroh->WS] WS send failed");
+                        break;
+                    }
+                    total += n;
+                }
+                Err(e) => {
+                    debug!("[BlindTunnel][Iroh->WS] Read error: {e}");
+                    break;
+                }
+            }
+        }
+        debug!("[BlindTunnel][Iroh->WS] Done; total={} bytes", total);
+    };
+
+    tokio::select! {
+        _ = ws_to_iroh => { debug!("[BlindTunnel] WS->Iroh half finished first"); }
+        _ = iroh_to_ws => { debug!("[BlindTunnel] Iroh->WS half finished first"); }
+    }
+    debug!("[BlindTunnel] Tunnel closed for service '{}'", preamble.service_id);
 }
 
 fn construct_signaling_url(
@@ -267,74 +393,6 @@ fn construct_signaling_url(
     };
 
     format!("{}://{}:{}/ws", scheme, signaling_host, signaling_port)
-}
-
-fn is_websocket_upgrade(buf: &[u8]) -> bool {
-    let mut headers = [httparse::EMPTY_HEADER; 64];
-    let mut req = httparse::Request::new(&mut headers);
-    // Use Partial here because we might not have a full body, but we should have full headers
-    // since we call this after find_double_crlf.
-    if let Ok(status) = req.parse(buf)
-        && (status.is_partial() || status.is_complete())
-    {
-        let has_upgrade = req.headers.iter().any(|h| {
-            h.name.eq_ignore_ascii_case("Upgrade") && h.value.eq_ignore_ascii_case(b"websocket")
-        });
-        let has_connection = req.headers.iter().any(|h| {
-            h.name.eq_ignore_ascii_case("Connection")
-                && String::from_utf8_lossy(h.value).to_lowercase().contains("upgrade")
-        });
-        return has_upgrade && has_connection;
-    }
-    false
-}
-
-async fn tunnel_to_iroh(
-    mut stream: TcpStream,
-    state: Arc<BootstrapState>,
-    peer_id: String,
-    service_id: String,
-    requested_interface: Option<String>,
-    iroh_addr: Option<iroh::EndpointAddr>,
-) -> anyhow::Result<()> {
-    let iface = if let Some(req_iface) = requested_interface {
-        req_iface
-    } else {
-        let endpoints = state.registry.lookup_by_service(&service_id);
-        endpoints
-            .first()
-            .ok_or_else(|| anyhow!("Service not found in registry: {}", service_id))?
-            .0
-            .clone()
-    };
-
-    let endpoint_addr = if let Some(addr) = iroh_addr {
-        addr
-    } else {
-        // Fallback: Resolve NodeId from peer_id (which might be a DID)
-        let node_id = if peer_id.starts_with("did:key:h") {
-            let pubkey = resolve_did_key(&peer_id)?;
-            iroh::PublicKey::from_bytes(pubkey.as_bytes())?
-        } else {
-            peer_id
-                .parse::<iroh::PublicKey>()
-                .map_err(|_| anyhow!("Invalid NodeId: {}", peer_id))?
-        };
-        iroh::EndpointAddr::from(node_id)
-    };
-
-    debug!("Connecting to Iroh node: {:?}", endpoint_addr);
-    let connection = state.iroh.connect(endpoint_addr, SYNEROYM_ALPN).await?;
-    let (send, recv) = connection.open_bi().await?;
-    let mut iroh_stream = IrohStream::new(send, recv);
-
-    // Send preamble to Iroh
-    let preamble = format!("http://{}|{}\n", iface, service_id);
-    iroh_stream.write_all(preamble.as_bytes()).await?;
-
-    tokio::io::copy_bidirectional(&mut stream, &mut iroh_stream).await?;
-
-    Ok(())
 }
 
 #[cfg(test)]
@@ -366,40 +424,6 @@ mod tests {
             construct_signaling_url("ws", "coordinator.local:7962", &None, 7963),
             "ws://coordinator.local:7963/ws"
         );
-    }
-
-    #[test]
-    fn test_svc_name_interface_splitting() {
-        let cases = vec![
-            ("myapp-p1234-i80", "myapp-p1234", Some("80")),
-            ("myapp-i80", "myapp", Some("80")),
-            ("my-app-i80", "my-app", Some("80")),
-            ("myapp-p1234", "myapp-p1234", None),
-            ("my-i-80", "my-i-80", None), // last part 80 doesn't start with i
-            ("i80", "i80", None),         // parts.len() == 1
-        ];
-
-        for (input, expected_svc, expected_iface) in cases {
-            let mut svc_name = input.to_string();
-            let mut requested_interface = None;
-            let mut parts: Vec<&str> = svc_name.split('-').collect();
-            if parts.len() > 1
-                && let Some(last) = parts.last()
-                && last.starts_with('i')
-                && last.len() > 1
-            {
-                requested_interface = Some(last[1..].to_string());
-                parts.pop();
-                svc_name = parts.join("-");
-            }
-            assert_eq!(svc_name, expected_svc, "Failed for input: {}", input);
-            assert_eq!(
-                requested_interface.as_deref(),
-                expected_iface,
-                "Failed for input: {}",
-                input
-            );
-        }
     }
 
     #[test]

@@ -19,7 +19,10 @@ __pycache__/
 *.tmp
 *.swp
 
-**/scratch-notes*.md
+docs/*scratch-notes*.md
+apps/*prototype
+crates/*prototype
+
 
 crates/substrate/config.dev.toml
 
