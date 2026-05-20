@@ -1,6 +1,6 @@
 // Adapted from: https://github.com/n0-computer/iroh/blob/main/iroh-relay/src/main.rs
 // Original license: MIT OR Apache-2.0
-// Used under MIT OR Apache-2.0 License
+// Used under the Apache-2.0 License option
 use anyhow::{Context, Result};
 use iroh_relay::server::Server;
 use syneroym_core::config::SubstrateConfig;

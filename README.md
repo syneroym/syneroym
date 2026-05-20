@@ -101,4 +101,4 @@ npm test
 Contributions are welcome once the Phase 1 scope is locked. See `CONTRIBUTING.md` for guidelines.
 
 ## License
-MIT OR Apache-2.0
+Apache-2.0

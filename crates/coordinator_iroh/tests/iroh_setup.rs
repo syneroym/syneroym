@@ -1,6 +1,6 @@
 // From: https://github.com/n0-computer/iroh/blob/main/iroh/examples/echo.rs
 // Original license: MIT OR Apache-2.0
-// Used under MIT OR Apache-2.0 License
+// Used under the Apache-2.0 License option
 
 //! Very basic example to showcase how to use iroh's APIs.
 //!
