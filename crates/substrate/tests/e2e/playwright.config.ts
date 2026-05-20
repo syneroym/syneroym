@@ -11,6 +11,7 @@ export default defineConfig({
   globalTeardown: require.resolve('./global-teardown.ts'),
   use: {
     trace: 'on-first-retry',
+    screenshot: 'only-on-failure',
   },
 
   projects: [

@@ -7,7 +7,7 @@
 - Have extensive integration and end to end tests for end user facing interfaces.
 - Have solid unit tests for internal code if it is complex and delicate, even if it is not user facing.
 - If new tools are needed in the build pipeline, add them to `mise.toml` too, so other dev environments easily get it.
-- Do not commit code changes.
+- Do not commit code changes, and also do not add code changes to git index.
 
 ## Project & Rust Specifics
 - Given the presence of WASM component configurations (`wasm32-wasip1`), maintain clean `wit` file boundaries and consider cross-compilation constraints.

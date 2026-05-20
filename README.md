@@ -65,11 +65,37 @@ cargo run --bin syneroym -- --help
 
 ### Testing
 
-Run the Rust test suite:
+We organize tests into two suites: the **Rust suite** (for unit/integration tests) and the **Playwright E2E suite** (for browser-automation and WebRTC data plane scenarios).
+
+#### Using Mise (Recommended)
+
+If you are using `mise`, you can run self-documenting workspace tasks:
 
 ```bash
-cargo test
+# Run both the Rust and browser E2E test suites sequentially
+mise run test:all
+
+# Run only Rust unit and integration tests
+mise run test:rust
+
+# Run only Playwright E2E browser tests
+mise run test:e2e
 ```
+
+#### Using raw commands
+
+If you're not using `mise`, you can run the suites individually using standard toolchains:
+
+```bash
+# Run Rust unit/integration tests
+cargo test --workspace
+
+# Run Playwright E2E tests
+cd crates/substrate/tests/e2e
+npm install
+npm test
+```
+
 
 ## Contributing
 Contributions are welcome once the Phase 1 scope is locked. See `CONTRIBUTING.md` for guidelines.

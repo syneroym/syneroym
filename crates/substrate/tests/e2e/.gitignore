@@ -1,0 +1,13 @@
+# Node dependencies
+node_modules/
+
+# Playwright artifacts
+playwright-report/
+test-results/
+
+# Dynamic E2E test data
+.e2e-data/
+
+# Temporary files created during binary file tests
+tests/test-file-*.txt
+tests/downloaded-test-file-*.txt

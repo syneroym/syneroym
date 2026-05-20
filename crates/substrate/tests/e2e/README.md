@@ -1,63 +1,81 @@
-## E2E browser automation test for webrtc
-This is an end to end test to verify that miniapps can be accessed via webrtc. Uses playwright for automation. We spin up substrate, a web miniapp and then use playwright to exercise various features of the miniapp.
+# Substrate WebRTC Browser E2E Tests
 
-This is work in progress. The automation is still not working as expected. The below instructions show how the automation can be run step by step for manual troubleshooting. Remember, there may be some issue in the test steps too. 
+This directory contains a black-box, end-to-end browser automation suite built using **Playwright** and **TypeScript** to verify that a client browser can successfully access mini-apps over WebRTC and fallback transport protocols.
 
-### Troubleshooting the "Timed out waiting for substrate to become ready" error
-The `roymctl app deploy` command is currently failing in automation because the `SyneroymClient` (used internally by `roymctl`) cannot connect to the local substrate via Iroh. This usually happens if:
-1. The substrate hasn't fully registered its Iroh endpoint in the Community Registry yet.
-2. There's a connectivity issue with the local Iroh node (e.g., port binding or relay discovery).
+## Test Architecture
 
-### Manual Troubleshooting Guide
-If you'd like to troubleshoot this manually, follow these steps to set up the environment yourself:
+The E2E test runs against a fully local, self-contained instance of the Syneroym ecosystem to guarantee reproducibility and speed. During the global setup:
 
-#### 1. Initialize a Test Directory
-```bash
-mkdir -p .e2e-data
-# Initialize a node identity
-cargo run --bin roymctl -- node init --dir .e2e-data
+```
+┌────────────────────────────────────────────────────────────────┐
+│                   Playwright E2E Environment                   │
+│                                                                │
+│  ┌───────────────────────┐          ┌───────────────────────┐  │
+│  │   syneroym-substrate  │          │   miniapp-demo1-web   │  │
+│  │   (Substrate Daemon)  │◄─────────│   (Test Rust Backend) │  │
+│  └───────────────────────┘          └───────────────────────┘  │
+│              ▲                                                 │
+│              │ (WebRTC Signalling & Data Plane)                │
+│              ▼                                                 │
+│  ┌───────────────────────┐                                     │
+│  │    Chromium Browser   │                                     │
+│  │  (with Service Worker)│                                     │
+│  └───────────────────────┘                                     │
+└────────────────────────────────────────────────────────────────┘
 ```
 
-#### 2. Start the Substrate (Terminal 1)
-Create a `syneroym.toml` in `.e2e-data` with the ports we defined (7660-7665) and set `registry_url = "http://127.0.0.1:7661"`.
+1. **Clean Workspace Initialization:** Creates a temporary, isolated config directory (`.e2e-data`).
+2. **Infrastructure Initialization:** Generates a local node identity and sets up a local Substrate config.
+3. **Local Relays & Registries Boot:**
+   * Runs the **Community Registry** HTTP server (port `7661`).
+   * Runs the local **Iroh QUIC Relay** (port `7664`) and signalling server.
+   * Runs the local **WebRTC Signalling** WebSocket server (port `7663`) and Bootstrap HTTP server (port `7662`).
+   * Runs the **Client Gateway** reverse proxy (port `7660`).
+4. **Substrate Daemon Spin-up:** Spawns a background `syneroym-substrate` node configured with local relays and communication interfaces.
+5. **Mini-app Backend Boot:** Launches `miniapp-demo1-web` (listening on port `3000`).
+6. **E2E Deployment:** Registers the mini-app with the local registry and deploys the TCP passthrough routing.
+
+## Test Scenarios Covered
+
+The test suite in [`tests/webrtc.spec.ts`](tests/webrtc.spec.ts) acts as a real client using the WebRTC proxying service worker:
+
+1. **Bootstrap & Navigation:** Loads the bootstrap page via the registered app alias, activates the proxying Service Worker, and verifies successful rendering of the home page.
+2. **REST API Interactions (POST/GET):** Intercepts and proxies dynamic API comments (`POST /api/comments`) over the WebRTC DataChannel.
+3. **Real-time WebSockets:** Connects to the local WebSocket echo/broadcast endpoint and asserts that messages are successfully signaled live.
+4. **Binary File Handling:** Intercepts and verifies file uploads (`POST /api/files`) and dynamic downloads (`GET /api/files/:filename`) over WebRTC.
+
+## How to Run Tests
+
+### Workspace level (Recommended)
+From the root of the Syneroym workspace:
+
 ```bash
-cargo run --bin syneroym-substrate -- run --config .e2e-data/syneroym.toml
-```
-*Look for the line: `substrate identity initialized, did: did:key:h...` and copy the DID.*
+# Run all tests (Rust + Playwright E2E)
+mise run test:all
 
-#### 3. Start the Miniapp (Terminal 2)
+# Run E2E tests only (headless)
+mise run test:e2e
+
+# Run E2E tests in interactive UI Mode (with UI visible)
+mise run test:e2e-ui
+```
+
+### Local level
+From this directory:
+
 ```bash
-cargo run -p miniapp-demo1-web -- --port 3000 --data-dir .e2e-data/miniapp-data
-```
+# Install Node dependencies
+npm install
 
-#### 4. Deploy and Register (Terminal 3)
-```bash
-# 1. Create an identity for the app
-cargo run --bin roymctl -- identity create --name demo1 --dir .e2e-data
-# Get the App DID
-APP_DID=$(cargo run --bin roymctl -- identity show --name demo1 --dir .e2e-data | grep -o 'did:key:[a-z0-9]*')
+# Run the test suite (headless)
+npm test
 
-# 2. Register the app in the Registry
-cargo run --bin roymctl -- registry register --identity demo1 --substrate <SUBSTRATE_DID> --nickname demo1 --dir .e2e-data --api-url http://127.0.0.1:7661
+# Run tests in Playwright's interactive UI Mode (highly recommended for debugging)
+npx playwright test --ui
 
-# 3. Deploy the TCP passthrough
-cargo run --bin roymctl -- app deploy --app-id $APP_DID --interfaces http --tcp 127.0.0.1:3000 --substrate <SUBSTRATE_DID> --dir .e2e-data --api-url http://127.0.0.1:7661
-```
+# Run tests in headed browser mode
+npx playwright test --headed
 
-#### 5. Verify in Browser
-Calculate the alias:
-```bash
-cargo run --bin roymctl -- alias $APP_DID --nickname demo1 --interface http
-```
-Visit the resulting URL on port **7662** (e.g., `http://demo1-p9y1qiex4-ihboda1c4.localhost:7662/`).
-
----
-
-I have documented the progress in the [task.md](file:///Users/pari/.gemini/antigravity/brain/6d515352-0d6d-404d-a3a7-5a79f4e55f84/task.md) and provided the updated code for the tests.
-
-```typescript
-// crates/substrate/tests/e2e/tests/webrtc.spec.ts
-const appAlias = process.env.APP_ALIAS;
-const url = `http://${appAlias}:7662/`; // Corrected URL
-await page.goto(url);
+# Run tests in Playwright Inspector (step-by-step debug mode)
+npm run test:debug
 ```
