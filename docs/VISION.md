@@ -39,7 +39,7 @@ We feel there is room for alternate systems that bring the best of both worlds, 
 
 We will take a shot at building one such an alternative with `Autonomous Cooperating Mini-Apps over a common technology substrate`. Specifically we will build:
 
-- A technology substrate that catalyzes building similar value generation ecosystems on top by providing needed underlying technology ingradients via of Mini-apps running on top of it.
+- A technology substrate that catalyzes building similar value generation ecosystems by providing useful technology primitives to Mini-apps running on top of it.
 
 - Mini-apps for selected business verticals that act as fundamental blocks of the new ecosystem. We will start by building the following two.
     1. Federated Professional Services Guild (Home services first)

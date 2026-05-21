@@ -72,9 +72,9 @@ High-level requirement highlights:
 - Providers self-host business applications on commodity hardware (PCs, phones, Raspberry Pi) without requiring cloud accounts or deep technical expertise.
 - Providers federate with others to share infrastructure and improve resilience and discovery reach.
 - Consumers discover and transact with providers through a unified experience regardless of which substrate hosts the provider.
-- The substrate provides shared primitives (identity, messaging, payments, reputation) that SynApps build on rather than re-implement.
+- The substrate provides shared primitives (identity, messaging, discovery, payments, reputation) that SynApps build on rather than re-implement.
 - The system degrades gracefully under network partition — queuing, offline-first storage, and async workflows keep transactions progressing.
-- All participants retain the ability to exit — migrating data and services to a different infrastructure provider or running independently.
+- All provider participants retain the ability to exit — migrating data and services to a different infrastructure provider or running independently.
 
 ## MVP Boundary (Phase 1)
 
@@ -91,7 +91,6 @@ The following scope boundary is added to keep implementation decisions focused.
 
 - Syneroym-native coin or mutual credit issuance.
 - Advanced ad auction and marketplace economics.
-- Fully decentralised bootstrap replacement.
 - Complex AI-assisted workflow synthesis.
 
 ---
@@ -122,7 +121,7 @@ The following are key personas. A single person or organisation may play multipl
 
 **App Developer.** A person or organisation that builds SynApps and publishes them for others to deploy. Does not necessarily host or operate any infrastructure.
 
-**Bootstrap Server.** A Syneroym-operated service that maintains a registry of active Relays, and handles other system management responsibilities.
+**Bootstrap Server.** A Syneroym-operated service that is a registry of active services and Relays, and handles other system management responsibilities.
 
 **Consumer / General User.** Uses the Syneroym ecosystem to discover and purchase services or products, or to interact with other entities.
 
@@ -365,7 +364,7 @@ Description of the core Syneroym substrate functionality, key protocols, and imp
 - Substrate generates admin keypair on first run. Private key never leaves the node.
 - Substrate registers with a Relay:
     - Contacts a bootstrap service to obtain a home relay assignment.
-    - Publishes its node public key and associated relay routing information to a distributed registry or network (used for the node's control plane, e.g. SYN-SVC deploy/remove).
+    - Publishes its node public key and associated relay routing information to a distributed registry or p2p network (used for the node's control plane, e.g. SYN-SVC deploy/remove).
     - Starts a secure communication server listening via the assigned relay and/or direct peer-to-peer interfaces.
 - Substrate identifies its capabilities (sandbox/container types, quota configurability). Node owner configures capability limits (CPU, GPU, memory, disk, other capabilities) available to hosted Services.
 - Access control setup:
@@ -404,9 +403,10 @@ Description of the core Syneroym substrate functionality, key protocols, and imp
 
 ### Bootstrap
 
-- Maintains a registry of officially operated relays with capability metadata (TCP relay, TURN, etc.).
+- Accepts NodeId registration offers; with associated relay details as applicable.
+- Maintains a list of officially operated relays with capability metadata (TCP relay, TURN, etc.).
 - Accepts community relay registration offers; verifies capability claims (offline or real-time checks).
-- Registers DNS entries for community relays under `*.syneroym.net`.
+- Registers DNS entries for community relays under its domain e.g. `*.syneroym.xyz`.
 - Returns a weighted random set of relays from the registry based on requested capability and relay capacity.
 - Periodically audits registered relays and expires stale entries.
 - For node ID lookups, checks internal cache or DHT fallback and returns the relay. For HTTP URL lookups from browsers, finds the relay and issues an HTTP redirect.
