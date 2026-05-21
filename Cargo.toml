@@ -53,7 +53,7 @@ uuid = { version = "1.12", features = ["v4"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tracing-appender = "0.2"
-dashmap = "6.1"
+dashmap = "6.2"
 httparse = "1.10"
 async-trait = "0.1"
 z32 = "1.3"
