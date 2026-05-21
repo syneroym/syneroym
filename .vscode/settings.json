@@ -16,5 +16,8 @@
   "rust-analyzer.runnables.extraEnv": {
     "RUST_LOG": "syneroym=debug"
   },
-  "geminicodeassist.agentYoloMode": true,
+  "rust-analyzer.linkedProjects": [
+    "test-components/greeter/Cargo.toml"
+  ],
+  "geminicodeassist.agentYoloMode": true
 }

@@ -9,9 +9,6 @@ anyhow.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 reqwest.workspace = true
-# TODO: Upgrade sha2 to v0.11 once iroh updates its crates. 
-# iroh-base v0.97.0 strictly pins sha2 = "=0.11.0-rc.2", causing resolution 
-# conflicts if we attempt to use the stable 0.11 release here.
 sha2.workspace = true
 hex.workspace = true
 syneroym-bindings = { path = "../bindings" }
