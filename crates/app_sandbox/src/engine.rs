@@ -1,3 +1,8 @@
+//! WASM execution engine based on Wasmtime
+//!
+//! Sets up the sandboxed environment with strict CPU/memory quotas,
+//! registers host capabilities, and runs WASM component binaries.
+
 use anyhow::{Context, Result};
 use dashmap::DashMap;
 use std::path::PathBuf;

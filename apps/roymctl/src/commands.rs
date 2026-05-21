@@ -1,3 +1,7 @@
+//! Roymctl CLI subcommands orchestrator
+//!
+//! Registers CLI parsing hooks and routes input options to command modules.
+
 use clap::Subcommand;
 use std::fs;
 use std::path::PathBuf;

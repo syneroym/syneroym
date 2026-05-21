@@ -1,3 +1,7 @@
+//! Local endpoint stream dispatcher
+//!
+//! Hooks active streams up to their target local services (e.g. WASM sandbox input, native wRPC, or TCP socket).
+
 use super::RouteHandler;
 use crate::preamble::RouteProtocol;
 use crate::routing::{DeliveryMode, ProtocolAdapter, ResolvedRoute, RouteExecution, RoutingPlan};

@@ -1,3 +1,7 @@
+//! Integration tests for Roymctl CLI argument parser
+//!
+//! Verifies correct routing and option validations for roymctl subcommands.
+
 use assert_cmd::Command;
 
 #[test]

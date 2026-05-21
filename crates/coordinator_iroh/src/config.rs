@@ -1,3 +1,7 @@
+//! Configuration for the Iroh Transport Coordinator
+//!
+//! Structs and validation for signaling/relay address bindings and keypaths.
+
 use anyhow::{Context, Result};
 use iroh_relay::server::{self as relay, QuicConfig, ServerConfig};
 use rustls_pki_types::pem::PemObject;

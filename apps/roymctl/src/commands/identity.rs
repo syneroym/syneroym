@@ -1,3 +1,7 @@
+//! Identity management subcommands
+//!
+//! Commands to generate node keypairs, create agreements, and inspect node DIDs.
+
 use clap::Subcommand;
 use std::fs;
 use std::path::Path;

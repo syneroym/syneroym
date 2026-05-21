@@ -1,3 +1,8 @@
+//! Iroh Ecosystem Coordinator
+//!
+//! Establishes secure peer-to-peer tunnels using the Iroh protocol, hosting
+//! the local Iroh endpoint and relay server.
+
 // Adapted from: https://github.com/n0-computer/iroh/blob/main/iroh-relay/src/main.rs
 // Original license: MIT OR Apache-2.0
 // Used under the Apache-2.0 License option

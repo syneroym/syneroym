@@ -1,3 +1,8 @@
+//! Substrate boot-time identity setup and verification
+//!
+//! Loads cryptographic keyfiles, resolves agreements, and initializes verified
+//! controller states during runtime boot.
+
 use std::fs;
 use syneroym_core::config::{DEFAULT_SUBSTRATE_KEY_FILE, IdentityConfig};
 use syneroym_identity::Identity;

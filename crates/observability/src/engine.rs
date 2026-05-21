@@ -1,3 +1,11 @@
+//! Observability diagnostics engine
+//!
+//! Collects metrics, configures structured logging formats (JSON/Pretty),
+//! and handles OTLP trace exports to ensure system visibility.
+//!
+//! TODO: The current implementation is more of a placeholder/basic shell.
+//! We need to integrate full OTLP/OpenTelemetry exports and live metrics collection later.
+
 use anyhow::{Context, Result};
 use std::fs;
 use syneroym_core::config::{LogFormat, LogLevel, LogTarget, SubstrateConfig};

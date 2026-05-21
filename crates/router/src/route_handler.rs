@@ -1,3 +1,7 @@
+//! Protocol-specific routing handlers
+//!
+//! Defines dispatch pipelines for HTTP, wRPC, and raw TCP traffic.
+
 use anyhow::Result;
 use dashmap::DashMap;
 use iroh::endpoint::Connection;

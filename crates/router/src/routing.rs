@@ -1,3 +1,8 @@
+//! Routing table and address resolver
+//!
+//! Resolves nicknames and short hashes, maps remote services to their public substrate address,
+//! and performs access control checking.
+
 use syneroym_core::registry::SubstrateEndpoint;
 
 use crate::preamble::RoutePreamble;

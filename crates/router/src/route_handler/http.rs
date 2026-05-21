@@ -1,3 +1,7 @@
+//! HTTP router request interception
+//!
+//! Handles incoming HTTP traffic, performing URL host rewrite parsing and proxy forwarding.
+
 use anyhow::{Result, anyhow};
 use bytes::Bytes;
 use http_body_util::Full;

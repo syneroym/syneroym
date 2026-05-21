@@ -1,3 +1,7 @@
+//! Registry management subcommands
+//!
+//! Commands for querying, registering, and listing endpoints in the community registry.
+
 use clap::Subcommand;
 use std::fs;
 use std::path::Path;

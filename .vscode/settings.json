@@ -17,6 +17,7 @@
     "RUST_LOG": "syneroym=debug"
   },
   "rust-analyzer.linkedProjects": [
+    "Cargo.toml",
     "test-components/greeter/Cargo.toml"
   ],
   "geminicodeassist.agentYoloMode": true

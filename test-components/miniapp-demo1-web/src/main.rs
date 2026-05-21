@@ -1,3 +1,7 @@
+//! Mini-app demo main entrypoint
+//!
+//! Simple guest process to run basic requests in sandbox execution tests.
+
 #[tokio::main]
 async fn main() {
     rustls::crypto::ring::default_provider()

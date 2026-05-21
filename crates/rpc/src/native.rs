@@ -1,3 +1,8 @@
+//! Native wRPC client & server bridge
+//!
+//! Adapts native wRPC traits to async stream readers/writers, permitting
+//! wRPC calls over raw TCP/IP or Unix Socket streams.
+
 use serde_json::Value;
 use std::fmt::Debug;
 

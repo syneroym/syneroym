@@ -1,3 +1,7 @@
+//! App sandbox deployment and lifecycle subcommands
+//!
+//! Commands to package, deploy, start, list, and terminate sandboxed guest apps.
+
 use clap::Subcommand;
 use std::fs;
 use std::path::PathBuf;

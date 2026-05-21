@@ -1,6 +1,7 @@
 use anyhow::Result;
 use wasmtime::component::{Val, types::Type};
 
+// TODO: This is a very basic implementation. We need to handle more complex types and also consider using named parameters instead of positional ones.
 /// Convert JSON parameters to wasmtime Val vector based on function signature
 pub fn json_to_wasm_params<'a>(
     params_iter: impl Iterator<Item = (&'a str, Type)>,

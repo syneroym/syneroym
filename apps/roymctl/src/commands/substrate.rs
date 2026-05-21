@@ -1,3 +1,7 @@
+//! Substrate control and launch subcommands
+//!
+//! Commands to boot up or manage the main substrate execution node.
+
 use clap::Subcommand;
 use std::fs;
 use std::path::Path;

@@ -1,3 +1,7 @@
+//! Greeter test guest component
+//!
+//! Standard mock WASM component utilizing generated bindings to respond to greeting requests.
+
 mod bindings {
     // The line below will be expanded as Rust code containing
     wit_bindgen::generate!({

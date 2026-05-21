@@ -1,3 +1,7 @@
+//! Mini-app demo guest service library
+//!
+//! Runs a mock sandboxed client library exposing basic network interfaces.
+
 use axum::{
     Router,
     extract::{

@@ -1,3 +1,7 @@
+//! Integration tests for Iroh Transport setup
+//!
+//! Verifies Iroh connection establishing, relay discovery, and routing.
+
 // From: https://github.com/n0-computer/iroh/blob/main/iroh/examples/echo.rs
 // Original license: MIT OR Apache-2.0
 // Used under the Apache-2.0 License option

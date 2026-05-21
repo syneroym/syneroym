@@ -1,3 +1,8 @@
+//! Substrate Service discovery registry
+//!
+//! Tracks local running/deployed micro-services (WASM, TCP, Podman, native host),
+//! enabling internal service-to-service discovery (Internal Micro-Discovery).
+
 use crate::storage::EndpointStorage;
 use anyhow::Result;
 use dashmap::DashMap;

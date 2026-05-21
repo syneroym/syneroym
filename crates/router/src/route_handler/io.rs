@@ -1,3 +1,7 @@
+//! Async I/O copy loops and bridge utilities
+//!
+//! Handles bidirectional copy tasks and framing adapters for bridged streams.
+
 use super::RouteHandler;
 use crate::preamble::{RoutePreamble, RouteTransport};
 use anyhow::{Result, anyhow};

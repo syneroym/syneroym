@@ -1,3 +1,8 @@
+//! WebRTC Bootstrap page server
+//!
+//! Hosts static/dynamic HTML pages and assets to assist peer discovery
+//! and WebRTC initialization inside web clients.
+
 use askama::Template;
 use axum::{
     Router,

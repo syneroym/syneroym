@@ -1,3 +1,8 @@
+//! Community Service Registry
+//!
+//! A public/shared registry server allowing nodes to register their network addresses
+//! and nicknames, enabling global peer lookup.
+
 use anyhow::{Context, Result};
 use axum::{
     Json, Router,
