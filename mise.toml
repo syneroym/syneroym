@@ -11,6 +11,21 @@ node = "20"
 [settings]
 experimental = true
 
+[tasks."deps:update"]
+description = """
+Update all dependencies and re-apply version pins required by iroh v0.97's
+pre-release crypto chain. iroh pulls in ed25519-dalek v3.0.0-pre.1, which
+requires ed25519 ^3.0.0-rc.0 and pkcs8 ^0.11.0-rc.10. A plain `cargo update`
+bumps those to their stable releases, which have breaking API changes against
+the pre-release dalek. The two `--precise` commands below restore compatible
+versions. Remove these pins once iroh ships a release using stable ed25519-dalek v3.
+"""
+run = [
+  "cargo update",
+  "cargo update 'ed25519@3.0.0' --precise 3.0.0-rc.4",
+  "cargo update 'pkcs8@0.11.0'  --precise 0.11.0-rc.11",
+]
+
 [tasks."test:rust"]
 description = "Run all Rust unit and integration tests"
 run = "cargo test --workspace"
