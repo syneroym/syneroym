@@ -30,6 +30,7 @@ pub(crate) struct RouteHandlerInner {
     pub registry: EndpointRegistry,
     pub native_dispatch: DashMap<String, Arc<dyn NativeService>>,
     pub app_sandbox_engine: Arc<AppSandboxEngine>,
+    pub identity: syneroym_identity::Identity,
 }
 
 impl fmt::Debug for RouteHandler {
@@ -46,14 +47,18 @@ impl RouteHandler {
         service_id: String,
         config: &SubstrateConfig,
         registry: EndpointRegistry,
+        secret_key: [u8; 32],
     ) -> Result<Self> {
         let app_sandbox_engine =
             Arc::new(AppSandboxEngine::init(config, registry.get_all_endpoints()).await?);
+
+        let identity = syneroym_identity::Identity::from_bytes(&secret_key);
 
         let inner = Arc::new(RouteHandlerInner {
             registry: registry.clone(),
             native_dispatch: DashMap::new(),
             app_sandbox_engine: app_sandbox_engine.clone(),
+            identity,
         });
 
         let s = Self { inner };

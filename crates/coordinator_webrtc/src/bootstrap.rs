@@ -43,6 +43,7 @@ struct PeerProxyTemplate {
     target_service_id: String,
     signaling_server_url: String,
     http_version: String,
+    target_pubkey_hex: String,
 }
 
 pub async fn start(listener: TcpListener, state: Arc<BootstrapState>) -> anyhow::Result<()> {
@@ -127,11 +128,20 @@ async fn handle_bootstrap(
     let signaling_server_url =
         construct_signaling_url("ws", &host, &state.external_host, state.signaling_port);
 
+    let target_pubkey_hex = match resolve_did_key(&target_peer_id) {
+        Ok(pubkey) => hex::encode(pubkey.as_bytes()),
+        Err(e) => {
+            error!("Failed to resolve target_peer_id '{}' DID: {}", target_peer_id, e);
+            "".to_string()
+        }
+    };
+
     let tpl = PeerProxyTemplate {
         target_peer_id,
         target_service_id,
         signaling_server_url,
         http_version: "HTTP/1.1".to_string(),
+        target_pubkey_hex,
     };
 
     match tpl.render() {

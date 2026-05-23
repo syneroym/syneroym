@@ -145,12 +145,21 @@ impl RouteHandler {
                         let cipher =
                             Arc::new(Aes256Gcm::new(aes_gcm::Key::<Aes256Gcm>::from_slice(&key)));
 
-                        // Send our server public key
+                        // Send our server public key and signature
+                        let mut payload = Vec::with_capacity(130);
+                        payload.extend_from_slice(server_pub_key.as_bytes());
+                        payload.extend_from_slice(&client_pub_key_bytes);
+
+                        let signature = self.inner.identity.sign(&payload);
+                        let signature_bytes = signature.to_bytes();
+
                         debug!(
-                            "[Router] Sending server public key ({} bytes)",
-                            server_pub_key.as_bytes().len()
+                            "[Router] Sending server public key ({} bytes) and signature ({} bytes)",
+                            server_pub_key.as_bytes().len(),
+                            signature_bytes.len()
                         );
                         writer.write_all(server_pub_key.as_bytes()).await?;
+                        writer.write_all(&signature_bytes).await?;
                         debug!(
                             "[Router] ECDH key exchange complete; starting encrypted bidirectional pipe"
                         );

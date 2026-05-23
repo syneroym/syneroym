@@ -45,7 +45,8 @@ impl ConnectionRouter {
     ) -> Result<Self> {
         let mut router = Self { iroh_router: None };
         let route_handler =
-            RouteHandler::init(service_id.clone(), &config, registry.clone()).await?;
+            RouteHandler::init(service_id.clone(), &config, registry.clone(), iroh_secret_key)
+                .await?;
 
         for comm in &config.substrate.communication_interfaces {
             match comm.as_str() {
@@ -116,7 +117,7 @@ impl ConnectionRouter {
     ) -> Result<()> {
         let signaling_url = config.signaling_server_url.clone();
 
-        // 2. Initialize WebRTC API
+        // Initialize WebRTC API
         let mut m = MediaEngine::default();
         m.register_default_codecs()?;
 
@@ -145,7 +146,7 @@ impl ConnectionRouter {
             ..Default::default()
         };
 
-        // 3. Connect to Signaling Server and handle incoming connections
+        // Connect to Signaling Server and handle incoming connections
         let api = Arc::new(api);
         let rtc_config = rtc_config.clone();
 
