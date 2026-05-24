@@ -1,4 +1,4 @@
-//! Protocol buffers/wRPC type conversion helpers
+//! JSON-RPC type conversion helpers
 //!
 //! Defines standard bidirectional mapping and type conversion adapters
 //! across different data representations in the RPC layer.

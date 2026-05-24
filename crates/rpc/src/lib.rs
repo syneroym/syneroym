@@ -1,4 +1,4 @@
-//! Syneroym wRPC and framing library
+//! Syneroym RPC framing library
 //!
 //! Core module for RPC protocol compilation, providing framing,
 //! serialization, type conversions, and transport adapters.

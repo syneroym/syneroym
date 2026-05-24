@@ -1,4 +1,4 @@
-//! wRPC control plane bindings
+//! Control plane WIT bindings
 //!
 //! Contains generated bindings and marshalling traits allowing guest applications
 //! to invoke substrate control plane features.

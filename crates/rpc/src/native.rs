@@ -1,7 +1,7 @@
-//! Native wRPC client & server bridge
+//! Native service execution bridge
 //!
-//! Adapts native wRPC traits to async stream readers/writers, permitting
-//! wRPC calls over raw TCP/IP or Unix Socket streams.
+//! Provides the core abstraction and types for in-process, native Rust services,
+//! permitting local request dispatching within the substrate.
 
 use serde_json::Value;
 use std::fmt::Debug;

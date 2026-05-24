@@ -1,6 +1,6 @@
-//! wRPC host bindings
+//! WIT host bindings
 //!
-//! Provides the wRPC interfaces enabling the substrate host to communicate
+//! Provides the WIT interfaces enabling the substrate host to communicate
 //! with guest WASM modules.
 
 wasmtime::component::bindgen!({
