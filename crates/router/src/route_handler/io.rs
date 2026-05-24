@@ -114,8 +114,8 @@ impl RouteHandler {
                 Ok(())
             }
             ServiceStage::WasmComponent { service_id } => {
-                // wRPC passthrough
-                debug!("Passthrough wRPC stream to Wasm channel: {}", service_id);
+                // TODO(wRPC): passthrough not yet implemented
+                debug!("Passthrough stream to Wasm channel: {}", service_id);
                 tracing::warn!(
                     service_id = %service_id,
                     "wRPC passthrough not yet implemented; dropping stream"

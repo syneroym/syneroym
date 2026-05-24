@@ -1,6 +1,6 @@
 //! Syneroym connection routing and translation library
 //!
-//! Integrates Iroh, WebRTC, HTTP, and wRPC channels into a unified, alias-aware
+//! Integrates Iroh, WebRTC, HTTP, and raw-byte channels (wRPC — TODO: not yet implemented) into a unified, alias-aware
 //! internal peer network.
 
 mod connection_router;

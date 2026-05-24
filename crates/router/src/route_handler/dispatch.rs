@@ -1,6 +1,6 @@
 //! Local endpoint stream dispatcher
 //!
-//! Hooks active streams up to their target local services (e.g. WASM sandbox input, native wRPC, or TCP socket).
+//! Hooks active streams up to their target local services (e.g. WASM sandbox input, native services, or TCP socket).
 
 use super::RouteHandler;
 use crate::preamble::{RoutePreamble, RouteProtocol};
@@ -104,7 +104,7 @@ impl RouteHandler {
                 ServiceStage::NativeService { service_id: service_id.clone() },
             ),
             (RouteProtocol::Wrpc, SubstrateEndpoint::WasmChannel { service_id }) => (
-                AdaptationStage::None, // NOTE: wRPC not yet implemented, might need adaptation)
+                AdaptationStage::None, // NOTE: wRPC not yet implemented, might need adaptation
                 ServiceStage::WasmComponent { service_id: service_id.clone() },
             ),
             (RouteProtocol::JsonRpc, SubstrateEndpoint::WasmChannel { service_id }) => (
@@ -123,7 +123,7 @@ impl RouteHandler {
             crate::preamble::RouteTransport::Raw => TransportStage::Raw,
         };
 
-        // Passthrough services (like TcpProxy or direct WasmComponent wRPC passthrough)
+        // Passthrough services (like TcpProxy or direct WasmComponent passthrough (wRPC — TODO: not yet implemented))
         // do not perform substrate-level wire framing; they bypass transport decoding
         // and stream raw bytes directly.
         if let ServiceStage::TcpProxy { .. } = &service {

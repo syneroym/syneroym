@@ -22,10 +22,10 @@
 //!
 //! Composable schemes split the transport and protocol with a `-` character:
 //!
-//! | Preamble Scheme | Wire Transport | Application Protocol |
-//! |-----------------|----------------|----------------------|
-//! | `http-wrpc://`   | HTTP/1.1       | wRPC                 |
-//! | `binary-wrpc://` | Binary frames  | wRPC                 |
+//! | Preamble Scheme | Wire Transport | Application Protocol | Notes |
+//! |-----------------|----------------|----------------------|-------|
+//! | `http-wrpc://`   | HTTP/1.1       | wRPC                 | NOTE: not yet implemented |
+//! | `binary-wrpc://` | Binary frames  | wRPC                 | NOTE: not yet implemented |
 //!
 //! ## Encryption Query Parameters
 //!
@@ -77,7 +77,7 @@ impl fmt::Display for RouteTransport {
 pub enum RouteProtocol {
     /// JSON-RPC 2.0 protocol.
     JsonRpc,
-    /// WebRPC (wRPC) protocol.
+    /// wRPC protocol (NOTE: not yet implemented).
     Wrpc,
     /// Raw bytes (no application-level protocol).
     Raw,
