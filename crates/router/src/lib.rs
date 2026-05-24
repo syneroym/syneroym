@@ -12,4 +12,4 @@ mod routing;
 
 pub use connection_router::{ConnectionRouter, SYNEROYM_ALPN};
 pub use preamble::{RoutePreamble, RouteProtocol, RouteTransport};
-pub use routing::{DeliveryMode, ProtocolAdapter, ResolvedRoute, RouteExecution, RoutingPlan};
+pub use routing::{AdaptationStage, EncryptionStage, RoutePipeline, ServiceStage, TransportStage};

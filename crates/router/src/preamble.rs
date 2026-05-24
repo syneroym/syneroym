@@ -1,15 +1,40 @@
 //! Route preamble parsing and types.
 //!
-//! A preamble is the prefix of a route that specifies protocol, interface, and service information.
-//! It follows the format: `protocol://[interface.]service_id`
+//! A preamble is the prefix of a route that specifies transport, application protocol,
+//! interface, and service information.
 //!
-//! Example: `json-rpc://health.substrate-123`
-//! - Protocol: `json-rpc`
-//! - Interface: `health`
-//! - Service ID: `substrate-123`
+//! The full preamble grammar is:
+//! `<scheme>://<interface>.<service_id>[?enc=<alg>&pubkey=<hex>]`
 //!
-//! The preamble is used by the router to determine how to forward messages and which
-//! protocol handler should process the incoming request.
+//! ## Scheme Overloading
+//!
+//! To keep the URL compact, well-known scheme tokens overload both the wire transport
+//! framing and the application-level protocol initiated by the client:
+//!
+//! | Preamble Scheme | Wire Transport | Application Protocol | Notes |
+//! |-----------------|----------------|----------------------|-------|
+//! | `json-rpc://`   | Binary frames  | JSON-RPC 2.0         | Most common JSON-RPC client case |
+//! | `http://`       | HTTP/1.1       | JSON-RPC 2.0         | Hyper consumes the stream; payload is JSON-RPC |
+//! | `wrpc://`       | Binary frames  | wRPC                 | Native WASM wRPC component protocol (NOTE: not yet implemented) |
+//! | `raw://`        | Raw bytes      | Raw bytes            | Used for direct passthrough proxying |
+//!
+//! ## Composable Schemes
+//!
+//! Composable schemes split the transport and protocol with a `-` character:
+//!
+//! | Preamble Scheme | Wire Transport | Application Protocol |
+//! |-----------------|----------------|----------------------|
+//! | `http-wrpc://`   | HTTP/1.1       | wRPC                 |
+//! | `binary-wrpc://` | Binary frames  | wRPC                 |
+//!
+//! ## Encryption Query Parameters
+//!
+//! Encryption is orthogonal to the scheme and applies to any transport:
+//! `raw://my-interface.my-service?enc=ecdh-p256&pubkey=<hex-encoded-client-pubkey>`
+//!
+//! The `RoutePipeline`'s `EncryptionStage` and `AdaptationStage` are **not** encoded in the
+//! preamble itself; they are **derived** at planning time (`plan_pipeline`) from the combination
+//! of preamble fields and target registry capability entries.
 
 use anyhow::{Result, anyhow};
 use std::fmt;
@@ -103,7 +128,10 @@ pub struct RoutePreamble {
 impl RoutePreamble {
     /// Parses a preamble string into structured route information.
     ///
-    /// The preamble format is: `protocol://[interface.]service_id[?query]`
+    /// The preamble format is: `scheme://[interface.]service_id[?query]`
+    ///
+    /// Schemes can be well-known overloaded aliases (e.g. `json-rpc`, `http`, `wrpc`, `raw`)
+    /// or explicit composable tokens separated by a dash (e.g. `http-wrpc`).
     ///
     /// # Examples
     ///

@@ -18,6 +18,7 @@ use crate::net_iroh::IrohStream;
 use syneroym_app_sandbox::AppSandboxEngine;
 
 pub mod dispatch;
+pub mod encryption;
 pub mod http;
 pub mod io;
 
