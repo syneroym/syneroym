@@ -24,7 +24,7 @@ tokio-tungstenite.workspace = true
 tls-parser.workspace = true
 iroh.workspace = true
 bytes.workspace = true
-rand = "0.9"
+rand.workspace = true
 rand_core = { version = "0.6", features = ["getrandom"] }
 httparse.workspace = true
 z32.workspace = true

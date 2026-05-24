@@ -181,7 +181,7 @@ impl<W: AsyncWrite + Unpin> EncryptedWriter<W> {
         use aes_gcm::aead::Aead;
         use rand::RngCore;
         let mut nonce_bytes = [0u8; 12];
-        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        rand::rng().fill_bytes(&mut nonce_bytes);
         let nonce = aes_gcm::Nonce::from_slice(&nonce_bytes);
 
         let ciphertext = self
@@ -300,7 +300,7 @@ where
             let public_key = p256::PublicKey::from_sec1_bytes(client_pub_key.as_bytes())
                 .map_err(|e| anyhow!("Invalid public key point: {e}"))?;
 
-            let secret = p256::ecdh::EphemeralSecret::random(&mut rand::rngs::OsRng);
+            let secret = p256::ecdh::EphemeralSecret::random(&mut aes_gcm::aead::OsRng);
             let server_pub_key = p256::EncodedPoint::from(secret.public_key());
 
             let shared = secret.diffie_hellman(&public_key);
