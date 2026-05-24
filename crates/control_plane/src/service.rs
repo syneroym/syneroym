@@ -1,3 +1,8 @@
+//! Orchestrator control service implementation
+//!
+//! Handles requests for registering, deploying, listing, and destroying
+//! sandbox instances or services running on the node.
+
 use crate::dummy_sandbox::AppSandboxEngine;
 use anyhow::Result;
 use std::fmt;

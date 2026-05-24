@@ -1,3 +1,8 @@
+//! RPC core data types
+//!
+//! Definitions for messages, headers, statuses, and envelope types
+//! used in RPC message serialization.
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

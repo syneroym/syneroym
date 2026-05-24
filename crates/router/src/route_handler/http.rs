@@ -1,3 +1,7 @@
+//! HTTP router request interception
+//!
+//! Handles incoming HTTP traffic, performing URL host rewrite parsing and proxy forwarding.
+
 use anyhow::{Result, anyhow};
 use bytes::Bytes;
 use http_body_util::Full;
@@ -11,25 +15,32 @@ use tracing::error;
 
 use super::RouteHandler;
 use crate::preamble::RoutePreamble;
+use crate::routing::RoutePipeline;
 use syneroym_rpc::{JsonRpcError, JsonRpcErrorResponse};
 
 /// A handler for HTTP-based JSON-RPC requests.
 ///
-/// It wraps a `RouteHandler` and a connection-level `RoutePreamble`.
+/// It wraps a `RouteHandler`, a connection-level `RoutePreamble`, and the planned `RoutePipeline`.
 pub struct HttpHandler {
     pub route_handler: RouteHandler,
     pub preamble: RoutePreamble,
+    pub pipeline: RoutePipeline,
 }
 
 impl RouteHandler {
     /// Upgrades a raw stream to an HTTP server and handles incoming requests.
     ///
     /// This uses `hyper` to serve JSON-RPC over HTTP/1.1.
-    pub async fn handle_http_stream<I>(self, io: TokioIo<I>, preamble: RoutePreamble) -> Result<()>
+    pub async fn handle_http_stream<I>(
+        self,
+        io: TokioIo<I>,
+        preamble: RoutePreamble,
+        pipeline: RoutePipeline,
+    ) -> Result<()>
     where
         I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        let handler = Arc::new(HttpHandler { route_handler: self, preamble });
+        let handler = Arc::new(HttpHandler { route_handler: self, preamble, pipeline });
 
         AutoBuilder::new(hyper_util::rt::TokioExecutor::new())
             .serve_connection(
@@ -79,15 +90,6 @@ impl HttpHandler {
             ));
         }
 
-        let resolved = match self.route_handler.resolve_route(self.preamble.clone()) {
-            Ok(r) => r,
-            Err(e) => {
-                return Ok(http_error(StatusCode::NOT_FOUND, e.to_string()));
-            }
-        };
-        let plan = self.route_handler.plan_route(&resolved);
-        super::dispatch::log_route(&resolved, &plan);
-
         use http_body_util::BodyExt;
         let body_bytes =
             req.collect().await.map_err(|e| anyhow!("Failed to read HTTP body: {e}"))?.to_bytes();
@@ -96,7 +98,11 @@ impl HttpHandler {
             return Ok(http_error(StatusCode::BAD_REQUEST, "Empty request body".into()));
         }
 
-        match self.route_handler.dispatch_json_rpc_once(&resolved, &plan, &body_bytes).await {
+        match self
+            .route_handler
+            .dispatch_json_rpc_once(&self.pipeline, &self.preamble, &body_bytes)
+            .await
+        {
             Ok(payload) => Ok(Response::builder()
                 .status(StatusCode::OK)
                 .header(hyper::header::CONTENT_TYPE, "application/json")

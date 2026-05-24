@@ -1,3 +1,8 @@
+//! Stable storage abstraction and persistence backend
+//!
+//! Defines the `EndpointStorage` trait and implements SQLite persistence
+//! and thread-safe in-memory mock storage for the local `EndpointRegistry`.
+
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 

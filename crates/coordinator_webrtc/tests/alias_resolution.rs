@@ -1,3 +1,8 @@
+//! Integration tests for WebRTC alias resolution and discovery
+//!
+//! Verifies that shorthash aliases and nicknames resolve correctly under
+//! simulated WebRTC connections.
+
 use axum::{Json, Router, routing::get};
 use std::sync::Arc;
 use syneroym_coordinator_webrtc::bootstrap::{BootstrapState, start};

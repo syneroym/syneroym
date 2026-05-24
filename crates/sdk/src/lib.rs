@@ -1,3 +1,8 @@
+//! Syneroym App SDK
+//!
+//! High-level APIs and traits to help third-party developers build apps
+//! that integrate seamlessly with the Syneroym runtime and services.
+
 use anyhow::{Context, Result};
 use iroh::endpoint::Connection;
 use std::time::Duration;

@@ -1,3 +1,8 @@
+//! Dummy Sandbox implementation for testing
+//!
+//! Provides an isolated, mock execution environment for validating WASM
+//! component orchestration and workflows without invoking a full WASM runtime.
+
 #[cfg(feature = "app_sandbox")]
 pub use syneroym_app_sandbox::AppSandboxEngine;
 

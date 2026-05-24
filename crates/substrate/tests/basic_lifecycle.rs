@@ -1,3 +1,8 @@
+//! Integration tests for the Substrate core lifecycle
+//!
+//! Validates proper boot flow, identity checks, role starting,
+//! and clean shutdown sequences of the Substrate.
+
 use assert_cmd::assert::OutputAssertExt;
 use assert_cmd::cargo::CommandCargoExt;
 use std::io::{BufRead, BufReader, Write};

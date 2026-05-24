@@ -1,3 +1,8 @@
+//! Connection Router orchestrator
+//!
+//! The main connection router that accepts incoming network streams (Iroh, WebRTC),
+//! extracts protocol preambles, and forwards traffic to local endpoints or sandbox instances.
+
 use anyhow::Result;
 use futures::{SinkExt, StreamExt};
 use iroh::endpoint::presets;
@@ -25,7 +30,7 @@ pub const SYNEROYM_ALPN: &[u8] = b"syneroym/0.1";
 
 /// The Connection Router (The Data Plane)
 /// Internal traffic cop that uses the Endpoint Registry to look up
-/// the destination for an incoming wRPC stream.
+/// the destination for an incoming data stream.
 #[derive(Debug, Clone)]
 pub struct ConnectionRouter {
     iroh_router: Option<IrohRouter>,
@@ -40,7 +45,8 @@ impl ConnectionRouter {
     ) -> Result<Self> {
         let mut router = Self { iroh_router: None };
         let route_handler =
-            RouteHandler::init(service_id.clone(), &config, registry.clone()).await?;
+            RouteHandler::init(service_id.clone(), &config, registry.clone(), iroh_secret_key)
+                .await?;
 
         for comm in &config.substrate.communication_interfaces {
             match comm.as_str() {
@@ -111,7 +117,7 @@ impl ConnectionRouter {
     ) -> Result<()> {
         let signaling_url = config.signaling_server_url.clone();
 
-        // 2. Initialize WebRTC API
+        // Initialize WebRTC API
         let mut m = MediaEngine::default();
         m.register_default_codecs()?;
 
@@ -140,7 +146,7 @@ impl ConnectionRouter {
             ..Default::default()
         };
 
-        // 3. Connect to Signaling Server and handle incoming connections
+        // Connect to Signaling Server and handle incoming connections
         let api = Arc::new(api);
         let rtc_config = rtc_config.clone();
 

@@ -9,7 +9,9 @@
         const TARGET_PEER_ID = "{{ target_peer_id }}";
         const TARGET_SERVICE_ID = "{{ target_service_id }}";
         const HTTP_VERSION = "{{ http_version }}";
-        const FORCE_TUNNEL = false;
+        const TARGET_PUBKEY_HEX = "{{ target_pubkey_hex }}";
+        const urlParams = new URLSearchParams(window.location.search);
+        const FORCE_TUNNEL = urlParams.get('force_tunnel') === 'true';
         const MY_ID = "gateway-" + Math.random().toString(36).substr(2, 9);
         window.logs = [];
         const originalLog = console.log;
@@ -206,6 +208,68 @@
         let isConnected = false;
         let connectionPromise = null;
 
+        async function verifyAndDeriveSharedSecret(serverKeyBytes, clientKeyPair, clientPubRaw) {
+            if (serverKeyBytes.length < 129) {
+                return null;
+            }
+
+            const serverPubBytes = serverKeyBytes.slice(0, 65);
+            const signature = serverKeyBytes.slice(65, 129);
+            const leftovers = serverKeyBytes.slice(129);
+
+            console.debug("[Page][BlindTunnel] Verifying server signature...");
+
+            if (!TARGET_PUBKEY_HEX || TARGET_PUBKEY_HEX.length !== 64) {
+                throw new Error("Invalid or missing target permanent public key (TARGET_PUBKEY_HEX)");
+            }
+
+            const targetPubkeyBytes = new Uint8Array(TARGET_PUBKEY_HEX.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
+
+            const targetKey = await window.crypto.subtle.importKey(
+                "raw",
+                targetPubkeyBytes,
+                { name: "Ed25519" },
+                true,
+                ["verify"]
+            );
+
+            const payload = new Uint8Array(130);
+            payload.set(serverPubBytes, 0);
+            payload.set(new Uint8Array(clientPubRaw), 65);
+
+            const isValid = await window.crypto.subtle.verify(
+                { name: "Ed25519" },
+                targetKey,
+                signature,
+                payload
+            );
+
+            if (!isValid) {
+                console.error("[Page][BlindTunnel] MITM alert: Server signature verification failed!");
+                throw new Error("MITM alert: Server signature verification failed");
+            }
+
+            console.debug("[Page][BlindTunnel] Signature verified successfully! Deriving shared secret...");
+
+            const serverPub = await window.crypto.subtle.importKey(
+                "raw",
+                serverPubBytes,
+                { name: "ECDH", namedCurve: "P-256" },
+                true,
+                []
+            );
+
+            const sharedSecret = await window.crypto.subtle.deriveKey(
+                { name: "ECDH", public: serverPub },
+                clientKeyPair.privateKey,
+                { name: "AES-GCM", length: 256 },
+                false,
+                ["encrypt", "decrypt"]
+            );
+
+            return { sharedSecret, leftovers };
+        }
+
         async function connectTunnel(preamble, isRaw, onData, onClose) {
             if (isConnected && peerConnection && peerConnection.connectionState === 'connected') {
                 try {
@@ -261,6 +325,7 @@
 
                 let finalPreamble = preamble;
                 let clientKeyPair = null;
+                let clientPubRaw = null;
                 let sharedSecret = null;
                 let decryptor = null;
 
@@ -271,7 +336,7 @@
                             true,
                             ["deriveKey", "deriveBits"]
                         );
-                        const clientPubRaw = await window.crypto.subtle.exportKey("raw", clientKeyPair.publicKey);
+                        clientPubRaw = await window.crypto.subtle.exportKey("raw", clientKeyPair.publicKey);
                         const clientPubHex = Array.from(new Uint8Array(clientPubRaw)).map(b => b.toString(16).padStart(2, '0')).join('');
 
                         finalPreamble = preamble.replace(/pubkey=[^ \n]*/, `pubkey=${clientPubHex}`);
@@ -314,51 +379,45 @@
                             combined.set(bytes, serverKeyBytes.length);
                             serverKeyBytes = combined;
 
-                            if (serverKeyBytes.length >= 65) {
-                                const serverPubBytes = serverKeyBytes.slice(0, 65);
-                                const leftovers = serverKeyBytes.slice(65);
+                            if (serverKeyBytes.length >= 129) {
+                                try {
+                                    const result = await verifyAndDeriveSharedSecret(serverKeyBytes, clientKeyPair, clientPubRaw);
+                                    if (result) {
+                                        sharedSecret = result.sharedSecret;
+                                        const leftovers = result.leftovers;
 
-                                const serverPub = await window.crypto.subtle.importKey(
-                                    "raw",
-                                    serverPubBytes,
-                                    { name: "ECDH", namedCurve: "P-256" },
-                                    true,
-                                    []
-                                );
+                                        decryptor = new Decryptor(sharedSecret, (decrypted) => {
+                                            if (!closed) onData(decrypted);
+                                        });
 
-                                sharedSecret = await window.crypto.subtle.deriveKey(
-                                    { name: "ECDH", public: serverPub },
-                                    clientKeyPair.privateKey,
-                                    { name: "AES-GCM", length: 256 },
-                                    false,
-                                    ["encrypt", "decrypt"]
-                                );
+                                        console.debug("[Page][BlindTunnel] E2E ECDH key negotiated! Encrypted tunnel ready.");
 
-                                decryptor = new Decryptor(sharedSecret, (decrypted) => {
-                                    if (!closed) onData(decrypted);
-                                });
-
-                                console.debug("[Page][BlindTunnel] E2E ECDH key negotiated! Encrypted tunnel ready.");
-
-                                resolve({
-                                    send: async (data) => {
-                                        if (tunnelWS.readyState === NativeWebSocket.OPEN) {
-                                            if (sharedSecret) {
-                                                const encrypted = await encryptChunk(sharedSecret, data);
-                                                tunnelWS.send(encrypted);
-                                            } else {
-                                                tunnelWS.send(data);
+                                        resolve({
+                                            send: async (data) => {
+                                                if (tunnelWS.readyState === NativeWebSocket.OPEN) {
+                                                    if (sharedSecret) {
+                                                        const encrypted = await encryptChunk(sharedSecret, data);
+                                                        tunnelWS.send(encrypted);
+                                                    } else {
+                                                        tunnelWS.send(data);
+                                                    }
+                                                }
+                                            },
+                                            close: () => {
+                                                closed = true;
+                                                tunnelWS.close();
                                             }
-                                        }
-                                    },
-                                    close: () => {
-                                        closed = true;
-                                        tunnelWS.close();
-                                    }
-                                });
+                                        });
 
-                                if (leftovers.length > 0) {
-                                    await decryptor.addBytes(leftovers);
+                                        if (leftovers.length > 0) {
+                                            await decryptor.addBytes(leftovers);
+                                        }
+                                    }
+                                } catch (e) {
+                                    console.error("[Page][BlindTunnel] Handshake error:", e);
+                                    closed = true;
+                                    tunnelWS.close();
+                                    reject(e);
                                 }
                             }
                         } else {

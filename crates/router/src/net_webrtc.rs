@@ -1,3 +1,7 @@
+//! WebRTC network client/server channel routing
+//!
+//! Adapts active WebRTC data channels to the connection router, mapping SDP/ICE candidates.
+
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};

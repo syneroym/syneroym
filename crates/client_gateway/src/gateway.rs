@@ -1,3 +1,8 @@
+//! HTTP Client Gateway
+//!
+//! Proxies external client requests into the internal Syneroym network,
+//! managing routing, protocol translation, and error boundaries.
+
 use anyhow::Result;
 use dashmap::DashMap;
 use std::sync::Arc;

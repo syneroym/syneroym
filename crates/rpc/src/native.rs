@@ -1,3 +1,8 @@
+//! Native service execution bridge
+//!
+//! Provides the core abstraction and types for in-process, native Rust services,
+//! permitting local request dispatching within the substrate.
+
 use serde_json::Value;
 use std::fmt::Debug;
 

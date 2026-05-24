@@ -1,3 +1,8 @@
+//! Substrate execution runtime
+//!
+//! Manages the lifecycle of all substrate components including the App Sandbox,
+//! Observability engine, Router, Client Gateway, and Coordinators.
+
 use syneroym_core::config::SubstrateConfig;
 use syneroym_core::registry::{EndpointRegistry, SubstrateEndpoint};
 use syneroym_observability::ObservabilityEngine;

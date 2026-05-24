@@ -1,3 +1,8 @@
+//! Community Registry Client and Types
+//!
+//! Provides structures and client methods for registering, querying, and
+//! resolving service/substrate endpoints in the Syneroym community registry.
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

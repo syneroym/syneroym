@@ -1,3 +1,8 @@
+//! WebRTC Ecosystem Coordinator
+//!
+//! Orchestrates signaling and peer-to-peer transport bridging using WebRTC,
+//! handling peer discovery and connection routing.
+
 use crate::bootstrap::{self, BootstrapState};
 use crate::signalling;
 use anyhow::Result;

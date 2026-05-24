@@ -1,3 +1,8 @@
+//! Core transport bridge and multi-transport coordination logic
+//!
+//! Initializes, manages, and orchestrates transport coordinators (like Iroh
+//! and WebRTC) based on global Substrate configurations.
+
 use anyhow::Result;
 use syneroym_core::config::SubstrateConfig;
 use tracing::info;

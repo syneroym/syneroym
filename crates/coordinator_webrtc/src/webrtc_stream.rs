@@ -1,3 +1,8 @@
+//! WebRTC Stream and Data Channel framing
+//!
+//! Implements active data channel reads/writes and framing, exposing WebRTC
+//! connections as standard async stream buffers for the router.
+
 use std::io::Result;
 use std::pin::Pin;
 use std::sync::Arc;

@@ -1,3 +1,8 @@
+//! Length-prefixed and chunked frame encoders/decoders
+//!
+//! Implements framing protocol layers over async buffers, supporting
+//! reliable message boundaries in network streams.
+
 use anyhow::Result;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 

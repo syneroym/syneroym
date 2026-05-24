@@ -1,3 +1,8 @@
+//! Substrate Service discovery registry
+//!
+//! Tracks local running/deployed micro-services (WASM, TCP, Podman, native host),
+//! enabling internal service-to-service discovery (Internal Micro-Discovery).
+
 use crate::storage::EndpointStorage;
 use anyhow::Result;
 use dashmap::DashMap;
@@ -6,7 +11,7 @@ use std::sync::Arc;
 /// A deployable entity within the Substrate.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum SubstrateEndpoint {
-    /// A WASM component communicating via wRPC channels
+    /// A WASM component communicating via WASM channels
     WasmChannel { service_id: String },
     /// A containerized service running via Podman
     PodmanSocket { socket_path: String },

@@ -29,6 +29,7 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 httparse.workspace = true
 z32.workspace = true
 ed25519-dalek.workspace = true
+hex.workspace = true
 
 [dev-dependencies]
 reqwest = { workspace = true, features = ["json"] }

@@ -1,3 +1,8 @@
+//! Substrate-Controller agreements and boot-time identity flow
+//!
+//! Implements `did:key` resolution, RFC 8785 JSON Canonicalization,
+//! controller agreement verification, and cryptographic status checks.
+
 use anyhow::{Context, Result, anyhow};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};

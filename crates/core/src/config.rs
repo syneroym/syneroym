@@ -274,7 +274,7 @@ pub struct RolesConfig {
 fn default_communication_interfaces() -> Vec<String> {
     vec!["iroh".to_string(), "webrtc".to_string()]
 }
-fn default_wrpc_sandbox() -> bool {
+fn default_wasm_sandbox() -> bool {
     true
 }
 fn default_cpu_limit() -> u32 {
@@ -290,7 +290,8 @@ fn default_max_concurrent_instances() -> u32 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppSandboxRole {
-    pub wrpc_sandbox: bool,
+    /// Enables the WASM component sandbox.
+    pub wasm_sandbox: bool,
     pub cpu_limit: u32,
     pub memory_limit: String,
     pub max_concurrent_instances: u32,
@@ -305,7 +306,7 @@ impl AppSandboxRole {
 impl Default for AppSandboxRole {
     fn default() -> Self {
         Self {
-            wrpc_sandbox: default_wrpc_sandbox(),
+            wasm_sandbox: default_wasm_sandbox(),
             cpu_limit: default_cpu_limit(),
             memory_limit: default_memory_limit(),
             max_concurrent_instances: default_max_concurrent_instances(),

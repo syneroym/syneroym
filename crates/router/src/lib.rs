@@ -1,3 +1,8 @@
+//! Syneroym connection routing and translation library
+//!
+//! Integrates Iroh, WebRTC, HTTP, and raw-byte channels (wRPC — TODO: not yet implemented) into a unified, alias-aware
+//! internal peer network.
+
 mod connection_router;
 pub mod net_iroh;
 pub mod net_webrtc;
@@ -7,4 +12,4 @@ mod routing;
 
 pub use connection_router::{ConnectionRouter, SYNEROYM_ALPN};
 pub use preamble::{RoutePreamble, RouteProtocol, RouteTransport};
-pub use routing::{DeliveryMode, ProtocolAdapter, ResolvedRoute, RouteExecution, RoutingPlan};
+pub use routing::{AdaptationStage, EncryptionStage, RoutePipeline, ServiceStage, TransportStage};

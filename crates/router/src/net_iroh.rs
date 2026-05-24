@@ -1,3 +1,8 @@
+//! Iroh network client/server channel routing
+//!
+//! Adapts Iroh peer endpoints to the connection router, handling secure tunnel
+//! connection requests.
+
 use std::pin::Pin;
 use std::task::{Context as TaskContext, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};

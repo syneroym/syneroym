@@ -1,3 +1,8 @@
+//! Cryptographic identity and keypair management
+//!
+//! Defines the primary `Identity` struct utilizing Ed25519 dalek for key generation,
+//! secure storage, signing, and DID document generation.
+
 use anyhow::Context;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 
