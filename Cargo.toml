@@ -33,7 +33,7 @@ axum = { version = "0.8", features = ["ws"] }
 tower = "0.5"
 tower-service = "0.3"
 tower-http = { version = "0.6", features = ["full"] }
-webrtc = "0.11" # Using a slightly older stable version as v0.17 might have breaking changes for this specific codebase
+webrtc = "0.17" # Using a slightly older stable version as v0.17 might have breaking changes for this specific codebase
 askama = { version = "0.12", features = ["with-axum"] }
 askama_axum = "0.4"
 tls-parser = "0.12"
@@ -98,7 +98,7 @@ tempfile = "3.10"
 assert_cmd = "2.0"
 predicates = "3.1"
 libc = "0.2"
-tokio-tungstenite = "0.26"
+tokio-tungstenite = "0.29"
 futures-util = "0.3"
 futures = "0.3"
 chromiumoxide = { version = "0.9" }
