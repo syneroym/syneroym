@@ -109,8 +109,8 @@ roles = [
 
 # Resources limits across all services in the application sandbox
 [roles.app_sandbox]
-# Use wRPC sandbox for WASM components
-wrpc_sandbox = true
+# Enable the WASM component sandbox
+wasm_sandbox = true
 # CPU core limit for the sandbox
 cpu_limit = 1
 # Memory limit for the sandbox (e.g. "1Gi", "512Mi")

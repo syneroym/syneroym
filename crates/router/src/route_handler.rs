@@ -1,6 +1,6 @@
 //! Protocol-specific routing handlers
 //!
-//! Defines dispatch pipelines for HTTP, wRPC, and raw TCP traffic.
+//! Defines dispatch pipelines for HTTP, JSON-RPC, and raw TCP traffic (wRPC — TODO: not yet implemented).
 
 use anyhow::Result;
 use dashmap::DashMap;
@@ -18,6 +18,7 @@ use crate::net_iroh::IrohStream;
 use syneroym_app_sandbox::AppSandboxEngine;
 
 pub mod dispatch;
+pub mod encryption;
 pub mod http;
 pub mod io;
 

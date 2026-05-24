@@ -1,4 +1,8 @@
 # Syneroym Ecosystem — Architecture Document
+
+> [!WARNING]
+> **Implementation Note:** Several core elements defined in this architecture, including the **wRPC protocol layers/surface** and **multi-hop relay routing**, are currently **NOT YET IMPLEMENTED** in the codebase. The current implementation is centered around JSON-RPC 2.0 and direct TCP/IP or single-hop Iroh/WebRTC streams. See open items and progress trackers for ongoing development.
+
 ---
 
 ## Table of Contents

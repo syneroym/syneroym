@@ -30,7 +30,7 @@ pub const SYNEROYM_ALPN: &[u8] = b"syneroym/0.1";
 
 /// The Connection Router (The Data Plane)
 /// Internal traffic cop that uses the Endpoint Registry to look up
-/// the destination for an incoming wRPC stream.
+/// the destination for an incoming data stream.
 #[derive(Debug, Clone)]
 pub struct ConnectionRouter {
     iroh_router: Option<IrohRouter>,
