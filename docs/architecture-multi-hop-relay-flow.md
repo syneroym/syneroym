@@ -95,20 +95,23 @@ All entries in any registry (R, Rx, Ry) are signed pkarr records.
 
 ### Preamble Wire Format (on every new QUIC stream)
 
-```
-[4-byte big-endian length][CBOR payload]
+The **existing URL-scheme preamble format** is used unchanged for all streams, including hop-relay hops:
 
-{
-  "type": "hop-relay" | "service",
-  "service_did": "did:svc:Ay",
-  "caller_did": "did:p2p:Sx",
-  "caller_pubkey": "<Ed25519 pubkey bytes>"
-}
+```
+<scheme>://<interface>.<service_id>[?pubkey=<hex-ed25519>]
+\n   (newline-terminated)
+
+Examples:
+  json-rpc://health.did:key:Ay?pubkey=<Sx-Ed25519-pubkey-hex>
+  raw://did:key:Ay?pubkey=<Sx-Ed25519-pubkey-hex>
 ```
 
-- `type: hop-relay` — this hop should forward to the next hop in its routing table
-- `type: service` — this is the final hop; dispatch to local service
-- `caller_pubkey` — forwarded unchanged through the entire chain so Ay can verify identity
+- `service_id` — the target service DID; used by each hop to look up the next hop
+- `pubkey` — the originating caller's Ed25519 public key hex; forwarded **unchanged** through all hops so the final service (Ay) can verify identity
+- `scheme` (transport + protocol) — whatever the originating caller chose; forwarded unchanged
+- `caller_did` — **not needed** as a separate field. `did:key` is derived deterministically from the Ed25519 `pubkey`, so the final service can reconstruct it: `did:key:<z-base-32(pubkey)>`
+
+Each intermediate hop reads the preamble once, determines the next hop via its local `EndpointRegistry` lookup (miss) → community registry lookup, then writes the **same preamble string** verbatim to the next-hop stream before starting blind `copy_bidirectional`.
 
 ---
 
@@ -257,8 +260,8 @@ sequenceDiagram
 
     Note over Ax,Sy: ── PHASE 1: Registry Lookup ──────────────────────────────────
 
-    Ax->>Sx: connect("did:svc:Ay")
-    Sx->>Rx: resolve("did:svc:Ay")
+    Ax->>Sx: connect("did:key:Ay")
+    Sx->>Rx: resolve("did:key:Ay")
     Rx->>R: cache miss → query R
     R-->>Rx: {entry_point: CSy, relay: cs1.syneroym.net}
     Rx-->>Sx: {entry_point: CSy, relay: cs1.syneroym.net}
@@ -267,25 +270,25 @@ sequenceDiagram
 
     Note over Ax,Sy: ── PHASE 2: Chain Setup (per-hop DH / QUIC TLS) ─────────────
 
-    Sx->>CSx: New Iroh QUIC stream (local LAN)<br/>Preamble: {type:hop-relay, service_did:Ay,<br/>           caller_did:Sx, caller_pubkey:Sx_pub}<br/>TLS handshake: Sx ↔ CSx (ECDH, leg 1)
+    Sx->>CSx: New Iroh QUIC stream (local LAN)<br/>Preamble: json-rpc://health.did:key:Ay?pubkey=<Sx_pubkey_hex>\n<br/>TLS handshake: Sx ↔ CSx (ECDH, leg 1)
 
-    Note over CSx: Routing table lookup: "Ay" → not local.<br/>Query R → {entry_point:CSy, relay:cs1.syneroym.net}<br/>Iroh connect to CSy using CS1 as home relay.
+    Note over CSx: handle_stream(): EndpointRegistry miss for did:key:Ay<br/>plan_pipeline() → ServiceStage::RelayHop<br/>handle_raw_stream(): RegistryClient::lookup(community_registry, "did:key:Ay")<br/>→ {entry_point: CSy, mechanisms: [Iroh{endpoint_addr_bytes, relay_url}]}<br/>Iroh connect to CSy using CS1 as home relay.
 
     CSx->>CS1: Iroh QUIC connect (outbound)<br/>TLS handshake: CSx ↔ CS1 (ECDH, leg 2)
     CS1->>CSy: DERP relay forward to CSy<br/>TLS handshake: CS1 ↔ CSy (ECDH, leg 3)
-    CSx-->>CSy: Preamble: {type:hop-relay, service_did:Ay,<br/>            caller_did:Sx, caller_pubkey:Sx_pub}
+    CSx-->>CSy: Write original preamble unchanged:<br/>json-rpc://health.did:key:Ay?pubkey=<Sx_pubkey_hex>\n
 
     Note over CS1: Blind to preamble content.<br/>Forwards encrypted QUIC frames only.
 
-    Note over CSy: Routing table lookup: "Ay" → Sy ✓
+    Note over CSy: handle_stream(): EndpointRegistry lookup for did:key:Ay → HIT (Sy)<br/>plan_pipeline() → local ServiceStage
 
-    CSy->>Sy: New Iroh QUIC stream (local LAN)<br/>Preamble: {type:service, service_did:Ay,<br/>           caller_did:Sx, caller_pubkey:Sx_pub}<br/>TLS handshake: CSy ↔ Sy (ECDH, leg 4)
+    CSy->>Sy: New Iroh QUIC stream (local LAN)<br/>Preamble: json-rpc://health.did:key:Ay?pubkey=<Sx_pubkey_hex>\n<br/>TLS handshake: CSy ↔ Sy (ECDH, leg 4)
 
-    Sy->>Ay: Dispatch: preamble type=service, local route
+    Sy->>Ay: Dispatch: local EndpointRegistry match → ServiceStage → Ay
 
     Note over Ax,Ay: ── PHASE 3: Bidirectional Stream Active ──────────────────────
 
-    Note over Ax,Ay: Each leg encrypted independently by QUIC TLS.<br/>caller_pubkey forwarded unchanged → Ay authenticates Sx's identity.<br/>Ax's wRPC/JSON-RPC payload opaque to all hops.
+    Note over Ax,Ay: Each leg encrypted independently by QUIC TLS.<br/>pubkey query param forwarded unchanged → Ay derives caller_did = did:key:<pubkey>.<br/>Ax's wRPC/JSON-RPC payload opaque to all hops.
 
     Ax->>Ay: wRPC request (flows through chain)
     Ay-->>Ax: wRPC response (flows back through chain)
@@ -300,10 +303,11 @@ sequenceDiagram
 
 ## 6. Encryption Model
 
-Each leg of the chain is independently encrypted by Iroh's QUIC TLS 1.3 (ECDH per leg). The caller's Ed25519 `caller_pubkey` is carried in the preamble and forwarded **unchanged** through every hop. The final service (Ay) uses this to:
+Each leg of the chain is independently encrypted by Iroh's QUIC TLS 1.3 (ECDH per leg). The caller's Ed25519 `pubkey` is carried in the preamble as the `?pubkey=<hex>` query parameter and forwarded **unchanged** through every hop. The final service (Ay) uses this to:
 
 1. Verify the caller's identity (Ed25519 signature on the request payload)
-2. Optionally encrypt a response envelope specifically for the caller
+2. Derive `caller_did = did:key:<z-base-32(pubkey)>` for authorization
+3. Optionally encrypt a response envelope specifically for the caller
 
 ```
 Leg 1: Sx ↔ CSx       QUIC TLS session key K1 (ephemeral ECDH)
@@ -312,7 +316,7 @@ Leg 3: CS1 ↔ CSy      QUIC TLS session key K3 (ephemeral ECDH)
 Leg 4: CSy ↔ Sy       QUIC TLS session key K4 (ephemeral ECDH)
 
 Application payload:   wRPC frames signed by Sx's Ed25519 key
-                       Verifiable by Ay using caller_pubkey from preamble
+                       Verifiable by Ay using ?pubkey= from preamble
                        Opaque to CS1, CSx, CSy (they only see encrypted QUIC frames)
 ```
 
@@ -424,9 +428,9 @@ assert_eq!(ax_rec.entry_point, csx.node_did());  // same entry point, re-registe
 
 ### Key Invariants to Verify
 
-1. **Routing table correctness:** CSx's table always reflects exactly what Sx has registered, no more.
+1. **Routing table correctness:** CSx's routing decision for `did:key:Ay` always correctly resolves to CSy via the community registry, not locally.
 2. **Registry hierarchy:** Every service reachable from Sy/Sx is resolvable at R, via the Ry/Rx chain.
-3. **Identity propagation:** `caller_did` and `caller_pubkey` are present at Ay's receive, unchanged.
+3. **Identity propagation:** `?pubkey=<Sx_pubkey_hex>` is present and unchanged at Ay's receive; Ay can derive `caller_did = did:key:<pubkey>` from it.
 4. **Hop blindness:** CS1 never observes any preamble plaintext from a CSx↔CSy connection.
 5. **Connection isolation:** Two concurrent connections Ax→Ay and Ax→Ay2 (another service on Sy) use separate QUIC streams; neither affects the other.
 6. **Teardown propagation:** When Sx disconnects, all entries are evicted up the chain to R within a bounded time.

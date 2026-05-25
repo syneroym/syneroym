@@ -112,17 +112,21 @@ sequenceDiagram
 
 ## How Each Hop Stays Blind to the Payload
 
-Each hop reads exactly one preamble at connection open time:
+Each hop reads exactly one preamble at connection open time using the **existing URL-scheme preamble format** already in the router:
 
 ```
-[4-byte length] [preamble JSON/CBOR]
-{
-  "type": "hop-relay",         // or "service" at the final hop
-  "service_did": "did:svc:pizza-shop"
-}
+<scheme>://<interface>.<service_did>[?pubkey=<hex-ed25519>]
+
+Examples:
+  json-rpc://health.did:key:pizza-shop?pubkey=<caller-hex-pubkey>
+  raw://did:key:pizza-shop?pubkey=<caller-hex-pubkey>
 ```
 
-After the preamble is consumed, the hop does **pure bidirectional byte copying** between the upstream stream and the downstream stream it opened. It never reads the payload again. This is identical to the existing blind tunnel behavior in the WebRTC coordinator — the hop is a transparent pipe.
+- **`service_did`** is the `service_id` field in `RoutePreamble` — the target service's DID.
+- **`pubkey`** is the existing optional query parameter on `RoutePreamble` — the caller's Ed25519 public key, forwarded unchanged through the entire chain so the final service can verify the caller's identity. Since `did:key` is derived deterministically from the pubkey, a separate `caller_did` field is not needed.
+- **`scheme`** (transport + protocol) is whatever the **originating caller chose** and is forwarded unchanged. The intermediate hop never inspects or re-encodes it; it passes the exact preamble bytes it received when opening the downstream stream.
+
+After the preamble is consumed, the hop does **pure bidirectional byte copying** between the upstream stream and the downstream stream it opened. It never reads the payload again — the hop is a transparent pipe.
 
 The application-level payload (wRPC frames, JSON-RPC requests/responses) is protected by:
 - **Transport encryption** per QUIC leg (Iroh QUIC / TLS 1.3)
@@ -210,31 +214,44 @@ Evicted by:
 ### Stream forwarder (relay role)
 
 ```
-On incoming stream:
-  1. Read preamble → extract service_did
-  2. Look up routing table → next_hop
-  3. Open new QUIC stream to next_hop with same preamble
-  4. tokio::io::copy_bidirectional(upstream, downstream)
-  5. On either side close → close both
+On incoming stream (handled inside handle_raw_stream → ServiceStage::RelayHop):
+  1. Read preamble → extract service_id (target DID) via existing read_preamble()
+  2. EndpointRegistry::lookup() → miss (service not local)
+  3. RegistryClient::lookup(community_registry_url, service_id, resolve=true)
+       → SignedEndpointInfo { mechanisms: [Iroh { endpoint_addr_bytes, relay_url }] }
+  4. Parse IrohAddr from endpoint_addr_bytes
+  5. Obtain Iroh Connection to next-hop substrate (reuse existing or connect)
+  6. Open new QUIC bidirectional stream on that connection
+  7. Write the original preamble string to the new stream (unchanged)
+  8. tokio::io::copy_bidirectional(upstream_stream, downstream_stream)
+  9. On either side close → close both streams; underlying QUIC connection persists
 ```
 
 > [!NOTE]
-> **Implementation:** `hop-relay` is a **native Rust subsystem built into the substrate binary**, sitting alongside `connection_router`. WASM sandboxing would add per-byte overhead on every forwarded connection — the wrong tradeoff for infrastructure-level byte shuttling. It uses the same Iroh endpoint and Tokio runtime the substrate already owns:
+> **Implementation:** `hop-relay` is a **native Rust subsystem built into the substrate binary**, sitting alongside `connection_router`. WASM sandboxing would add per-byte overhead on every forwarded connection — the wrong tradeoff for infrastructure-level byte shuttling.
+>
+> The integration point in the existing stage-pipeline architecture is `ServiceStage::RelayHop` inside `handle_raw_stream()` in [`route_handler/io.rs`](../crates/router/src/route_handler/io.rs). The preamble parsing, registry lookup, and pipeline planning are already wired in `handle_stream()` — the only missing piece is the `RelayHop` branch that reaches out to the community registry and opens an outbound Iroh stream:
+>
 > ```rust
-> // Accept inbound stream (from upstream hop or caller)
-> let inbound = iroh_endpoint.accept().await?;
-> let service_did = read_preamble(&inbound).await?;
+> // Inside handle_raw_stream(), ServiceStage::RelayHop branch:
+> ServiceStage::RelayHop { .. } => {
+>     // Resolve next-hop substrate via community registry
+>     let info = RegistryClient::lookup(&registry_url, &preamble.service_id, true).await?;
+>     let iroh_addr = iroh_addr_from_mechanisms(&info.info.mechanisms)?;
 >
-> // Look up routing table → next hop
-> let next_hop = routing_table.get(&service_did)?;
+>     // Open outbound stream to next-hop substrate (reuses existing Iroh connection)
+>     let conn = iroh_endpoint.connect(iroh_addr, SYNEROYM_ALPN).await?;
+>     let (mut send, mut recv) = conn.open_bi().await?;
 >
-> // Open outbound stream to next hop
-> let outbound = iroh_endpoint.connect(next_hop, &service_did).await?;
+>     // Forward the original preamble to the next hop, unchanged
+>     send.write_all(preamble_line.as_bytes()).await?;
 >
-> // Pure byte forwarding — substrate is a transparent pipe
-> tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await?;
+>     // Blind bidirectional forwarding
+>     tokio::io::copy_bidirectional(&mut stream, &mut ReaderWriter { reader: recv, writer: send }).await?;
+>     Ok(())
+> }
 > ```
-> Being native also means it can share the substrate's existing Iroh `Endpoint` directly — no capability boundary crossing needed.
+> The `EncryptionStage::RelayOpaqueForward` variant in `routing.rs` is the corresponding stub for the encryption stage — used when a hop needs to forward an E2E-encrypted stream without terminating TLS.
 
 ---
 
@@ -270,11 +287,12 @@ Each node only knows the **next hop**, not the full path. This is exactly the IP
 
 | File / Component | Change |
 |---|---|
-| `router/connection_router.rs` | Add `HopRelay` preamble variant; on match, delegate to the `hop_relay` subsystem |
-| `crates/substrate/` (new module) | `hop_relay`: native Rust subsystem — routing table, Iroh connection-close listener, gossip sender/receiver, `copy_bidirectional` forwarder |
-| `pkarr` / registry publish logic | Edge substrate publishes subtree service records to global DHT; record format gains `entry_point` field |
-| WIT interfaces | `hop-relay` WIT interface for the *management plane* only: `register-service`, `deregister-service`, `gossip-update` (the data plane is all native, no WIT involved) |
-| Config / CLI | `syneroym hop-relay enable` — activates the native subsystem; `syneroym join-hop <parent-addr>` for initial pairing |
+| `router/route_handler/io.rs` | Implement `ServiceStage::RelayHop` branch in `handle_raw_stream()`: community registry lookup → Iroh connect → forward preamble → `copy_bidirectional` |
+| `router/routing.rs` | `ServiceStage::RelayHop` and `EncryptionStage::RelayOpaqueForward` are **already stubbed** — just need the real implementation body |
+| `router/route_handler/dispatch.rs` | `plan_pipeline()` needs a new match arm: when `EndpointRegistry::lookup()` misses, attempt a community registry lookup and return `ServiceStage::RelayHop` |
+| `core/community_registry.rs` | `RegistryClient::lookup()` already exists and returns `EndpointMechanism::Iroh { endpoint_addr_bytes, relay_url }` — no changes needed |
+| Preamble format | **No changes.** The existing URL-scheme preamble (`scheme://interface.service_id?pubkey=<hex>`) is forwarded **unchanged** to the next hop. No new format or fields needed. |
+| Config | Add optional `community_registry_url` to substrate config for hops that need to reach out-of-local-registry services |
 
 ---
 
