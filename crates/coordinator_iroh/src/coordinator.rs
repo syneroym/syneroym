@@ -67,11 +67,11 @@ impl CoordinatorIroh {
                     }
                 }
 
-                if let Some(relay_url_str) = chosen_relay_url_str {
-                    if let Ok(relay_url) = relay_url_str.parse::<RelayUrl>() {
-                        ep_bldr = iroh::Endpoint::empty_builder()
-                            .relay_mode(RelayMode::Custom(RelayMap::from(relay_url)));
-                    }
+                if let Some(relay_url_str) = chosen_relay_url_str
+                    && let Ok(relay_url) = relay_url_str.parse::<RelayUrl>()
+                {
+                    ep_bldr = iroh::Endpoint::empty_builder()
+                        .relay_mode(RelayMode::Custom(RelayMap::from(relay_url)));
                 }
                 let iroh_endpoint = ep_bldr.secret_key(secret_key.clone()).bind().await?;
                 iroh_endpoint.online().await;
@@ -150,10 +150,10 @@ impl CoordinatorIroh {
 
                     let endpoint_addr_payload = iroh::EndpointAddr::new(endpoint_addr.id);
                     let actual_http_addr = relay_server.as_ref().and_then(|s| s.http_addr());
-                    let relay_url_payload = if let Some(ref parent_url) =
+                    let relay_url_payload = if let Some(parent_url) =
                         config.uplink.iroh.as_ref().map(|u| &u.relay_url)
                     {
-                        Some((*parent_url).clone())
+                        Some(parent_url.clone())
                     } else if iroh_cfg.enable_relay {
                         if let Some(addr) = actual_http_addr {
                             Some(format!("http://{}", addr))

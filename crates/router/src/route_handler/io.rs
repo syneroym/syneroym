@@ -83,10 +83,10 @@ impl RouteHandler {
                         {
                             let mut addr: iroh::EndpointAddr =
                                 serde_json::from_slice(&endpoint_addr_bytes)?;
-                            if let Some(r_url_str) = relay_url {
-                                if let Ok(relay_url) = r_url_str.parse::<iroh::RelayUrl>() {
-                                    addr = addr.with_relay_url(relay_url);
-                                }
+                            if let Some(r_url_str) = relay_url
+                                && let Ok(relay_url) = r_url_str.parse::<iroh::RelayUrl>()
+                            {
+                                addr = addr.with_relay_url(relay_url);
                             }
                             iroh_addr = Some(addr);
                             break;

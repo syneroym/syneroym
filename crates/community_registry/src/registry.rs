@@ -191,31 +191,31 @@ async fn register_endpoint(
     state.aliases.insert(alias, service_id.clone());
     state.endpoints.insert(service_id.clone(), payload.clone());
 
-    if let Some(parent_url) = &state.parent_registry_url {
-        if !payload.info.is_private {
-            let parent_url = parent_url.clone();
-            let payload_to_propagate = payload;
-            tokio::spawn(async move {
-                let client = reqwest::Client::new();
-                let url = format!("{}/register", parent_url);
-                debug!("Propagating registration to parent registry at: {}", url);
-                match client.post(&url).json(&payload_to_propagate).send().await {
-                    Ok(resp) if resp.status().is_success() => {
-                        debug!("Successfully propagated registration to {}", url);
-                    }
-                    Ok(resp) => {
-                        tracing::warn!(
-                            "Failed to propagate registration to {} (status: {})",
-                            url,
-                            resp.status()
-                        );
-                    }
-                    Err(e) => {
-                        tracing::warn!("Error propagating registration to {}: {}", url, e);
-                    }
+    if let Some(parent_url) = &state.parent_registry_url
+        && !payload.info.is_private
+    {
+        let parent_url = parent_url.clone();
+        let payload_to_propagate = payload;
+        tokio::spawn(async move {
+            let client = reqwest::Client::new();
+            let url = format!("{}/register", parent_url);
+            debug!("Propagating registration to parent registry at: {}", url);
+            match client.post(&url).json(&payload_to_propagate).send().await {
+                Ok(resp) if resp.status().is_success() => {
+                    debug!("Successfully propagated registration to {}", url);
                 }
-            });
-        }
+                Ok(resp) => {
+                    tracing::warn!(
+                        "Failed to propagate registration to {} (status: {})",
+                        url,
+                        resp.status()
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!("Error propagating registration to {}: {}", url, e);
+                }
+            }
+        });
     }
 
     Ok(StatusCode::OK)
