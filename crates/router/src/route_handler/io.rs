@@ -55,16 +55,75 @@ impl RouteHandler {
         );
 
         // 2. Registry lookup & normalization
-        let (endpoint, canonical_interface) =
-            self.inner.registry.lookup(&preamble.service_id, &preamble.interface).ok_or_else(
-                || {
-                    anyhow!(
+        let lookup_result = self.inner.registry.lookup(&preamble.service_id, &preamble.interface);
+
+        let (endpoint, canonical_interface) = match lookup_result {
+            Some(res) => res,
+            None => {
+                if let Some(registry_url) = &self.inner.community_registry_url {
+                    debug!(
+                        "[Router] Local miss for service '{}'. Falling back to community registry: {}",
+                        preamble.service_id, registry_url
+                    );
+                    // 1. Community registry lookup
+                    let info = syneroym_core::community_registry::RegistryClient::lookup(
+                        registry_url,
+                        &preamble.service_id,
+                        true,
+                    )
+                    .await?;
+
+                    // 2. Extract Iroh EndpointAddr from mechanisms
+                    let mut iroh_addr = None;
+                    for mech in info.info.mechanisms {
+                        if let syneroym_core::community_registry::EndpointMechanism::Iroh {
+                            endpoint_addr_bytes,
+                            relay_url,
+                        } = mech
+                        {
+                            let mut addr: iroh::EndpointAddr =
+                                serde_json::from_slice(&endpoint_addr_bytes)?;
+                            if let Some(r_url_str) = relay_url
+                                && let Ok(relay_url) = r_url_str.parse::<iroh::RelayUrl>()
+                            {
+                                addr = addr.with_relay_url(relay_url);
+                            }
+                            iroh_addr = Some(addr);
+                            break;
+                        }
+                    }
+
+                    let next_hop_addr = iroh_addr.ok_or_else(|| {
+                        anyhow!("No valid Iroh mechanism found for next hop in registry")
+                    })?;
+
+                    // 3. Connect outbound to next hop
+                    let ep = self.inner.iroh_endpoint.as_ref().ok_or_else(|| {
+                        anyhow!("No Iroh endpoint configured for relay forwarding")
+                    })?;
+                    debug!("[Router] Relay connecting to next hop: {:?}", next_hop_addr.id);
+                    let conn = ep.connect(next_hop_addr, super::super::SYNEROYM_ALPN).await?;
+                    let (mut out_send, out_recv) = conn.open_bi().await?;
+
+                    // 4. Send original preamble
+                    debug!("[Router] Forwarding original preamble: {}", preamble.to_string());
+                    out_send.write_all(preamble.to_preamble_line().as_bytes()).await?;
+
+                    // 5. Blind bidirectional pipe
+                    let mut inbound = super::encryption::ReaderWriter { reader, writer };
+                    let mut outbound = crate::net_iroh::IrohStream::new(out_send, out_recv);
+                    tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await?;
+                    debug!("[Router] Relay copy completed successfully");
+                    return Ok(());
+                } else {
+                    return Err(anyhow!(
                         "Interface '{}' not found for service '{}'",
                         preamble.interface,
                         preamble.service_id
-                    )
-                },
-            )?;
+                    ));
+                }
+            }
+        };
 
         preamble.interface = canonical_interface;
         debug!("[Router] Registry lookup complete: endpoint={:?}", endpoint);
@@ -121,13 +180,6 @@ impl RouteHandler {
                     "wRPC passthrough not yet implemented; dropping stream"
                 );
                 Ok(())
-            }
-            ServiceStage::RelayHop { next_hop_id } => {
-                tracing::warn!(
-                    next_hop_id = ?next_hop_id,
-                    "RelayHop raw passthrough is not implemented yet; dropping stream"
-                );
-                Err(anyhow!("RelayHop raw passthrough not implemented"))
             }
             _ => Err(anyhow!(
                 "ServiceStage {:?} is not supported for Raw transport",

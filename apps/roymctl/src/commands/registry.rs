@@ -21,6 +21,9 @@ pub enum RegistryCommands {
         /// Optional nickname for the service
         #[arg(long)]
         nickname: Option<String>,
+        /// Make this registration private (will not propagate to parent registries)
+        #[arg(long)]
+        private: bool,
     },
     /// Look up an entry in the community registry
     Lookup {
@@ -35,7 +38,7 @@ pub enum RegistryCommands {
 /// Handle community registry subcommands
 pub async fn handle(command: &RegistryCommands, api_url: &str, dir: &Path) -> anyhow::Result<()> {
     match command {
-        RegistryCommands::Register { identity: name, substrate, nickname } => {
+        RegistryCommands::Register { identity: name, substrate, nickname, private } => {
             let key_path = dir.join("identities").join(format!("{}.key", name));
             if !key_path.exists() {
                 anyhow::bail!("Identity '{}' not found at {}", name, key_path.display());
@@ -53,6 +56,7 @@ pub async fn handle(command: &RegistryCommands, api_url: &str, dir: &Path) -> an
                 endpoint_type: EndpointType::Service,
                 mechanisms: vec![], // Services resolved via substrate don't need mechanisms here
                 nickname: nickname.clone(),
+                is_private: *private,
             };
 
             let signature = identity.sign_json(&serde_json::to_value(&info)?)?;

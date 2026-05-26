@@ -535,6 +535,7 @@ async fn register_app_in_registry(
         endpoint_type: syneroym_core::community_registry::EndpointType::Service,
         nickname: Some(nickname.to_string()),
         mechanisms: substrate_mechanisms,
+        is_private: false,
     };
     let info_value = serde_json::to_value(&info).unwrap();
     let canonical_value = syneroym_identity::substrate::canonicalize_json_value(&info_value);

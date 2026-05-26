@@ -351,11 +351,5 @@ where
                 writer: Box::new(encrypted_writer) as Box<dyn AsyncWrite + Unpin + Send>,
             })
         }
-        EncryptionStage::RelayOpaqueForward => {
-            tracing::warn!(
-                "[Router] EncryptionStage::RelayOpaqueForward is not implemented yet; returning unsupported error"
-            );
-            Err(anyhow!("EncryptionStage::RelayOpaqueForward is not implemented yet"))
-        }
     }
 }

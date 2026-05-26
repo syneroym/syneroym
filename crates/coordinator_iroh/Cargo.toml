@@ -5,17 +5,29 @@ edition = "2024"
 
 [dependencies]
 syneroym-core = { path = "../core" }
+syneroym-router = { path = "../router" }
+syneroym-identity = { path = "../identity" }
+syneroym-rpc = { path = "../rpc" }
 anyhow.workspace = true
 tokio.workspace = true
 iroh-relay.workspace = true
 iroh-base.workspace = true
+iroh = { workspace = true }
 tracing.workspace = true
 url.workspace = true
 rustls-pki-types.workspace = true
 rustls.workspace = true
+axum = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+rand = { workspace = true }
+async-trait = { workspace = true }
 
 [dev-dependencies]
 iroh.workspace = true
 n0-error.workspace = true
 tracing-subscriber.workspace = true
 tempfile.workspace = true
+syneroym-community-registry = { path = "../community_registry" }
+syneroym-sdk = { path = "../sdk" }

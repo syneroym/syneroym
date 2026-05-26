@@ -323,11 +323,16 @@ fn default_registry_http_bind_address() -> String {
 pub struct ServiceRegistryRole {
     pub access: AccessControl,
     pub http_bind_address: String,
+    pub parent_registry_url: Option<String>,
 }
 
 impl Default for ServiceRegistryRole {
     fn default() -> Self {
-        Self { access: Default::default(), http_bind_address: default_registry_http_bind_address() }
+        Self {
+            access: Default::default(),
+            http_bind_address: default_registry_http_bind_address(),
+            parent_registry_url: None,
+        }
     }
 }
 
@@ -376,6 +381,8 @@ pub struct CoordinatorIrohConfig {
     pub enable_relay: bool,
     pub http_bind_address: String,
     pub quic_bind_address: String,
+    pub community_registry_url: Option<String>,
+    pub share_in_registry: bool,
 }
 
 impl Default for CoordinatorIrohConfig {
@@ -385,6 +392,8 @@ impl Default for CoordinatorIrohConfig {
             enable_relay: false,
             http_bind_address: default_iroh_http_bind_address(),
             quic_bind_address: default_iroh_quic_bind_address(),
+            community_registry_url: None,
+            share_in_registry: false,
         }
     }
 }
@@ -543,11 +552,16 @@ pub enum SamplingStrategy {
 pub struct SubstrateGlobalConfig {
     pub communication_interfaces: Vec<String>,
     pub registry_url: Option<String>,
+    pub coordinator_discovery_url: Option<String>,
 }
 
 impl Default for SubstrateGlobalConfig {
     fn default() -> Self {
-        Self { communication_interfaces: default_communication_interfaces(), registry_url: None }
+        Self {
+            communication_interfaces: default_communication_interfaces(),
+            registry_url: None,
+            coordinator_discovery_url: None,
+        }
     }
 }
 
