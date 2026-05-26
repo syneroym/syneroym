@@ -52,24 +52,27 @@ impl RouteHandler {
                 let request: JsonRpcRequest =
                     serde_json::from_slice(body).map_err(|e| anyhow!("JSON parse error: {e}"))?;
 
-                match self
-                    .inner
-                    .app_sandbox_engine
-                    .execute_wasm(service_id, &preamble.interface, &request)
-                    .await
-                {
-                    Ok(wasm_result) => {
-                        let json_response = JsonRpcResponse {
-                            jsonrpc: "2.0".to_string(),
-                            result: serde_json::Value::String(wasm_result),
-                            id: request.id.clone(),
-                        };
-                        serde_json::to_vec(&json_response).map_err(Into::into)
+                if let Some(app_sandbox_engine) = &self.inner.app_sandbox_engine {
+                    match app_sandbox_engine
+                        .execute_wasm(service_id, &preamble.interface, &request)
+                        .await
+                    {
+                        Ok(wasm_result) => {
+                            let json_response = JsonRpcResponse {
+                                jsonrpc: "2.0".to_string(),
+                                result: serde_json::Value::String(wasm_result),
+                                id: request.id.clone(),
+                            };
+                            serde_json::to_vec(&json_response).map_err(Into::into)
+                        }
+                        Err(e) => {
+                            error!("WASM execution error: {}", e);
+                            JsonRpcConverter::json_error(request.id.clone(), -32603, e.to_string())
+                        }
                     }
-                    Err(e) => {
-                        error!("WASM execution error: {}", e);
-                        JsonRpcConverter::json_error(request.id.clone(), -32603, e.to_string())
-                    }
+                } else {
+                    let message = "App sandbox engine not available in coordinator mode";
+                    JsonRpcConverter::json_error(request.id.clone(), -32603, message.to_string())
                 }
             }
             (AdaptationStage::JsonRpcToWrpc, ServiceStage::WasmComponent { .. }) => {
@@ -94,7 +97,6 @@ impl RouteHandler {
 
         let encryption = match preamble.enc.as_deref() {
             Some("ecdh-p256") => EncryptionStage::TerminateEcdhP256,
-            Some("relay-opaque") => EncryptionStage::RelayOpaqueForward,
             _ => EncryptionStage::None,
         };
 

@@ -25,6 +25,7 @@ pub struct EcosystemRegistry {
     state: Arc<RegistryState>,
     shutdown_tx: Option<oneshot::Sender<()>>,
     server_handle: Option<tokio::task::JoinHandle<()>>,
+    listener: Option<TcpListener>,
 }
 
 struct RegistryState {
@@ -32,6 +33,13 @@ struct RegistryState {
     endpoints: DashMap<String, SignedEndpointInfo>,
     // Map of alias -> service_id
     aliases: DashMap<String, String>,
+    parent_registry_url: Option<String>,
+}
+
+impl Default for RegistryState {
+    fn default() -> Self {
+        Self { endpoints: DashMap::new(), aliases: DashMap::new(), parent_registry_url: None }
+    }
 }
 
 impl EcosystemRegistry {
@@ -46,25 +54,52 @@ impl EcosystemRegistry {
             .http_bind_address
             .clone();
 
+        let parent_registry_url =
+            config.roles.community_registry.as_ref().and_then(|r| r.parent_registry_url.clone());
+
         Ok(Self {
             bind_address,
-            state: Arc::new(RegistryState { endpoints: DashMap::new(), aliases: DashMap::new() }),
+            state: Arc::new(RegistryState {
+                endpoints: DashMap::new(),
+                aliases: DashMap::new(),
+                parent_registry_url,
+            }),
             shutdown_tx: None,
             server_handle: None,
+            listener: None,
         })
     }
 
-    pub async fn run(&mut self) -> Result<()> {
-        info!("running service registry on {}", self.bind_address);
+    pub async fn bind(&mut self) -> Result<String> {
+        if self.listener.is_none() {
+            let listener = TcpListener::bind(&self.bind_address)
+                .await
+                .context("Failed to bind registry listener")?;
+            let bound_address = listener.local_addr()?;
+            self.bind_address = format!("127.0.0.1:{}", bound_address.port());
+            self.listener = Some(listener);
+        }
+        Ok(format!("http://{}", self.bind_address))
+    }
+
+    pub async fn spawn(&mut self) -> Result<()> {
+        let listener = match self.listener.take() {
+            Some(l) => l,
+            None => TcpListener::bind(&self.bind_address)
+                .await
+                .context("Failed to bind registry listener")?,
+        };
+
+        let bound_address = listener.local_addr()?;
+        self.bind_address = format!("127.0.0.1:{}", bound_address.port());
+        let addr_str = format!("http://{}", self.bind_address);
+
+        info!("running service registry on {}", addr_str);
 
         let app = Router::new()
             .route("/register", post(register_endpoint))
             .route("/lookup/{service_id}", get(lookup_endpoint))
             .with_state(self.state.clone());
-
-        let listener = TcpListener::bind(&self.bind_address)
-            .await
-            .context("Failed to bind registry listener")?;
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
         self.shutdown_tx = Some(shutdown_tx);
@@ -80,8 +115,14 @@ impl EcosystemRegistry {
         });
         self.server_handle = Some(server_handle);
 
-        // Keep the run method from returning until shut down
-        std::future::pending::<()>().await;
+        Ok(())
+    }
+
+    pub async fn run(&mut self) -> Result<()> {
+        self.spawn().await?;
+        if let Some(ref mut handle) = self.server_handle {
+            let _ = handle.await;
+        }
         Ok(())
     }
 
@@ -148,7 +189,35 @@ async fn register_endpoint(
 
     // Store in DashMap
     state.aliases.insert(alias, service_id.clone());
-    state.endpoints.insert(service_id.clone(), payload);
+    state.endpoints.insert(service_id.clone(), payload.clone());
+
+    if let Some(parent_url) = &state.parent_registry_url {
+        if !payload.info.is_private {
+            let parent_url = parent_url.clone();
+            let payload_to_propagate = payload;
+            tokio::spawn(async move {
+                let client = reqwest::Client::new();
+                let url = format!("{}/register", parent_url);
+                debug!("Propagating registration to parent registry at: {}", url);
+                match client.post(&url).json(&payload_to_propagate).send().await {
+                    Ok(resp) if resp.status().is_success() => {
+                        debug!("Successfully propagated registration to {}", url);
+                    }
+                    Ok(resp) => {
+                        tracing::warn!(
+                            "Failed to propagate registration to {} (status: {})",
+                            url,
+                            resp.status()
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!("Error propagating registration to {}: {}", url, e);
+                    }
+                }
+            });
+        }
+    }
+
     Ok(StatusCode::OK)
 }
 
@@ -200,7 +269,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_register_and_lookup_success() {
-        let state = Arc::new(RegistryState { endpoints: DashMap::new(), aliases: DashMap::new() });
+        let state = Arc::new(RegistryState::default());
         let identity = Identity::generate().unwrap();
         let did = derive_did_key(&identity.public_key());
 
@@ -213,6 +282,7 @@ mod tests {
                 endpoint_addr_bytes: vec![1, 2, 3],
                 relay_url: Some("http://relay.example.com".to_string()),
             }],
+            is_private: false,
         };
 
         let signed_info = create_signed_info(&identity, info);
@@ -233,7 +303,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_register_invalid_signature() {
-        let state = Arc::new(RegistryState { endpoints: DashMap::new(), aliases: DashMap::new() });
+        let state = Arc::new(RegistryState::default());
         let identity = Identity::generate().unwrap();
         let other_identity = Identity::generate().unwrap();
         let did = derive_did_key(&identity.public_key());
@@ -244,6 +314,7 @@ mod tests {
             endpoint_type: EndpointType::Substrate,
             nickname: None,
             mechanisms: vec![],
+            is_private: false,
         };
 
         // Sign with OTHER identity
@@ -256,7 +327,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_register_invalid_did() {
-        let state = Arc::new(RegistryState { endpoints: DashMap::new(), aliases: DashMap::new() });
+        let state = Arc::new(RegistryState::default());
         let identity = Identity::generate().unwrap();
 
         let info = EndpointInfo {
@@ -265,6 +336,7 @@ mod tests {
             endpoint_type: EndpointType::Substrate,
             nickname: None,
             mechanisms: vec![],
+            is_private: false,
         };
 
         let signed_info = create_signed_info(&identity, info);
@@ -276,7 +348,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_indirect_lookup() {
-        let state = Arc::new(RegistryState { endpoints: DashMap::new(), aliases: DashMap::new() });
+        let state = Arc::new(RegistryState::default());
         let substrate_id = "did:key:hsubstrate";
         let service_id = "did:key:hservice";
 
@@ -291,6 +363,7 @@ mod tests {
                     endpoint_addr_bytes: vec![42],
                     relay_url: None,
                 }],
+                is_private: false,
             },
             signature: "mock-sig".to_string(),
         };
@@ -304,6 +377,7 @@ mod tests {
                 endpoint_type: EndpointType::Service,
                 nickname: None,
                 mechanisms: vec![],
+                is_private: false,
             },
             signature: "mock-sig".to_string(),
         };
@@ -338,7 +412,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_lookup_by_shorthash_no_nickname() {
-        let state = Arc::new(RegistryState { endpoints: DashMap::new(), aliases: DashMap::new() });
+        let state = Arc::new(RegistryState::default());
         let identity = Identity::generate().unwrap();
         let did = derive_did_key(&identity.public_key());
 
@@ -348,6 +422,7 @@ mod tests {
             endpoint_type: EndpointType::Substrate,
             nickname: None, // No nickname
             mechanisms: vec![],
+            is_private: false,
         };
 
         let signed_info = create_signed_info(&identity, info);
@@ -366,7 +441,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_lookup_by_shorthash_fails_if_nickname_present() {
-        let state = Arc::new(RegistryState { endpoints: DashMap::new(), aliases: DashMap::new() });
+        let state = Arc::new(RegistryState::default());
         let identity = Identity::generate().unwrap();
         let did = derive_did_key(&identity.public_key());
 
@@ -376,6 +451,7 @@ mod tests {
             endpoint_type: EndpointType::Substrate,
             nickname: Some("alice".to_string()),
             mechanisms: vec![],
+            is_private: false,
         };
 
         let signed_info = create_signed_info(&identity, info);
@@ -393,7 +469,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_lookup_not_found() {
-        let state = Arc::new(RegistryState { endpoints: DashMap::new(), aliases: DashMap::new() });
+        let state = Arc::new(RegistryState::default());
         let res = lookup_endpoint(
             Path("non-existent".to_string()),
             Query(LookupQuery { resolve: None }),

@@ -12,12 +12,6 @@ pub enum EncryptionStage {
     /// sign the server public key with this substrate's identity key, and wrap the
     /// stream in AES-256-GCM framing for the remainder of the session.
     TerminateEcdhP256,
-    /// This substrate is an intermediate relay hop on a multi-hop path.
-    /// The ECDH handshake preamble and all subsequent encrypted bytes are forwarded
-    /// opaquely to the next hop — this substrate never sees plaintext.
-    ///
-    /// NOTE: stub implementation only. Full multi-hop relay forwarding is not yet built.
-    RelayOpaqueForward,
 }
 
 /// Specifies how discrete payloads are extracted from the (possibly encrypted) byte stream.
@@ -64,12 +58,6 @@ pub enum ServiceStage {
     /// Proxy raw bytes to an externally running TCP service at host:port.
     /// Covers Podman-managed containers, sidecar processes, or any TCP server.
     TcpProxy { host: String, port: u16 },
-    /// Forward the stream to the next substrate in a multi-hop relay path.
-    /// `next_hop_id` is the substrate DID of the next hop, if known.
-    /// If None, the next hop must be resolved via a registry lookup at dispatch time.
-    ///
-    /// NOTE: stub — full multi-hop relay routing is not yet implemented.
-    RelayHop { next_hop_id: Option<String> },
     /// No viable service was found or the combination is unsupported.
     /// The stream will be rejected with a diagnostic error.
     Unsupported,

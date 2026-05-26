@@ -87,15 +87,17 @@ impl SyneroymClient {
         for mechanism in mechanisms {
             match mechanism {
                 EndpointMechanism::Iroh { endpoint_addr_bytes, relay_url } => {
-                    let endpoint_addr: iroh::EndpointAddr =
+                    let mut endpoint_addr: iroh::EndpointAddr =
                         serde_json::from_slice(&endpoint_addr_bytes)?;
 
                     let mut ep_bldr = iroh::Endpoint::empty_builder();
-                    if let Some(relay) = relay_url
-                        && let Ok(url) = relay.parse::<iroh::RelayUrl>()
-                    {
-                        ep_bldr =
-                            ep_bldr.relay_mode(iroh::RelayMode::Custom(iroh::RelayMap::from(url)));
+                    if let Some(relay) = relay_url {
+                        if let Ok(url) = relay.parse::<iroh::RelayUrl>() {
+                            ep_bldr = ep_bldr.relay_mode(iroh::RelayMode::Custom(
+                                iroh::RelayMap::from(url.clone()),
+                            ));
+                            endpoint_addr = endpoint_addr.with_relay_url(url);
+                        }
                     }
 
                     let endpoint = ep_bldr.bind().await?;

@@ -30,8 +30,11 @@ pub struct RouteHandler {
 pub(crate) struct RouteHandlerInner {
     pub registry: EndpointRegistry,
     pub native_dispatch: DashMap<String, Arc<dyn NativeService>>,
-    pub app_sandbox_engine: Arc<AppSandboxEngine>,
+    pub app_sandbox_engine: Option<Arc<AppSandboxEngine>>,
     pub identity: syneroym_identity::Identity,
+    pub iroh_endpoint: Option<iroh::Endpoint>,
+    pub community_registry_url: Option<String>,
+    pub _parent_relay_url: Option<String>,
 }
 
 impl fmt::Debug for RouteHandler {
@@ -55,11 +58,16 @@ impl RouteHandler {
 
         let identity = syneroym_identity::Identity::from_bytes(&secret_key);
 
+        let parent_relay_url = config.uplink.iroh.as_ref().map(|cfg| cfg.relay_url.clone());
+
         let inner = Arc::new(RouteHandlerInner {
             registry: registry.clone(),
             native_dispatch: DashMap::new(),
-            app_sandbox_engine: app_sandbox_engine.clone(),
+            app_sandbox_engine: Some(app_sandbox_engine.clone()),
             identity,
+            iroh_endpoint: None,
+            community_registry_url: None,
+            _parent_relay_url: parent_relay_url,
         });
 
         let s = Self { inner };
@@ -68,6 +76,25 @@ impl RouteHandler {
             ControlPlaneService::init(service_id.clone(), app_sandbox_engine, registry).await?;
         s.register_native_service(service_id, Arc::new(substrate_service));
         Ok(s)
+    }
+
+    pub fn new_coordinator(
+        iroh_endpoint: iroh::Endpoint,
+        community_registry_url: Option<String>,
+        parent_relay_url: Option<String>,
+    ) -> Self {
+        let inner = Arc::new(RouteHandlerInner {
+            registry: EndpointRegistry::new_mock(Arc::new(
+                syneroym_core::storage::MockStorage::new(),
+            )),
+            native_dispatch: DashMap::new(),
+            app_sandbox_engine: None,
+            identity: syneroym_identity::Identity::generate().expect("coordinator identity"),
+            iroh_endpoint: Some(iroh_endpoint),
+            community_registry_url,
+            _parent_relay_url: parent_relay_url,
+        });
+        Self { inner }
     }
 
     pub fn register_native_service(&self, service_id: String, service: Arc<dyn NativeService>) {

@@ -1,0 +1,19 @@
+use axum::{Json, extract::State};
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoordinatorInfo {
+    pub endpoint_addr_bytes: Vec<u8>, // serde_json-encoded iroh::EndpointAddr
+    pub node_id: String,
+    pub relay_url: Option<String>, // Local relay URL hosted by this coordinator
+    pub parent_relay_url: Option<String>, // Parent/uplink relay URL
+}
+
+pub struct InfoState {
+    pub info: CoordinatorInfo,
+}
+
+pub async fn get_info(State(state): State<Arc<InfoState>>) -> Json<CoordinatorInfo> {
+    Json(state.info.clone())
+}

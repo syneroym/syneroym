@@ -132,6 +132,8 @@ mod tests {
                 http_bind_address: "127.0.0.1:8080".to_string(),
                 quic_bind_address: "127.0.0.1:8081".to_string(),
                 enable_signalling: false,
+                community_registry_url: None,
+                share_in_registry: false,
             }),
             ..Default::default()
         };
@@ -152,6 +154,8 @@ mod tests {
                 http_bind_address: "127.0.0.1:8080".to_string(),
                 quic_bind_address: "127.0.0.1:8081".to_string(),
                 enable_signalling: false,
+                community_registry_url: None,
+                share_in_registry: false,
             }),
             ..Default::default()
         };

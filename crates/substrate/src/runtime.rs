@@ -331,6 +331,7 @@ fn build_signed_endpoint_info<E: serde::Serialize>(
             endpoint_addr_bytes,
             relay_url,
         }],
+        is_private: false,
     };
 
     let identity = syneroym_identity::Identity::from_bytes(secret_key);

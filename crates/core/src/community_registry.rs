@@ -27,6 +27,8 @@ pub struct EndpointInfo {
     pub mechanisms: Vec<EndpointMechanism>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nickname: Option<String>,
+    #[serde(default)]
+    pub is_private: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
