@@ -13,6 +13,12 @@ pub struct Identity {
     signing_key: SigningKey,
 }
 
+impl std::fmt::Debug for Identity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Identity").field("public_key", &self.public_key()).finish()
+    }
+}
+
 impl Identity {
     /// Generate a new random Ed25519 identity keypair.
     ///
@@ -27,23 +33,55 @@ impl Identity {
     }
 
     /// Load an identity from a 32-byte secret key slice.
+    #[must_use]
     pub fn from_bytes(bytes: &[u8; 32]) -> Self {
         let signing_key = SigningKey::from_bytes(bytes);
         Self { signing_key }
     }
 
+    /// Load an identity from a file path.
+    /// Expects a 32-byte secret key file.
+    pub fn load_from_path(path: impl AsRef<std::path::Path>) -> anyhow::Result<Self> {
+        let path = path.as_ref();
+        let bytes = std::fs::read(path)
+            .with_context(|| format!("Failed to read identity file at {}", path.display()))?;
+        let len = bytes.len();
+        let bytes_array: [u8; 32] = bytes.try_into().map_err(|_| {
+            anyhow::anyhow!("Invalid key file size ({}) at {}", len, path.display())
+        })?;
+        Ok(Self::from_bytes(&bytes_array))
+    }
+
+    /// Save the identity to a file path.
+    /// Writes the 32-byte secret key.
+    pub fn save_to_path(&self, path: impl AsRef<std::path::Path>) -> anyhow::Result<()> {
+        let path = path.as_ref();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!("Failed to create parent directories for {}", path.display())
+            })?;
+        }
+        let bytes = self.to_bytes();
+        std::fs::write(path, bytes)
+            .with_context(|| format!("Failed to write identity file to {}", path.display()))?;
+        Ok(())
+    }
+
     /// Export the secret key as a 32-byte array.
     /// WARNING: This must be kept highly secure.
+    #[must_use]
     pub fn to_bytes(&self) -> [u8; 32] {
         self.signing_key.to_bytes()
     }
 
     /// Get the public verifying key associated with this identity.
+    #[must_use]
     pub fn public_key(&self) -> VerifyingKey {
         self.signing_key.verifying_key()
     }
 
     /// Sign a message payload using this identity.
+    #[must_use]
     pub fn sign(&self, message: &[u8]) -> Signature {
         self.signing_key.sign(message)
     }
@@ -58,10 +96,11 @@ impl Identity {
     }
 
     /// Generate a public `IdentityDoc` for this node.
+    #[must_use]
     pub fn to_doc(&self, created_at: u64) -> IdentityDoc {
         let pubkey_bytes = self.public_key().to_bytes();
         let pubkey_hex = hex::encode(pubkey_bytes);
-        let id = format!("did:syn:{}", pubkey_hex);
+        let id = format!("did:syn:{pubkey_hex}");
 
         IdentityDoc { id, pubkey_hex, created_at }
     }

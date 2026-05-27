@@ -18,6 +18,22 @@ pub struct CoordinatorWebRtc {
     bootstrap_state: Arc<BootstrapState>,
 }
 
+impl std::fmt::Debug for CoordinatorWebRtc {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CoordinatorWebRtc")
+            .field(
+                "bootstrap_listener",
+                &self.bootstrap_listener.as_ref().map(|l| l.local_addr().ok()),
+            )
+            .field(
+                "signalling_listener",
+                &self.signalling_listener.as_ref().map(|l| l.local_addr().ok()),
+            )
+            .field("bootstrap_state", &self.bootstrap_state)
+            .finish()
+    }
+}
+
 impl CoordinatorWebRtc {
     pub async fn init(config: &SubstrateConfig) -> Result<Self> {
         info!("Initializing coordinator webrtc");
@@ -58,19 +74,11 @@ impl CoordinatorWebRtc {
     }
 
     pub fn bootstrap_port(&self) -> u16 {
-        self.bootstrap_listener
-            .as_ref()
-            .and_then(|l| l.local_addr().ok())
-            .map(|a| a.port())
-            .unwrap_or(0)
+        self.bootstrap_listener.as_ref().and_then(|l| l.local_addr().ok()).map_or(0, |a| a.port())
     }
 
     pub fn signalling_port(&self) -> u16 {
-        self.signalling_listener
-            .as_ref()
-            .and_then(|l| l.local_addr().ok())
-            .map(|a| a.port())
-            .unwrap_or(0)
+        self.signalling_listener.as_ref().and_then(|l| l.local_addr().ok()).map_or(0, |a| a.port())
     }
 
     pub fn endpoint(&self) -> iroh::Endpoint {
@@ -109,7 +117,7 @@ mod common {
     use anyhow::Result;
     use iroh::{Endpoint, SecretKey};
     pub mod iroh_utils {
-        use super::*;
+        use super::{Endpoint, Result, SecretKey};
         pub async fn bind_endpoint(relay_url: Option<String>) -> Result<Endpoint> {
             let secret_key = SecretKey::from_bytes(&[0u8; 32]);
             let mut builder = Endpoint::builder(iroh::endpoint::presets::N0).secret_key(secret_key);

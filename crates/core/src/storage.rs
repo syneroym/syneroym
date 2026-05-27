@@ -1,6 +1,6 @@
 //! Stable storage abstraction and persistence backend
 //!
-//! Defines the `EndpointStorage` trait and implements SQLite persistence
+//! Defines the `EndpointStorage` trait and implements `SQLite` persistence
 //! and thread-safe in-memory mock storage for the local `EndpointRegistry`.
 
 use std::path::Path;
@@ -12,10 +12,10 @@ use anyhow::Result;
 use async_trait::async_trait;
 use rusqlite::params;
 
-/// A trait abstracting stable storage for the EndpointRegistry.
+/// A trait abstracting stable storage for the `EndpointRegistry`.
 #[async_trait]
 pub trait EndpointStorage: Send + Sync {
-    /// Load all endpoints from stable storage. Returns a vector of (service_id, interface_name, endpoint).
+    /// Load all endpoints from stable storage. Returns a vector of (`service_id`, `interface_name`, endpoint).
     async fn load_all(&self) -> Result<Vec<(String, String, SubstrateEndpoint)>>;
 
     /// Save an endpoint into stable storage.
@@ -40,6 +40,7 @@ pub async fn init_store(config: &SubstrateConfig) -> Result<Arc<dyn EndpointStor
 }
 
 /// A thread-safe in-memory storage for testing.
+#[derive(Debug)]
 pub struct MockStorage {
     data: Arc<dashmap::DashMap<(String, String), SubstrateEndpoint>>,
 }
@@ -51,6 +52,7 @@ impl Default for MockStorage {
 }
 
 impl MockStorage {
+    #[must_use]
     pub fn new() -> Self {
         Self { data: Arc::new(dashmap::DashMap::new()) }
     }
@@ -81,7 +83,8 @@ impl EndpointStorage for MockStorage {
 
 impl SubstrateEndpoint {
     /// Returns the discriminant key used in stable storage.
-    pub fn storage_key(&self) -> &'static str {
+    #[must_use]
+    pub const fn storage_key(&self) -> &'static str {
         match self {
             Self::WasmChannel { .. } => "wasm",
             Self::PodmanSocket { .. } => "podman",
@@ -96,7 +99,7 @@ impl SubstrateEndpoint {
             Self::WasmChannel { service_id } => service_id.clone(),
             Self::PodmanSocket { socket_path } => socket_path.clone(),
             Self::NativeHostChannel { service_id } => service_id.clone(),
-            Self::TcpHostPort { host, port } => format!("{}:{}", host, port),
+            Self::TcpHostPort { host, port } => format!("{host}:{port}"),
         }
     }
 }
@@ -112,13 +115,13 @@ impl TryFrom<(&str, String)> for SubstrateEndpoint {
             "tcp" => {
                 let (host, port_str) = data
                     .split_once(':')
-                    .ok_or_else(|| anyhow::anyhow!("Invalid TCP endpoint data: {}", data))?;
+                    .ok_or_else(|| anyhow::anyhow!("Invalid TCP endpoint data: {data}"))?;
                 let port = port_str.parse().map_err(|e| {
-                    anyhow::anyhow!("Invalid port in TCP endpoint data: {} ({})", data, e)
+                    anyhow::anyhow!("Invalid port in TCP endpoint data: {data} ({e})")
                 })?;
                 Ok(Self::TcpHostPort { host: host.to_string(), port })
             }
-            other => Err(anyhow::anyhow!("Unknown endpoint type in storage: {}", other)),
+            other => Err(anyhow::anyhow!("Unknown endpoint type in storage: {other}")),
         }
     }
 }
@@ -129,8 +132,14 @@ pub struct SqliteEndpointStorage {
     conn: Arc<Mutex<rusqlite::Connection>>,
 }
 
+impl std::fmt::Debug for SqliteEndpointStorage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SqliteEndpointStorage").field("conn", &"rusqlite::Connection").finish()
+    }
+}
+
 impl SqliteEndpointStorage {
-    /// Create a new SqliteEndpointStorage with the given DB path.
+    /// Create a new `SqliteEndpointStorage` with the given DB path.
     pub async fn new<P: AsRef<Path>>(db_path: P) -> Result<Self> {
         let path = db_path.as_ref().to_owned();
         let conn = tokio::task::spawn_blocking(move || -> Result<rusqlite::Connection> {
@@ -158,7 +167,7 @@ impl SqliteEndpointStorage {
 fn lock_db(
     conn: &Arc<Mutex<rusqlite::Connection>>,
 ) -> Result<std::sync::MutexGuard<'_, rusqlite::Connection>> {
-    conn.lock().map_err(|e| anyhow::anyhow!("Database connection mutex poisoned: {}", e))
+    conn.lock().map_err(|e| anyhow::anyhow!("Database connection mutex poisoned: {e}"))
 }
 
 #[async_trait]
@@ -180,7 +189,7 @@ impl EndpointStorage for SqliteEndpointStorage {
                         row.get::<_, String>(3)?,
                     ))
                 })?
-                .filter_map(|r| r.ok())
+                .filter_map(std::result::Result::ok)
                 .filter_map(|(sid, iname, key, data)| {
                     SubstrateEndpoint::try_from((key.as_str(), data))
                         .ok()
@@ -203,7 +212,7 @@ impl EndpointStorage for SqliteEndpointStorage {
         let sid = service_id.to_string();
         let iname = interface_name.to_string();
         let e_type = endpoint.storage_key().to_string();
-        let e_data = endpoint.storage_data().to_string();
+        let e_data = endpoint.storage_data();
 
         tokio::task::spawn_blocking(move || -> Result<()> {
             let conn = lock_db(&conn_arc)?;
@@ -300,7 +309,7 @@ mod tests {
         ];
         for ep in &cases {
             let key = ep.storage_key();
-            let data = ep.storage_data().to_string();
+            let data = ep.storage_data().clone();
             let back = SubstrateEndpoint::try_from((key, data)).unwrap();
             assert_eq!(ep.storage_key(), back.storage_key());
         }

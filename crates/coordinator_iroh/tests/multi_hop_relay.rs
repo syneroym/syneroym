@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use anyhow::Result;
 use iroh::{Endpoint, RelayMap, RelayMode, RelayUrl, SecretKey};
 use std::sync::Arc;
@@ -92,7 +93,7 @@ async fn test_registry_propagation() -> Result<()> {
     let signed_info = create_signed_info(&identity, &did, &dummy_addr);
 
     let client = reqwest::Client::new();
-    let res = client.post(format!("{}/register", rp_url)).json(&signed_info).send().await?;
+    let res = client.post(format!("{rp_url}/register")).json(&signed_info).send().await?;
     assert!(res.status().is_success());
 
     // 4. Verify propagation to R
@@ -182,7 +183,7 @@ async fn test_ax_to_az_inbound_relay() -> Result<()> {
     // Fetch Cp's info early so we can get its dynamically bound relay_url!
     let cp_info_client = reqwest::Client::new();
     let cp_info: CoordinatorInfo =
-        cp_info_client.get(format!("http://{}/v1/info", cp_info_addr)).send().await?.json().await?;
+        cp_info_client.get(format!("http://{cp_info_addr}/v1/info")).send().await?.json().await?;
 
     let cp_endpoint_addr: iroh::EndpointAddr =
         serde_json::from_slice(&cp_info.endpoint_addr_bytes)?;
@@ -205,7 +206,7 @@ async fn test_ax_to_az_inbound_relay() -> Result<()> {
     // Register Sz in community registry R
     let signed_info_z = create_signed_info(&identity_z, &did_z, &ep_z_addr);
     let client = reqwest::Client::new();
-    let res = client.post(format!("{}/register", r_url)).json(&signed_info_z).send().await?;
+    let res = client.post(format!("{r_url}/register")).json(&signed_info_z).send().await?;
     assert!(res.status().is_success());
 
     // 4. Connect from Ax (a client in public network) to Az via Cp
@@ -301,7 +302,7 @@ async fn test_az_to_ax_outbound_relay() -> Result<()> {
     // Fetch Cp's info early so we can get its dynamically bound relay_url!
     let cp_info_client = reqwest::Client::new();
     let cp_info: CoordinatorInfo =
-        cp_info_client.get(format!("http://{}/v1/info", cp_info_addr)).send().await?.json().await?;
+        cp_info_client.get(format!("http://{cp_info_addr}/v1/info")).send().await?.json().await?;
 
     // Bind Sx to Iroh so Cp can connect to it
     let mut ep_x_bldr = Endpoint::builder(iroh::endpoint::presets::N0);
@@ -320,7 +321,7 @@ async fn test_az_to_ax_outbound_relay() -> Result<()> {
     // Register Sx in community registry R
     let signed_info_x = create_signed_info(&identity_x, &did_x, &ep_x_addr);
     let client = reqwest::Client::new();
-    let res = client.post(format!("{}/register", r_url)).json(&signed_info_x).send().await?;
+    let res = client.post(format!("{r_url}/register")).json(&signed_info_x).send().await?;
     assert!(res.status().is_success());
 
     // 4. Connect from Az (on Sz in private network) to Ax via Cp

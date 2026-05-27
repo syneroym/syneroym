@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Integration tests for Iroh Transport setup
 //!
 //! Verifies Iroh connection establishing, relay discovery, and routing.
@@ -61,7 +62,7 @@ async fn test_echo() -> anyhow::Result<()> {
     config.roles.coordinator = Some(CoordinatorRole {
         iroh: Some(CoordinatorIrohConfig {
             enable_relay: true,
-            http_bind_address: format!("0.0.0.0:{}", IROH_PORT),
+            http_bind_address: format!("0.0.0.0:{IROH_PORT}"),
             ..Default::default()
         }),
         ..Default::default()
@@ -106,7 +107,7 @@ async fn connect_side(addr: EndpointAddr) -> Result<()> {
     // let endpoint = Endpoint::bind(presets::N0).await?;
     let endpoint_addr = EndpointAddr::new(addr.id)
         .with_relay_url(IROH_RELAY_URL.to_string().parse::<iroh::RelayUrl>().unwrap());
-    println!("Connected to endpoint: {:?}", endpoint_addr);
+    println!("Connected to endpoint: {endpoint_addr:?}");
 
     // Open a connection to the accepting endpoint
     let conn = endpoint.connect(endpoint_addr, ALPN).await?;

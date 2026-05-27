@@ -1,3 +1,4 @@
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 //! Syneroym connection routing and translation library
 //!
 //! Integrates Iroh, WebRTC, HTTP, and raw-byte channels (wRPC — TODO: not yet implemented) into a unified, alias-aware

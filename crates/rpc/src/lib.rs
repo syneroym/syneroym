@@ -1,3 +1,4 @@
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 //! Syneroym RPC framing library
 //!
 //! Core module for RPC protocol compilation, providing framing,
@@ -28,7 +29,8 @@ pub enum RpcError {
 }
 
 impl RpcError {
-    pub fn code(&self) -> i32 {
+    #[must_use]
+    pub const fn code(&self) -> i32 {
         match self {
             Self::MethodNotFound(_) => -32601,
             Self::InvalidParams(_) => -32602,
@@ -37,6 +39,7 @@ impl RpcError {
         }
     }
 
+    #[must_use]
     pub fn data(&self) -> Option<Value> {
         match self {
             Self::Custom(_, _, data) => data.clone(),

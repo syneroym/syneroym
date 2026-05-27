@@ -32,7 +32,7 @@ impl RouteHandler {
             (AdaptationStage::None, ServiceStage::NativeService { service_id }) => {
                 let service = self
                     .native_service(service_id)
-                    .ok_or_else(|| anyhow!("Native service not found for {}", service_id))?;
+                    .ok_or_else(|| anyhow!("Native service not found for {service_id}"))?;
 
                 let (request, invocation) =
                     JsonRpcConverter::json_to_native(&preamble.interface, body)
@@ -88,6 +88,7 @@ impl RouteHandler {
     }
 
     /// Creates a `RoutePipeline` for a given preamble and endpoint.
+    #[must_use]
     pub fn plan_pipeline(
         &self,
         preamble: &RoutePreamble,

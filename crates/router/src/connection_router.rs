@@ -148,7 +148,6 @@ impl ConnectionRouter {
 
         // Connect to Signaling Server and handle incoming connections
         let api = Arc::new(api);
-        let rtc_config = rtc_config.clone();
 
         tokio::spawn(async move {
             if let Err(e) =
@@ -163,7 +162,7 @@ impl ConnectionRouter {
 
     pub async fn run(&self) -> Result<()> {
         info!("running connection router");
-        let endpoint = self.iroh_router.as_ref().map(|router| router.endpoint());
+        let endpoint = self.iroh_router.as_ref().map(iroh::protocol::Router::endpoint);
         if let Some(endpoint) = endpoint {
             endpoint.closed().await;
         } else {
@@ -172,6 +171,7 @@ impl ConnectionRouter {
         Ok(())
     }
 
+    #[must_use]
     pub fn endpoint_addr(&self) -> Option<EndpointAddr> {
         self.iroh_router.as_ref().map(|router| router.endpoint().addr())
     }
@@ -317,7 +317,7 @@ async fn handle_data_channel(d: Arc<RTCDataChannel>, route_handler: RouteHandler
     d.on_open(Box::new(move || {
         let d = d2.clone();
         let d_label = d_label.clone();
-        let rh = route_handler.clone();
+        let rh = route_handler;
         Box::pin(async move {
             info!("DataChannel '{}' open", d_label);
 

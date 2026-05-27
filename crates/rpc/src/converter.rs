@@ -11,6 +11,7 @@ use crate::{
     NativeResponse,
 };
 
+#[derive(Debug)]
 pub struct JsonRpcConverter;
 
 impl JsonRpcConverter {
@@ -19,7 +20,7 @@ impl JsonRpcConverter {
         frame: &[u8],
     ) -> Result<(JsonRpcRequest, NativeInvocation)> {
         let request: JsonRpcRequest =
-            serde_json::from_slice(frame).map_err(|e| anyhow!("JSON parse error: {}", e))?;
+            serde_json::from_slice(frame).map_err(|e| anyhow!("JSON parse error: {e}"))?;
 
         let invocation = NativeInvocation {
             interface: interface.to_string(),

@@ -37,6 +37,7 @@ pub struct SignedEndpointInfo {
     pub signature: String, // z32 encoded ed25519 signature
 }
 
+#[derive(Debug)]
 pub struct RegistryClient;
 
 impl RegistryClient {
@@ -49,7 +50,7 @@ impl RegistryClient {
         resolve: bool,
     ) -> Result<SignedEndpointInfo, anyhow::Error> {
         let client = reqwest::Client::new();
-        let url = format!("{}/lookup/{}?resolve={}", registry_url, id, resolve);
+        let url = format!("{registry_url}/lookup/{id}?resolve={resolve}");
 
         tracing::debug!("Registry lookup: {}", url);
 

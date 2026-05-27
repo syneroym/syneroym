@@ -15,7 +15,7 @@ pub enum SubstrateEndpoint {
     WasmChannel { service_id: String },
     /// A containerized service running via Podman
     PodmanSocket { socket_path: String },
-    /// A native Rust host capability or service (e.g. SubstrateService)
+    /// A native Rust host capability or service (e.g. `SubstrateService`)
     NativeHostChannel { service_id: String },
     /// An already existing TCP service running on a host:port
     TcpHostPort { host: String, port: u16 },
@@ -25,9 +25,9 @@ pub enum SubstrateEndpoint {
 /// It acts as Internal Micro-Discovery.
 #[derive(Clone)]
 pub struct EndpointRegistry {
-    /// Thread-safe shared map of (service_id, interface_name) to LocalEndpoint
+    /// Thread-safe shared map of (`service_id`, `interface_name`) to `LocalEndpoint`
     active_endpoints: Arc<DashMap<(String, String), SubstrateEndpoint>>,
-    /// Secondary map for fast lookup by interface hash: (service_id, interface_hash) -> interface_name
+    /// Secondary map for fast lookup by interface hash: (`service_id`, `interface_hash`) -> `interface_name`
     interface_hashes: Arc<DashMap<(String, String), String>>,
     /// Stable storage connection for persistence
     storage: Arc<dyn EndpointStorage>,
@@ -87,6 +87,7 @@ impl EndpointRegistry {
     /// Lookup a destination for an incoming request.
     /// Returns the endpoint and the canonical interface name it was registered under.
     /// The canonical interface name may differ from `interface_name` when a short hash is provided.
+    #[must_use]
     pub fn lookup(
         &self,
         service_id: &str,
@@ -115,7 +116,8 @@ impl EndpointRegistry {
         None
     }
 
-    /// Lookup all endpoints for a given service_id.
+    /// Lookup all endpoints for a given `service_id`.
+    #[must_use]
     pub fn lookup_by_service(&self, service_id: &str) -> Vec<(String, SubstrateEndpoint)> {
         self.active_endpoints
             .iter()
@@ -135,6 +137,7 @@ impl EndpointRegistry {
     }
 
     /// Returns a list of all currently registered endpoints
+    #[must_use]
     pub fn get_all_endpoints(&self) -> Vec<(String, String, SubstrateEndpoint)> {
         self.active_endpoints
             .iter()
@@ -146,6 +149,7 @@ impl EndpointRegistry {
     }
 
     /// Creates a mock registry with in-memory storage for testing.
+    #[must_use]
     pub fn new_mock(storage: Arc<crate::storage::MockStorage>) -> Self {
         Self {
             active_endpoints: Arc::new(DashMap::new()),
@@ -194,7 +198,7 @@ mod tests {
         let registry = EndpointRegistry::new(storage).await.unwrap();
 
         let service = "empty-iface-service".to_string();
-        let iface = "".to_string();
+        let iface = String::new();
         let endpoint = SubstrateEndpoint::WasmChannel { service_id: service.clone() };
 
         registry.register(service.clone(), iface.clone(), endpoint.clone()).await.unwrap();

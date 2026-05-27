@@ -9,24 +9,26 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream
 use tracing::{debug, error};
 use webrtc::data::data_channel::DataChannel as DetachedDataChannel;
 
-/// A wrapper around WebRTC DetachedDataChannel that implements
-/// tokio::io::AsyncRead and tokio::io::AsyncWrite.
+/// A wrapper around WebRTC `DetachedDataChannel` that implements
+/// `tokio::io::AsyncRead` and `tokio::io::AsyncWrite`.
 ///
-/// Since DetachedDataChannel exposes an async API (not poll-based) and is message-oriented,
+/// Since `DetachedDataChannel` exposes an async API (not poll-based) and is message-oriented,
 /// this wrapper spawns a background task to bridge the data between the channel and
-/// a tokio::io::duplex stream.
+/// a `tokio::io::duplex` stream.
+#[derive(Debug)]
 pub struct WebRTCStream {
     inner: DuplexStream,
 }
 
 impl WebRTCStream {
+    #[must_use]
     pub fn new(channel: Arc<DetachedDataChannel>) -> Self {
         let (local, remote) = tokio::io::duplex(65536); // 64KB buffer
 
         // Split the duplex stream into read and write halves
         let (mut remote_read, mut remote_write) = tokio::io::split(remote);
         let channel_read = channel.clone();
-        let channel_write = channel.clone();
+        let channel_write = channel;
 
         tokio::spawn(async move {
             // Task 1: Read from WebRTC -> Write to Duplex

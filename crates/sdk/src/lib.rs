@@ -1,3 +1,4 @@
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 //! Syneroym App SDK
 //!
 //! High-level APIs and traits to help third-party developers build apps
@@ -28,6 +29,17 @@ pub struct SyneroymClient {
     connection: Option<TransportConnection>,
 }
 
+impl std::fmt::Debug for SyneroymClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SyneroymClient")
+            .field("service_id", &self.service_id)
+            .field("registry_url", &self.registry_url)
+            .field("provided_mechanisms", &self.provided_mechanisms)
+            .field("connection", &self.connection)
+            .finish()
+    }
+}
+
 #[derive(Clone)]
 pub enum TransportConnection {
     Iroh {
@@ -38,12 +50,29 @@ pub enum TransportConnection {
     },
 }
 
+impl std::fmt::Debug for TransportConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Iroh { conn, .. } => f
+                .debug_struct("TransportConnection::Iroh")
+                .field("endpoint", &"iroh::Endpoint")
+                .field("conn", &format!("{:?}", conn.remote_id()))
+                .finish(),
+        }
+    }
+}
+
 impl SyneroymClient {
-    pub fn new(service_id: String, registry_url: String) -> Self {
+    #[must_use]
+    pub const fn new(service_id: String, registry_url: String) -> Self {
         Self { service_id, registry_url, provided_mechanisms: None, connection: None }
     }
 
-    pub fn new_with_mechanisms(service_id: String, mechanisms: Vec<EndpointMechanism>) -> Self {
+    #[must_use]
+    pub const fn new_with_mechanisms(
+        service_id: String,
+        mechanisms: Vec<EndpointMechanism>,
+    ) -> Self {
         Self {
             service_id,
             registry_url: String::new(),
@@ -134,7 +163,7 @@ impl SyneroymClient {
         let start = std::time::Instant::now();
         while start.elapsed() < timeout {
             match self.connect().await {
-                Ok(_) => {
+                Ok(()) => {
                     // Check if readyz is ok
                     match self.request("orchestrator", "readyz", serde_json::json!({})).await {
                         Ok(res) if res.result == serde_json::json!({"status": "ok"}) => {
@@ -160,10 +189,12 @@ impl SyneroymClient {
         Ok(())
     }
 
+    #[must_use]
     pub fn service_id(&self) -> &str {
         &self.service_id
     }
 
+    #[must_use]
     pub fn connection(&self) -> Option<TransportConnection> {
         self.connection.clone()
     }
@@ -290,7 +321,7 @@ impl SyneroymClient {
     ) -> Result<()> {
         match conn_wrapper {
             TransportConnection::Iroh { conn, .. } => {
-                let (mut send, mut recv) = conn.open_bi().await?;
+                let (mut send, recv) = conn.open_bi().await?;
 
                 // Use HTTP transport for passthrough of raw requests.
                 let preamble = RoutePreamble {
@@ -306,22 +337,9 @@ impl SyneroymClient {
 
                 send.write_all(initial_bytes).await?;
 
-                let (mut tcp_read, mut tcp_write) = tcp_stream.split();
-
-                let send_task = tokio::io::copy(&mut tcp_read, &mut send);
-                let recv_task = tokio::io::copy(&mut recv, &mut tcp_write);
-
-                tokio::select! {
-                    res = send_task => {
-                        if let Err(e) = res {
-                            debug!("Error copying from TCP to Iroh: {}", e);
-                        }
-                    }
-                    res = recv_task => {
-                        if let Err(e) = res {
-                            debug!("Error copying from Iroh to TCP: {}", e);
-                        }
-                    }
+                let mut joined_iroh = tokio::io::join(recv, send);
+                if let Err(e) = tokio::io::copy_bidirectional(tcp_stream, &mut joined_iroh).await {
+                    debug!("Bidirectional copy error between TCP and Iroh: {}", e);
                 }
 
                 Ok(())

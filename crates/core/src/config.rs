@@ -26,7 +26,7 @@ fn default_app_log_dir() -> PathBuf {
     default_app_local_data_dir().join("logs")
 }
 
-fn default_config_version() -> u32 {
+const fn default_config_version() -> u32 {
     1
 }
 
@@ -274,16 +274,16 @@ pub struct RolesConfig {
 fn default_communication_interfaces() -> Vec<String> {
     vec!["iroh".to_string(), "webrtc".to_string()]
 }
-fn default_wasm_sandbox() -> bool {
+const fn default_wasm_sandbox() -> bool {
     true
 }
-fn default_cpu_limit() -> u32 {
+const fn default_cpu_limit() -> u32 {
     1
 }
 fn default_memory_limit() -> String {
     "1Gi".to_string()
 }
-fn default_max_concurrent_instances() -> u32 {
+const fn default_max_concurrent_instances() -> u32 {
     10
 }
 
@@ -298,6 +298,7 @@ pub struct AppSandboxRole {
 }
 
 impl AppSandboxRole {
+    #[must_use]
     pub fn memory_limit_bytes(&self) -> u64 {
         crate::util::parse_size_string(&self.memory_limit, 128 * 1024 * 1024)
     }
@@ -346,7 +347,7 @@ pub enum AccessControl {
 
 impl Default for AccessControl {
     fn default() -> Self {
-        AccessControl::String("everyone".to_string())
+        Self::String("everyone".to_string())
     }
 }
 
@@ -441,7 +442,7 @@ pub struct ProtocolTranslation {
     pub to: String,
 }
 
-fn default_http_port() -> u16 {
+const fn default_http_port() -> u16 {
     7960
 }
 
@@ -521,7 +522,7 @@ pub enum OtlpProtocol {
     Grpc,
 }
 
-fn default_sampling_ratio() -> f32 {
+const fn default_sampling_ratio() -> f32 {
     0.1
 }
 

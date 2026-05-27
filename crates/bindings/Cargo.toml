@@ -5,6 +5,9 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
 wit-bindgen.workspace = true

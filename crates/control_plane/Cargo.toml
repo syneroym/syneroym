@@ -3,6 +3,9 @@ name = "syneroym-control-plane"
 version = "0.1.0"
 edition = "2024"
 
+[lints]
+workspace = true
+
 [features]
 default = ["app_sandbox"]
 app_sandbox = ["dep:syneroym-app-sandbox"]

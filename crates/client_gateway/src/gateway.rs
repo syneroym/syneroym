@@ -13,12 +13,14 @@ use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info};
 
+#[derive(Debug)]
 struct GatewayState {
     registry_url: String,
     clients: DashMap<String, Arc<Mutex<SyneroymClient>>>,
 }
 
-/// ClientGateway: Acts as an entry point for local HTTP/WebSocket clients to reach the wider Syneroym network.
+/// `ClientGateway`: Acts as an entry point for local HTTP/WebSocket clients to reach the wider Syneroym network.
+///
 /// It accepts TCP traffic, reads the HTTP headers to extract the routing target from the `Host` header,
 /// and streams the raw bytes over the Syneroym network.
 pub struct ClientGateway {
@@ -27,11 +29,21 @@ pub struct ClientGateway {
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
+impl std::fmt::Debug for ClientGateway {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClientGateway")
+            .field("port", &self.port)
+            .field("state", &self.state)
+            .field("shutdown_tx", &self.shutdown_tx.as_ref().map(|_| "oneshot::Sender"))
+            .finish()
+    }
+}
+
 impl ClientGateway {
     pub async fn init(config: &SubstrateConfig) -> Result<Self> {
         info!("initializing client gateway");
 
-        let port = config.roles.client_gateway.as_ref().map(|g| g.http_port).unwrap_or(7000);
+        let port = config.roles.client_gateway.as_ref().map_or(7000, |g| g.http_port);
         let registry_url = config.substrate.registry_url.clone().unwrap_or_default();
 
         let state = Arc::new(GatewayState { registry_url, clients: DashMap::new() });
@@ -76,7 +88,7 @@ impl ClientGateway {
         }
 
         // Shutdown all cached clients to close their Iroh endpoints gracefully
-        for entry in self.state.clients.iter() {
+        for entry in &self.state.clients {
             let mut client = entry.value().lock().await;
             let _ = client.shutdown().await;
         }
@@ -109,55 +121,17 @@ async fn handle_connection(
 
         match req.parse(&buf[..bytes_read]) {
             Ok(httparse::Status::Complete(_header_len)) => {
-                let host_header = req
-                    .headers
-                    .iter()
-                    .find(|h| h.name.eq_ignore_ascii_case("host"))
-                    .map(|h| std::str::from_utf8(h.value).unwrap_or(""))
-                    .unwrap_or("");
-
-                let mut host = host_header;
-                if let Some((h, p)) = host_header.rsplit_once(':')
-                    && !p.is_empty()
-                    && p.chars().all(|c| c.is_ascii_digit())
-                {
-                    host = h;
-                }
-                let host_base = host.strip_suffix(".localhost").unwrap_or(host);
-
-                // Parse host_base according to `<nickname>-p<pubkeyhash>-i<interfacehash>` or `<nickname>-p<pubkeyhash>`
-                // Split by '-' and parse from the right to support nicknames with dashes
-                let mut parts: Vec<&str> = host_base.split('-').collect();
-
-                let mut interfacehash = None;
-                if let Some(last) = parts.last()
-                    && last.starts_with('i')
-                    && last.len() > 1
-                {
-                    interfacehash = Some(&last[1..]);
-                    parts.pop();
-                }
-
-                let mut pubkeyhash = None;
-                if let Some(last) = parts.last()
-                    && last.starts_with('p')
-                    && last.len() > 1
-                {
-                    pubkeyhash = Some(&last[1..]);
-                    parts.pop();
-                }
-
-                let nickname = if !parts.is_empty() { Some(parts.join("-")) } else { None };
-
-                let lookup_alias = if let Some(n) = nickname {
-                    format!("{n}-p{}", pubkeyhash.unwrap_or_default())
-                } else {
-                    format!("p{}", pubkeyhash.unwrap_or_default())
+                let (service_id, interface) = match parse_target_service_and_interface(&req) {
+                    Some(res) => res,
+                    None => {
+                        return write_json_rpc_error(
+                            &mut stream,
+                            400,
+                            "Missing or invalid Host header",
+                        )
+                        .await;
+                    }
                 };
-
-                // The interface is now the short hash, fallback to empty if omitted
-                let interface = interfacehash.unwrap_or("").to_string();
-                let service_id = lookup_alias;
 
                 debug!(
                     "Proxying to interface (hash): {}, service_id (alias): {}",
@@ -207,12 +181,69 @@ async fn handle_connection(
                 return write_json_rpc_error(
                     &mut stream,
                     400,
-                    &format!("Invalid HTTP request: {}", e),
+                    &format!("Invalid HTTP request: {e}"),
                 )
                 .await;
             }
         }
     }
+}
+
+fn parse_target_service_and_interface(req: &httparse::Request) -> Option<(String, String)> {
+    let host_header = req
+        .headers
+        .iter()
+        .find(|h| h.name.eq_ignore_ascii_case("host"))
+        .map_or("", |h| std::str::from_utf8(h.value).unwrap_or(""));
+
+    if host_header.is_empty() {
+        return None;
+    }
+
+    let mut host = host_header;
+    if let Some((h, p)) = host_header.rsplit_once(':')
+        && !p.is_empty()
+        && p.chars().all(|c| c.is_ascii_digit())
+    {
+        host = h;
+    }
+    let host_base = host.strip_suffix(".localhost").unwrap_or(host);
+
+    // Parse host_base according to `<nickname>-p<pubkeyhash>-i<interfacehash>` or `<nickname>-p<pubkeyhash>`
+    // Split by '-' and parse from the right to support nicknames with dashes
+    let mut parts: Vec<&str> = host_base.split('-').collect();
+
+    let mut interfacehash = None;
+    if let Some(last) = parts.last()
+        && last.starts_with('i')
+        && last.len() > 1
+    {
+        interfacehash = Some(&last[1..]);
+        parts.pop();
+    }
+
+    let mut pubkeyhash = None;
+    if let Some(last) = parts.last()
+        && last.starts_with('p')
+        && last.len() > 1
+    {
+        pubkeyhash = Some(&last[1..]);
+        parts.pop();
+    }
+
+    let nickname = if parts.is_empty() { None } else { Some(parts.join("-")) };
+
+    let lookup_alias = if let Some(n) = nickname {
+        format!("{n}-p{}", pubkeyhash.unwrap_or_default())
+    } else {
+        format!("p{}", pubkeyhash.unwrap_or_default())
+    };
+
+    // The interface is now the short hash, fallback to empty if omitted
+    let interface = interfacehash.unwrap_or("").to_string();
+    let service_id = lookup_alias;
+
+    Some((service_id, interface))
 }
 
 /// Writes a JSON-RPC error response as an HTTP response.

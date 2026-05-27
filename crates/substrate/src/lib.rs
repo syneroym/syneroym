@@ -1,3 +1,4 @@
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 //! Main library entry point for the Syneroym substrate.
 
 pub mod identity;

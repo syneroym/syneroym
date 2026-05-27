@@ -28,6 +28,19 @@ pub struct EcosystemRegistry {
     listener: Option<TcpListener>,
 }
 
+impl std::fmt::Debug for EcosystemRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EcosystemRegistry")
+            .field("bind_address", &self.bind_address)
+            .field("state", &self.state)
+            .field("shutdown_tx", &self.shutdown_tx.as_ref().map(|_| "oneshot::Sender"))
+            .field("server_handle", &self.server_handle)
+            .field("listener", &self.listener.as_ref().map(|l| l.local_addr().ok()))
+            .finish()
+    }
+}
+
+#[derive(Debug)]
 struct RegistryState {
     // Map of service_id -> SignedEndpointInfo
     endpoints: DashMap<String, SignedEndpointInfo>,
@@ -50,7 +63,9 @@ impl EcosystemRegistry {
             .roles
             .community_registry
             .as_ref()
-            .expect("community registry role must be enabled to initialize registry")
+            .ok_or_else(|| {
+                anyhow::anyhow!("community registry role must be enabled to initialize registry")
+            })?
             .http_bind_address
             .clone();
 
@@ -144,33 +159,7 @@ async fn register_endpoint(
 ) -> Result<StatusCode, (StatusCode, String)> {
     let service_id = &payload.info.service_id;
 
-    // Resolve public key
-    let pubkey = resolve_did_key(service_id)
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid service_id (did:key): {}", e)))?;
-    debug!("Registering public key: {:?} to registry", pubkey);
-
-    // Canonicalize EndpointInfo
-    let info_value = serde_json::to_value(&payload.info)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let canonical_value = canonicalize_json_value(&info_value);
-    let canonical_string = serde_json::to_string(&canonical_value)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    // Verify signature
-    let sig_bytes = z32::decode(payload.signature.as_bytes()).map_err(|_| {
-        (StatusCode::BAD_REQUEST, "Invalid z-base-32 signature encoding".to_string())
-    })?;
-
-    if sig_bytes.len() != 64 {
-        return Err((StatusCode::BAD_REQUEST, "Invalid signature length".to_string()));
-    }
-
-    let signature = Signature::from_slice(&sig_bytes)
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid signature format: {}", e)))?;
-
-    if pubkey.verify(canonical_string.as_bytes(), &signature).is_err() {
-        return Err((StatusCode::UNAUTHORIZED, "Signature verification failed".to_string()));
-    }
+    verify_endpoint_signature(&payload)?;
 
     let alias = syneroym_core::util::generate_alias(payload.info.nickname.as_deref(), service_id);
 
@@ -194,31 +183,69 @@ async fn register_endpoint(
     if let Some(parent_url) = &state.parent_registry_url
         && !payload.info.is_private
     {
-        let parent_url = parent_url.clone();
-        let payload_to_propagate = payload;
-        tokio::spawn(async move {
-            let client = reqwest::Client::new();
-            let url = format!("{}/register", parent_url);
-            debug!("Propagating registration to parent registry at: {}", url);
-            match client.post(&url).json(&payload_to_propagate).send().await {
-                Ok(resp) if resp.status().is_success() => {
-                    debug!("Successfully propagated registration to {}", url);
-                }
-                Ok(resp) => {
-                    tracing::warn!(
-                        "Failed to propagate registration to {} (status: {})",
-                        url,
-                        resp.status()
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!("Error propagating registration to {}: {}", url, e);
-                }
-            }
-        });
+        propagate_registration(payload, parent_url.clone());
     }
 
     Ok(StatusCode::OK)
+}
+
+fn verify_endpoint_signature(
+    payload: &SignedEndpointInfo,
+) -> Result<ed25519_dalek::VerifyingKey, (StatusCode, String)> {
+    let service_id = &payload.info.service_id;
+
+    // Resolve public key
+    let pubkey = resolve_did_key(service_id)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid service_id (did:key): {e}")))?;
+    debug!("Registering public key: {:?} to registry", pubkey);
+
+    // Canonicalize EndpointInfo
+    let info_value = serde_json::to_value(&payload.info)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let canonical_value = canonicalize_json_value(&info_value);
+    let canonical_string = serde_json::to_string(&canonical_value)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // Verify signature
+    let sig_bytes = z32::decode(payload.signature.as_bytes()).map_err(|_| {
+        (StatusCode::BAD_REQUEST, "Invalid z-base-32 signature encoding".to_string())
+    })?;
+
+    if sig_bytes.len() != 64 {
+        return Err((StatusCode::BAD_REQUEST, "Invalid signature length".to_string()));
+    }
+
+    let signature = Signature::from_slice(&sig_bytes)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid signature format: {e}")))?;
+
+    if pubkey.verify(canonical_string.as_bytes(), &signature).is_err() {
+        return Err((StatusCode::UNAUTHORIZED, "Signature verification failed".to_string()));
+    }
+
+    Ok(pubkey)
+}
+
+fn propagate_registration(payload: SignedEndpointInfo, parent_url: String) {
+    tokio::spawn(async move {
+        let client = reqwest::Client::new();
+        let url = format!("{parent_url}/register");
+        debug!("Propagating registration to parent registry at: {}", url);
+        match client.post(&url).json(&payload).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                debug!("Successfully propagated registration to {}", url);
+            }
+            Ok(resp) => {
+                tracing::warn!(
+                    "Failed to propagate registration to {} (status: {})",
+                    url,
+                    resp.status()
+                );
+            }
+            Err(e) => {
+                tracing::warn!("Error propagating registration to {}: {}", url, e);
+            }
+        }
+    });
 }
 
 #[derive(serde::Deserialize)]

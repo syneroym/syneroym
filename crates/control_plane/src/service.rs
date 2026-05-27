@@ -17,7 +17,7 @@ use tracing::info;
 const ORCHESTRATOR_INTERFACE: &str = "orchestrator";
 
 /// The Substrate Service (The Control Plane Orchestrator)
-/// This service handles the deployment and lifecycle of applications (SynApps)
+/// This service handles the deployment and lifecycle of applications (`SynApps`)
 /// within the substrate. It interacts with sandbox environments like Podman or Wasmtime.
 pub struct ControlPlaneService {
     service_id: String,
@@ -54,9 +54,7 @@ impl NativeService for ControlPlaneService {
             (ORCHESTRATOR_INTERFACE, "readyz") => Ok(ready_response()),
             (ORCHESTRATOR_INTERFACE, "deploy") => self.deploy(invocation.params).await,
             (ORCHESTRATOR_INTERFACE, "list") => self.list().await,
-            (ORCHESTRATOR_INTERFACE, _) => {
-                Err(RpcError::MethodNotFound(invocation.method.to_string()))
-            }
+            (ORCHESTRATOR_INTERFACE, _) => Err(RpcError::MethodNotFound(invocation.method.clone())),
             _ => Err(RpcError::InternalError(format!(
                 "Interface {} not handled by orchestrator",
                 invocation.interface
@@ -154,7 +152,9 @@ impl ControlPlaneService {
         let mut result: Vec<DeployedService> = services.into_values().collect();
         result.sort_by(|a, b| a.service_id.cmp(&b.service_id));
 
-        Ok(NativeResponse { payload: serde_json::to_value(result).unwrap() })
+        Ok(NativeResponse {
+            payload: serde_json::to_value(result).unwrap_or(serde_json::Value::Null),
+        })
     }
 }
 

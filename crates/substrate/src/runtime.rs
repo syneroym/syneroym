@@ -25,6 +25,16 @@ pub struct InitializedRuntime {
     pub connection_router: ConnectionRouter,
 }
 
+impl std::fmt::Debug for InitializedRuntime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InitializedRuntime")
+            .field("observability", &"ObservabilityEngine")
+            .field("services", &self.services)
+            .field("connection_router", &"ConnectionRouter")
+            .finish()
+    }
+}
+
 /// Runs the substrate given the consolidated configuration and a custom shutdown signal.
 pub async fn init_and_run_with_signal<F>(
     config: SubstrateConfig,
@@ -84,6 +94,26 @@ pub struct RuntimeServices {
     coordinator: Option<syneroym_coordinator::EcosystemCoordinator>,
     #[cfg(feature = "client_gateway")]
     client_gateway: Option<syneroym_client_gateway::ClientGateway>,
+}
+
+impl std::fmt::Debug for RuntimeServices {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug_struct = f.debug_struct("RuntimeServices");
+
+        #[cfg(feature = "community_registry")]
+        debug_struct.field(
+            "community_registry",
+            &self.community_registry.as_ref().map(|_| "EcosystemRegistry"),
+        );
+
+        #[cfg(feature = "coordinator")]
+        debug_struct.field("coordinator", &self.coordinator);
+
+        #[cfg(feature = "client_gateway")]
+        debug_struct.field("client_gateway", &self.client_gateway);
+
+        debug_struct.finish()
+    }
 }
 
 impl RuntimeServices {
@@ -157,7 +187,7 @@ impl RuntimeServices {
             res = &mut registry_fut => log_component_exit("service registry", res),
             res = &mut coordinator_fut => log_component_exit("coordinator", res),
             res = &mut client_gateway_fut => log_component_exit("http proxy", res),
-            _ = &mut shutdown_signal => warn!("received shutdown signal"),
+            () = &mut shutdown_signal => warn!("received shutdown signal"),
         }
     }
 
@@ -193,7 +223,7 @@ fn log_component_exit(component: &str, result: anyhow::Result<()>) {
     match result {
         Ok(()) => info!(component = component, "component finished"),
         Err(error) => {
-            error!(component = component, error = %error, "component finished with error")
+            error!(component = component, error = %error, "component finished with error");
         }
     }
 }
@@ -304,7 +334,7 @@ async fn register_substrate_endpoint<E: serde::Serialize>(
     )?;
 
     let client = reqwest::Client::new();
-    let url = format!("{}/register", registry_url);
+    let url = format!("{registry_url}/register");
     let res = client.post(&url).json(&signed_info).send().await;
 
     log_registration_status(res, service_id, nickname.as_deref());
@@ -320,7 +350,7 @@ fn build_signed_endpoint_info<E: serde::Serialize>(
     nickname: Option<String>,
 ) -> anyhow::Result<syneroym_core::community_registry::SignedEndpointInfo> {
     let endpoint_addr_bytes = serde_json::to_vec(endpoint_addr)
-        .map_err(|e| anyhow::anyhow!("Failed to serialize endpoint addr: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to serialize endpoint addr: {e}"))?;
 
     let info = syneroym_core::community_registry::EndpointInfo {
         service_id: service_id.to_string(),

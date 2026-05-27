@@ -58,7 +58,7 @@ impl FromStr for RouteTransport {
             "binary" => Ok(Self::Binary),
             "http" => Ok(Self::Http),
             "raw" => Ok(Self::Raw),
-            _ => Err(anyhow!("Invalid transport: {}", raw)),
+            _ => Err(anyhow!("Invalid transport: {raw}")),
         }
     }
 }
@@ -104,7 +104,7 @@ impl fmt::Display for RouteProtocol {
             Self::JsonRpc => write!(f, "json-rpc"),
             Self::Wrpc => write!(f, "wrpc"),
             Self::Raw => write!(f, "raw"),
-            Self::Other(value) => write!(f, "{}", value),
+            Self::Other(value) => write!(f, "{value}"),
         }
     }
 }
@@ -246,8 +246,9 @@ impl RoutePreamble {
     /// Returns the preamble as a newline-terminated string, suitable for sending over the wire.
     ///
     /// This is used by clients to prefix their streams so the router knows how to handle them.
+    #[must_use]
     pub fn to_preamble_line(&self) -> String {
-        format!("{}\n", self)
+        format!("{self}\n")
     }
 }
 
@@ -255,12 +256,12 @@ impl fmt::Display for RoutePreamble {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let scheme = match (self.transport, &self.protocol) {
             (RouteTransport::Http, RouteProtocol::JsonRpc) => "http".to_string(),
-            (RouteTransport::Http, p) => format!("http-{}", p),
+            (RouteTransport::Http, p) => format!("http-{p}"),
             (RouteTransport::Binary, RouteProtocol::JsonRpc) => "json-rpc".to_string(),
             (RouteTransport::Binary, RouteProtocol::Wrpc) => "wrpc".to_string(),
             (RouteTransport::Binary, p) => p.to_string(),
             (RouteTransport::Raw, RouteProtocol::Raw) => "raw".to_string(),
-            (RouteTransport::Raw, p) => format!("raw-{}", p),
+            (RouteTransport::Raw, p) => format!("raw-{p}"),
         };
 
         let mut base = if self.interface.is_empty() {
@@ -276,10 +277,10 @@ impl fmt::Display for RoutePreamble {
         };
 
         if let (Some(enc), Some(pubkey)) = (&self.enc, &self.pubkey) {
-            base = format!("{}?enc={}&pubkey={}", base, enc, pubkey);
+            base = format!("{base}?enc={enc}&pubkey={pubkey}");
         }
 
-        write!(f, "{}", base)
+        write!(f, "{base}")
     }
 }
 

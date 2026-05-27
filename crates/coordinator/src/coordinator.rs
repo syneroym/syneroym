@@ -12,6 +12,7 @@ use syneroym_coordinator_iroh::CoordinatorIroh;
 #[cfg(feature = "webrtc")]
 use syneroym_coordinator_webrtc::CoordinatorWebRtc;
 
+#[derive(Debug)]
 pub struct EcosystemCoordinator {
     #[cfg(feature = "iroh")]
     iroh_coordinator: Option<CoordinatorIroh>,
@@ -67,7 +68,7 @@ impl EcosystemCoordinator {
             return Ok(());
         }
 
-        let EcosystemCoordinator {
+        let Self {
             #[cfg(feature = "iroh")]
                 iroh_coordinator: iroh_component,
             #[cfg(feature = "webrtc")]

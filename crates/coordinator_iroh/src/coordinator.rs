@@ -26,6 +26,17 @@ pub struct CoordinatorIroh {
     info_addr: Option<SocketAddr>,
 }
 
+impl std::fmt::Debug for CoordinatorIroh {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CoordinatorIroh")
+            .field("relay_server", &self.relay_server.as_ref().map(|_| "Server"))
+            .field("iroh_router", &self.iroh_router.as_ref().map(|_| "Router"))
+            .field("http_info_handle", &self.http_info_handle)
+            .field("info_addr", &self.info_addr)
+            .finish()
+    }
+}
+
 impl CoordinatorIroh {
     pub async fn init(config: &SubstrateConfig) -> Result<Self> {
         info!("Initializing Coordinator IROH");
@@ -37,126 +48,45 @@ impl CoordinatorIroh {
         let mut info_addr = None;
 
         if let Some(role) = &config_roles {
-            if role.iroh.as_ref().map(|i| i.enable_relay).unwrap_or(false) {
-                let server_config = build_relay_config(role).await?;
-                debug!("Iroh Relay Config built: {:?}", server_config.relay.is_some());
-                relay_server = Some(
-                    Server::spawn(server_config)
-                        .await
-                        .context("failed to spawn iroh relay server")?,
-                );
+            if role.iroh.as_ref().is_some_and(|i| i.enable_relay) {
+                relay_server = Some(Self::spawn_relay_server(role).await?);
             }
 
             if let Some(iroh_cfg) = &role.iroh {
-                let community_registry_url = iroh_cfg.community_registry_url.clone();
-
                 // 1. Build Iroh Endpoint
-                let secret_key = SecretKey::generate(&mut rand::rng());
-                let mut ep_bldr = iroh::Endpoint::builder(iroh::endpoint::presets::N0);
+                let (iroh_endpoint, secret_key) =
+                    Self::build_iroh_endpoint(config, role, iroh_cfg, &relay_server).await?;
+                let node_id = iroh_endpoint.addr().id;
 
-                let mut chosen_relay_url_str = None;
-                if let Some(parent_url) = config.uplink.iroh.as_ref().map(|u| u.relay_url.clone()) {
-                    chosen_relay_url_str = Some(parent_url);
-                } else if iroh_cfg.enable_relay {
-                    let actual_http_addr = relay_server.as_ref().and_then(|s| s.http_addr());
-                    if let Some(addr) = actual_http_addr {
-                        chosen_relay_url_str = Some(format!("http://{}", addr));
-                    } else {
-                        chosen_relay_url_str =
-                            Some(format!("http://{}", iroh_cfg.http_bind_address));
-                    }
-                }
-
-                if let Some(relay_url_str) = chosen_relay_url_str
-                    && let Ok(relay_url) = relay_url_str.parse::<RelayUrl>()
-                {
-                    ep_bldr = iroh::Endpoint::empty_builder()
-                        .relay_mode(RelayMode::Custom(RelayMap::from(relay_url)));
-                }
-                let iroh_endpoint = ep_bldr.secret_key(secret_key.clone()).bind().await?;
-                iroh_endpoint.online().await;
-
-                let endpoint_addr = iroh_endpoint.addr();
-                let node_id = endpoint_addr.id;
-                debug!("Coordinator Iroh endpoint bound: {}", node_id);
-
-                let parent_relay_url = config.uplink.iroh.as_ref().map(|u| u.relay_url.clone());
-                // 2. Build RouteHandler
-                let route_handler = RouteHandler::new_coordinator(
-                    iroh_endpoint.clone(),
-                    community_registry_url.clone(),
-                    parent_relay_url,
-                );
-
-                // 3. Spawn Iroh Router
-                let router = iroh::protocol::Router::builder(iroh_endpoint)
-                    .accept(syneroym_router::SYNEROYM_ALPN, route_handler)
-                    .spawn();
+                // 2. Spawn Iroh Router
+                let router = Self::spawn_iroh_router(&iroh_endpoint, iroh_cfg, config);
                 iroh_router = Some(router);
 
-                // 4. Start Axum /v1/info HTTP Server
-                let mut http_info_addr: SocketAddr =
-                    iroh_cfg.http_bind_address.parse().context("invalid http_bind_address")?;
-                // Add 10 to the port to avoid conflict, or bind to port 0 for dynamic port in tests
-                if http_info_addr.port() == 0 {
-                    http_info_addr.set_port(0);
-                } else {
-                    http_info_addr.set_port(http_info_addr.port() + 10);
-                }
-
-                let listener = TcpListener::bind(http_info_addr).await?;
-                let local_addr = listener.local_addr()?;
+                // 3. Start Axum /v1/info HTTP Server
+                let (handle, local_addr) = Self::spawn_http_info_server(
+                    config,
+                    role,
+                    iroh_cfg,
+                    &iroh_endpoint,
+                    &relay_server,
+                )
+                .await?;
                 info_addr = Some(local_addr);
-                info!("Coordinator /v1/info listening on {}", local_addr);
-
-                let endpoint_addr_payload = iroh::EndpointAddr::new(endpoint_addr.id);
-                let endpoint_addr_bytes = serde_json::to_vec(&endpoint_addr_payload)?;
-                let actual_http_addr = relay_server.as_ref().and_then(|s| s.http_addr());
-                let local_relay_url = if iroh_cfg.enable_relay {
-                    if let Some(addr) = actual_http_addr {
-                        Some(format!("http://{}", addr))
-                    } else {
-                        Some(format!("http://{}", iroh_cfg.http_bind_address))
-                    }
-                } else {
-                    None
-                };
-
-                let parent_relay_url = config.uplink.iroh.as_ref().map(|u| u.relay_url.clone());
-
-                let info_state = Arc::new(InfoState {
-                    info: CoordinatorInfo {
-                        endpoint_addr_bytes,
-                        node_id: node_id.to_string(),
-                        relay_url: local_relay_url,
-                        parent_relay_url,
-                    },
-                });
-
-                let app = Router::new().route("/v1/info", get(get_info)).with_state(info_state);
-
-                let handle = tokio::spawn(async move {
-                    if let Err(e) = axum::serve(listener, app).await {
-                        warn!("HTTP info server error: {}", e);
-                    }
-                });
                 http_info_handle = Some(handle);
 
-                // 5. Register in Global Registry if requested
-                if iroh_cfg.share_in_registry && iroh_cfg.community_registry_url.is_some() {
-                    let registry_url = iroh_cfg.community_registry_url.clone().unwrap();
-                    let node_id_str = node_id.to_string();
-                    let secret_key_bytes = secret_key.to_bytes();
-
-                    let endpoint_addr_payload = iroh::EndpointAddr::new(endpoint_addr.id);
-                    let actual_http_addr = relay_server.as_ref().and_then(|s| s.http_addr());
+                // 4. Register in Global Registry if requested
+                if iroh_cfg.share_in_registry
+                    && let Some(registry_url) = &iroh_cfg.community_registry_url
+                {
+                    let actual_http_addr =
+                        relay_server.as_ref().and_then(iroh_relay::server::Server::http_addr);
                     let relay_url_payload = if let Some(parent_url) =
                         config.uplink.iroh.as_ref().map(|u| &u.relay_url)
                     {
                         Some(parent_url.clone())
                     } else if iroh_cfg.enable_relay {
                         if let Some(addr) = actual_http_addr {
-                            Some(format!("http://{}", addr))
+                            Some(format!("http://{addr}"))
                         } else {
                             Some(format!("http://{}", iroh_cfg.http_bind_address))
                         }
@@ -164,34 +94,13 @@ impl CoordinatorIroh {
                         None
                     };
 
-                    tokio::spawn(async move {
-                        let mut attempts = 0;
-                        while attempts < 30 {
-                            match register_coordinator_in_registry(
-                                &registry_url,
-                                &node_id_str,
-                                &endpoint_addr_payload,
-                                relay_url_payload.clone(),
-                                &secret_key_bytes,
-                            )
-                            .await
-                            {
-                                Ok(()) => {
-                                    info!("Coordinator successfully registered in global registry");
-                                    return;
-                                }
-                                Err(e) => {
-                                    warn!(
-                                        "Failed to register coordinator in registry (attempt {}): {}",
-                                        attempts + 1,
-                                        e
-                                    );
-                                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                                    attempts += 1;
-                                }
-                            }
-                        }
-                    });
+                    Self::register_in_global_registry(
+                        registry_url.clone(),
+                        node_id.to_string(),
+                        iroh::EndpointAddr::new(node_id),
+                        relay_url_payload,
+                        secret_key,
+                    );
                 }
             }
         }
@@ -199,10 +108,168 @@ impl CoordinatorIroh {
         Ok(Self { relay_server, iroh_router, http_info_handle, info_addr })
     }
 
-    pub fn info_addr(&self) -> Option<SocketAddr> {
+    async fn spawn_relay_server(role: &syneroym_core::config::CoordinatorRole) -> Result<Server> {
+        let server_config = build_relay_config(role).await?;
+        debug!("Iroh Relay Config built: {:?}", server_config.relay.is_some());
+        let server =
+            Server::spawn(server_config).await.context("failed to spawn iroh relay server")?;
+        Ok(server)
+    }
+
+    async fn build_iroh_endpoint(
+        config: &SubstrateConfig,
+        _role: &syneroym_core::config::CoordinatorRole,
+        iroh_cfg: &syneroym_core::config::CoordinatorIrohConfig,
+        relay_server: &Option<Server>,
+    ) -> Result<(iroh::Endpoint, SecretKey)> {
+        let secret_key = SecretKey::generate(&mut rand::rng());
+        let mut ep_bldr = iroh::Endpoint::builder(iroh::endpoint::presets::N0);
+
+        let mut chosen_relay_url_str = None;
+        if let Some(parent_url) = config.uplink.iroh.as_ref().map(|u| u.relay_url.clone()) {
+            chosen_relay_url_str = Some(parent_url);
+        } else if iroh_cfg.enable_relay {
+            let actual_http_addr =
+                relay_server.as_ref().and_then(iroh_relay::server::Server::http_addr);
+            if let Some(addr) = actual_http_addr {
+                chosen_relay_url_str = Some(format!("http://{addr}"));
+            } else {
+                chosen_relay_url_str = Some(format!("http://{}", iroh_cfg.http_bind_address));
+            }
+        }
+
+        if let Some(relay_url_str) = chosen_relay_url_str
+            && let Ok(relay_url) = relay_url_str.parse::<RelayUrl>()
+        {
+            ep_bldr = iroh::Endpoint::empty_builder()
+                .relay_mode(RelayMode::Custom(RelayMap::from(relay_url)));
+        }
+        let iroh_endpoint = ep_bldr.secret_key(secret_key.clone()).bind().await?;
+        iroh_endpoint.online().await;
+
+        let node_id = iroh_endpoint.addr().id;
+        debug!("Coordinator Iroh endpoint bound: {}", node_id);
+
+        Ok((iroh_endpoint, secret_key))
+    }
+
+    fn spawn_iroh_router(
+        iroh_endpoint: &iroh::Endpoint,
+        iroh_cfg: &syneroym_core::config::CoordinatorIrohConfig,
+        config: &SubstrateConfig,
+    ) -> iroh::protocol::Router {
+        let parent_relay_url = config.uplink.iroh.as_ref().map(|u| u.relay_url.clone());
+        let route_handler = RouteHandler::new_coordinator(
+            iroh_endpoint.clone(),
+            iroh_cfg.community_registry_url.clone(),
+            parent_relay_url,
+        );
+
+        iroh::protocol::Router::builder(iroh_endpoint.clone())
+            .accept(syneroym_router::SYNEROYM_ALPN, route_handler)
+            .spawn()
+    }
+
+    async fn spawn_http_info_server(
+        config: &SubstrateConfig,
+        _role: &syneroym_core::config::CoordinatorRole,
+        iroh_cfg: &syneroym_core::config::CoordinatorIrohConfig,
+        iroh_endpoint: &iroh::Endpoint,
+        relay_server: &Option<Server>,
+    ) -> Result<(tokio::task::JoinHandle<()>, SocketAddr)> {
+        let mut http_info_addr: SocketAddr =
+            iroh_cfg.http_bind_address.parse().context("invalid http_bind_address")?;
+        // Add 10 to the port to avoid conflict, or bind to port 0 for dynamic port in tests
+        if http_info_addr.port() != 0 {
+            http_info_addr.set_port(http_info_addr.port() + 10);
+        }
+
+        let listener = TcpListener::bind(http_info_addr).await?;
+        let local_addr = listener.local_addr()?;
+        info!("Coordinator /v1/info listening on {}", local_addr);
+
+        let endpoint_addr = iroh_endpoint.addr();
+        let node_id = endpoint_addr.id;
+        let endpoint_addr_payload = iroh::EndpointAddr::new(node_id);
+        let endpoint_addr_bytes = serde_json::to_vec(&endpoint_addr_payload)?;
+        let actual_http_addr =
+            relay_server.as_ref().and_then(iroh_relay::server::Server::http_addr);
+        let local_relay_url = if iroh_cfg.enable_relay {
+            if let Some(addr) = actual_http_addr {
+                Some(format!("http://{addr}"))
+            } else {
+                Some(format!("http://{}", iroh_cfg.http_bind_address))
+            }
+        } else {
+            None
+        };
+
+        let parent_relay_url = config.uplink.iroh.as_ref().map(|u| u.relay_url.clone());
+
+        let info_state = Arc::new(InfoState {
+            info: CoordinatorInfo {
+                endpoint_addr_bytes,
+                node_id: node_id.to_string(),
+                relay_url: local_relay_url,
+                parent_relay_url,
+            },
+        });
+
+        let app = Router::new().route("/v1/info", get(get_info)).with_state(info_state);
+
+        let handle = tokio::spawn(async move {
+            if let Err(e) = axum::serve(listener, app).await {
+                warn!("HTTP info server error: {}", e);
+            }
+        });
+
+        Ok((handle, local_addr))
+    }
+
+    fn register_in_global_registry(
+        registry_url: String,
+        node_id_str: String,
+        endpoint_addr_payload: iroh::EndpointAddr,
+        relay_url_payload: Option<String>,
+        secret_key: SecretKey,
+    ) {
+        let secret_key_bytes = secret_key.to_bytes();
+        tokio::spawn(async move {
+            let mut attempts = 0;
+            while attempts < 30 {
+                match register_coordinator_in_registry(
+                    &registry_url,
+                    &node_id_str,
+                    &endpoint_addr_payload,
+                    relay_url_payload.clone(),
+                    &secret_key_bytes,
+                )
+                .await
+                {
+                    Ok(()) => {
+                        info!("Coordinator successfully registered in global registry");
+                        return;
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to register coordinator in registry (attempt {}): {}",
+                            attempts + 1,
+                            e
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        attempts += 1;
+                    }
+                }
+            }
+        });
+    }
+
+    #[must_use]
+    pub const fn info_addr(&self) -> Option<SocketAddr> {
         self.info_addr
     }
 
+    #[must_use]
     pub fn endpoint_addr(&self) -> Option<iroh::EndpointAddr> {
         self.iroh_router.as_ref().map(|r| r.endpoint().addr())
     }
@@ -263,7 +330,7 @@ async fn register_coordinator_in_registry(
     secret_key_bytes: &[u8; 32],
 ) -> Result<()> {
     let endpoint_addr_bytes = serde_json::to_vec(endpoint_addr)
-        .map_err(|e| anyhow::anyhow!("Failed to serialize endpoint addr: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to serialize endpoint addr: {e}"))?;
 
     let identity = Identity::from_bytes(secret_key_bytes);
     let did = derive_did_key(&identity.public_key());
@@ -285,7 +352,7 @@ async fn register_coordinator_in_registry(
         syneroym_core::community_registry::SignedEndpointInfo { info, signature: signature_z32 };
 
     let client = reqwest::Client::new();
-    let url = format!("{}/register", registry_url);
+    let url = format!("{registry_url}/register");
     let res = client.post(&url).json(&signed_info).send().await?;
 
     if !res.status().is_success() {

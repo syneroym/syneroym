@@ -1,3 +1,4 @@
+#![allow(unsafe_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Integration tests for the Substrate core lifecycle
 //!
 //! Validates proper boot flow, identity checks, role starting,
@@ -70,7 +71,7 @@ async fn test_run_finishes_on_ctrl_c() {
     bind_address = "0.0.0.0:0"
     endpoint = "/metrics"
     "#;
-    write!(config_file, "{}", config_toml).expect("Failed to write to temp config file");
+    write!(config_file, "{config_toml}").expect("Failed to write to temp config file");
 
     let mut command = Command::cargo_bin("syneroym-substrate").unwrap();
 
@@ -96,8 +97,7 @@ async fn test_run_finishes_on_ctrl_c() {
                 let mut err_output = String::new();
                 std::io::Read::read_to_string(&mut BufReader::new(stderr), &mut err_output).ok();
                 panic!(
-                    "Process closed stdout before reaching running state. Stderr:\n{}",
-                    err_output
+                    "Process closed stdout before reaching running state. Stderr:\n{err_output}"
                 );
             }
             Ok(_) => {
@@ -105,7 +105,7 @@ async fn test_run_finishes_on_ctrl_c() {
                     break;
                 }
             }
-            Err(e) => panic!("Failed to read from child stdout: {}", e),
+            Err(e) => panic!("Failed to read from child stdout: {e}"),
         }
     }
 
@@ -119,11 +119,7 @@ async fn test_run_finishes_on_ctrl_c() {
     let status = child.wait().expect("Failed to wait on child process");
 
     // Verify the process exited successfully (graceful shutdown)
-    assert!(
-        status.success(),
-        "Process did not exit successfully after SIGINT, status: {:?}",
-        status
-    );
+    assert!(status.success(), "Process did not exit successfully after SIGINT, status: {status:?}");
 }
 
 const IROH_PORT: u16 = 7994;
@@ -171,19 +167,19 @@ impl SubstrateTestContext {
         config.roles.coordinator = Some(CoordinatorRole {
             iroh: Some(CoordinatorIrohConfig {
                 enable_relay: true,
-                http_bind_address: format!("0.0.0.0:{}", iroh_port),
+                http_bind_address: format!("0.0.0.0:{iroh_port}"),
                 ..Default::default()
             }),
             ..Default::default()
         });
         config.roles.community_registry = Some(ServiceRegistryRole {
-            http_bind_address: format!("0.0.0.0:{}", registry_port),
+            http_bind_address: format!("0.0.0.0:{registry_port}"),
             ..Default::default()
         });
-        let registry_url = format!("http://localhost:{}", registry_port);
+        let registry_url = format!("http://localhost:{registry_port}");
         config.substrate.registry_url = Some(registry_url.clone());
         config.uplink.iroh = Some(syneroym_core::config::IrohRelayConfig {
-            relay_url: format!("http://localhost:{}", iroh_port),
+            relay_url: format!("http://localhost:{iroh_port}"),
         });
 
         config.roles.client_gateway =
@@ -392,7 +388,7 @@ async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
     let url = format!("{}/", ctx.gateway_url());
     let interface_hash = syneroym_core::util::short_hash("default");
     let pubkeyhash = syneroym_core::util::short_hash(&app_service_id);
-    let host_header = format!("tcp-demo-app-p{}-i{}.localhost", pubkeyhash, interface_hash);
+    let host_header = format!("tcp-demo-app-p{pubkeyhash}-i{interface_hash}.localhost");
 
     // 1. GET /
     let res = req_client.get(&url).header("Host", &host_header).send().await.expect("GET / failed");
@@ -403,7 +399,7 @@ async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
     // 2. POST /api/comments
     let comment_req = serde_json::json!({"text": "test comment"});
     let res = req_client
-        .post(format!("{}api/comments", url))
+        .post(format!("{url}api/comments"))
         .header("Host", &host_header)
         .json(&comment_req)
         .send()
@@ -413,7 +409,7 @@ async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
 
     // 3. GET /api/comments
     let res = req_client
-        .get(format!("{}api/comments", url))
+        .get(format!("{url}api/comments"))
         .header("Host", &host_header)
         .send()
         .await
@@ -447,14 +443,14 @@ async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
         let ws_resp: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert!(ws_resp["recdMsg"].as_str().unwrap().contains(test_msg));
     } else {
-        panic!("Expected text message, got {:?}", response);
+        panic!("Expected text message, got {response:?}");
     }
 
     // 5. WebSocket Broadcast Test (comment update)
     debug!(">>> TCP Scenario: WebSocket Broadcast Test");
     let comment_req = serde_json::json!({"text": "broadcast test comment"});
     req_client
-        .post(format!("{}api/comments", url))
+        .post(format!("{url}api/comments"))
         .header("Host", &host_header)
         .json(&comment_req)
         .send()
@@ -471,7 +467,7 @@ async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
         let ws_resp: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert!(ws_resp["commentUpdateTimestamp"].is_string());
     } else {
-        panic!("Expected text message, got {:?}", response);
+        panic!("Expected text message, got {response:?}");
     }
 
     // 6. HTTPS Test
@@ -507,7 +503,7 @@ async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
 
     // Note: The gateway currently only supports plain HTTP/WS proxying via Host header.
     // For now, we test the HTTPS endpoint directly to ensure it works.
-    let app_https_url = format!("https://localhost:{}", https_port);
+    let app_https_url = format!("https://localhost:{https_port}");
     let res = https_req_client.get(&app_https_url).send().await.expect("HTTPS GET / failed");
 
     assert!(res.status().is_success());
@@ -547,14 +543,14 @@ async fn register_app_in_registry(
         signature: z32::encode(&signature.to_bytes()),
     };
     let res = req_client
-        .post(format!("{}/register", registry_url))
+        .post(format!("{registry_url}/register"))
         .json(&signed_info)
         .send()
         .await
         .expect("Failed to register app_service_id in HTTP registry");
     if !res.status().is_success() {
         let err = res.text().await.unwrap();
-        panic!("Registry registration failed: {}", err);
+        panic!("Registry registration failed: {err}");
     }
 }
 
@@ -574,7 +570,7 @@ async fn test_http_proxy_invocation(
     let url = format!("{}/", ctx.gateway_url());
     let interface_hash = syneroym_core::util::short_hash("syneroym-test:greeter/greet@0.1.0");
     let pubkeyhash = syneroym_core::util::short_hash(app_service_id);
-    let host_header = format!("{}-p{}-i{}.localhost", nickname, pubkeyhash, interface_hash);
+    let host_header = format!("{nickname}-p{pubkeyhash}-i{interface_hash}.localhost");
 
     let proxy_res = req_client
         .post(&url)

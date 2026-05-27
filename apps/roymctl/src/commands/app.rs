@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum AppCommands {
-    /// Deploy a new SynApp via API
+    /// Deploy a new `SynApp` via API
     Deploy {
         /// The DID-key for the application
         #[arg(long)]
@@ -23,26 +23,26 @@ pub enum AppCommands {
         #[arg(long)]
         tcp: Option<String>,
     },
-    /// Remove an installed SynApp via API
+    /// Remove an installed `SynApp` via API
     Remove {
         #[arg(long)]
         app_id: String,
     },
-    /// List installed SynApps via API
+    /// List installed `SynApps` via API
     List,
-    /// Start an installed SynApp via API (warm up)
+    /// Start an installed `SynApp` via API (warm up)
     Start {
         #[arg(long)]
         app_id: String,
     },
-    /// Stop a running SynApp via API (evict from cache)
+    /// Stop a running `SynApp` via API (evict from cache)
     Stop {
         #[arg(long)]
         app_id: String,
     },
 }
 
-/// Handle SynApp management subcommands
+/// Handle `SynApp` management subcommands
 pub async fn handle(
     command: &AppCommands,
     api_url: &str,
@@ -58,16 +58,11 @@ pub async fn handle(
             if let Some(wasm_path) = wasm {
                 let wasm_bytes = fs::read(wasm_path)?;
                 client.deploy_wasm(app_id.clone(), ifaces, wasm_bytes).await?;
-                println!("Successfully deployed WASM app {}", app_id);
+                println!("Successfully deployed WASM app {app_id}");
             } else if let Some(tcp_addr) = tcp {
-                let parts: Vec<&str> = tcp_addr.split(':').collect();
-                if parts.len() != 2 {
-                    anyhow::bail!("Invalid TCP address format. Expected host:port");
-                }
-                let host = parts[0].to_string();
-                let port = parts[1].parse::<u16>()?;
+                let (host, port) = get_host_port_from_tcp_addr(tcp_addr)?;
                 client.deploy_tcp(app_id.clone(), ifaces, host, port).await?;
-                println!("Successfully deployed TCP service {}", app_id);
+                println!("Successfully deployed TCP service {app_id}");
             } else {
                 anyhow::bail!("Either --wasm or --tcp must be provided for deployment");
             }
@@ -76,7 +71,7 @@ pub async fn handle(
             client
                 .request("orchestrator", "remove", serde_json::json!({ "app_id": app_id }))
                 .await?;
-            println!("Successfully removed app {}", app_id);
+            println!("Successfully removed app {app_id}");
         }
         AppCommands::List => {
             let services = client.list_services().await?;
@@ -95,12 +90,22 @@ pub async fn handle(
             client
                 .request("orchestrator", "start", serde_json::json!({ "app_id": app_id }))
                 .await?;
-            println!("Successfully started app {}", app_id);
+            println!("Successfully started app {app_id}");
         }
         AppCommands::Stop { app_id } => {
             client.request("orchestrator", "stop", serde_json::json!({ "app_id": app_id })).await?;
-            println!("Successfully stopped app {}", app_id);
+            println!("Successfully stopped app {app_id}");
         }
     }
     Ok(())
+}
+
+fn get_host_port_from_tcp_addr(tcp_addr: &str) -> anyhow::Result<(String, u16)> {
+    let parts: Vec<&str> = tcp_addr.split(':').collect();
+    if parts.len() != 2 {
+        anyhow::bail!("Invalid TCP address format. Expected host:port");
+    }
+    let host = parts[0].to_string();
+    let port = parts[1].parse::<u16>()?;
+    Ok((host, port))
 }

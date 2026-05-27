@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Integration tests for WebRTC alias resolution and discovery
 //!
 //! Verifies that shorthash aliases and nicknames resolve correctly under
@@ -37,7 +38,7 @@ async fn test_bootstrap_alias_resolution() -> anyhow::Result<()> {
         Router::new().route("/lookup/{id}", get(move || async move { Json(mock_info.clone()) }));
     let registry_listener = TcpListener::bind("127.0.0.1:0").await?;
     let registry_port = registry_listener.local_addr()?.port();
-    let registry_url = format!("http://127.0.0.1:{}", registry_port);
+    let registry_url = format!("http://127.0.0.1:{registry_port}");
 
     tokio::spawn(async move {
         axum::serve(registry_listener, app).await.unwrap();
@@ -80,14 +81,14 @@ async fn test_bootstrap_alias_resolution() -> anyhow::Result<()> {
 
     // 3. Hit the bootstrap server with the alias
     let client = reqwest::Client::new();
-    let url = format!("http://127.0.0.1:{}", bootstrap_port);
-    let resp = client.get(&url).header("Host", format!("{}.localhost", alias)).send().await?;
+    let url = format!("http://127.0.0.1:{bootstrap_port}");
+    let resp = client.get(&url).header("Host", format!("{alias}.localhost")).send().await?;
 
     assert!(resp.status().is_success());
     let body = resp.text().await?;
 
     // 4. Verify that the rendered HTML contains the substrate DID as TARGET_PEER_ID
-    assert!(body.contains(&format!("const TARGET_PEER_ID = \"{}\"", substrate_id)));
+    assert!(body.contains(&format!("const TARGET_PEER_ID = \"{substrate_id}\"")));
 
     iroh_endpoint.close().await;
     Ok(())

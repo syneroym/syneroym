@@ -10,6 +10,7 @@ pub struct CoordinatorInfo {
     pub parent_relay_url: Option<String>, // Parent/uplink relay URL
 }
 
+#[derive(Debug)]
 pub struct InfoState {
     pub info: CoordinatorInfo,
 }

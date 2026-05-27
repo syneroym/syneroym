@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Mini-app demo guest service library
 //!
 //! Runs a mock sandboxed client library exposing basic network interfaces.
@@ -105,11 +106,11 @@ async fn get_recent_comments(State(state): State<Arc<AppState>>) -> impl IntoRes
     match result {
         Ok(Ok(comments)) => Json(comments).into_response(),
         Ok(Err(e)) => {
-            eprintln!("Database query error: {}", e);
+            eprintln!("Database query error: {e}");
             (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response()
         }
         Err(e) => {
-            eprintln!("Join error: {}", e);
+            eprintln!("Join error: {e}");
             (StatusCode::INTERNAL_SERVER_ERROR, "Internal error").into_response()
         }
     }
@@ -135,11 +136,11 @@ async fn save_comment(
             StatusCode::CREATED
         }
         Ok(Err(e)) => {
-            eprintln!("Database error: {}", e);
+            eprintln!("Database error: {e}");
             StatusCode::INTERNAL_SERVER_ERROR
         }
         Err(e) => {
-            eprintln!("Join error: {}", e);
+            eprintln!("Join error: {e}");
             StatusCode::INTERNAL_SERVER_ERROR
         }
     }
@@ -185,7 +186,7 @@ async fn upload_file(
             if let Ok(data) = field.bytes().await {
                 let file_path = std::path::Path::new(&state.data_dir).join(&file_name);
                 if let Err(e) = tokio::fs::write(&file_path, data).await {
-                    eprintln!("Failed to write file: {}", e);
+                    eprintln!("Failed to write file: {e}");
                     return StatusCode::INTERNAL_SERVER_ERROR;
                 }
             }
@@ -354,12 +355,12 @@ pub async fn run_server(
         rustls_pki_types::CertificateDer::pem_reader_iter(&mut cert_reader)
             .collect::<Result<Vec<_>, _>>()?;
     let key = rustls_pki_types::PrivateKeyDer::from_pem_reader(&mut key_reader)
-        .map_err(|e| format!("no private key found in test_key.pem: {}", e))?;
+        .map_err(|e| format!("no private key found in test_key.pem: {e}"))?;
 
     let tls_config = rustls::ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(certs, key)
-        .map_err(|e| format!("invalid certificate: {}", e))?;
+        .map_err(|e| format!("invalid certificate: {e}"))?;
 
     let tls_acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(tls_config));
 

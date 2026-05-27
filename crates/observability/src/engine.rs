@@ -17,6 +17,14 @@ pub struct ObservabilityEngine {
     log_guard: Option<WorkerGuard>,
 }
 
+impl std::fmt::Debug for ObservabilityEngine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ObservabilityEngine")
+            .field("log_guard", &self.log_guard.as_ref().map(|_| "WorkerGuard"))
+            .finish()
+    }
+}
+
 impl ObservabilityEngine {
     /// Initializes global tracing subscribers and metrics registries.
     pub fn init(config: &SubstrateConfig) -> Result<Self> {
@@ -30,7 +38,7 @@ impl ObservabilityEngine {
                 if let Err(e) = subscriber.try_init() {
                     // TODO: Handle process-global tracing initialization more cleanly.
                     // This often fails in tests when multiple substrate instances are initialized in the same process.
-                    eprintln!("Warning: Failed to initialize stdout tracing subscriber: {}", e);
+                    eprintln!("Warning: Failed to initialize stdout tracing subscriber: {e}");
                 }
                 None
             }
@@ -47,7 +55,7 @@ impl ObservabilityEngine {
                 if let Err(e) = subscriber.try_init() {
                     // TODO: Handle process-global tracing initialization more cleanly.
                     // This often fails in tests when multiple substrate instances are initialized in the same process.
-                    eprintln!("Warning: Failed to initialize file tracing subscriber: {}", e);
+                    eprintln!("Warning: Failed to initialize file tracing subscriber: {e}");
                 }
                 Some(guard)
             }
@@ -72,7 +80,7 @@ impl ObservabilityEngine {
     }
 }
 
-fn default_directive(level: &LogLevel) -> &'static str {
+const fn default_directive(level: &LogLevel) -> &'static str {
     match level {
         LogLevel::Error => "error",
         LogLevel::Warn => "warn",

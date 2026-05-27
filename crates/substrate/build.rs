@@ -42,18 +42,16 @@ fn main() {
         }
         Ok(s) => {
             println!(
-                "cargo:warning=Failed to build WASM component in {:?} : {}. \
+                "cargo:warning=Failed to build WASM component in {component_dir:?} : {s}. \
                  Install cargo-component to rebuild: `cargo install cargo-component`. \
-                 Continuing build without updated WASM component.",
-                component_dir, s
+                 Continuing build without updated WASM component."
             );
         }
         Err(e) => {
             println!(
-                "cargo:warning=Failed to execute WASM component build: {}. \
+                "cargo:warning=Failed to execute WASM component build: {e}. \
                  Ensure 'cargo' is available and cargo-component is installed. \
-                 Continuing build without WASM component.",
-                e
+                 Continuing build without WASM component."
             );
         }
     }

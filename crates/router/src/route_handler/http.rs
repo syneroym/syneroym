@@ -103,11 +103,13 @@ impl HttpHandler {
             .dispatch_json_rpc_once(&self.pipeline, &self.preamble, &body_bytes)
             .await
         {
-            Ok(payload) => Ok(Response::builder()
-                .status(StatusCode::OK)
-                .header(hyper::header::CONTENT_TYPE, "application/json")
-                .body(Full::new(Bytes::from(payload)))
-                .expect("valid response")),
+            Ok(payload) => {
+                let res = Response::builder()
+                    .status(StatusCode::OK)
+                    .header(hyper::header::CONTENT_TYPE, "application/json")
+                    .body(Full::new(Bytes::from(payload)));
+                Ok(res.unwrap_or_else(|_| Response::default()))
+            }
             Err(e) => Ok(http_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
         }
     }
@@ -125,5 +127,5 @@ pub fn http_error(status: StatusCode, message: String) -> Response<Full<Bytes>> 
         .status(status)
         .header(hyper::header::CONTENT_TYPE, "application/json")
         .body(Full::new(Bytes::from(body_bytes)))
-        .expect("valid error response")
+        .unwrap_or_else(|_| Response::default())
 }

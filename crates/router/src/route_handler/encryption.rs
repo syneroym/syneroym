@@ -92,9 +92,8 @@ impl<R: AsyncRead + Unpin> AsyncRead for EncryptedReader<R> {
                         buf.put_slice(&decrypted_buf[*pos..*pos + to_read]);
                         *pos += to_read;
                         return Poll::Ready(Ok(()));
-                    } else {
-                        this.state = ReadState::ReadLen { buf: [0; 2], bytes_read: 0 };
                     }
+                    this.state = ReadState::ReadLen { buf: [0; 2], bytes_read: 0 };
                 }
                 ReadState::ReadLen { buf: len_buf, bytes_read } => {
                     while *bytes_read < 2 {
@@ -105,12 +104,11 @@ impl<R: AsyncRead + Unpin> AsyncRead for EncryptedReader<R> {
                             if *bytes_read == 0 {
                                 this.state = ReadState::Eof;
                                 return Poll::Ready(Ok(()));
-                            } else {
-                                return Poll::Ready(Err(std::io::Error::new(
-                                    std::io::ErrorKind::UnexpectedEof,
-                                    "unexpected EOF reading chunk length",
-                                )));
                             }
+                            return Poll::Ready(Err(std::io::Error::new(
+                                std::io::ErrorKind::UnexpectedEof,
+                                "unexpected EOF reading chunk length",
+                            )));
                         }
                         *bytes_read += n;
                     }
@@ -148,7 +146,7 @@ impl<R: AsyncRead + Unpin> AsyncRead for EncryptedReader<R> {
                     let plaintext = this.cipher.decrypt(nonce, ciphertext).map_err(|e| {
                         std::io::Error::new(
                             std::io::ErrorKind::InvalidData,
-                            format!("Decryption failed: {}", e),
+                            format!("Decryption failed: {e}"),
                         )
                     })?;
                     this.state = ReadState::Decrypted { buf: plaintext, pos: 0 };
@@ -187,7 +185,7 @@ impl<W: AsyncWrite + Unpin> EncryptedWriter<W> {
         let ciphertext = self
             .cipher
             .encrypt(nonce, self.write_buf.as_slice())
-            .map_err(|e| std::io::Error::other(format!("Encryption failed: {}", e)))?;
+            .map_err(|e| std::io::Error::other(format!("Encryption failed: {e}")))?;
 
         let payload_len = (12 + ciphertext.len()) as u16;
         let mut pending_buf = Vec::with_capacity(2 + 12 + ciphertext.len());
@@ -265,7 +263,7 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for EncryptedWriter<W> {
     }
 }
 
-/// Applies the encryption stage to the stream, returning an OwnedStream
+/// Applies the encryption stage to the stream, returning an `OwnedStream`
 /// that downstream transport/service stages can use without knowing
 /// whether the wire is encrypted.
 pub async fn apply_encryption_stage<R, W>(

@@ -103,3 +103,20 @@ futures-util = "0.3"
 futures = "0.3"
 chromiumoxide = { version = "0.9" }
 tokio-stream = "0.1"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+correctness = { level = "deny", priority = -1 }
+suspicious = { level = "deny", priority = -1 }
+perf = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+todo = "warn"
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+enum_glob_use = "warn"
+rc_buffer = "warn"

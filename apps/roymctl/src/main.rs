@@ -1,3 +1,4 @@
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 //! Command-line control interface for operations on, and through, a Syneroym substrate.
 
 use clap::Parser;
@@ -30,9 +31,10 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .expect("Failed to install rustls default crypto provider");
+    if rustls::crypto::ring::default_provider().install_default().is_err() {
+        eprintln!("Failed to install rustls default crypto provider");
+        std::process::exit(1);
+    }
 
     let cli = Cli::parse();
 

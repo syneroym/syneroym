@@ -5,6 +5,7 @@
 /// Supports common suffixes like `Ki`, `Mi`, `Gi`, `K`, `M`, `G`.
 /// If the string cannot be parsed as a number, it returns `default_if_unparseable`
 /// multiplied by the parsed suffix multiplier.
+#[must_use]
 pub fn parse_size_string(s: &str, default_if_unparseable: u64) -> u64 {
     let s = s.trim();
     let mut multiplier = 1;
@@ -35,6 +36,7 @@ pub fn parse_size_string(s: &str, default_if_unparseable: u64) -> u64 {
 
 /// Generates a short z32-encoded hash from the given data.
 /// It uses SHA256 and takes the first 5 bytes, resulting in an 8-character string.
+#[must_use]
 pub fn short_hash(data: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -45,6 +47,7 @@ pub fn short_hash(data: &str) -> String {
 
 /// Generates a consistent alias for a service ID and optional nickname.
 /// Format: {nickname}-p{shorthash} or p{shorthash} if nickname is None.
+#[must_use]
 pub fn generate_alias(nickname: Option<&str>, service_id: &str) -> String {
     let service_hash = short_hash(service_id);
     match nickname {

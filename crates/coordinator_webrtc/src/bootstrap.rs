@@ -36,6 +36,18 @@ pub struct BootstrapState {
     pub registry_url: Option<String>,
 }
 
+impl std::fmt::Debug for BootstrapState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BootstrapState")
+            .field("iroh", &"iroh::Endpoint")
+            .field("external_host", &self.external_host)
+            .field("signaling_port", &self.signaling_port)
+            .field("registry", &self.registry)
+            .field("registry_url", &self.registry_url)
+            .finish()
+    }
+}
+
 #[derive(Template)]
 #[template(path = "peer-proxy.html")]
 struct PeerProxyTemplate {
@@ -132,7 +144,7 @@ async fn handle_bootstrap(
         Ok(pubkey) => hex::encode(pubkey.as_bytes()),
         Err(e) => {
             error!("Failed to resolve target_peer_id '{}' DID: {}", target_peer_id, e);
-            "".to_string()
+            String::new()
         }
     };
 
@@ -163,9 +175,43 @@ async fn handle_tunnel_upgrade(
 
 async fn handle_blind_tunnel(socket: WebSocket, state: Arc<BootstrapState>) {
     debug!("[BlindTunnel] Connection upgraded; waiting for preamble message");
-    let (mut ws_sender, mut ws_receiver) = socket.split();
+    let (ws_sender, mut ws_receiver) = socket.split();
 
-    // 1. Read first message which contains the preamble
+    // 1. Read preamble
+    let (preamble, preamble_str) = match read_preamble_from_ws(&mut ws_receiver).await {
+        Some(res) => res,
+        None => return,
+    };
+
+    // 2. Resolve registry URL
+    let registry_url = if let Some(url) = &state.registry_url {
+        url
+    } else {
+        error!("[BlindTunnel] No community registry configured; cannot resolve substrate");
+        return;
+    };
+
+    // 3. Resolve Iroh Endpoint
+    let endpoint_addr =
+        match resolve_iroh_endpoint_from_registry(&preamble.service_id, registry_url).await {
+            Some(addr) => addr,
+            None => return,
+        };
+
+    // 4. Connect to Iroh Node and forward preamble
+    let iroh_stream = match connect_iroh_stream(&state.iroh, endpoint_addr, &preamble_str).await {
+        Some(stream) => stream,
+        None => return,
+    };
+
+    // 5. Pipe bidirectionally WS <-> Iroh
+    pipe_ws_and_iroh(ws_sender, ws_receiver, iroh_stream).await;
+    debug!("[BlindTunnel] Tunnel closed for service '{}'", preamble.service_id);
+}
+
+async fn read_preamble_from_ws(
+    ws_receiver: &mut futures::stream::SplitStream<WebSocket>,
+) -> Option<(syneroym_router::RoutePreamble, String)> {
     let msg = match ws_receiver.next().await {
         Some(Ok(Message::Binary(bin))) => {
             debug!("[BlindTunnel] Received binary preamble ({} bytes)", bin.len());
@@ -177,7 +223,7 @@ async fn handle_blind_tunnel(socket: WebSocket, state: Arc<BootstrapState>) {
         }
         _ => {
             error!("[BlindTunnel] Failed to read preamble; closing tunnel");
-            return;
+            return None;
         }
     };
 
@@ -185,7 +231,7 @@ async fn handle_blind_tunnel(socket: WebSocket, state: Arc<BootstrapState>) {
         Ok(s) => s,
         Err(e) => {
             error!("[BlindTunnel] Invalid UTF-8 preamble: {e}");
-            return;
+            return None;
         }
     };
 
@@ -195,7 +241,7 @@ async fn handle_blind_tunnel(socket: WebSocket, state: Arc<BootstrapState>) {
         Ok(p) => p,
         Err(e) => {
             error!("[BlindTunnel] Failed to parse preamble '{}': {e}", preamble_str.trim());
-            return;
+            return None;
         }
     };
 
@@ -208,23 +254,17 @@ async fn handle_blind_tunnel(socket: WebSocket, state: Arc<BootstrapState>) {
         preamble.enc
     );
 
-    // Resolve Iroh endpoint for the substrate hosting this service.
-    // Connection is made to the substrate_id resolved from registry.
-    let registry_url = match &state.registry_url {
-        Some(url) => url,
-        None => {
-            error!("[BlindTunnel] No community registry configured; cannot resolve substrate");
-            return;
-        }
-    };
+    Some((preamble, preamble_str))
+}
 
-    debug!(
-        "[BlindTunnel] Looking up service '{}' in registry at '{}'",
-        preamble.service_id, registry_url
-    );
+async fn resolve_iroh_endpoint_from_registry(
+    service_id: &str,
+    registry_url: &str,
+) -> Option<iroh::EndpointAddr> {
+    debug!("[BlindTunnel] Looking up service '{}' in registry at '{}'", service_id, registry_url);
     let info = match syneroym_core::community_registry::RegistryClient::lookup(
         registry_url,
-        &preamble.service_id,
+        service_id,
         true,
     )
     .await
@@ -239,8 +279,8 @@ async fn handle_blind_tunnel(socket: WebSocket, state: Arc<BootstrapState>) {
             i
         }
         Err(e) => {
-            error!("[BlindTunnel] Registry lookup failed for '{}': {e}", preamble.service_id);
-            return;
+            error!("[BlindTunnel] Registry lookup failed for '{}': {e}", service_id);
+            return None;
         }
     };
 
@@ -255,41 +295,44 @@ async fn handle_blind_tunnel(socket: WebSocket, state: Arc<BootstrapState>) {
         }
     }
 
-    let endpoint_addr = match iroh_addr_from_mechanism {
-        Some(addr) => {
-            debug!("[BlindTunnel] Using explicit Iroh mechanism from registry: {:?}", addr);
-            addr
-        }
-        None => {
-            debug!(
-                "[BlindTunnel] No explicit Iroh mechanism; deriving from substrate DID '{}'",
-                info.info.substrate_id
-            );
-            match resolve_did_key(&info.info.substrate_id) {
-                Ok(pubkey) => match iroh::PublicKey::from_bytes(pubkey.as_bytes()) {
-                    Ok(pk) => {
-                        let addr = iroh::EndpointAddr::from(pk);
-                        debug!("[BlindTunnel] Derived Iroh endpoint addr: {:?}", addr);
-                        addr
-                    }
-                    Err(e) => {
-                        error!("[BlindTunnel] Invalid substrate public key bytes: {e}");
-                        return;
-                    }
-                },
-                Err(e) => {
-                    error!(
-                        "[BlindTunnel] Failed to resolve substrate DID '{}': {e}",
-                        info.info.substrate_id
-                    );
-                    return;
+    if let Some(addr) = iroh_addr_from_mechanism {
+        debug!("[BlindTunnel] Using explicit Iroh mechanism from registry: {:?}", addr);
+        Some(addr)
+    } else {
+        debug!(
+            "[BlindTunnel] No explicit Iroh mechanism; deriving from substrate DID '{}'",
+            info.info.substrate_id
+        );
+        match resolve_did_key(&info.info.substrate_id) {
+            Ok(pubkey) => match iroh::PublicKey::from_bytes(pubkey.as_bytes()) {
+                Ok(pk) => {
+                    let addr = iroh::EndpointAddr::from(pk);
+                    debug!("[BlindTunnel] Derived Iroh endpoint addr: {:?}", addr);
+                    Some(addr)
                 }
+                Err(e) => {
+                    error!("[BlindTunnel] Invalid substrate public key bytes: {e}");
+                    None
+                }
+            },
+            Err(e) => {
+                error!(
+                    "[BlindTunnel] Failed to resolve substrate DID '{}': {e}",
+                    info.info.substrate_id
+                );
+                None
             }
         }
-    };
+    }
+}
 
+async fn connect_iroh_stream(
+    endpoint: &iroh::Endpoint,
+    endpoint_addr: iroh::EndpointAddr,
+    preamble_str: &str,
+) -> Option<IrohStream> {
     debug!("[BlindTunnel] Connecting to Iroh node: {:?}", endpoint_addr);
-    let connection = match state.iroh.connect(endpoint_addr, SYNEROYM_ALPN).await {
+    let connection = match endpoint.connect(endpoint_addr, SYNEROYM_ALPN).await {
         Ok(c) => {
             debug!(
                 "[BlindTunnel] Iroh connection established (ALPN={})",
@@ -299,7 +342,7 @@ async fn handle_blind_tunnel(socket: WebSocket, state: Arc<BootstrapState>) {
         }
         Err(e) => {
             error!("[BlindTunnel] Failed to connect to Iroh node: {e}");
-            return;
+            return None;
         }
     };
 
@@ -310,7 +353,7 @@ async fn handle_blind_tunnel(socket: WebSocket, state: Arc<BootstrapState>) {
         }
         Err(e) => {
             error!("[BlindTunnel] Failed to open bi-directional stream: {e}");
-            return;
+            return None;
         }
     };
 
@@ -320,11 +363,18 @@ async fn handle_blind_tunnel(socket: WebSocket, state: Arc<BootstrapState>) {
     debug!("[BlindTunnel] Forwarding preamble to Iroh ({} bytes)", preamble_str.len());
     if let Err(e) = iroh_stream.write_all(preamble_str.as_bytes()).await {
         error!("[BlindTunnel] Failed to write preamble to Iroh stream: {e}");
-        return;
+        return None;
     }
-    debug!("[BlindTunnel] Preamble sent; starting bidirectional pipe WS<->Iroh");
 
-    // Now, pipe the WebSocket messages bidirectionally to/from the Iroh stream!
+    Some(iroh_stream)
+}
+
+async fn pipe_ws_and_iroh(
+    mut ws_sender: futures::stream::SplitSink<WebSocket, Message>,
+    mut ws_receiver: futures::stream::SplitStream<WebSocket>,
+    iroh_stream: IrohStream,
+) {
+    debug!("[BlindTunnel] Preamble sent; starting bidirectional pipe WS<->Iroh");
     let (mut iroh_read, mut iroh_write) = tokio::io::split(iroh_stream);
 
     let ws_to_iroh = async move {
@@ -376,10 +426,9 @@ async fn handle_blind_tunnel(socket: WebSocket, state: Arc<BootstrapState>) {
     };
 
     tokio::select! {
-        _ = ws_to_iroh => {}
-        _ = iroh_to_ws => {}
+        () = ws_to_iroh => {}
+        () = iroh_to_ws => {}
     }
-    debug!("[BlindTunnel] Tunnel closed for service '{}'", preamble.service_id);
 }
 
 fn construct_signaling_url(
@@ -395,7 +444,7 @@ fn construct_signaling_url(
         host.split(':').next().unwrap_or("localhost").to_string()
     };
 
-    format!("{}://{}:{}/ws", scheme, signaling_host, signaling_port)
+    format!("{scheme}://{signaling_host}:{signaling_port}/ws")
 }
 
 #[cfg(test)]

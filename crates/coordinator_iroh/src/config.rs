@@ -28,9 +28,7 @@ fn load_secret_key(filename: impl AsRef<Path>) -> Result<PrivateKeyDer<'static>>
     Ok(key)
 }
 
-pub(crate) async fn build_relay_config(
-    role: &CoordinatorRole,
-) -> Result<ServerConfig<std::io::Error>> {
+pub async fn build_relay_config(role: &CoordinatorRole) -> Result<ServerConfig<std::io::Error>> {
     let iroh_cfg = role.iroh.clone().unwrap_or_default();
 
     let http_bind_addr: SocketAddr =
@@ -55,7 +53,7 @@ pub(crate) async fn build_relay_config(
             rustls::crypto::ring::default_provider(),
         ))
         .with_safe_default_protocol_versions()
-        .map_err(|e| anyhow::anyhow!("protocols supported by ring: {}", e))?
+        .map_err(|e| anyhow::anyhow!("protocols supported by ring: {e}"))?
         .with_no_client_auth()
         .with_single_cert(certs.clone(), private_key)
         .context("failed to create rustls ServerConfig")?;

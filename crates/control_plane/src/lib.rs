@@ -1,3 +1,4 @@
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 //! Control Plane service definitions and types
 //!
 //! Exposes APIs for deploying apps, managing running services,

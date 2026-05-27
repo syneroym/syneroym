@@ -25,7 +25,7 @@ pub struct SubstrateIdentityState {
     pub status: SubstrateIdentityStatus,
 }
 
-/// A proof within a ControllerAgreement.
+/// A proof within a `ControllerAgreement`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Proof {
     #[serde(rename = "type")]
@@ -38,7 +38,7 @@ pub struct Proof {
     pub proof_value: String,
 }
 
-/// ControllerAgreement binding a node DID to a controller DID.
+/// `ControllerAgreement` binding a node DID to a controller DID.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ControllerAgreement {
     #[serde(rename = "type")]
@@ -53,13 +53,14 @@ pub struct ControllerAgreement {
 }
 
 impl ControllerAgreement {
-    /// Attempt to parse a ControllerAgreement from JSON string.
+    /// Attempt to parse a `ControllerAgreement` from JSON string.
     pub fn from_json(json: &str) -> Result<Self> {
         serde_json::from_str(json).map_err(Into::into)
     }
 }
 
 /// Derive a did:key from an ed25519 public key.
+#[must_use]
 pub fn derive_did_key(pubkey: &VerifyingKey) -> String {
     // multicodec ed25519-pub is 0xed01
     let mut bytes = vec![0xed, 0x01];
@@ -70,7 +71,7 @@ pub fn derive_did_key(pubkey: &VerifyingKey) -> String {
 /// Resolve a z-base-32 encoded string from a did:key.
 pub fn resolve_did_z32(did: &str) -> Result<&str> {
     if !did.starts_with("did:key:h") {
-        return Err(anyhow!("DID is not a z-base-32 did:key: {}", did));
+        return Err(anyhow!("DID is not a z-base-32 did:key: {did}"));
     }
     Ok(&did["did:key:h".len()..])
 }
@@ -106,7 +107,7 @@ pub fn canonicalize_json_value(value: &serde_json::Value) -> serde_json::Value {
             keys.sort();
             for key in keys {
                 if let Some(val) = map.get(key) {
-                    sorted_map.insert(key.to_string(), canonicalize_json_value(val));
+                    sorted_map.insert(key.clone(), canonicalize_json_value(val));
                 }
             }
             serde_json::Value::Object(sorted_map)
@@ -149,7 +150,7 @@ fn verify_signature(
 }
 
 impl SubstrateIdentityState {
-    /// Initialize the SubstrateIdentityState according to the boot flow rules.
+    /// Initialize the `SubstrateIdentityState` according to the boot flow rules.
     pub fn init(
         substrate_identity: &Identity,
         agreement: Option<&ControllerAgreement>,
@@ -176,7 +177,7 @@ impl SubstrateIdentityState {
                 Ok(pk) => pk,
                 Err(e) => {
                     if require_agreement {
-                        return Err(anyhow!("Failed to resolve controller DID: {}", e));
+                        return Err(anyhow!("Failed to resolve controller DID: {e}"));
                     }
                     return Ok(Self {
                         did: substrate_did,
@@ -223,16 +224,15 @@ impl SubstrateIdentityState {
                     controller: Some(agr.controller.clone()),
                     status: SubstrateIdentityStatus::Verified,
                 });
-            } else {
-                if require_agreement {
-                    return Err(anyhow!("Agreement signatures invalid"));
-                }
-                return Ok(Self {
-                    did: substrate_did,
-                    controller: Some(agr.controller.clone()),
-                    status: SubstrateIdentityStatus::Unverified,
-                });
             }
+            if require_agreement {
+                return Err(anyhow!("Agreement signatures invalid"));
+            }
+            return Ok(Self {
+                did: substrate_did,
+                controller: Some(agr.controller.clone()),
+                status: SubstrateIdentityStatus::Unverified,
+            });
         }
 
         if let Some(ctrl) = controller_flag {

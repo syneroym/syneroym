@@ -49,7 +49,11 @@ async fn handle_socket(socket: WebSocket, state: Arc<SignallingState>) {
     // Perform a simple handshake: wait for {"type": "register", "id": "my-id"}
     let peer_id = if let Some(Ok(Message::Text(text))) = ws_stream.next().await {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
-            if v["type"] == "register" { v["id"].as_str().map(|s| s.to_string()) } else { None }
+            if v["type"] == "register" {
+                v["id"].as_str().map(std::string::ToString::to_string)
+            } else {
+                None
+            }
         } else {
             None
         }
@@ -57,12 +61,11 @@ async fn handle_socket(socket: WebSocket, state: Arc<SignallingState>) {
         None
     };
 
-    let peer_id = match peer_id {
-        Some(id) => id,
-        None => {
-            warn!("Signaling client did not register correctly. Closing.");
-            return;
-        }
+    let peer_id = if let Some(id) = peer_id {
+        id
+    } else {
+        warn!("Signaling client did not register correctly. Closing.");
+        return;
     };
 
     info!("Peer registered in signaling: {}", peer_id);
@@ -70,7 +73,10 @@ async fn handle_socket(socket: WebSocket, state: Arc<SignallingState>) {
     let (send_ch, mut rcv_ch) = broadcast::channel(100);
 
     {
-        let mut peers = state.peers.lock().unwrap();
+        let mut peers = match state.peers.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
         peers.insert(peer_id.clone(), send_ch.clone());
     }
 
@@ -88,7 +94,10 @@ async fn handle_socket(socket: WebSocket, state: Arc<SignallingState>) {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text)
                 && let Some(target) = v.get("target").and_then(|t| t.as_str())
             {
-                let peers = state.peers.lock().unwrap();
+                let peers = match state.peers.lock() {
+                    Ok(g) => g,
+                    Err(e) => e.into_inner(),
+                };
                 if let Some(target_tx) = peers.get(target) {
                     let _ = target_tx.send(text.to_string());
                 } else {
@@ -101,7 +110,10 @@ async fn handle_socket(socket: WebSocket, state: Arc<SignallingState>) {
     // Cleanup
     send_task.abort();
     {
-        let mut peers = state.peers.lock().unwrap();
+        let mut peers = match state.peers.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
         peers.remove(&peer_id);
     }
     info!("Peer disconnected from signaling: {}", peer_id);

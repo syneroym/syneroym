@@ -3,7 +3,6 @@
 //! Registers CLI parsing hooks and routes input options to command modules.
 
 use clap::Subcommand;
-use std::fs;
 use std::path::PathBuf;
 use syneroym_identity::Identity;
 
@@ -20,7 +19,7 @@ pub enum Commands {
         #[command(subcommand)]
         command: substrate::SubstrateCommands,
     },
-    /// Manage SynApps on the local node
+    /// Manage `SynApps` on the local node
     App {
         #[command(subcommand)]
         command: app::AppCommands,
@@ -68,14 +67,9 @@ pub async fn run(
             let substrate_did = substrate_opt.or_else(|| {
                 // Try to load local substrate DID from key file if it exists
                 let key_path = dir.join("substrate.key");
-                if key_path.exists() {
-                    let bytes = fs::read(key_path).ok()?;
-                    let bytes_array: [u8; 32] = bytes.try_into().ok()?;
-                    let identity = Identity::from_bytes(&bytes_array);
-                    Some(syneroym_identity::substrate::derive_did_key(&identity.public_key()))
-                } else {
-                    None
-                }
+                Identity::load_from_path(&key_path)
+                    .map(|identity| syneroym_identity::substrate::derive_did_key(&identity.public_key()))
+                    .ok()
             }).ok_or_else(|| {
                 anyhow::anyhow!("Substrate DID not provided and substrate.key not found. Use --substrate <did>")
             })?;
@@ -87,15 +81,15 @@ pub async fn run(
         }
         Commands::Shorthash { input } => {
             let hash = syneroym_core::util::short_hash(&input);
-            println!("{}", hash);
+            println!("{hash}");
         }
         Commands::Alias { service_id, nickname, interface } => {
             let alias = syneroym_core::util::generate_alias(nickname.as_deref(), &service_id);
             if let Some(iface) = interface {
                 let iface_hash = syneroym_core::util::short_hash(&iface);
-                println!("{}-i{}.localhost", alias, iface_hash);
+                println!("{alias}-i{iface_hash}.localhost");
             } else {
-                println!("{}", alias);
+                println!("{alias}");
             }
         }
         Commands::Registry { command } => {

@@ -46,15 +46,15 @@ pub fn wasm_results_to_json_string(wasm_results: &[Val]) -> Result<String> {
         Ok(String::new())
     } else {
         match &wasm_results[0] {
-            Val::String(s) => Ok(s.to_string()),
+            Val::String(s) => Ok(s.clone()),
             Val::Result(Ok(Some(v))) => match &**v {
-                Val::String(s) => Ok(s.to_string()),
-                _ => Ok(format!("{:?}", v)),
+                Val::String(s) => Ok(s.clone()),
+                _ => Ok(format!("{v:?}")),
             },
             Val::Result(Ok(None)) => Ok(String::new()),
-            Val::Result(Err(Some(e))) => Err(anyhow::anyhow!("Component returned error: {:?}", e)),
+            Val::Result(Err(Some(e))) => Err(anyhow::anyhow!("Component returned error: {e:?}")),
             Val::Result(Err(None)) => Err(anyhow::anyhow!("Component returned empty error")),
-            other => Ok(format!("{:?}", other)),
+            other => Ok(format!("{other:?}")),
         }
     }
 }

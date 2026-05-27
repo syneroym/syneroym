@@ -26,6 +26,15 @@ pub struct HostState {
     pub request_ctx: Option<String>,
 }
 
+impl std::fmt::Debug for HostState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HostState")
+            .field("component_id", &self.component_id)
+            .field("request_ctx", &self.request_ctx)
+            .finish()
+    }
+}
+
 impl wasmtime_wasi::WasiView for HostState {
     fn ctx(&mut self) -> WasiCtxView<'_> {
         WasiCtxView { ctx: &mut self.wasi, table: &mut self.table }
@@ -36,9 +45,9 @@ impl syneroym_bindings::host::syneroym::host::context::Host for HostState {
     async fn get_test_context(&mut self, request_ctx: String) -> String {
         let component_ctx = format!("Component: {}", self.component_id);
         if let Some(existing) = &self.request_ctx {
-            format!("{} | {} | {}", component_ctx, existing, request_ctx)
+            format!("{component_ctx} | {existing} | {request_ctx}")
         } else {
-            format!("{} | {}", component_ctx, request_ctx)
+            format!("{component_ctx} | {request_ctx}")
         }
     }
 }
@@ -51,6 +60,15 @@ pub struct AppSandboxEngine {
     linker: Linker<HostState>,
     // Cache of compiled components for fast instantiation
     components: DashMap<String, Component>,
+}
+
+impl std::fmt::Debug for AppSandboxEngine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppSandboxEngine")
+            .field("blobs_dir", &self.blobs_dir)
+            .field("components_len", &self.components.len())
+            .finish()
+    }
 }
 
 impl AppSandboxEngine {
@@ -159,9 +177,7 @@ impl AppSandboxEngine {
 
             if computed_hash != expected_hash_clean {
                 return Err(anyhow::anyhow!(
-                    "Hash mismatch: expected {}, got {}",
-                    expected_hash_clean,
-                    computed_hash
+                    "Hash mismatch: expected {expected_hash_clean}, got {computed_hash}"
                 ));
             }
             tracing::info!("WASM hash verified successfully");
@@ -178,12 +194,12 @@ impl AppSandboxEngine {
     ) -> Result<(wasmtime::component::Func, usize, wasmtime::component::types::ComponentItem)> {
         let (_, instance_idx) = instance
             .get_export(&mut *store, None, interface_name)
-            .ok_or_else(|| anyhow::anyhow!("Interface '{}' not found", interface_name))?;
+            .ok_or_else(|| anyhow::anyhow!("Interface '{interface_name}' not found"))?;
 
         let (item, func_idx) = instance
             .get_export(&mut *store, Some(&instance_idx), method_name)
             .ok_or_else(|| {
-            anyhow::anyhow!("Method '{}' not found in interface '{}'", method_name, interface_name)
+            anyhow::anyhow!("Method '{method_name}' not found in interface '{interface_name}'")
         })?;
 
         let func = instance
@@ -213,7 +229,7 @@ impl AppSandboxEngine {
         Self::verify_wasm_hash(&bytes, wasm_manifest.hash.as_deref())?;
 
         // 3. Store locally in blobs_dir
-        let file_path = self.blobs_dir.join(format!("{}.wasm", service_id));
+        let file_path = self.blobs_dir.join(format!("{service_id}.wasm"));
         tokio::fs::write(&file_path, &bytes).await.context("Failed to save WASM binary locally")?;
 
         tracing::info!("WASM binary stored at {:?}", file_path);
@@ -282,7 +298,7 @@ impl AppSandboxEngine {
         let component = self
             .components
             .get(service_id)
-            .ok_or_else(|| anyhow::anyhow!("Component not found for service {}", service_id))?;
+            .ok_or_else(|| anyhow::anyhow!("Component not found for service {service_id}"))?;
         debug!("looked up component");
 
         // Create new WASI context and table for per-request isolation
@@ -337,22 +353,22 @@ impl AppSandboxEngine {
     /// Remove a stopped Wasm component's binary from disk.
     pub async fn remove_wasm(&self, service_id: &str) -> Result<()> {
         tracing::info!(service_id = %service_id, "AppSandboxEngine: removing Wasm component");
-        let file_path = self.blobs_dir.join(format!("{}.wasm", service_id));
+        let file_path = self.blobs_dir.join(format!("{service_id}.wasm"));
         if file_path.exists() {
             tokio::fs::remove_file(&file_path)
                 .await
-                .with_context(|| format!("Failed to remove WASM file {:?}", file_path))?;
+                .with_context(|| format!("Failed to remove WASM file {file_path:?}"))?;
         }
         Ok(())
     }
 
     /// Helper to load a cached WASM component from disk and compile it
     async fn load_cached_wasm(&self, service_id: &str) -> Result<()> {
-        let file_path = self.blobs_dir.join(format!("{}.wasm", service_id));
+        let file_path = self.blobs_dir.join(format!("{service_id}.wasm"));
         if file_path.exists() {
             let bytes = tokio::fs::read(&file_path)
                 .await
-                .context(format!("Failed to read WASM file {:?}", file_path))?;
+                .context(format!("Failed to read WASM file {file_path:?}"))?;
             self.compile_and_cache_wasm(service_id, &bytes)?;
         } else {
             tracing::warn!("WASM file not found on disk for service: {:?}", file_path);
@@ -363,7 +379,7 @@ impl AppSandboxEngine {
     /// Helper to compile a WASM binary and store it in the cache
     fn compile_and_cache_wasm(&self, service_id: &str, bytes: &[u8]) -> Result<()> {
         let component = Component::new(&self.engine, bytes)
-            .map_err(|e| anyhow::anyhow!("Failed to compile WASM component: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to compile WASM component: {e}"))?;
 
         self.components.insert(service_id.to_string(), component);
         tracing::info!("WASM component compiled and cached for {}", service_id);
@@ -400,21 +416,17 @@ mod tests {
 
         let component_path =
             "../../test-components/greeter/target/wasm32-wasip2/release/syneroym_test_greeter.wasm";
-        let wasm_bytes = match std::fs::read(component_path) {
-            Ok(bytes) => bytes,
-            Err(_) => {
-                println!(
-                    "Skipping test_list_interfaces: WASM artifact not found at {}",
-                    component_path
-                );
-                return;
-            }
+        let wasm_bytes = if let Ok(bytes) = std::fs::read(component_path) {
+            bytes
+        } else {
+            println!("Skipping test_list_interfaces: WASM artifact not found at {component_path}");
+            return;
         };
 
         let component: Component =
             Component::new(&engine, &wasm_bytes).expect("Failed to compile WASM component");
         for interface in component.component_type().exports(&engine) {
-            println!("Listing interface: {:?}", interface);
+            println!("Listing interface: {interface:?}");
         }
 
         match linker.instantiate_async(&mut store, &component).await {
@@ -430,7 +442,7 @@ mod tests {
                     method_name,
                 ) {
                     Ok((func, results_len, _item)) => {
-                        println!("Function export: {:?}", func);
+                        println!("Function export: {func:?}");
                         let mut wasm_results =
                             vec![wasmtime::component::Val::Bool(false); results_len];
 
@@ -441,16 +453,16 @@ mod tests {
                                 &mut wasm_results,
                             )
                             .await
-                            .map_err(|e| anyhow::anyhow!("Failed to call function: {}", e));
-                        println!("Function call result: {:?} is {:?}", result, wasm_results);
+                            .map_err(|e| anyhow::anyhow!("Failed to call function: {e}"));
+                        println!("Function call result: {result:?} is {wasm_results:?}");
                     }
                     Err(e) => {
-                        println!("Failed to get wasm func: {}", e);
+                        println!("Failed to get wasm func: {e}");
                     }
                 }
             }
             Err(err) => {
-                println!("Error instantiating component: {}", err);
+                println!("Error instantiating component: {err}");
             }
         }
     }

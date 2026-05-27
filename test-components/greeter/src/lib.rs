@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Greeter test guest component
 //!
 //! Standard mock WASM component utilizing generated bindings to respond to greeting requests.

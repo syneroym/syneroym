@@ -1,3 +1,4 @@
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 //! CLI entry point for running the Syneroym substrate.
 
 use anyhow::{Context, Result};
@@ -46,11 +47,11 @@ enum Commands {
         #[arg(long)]
         controller_did: Option<String>,
 
-        /// Path to the ControllerAgreement JSON
+        /// Path to the `ControllerAgreement` JSON
         #[arg(long)]
         agreement: Option<PathBuf>,
 
-        /// Require a valid ControllerAgreement to start
+        /// Require a valid `ControllerAgreement` to start
         #[arg(long, default_missing_value = "true", num_args = 0..=1)]
         require_agreement: Option<bool>,
 
@@ -82,9 +83,9 @@ pub(crate) fn resolve_config(command: Commands) -> Result<SubstrateConfig> {
             // Load from file if provided, otherwise use defaults
             let mut config = if let Some(path) = config_path {
                 let content = std::fs::read_to_string(&path)
-                    .with_context(|| format!("Failed to read config file at {:?}", path))?;
+                    .with_context(|| format!("Failed to read config file at {path:?}"))?;
                 toml::from_str(&content)
-                    .with_context(|| format!("Failed to parse config file at {:?}", path))?
+                    .with_context(|| format!("Failed to parse config file at {path:?}"))?
             } else {
                 dev_mode_config()
             };
@@ -157,9 +158,10 @@ pub(crate) fn resolve_config(command: Commands) -> Result<SubstrateConfig> {
 }
 
 fn main() -> Result<()> {
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .expect("Failed to install rustls default crypto provider");
+    if rustls::crypto::ring::default_provider().install_default().is_err() {
+        eprintln!("Failed to install rustls default crypto provider");
+        std::process::exit(1);
+    }
 
     let cli = Cli::parse();
     let config = resolve_config(cli.command)?;
@@ -240,7 +242,7 @@ mod tests {
         enable_relay = true
         http_bind_address = "0.0.0.0:8000"
         "#;
-        write!(config_file, "{}", config_toml).expect("Failed to write config file");
+        write!(config_file, "{config_toml}").expect("Failed to write config file");
 
         // 2. Setup CLI arguments overriding some config file values and some defaults
         // - Override config file: iroh_relay_url ("http://cli.relay:3340" vs "http://config.relay:3340")

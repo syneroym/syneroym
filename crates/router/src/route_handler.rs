@@ -27,7 +27,7 @@ pub struct RouteHandler {
     pub(crate) inner: Arc<RouteHandlerInner>,
 }
 
-pub(crate) struct RouteHandlerInner {
+pub struct RouteHandlerInner {
     pub registry: EndpointRegistry,
     pub native_dispatch: DashMap<String, Arc<dyn NativeService>>,
     pub app_sandbox_engine: Option<Arc<AppSandboxEngine>>,
@@ -78,6 +78,8 @@ impl RouteHandler {
         Ok(s)
     }
 
+    #[allow(clippy::expect_used)]
+    #[must_use]
     pub fn new_coordinator(
         iroh_endpoint: iroh::Endpoint,
         community_registry_url: Option<String>,

@@ -24,14 +24,10 @@ pub fn setup_substrate_identity(
 
     // Load or generate substrate identity
     let substrate_identity = if key_path.exists() {
-        let key_bytes = fs::read(&key_path)?;
-        let mut key_arr = [0u8; 32];
-        let copy_len = std::cmp::min(key_bytes.len(), 32);
-        key_arr[..copy_len].copy_from_slice(&key_bytes[..copy_len]);
-        Identity::from_bytes(&key_arr)
+        Identity::load_from_path(&key_path)?
     } else {
         let id = Identity::generate()?;
-        fs::write(&key_path, id.to_bytes())?;
+        id.save_to_path(&key_path)?;
         id
     };
 
@@ -72,10 +68,6 @@ pub fn get_secret(
     let key_path =
         config.key.clone().unwrap_or_else(|| app_data_dir.join(DEFAULT_SUBSTRATE_KEY_FILE));
 
-    let key_bytes = fs::read(&key_path)?;
-    let mut key_arr = [0u8; 32];
-    let copy_len = std::cmp::min(key_bytes.len(), 32);
-    key_arr[..copy_len].copy_from_slice(&key_bytes[..copy_len]);
-
-    Ok(key_arr)
+    let identity = Identity::load_from_path(&key_path)?;
+    Ok(identity.to_bytes())
 }

@@ -12,8 +12,18 @@ pub struct IrohStream {
     recv: iroh::endpoint::RecvStream,
 }
 
+impl std::fmt::Debug for IrohStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IrohStream")
+            .field("send", &"iroh::endpoint::SendStream")
+            .field("recv", &"iroh::endpoint::RecvStream")
+            .finish()
+    }
+}
+
 impl IrohStream {
-    pub fn new(send: iroh::endpoint::SendStream, recv: iroh::endpoint::RecvStream) -> Self {
+    #[must_use]
+    pub const fn new(send: iroh::endpoint::SendStream, recv: iroh::endpoint::RecvStream) -> Self {
         Self { send, recv }
     }
 }
