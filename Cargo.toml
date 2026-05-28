@@ -25,7 +25,7 @@ syneroym-identity = { path = "crates/identity", version = "0.1.0" }
 
 # Networking & Async
 tokio = { version = "1.50", features = ["full"] }
-hyper = { version = "1.9", features = ["server", "http1", "http2"] }
+hyper = { version = "1.10", features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["server", "server-auto", "tokio"] }
 http-body-util = "0.1"
 bytes = "1.10"
