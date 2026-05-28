@@ -1,3 +1,8 @@
+//! Integration tests for the multi-hop relay functionality
+//!
+//! Simulates the scenario described in the multi-hop-relay-scenario.md
+//! which organizes relays, registries, substrates across network boundaries in a hierarchy
+//! and tests bidirectional e2e connectivity between clients and substrates across networks.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use anyhow::Result;
 use iroh::{Endpoint, RelayMap, RelayMode, RelayUrl, SecretKey};
@@ -216,8 +221,8 @@ async fn test_inbound_relay() -> Result<()> {
     let mut sdk_client = syneroym_sdk::SyneroymClient::new_with_mechanisms(
         did_z.clone(),
         vec![EndpointMechanism::Iroh {
-            endpoint_addr_bytes: cp_info.endpoint_addr_bytes,
-            relay_url: cp_info.relay_url,
+            endpoint_addr_bytes: c_info.endpoint_addr_bytes,
+            relay_url: c_info.relay_url,
         }],
     );
 
