@@ -27,6 +27,7 @@ tracing.workspace = true
 reqwest.workspace = true
 z32.workspace = true
 rustls.workspace = true
+iroh.workspace = true
 
 [features]
 default = [

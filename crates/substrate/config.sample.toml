@@ -64,27 +64,27 @@ registry_url = "http://localhost:7961"
 
 # A node that connect to the internet should configure uplink bridges to act as their gateway to the larger network
 # Note: Uplink-bridge functionality is WIP.
-[uplink]
+[parent_coordinator]
 
 # Iroh communication configuration for uplink/signaling
-[uplink.iroh]
+[parent_coordinator.iroh]
 # The relay/signaling URL for Iroh connections.
-relay_url = "http://localhost:7964"
+url = "http://localhost:7964"
 
 # WebRTC communication configuration
-[uplink.webrtc]
+[parent_coordinator.webrtc]
 # The signaling server URL for establishing WebRTC peer-to-peer connections.
-signaling_server_url = "ws://localhost:7963/ws"
+signaling_url = "ws://localhost:7963/ws"
 # The bootstrap page URL for WebRTC clients.
-bootstrap_page_url = "ws://localhost:7962"
+bootstrap_url = "ws://localhost:7962"
 # List of STUN servers to use for NAT traversal.
 stun_servers = ["stun:stun.l.google.com:19302"]
 
-[uplink.ble]
+[parent_coordinator.ble]
 enabled = false
 bridge = "ble://A4:C1:38:12:34:56/some-service-uuid"
 
-[uplink.lora]
+[parent_coordinator.lora]
 enabled = false
 bridge = "lora://70B3D57ED0051234"
 

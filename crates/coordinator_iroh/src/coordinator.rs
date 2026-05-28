@@ -81,7 +81,7 @@ impl CoordinatorIroh {
                     let actual_http_addr =
                         relay_server.as_ref().and_then(iroh_relay::server::Server::http_addr);
                     let relay_url_payload = if let Some(parent_url) =
-                        config.uplink.iroh.as_ref().map(|u| &u.relay_url)
+                        config.parent_coordinator.iroh.as_ref().map(|u| &u.url)
                     {
                         Some(parent_url.clone())
                     } else if iroh_cfg.enable_relay {
@@ -126,7 +126,8 @@ impl CoordinatorIroh {
         let mut ep_bldr = iroh::Endpoint::builder(iroh::endpoint::presets::N0);
 
         let mut chosen_relay_url_str = None;
-        if let Some(parent_url) = config.uplink.iroh.as_ref().map(|u| u.relay_url.clone()) {
+        if let Some(parent_url) = config.parent_coordinator.iroh.as_ref().map(|u| u.url.clone()) {
+            info!("Registering with parent coordinator at {}", parent_url);
             chosen_relay_url_str = Some(parent_url);
         } else if iroh_cfg.enable_relay {
             let actual_http_addr =
@@ -158,7 +159,7 @@ impl CoordinatorIroh {
         iroh_cfg: &syneroym_core::config::CoordinatorIrohConfig,
         config: &SubstrateConfig,
     ) -> iroh::protocol::Router {
-        let parent_relay_url = config.uplink.iroh.as_ref().map(|u| u.relay_url.clone());
+        let parent_relay_url = config.parent_coordinator.iroh.as_ref().map(|u| u.url.clone());
         let route_handler = RouteHandler::new_coordinator(
             iroh_endpoint.clone(),
             iroh_cfg.community_registry_url.clone(),
@@ -192,9 +193,12 @@ impl CoordinatorIroh {
         let node_id = endpoint_addr.id;
         let endpoint_addr_payload = iroh::EndpointAddr::new(node_id);
         let endpoint_addr_bytes = serde_json::to_vec(&endpoint_addr_payload)?;
+        let parent_relay_url = config.parent_coordinator.iroh.as_ref().map(|u| u.url.clone());
         let actual_http_addr =
             relay_server.as_ref().and_then(iroh_relay::server::Server::http_addr);
-        let local_relay_url = if iroh_cfg.enable_relay {
+        let relay_url = if let Some(parent_url) = parent_relay_url.as_ref() {
+            Some(parent_url.clone())
+        } else if iroh_cfg.enable_relay {
             if let Some(addr) = actual_http_addr {
                 Some(format!("http://{addr}"))
             } else {
@@ -204,14 +208,12 @@ impl CoordinatorIroh {
             None
         };
 
-        let parent_relay_url = config.uplink.iroh.as_ref().map(|u| u.relay_url.clone());
-
         let info_state = Arc::new(InfoState {
             info: CoordinatorInfo {
                 endpoint_addr_bytes,
                 node_id: node_id.to_string(),
-                relay_url: local_relay_url,
-                parent_relay_url,
+                relay_url,
+                parent_coordinator_url: parent_relay_url.clone(),
             },
         });
 

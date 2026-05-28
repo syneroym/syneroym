@@ -52,7 +52,7 @@ impl CoordinatorWebRtc {
 
         let actual_signalling_port = signalling_listener.local_addr()?.port();
 
-        let iroh_relay_url = config.uplink.iroh.as_ref().map(|c| c.relay_url.clone());
+        let iroh_relay_url = config.parent_coordinator.iroh.as_ref().map(|c| c.url.clone());
         let endpoint = common::iroh_utils::bind_endpoint(iroh_relay_url).await?;
 
         let data_store = storage::init_store(config).await?;
@@ -115,12 +115,11 @@ impl CoordinatorWebRtc {
 // Internal common module for iroh utils if not available elsewhere
 mod common {
     use anyhow::Result;
-    use iroh::{Endpoint, SecretKey};
+    use iroh::Endpoint;
     pub mod iroh_utils {
-        use super::{Endpoint, Result, SecretKey};
+        use super::{Endpoint, Result};
         pub async fn bind_endpoint(relay_url: Option<String>) -> Result<Endpoint> {
-            let secret_key = SecretKey::from_bytes(&[0u8; 32]);
-            let mut builder = Endpoint::builder(iroh::endpoint::presets::N0).secret_key(secret_key);
+            let mut builder = Endpoint::builder(iroh::endpoint::presets::N0);
             if let Some(url) = relay_url
                 && let Ok(relay_url) = url.parse::<iroh::RelayUrl>()
             {

@@ -58,7 +58,8 @@ impl RouteHandler {
 
         let identity = syneroym_identity::Identity::from_bytes(&secret_key);
 
-        let parent_relay_url = config.uplink.iroh.as_ref().map(|cfg| cfg.relay_url.clone());
+        let parent_coordinator_url =
+            config.parent_coordinator.iroh.as_ref().map(|cfg| cfg.url.clone());
 
         let inner = Arc::new(RouteHandlerInner {
             registry: registry.clone(),
@@ -67,7 +68,7 @@ impl RouteHandler {
             identity,
             iroh_endpoint: None,
             community_registry_url: None,
-            _parent_relay_url: parent_relay_url,
+            _parent_relay_url: parent_coordinator_url,
         });
 
         let s = Self { inner };

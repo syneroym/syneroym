@@ -287,9 +287,15 @@ async fn resolve_iroh_endpoint_from_registry(
     // Prefer an explicit Iroh mechanism; fall back to deriving from the substrate DID.
     let mut iroh_addr_from_mechanism = None;
     for mechanism in &info.info.mechanisms {
-        if let EndpointMechanism::Iroh { endpoint_addr_bytes, .. } = mechanism
+        if let EndpointMechanism::Iroh { endpoint_addr_bytes, relay_url } = mechanism
             && let Ok(addr) = serde_json::from_slice::<iroh::EndpointAddr>(endpoint_addr_bytes)
         {
+            let mut addr = addr;
+            if let Some(url_str) = relay_url
+                && let Ok(url) = url_str.parse::<iroh::RelayUrl>()
+            {
+                addr = addr.with_relay_url(url);
+            }
             iroh_addr_from_mechanism = Some(addr);
             break;
         }

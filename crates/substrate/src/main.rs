@@ -132,8 +132,8 @@ pub(crate) fn resolve_config(command: Commands) -> Result<SubstrateConfig> {
             }
 
             if let Some(url) = iroh_relay_url {
-                let iroh = config.uplink.iroh.get_or_insert_with(Default::default);
-                iroh.relay_url = url;
+                let iroh = config.parent_coordinator.iroh.get_or_insert_with(Default::default);
+                iroh.url = url;
             }
 
             if let Some(enable) = enable_coordinator_webrtc {
@@ -234,7 +234,7 @@ mod tests {
         let config_toml = r#"
         profile = "config_profile"
         
-        [uplink.iroh]
+        [parent_coordinator.iroh]
         relay_url = "http://config.relay:3340"
         
         [roles.coordinator.iroh]
@@ -287,7 +287,7 @@ mod tests {
 
         // Assert: Value specified in CLI overriding config file
         assert_eq!(
-            config.uplink.iroh.as_ref().unwrap().relay_url,
+            config.parent_coordinator.iroh.as_ref().unwrap().url,
             "http://cli.relay:3340",
             "Iroh relay URL should be overridden by CLI"
         );

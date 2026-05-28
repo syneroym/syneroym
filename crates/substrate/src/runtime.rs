@@ -238,10 +238,12 @@ async fn setup_connection_router(config: &SubstrateConfig) -> anyhow::Result<Con
     if let Some(registry_url) = &config.substrate.registry_url
         && let Some(endpoint_addr) = router.endpoint_addr()
     {
+        let relay_url = config.parent_coordinator.iroh.as_ref().map(|c| c.url.clone());
         publish_to_community_registry(
             registry_url.clone(),
             service_id,
             endpoint_addr,
+            relay_url,
             secret_key,
             config.identity.nickname.clone(),
         );
@@ -282,12 +284,12 @@ fn publish_to_community_registry<E: serde::Serialize + Send + Sync + 'static>(
     registry_url: String,
     service_id: String,
     endpoint_addr: E,
+    relay_url: Option<String>,
     secret_key: [u8; 32],
     nickname: Option<String>,
 ) {
     tokio::spawn(async move {
         let mut attempts = 0;
-        let relay_url = None; // TODO: extract relay URL from endpoint_addr if needed
 
         while attempts < 30 {
             if let Err(e) = register_substrate_endpoint(

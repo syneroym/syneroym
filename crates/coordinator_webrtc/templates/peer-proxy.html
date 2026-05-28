@@ -11,7 +11,12 @@
         const HTTP_VERSION = "{{ http_version }}";
         const TARGET_PUBKEY_HEX = "{{ target_pubkey_hex }}";
         const urlParams = new URLSearchParams(window.location.search);
-        const FORCE_TUNNEL = urlParams.get('force_tunnel') === 'true';
+        let FORCE_TUNNEL = urlParams.get('force_tunnel') === 'true';
+        if (FORCE_TUNNEL) {
+            sessionStorage.setItem('force_tunnel', 'true');
+        } else if (sessionStorage.getItem('force_tunnel') === 'true') {
+            FORCE_TUNNEL = true;
+        }
         const MY_ID = "gateway-" + Math.random().toString(36).substr(2, 9);
         window.logs = [];
         const originalLog = console.log;
@@ -658,10 +663,37 @@
                 console.debug("[Page] Connecting to Signaling Server:", SIGNALING_SERVER_URL);
                 ws = new NativeWebSocket(SIGNALING_SERVER_URL);
 
+                const timeoutId = setTimeout(() => {
+                    console.warn("[Page] WebRTC bootstrap timed out after 5s. Falling back to tunnel.");
+                    cleanup();
+                    reject(new Error("WebRTC bootstrap timeout"));
+                }, 5000);
+
+                const cleanup = () => {
+                    clearTimeout(timeoutId);
+                    if (ws) {
+                        try { ws.close(); } catch (_) {}
+                        ws = null;
+                    }
+                    if (peerConnection) {
+                        try { peerConnection.close(); } catch (_) {}
+                        peerConnection = null;
+                    }
+                };
+
                 ws.onopen = () => {
                     console.debug("[Page] WS Open. Registering as:", MY_ID);
                     ws.send(JSON.stringify({ type: "register", id: MY_ID }));
-                    startWebRTC(resolve, reject);
+                    startWebRTC(
+                        () => {
+                            clearTimeout(timeoutId);
+                            resolve();
+                        },
+                        (err) => {
+                            cleanup();
+                            reject(err);
+                        }
+                    );
                 };
 
                 ws.onmessage = async (event) => {
@@ -671,6 +703,7 @@
 
                 ws.onerror = (e) => {
                     console.error("[Page] WS Error:", e);
+                    cleanup();
                     reject(e);
                 };
 

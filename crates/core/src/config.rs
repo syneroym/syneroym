@@ -52,7 +52,7 @@ pub struct SubstrateConfig {
     pub storage: StorageConfig,
     pub logging: LoggingConfig,
 
-    pub uplink: UplinkConfig,
+    pub parent_coordinator: ParentCoordinatorConfig,
 
     pub profiles: HashMap<String, ProfileConfig>,
 
@@ -110,7 +110,7 @@ impl Default for SubstrateConfig {
             identity: Default::default(),
             storage: Default::default(),
             logging: Default::default(),
-            uplink: Default::default(),
+            parent_coordinator: Default::default(),
             profiles: Default::default(),
             roles: Default::default(),
             substrate: Default::default(),
@@ -201,13 +201,13 @@ fn default_relay_url() -> String {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct IrohRelayConfig {
-    pub relay_url: String,
+pub struct IrohParentConfig {
+    pub url: String,
 }
 
-impl Default for IrohRelayConfig {
+impl Default for IrohParentConfig {
     fn default() -> Self {
-        Self { relay_url: default_relay_url() }
+        Self { url: default_relay_url() }
     }
 }
 
@@ -223,17 +223,17 @@ fn default_stun_servers() -> Vec<String> {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct WebRtcRelayConfig {
-    pub signaling_server_url: String,
-    pub bootstrap_page_url: String,
+pub struct WebRtcParentConfig {
+    pub signaling_url: String,
+    pub bootstrap_url: String,
     pub stun_servers: Vec<String>,
 }
 
-impl Default for WebRtcRelayConfig {
+impl Default for WebRtcParentConfig {
     fn default() -> Self {
         Self {
-            signaling_server_url: default_signaling_server_url(),
-            bootstrap_page_url: default_bootstrap_page_url(),
+            signaling_url: default_signaling_server_url(),
+            bootstrap_url: default_bootstrap_page_url(),
             stun_servers: default_stun_servers(),
         }
     }
@@ -241,9 +241,9 @@ impl Default for WebRtcRelayConfig {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
-pub struct UplinkConfig {
-    pub iroh: Option<IrohRelayConfig>,
-    pub webrtc: Option<WebRtcRelayConfig>,
+pub struct ParentCoordinatorConfig {
+    pub iroh: Option<IrohParentConfig>,
+    pub webrtc: Option<WebRtcParentConfig>,
     pub ble: Option<BridgeConfig>,
     pub lora: Option<BridgeConfig>,
 }

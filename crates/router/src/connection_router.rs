@@ -9,7 +9,7 @@ use iroh::endpoint::presets;
 use iroh::protocol::Router as IrohRouter;
 use iroh::{EndpointAddr, RelayMap, RelayMode, RelayUrl, SecretKey};
 use std::sync::Arc;
-use syneroym_core::config::{IrohRelayConfig, SubstrateConfig, WebRtcRelayConfig};
+use syneroym_core::config::{IrohParentConfig, SubstrateConfig, WebRtcParentConfig};
 use syneroym_core::registry::EndpointRegistry;
 use tracing::{debug, error, info};
 use webrtc::api::APIBuilder;
@@ -51,7 +51,7 @@ impl ConnectionRouter {
         for comm in &config.substrate.communication_interfaces {
             match comm.as_str() {
                 "iroh" => {
-                    if let Some(iroh_config) = config.uplink.iroh.as_ref() {
+                    if let Some(iroh_config) = config.parent_coordinator.iroh.as_ref() {
                         info!("Initializing Iroh interface for Router...");
                         let iroh_router = router
                             .init_iroh(
@@ -64,7 +64,7 @@ impl ConnectionRouter {
                     }
                 }
                 "webrtc" => {
-                    if let Some(webrtc_config) = config.uplink.webrtc.as_ref() {
+                    if let Some(webrtc_config) = config.parent_coordinator.webrtc.as_ref() {
                         info!("Initializing WebRTC interface for Router...");
                         router
                             .init_webrtc(webrtc_config, service_id.clone(), route_handler.clone())
@@ -82,14 +82,14 @@ impl ConnectionRouter {
 
     async fn init_iroh(
         &self,
-        config: &IrohRelayConfig,
+        config: &IrohParentConfig,
         secret_key: SecretKey,
         route_handler: RouteHandler,
     ) -> Result<IrohRouter> {
         debug!("Initializing Iroh communication...");
 
         let mut ep_bldr = iroh::Endpoint::builder(presets::N0);
-        if let Ok(relay_url) = config.relay_url.parse::<RelayUrl>() {
+        if let Ok(relay_url) = config.url.parse::<RelayUrl>() {
             ep_bldr = iroh::Endpoint::empty_builder()
                 .relay_mode(RelayMode::Custom(RelayMap::from(relay_url)));
         }
@@ -111,11 +111,11 @@ impl ConnectionRouter {
 
     async fn init_webrtc(
         &self,
-        config: &WebRtcRelayConfig,
+        webrtc_config: &WebRtcParentConfig,
         service_id: String,
         route_handler: RouteHandler,
     ) -> Result<()> {
-        let signaling_url = config.signaling_server_url.clone();
+        let signaling_url = webrtc_config.signaling_url.clone();
 
         // Initialize WebRTC API
         let mut m = MediaEngine::default();
@@ -135,10 +135,10 @@ impl ConnectionRouter {
             .build();
 
         let rtc_config = RTCConfiguration {
-            ice_servers: config
+            ice_servers: webrtc_config
                 .stun_servers
                 .iter()
-                .map(|url| webrtc::ice_transport::ice_server::RTCIceServer {
+                .map(|url: &String| webrtc::ice_transport::ice_server::RTCIceServer {
                     urls: vec![url.clone()],
                     ..Default::default()
                 })

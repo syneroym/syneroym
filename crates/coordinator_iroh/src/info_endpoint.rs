@@ -7,7 +7,7 @@ pub struct CoordinatorInfo {
     pub endpoint_addr_bytes: Vec<u8>, // serde_json-encoded iroh::EndpointAddr
     pub node_id: String,
     pub relay_url: Option<String>, // Local relay URL hosted by this coordinator
-    pub parent_relay_url: Option<String>, // Parent/uplink relay URL
+    pub parent_coordinator_url: Option<String>, // Parent coordinator URL
 }
 
 #[derive(Debug)]

@@ -14,6 +14,9 @@ export default async function globalSetup() {
   fs.mkdirSync(TEST_DIR, { recursive: true });
 
   const WORKSPACE_DIR = path.resolve(process.cwd(), '../../../../');
+  const SUBSTRATE_BIN = path.join(WORKSPACE_DIR, 'target/debug/syneroym-substrate');
+  const ROYMCTL_BIN = path.join(WORKSPACE_DIR, 'target/debug/roymctl');
+  const MINIAPP_BIN = path.join(WORKSPACE_DIR, 'target/debug/miniapp-demo1-web');
   
   console.log('Building Cargo binaries...');
   execSync('cargo build --bin roymctl', { cwd: WORKSPACE_DIR, stdio: 'inherit' });
@@ -21,7 +24,7 @@ export default async function globalSetup() {
   execSync('cargo build -p miniapp-demo1-web', { cwd: WORKSPACE_DIR, stdio: 'inherit' });
 
   console.log('Initializing local node identity...');
-  execSync(`cargo run --bin roymctl -- node init --dir ${TEST_DIR}`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
+  execSync(`"${ROYMCTL_BIN}" node init --dir ${TEST_DIR}`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
 
   // Generate syneroym.toml overrides
   const configContent = `
@@ -54,12 +57,12 @@ bootstrap_page_bind_address = "127.0.0.1:7662"
 [roles.client_gateway]
 http_port = 7660
 
-[uplink.iroh]
-relay_url = "http://127.0.0.1:7664"
+[parent_coordinator.iroh]
+url = "http://127.0.0.1:7664"
 
-[uplink.webrtc]
-signaling_server_url = "ws://127.0.0.1:7663/ws"
-bootstrap_page_url = "ws://127.0.0.1:7662"
+[parent_coordinator.webrtc]
+signaling_url = "ws://127.0.0.1:7663/ws"
+bootstrap_url = "ws://127.0.0.1:7662"
 stun_servers = ["stun:stun.l.google.com:19302"]
 
 [substrate]
@@ -71,7 +74,7 @@ registry_url = "http://127.0.0.1:7661"
   fs.writeFileSync(configPath, configContent);
 
   console.log('Starting Substrate...');
-  const substrateProcess = spawn('cargo', ['run', '--bin', 'syneroym-substrate', '--', 'run', '--config', configPath], {
+  const substrateProcess = spawn(SUBSTRATE_BIN, ['run', '--config', configPath], {
     cwd: WORKSPACE_DIR,
     env: { ...process.env, RUST_LOG: 'info', NO_COLOR: '1' }
   });
@@ -80,7 +83,7 @@ registry_url = "http://127.0.0.1:7661"
   let substrateDid = '';
   let substrateOutputBuffer = '';
   await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('Timeout waiting for substrate DID')), 30000);
+    const timer = setTimeout(() => reject(new Error('Timeout waiting for substrate DID')), 20000);
 
     substrateProcess.stdout.on('data', (data) => {
       const output = data.toString();
@@ -105,7 +108,7 @@ registry_url = "http://127.0.0.1:7661"
   console.log('Substrate DID extracted:', substrateDid);
 
   console.log('Starting miniapp-demo1-web...');
-  const miniappProcess = spawn('cargo', ['run', '-p', 'miniapp-demo1-web', '--', '--port', '3000', '--data-dir', path.join(TEST_DIR, 'miniapp-data')], {
+  const miniappProcess = spawn(MINIAPP_BIN, ['--port', '3000', '--data-dir', path.join(TEST_DIR, 'miniapp-data')], {
     cwd: WORKSPACE_DIR,
     env: { ...process.env, RUST_LOG: 'info' }
   });
@@ -115,14 +118,13 @@ registry_url = "http://127.0.0.1:7661"
   miniappProcess.stderr.on('data', data => process.stdout.write('[Miniapp ERR] ' + data.toString()));
 
   console.log('Waiting for components to be ready...');
-  // Wait a few seconds for servers to bind and register
-  await new Promise(r => setTimeout(r, 6000));
+  await new Promise(r => setTimeout(r, 4000));
 
   // Generate Identity for the App
   console.log('Creating app identity...');
-  execSync(`cargo run --bin roymctl -- --dir ${TEST_DIR} identity create --name demo1`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
+  execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR} identity create --name demo1`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
   
-  const appIdentityOutput = execSync(`cargo run --bin roymctl -- --dir ${TEST_DIR} identity show --name demo1`, { cwd: WORKSPACE_DIR }).toString();
+  const appIdentityOutput = execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR} identity show --name demo1`, { cwd: WORKSPACE_DIR }).toString();
   const appDidMatch = appIdentityOutput.match(/(did:key:[a-z0-9]+)/);
   if (!appDidMatch) throw new Error("Could not find app DID in roymctl output");
   const appDid = appDidMatch[1];
@@ -130,22 +132,20 @@ registry_url = "http://127.0.0.1:7661"
 
   // Calculate Alias
   console.log('Calculating app alias...');
-  const aliasOutput = execSync(`cargo run --bin roymctl -- alias ${appDid} --nickname demo1 --interface http`, { cwd: WORKSPACE_DIR }).toString().trim();
+  const aliasOutput = execSync(`"${ROYMCTL_BIN}" alias ${appDid} --nickname demo1 --interface http`, { cwd: WORKSPACE_DIR }).toString().trim();
   const appAlias = aliasOutput.split('\n').pop()?.trim();
   if (!appAlias) throw new Error("Could not calculate app alias");
   console.log('App Alias:', appAlias);
 
-  // Register in Community Registry FIRST (so substrate knows about it if needed, 
-  // though orchestrator usually doesn't need it in registry to deploy)
+  // Register in Community Registry FIRST
   console.log('Registering service in Community Registry...');
-  execSync(`cargo run --bin roymctl -- --dir ${TEST_DIR} --api-url http://127.0.0.1:7661 registry register --identity demo1 --substrate ${substrateDid} --nickname demo1`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
+  execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR} --api-url http://127.0.0.1:7661 registry register --identity demo1 --substrate ${substrateDid} --nickname demo1`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
 
   // Deploy Passthrough Service
   console.log('Deploying TCP Service (Passthrough)...');
   try {
-    // Wait a bit more for substrate to be fully discoverable in registry
     await new Promise(r => setTimeout(r, 2000));
-    execSync(`cargo run --bin roymctl -- --dir ${TEST_DIR} --api-url http://127.0.0.1:7661 --substrate ${substrateDid} app deploy --app-id ${appDid} --interfaces http --tcp 127.0.0.1:3000`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
+    execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR} --api-url http://127.0.0.1:7661 --substrate ${substrateDid} app deploy --app-id ${appDid} --interfaces http --tcp 127.0.0.1:3000`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
   } catch (err: any) {
     console.error("Deploy failed!");
     throw err;
