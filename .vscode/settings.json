@@ -20,5 +20,8 @@
     "Cargo.toml",
     "test-components/greeter/Cargo.toml"
   ],
-  "geminicodeassist.agentYoloMode": true
+  "geminicodeassist.agentYoloMode": true,
+  "git.inputValidationSubjectLength": 50,
+  "git.inputValidationLength": 72,
+  "git.commitValidation": "warn"
 }

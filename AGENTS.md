@@ -26,6 +26,7 @@
 - **Interaction Style**: Respond concisely and directly. Use structured markdown for outputs, including code blocks, lists, and links to files/lines. Avoid verbose explanations unless requested.
 - **Output Quality**: Ensure responses are accurate, idiomatic Rust code. Link to relevant files using workspace-relative paths (e.g., [src/main.rs](src/main.rs#L10)). Provide runnable code snippets with minimal setup instructions.
 - **Security and Dependencies**: Do not exfiltrate secrets. Use minimal, pinned, widely-used libraries. Update manifests appropriately.
+- **Git Commit Messages (50/72 Rule)**: When auto-generating or suggesting git commit messages, strictly enforce the 50/72 rule. The subject line (first line) must be capitalized, in the imperative mood, and no more than 50 characters, with no trailing period. The second line must be empty. The body (lines 3+) must be wrapped at 72 characters and explain the what and why, not the how.
 
 ## Repository Structure and Key Components
 - **Workspace Layout**: This is a Rust workspace with multiple crates in `crates/`, apps in `apps/`, documentation in `docs/`, and test components in `test-components/`. Key files include `Cargo.toml` (workspace config) and `mise.toml` (tool versions).
