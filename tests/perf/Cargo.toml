@@ -1,0 +1,37 @@
+[package]
+name = "syneroym-perf"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+# Basic
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+# Async
+tokio.workspace = true
+futures.workspace = true
+
+# HTTP & Metrics
+reqwest.workspace = true
+
+# Substrate path
+syneroym-sdk = { path = "../../crates/sdk" }
+syneroym-app-sandbox = { path = "../../crates/app_sandbox" }
+syneroym-core = { path = "../../crates/core" }
+syneroym-bindings = { path = "../../crates/bindings" }
+syneroym-identity = { path = "../../crates/identity" }
+wasmtime.workspace = true
+z32.workspace = true
+
+# Testing & Execution
+assert_cmd.workspace = true
+tempfile.workspace = true
+
+[dev-dependencies]
+# none for now

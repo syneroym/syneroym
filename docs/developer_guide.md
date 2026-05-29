@@ -88,6 +88,18 @@ These capture performance baselines for hotpaths under CPU stress in isolation, 
   cargo bench --workspace
   ```
 
+### Suite 4: Latency Overhead Tests
+These tests spin up a local substrate process, load applications onto it, and benchmark the latency difference between direct execution and execution routed via the substrate framework.
+
+* **Run via Mise (Recommended):**
+  ```bash
+  mise run bench:latency
+  ```
+* **Run via Cargo:**
+  ```bash
+  cargo run -p syneroym-perf -- latency
+  ```
+
 ### Run Everything Together
 To execute all Rust and E2E suites sequentially:
 ```bash

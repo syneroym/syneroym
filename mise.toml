@@ -45,5 +45,9 @@ description = "Run both Rust and browser E2E test suites"
 depends = ["test:rust", "test:e2e"]
 
 [tasks."bench:micro"]
-description = "Run all Criterion micro-benchmarks in the workspace"
+description = "Run Criterion micro-benchmarks across the workspace"
 run = "cargo bench --workspace"
+
+[tasks."bench:latency"]
+description = "Run Latency Overhead Tests"
+run = "cargo run -p syneroym-perf -- latency"

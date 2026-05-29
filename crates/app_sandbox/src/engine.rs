@@ -257,6 +257,20 @@ impl AppSandboxEngine {
         interface_name: &str,
         request: &JsonRpcRequest,
     ) -> Result<String> {
+        struct ActiveInstanceGuard;
+        impl ActiveInstanceGuard {
+            fn new() -> Self {
+                metrics::gauge!("substrate.wasm.active_instances").increment(1.0);
+                Self
+            }
+        }
+        impl Drop for ActiveInstanceGuard {
+            fn drop(&mut self) {
+                metrics::gauge!("substrate.wasm.active_instances").decrement(1.0);
+            }
+        }
+
+        let _guard = ActiveInstanceGuard::new();
         debug!("starting to execute wasm");
 
         // TODO: Later optimize this by caching things like function parameter details on first execution, so we don't have to do the same lookups every time.
@@ -284,7 +298,10 @@ impl AppSandboxEngine {
         let mut wasm_results = vec![wasmtime::component::Val::Bool(false); results_len];
         debug!("created result types");
 
+        let exec_start = std::time::Instant::now();
         func.call_async(&mut store, &wasm_params, &mut wasm_results).await?;
+        metrics::histogram!("substrate.wasm.execution_ms")
+            .record(exec_start.elapsed().as_secs_f64() * 1000.0);
 
         debug!("called wasm function, processing results");
 
@@ -318,7 +335,10 @@ impl AppSandboxEngine {
         // Create a new store
         let mut store = wasmtime::Store::new(&self.engine, host_state);
 
+        let inst_start = std::time::Instant::now();
         let instance = self.linker.instantiate_async(&mut store, &component).await?;
+        metrics::histogram!("substrate.wasm.instantiation_ms")
+            .record(inst_start.elapsed().as_secs_f64() * 1000.0);
 
         debug!("instantiated store and instance");
 

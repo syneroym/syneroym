@@ -1,10 +1,13 @@
 [workspace]
 resolver = "2"
-members = ["crates/*", "apps/*", "test-components/*"]
+members = ["crates/*", "apps/*", "test-components/*", "tests/perf"]
 exclude = ["test-components/greeter"]
 
 [profile.dev]
 incremental = true # Compile your binary in smaller steps.
+debug = true
+[profile.dev.package."*"]
+debug = false     # Disable debug symbols for all dependencies
 
 [profile.release]
 codegen-units = 1 # Allows LLVM to perform better optimization.
@@ -53,6 +56,9 @@ uuid = { version = "1.12", features = ["v4"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tracing-appender = "0.2"
+metrics = "0.22"
+metrics-util = "0.17"
+sysinfo = "0.30"
 dashmap = "6.1"
 httparse = "1.10"
 async-trait = "0.1"

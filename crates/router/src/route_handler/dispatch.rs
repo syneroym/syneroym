@@ -28,7 +28,10 @@ impl RouteHandler {
         preamble: &RoutePreamble,
         body: &[u8],
     ) -> Result<Vec<u8>> {
-        match (&pipeline.adaptation, &pipeline.service) {
+        let start = std::time::Instant::now();
+        metrics::counter!("substrate.request.total").increment(1);
+
+        let result = match (&pipeline.adaptation, &pipeline.service) {
             (AdaptationStage::None, ServiceStage::NativeService { service_id }) => {
                 let service = self
                     .native_service(service_id)
@@ -44,6 +47,7 @@ impl RouteHandler {
                     }
                     Err(e) => {
                         error!("Native service error: {}", e);
+                        metrics::counter!("substrate.request.errors").increment(1);
                         JsonRpcConverter::json_error(request.id.clone(), e.code(), e.to_string())
                     }
                 }
@@ -67,24 +71,34 @@ impl RouteHandler {
                         }
                         Err(e) => {
                             error!("WASM execution error: {}", e);
+                            metrics::counter!("substrate.request.errors").increment(1);
                             JsonRpcConverter::json_error(request.id.clone(), -32603, e.to_string())
                         }
                     }
                 } else {
                     let message = "App sandbox engine not available in coordinator mode";
+                    metrics::counter!("substrate.request.errors").increment(1);
                     JsonRpcConverter::json_error(request.id.clone(), -32603, message.to_string())
                 }
             }
             (AdaptationStage::JsonRpcToWrpc, ServiceStage::WasmComponent { .. }) => {
                 let message = "JSON-RPC to wRPC component bridging is not implemented yet";
+                metrics::counter!("substrate.request.errors").increment(1);
                 JsonRpcConverter::json_error(None, -32601, message.to_string())
             }
-            _ => Err(anyhow!(
-                "Execution stage {:?} with adaptation {:?} not supported in request-response mode",
-                pipeline.service,
-                pipeline.adaptation
-            )),
-        }
+            _ => {
+                metrics::counter!("substrate.request.errors").increment(1);
+                Err(anyhow!(
+                    "Execution stage {:?} with adaptation {:?} not supported in request-response mode",
+                    pipeline.service,
+                    pipeline.adaptation
+                ))
+            }
+        };
+
+        metrics::histogram!("substrate.request.duration_ms")
+            .record(start.elapsed().as_secs_f64() * 1000.0);
+        result
     }
 
     /// Creates a `RoutePipeline` for a given preamble and endpoint.

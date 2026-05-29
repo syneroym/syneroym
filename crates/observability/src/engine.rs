@@ -13,14 +13,20 @@ use tracing::info;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
+use crate::metrics::SystemSampler;
+use crate::recorder::MemoryRecorder;
+use std::sync::Mutex;
+
 pub struct ObservabilityEngine {
     log_guard: Option<WorkerGuard>,
+    sampler_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl std::fmt::Debug for ObservabilityEngine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ObservabilityEngine")
             .field("log_guard", &self.log_guard.as_ref().map(|_| "WorkerGuard"))
+            .field("sampler_handle", &"JoinHandle")
             .finish()
     }
 }
@@ -61,6 +67,16 @@ impl ObservabilityEngine {
             }
         };
 
+        // Initialize metrics recorder
+        let recorder = MemoryRecorder::new();
+        if let Err(e) = recorder.install() {
+            eprintln!("Warning: Failed to install global metrics recorder: {e}");
+        }
+
+        // Start system resource metrics sampler
+        let sampler = SystemSampler::new(std::time::Duration::from_secs(1));
+        let sampler_handle = Mutex::new(Some(sampler.start()));
+
         info!(
             level = %default_directive(&config.logging.level),
             format = ?config.logging.format,
@@ -69,13 +85,18 @@ impl ObservabilityEngine {
             "observability initialized"
         );
 
-        Ok(Self { log_guard })
+        Ok(Self { log_guard, sampler_handle })
     }
 
     /// Flushes remaining telemetry data before the application exits.
     pub async fn shutdown(&self) -> Result<()> {
         let _ = &self.log_guard;
         info!("flushing observability data");
+        if let Ok(mut lock) = self.sampler_handle.lock()
+            && let Some(handle) = lock.take()
+        {
+            handle.abort();
+        }
         Ok(())
     }
 }
