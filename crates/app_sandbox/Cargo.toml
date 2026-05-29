@@ -21,3 +21,10 @@ wasmtime-wasi.workspace = true
 dashmap.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "wasm_engine"
+harness = false

@@ -1,8 +1,102 @@
-# Syneroym API Examples
+# Syneroym Developer Guide
 
-This document provides examples of how to interact with the Syneroym substrate using standard tools like `curl`.
+Welcome to the Syneroym developer guide! This document consolidates all essential development procedures, repository layouts, testing workflows, and API interaction examples into a single, unified reference.
 
-## Port Reference (Normalized 796x)
+---
+
+## 1. Development Workflows & Setup
+
+### Prerequisites
+
+We recommend using [mise](https://mise.jdx.dev/) to automatically manage project tool versions (Rust stable, wasm-tools, Node.js 20, etc.).
+
+```bash
+# Automatically install tools configured in mise.toml
+mise install
+```
+
+Alternatively, you can manually install:
+- **Rust**: The latest stable compiler via [rustup](https://rustup.rs/)
+- **Node.js**: Version 20+ via [nodejs.org](https://nodejs.org/)
+
+### Building the Project
+
+Ensure all dependencies are installed and build the Rust workspace:
+
+```bash
+# Install frontend / E2E dependencies
+pnpm install
+
+# Build all workspace crates and applications
+cargo build
+```
+
+### Run Commands
+
+To run local CLI and substrate nodes:
+
+```bash
+# Show CLI options for roymctl
+cargo run --bin roymctl -- --help
+```
+
+---
+
+## 2. Testing & Benchmarking Reference
+
+Syneroym has a tiered testing and benchmarking strategy across three different suites:
+
+### Suite 1: Rust Unit & Integration Tests (SUT)
+These verify code correctness in isolation. Unit tests cover individual helper modules, and integration tests cover complex multi-system flows (e.g. substrate lifecycles).
+
+* **Run via Mise (Recommended):**
+  ```bash
+  mise run test:rust
+  ```
+* **Run via Cargo:**
+  ```bash
+  cargo test --workspace
+  ```
+
+### Suite 2: Playwright WebRTC End-to-End Tests
+These verify fully integrated WebRTC signaling and client gateway browser scenarios.
+
+* **Run via Mise (Recommended):**
+  ```bash
+  mise run test:e2e
+  ```
+* **Run Interactive UI Mode:**
+  ```bash
+  mise run test:e2e-ui
+  ```
+* **Run via npm:**
+  ```bash
+  cd crates/substrate/tests/e2e
+  npm install
+  npm test
+  ```
+
+### Suite 3: Criterion Micro-Benchmarks
+These capture performance baselines for hotpaths under CPU stress in isolation, including preamble parsing, crypto (ECDH and AES-GCM), length-prefixed framing, and WASM sandbox store creation and instantiation.
+
+* **Run via Mise (Recommended):**
+  ```bash
+  mise run bench:micro
+  ```
+* **Run via Cargo:**
+  ```bash
+  cargo bench --workspace
+  ```
+
+### Run Everything Together
+To execute all Rust and E2E suites sequentially:
+```bash
+mise run test:all
+```
+
+---
+
+## 3. Port Reference (Normalized 796x)
 
 - **7960**: Client Gateway (HTTP Proxy)
 - **7961**: Community Registry (HTTP)
@@ -10,6 +104,12 @@ This document provides examples of how to interact with the Syneroym substrate u
 - **7963**: WebRTC Signaling Server (WebSocket)
 - **7964**: Iroh Coordinator (HTTP Signaling)
 - **7965**: Iroh Coordinator (QUIC Data)
+
+---
+
+## 4. API & Interaction Examples
+
+This section details how to interact with the local substrate gateway and registries using the CLI (`roymctl`) and standard tools like `curl`.
 
 ### Identifying your Substrate
 
@@ -47,23 +147,19 @@ You can verify the registration using the lookup command:
 roymctl registry lookup "alice-p<SERVICE_DID_SHORTHASH>"
 ```
 
----
+### Discovering Services
 
-## 1. Discovering Services
-
-### Lookup a specific service by its DID
+Lookup a specific service by its DID:
 ```bash
 # Returns signed endpoint info
 curl http://localhost:7961/lookup/did:key:z6MkhaXn...
 ```
 
----
-
-## 2. Managing Applications (Orchestrator)
+### Managing Applications (Orchestrator)
 
 The Orchestrator is a native service running inside the substrate. You can interact with it via the Client Gateway (Port 7960).
 
-### List Deployed Services
+#### List Deployed Services
 ```bash
 # Replace <NICKNAME> and <SUBSTRATE_DID_SHORTHASH>
 curl -X POST http://localhost:7960/ \
@@ -77,7 +173,7 @@ curl -X POST http://localhost:7960/ \
   }'
 ```
 
-### Deploy a WASM Component
+#### Deploy a WASM Component
 ```bash
 # Note: WASM binary bytes are usually sent as a base64-encoded array or via a URL.
 curl -X POST http://localhost:7960/ \
@@ -103,7 +199,7 @@ curl -X POST http://localhost:7960/ \
   }'
 ```
 
-### Deploy a TCP Service (Passthrough)
+#### Deploy a TCP Service (Passthrough)
 ```bash
 curl -X POST http://localhost:7960/ \
   -H "Host: <NICKNAME>-p<SUBSTRATE_DID_SHORTHASH>-iorchestrator.localhost" \
@@ -128,11 +224,9 @@ curl -X POST http://localhost:7960/ \
   }'
 ```
 
----
+### Interacting with Applications
 
-## 3. Interacting with Applications
-
-### Call a JSON-RPC method on a WASM app via HTTP Proxy
+#### Call a JSON-RPC method on a WASM app via HTTP Proxy
 
 > [!TIP]
 > You can use `roymctl alias <APP_DID> --nickname <NICKNAME> --interface <INTERFACE_NAME>` to get the full Host header.
@@ -150,23 +244,21 @@ curl -X POST http://localhost:7960/ \
   }'
 ```
 
-### Call a TCP service via HTTP Proxy
+#### Call a TCP service via HTTP Proxy
 ```bash
 # Simple GET request
 curl http://localhost:7960/api/data \
   -H "Host: my-tcp-service-p<APP_DID_HASH>-i<INTERFACE_HASH>.localhost"
 ```
 
----
+### Health and Metrics
 
-## 4. Health and Metrics
-
-### Health Check
+#### Health Check
 ```bash
 curl http://localhost:7966/health
 ```
 
-### Prometheus Metrics
+#### Prometheus Metrics
 ```bash
 curl http://localhost:7967/metrics
 ```

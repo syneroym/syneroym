@@ -24,81 +24,35 @@ intermittent connectivity, explicit trust boundaries, and portable execution.
 The `crates/` directory contains the core substrate components and libraries that applications use.
 Mini-apps that run on top of the substrate are out of scope for this repo and are expected to be built independently (e.g., WASM components for backend logic, and HTML/CSS/JS loaded in WebViews for frontend UI).
 
-## Getting Started
+## Getting Started (Quickstart)
 
-This repo is being bootstrapped. For now:
-- Read the vision in `docs/VISION.md`
-- Read the requirement spec in `docs/requirements.md`
-- Read the architecture design in `docs/architecture.md`
-
-### Prerequisites
-
-We recommend using [mise](https://mise.jdx.dev/) to manage development tools.
+This repository uses [mise](https://mise.jdx.dev/) to automatically manage toolchains.
 
 ```bash
-# Install tools specified in mise.toml (Rust, wasm-tools, etc.)
+# 1. Install toolchains
 mise install
-```
 
-Alternatively, you can manually install the required versions of [Rust](https://rustup.rs/) and [Node.js](https://nodejs.org/).
-
-### Building
-
-Install dependencies and build the project:
-
-```bash
-# Install Node/frontend dependencies
+# 2. Install dependencies & build
 pnpm install
-
-# Build all Rust crates
 cargo build
-```
 
-### Running
-
-You can run individual binaries using Cargo. For example, to run the CLI (`syneroym`):
-
-```bash
-cargo run --bin syneroym -- --help
-```
-
-
-### Testing
-
-We organize tests into two suites: the **Rust suite** (for unit/integration tests) and the **Playwright E2E suite** (for browser-automation and WebRTC data plane scenarios).
-
-#### Using Mise (Recommended)
-
-If you are using `mise`, you can run self-documenting workspace tasks:
-
-```bash
-# Run both the Rust and browser E2E test suites sequentially
+# 3. Run all tests (Rust unit/integration & E2E)
 mise run test:all
-
-# Run only Rust unit and integration tests
-mise run test:rust
-
-# Run only Playwright E2E browser tests
-mise run test:e2e
 ```
 
-#### Using raw commands
+For more detailed workflows, port references, test suites (unit, e2e, and micro-benchmarks), and API examples, refer to the [Developer Guide](docs/developer_guide.md).
 
-If you're not using `mise`, you can run the suites individually using standard toolchains:
+## Related Documentation
 
-```bash
-# Run Rust unit/integration tests
-cargo test --workspace
-
-# Run Playwright E2E tests
-cd crates/substrate/tests/e2e
-npm install
-npm test
-```
-
+- [VISION.md](docs/VISION.md) — Product vision mapping
+- [requirements.md](docs/requirements.md) — Requirement specifications
+- [architecture.md](docs/architecture.md) — Substrate architectural design
+- [Developer Guide](docs/developer_guide.md) — Detailed setup, testing, and API examples
 
 ## Contributing
+
 Contributions are welcome once the Phase 1 scope is locked. See `CONTRIBUTING.md` for guidelines.
 
 ## License
+
 Apache-2.0

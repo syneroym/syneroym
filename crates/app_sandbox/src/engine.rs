@@ -35,6 +35,15 @@ impl std::fmt::Debug for HostState {
     }
 }
 
+impl HostState {
+    /// Creates a new HostState with standard WASI context.
+    pub fn new(component_id: String) -> Self {
+        let wasi = WasiCtx::builder().inherit_stderr().inherit_stdout().build();
+        let table = ResourceTable::new();
+        Self { wasi, table, component_id, request_ctx: None }
+    }
+}
+
 impl wasmtime_wasi::WasiView for HostState {
     fn ctx(&mut self) -> WasiCtxView<'_> {
         WasiCtxView { ctx: &mut self.wasi, table: &mut self.table }
@@ -301,13 +310,8 @@ impl AppSandboxEngine {
             .ok_or_else(|| anyhow::anyhow!("Component not found for service {service_id}"))?;
         debug!("looked up component");
 
-        // Create new WASI context and table for per-request isolation
-        let wasi = WasiCtx::builder().inherit_stderr().inherit_stdout().build();
-        let table = ResourceTable::new();
-
         // Create host state
-        let host_state =
-            HostState { wasi, table, component_id: service_id.to_string(), request_ctx: None };
+        let host_state = HostState::new(service_id.to_string());
 
         debug!("created wasi ctx and host state");
 
@@ -397,21 +401,13 @@ impl AppSandboxEngine {
 mod tests {
     use super::*;
     use wasmtime::component::Component;
-    use wasmtime_wasi::{ResourceTable, WasiCtx};
 
     #[tokio::test]
     async fn test_list_interfaces() {
         let engine = AppSandboxEngine::build_wasm_engine(None, None).unwrap();
         let linker = AppSandboxEngine::build_wasm_linker(&engine).unwrap();
 
-        let wasi = WasiCtx::builder().inherit_stderr().inherit_stdout().build();
-        let table = ResourceTable::new();
-        let host_state = HostState {
-            wasi,
-            table,
-            component_id: "test_component".to_string(),
-            request_ctx: None,
-        };
+        let host_state = HostState::new("test_component".to_string());
         let mut store = wasmtime::Store::new(&engine, host_state);
 
         let component_path =

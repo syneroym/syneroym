@@ -94,6 +94,7 @@ wasmtime-wasi = "44"
 wit-bindgen = "0.57"
 
 # Test / Dev
+criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
 tempfile = "3.10"
 assert_cmd = "2.0"
 predicates = "3.1"

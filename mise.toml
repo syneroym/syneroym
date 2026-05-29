@@ -43,3 +43,7 @@ dir = "crates/substrate/tests/e2e"
 [tasks."test:all"]
 description = "Run both Rust and browser E2E test suites"
 depends = ["test:rust", "test:e2e"]
+
+[tasks."bench:micro"]
+description = "Run all Criterion micro-benchmarks in the workspace"
+run = "cargo bench --workspace"
