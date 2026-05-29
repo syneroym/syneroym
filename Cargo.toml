@@ -5,7 +5,7 @@ exclude = ["test-components/greeter"]
 
 [profile.dev]
 incremental = true # Compile your binary in smaller steps.
-debug = true
+
 [profile.dev.package."*"]
 debug = false     # Disable debug symbols for all dependencies
 
