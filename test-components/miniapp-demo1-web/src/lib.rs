@@ -292,7 +292,7 @@ use tracing::{debug, info};
 pub async fn real_main() {
     tracing_subscriber::fmt::init();
     let args = Args::parse();
-    let addr = SocketAddr::from(([127, 0, 0, 1], args.port));
+    let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
 
     let (_tx, mut rx) = tokio::sync::mpsc::channel::<()>(1);
     run_server(args, addr, async move {
@@ -339,7 +339,7 @@ pub async fn run_server(
     let http_listener = tokio::net::TcpListener::bind(addr).await?;
 
     // HTTPS Setup
-    let https_addr = SocketAddr::from(([127, 0, 0, 1], args.https_port));
+    let https_addr = SocketAddr::from(([0, 0, 0, 0], args.https_port));
     info!("listening on https://{}", https_addr);
     let https_listener = tokio::net::TcpListener::bind(https_addr).await?;
 

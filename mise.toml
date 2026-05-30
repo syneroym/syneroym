@@ -43,3 +43,21 @@ dir = "crates/substrate/tests/e2e"
 [tasks."test:all"]
 description = "Run both Rust and browser E2E test suites"
 depends = ["test:rust", "test:e2e"]
+
+[tasks."bench:micro"]
+description = "Run Criterion micro-benchmarks across the workspace"
+run = "cargo bench --workspace"
+
+[tasks."bench:latency"]
+description = "Run Latency Overhead Tests"
+run = "cargo run -p syneroym-perf -- latency"
+
+[tasks."bench:concurrency"]
+description = "Run Concurrency & Resource Profiling Tests"
+run = "cargo run -p syneroym-perf -- concurrency"
+
+[tasks."bench:soak"]
+description = "Run Soak / Endurance Tests"
+run = "cargo run -p syneroym-perf -- soak"
+
+

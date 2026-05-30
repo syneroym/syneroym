@@ -43,21 +43,21 @@ nickname = "c-global"
 
 [roles.community_registry]
 access = "everyone"
-http_bind_address = "127.0.0.1:7661"
+http_bind_address = "0.0.0.0:7661"
 
 [roles.coordinator.iroh]
 enable_signalling = true
 enable_relay = true
-http_bind_address = "127.0.0.1:7664"
-quic_bind_address = "127.0.0.1:7665"
+http_bind_address = "0.0.0.0:7664"
+quic_bind_address = "0.0.0.0:7665"
 community_registry_url = "http://127.0.0.1:7661"
 share_in_registry = true
 
 [roles.coordinator.webrtc]
 enable_signalling = true
 enable_relay = true
-signalling_bind_address = "127.0.0.1:7663"
-bootstrap_page_bind_address = "127.0.0.1:7662"
+signalling_bind_address = "0.0.0.0:7663"
+bootstrap_page_bind_address = "0.0.0.0:7662"
 
 [roles.client_gateway]
 http_port = 7660
@@ -83,16 +83,16 @@ nickname = "cp-private"
 [roles.coordinator.iroh]
 enable_signalling = true
 enable_relay = true
-http_bind_address = "127.0.0.1:7676"
-quic_bind_address = "127.0.0.1:7677"
+http_bind_address = "0.0.0.0:7676"
+quic_bind_address = "0.0.0.0:7677"
 community_registry_url = "http://127.0.0.1:7661"
 share_in_registry = true
 
 [roles.coordinator.webrtc]
 enable_signalling = true
 enable_relay = true
-signalling_bind_address = "127.0.0.1:7673"
-bootstrap_page_bind_address = "127.0.0.1:7672"
+signalling_bind_address = "0.0.0.0:7673"
+bootstrap_page_bind_address = "0.0.0.0:7672"
 
 [parent_coordinator.iroh]
 url = "http://127.0.0.1:7664"

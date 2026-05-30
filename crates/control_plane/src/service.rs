@@ -53,6 +53,7 @@ impl NativeService for ControlPlaneService {
         match (invocation.interface.as_str(), invocation.method.as_str()) {
             (ORCHESTRATOR_INTERFACE, "readyz") => Ok(ready_response()),
             (ORCHESTRATOR_INTERFACE, "deploy") => self.deploy(invocation.params).await,
+            (ORCHESTRATOR_INTERFACE, "undeploy") => self.undeploy(invocation.params).await,
             (ORCHESTRATOR_INTERFACE, "list") => self.list().await,
             (ORCHESTRATOR_INTERFACE, _) => Err(RpcError::MethodNotFound(invocation.method.clone())),
             _ => Err(RpcError::InternalError(format!(
@@ -128,6 +129,44 @@ impl ControlPlaneService {
                 .await?;
         }
         Ok(())
+    }
+
+    async fn undeploy(&self, params: serde_json::Value) -> RpcResult<NativeResponse> {
+        let (service_id,): (String,) = serde_json::from_value(params.clone())
+            .or_else(|_| serde_json::from_value::<String>(params.clone()).map(|s| (s,)))
+            .map_err(|e| {
+                RpcError::InvalidParams(format!("Failed to parse undeploy params: {e}"))
+            })?;
+
+        info!("Undeploying service: {}", service_id);
+
+        let endpoints = self.registry.lookup_by_service(&service_id);
+        let mut is_wasm = false;
+
+        for (interface_name, endpoint) in endpoints {
+            if matches!(endpoint, SubstrateEndpoint::WasmChannel { .. }) {
+                is_wasm = true;
+            }
+            if let Err(e) = self.registry.remove(&service_id, &interface_name).await {
+                tracing::warn!(
+                    "Failed to remove endpoint {} for service {}: {}",
+                    interface_name,
+                    service_id,
+                    e
+                );
+            }
+        }
+
+        if is_wasm {
+            if let Err(e) = self.app_sandbox_engine.stop_wasm(&service_id).await {
+                tracing::warn!("Failed to stop WASM engine for service {}: {}", service_id, e);
+            }
+            if let Err(e) = self.app_sandbox_engine.remove_wasm(&service_id).await {
+                tracing::warn!("Failed to remove WASM file for service {}: {}", service_id, e);
+            }
+        }
+
+        Ok(NativeResponse { payload: serde_json::json!({"status": "undeployed"}) })
     }
 
     async fn list(&self) -> RpcResult<NativeResponse> {

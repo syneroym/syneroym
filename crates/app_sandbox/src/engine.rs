@@ -35,6 +35,15 @@ impl std::fmt::Debug for HostState {
     }
 }
 
+impl HostState {
+    /// Creates a new HostState with standard WASI context.
+    pub fn new(component_id: String) -> Self {
+        let wasi = WasiCtx::builder().inherit_stderr().inherit_stdout().build();
+        let table = ResourceTable::new();
+        Self { wasi, table, component_id, request_ctx: None }
+    }
+}
+
 impl wasmtime_wasi::WasiView for HostState {
     fn ctx(&mut self) -> WasiCtxView<'_> {
         WasiCtxView { ctx: &mut self.wasi, table: &mut self.table }
@@ -248,6 +257,20 @@ impl AppSandboxEngine {
         interface_name: &str,
         request: &JsonRpcRequest,
     ) -> Result<String> {
+        struct ActiveInstanceGuard;
+        impl ActiveInstanceGuard {
+            fn new() -> Self {
+                metrics::gauge!("substrate.wasm.active_instances").increment(1.0);
+                Self
+            }
+        }
+        impl Drop for ActiveInstanceGuard {
+            fn drop(&mut self) {
+                metrics::gauge!("substrate.wasm.active_instances").decrement(1.0);
+            }
+        }
+
+        let _guard = ActiveInstanceGuard::new();
         debug!("starting to execute wasm");
 
         // TODO: Later optimize this by caching things like function parameter details on first execution, so we don't have to do the same lookups every time.
@@ -275,7 +298,10 @@ impl AppSandboxEngine {
         let mut wasm_results = vec![wasmtime::component::Val::Bool(false); results_len];
         debug!("created result types");
 
+        let exec_start = std::time::Instant::now();
         func.call_async(&mut store, &wasm_params, &mut wasm_results).await?;
+        metrics::histogram!("substrate.wasm.execution_ms")
+            .record(exec_start.elapsed().as_secs_f64() * 1000.0);
 
         debug!("called wasm function, processing results");
 
@@ -301,20 +327,18 @@ impl AppSandboxEngine {
             .ok_or_else(|| anyhow::anyhow!("Component not found for service {service_id}"))?;
         debug!("looked up component");
 
-        // Create new WASI context and table for per-request isolation
-        let wasi = WasiCtx::builder().inherit_stderr().inherit_stdout().build();
-        let table = ResourceTable::new();
-
         // Create host state
-        let host_state =
-            HostState { wasi, table, component_id: service_id.to_string(), request_ctx: None };
+        let host_state = HostState::new(service_id.to_string());
 
         debug!("created wasi ctx and host state");
 
         // Create a new store
         let mut store = wasmtime::Store::new(&self.engine, host_state);
 
+        let inst_start = std::time::Instant::now();
         let instance = self.linker.instantiate_async(&mut store, &component).await?;
+        metrics::histogram!("substrate.wasm.instantiation_ms")
+            .record(inst_start.elapsed().as_secs_f64() * 1000.0);
 
         debug!("instantiated store and instance");
 
@@ -347,6 +371,7 @@ impl AppSandboxEngine {
     pub async fn stop_wasm(&self, service_id: &str) -> Result<()> {
         tracing::info!(service_id = %service_id, "AppSandboxEngine: stopping Wasm component");
         self.components.remove(service_id);
+        metrics::gauge!("substrate.wasm.component_cache_size").set(self.components.len() as f64);
         Ok(())
     }
 
@@ -383,6 +408,7 @@ impl AppSandboxEngine {
 
         self.components.insert(service_id.to_string(), component);
         tracing::info!("WASM component compiled and cached for {}", service_id);
+        metrics::gauge!("substrate.wasm.component_cache_size").set(self.components.len() as f64);
         Ok(())
     }
 
@@ -397,21 +423,13 @@ impl AppSandboxEngine {
 mod tests {
     use super::*;
     use wasmtime::component::Component;
-    use wasmtime_wasi::{ResourceTable, WasiCtx};
 
     #[tokio::test]
     async fn test_list_interfaces() {
         let engine = AppSandboxEngine::build_wasm_engine(None, None).unwrap();
         let linker = AppSandboxEngine::build_wasm_linker(&engine).unwrap();
 
-        let wasi = WasiCtx::builder().inherit_stderr().inherit_stdout().build();
-        let table = ResourceTable::new();
-        let host_state = HostState {
-            wasi,
-            table,
-            component_id: "test_component".to_string(),
-            request_ctx: None,
-        };
+        let host_state = HostState::new("test_component".to_string());
         let mut store = wasmtime::Store::new(&engine, host_state);
 
         let component_path =

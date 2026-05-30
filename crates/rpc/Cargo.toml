@@ -13,3 +13,10 @@ async-trait.workspace = true
 thiserror.workspace = true
 serde = { workspace = true, features = ["derive"] }
 tokio.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "framing"
+harness = false

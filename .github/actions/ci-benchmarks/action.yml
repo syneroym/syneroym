@@ -1,0 +1,16 @@
+name: 'CI Benchmarks'
+description: 'Runs performance and benchmark tests'
+runs:
+  using: "composite"
+  steps:
+    - name: Run Cargo Bench
+      run: cargo bench --workspace
+      shell: bash
+
+    - name: Run Latency Performance Tests
+      run: cargo run --release -p syneroym-perf -- latency
+      shell: bash
+
+    - name: Run Concurrency Performance Tests
+      run: cargo run --release -p syneroym-perf -- concurrency
+      shell: bash

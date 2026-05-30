@@ -109,6 +109,7 @@ impl IrohProtocolHandler for RouteHandler {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         let endpoint_id = connection.remote_id();
         debug!("[Router] Accepted Iroh connection from {endpoint_id}");
+        metrics::gauge!("substrate.connections.active").increment(1.0);
 
         loop {
             match connection.accept_bi().await {
@@ -137,6 +138,7 @@ impl IrohProtocolHandler for RouteHandler {
 
         connection.closed().await;
         debug!("[Router] Iroh connection from {endpoint_id} fully closed");
+        metrics::gauge!("substrate.connections.active").decrement(1.0);
 
         Ok(())
     }

@@ -1,0 +1,21 @@
+name: 'CI Lints and Audit'
+description: 'Runs formatting, clippy lints, and security audit'
+inputs:
+  github_token:
+    description: 'GitHub token for audit check'
+    required: true
+runs:
+  using: "composite"
+  steps:
+    - name: Check Formatting
+      run: cargo fmt --all -- --check
+      shell: bash
+
+    - name: Clippy Lints
+      run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      shell: bash
+
+    - name: Security Audit
+      uses: rustsec/audit-check@v2.0.0
+      with:
+        token: ${{ inputs.github_token }}
