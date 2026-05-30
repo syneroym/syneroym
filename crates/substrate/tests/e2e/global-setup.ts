@@ -18,6 +18,10 @@ export default async function globalSetup() {
   const ROYMCTL_BIN = path.join(WORKSPACE_DIR, 'target/debug/roymctl');
   const MINIAPP_BIN = path.join(WORKSPACE_DIR, 'target/debug/miniapp-demo1-web');
   
+  console.log('Building miniapp SolidJS client...');
+  const clientDir = path.join(WORKSPACE_DIR, 'test-components/miniapp-demo1-web/client');
+  execSync('npm install && npm run build', { cwd: clientDir, stdio: 'inherit' });
+
   console.log('Building Cargo binaries...');
   execSync('cargo build --bin roymctl', { cwd: WORKSPACE_DIR, stdio: 'inherit' });
   execSync('cargo build --bin syneroym-substrate', { cwd: WORKSPACE_DIR, stdio: 'inherit' });
