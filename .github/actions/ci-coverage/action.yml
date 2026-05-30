@@ -1,0 +1,18 @@
+name: 'CI Coverage'
+description: 'Runs code coverage and uploads to Codecov'
+inputs:
+  github_token:
+    description: 'GitHub token for Codecov'
+    required: true
+runs:
+  using: "composite"
+  steps:
+    - name: Generate Code Coverage
+      run: cargo llvm-cov --workspace --all-targets --all-features --lcov --output-path lcov.info
+      shell: bash
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v6
+      with:
+        files: lcov.info
+        token: ${{ inputs.github_token }}

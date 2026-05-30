@@ -35,8 +35,18 @@ aes-gcm.workspace = true
 p256.workspace = true
 rand.workspace = true
 hex.workspace = true
+metrics.workspace = true
 
 
 
 [dev-dependencies]
 syneroym-core = { path = "../core", features = ["test-utils"] }
+criterion.workspace = true
+
+[[bench]]
+name = "preamble"
+harness = false
+
+[[bench]]
+name = "crypto"
+harness = false

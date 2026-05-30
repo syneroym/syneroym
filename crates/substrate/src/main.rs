@@ -216,6 +216,9 @@ fn dev_mode_config() -> SubstrateConfig {
         tracing: Some(Default::default()),
     });
 
+    c.parent_coordinator.iroh = Some(Default::default());
+    c.parent_coordinator.webrtc = Some(Default::default());
+
     // Default to local registry
     c.substrate.registry_url = Some("http://localhost:7961".to_string());
     c
