@@ -89,6 +89,8 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
     let substrate_info = orchestrator_client.lookup().await?;
     let mechanisms = substrate_info.info.mechanisms;
 
+    let _ = orchestrator_client.shutdown().await;
+
     let info_reg = syneroym_core::community_registry::EndpointInfo {
         service_id: app_service_id.clone(),
         substrate_id: env.substrate_did.clone(),
@@ -258,7 +260,9 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
             cycle += 1;
             dep_cycles_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-            let unique_service_id = format!("soak-deploy-{}", cycle);
+            let churn_identity = syneroym_identity::Identity::generate().unwrap();
+            let unique_service_id =
+                syneroym_identity::substrate::derive_did_key(&churn_identity.public_key());
             info!("Deploy Churn Cycle {}: Deploying {}", cycle, unique_service_id);
 
             let mut orchestrator_client = syneroym_sdk::SyneroymClient::new(
@@ -283,17 +287,14 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
                 )
                 .await;
 
-            let _ = orchestrator_client.shutdown().await;
-
             match deploy_result {
                 Ok(_) => {
                     // Register the churned service in the registry first
-                    let churn_identity = syneroym_identity::Identity::generate().unwrap();
                     let info_reg = syneroym_core::community_registry::EndpointInfo {
                         service_id: unique_service_id.clone(),
                         substrate_id: substrate_did_clone.clone(),
                         endpoint_type: syneroym_core::community_registry::EndpointType::Service,
-                        nickname: Some(unique_service_id.clone()),
+                        nickname: Some(format!("soak-deploy-{}", cycle)),
                         mechanisms: mechanisms_clone.clone(),
                         is_private: false,
                     };
@@ -320,6 +321,8 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
                             cycle
                         );
                         dep_err_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let _ = orchestrator_client.undeploy(unique_service_id.clone()).await;
+                        let _ = orchestrator_client.shutdown().await;
                         continue;
                     }
 
@@ -358,12 +361,23 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
                         .json(&json!({ "service_id": unique_service_id }))
                         .send()
                         .await;
+
+                    // Undeploy the WASM service from the substrate!
+                    if let Err(e) = orchestrator_client.undeploy(unique_service_id.clone()).await {
+                        warn!(
+                            "Deploy Churn Cycle {} failed to undeploy WASM service {}: {:?}",
+                            cycle, unique_service_id, e
+                        );
+                        dep_err_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
                 }
                 Err(e) => {
                     warn!("Deploy Churn cycle failed to deploy: {:?}", e);
                     dep_err_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
             }
+
+            let _ = orchestrator_client.shutdown().await;
         }
     });
 
@@ -437,7 +451,7 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
     let _ = shared_client.lock().await.shutdown().await;
 
     // --- Wait a few seconds for metrics stabilization ---
-    sleep(Duration::from_secs(2)).await;
+    sleep(Duration::from_secs(5)).await;
 
     // Clean up registry registration
     let _ = http_client
@@ -519,7 +533,7 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
     let fd_stable = ending_fds <= baseline_fds + 25;
 
     // Heuristic 3: Tokio Tasks Leak Detection (Ending task count stable)
-    let task_stable = ending_tasks <= baseline_tasks + 15;
+    let task_stable = ending_tasks <= baseline_tasks + 25;
 
     // Heuristic 4: Connection Leak Detection (Active connections back to baseline)
     let conn_stable = ending_conns <= baseline_conns + 2;

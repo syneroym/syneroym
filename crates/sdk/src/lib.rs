@@ -129,11 +129,16 @@ impl SyneroymClient {
                     }
 
                     let endpoint = ep_bldr.bind().await?;
-                    let conn =
-                        endpoint.connect(endpoint_addr, syneroym_router::SYNEROYM_ALPN).await?;
-
-                    self.connection = Some(TransportConnection::Iroh { endpoint, conn });
-                    return Ok(());
+                    match endpoint.connect(endpoint_addr, syneroym_router::SYNEROYM_ALPN).await {
+                        Ok(conn) => {
+                            self.connection = Some(TransportConnection::Iroh { endpoint, conn });
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            endpoint.close().await;
+                            return Err(e.into());
+                        }
+                    }
                 }
                 EndpointMechanism::WebRtc { .. } => {
                     // Not implemented
@@ -286,6 +291,16 @@ impl SyneroymClient {
             Ok(())
         } else {
             Err(anyhow::anyhow!("Deployment failed: {:?}", res.result))
+        }
+    }
+
+    pub async fn undeploy(&self, service_id: String) -> Result<()> {
+        let params = serde_json::to_value((service_id,))?;
+        let res = self.request("orchestrator", "undeploy", params).await?;
+        if res.result == serde_json::json!({"status": "undeployed"}) {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Undeployment failed: {:?}", res.result))
         }
     }
 
