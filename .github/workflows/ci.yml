@@ -7,6 +7,14 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
     inputs:
+      build_mode:
+        description: "Cargo build mode (debug or release)"
+        required: false
+        type: choice
+        options:
+          - debug
+          - release
+        default: debug
       coverage:
         description: "Run code coverage and upload the report to Codecov"
         required: false
@@ -17,15 +25,23 @@ on:
         required: false
         type: boolean
         default: true
+      benchmarks:
+        description: "Run benchmarks and performance tests"
+        required: false
+        type: boolean
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  rust-checks:
-    name: Rust Check & Test
+  ci-pipeline:
+    name: CI Pipeline
     runs-on: ubuntu-latest
     steps:
+      # ========================================
+      # 1. Base Setup (Shared for all)
+      # ========================================
       - uses: actions/checkout@v6
 
       - name: Setup Rust
@@ -40,7 +56,7 @@ jobs:
           tool: cargo-component@0.21.1
 
       - name: Install cargo-llvm-cov
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.coverage }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.coverage == true }}
         uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: Setup Rust Cache
@@ -49,68 +65,33 @@ jobs:
       - name: Install wasm32-wasip2 target
         run: rustup target add wasm32-wasip2
 
-      - name: Build WASM Test Component
-        run: cd test-components/greeter && cargo component build --release --target wasm32-wasip2
-
-      - name: Check Formatting
-        run: cargo fmt --all -- --check
-
-      - name: Clippy Lints
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-
-      - name: Run Tests
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.coverage) }}
-        run: cargo test --workspace --all-targets --all-features
-
-      - name: Generate Code Coverage
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.coverage }}
-        run: cargo llvm-cov --workspace --all-targets --all-features --lcov --output-path lcov.info
-
-      - name: Upload coverage to Codecov
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.coverage }}
-        uses: codecov/codecov-action@v6
+      # ========================================
+      # 2. Composite Actions
+      # ========================================
+      - name: Run Lints & Audit
+        uses: ./.github/actions/ci-lints
         with:
-          files: lcov.info
-          token: ${{ secrets.GITHUB_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install Chrome
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.e2e }}
-        uses: browser-actions/setup-chrome@v1
-        id: setup-chrome
+      # Note: 'Run Build & Test' and 'Run Code Coverage' are mutually exclusive.
+      # `cargo llvm-cov` inherently runs the test suite. If coverage is requested,
+      # we skip the standard test step to avoid running all tests twice.
+      - name: Run Build & Test
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.coverage == true) }}
+        uses: ./.github/actions/ci-build-and-test
         with:
-          chrome-version: stable
+          build_mode: ${{ github.event.inputs.build_mode || 'debug' }}
 
-      - name: Set Chrome Path
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.e2e }}
-        run: echo "CHROME_PATH=${{ steps.setup-chrome.outputs.chrome-path }}" >> $GITHUB_ENV
-
-      - name: Setup Node.js
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.e2e }}
-        uses: actions/setup-node@v6
+      - name: Run Code Coverage
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.coverage == true }}
+        uses: ./.github/actions/ci-coverage
         with:
-          node-version: '20'
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install Node Dependencies & Playwright Browsers
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.e2e }}
-        working-directory: crates/substrate/tests/e2e
-        run: |
-          npm ci
-          npx playwright install --with-deps chromium
+      - name: Run Playwright E2E
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.e2e == true }}
+        uses: ./.github/actions/ci-e2e
 
-      - name: Run Playwright E2E Tests
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.e2e }}
-        working-directory: crates/substrate/tests/e2e
-        run: npm run test
-
-      - name: Upload Playwright Report
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.e2e }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: playwright-report
-          path: crates/substrate/tests/e2e/playwright-report/
-          retention-days: 14
-
-      - name: Security Audit
-        uses: rustsec/audit-check@v2.0.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Run Benchmarks
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.benchmarks == true }}
+        uses: ./.github/actions/ci-benchmarks
