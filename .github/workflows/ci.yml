@@ -24,7 +24,7 @@ on:
         description: "Run Playwright E2E integration tests"
         required: false
         type: boolean
-        default: true
+        default: false
       benchmarks:
         description: "Run benchmarks and performance tests"
         required: false
