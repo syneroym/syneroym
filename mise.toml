@@ -51,3 +51,13 @@ run = "cargo bench --workspace"
 [tasks."bench:latency"]
 description = "Run Latency Overhead Tests"
 run = "cargo run -p syneroym-perf -- latency"
+
+[tasks."bench:concurrency"]
+description = "Run Concurrency & Resource Profiling Tests"
+run = "cargo run -p syneroym-perf -- concurrency"
+
+[tasks."bench:soak"]
+description = "Run Soak / Endurance Tests"
+run = "cargo run -p syneroym-perf -- soak"
+
+

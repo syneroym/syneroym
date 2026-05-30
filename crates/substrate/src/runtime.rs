@@ -56,10 +56,7 @@ pub async fn run_with_signal<F>(
 where
     F: std::future::Future<Output = ()>,
 {
-    runtime
-        .services
-        .run_until_shutdown(&config.profile, &runtime.connection_router, shutdown_signal)
-        .await;
+    runtime.services.run_until_shutdown(&config, &runtime.connection_router, shutdown_signal).await;
 
     info!("shutting down substrate components");
     runtime.services.shutdown().await;
@@ -142,7 +139,7 @@ impl RuntimeServices {
 
     async fn run_until_shutdown<F>(
         &mut self,
-        profile: &str,
+        config: &SubstrateConfig,
         connection_router: &ConnectionRouter,
         shutdown_signal: F,
     ) where
@@ -178,15 +175,80 @@ impl RuntimeServices {
         #[cfg(not(feature = "client_gateway"))]
         let mut client_gateway_fut = std::pin::pin!(pending_component());
 
+        let mut health_fut = std::pin::pin!(async {
+            if let Some(obs) = &config.roles.observability
+                && let Some(health) = &obs.health
+                && health.enabled
+            {
+                let app = axum::Router::new()
+                    .route(&health.endpoint, axum::routing::get(|| async { "OK" }));
+                match tokio::net::TcpListener::bind(&health.bind_address).await {
+                    Ok(listener) => {
+                        if let Ok(addr) = listener.local_addr() {
+                            info!("observability health endpoint listening on http://{}", addr);
+                        }
+                        let _ = axum::serve(listener, app).await;
+                    }
+                    Err(e) => {
+                        error!(
+                            "failed to bind health endpoint on {}: {:?}",
+                            health.bind_address, e
+                        );
+                    }
+                }
+            }
+            pending_component().await
+        });
+
+        let mut metrics_fut = std::pin::pin!(async {
+            if let Some(obs) = &config.roles.observability
+                && let Some(metrics_cfg) = &obs.metrics
+                && metrics_cfg.enabled
+            {
+                let app = axum::Router::new().route(
+                    &metrics_cfg.endpoint,
+                    axum::routing::get(|| async {
+                        if let Some(recorder) = syneroym_observability::MemoryRecorder::global() {
+                            let snapshot = recorder.snapshot();
+                            axum::Json(snapshot)
+                        } else {
+                            axum::Json(syneroym_observability::MetricsSnapshot {
+                                counters: std::collections::HashMap::new(),
+                                gauges: std::collections::HashMap::new(),
+                                histograms: std::collections::HashMap::new(),
+                            })
+                        }
+                    }),
+                );
+                match tokio::net::TcpListener::bind(&metrics_cfg.bind_address).await {
+                    Ok(listener) => {
+                        if let Ok(addr) = listener.local_addr() {
+                            info!("observability metrics endpoint listening on http://{}", addr);
+                        }
+                        let _ = axum::serve(listener, app).await;
+                    }
+                    Err(e) => {
+                        error!(
+                            "failed to bind metrics endpoint on {}: {:?}",
+                            metrics_cfg.bind_address, e
+                        );
+                    }
+                }
+            }
+            pending_component().await
+        });
+
         let mut connection_router_fut = std::pin::pin!(connection_router.run());
         let mut shutdown_signal = std::pin::pin!(shutdown_signal);
 
-        info!(profile = %profile, "starting substrate components");
+        info!(profile = %config.profile, "starting substrate components");
         tokio::select! {
             res = &mut connection_router_fut => log_component_exit("connection router", res),
             res = &mut registry_fut => log_component_exit("service registry", res),
             res = &mut coordinator_fut => log_component_exit("coordinator", res),
             res = &mut client_gateway_fut => log_component_exit("http proxy", res),
+            res = &mut health_fut => log_component_exit("health server", res),
+            res = &mut metrics_fut => log_component_exit("metrics server", res),
             () = &mut shutdown_signal => warn!("received shutdown signal"),
         }
     }

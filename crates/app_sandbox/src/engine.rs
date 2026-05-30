@@ -371,6 +371,7 @@ impl AppSandboxEngine {
     pub async fn stop_wasm(&self, service_id: &str) -> Result<()> {
         tracing::info!(service_id = %service_id, "AppSandboxEngine: stopping Wasm component");
         self.components.remove(service_id);
+        metrics::gauge!("substrate.wasm.component_cache_size").set(self.components.len() as f64);
         Ok(())
     }
 
@@ -407,6 +408,7 @@ impl AppSandboxEngine {
 
         self.components.insert(service_id.to_string(), component);
         tracing::info!("WASM component compiled and cached for {}", service_id);
+        metrics::gauge!("substrate.wasm.component_cache_size").set(self.components.len() as f64);
         Ok(())
     }
 

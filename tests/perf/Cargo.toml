@@ -17,6 +17,10 @@ serde_json.workspace = true
 tokio.workspace = true
 futures.workspace = true
 
+# System & Utilities
+sysinfo.workspace = true
+chrono.workspace = true
+
 # HTTP & Metrics
 reqwest.workspace = true
 

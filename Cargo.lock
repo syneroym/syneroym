@@ -6265,6 +6265,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
+ "chrono",
  "clap",
  "futures",
  "reqwest 0.13.3",
@@ -6275,6 +6276,7 @@ dependencies = [
  "syneroym-core",
  "syneroym-identity",
  "syneroym-sdk",
+ "sysinfo",
  "tempfile",
  "tokio",
  "tracing",

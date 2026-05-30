@@ -42,6 +42,11 @@ impl SystemSampler {
                 // Count open FDs
                 let fds = std::fs::read_dir("/dev/fd").map(|dir| dir.count()).unwrap_or(0);
                 metrics::gauge!("substrate.system.open_fds").set(fds as f64);
+
+                // Count active tokio tasks
+                let tokio_metrics = tokio::runtime::Handle::current().metrics();
+                let active_tasks = tokio_metrics.num_alive_tasks();
+                metrics::gauge!("substrate.tokio.active_tasks").set(active_tasks as f64);
             }
         })
     }

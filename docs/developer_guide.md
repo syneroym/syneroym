@@ -76,6 +76,12 @@ These verify fully integrated WebRTC signaling and client gateway browser scenar
   npm test
   ```
 
+* **Run Everything Together**
+To execute all Rust and E2E suites sequentially:
+```bash
+mise run test:all
+```
+
 ### Suite 3: Criterion Micro-Benchmarks
 These capture performance baselines for hotpaths under CPU stress in isolation, including preamble parsing, crypto (ECDH and AES-GCM), length-prefixed framing, and WASM sandbox store creation and instantiation.
 
@@ -100,11 +106,33 @@ These tests spin up a local substrate process, load applications onto it, and be
   cargo run -p syneroym-perf -- latency
   ```
 
-### Run Everything Together
-To execute all Rust and E2E suites sequentially:
-```bash
-mise run test:all
-```
+### Suite 5: Concurrency & Resource Profiling Tests
+These tests flooding the substrate under high-concurrency, sudden spike load, pool exhaustion, and long-term client connections to verify resource boundaries.
+
+* **Run via Mise (Recommended):**
+  ```bash
+  mise run bench:concurrency
+  ```
+* **Run via Cargo:**
+  ```bash
+  cargo run -p syneroym-perf -- concurrency
+  ```
+
+### Suite 6: Soak / Endurance Tests
+These run long-duration endurance scenarios to detect slow memory/FD/task/cache leaks under concurrent sustained workloads.
+
+* **Run via Mise (Recommended):**
+  ```bash
+  mise run bench:soak
+  ```
+* **Run via Cargo:**
+  ```bash
+  cargo run -p syneroym-perf -- soak --duration 1800
+  ```
+
+> [!NOTE]
+> For a full design, layout of the metrics, leak detection heuristics, and results gating, refer to the comprehensive [Performance & Robustness Testing Report](performance_and_robustness_report.md).
+
 
 ---
 

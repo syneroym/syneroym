@@ -1,11 +1,42 @@
 use anyhow::{Context, Result};
-use assert_cmd::cargo::cargo_bin;
 use reqwest::Client;
 use std::process::Stdio;
 use std::time::Duration;
 use syneroym_identity::Identity;
 use tokio::process::{Child, Command};
 use tracing::info;
+
+fn get_cargo_bin(name: &str) -> std::path::PathBuf {
+    if let Some(path) = std::env::var_os(format!("CARGO_BIN_EXE_{}", name)) {
+        std::path::PathBuf::from(path)
+    } else {
+        // Fall back to target/debug or target/release based on current executable parent
+        if let Ok(current_exe) = std::env::current_exe()
+            && let Some(parent) = current_exe.parent()
+        {
+            let bin_path = parent.join(name);
+            if bin_path.exists() {
+                return bin_path;
+            }
+        }
+        // Fall back to workspace target/debug or target/release
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
+        let target_dir = std::path::Path::new(&manifest_dir)
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("target")
+            .join("debug");
+        let bin_path = target_dir.join(name);
+        if bin_path.exists() {
+            bin_path
+        } else {
+            let release_path = target_dir.parent().unwrap().join("release").join(name);
+            if release_path.exists() { release_path } else { std::path::PathBuf::from(name) }
+        }
+    }
+}
 
 pub struct TestEnvironment {
     substrate: Option<Child>,
@@ -36,7 +67,7 @@ impl TestEnvironment {
 
     pub async fn start_miniapp(&mut self, port: u16) -> Result<()> {
         info!("Starting miniapp-demo1-web on port {port}");
-        let bin = cargo_bin("miniapp-demo1-web");
+        let bin = get_cargo_bin("miniapp-demo1-web");
 
         // Use a temporary data dir for miniapp to avoid pollution
         let data_dir = tempfile::tempdir()?.keep();
@@ -62,7 +93,7 @@ impl TestEnvironment {
 
     pub async fn start_substrate(&mut self) -> Result<()> {
         info!("Starting syneroym-substrate");
-        let bin = cargo_bin("syneroym-substrate"); // Might be `syneroym` depending on cargo setup. Let's assume syneroym-substrate based on Cargo.toml `name`.
+        let bin = get_cargo_bin("syneroym-substrate"); // Might be `syneroym` depending on cargo setup. Let's assume syneroym-substrate based on Cargo.toml `name`.
 
         let child = Command::new(bin)
             .arg("run")

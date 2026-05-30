@@ -28,6 +28,8 @@ reqwest.workspace = true
 z32.workspace = true
 rustls.workspace = true
 iroh.workspace = true
+axum = { workspace = true }
+
 
 [features]
 default = [
@@ -67,4 +69,4 @@ webrtc.workspace = true
 syneroym-coordinator-webrtc = { path = "../coordinator_webrtc" }
 chromiumoxide.workspace = true
 tokio-stream.workspace = true
-axum.workspace = true
+
