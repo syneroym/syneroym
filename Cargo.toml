@@ -95,7 +95,7 @@ iroh = "0.97"
 iroh-relay = { version = "0.97", features = ["server"] }
 
 # WASM
-wasmtime = { version = "44", features = ["component-model"] }
+wasmtime = { version = "45", features = ["component-model"] }
 wasmtime-wasi = "44"
 wit-bindgen = "0.57"
 
