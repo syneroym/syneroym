@@ -89,7 +89,7 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run Playwright E2E
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.e2e == true }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.e2e == true }}
         uses: ./.github/actions/ci-e2e
 
       - name: Run Benchmarks
