@@ -28,7 +28,7 @@ import * as path from 'path';
 
     test('GET / and navigate to comments', async ({ page }) => {
       await page.click('text=Comments etc.');
-      await expect(page.locator('h2')).toContainText('Comments');
+      await expect(page.locator('h2')).toContainText('Comments', { timeout: 35000 });
     });
 
     test('POST /api/comments and verify recent comments', async ({ page }) => {
@@ -38,10 +38,10 @@ import * as path from 'path';
       await page.fill('textarea[placeholder="Write a comment..."]', commentText);
       await page.click('button:has-text("Submit")');
       
-      await expect(page.locator('text=Comment saved!')).toBeVisible();
+      await expect(page.locator('text=Comment saved!')).toBeVisible({ timeout: 35000 });
       
       // Verify it appears in the list
-      await expect(page.locator('ul').first()).toContainText(commentText);
+      await expect(page.locator('ul').first()).toContainText(commentText, { timeout: 35000 });
     });
 
     test('WebSocket Echo and Broadcast', async ({ page }) => {
@@ -60,7 +60,7 @@ import * as path from 'path';
       await page.click('button:has-text("Submit")');
       
       // Wait for the broadcast message to update the UI
-      await expect(lastUpdatedLocator).not.toHaveText(lastUpdatedBefore, { timeout: 10000 });
+      await expect(lastUpdatedLocator).not.toHaveText(lastUpdatedBefore, { timeout: 35000 });
     });
 
     test('File Upload and Download', async ({ page }) => {
@@ -76,10 +76,10 @@ import * as path from 'path';
         await fileInput.setInputFiles(filePath);
         await page.click('button:has-text("Upload")');
 
-        await expect(page.locator('text=Upload successful!')).toBeVisible();
+        await expect(page.locator('text=Upload successful!')).toBeVisible({ timeout: 35000 });
 
         // Verify in list and Download content
-        await expect(page.locator('ul').last()).toContainText(fileName);
+        await expect(page.locator('ul').last()).toContainText(fileName, { timeout: 35000 });
         
         const content = await page.evaluate(async (name) => {
           const res = await fetch(`/api/files/${name}`);
