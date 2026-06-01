@@ -92,6 +92,8 @@ jobs:
       - name: Run Playwright E2E
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.e2e == true }}
         uses: ./.github/actions/ci-e2e
+        with:
+          release_flag: ${{ github.event.inputs.build_mode == 'release' && '--release' || '' }}
 
       - name: Run Benchmarks
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.benchmarks == true }}

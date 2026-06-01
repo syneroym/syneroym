@@ -13,18 +13,21 @@ export default async function globalSetup() {
   fs.mkdirSync(TEST_DIR, { recursive: true });
 
   const WORKSPACE_DIR = path.resolve(process.cwd(), '../../../../');
-  const SUBSTRATE_BIN = path.join(WORKSPACE_DIR, 'target/debug/syneroym-substrate');
-  const ROYMCTL_BIN = path.join(WORKSPACE_DIR, 'target/debug/roymctl');
-  const MINIAPP_BIN = path.join(WORKSPACE_DIR, 'target/debug/miniapp-demo1-web');
+  const isRelease = process.env.CARGO_RELEASE_FLAG === '--release';
+  const targetDir = isRelease ? 'target/release' : 'target/debug';
+  const buildFlag = isRelease ? '--release' : '';
+  const SUBSTRATE_BIN = path.join(WORKSPACE_DIR, targetDir, 'syneroym-substrate');
+  const ROYMCTL_BIN = path.join(WORKSPACE_DIR, targetDir, 'roymctl');
+  const MINIAPP_BIN = path.join(WORKSPACE_DIR, targetDir, 'miniapp-demo1-web');
   
   console.log('Building miniapp SolidJS client...');
   const clientDir = path.join(WORKSPACE_DIR, 'test-components/miniapp-demo1-web/client');
   execSync('npm install && npm run build', { cwd: clientDir, stdio: 'inherit' });
 
   console.log('Building Cargo binaries...');
-  execSync('cargo build --bin roymctl', { cwd: WORKSPACE_DIR, stdio: 'inherit' });
-  execSync('cargo build --bin syneroym-substrate', { cwd: WORKSPACE_DIR, stdio: 'inherit' });
-  execSync('cargo build -p miniapp-demo1-web', { cwd: WORKSPACE_DIR, stdio: 'inherit' });
+  execSync(`cargo build ${buildFlag} --bin roymctl`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
+  execSync(`cargo build ${buildFlag} --bin syneroym-substrate`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
+  execSync(`cargo build ${buildFlag} -p miniapp-demo1-web`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
 
   // Initialize node directories
   console.log('Initializing node directories...');
