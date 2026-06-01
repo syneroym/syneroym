@@ -16,6 +16,7 @@ use tracing::{debug, error};
 
 use crate::net_iroh::IrohStream;
 use syneroym_app_sandbox::AppSandboxEngine;
+use syneroym_podman_sandbox::ContainerEngine;
 
 pub mod dispatch;
 pub mod encryption;
@@ -56,6 +57,15 @@ impl RouteHandler {
         let app_sandbox_engine =
             Arc::new(AppSandboxEngine::init(config, registry.get_all_endpoints()).await?);
 
+        let podman_path = config
+            .roles
+            .podman_sandbox
+            .as_ref()
+            .map(|cfg| cfg.podman_path.clone())
+            .unwrap_or_else(|| "podman".to_string());
+        let podman_sandbox_engine =
+            Arc::new(ContainerEngine::new(podman_path, &config.app_local_data_dir));
+
         let identity = syneroym_identity::Identity::from_bytes(&secret_key);
 
         let parent_coordinator_url =
@@ -73,8 +83,13 @@ impl RouteHandler {
 
         let s = Self { inner };
 
-        let substrate_service =
-            ControlPlaneService::init(service_id.clone(), app_sandbox_engine, registry).await?;
+        let substrate_service = ControlPlaneService::init(
+            service_id.clone(),
+            app_sandbox_engine,
+            podman_sandbox_engine,
+            registry,
+        )
+        .await?;
         s.register_native_service(service_id, Arc::new(substrate_service));
         Ok(s)
     }

@@ -264,6 +264,46 @@ curl -X POST http://localhost:7960/ \
   }'
 ```
 
+#### Deploy a Container Service (Podman)
+```bash
+curl -X POST http://localhost:7960/ \
+  -H "Host: <NICKNAME>-p<SUBSTRATE_DID_SHORTHASH>-iorchestrator.localhost" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "method": "deploy",
+    "params": [
+      "did:key:my-container-service",
+      ["default"],
+      {
+        "config": { "env": [], "args": [], "custom_config": null },
+        "service_type": {
+          "container": {
+            "source": { "binary": [] },
+            "hash": null,
+            "image": "docker.io/library/nginx:alpine",
+            "ports": [
+              {
+                "interface_name": "default",
+                "host_port": null,
+                "container_port": 80,
+                "protocol": "tcp"
+              }
+            ],
+            "volumes": [
+              {
+                "host_path": "html",
+                "container_path": "/usr/share/nginx/html"
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "id": 1
+  }'
+```
+
 ### Interacting with Applications
 
 #### Call a JSON-RPC method on a WASM app via HTTP Proxy

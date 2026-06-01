@@ -3,7 +3,7 @@
 //! Handles requests for registering, deploying, listing, and destroying
 //! sandbox instances or services running on the node.
 
-use crate::dummy_sandbox::AppSandboxEngine;
+use crate::dummy_sandbox::{AppSandboxEngine, ContainerEngine};
 use anyhow::Result;
 use std::fmt;
 use std::sync::Arc;
@@ -23,6 +23,7 @@ pub struct ControlPlaneService {
     service_id: String,
     registry: EndpointRegistry,
     app_sandbox_engine: Arc<AppSandboxEngine>,
+    podman_sandbox_engine: Arc<ContainerEngine>,
 }
 
 impl fmt::Debug for ControlPlaneService {
@@ -37,11 +38,12 @@ impl ControlPlaneService {
     pub async fn init(
         service_id: String,
         app_sandbox_engine: Arc<AppSandboxEngine>,
+        podman_sandbox_engine: Arc<ContainerEngine>,
         registry: EndpointRegistry,
     ) -> Result<Self> {
         info!("Initializing ControlPlaneService (Orchestrator)...");
 
-        Ok(Self { service_id, registry, app_sandbox_engine })
+        Ok(Self { service_id, registry, app_sandbox_engine, podman_sandbox_engine })
     }
 }
 
@@ -51,7 +53,7 @@ impl NativeService for ControlPlaneService {
         info!("Orchestrator received dispatch: {}.{}", invocation.interface, invocation.method);
 
         match (invocation.interface.as_str(), invocation.method.as_str()) {
-            (ORCHESTRATOR_INTERFACE, "readyz") => Ok(ready_response()),
+            (ORCHESTRATOR_INTERFACE, "readyz") => self.readyz(invocation.params).await,
             (ORCHESTRATOR_INTERFACE, "deploy") => self.deploy(invocation.params).await,
             (ORCHESTRATOR_INTERFACE, "undeploy") => self.undeploy(invocation.params).await,
             (ORCHESTRATOR_INTERFACE, "list") => self.list().await,
@@ -65,6 +67,29 @@ impl NativeService for ControlPlaneService {
 }
 
 impl ControlPlaneService {
+    async fn readyz(&self, params: serde_json::Value) -> RpcResult<NativeResponse> {
+        let (service_id,): (String,) = serde_json::from_value(params.clone())
+            .or_else(|_| serde_json::from_value::<String>(params.clone()).map(|s| (s,)))
+            .unwrap_or((String::new(),));
+
+        if !service_id.is_empty() {
+            let endpoints = self.registry.lookup_by_service(&service_id);
+            let mut is_container = false;
+            for (_, endpoint) in endpoints {
+                if matches!(endpoint, SubstrateEndpoint::TcpHostPort { .. }) {
+                    is_container = true;
+                    break;
+                }
+            }
+            if is_container {
+                self.podman_sandbox_engine.readyz(&service_id).await.map_err(|e| {
+                    RpcError::InternalError(format!("Container readiness check failed: {e}"))
+                })?;
+            }
+        }
+        Ok(ready_response())
+    }
+
     async fn deploy(&self, params: serde_json::Value) -> RpcResult<NativeResponse> {
         // NOTE: We use a positional tuple for parameters here because WASM component-model
         // metadata often strips argument names during compilation, making named parameter
@@ -104,10 +129,31 @@ impl ControlPlaneService {
                         })?;
                 }
             }
-            _ => {
-                return Err(RpcError::InvalidParams(
-                    "Unsupported service type for deployment".to_string(),
-                ));
+            ServiceType::Container(container_manifest) => {
+                info!(
+                    "Deploying container service {}: image={}",
+                    service_id, container_manifest.image
+                );
+                let actual_mappings =
+                    self.podman_sandbox_engine.deploy(&service_id, &manifest).await.map_err(
+                        |e| RpcError::InternalError(format!("Container deployment failed: {e}")),
+                    )?;
+
+                for (interface_name, host_port) in actual_mappings {
+                    self.registry
+                        .register(
+                            service_id.clone(),
+                            interface_name,
+                            SubstrateEndpoint::TcpHostPort {
+                                host: "127.0.0.1".to_string(),
+                                port: host_port,
+                            },
+                        )
+                        .await
+                        .map_err(|e| {
+                            RpcError::InternalError(format!("Endpoint registration failed: {e}"))
+                        })?;
+                }
             }
         }
 
@@ -142,10 +188,13 @@ impl ControlPlaneService {
 
         let endpoints = self.registry.lookup_by_service(&service_id);
         let mut is_wasm = false;
+        let mut is_container = false;
 
         for (interface_name, endpoint) in endpoints {
             if matches!(endpoint, SubstrateEndpoint::WasmChannel { .. }) {
                 is_wasm = true;
+            } else if matches!(endpoint, SubstrateEndpoint::TcpHostPort { .. }) {
+                is_container = true;
             }
             if let Err(e) = self.registry.remove(&service_id, &interface_name).await {
                 tracing::warn!(
@@ -163,6 +212,15 @@ impl ControlPlaneService {
             }
             if let Err(e) = self.app_sandbox_engine.remove_wasm(&service_id).await {
                 tracing::warn!("Failed to remove WASM file for service {}: {}", service_id, e);
+            }
+        }
+
+        if is_container {
+            if let Err(e) = self.podman_sandbox_engine.stop(&service_id).await {
+                tracing::warn!("Failed to stop Container engine for service {}: {}", service_id, e);
+            }
+            if let Err(e) = self.podman_sandbox_engine.remove(&service_id).await {
+                tracing::warn!("Failed to remove Container for service {}: {}", service_id, e);
             }
         }
 

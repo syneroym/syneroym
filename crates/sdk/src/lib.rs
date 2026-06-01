@@ -8,7 +8,8 @@ use anyhow::{Context, Result};
 use iroh::endpoint::Connection;
 use std::time::Duration;
 use syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::{
-    ArtifactSource, DeployManifest, ServiceConfig, ServiceType, TcpManifest, WasmManifest,
+    ArtifactSource, ContainerManifest, ContainerPortMapping, ContainerVolumeMapping,
+    DeployManifest, ServiceConfig, ServiceType, TcpManifest, WasmManifest,
 };
 use syneroym_core::community_registry::{EndpointMechanism, SignedEndpointInfo};
 use syneroym_router::{RoutePreamble, RouteProtocol, RouteTransport};
@@ -284,6 +285,33 @@ impl SyneroymClient {
         let manifest = DeployManifest {
             config: ServiceConfig { env: vec![], args: vec![], custom_config: None },
             service_type: ServiceType::Tcp(TcpManifest { host, port }),
+        };
+        let params = serde_json::to_value((service_id, interfaces, manifest))?;
+        let res = self.request("orchestrator", "deploy", params).await?;
+        if res.result == serde_json::json!({"status": "deployed"}) {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Deployment failed: {:?}", res.result))
+        }
+    }
+
+    pub async fn deploy_container(
+        &self,
+        service_id: String,
+        interfaces: Vec<String>,
+        image: String,
+        ports: Vec<ContainerPortMapping>,
+        volumes: Vec<ContainerVolumeMapping>,
+    ) -> Result<()> {
+        let manifest = DeployManifest {
+            config: ServiceConfig { env: vec![], args: vec![], custom_config: None },
+            service_type: ServiceType::Container(ContainerManifest {
+                source: ArtifactSource::Binary(vec![]),
+                hash: None,
+                image,
+                ports,
+                volumes,
+            }),
         };
         let params = serde_json::to_value((service_id, interfaces, manifest))?;
         let res = self.request("orchestrator", "deploy", params).await?;

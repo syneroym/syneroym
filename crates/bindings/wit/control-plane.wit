@@ -25,10 +25,27 @@ interface orchestrator {
         hash: option<string>,
     }
 
+    /// Port mapping for container
+    record container-port-mapping {
+        interface-name: string,
+        host-port: option<u16>,
+        container-port: u16,
+        protocol: string,
+    }
+
+    /// Volume mapping for container
+    record container-volume-mapping {
+        host-path: string,
+        container-path: string,
+    }
+
     /// Manifest details for a container (Podman) deployment.
     record container-manifest {
         source: artifact-source,
         hash: option<string>,
+        image: string,
+        ports: list<container-port-mapping>,
+        volumes: list<container-volume-mapping>,
     }
 
     /// Manifest details for an existing TCP service.

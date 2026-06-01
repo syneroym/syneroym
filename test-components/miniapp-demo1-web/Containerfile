@@ -1,0 +1,6 @@
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY miniapp-demo1-web /usr/local/bin/miniapp-demo1-web
+EXPOSE 8080
+ENTRYPOINT ["miniapp-demo1-web"]

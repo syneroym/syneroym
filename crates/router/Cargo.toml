@@ -11,6 +11,7 @@ workspace = true
 [dependencies]
 syneroym-core = { path = "../core" }
 syneroym-app-sandbox = { path = "../app_sandbox" }
+syneroym-podman-sandbox = { path = "../podman_sandbox" }
 syneroym-rpc = { path = "../rpc" }
 syneroym-control-plane = { path = "../control_plane" }
 syneroym-identity = { path = "../identity" }

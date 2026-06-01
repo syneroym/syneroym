@@ -15,12 +15,16 @@ pub struct AppSandboxEngine;
 #[cfg(not(feature = "app_sandbox"))]
 impl AppSandboxEngine {
     pub async fn init(
-        _config: &SubstrateConfig,
-        _endpoints: Vec<(String, SubstrateEndpoint)>,
-    ) -> Result<Self> {
+        _config: &syneroym_core::config::SubstrateConfig,
+        _endpoints: Vec<(String, String, syneroym_core::registry::SubstrateEndpoint)>,
+    ) -> anyhow::Result<Self> {
         Ok(Self)
     }
-
-    // Add any dummy methods here as you build out the real AppSandboxEngine
-    // pub async fn deploy_wasm(&self, _channel_id: &str) -> Result<()> { Ok(()) }
 }
+
+#[cfg(feature = "podman_sandbox")]
+pub use syneroym_podman_sandbox::ContainerEngine;
+
+#[cfg(not(feature = "podman_sandbox"))]
+#[derive(Debug, Clone)]
+pub struct ContainerEngine;

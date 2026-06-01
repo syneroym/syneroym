@@ -6062,6 +6062,7 @@ dependencies = [
  "syneroym-app-sandbox",
  "syneroym-bindings",
  "syneroym-core",
+ "syneroym-podman-sandbox",
  "syneroym-rpc",
  "tokio",
  "tracing",
@@ -6225,6 +6226,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "syneroym-podman-sandbox"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "hex",
+ "metrics 0.22.4",
+ "reqwest 0.13.4",
+ "serde_json",
+ "sha2 0.10.9",
+ "syneroym-bindings",
+ "syneroym-core",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "syneroym-router"
 version = "0.1.0"
 dependencies = [
@@ -6250,6 +6268,7 @@ dependencies = [
  "syneroym-control-plane",
  "syneroym-core",
  "syneroym-identity",
+ "syneroym-podman-sandbox",
  "syneroym-rpc",
  "tokio",
  "tokio-tungstenite",

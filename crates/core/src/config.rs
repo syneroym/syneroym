@@ -265,10 +265,27 @@ pub struct ProfileConfig {
 #[serde(default)]
 pub struct RolesConfig {
     pub app_sandbox: Option<AppSandboxRole>,
+    pub podman_sandbox: Option<PodmanSandboxRole>,
     pub community_registry: Option<ServiceRegistryRole>,
     pub coordinator: Option<CoordinatorRole>,
     pub client_gateway: Option<ClientGatewayRole>,
     pub observability: Option<ObservabilityRole>,
+}
+
+fn default_podman_path() -> String {
+    "podman".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PodmanSandboxRole {
+    pub podman_path: String,
+}
+
+impl Default for PodmanSandboxRole {
+    fn default() -> Self {
+        Self { podman_path: default_podman_path() }
+    }
 }
 
 fn default_communication_interfaces() -> Vec<String> {

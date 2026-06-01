@@ -7,8 +7,9 @@ edition = "2024"
 workspace = true
 
 [features]
-default = ["app_sandbox"]
+default = ["app_sandbox", "podman_sandbox"]
 app_sandbox = ["dep:syneroym-app-sandbox"]
+podman_sandbox = ["dep:syneroym-podman-sandbox"]
 
 [dependencies]
 anyhow.workspace = true
@@ -16,6 +17,7 @@ async-trait.workspace = true
 syneroym-core = { path = "../core" }
 syneroym-rpc = { path = "../rpc" }
 syneroym-app-sandbox = { path = "../app_sandbox", optional = true }
+syneroym-podman-sandbox = { path = "../podman_sandbox", optional = true }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
