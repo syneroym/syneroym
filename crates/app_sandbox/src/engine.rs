@@ -38,7 +38,7 @@ impl std::fmt::Debug for HostState {
 impl HostState {
     /// Creates a new HostState with standard WASI context.
     pub fn new(component_id: String) -> Self {
-        let wasi = WasiCtx::builder().inherit_stderr().inherit_stdout().build();
+        let wasi = WasiCtx::builder().build();
         let table = ResourceTable::new();
         Self { wasi, table, component_id, request_ctx: None }
     }
@@ -67,8 +67,8 @@ pub struct AppSandboxEngine {
     blobs_dir: PathBuf,
     engine: wasmtime::Engine,
     linker: Linker<HostState>,
-    // Cache of compiled components for fast instantiation
-    components: DashMap<String, Component>,
+    // Cache of pre-linked instances for fast instantiation
+    components: DashMap<String, wasmtime::component::InstancePre<HostState>>,
 }
 
 impl std::fmt::Debug for AppSandboxEngine {
@@ -320,12 +320,12 @@ impl AppSandboxEngine {
         usize,
         wasmtime::component::types::ComponentItem,
     )> {
-        // Look up the compiled component
-        let component = self
+        // Look up the pre-linked component instance
+        let instance_pre = self
             .components
             .get(service_id)
             .ok_or_else(|| anyhow::anyhow!("Component not found for service {service_id}"))?;
-        debug!("looked up component");
+        debug!("looked up pre-linked component");
 
         // Create host state
         let host_state = HostState::new(service_id.to_string());
@@ -336,7 +336,7 @@ impl AppSandboxEngine {
         let mut store = wasmtime::Store::new(&self.engine, host_state);
 
         let inst_start = std::time::Instant::now();
-        let instance = self.linker.instantiate_async(&mut store, &component).await?;
+        let instance = instance_pre.instantiate_async(&mut store).await?;
         metrics::histogram!("substrate.wasm.instantiation_ms")
             .record(inst_start.elapsed().as_secs_f64() * 1000.0);
 
@@ -406,7 +406,12 @@ impl AppSandboxEngine {
         let component = Component::new(&self.engine, bytes)
             .map_err(|e| anyhow::anyhow!("Failed to compile WASM component: {e}"))?;
 
-        self.components.insert(service_id.to_string(), component);
+        let instance_pre = self
+            .linker
+            .instantiate_pre(&component)
+            .map_err(|e| anyhow::anyhow!("Failed to pre-link WASM component: {e}"))?;
+
+        self.components.insert(service_id.to_string(), instance_pre);
         tracing::info!("WASM component compiled and cached for {}", service_id);
         metrics::gauge!("substrate.wasm.component_cache_size").set(self.components.len() as f64);
         Ok(())
