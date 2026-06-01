@@ -290,7 +290,7 @@ flowchart LR
     WASM_C[WASM Component .wasm]
     APP_SPEC[App Spec .toml manifest]
     SUB[Substrate Orchestrator]
-    JRPC[wRPC or JSON-RPC 2.0 External API]
+    JRPC[JSON-RPC 2.0 External API (wRPC planned)]
 
     WIT -->|generates bindings| WB
     WB --> RS
@@ -626,7 +626,7 @@ flowchart TD
     end
 
     subgraph PROVIDER_SUBSTRATE["Provider Substrate"]
-        GW[wRPC or JSON-RPC Gateway]
+        GW[JSON-RPC Gateway (wRPC planned)]
         
         subgraph WASM_COMPONENTS["WASM Components"]
             SM[space-manager]

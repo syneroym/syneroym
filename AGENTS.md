@@ -8,10 +8,10 @@
 - Have solid unit tests for internal code if it is complex and delicate, even if it is not user facing.
 - If new tools are needed in the build pipeline, add them to `mise.toml` too, so other dev environments easily get it.
 - Do not commit code changes, and also do not add code changes to git index.
-- Files with `scratch-notes` in the name are temporary files and can be ignored by the agent. Often might not contain reliable information.
+- Files with `scratch-notes` in the name, as well as the `docs/archive` folder, contain temporary or archived ideas and should be ignored by the agent. They might not contain reliable information.
 
 ## Project & Rust Specifics
-- Given the presence of WASM component configurations (`wasm32-wasip1`), maintain clean `wit` file boundaries and consider cross-compilation constraints.
+- Given the presence of WASM component configurations (`wasm32-wasip2`), maintain clean `wit` file boundaries and consider cross-compilation constraints.
 - Emphasize idiomatic Rust formatting, leveraging the language's strong typing to guarantee correctness.
 - Ensure any added dependencies reflect widely supported community standards.
 
@@ -40,4 +40,4 @@
   - `bindings/`: WASM/WebAssembly interfaces.
 - **Apps**: `roymctl/`: Command-line tool.
 - **Other**: `observability/`, `control_plane/`, `client_gateway/`, etc., for monitoring, control, and client interactions.
-- **Build and Test**: Use `cargo` for Rust builds. WASM targets (`wasm32-wasip1`) require special handling. Ensure `cargo fmt`, `clippy`, and `test` pass before completion.
+- **Build and Test**: Use `cargo` for Rust builds. WASM targets (`wasm32-wasip2`) require special handling. Ensure `cargo fmt`, `clippy`, and `test` pass before completion.

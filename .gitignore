@@ -19,7 +19,7 @@ __pycache__/
 *.tmp
 *.swp
 
-docs/*scratch-notes*.md
+docs/archive/
 apps/*prototype
 crates/*prototype
 
