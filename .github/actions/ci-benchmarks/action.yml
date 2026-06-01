@@ -8,6 +8,14 @@ inputs:
 runs:
   using: "composite"
   steps:
+    - name: Build WASM Test Component
+      run: cd test-components/greeter && cargo component build --release --target wasm32-wasip2
+      shell: bash
+
+    - name: Build Performance Test Dependencies
+      run: cargo build ${{ inputs.release_flag }} -p miniapp-demo1-web -p syneroym-substrate
+      shell: bash
+
     - name: Run Cargo Bench
       run: cargo bench --workspace ${{ inputs.release_flag }}
       shell: bash

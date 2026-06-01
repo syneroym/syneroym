@@ -19,21 +19,20 @@ fn get_cargo_bin(name: &str) -> std::path::PathBuf {
                 return bin_path;
             }
         }
-        // Fall back to workspace target/debug or target/release
+        // Fall back to workspace target/debug or target/release based on compilation profile
         let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
-        let target_dir = std::path::Path::new(&manifest_dir)
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("target")
-            .join("debug");
-        let bin_path = target_dir.join(name);
-        if bin_path.exists() {
-            bin_path
+        let workspace_target =
+            std::path::Path::new(&manifest_dir).parent().unwrap().parent().unwrap().join("target");
+
+        let primary_profile = if cfg!(debug_assertions) { "debug" } else { "release" };
+        let secondary_profile = if cfg!(debug_assertions) { "release" } else { "debug" };
+
+        let primary_path = workspace_target.join(primary_profile).join(name);
+        if primary_path.exists() {
+            primary_path
         } else {
-            let release_path = target_dir.parent().unwrap().join("release").join(name);
-            if release_path.exists() { release_path } else { std::path::PathBuf::from(name) }
+            let secondary_path = workspace_target.join(secondary_profile).join(name);
+            if secondary_path.exists() { secondary_path } else { std::path::PathBuf::from(name) }
         }
     }
 }
