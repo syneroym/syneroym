@@ -1,10 +1,10 @@
 name: 'CI Build and Test'
 description: 'Compiles workspace and runs tests'
 inputs:
-  build_mode:
-    description: 'Build mode (debug or release)'
-    required: true
-    default: 'debug'
+  release_flag:
+    description: 'Flag to pass to cargo for release mode (e.g. --release)'
+    required: false
+    default: ''
 runs:
   using: "composite"
   steps:
@@ -12,12 +12,6 @@ runs:
       run: cd test-components/greeter && cargo component build --release --target wasm32-wasip2
       shell: bash
 
-    - name: Run Tests (Debug)
-      if: ${{ inputs.build_mode != 'release' }}
-      run: cargo test --workspace --all-targets --all-features
-      shell: bash
-
-    - name: Run Tests (Release)
-      if: ${{ inputs.build_mode == 'release' }}
-      run: cargo test --workspace --all-targets --all-features --release
+    - name: Run Tests
+      run: cargo test --workspace --all-targets --all-features ${{ inputs.release_flag }}
       shell: bash

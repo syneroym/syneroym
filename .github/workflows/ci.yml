@@ -80,13 +80,14 @@ jobs:
         if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.coverage == true) }}
         uses: ./.github/actions/ci-build-and-test
         with:
-          build_mode: ${{ github.event.inputs.build_mode || 'debug' }}
+          release_flag: ${{ github.event.inputs.build_mode == 'release' && '--release' || '' }}
 
       - name: Run Code Coverage
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.coverage == true }}
         uses: ./.github/actions/ci-coverage
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          release_flag: ${{ github.event.inputs.build_mode == 'release' && '--release' || '' }}
 
       - name: Run Playwright E2E
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.e2e == true }}
@@ -95,3 +96,5 @@ jobs:
       - name: Run Benchmarks
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.benchmarks == true }}
         uses: ./.github/actions/ci-benchmarks
+        with:
+          release_flag: ${{ github.event.inputs.build_mode == 'release' && '--release' || '' }}

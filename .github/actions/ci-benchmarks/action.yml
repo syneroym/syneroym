@@ -1,16 +1,21 @@
 name: 'CI Benchmarks'
 description: 'Runs performance and benchmark tests'
+inputs:
+  release_flag:
+    description: 'Flag to pass to cargo for release mode (e.g. --release)'
+    required: false
+    default: ''
 runs:
   using: "composite"
   steps:
     - name: Run Cargo Bench
-      run: cargo bench --workspace
+      run: cargo bench --workspace ${{ inputs.release_flag }}
       shell: bash
 
     - name: Run Latency Performance Tests
-      run: cargo run --release -p syneroym-perf -- latency
+      run: cargo run ${{ inputs.release_flag }} -p syneroym-perf -- latency
       shell: bash
 
     - name: Run Concurrency Performance Tests
-      run: cargo run --release -p syneroym-perf -- concurrency
+      run: cargo run ${{ inputs.release_flag }} -p syneroym-perf -- concurrency
       shell: bash

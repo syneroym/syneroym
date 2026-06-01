@@ -4,11 +4,15 @@ inputs:
   github_token:
     description: 'GitHub token for Codecov'
     required: true
+  release_flag:
+    description: 'Flag to pass to cargo for release mode (e.g. --release)'
+    required: false
+    default: ''
 runs:
   using: "composite"
   steps:
     - name: Generate Code Coverage
-      run: cargo llvm-cov --workspace --all-targets --all-features --lcov --output-path lcov.info
+      run: cargo llvm-cov --workspace --all-targets --all-features ${{ inputs.release_flag }} --lcov --output-path lcov.info
       shell: bash
 
     - name: Upload coverage to Codecov
