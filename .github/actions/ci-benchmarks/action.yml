@@ -17,7 +17,7 @@ runs:
       shell: bash
 
     - name: Run Cargo Bench
-      run: cargo bench --workspace ${{ inputs.release_flag }}
+      run: cargo bench --workspace
       shell: bash
 
     - name: Run Latency Performance Tests
