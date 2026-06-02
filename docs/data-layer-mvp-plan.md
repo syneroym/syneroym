@@ -20,20 +20,22 @@ The strategy prioritizes vertical slicing: proving the end-to-end flow from a WA
 **Goal:** Make the data layer persistent and namespaces work.
 **Why here:** The ABAC engine (Phase 3) will need to execute raw local queries (`lookup()`) to evaluate rules, so the DB engine must exist first.
 1. **SQLite Integration**:
-   - Implement the SQLite backend for the CRUD operations. Ensure SQLite connections are initialized with `PRAGMA journal_mode=WAL;` to prepare for Phase 7 (Litestream).
+   - Implement the SQLite backend for the CRUD operations. Ensure SQLite connections are initialized with `PRAGMA journal_mode=WAL;` to prepare for Phase 8 (Litestream).
    - Ensure all operations are strictly sandboxed to the `app_id` retrieved from the host context.
 2. **Filter & Query Engine**:
    - Implement translation of abstract `FilterExpr` into parameterized SQLite queries.
 
 ## Phase 3: Security & ABAC Engine
 
-**Goal:** Secure the data layer using explicit claims and policies.
+**Goal:** Secure the data layer using explicit claims and policies, establishing the foundation for a Consent-First UX.
 **Why here:** We must secure the DB before deploying any real apps.
 1. **Casbin Integration**:
    - Integrate the Casbin Rust crate into the Substrate.
 2. **Enforcement Implementation**:
    - Intercept data layer calls, extract the `SessionContext`, and evaluate against Casbin before executing the SQLite query.
    - Implement the local `lookup("local", ...)` Casbin function (which relies on Phase 2's query engine).
+3. **Consent-First UX APIs**:
+   - Expose read endpoints to allow the UI to display human-readable permission states and allow dynamic revocation by users, directly supporting the "Consent-First UX" paradigm. *(Implementation Note: Extend policy storage to include human-readable metadata, not just raw Casbin rules).*
 
 ## Phase 4: SynApp Deployment Orchestrator
 
@@ -44,26 +46,35 @@ The strategy prioritizes vertical slicing: proving the end-to-end flow from a WA
 2. **Initialization Routine**:
    - On deployment, automatically execute `create_collection` for declared schemas and inject initial ABAC rules into the Casbin store.
 
-## Phase 5: The First App Slice (`space-manager`)
+## Phase 5: The First App Slice (`space-manager` & Trusted Rooms)
 
-**Goal:** Prove the core architecture with a real component from the Service Provider App.
+**Goal:** Prove the core architecture by modeling a "Trusted Room" (Context-Aware Thread) using a real WASM component.
 **Why here:** We now have the DB, the Security, and the Deployment pipeline ready. It's the perfect time for an End-to-End test.
 1. **Component Development**:
    - Create a new Rust project for the `space-manager` WASM component.
-   - Implement a simple logic flow (e.g., "Create a new Space Profile"). *Constraint: Do not depend on external services yet to avoid needing Phase 6.*
+   - Implement a logic flow to create and manage a "Trusted Room" (e.g., initializing a space, inviting a provider, managing shared object state). *Constraint: Do not depend on external services yet to avoid needing Phase 7.*
 2. **End-to-End Validation**:
    - Deploy via Phase 4 orchestrator. Test an authenticated request end-to-end.
 
-## Phase 6: Inter-Service Communication & Aliasing
+## Phase 6: Action & Agent Gateway (MCP Server)
+
+**Goal:** Expose the Substrate primitives to the "Multi-Surface UX", allowing Agentic Concierges (like Gemini/ChatGPT) to interact natively with Syneroym.
+**Why here:** With a functional, secure data layer and the first app slice running, we need to prove the "Headless Substrate" concept before introducing complex inter-service routing.
+1. **MCP Server Integration**:
+   - Implement a Model Context Protocol (MCP) server that interfaces with the Substrate Host. *(Implementation Note: Define the local authentication model for the MCP Server to securely assume the user's SessionContext).*
+2. **Agentic UI Exposure**:
+   - Expose the capabilities of the `space-manager` (e.g., creating Trusted Rooms, interacting with objects) as tools that an external LLM can invoke securely on behalf of the user.
+
+## Phase 7: Inter-Service Communication & Aliasing
 
 **Goal:** Enable secure references to other services and cross-service attribute lookups.
-**Why here:** Now that the local app slice works, we can introduce the complexity of federation and external dependencies.
+**Why here:** Now that the local app slice works and is exposed via MCP, we can introduce the complexity of federation and external dependencies.
 1. **Service Aliases**:
    - Implement the registry lookup mechanism to resolve aliases (e.g., `org-service`) to DIDs.
 2. **Remote ABAC Lookups**:
    - Implement the remote `lookup("service:did...", ...)` Casbin function via Iroh QUIC.
 
-## Phase 7: High Availability & Replication
+## Phase 8: High Availability & Replication
 
 **Goal:** Ensure data durability and prepare for primary/replica failover.
 **Why here:** Replication is an infrastructure concern that sits underneath the application logic. Building it last ensures it doesn't slow down the feature development cycle.
@@ -72,10 +83,10 @@ The strategy prioritizes vertical slicing: proving the end-to-end flow from a WA
 2. **Liveness & Failover**:
    - Implement Iroh QUIC heartbeats and manual failover sequence.
 
-## Phase 8: Content-Addressed Blob Storage
+## Phase 9: Content-Addressed Blob Storage
 
 **Goal:** Support media and large file storage.
-**Why here:** Lazy-pulling logic explicitly depends on the Primary/Replica architecture established in Phase 7.
+**Why here:** Lazy-pulling logic explicitly depends on the Primary/Replica architecture established in Phase 8.
 1. **Local Blob Store**:
    - Implement SHA-256 backed local storage.
 2. **Replication Sync**:
