@@ -45,6 +45,27 @@ pub struct SignedEndpointInfo {
     pub signature: String, // z32 encoded ed25519 signature
 }
 
+impl SignedEndpointInfo {
+    /// Verifies the signature on this endpoint info using the public key embedded in its service_id.
+    pub fn verify(&self) -> Result<(), anyhow::Error> {
+        let pubkey = syneroym_identity::substrate::resolve_did_key(&self.info.service_id)
+            .map_err(|e| anyhow::anyhow!("Failed to parse public key from service_id DID: {e}"))?;
+
+        let sig_bytes = z32::decode(self.signature.as_bytes())
+            .map_err(|_| anyhow::anyhow!("Invalid z-base-32 signature encoding"))?;
+
+        let signature = ed25519_dalek::Signature::from_slice(&sig_bytes)
+            .map_err(|e| anyhow::anyhow!("Invalid signature length: {e}"))?;
+
+        let info_value = serde_json::to_value(&self.info)?;
+        let canonical_value = syneroym_identity::substrate::canonicalize_json_value(&info_value);
+        let canonical_string = serde_json::to_string(&canonical_value)?;
+
+        use ed25519_dalek::Verifier;
+        pubkey.verify(canonical_string.as_bytes(), &signature).map_err(Into::into)
+    }
+}
+
 #[derive(Debug)]
 pub struct RegistryClient;
 
@@ -58,7 +79,10 @@ impl RegistryClient {
         resolve: bool,
     ) -> Result<SignedEndpointInfo, anyhow::Error> {
         let client = reqwest::Client::new();
-        let url = format!("{registry_url}/lookup/{id}?resolve={resolve}");
+        // Always ask the registry NOT to resolve mechanisms, because if the registry
+        // mutates the payload to inject mechanisms, it will invalidate the signature.
+        // We will perform the resolution locally instead.
+        let url = format!("{registry_url}/lookup/{id}?resolve=false");
 
         tracing::debug!("Registry lookup: {}", url);
 
@@ -72,7 +96,38 @@ impl RegistryClient {
             ));
         }
 
-        let info = response.json::<SignedEndpointInfo>().await?;
+        let mut info = response.json::<SignedEndpointInfo>().await?;
+
+        info.verify().map_err(|e| {
+            anyhow::anyhow!(
+                "Registry returned an invalid or spoofed endpoint info for {}: {}",
+                id,
+                e
+            )
+        })?;
+
+        // Perform local resolution
+        if resolve && info.info.endpoint_type == EndpointType::Service {
+            tracing::debug!("Resolving substrate mechanisms for service {}", info.info.service_id);
+            let sub_url = format!("{registry_url}/lookup/{}?resolve=false", info.info.substrate_id);
+            let sub_response = client.get(&sub_url).send().await?;
+
+            if !sub_response.status().is_success() {
+                return Err(anyhow::anyhow!(
+                    "Failed to resolve substrate {} for service {}",
+                    info.info.substrate_id,
+                    info.info.service_id
+                ));
+            }
+
+            let sub_info = sub_response.json::<SignedEndpointInfo>().await?;
+            sub_info
+                .verify()
+                .map_err(|e| anyhow::anyhow!("Registry returned invalid substrate info: {}", e))?;
+
+            info.info.mechanisms = sub_info.info.mechanisms;
+        }
+
         Ok(info)
     }
 }

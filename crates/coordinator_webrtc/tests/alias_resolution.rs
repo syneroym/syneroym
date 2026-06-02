@@ -17,23 +17,26 @@ async fn test_bootstrap_alias_resolution() -> anyhow::Result<()> {
     let _ = tracing_subscriber::fmt::try_init();
 
     // 1. Start Mock Registry
-    let substrate_id = "did:key:hsubstrate123".to_string();
-    let service_id = "did:key:hservice123".to_string();
+    let identity = syneroym_identity::Identity::generate()?;
+    let substrate_id = syneroym_identity::substrate::derive_did_key(&identity.public_key());
+    let service_id = substrate_id.clone();
     let nickname = "demo1".to_string();
     let alias = format!("{}-p{}", nickname, "shorthash");
 
-    let mock_info = SignedEndpointInfo {
-        info: EndpointInfo {
-            service_id: service_id.clone(),
-            substrate_id: substrate_id.clone(),
-            endpoint_type: EndpointType::Service,
-            mechanisms: vec![],
-            nickname: Some(nickname.clone()),
-            is_private: false,
-            ttl: None,
-        },
-        signature: "sig".to_string(),
+    let info = EndpointInfo {
+        service_id: service_id.clone(),
+        substrate_id: substrate_id.clone(),
+        endpoint_type: EndpointType::Service,
+        mechanisms: vec![],
+        nickname: Some(nickname.clone()),
+        is_private: false,
+        ttl: None,
     };
+
+    let info_val = serde_json::to_value(&info)?;
+    let signature = identity.sign_json(&info_val)?;
+
+    let mock_info = SignedEndpointInfo { info, signature };
 
     let app =
         Router::new().route("/lookup/{id}", get(move || async move { Json(mock_info.clone()) }));
