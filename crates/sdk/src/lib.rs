@@ -260,7 +260,10 @@ impl SyneroymClient {
         wasm_bytes: Vec<u8>,
         registry_certificate: Option<SignedEndpointInfo>,
     ) -> Result<()> {
-        let registry_certificate = registry_certificate.map(|c| serde_json::to_string(&c).unwrap());
+        let registry_certificate = registry_certificate
+            .map(|c| serde_json::to_string(&c))
+            .transpose()
+            .map_err(|e| anyhow::anyhow!("Failed to serialize registry certificate: {e}"))?;
         let manifest = DeployManifest {
             config: ServiceConfig { env: vec![], args: vec![], custom_config: None },
             service_type: ServiceType::Wasm(WasmManifest {
@@ -286,7 +289,10 @@ impl SyneroymClient {
         port: u16,
         registry_certificate: Option<SignedEndpointInfo>,
     ) -> Result<()> {
-        let registry_certificate = registry_certificate.map(|c| serde_json::to_string(&c).unwrap());
+        let registry_certificate = registry_certificate
+            .map(|c| serde_json::to_string(&c))
+            .transpose()
+            .map_err(|e| anyhow::anyhow!("Failed to serialize registry certificate: {e}"))?;
         let manifest = DeployManifest {
             config: ServiceConfig { env: vec![], args: vec![], custom_config: None },
             service_type: ServiceType::Tcp(TcpManifest { host, port }),
@@ -310,7 +316,10 @@ impl SyneroymClient {
         volumes: Vec<ContainerVolumeMapping>,
         registry_certificate: Option<SignedEndpointInfo>,
     ) -> Result<()> {
-        let registry_certificate = registry_certificate.map(|c| serde_json::to_string(&c).unwrap());
+        let registry_certificate = registry_certificate
+            .map(|c| serde_json::to_string(&c))
+            .transpose()
+            .map_err(|e| anyhow::anyhow!("Failed to serialize registry certificate: {e}"))?;
         let manifest = DeployManifest {
             config: ServiceConfig { env: vec![], args: vec![], custom_config: None },
             service_type: ServiceType::Container(ContainerManifest {
