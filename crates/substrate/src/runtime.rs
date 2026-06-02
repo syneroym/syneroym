@@ -308,6 +308,7 @@ async fn setup_connection_router(config: &SubstrateConfig) -> anyhow::Result<Con
             relay_url,
             secret_key,
             config.identity.nickname.clone(),
+            config.hosted_apps_dir(),
         );
     }
 
@@ -342,40 +343,78 @@ async fn setup_router(
         .await
 }
 
-fn publish_to_community_registry<E: serde::Serialize + Send + Sync + 'static>(
+fn publish_to_community_registry<E: serde::Serialize + Send + Sync + Clone + 'static>(
     registry_url: String,
     service_id: String,
     endpoint_addr: E,
     relay_url: Option<String>,
     secret_key: [u8; 32],
     nickname: Option<String>,
+    hosted_apps_dir: std::path::PathBuf,
 ) {
     tokio::spawn(async move {
-        let mut attempts = 0;
-
-        while attempts < 30 {
-            if let Err(e) = register_substrate_endpoint(
-                &registry_url,
-                &service_id,
-                &endpoint_addr,
-                relay_url.clone(),
-                &secret_key,
-                nickname.clone(),
-            )
-            .await
-            {
-                warn!("Failed to register endpoint (attempt {}): {}", attempts + 1, e);
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                attempts += 1;
-            } else {
-                return;
+        loop {
+            let mut attempts = 0;
+            let mut success = false;
+            while attempts < 30 {
+                if let Err(e) = register_substrate_endpoint(
+                    &registry_url,
+                    &service_id,
+                    &endpoint_addr,
+                    relay_url.clone(),
+                    &secret_key,
+                    nickname.clone(),
+                )
+                .await
+                {
+                    warn!("Failed to register endpoint (attempt {}): {}", attempts + 1, e);
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    attempts += 1;
+                } else {
+                    success = true;
+                    break;
+                }
             }
+
+            if !success {
+                warn!(
+                    service_id = %service_id,
+                    registry_url = %registry_url,
+                    "Exhausted registration retries. Substrate may be unreachable via community discovery."
+                );
+            }
+
+            // Proxy hosted apps
+            if hosted_apps_dir.exists()
+                && let Ok(mut entries) = tokio::fs::read_dir(&hosted_apps_dir).await
+            {
+                let client = reqwest::Client::new();
+                let url = format!("{registry_url}/register");
+
+                while let Ok(Some(entry)) = entries.next_entry().await {
+                    if let Ok(file_type) = entry.file_type().await
+                        && file_type.is_file()
+                        && let Ok(contents) = tokio::fs::read_to_string(entry.path()).await
+                        && let Ok(cert) = serde_json::from_str::<
+                            syneroym_core::community_registry::SignedEndpointInfo,
+                        >(&contents)
+                    {
+                        let res = client.post(&url).json(&cert).send().await;
+                        log_registration_status(
+                            res,
+                            &cert.info.service_id,
+                            cert.info.nickname.as_deref(),
+                        );
+                    }
+                }
+            }
+
+            // Sleep until the next heartbeat interval
+            tokio::time::sleep(std::time::Duration::from_secs(
+                syneroym_core::community_registry::HEARTBEAT_INTERVAL_SECS,
+            ))
+            .await;
         }
-        warn!(
-            service_id = %service_id,
-            registry_url = %registry_url,
-            "Exhausted registration retries. Substrate may be unreachable via community discovery."
-        );
     });
 }
 
@@ -426,6 +465,7 @@ fn build_signed_endpoint_info<E: serde::Serialize>(
             relay_url,
         }],
         is_private: false,
+        ttl: None,
     };
 
     let identity = syneroym_identity::Identity::from_bytes(secret_key);

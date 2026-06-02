@@ -258,13 +258,16 @@ impl SyneroymClient {
         service_id: String,
         interfaces: Vec<String>,
         wasm_bytes: Vec<u8>,
+        registry_certificate: Option<SignedEndpointInfo>,
     ) -> Result<()> {
+        let registry_certificate = registry_certificate.map(|c| serde_json::to_string(&c).unwrap());
         let manifest = DeployManifest {
             config: ServiceConfig { env: vec![], args: vec![], custom_config: None },
             service_type: ServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(wasm_bytes),
                 hash: None,
             }),
+            registry_certificate,
         };
         let params = serde_json::to_value((service_id, interfaces, manifest))?;
         let res = self.request("orchestrator", "deploy", params).await?;
@@ -281,10 +284,13 @@ impl SyneroymClient {
         interfaces: Vec<String>,
         host: String,
         port: u16,
+        registry_certificate: Option<SignedEndpointInfo>,
     ) -> Result<()> {
+        let registry_certificate = registry_certificate.map(|c| serde_json::to_string(&c).unwrap());
         let manifest = DeployManifest {
             config: ServiceConfig { env: vec![], args: vec![], custom_config: None },
             service_type: ServiceType::Tcp(TcpManifest { host, port }),
+            registry_certificate,
         };
         let params = serde_json::to_value((service_id, interfaces, manifest))?;
         let res = self.request("orchestrator", "deploy", params).await?;
@@ -302,7 +308,9 @@ impl SyneroymClient {
         image: String,
         ports: Vec<ContainerPortMapping>,
         volumes: Vec<ContainerVolumeMapping>,
+        registry_certificate: Option<SignedEndpointInfo>,
     ) -> Result<()> {
+        let registry_certificate = registry_certificate.map(|c| serde_json::to_string(&c).unwrap());
         let manifest = DeployManifest {
             config: ServiceConfig { env: vec![], args: vec![], custom_config: None },
             service_type: ServiceType::Container(ContainerManifest {
@@ -312,6 +320,7 @@ impl SyneroymClient {
                 ports,
                 volumes,
             }),
+            registry_certificate,
         };
         let params = serde_json::to_value((service_id, interfaces, manifest))?;
         let res = self.request("orchestrator", "deploy", params).await?;

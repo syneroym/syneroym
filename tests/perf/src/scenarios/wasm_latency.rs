@@ -78,7 +78,7 @@ pub async fn run_scenario() -> Result<()> {
 
     // Deploy WASM
     orchestrator_client
-        .deploy_wasm(app_service_id.clone(), vec![interface_name.to_string()], wasm_bytes)
+        .deploy_wasm(app_service_id.clone(), vec![interface_name.to_string()], wasm_bytes, None)
         .await?;
 
     // We need to register the WASM service in the registry so the client can resolve it
@@ -93,6 +93,7 @@ pub async fn run_scenario() -> Result<()> {
         nickname: Some("wasm-perf".to_string()),
         mechanisms,
         is_private: false,
+        ttl: None,
     };
     let info_value = serde_json::to_value(&info).unwrap();
     let canonical_value = syneroym_identity::substrate::canonicalize_json_value(&info_value);

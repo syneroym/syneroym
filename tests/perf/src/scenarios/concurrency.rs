@@ -38,6 +38,7 @@ pub async fn run_scenario() -> Result<()> {
             app_service_id.clone(),
             vec!["syneroym-test:greeter/greet@0.1.0".to_string()],
             wasm_bytes,
+            None,
         )
         .await?;
 
@@ -53,6 +54,7 @@ pub async fn run_scenario() -> Result<()> {
         nickname: Some("wasm-concurrency".to_string()),
         mechanisms,
         is_private: false,
+        ttl: None,
     };
     let info_value = serde_json::to_value(&info).unwrap();
     let canonical_value = syneroym_identity::substrate::canonicalize_json_value(&info_value);

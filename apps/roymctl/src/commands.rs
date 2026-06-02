@@ -74,7 +74,7 @@ pub async fn run(
                 anyhow::anyhow!("Substrate DID not provided and substrate.key not found. Use --substrate <did>")
             })?;
 
-            app::handle(&command, &api_url, substrate_did).await?;
+            app::handle(&command, &api_url, substrate_did, &dir).await?;
         }
         Commands::Identity { command } => {
             identity::handle(&command, &dir).await?;

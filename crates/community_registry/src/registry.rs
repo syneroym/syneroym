@@ -42,8 +42,8 @@ impl std::fmt::Debug for EcosystemRegistry {
 
 #[derive(Debug)]
 struct RegistryState {
-    // Map of service_id -> SignedEndpointInfo
-    endpoints: DashMap<String, SignedEndpointInfo>,
+    // Map of service_id -> (SignedEndpointInfo, std::time::Instant)
+    endpoints: DashMap<String, (SignedEndpointInfo, std::time::Instant)>,
     // Map of alias -> service_id
     aliases: DashMap<String, String>,
     parent_registry_url: Option<String>,
@@ -119,6 +119,34 @@ impl EcosystemRegistry {
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
         self.shutdown_tx = Some(shutdown_tx);
 
+        let state_clone = self.state.clone();
+        tokio::spawn(async move {
+            let default_ttl = std::time::Duration::from_secs(
+                syneroym_core::community_registry::DEFAULT_REGISTRY_TTL_SECS,
+            );
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(15 * 60)).await; // 15 mins
+                let mut expired_keys = Vec::new();
+                for entry in state_clone.endpoints.iter() {
+                    let ttl = entry
+                        .value()
+                        .0
+                        .info
+                        .ttl
+                        .map(std::time::Duration::from_secs)
+                        .unwrap_or(default_ttl);
+                    if entry.value().1.elapsed() > ttl {
+                        expired_keys.push(entry.key().clone());
+                    }
+                }
+                for key in expired_keys {
+                    state_clone.endpoints.remove(&key);
+                    state_clone.aliases.retain(|_, v| *v != key);
+                    tracing::debug!("Expired registry entry for {}", key);
+                }
+            }
+        });
+
         let server_handle = tokio::spawn(async move {
             let server = axum::serve(listener, app);
             let graceful = server.with_graceful_shutdown(async move {
@@ -178,7 +206,7 @@ async fn register_endpoint(
 
     // Store in DashMap
     state.aliases.insert(alias, service_id.clone());
-    state.endpoints.insert(service_id.clone(), payload.clone());
+    state.endpoints.insert(service_id.clone(), (payload.clone(), std::time::Instant::now()));
 
     if let Some(parent_url) = &state.parent_registry_url
         && !payload.info.is_private
@@ -259,14 +287,14 @@ async fn lookup_endpoint(
     State(state): State<Arc<RegistryState>>,
 ) -> Result<Json<SignedEndpointInfo>, StatusCode> {
     let resolved_id = state.aliases.get(&service_id).map(|e| e.clone()).unwrap_or(service_id);
-    let mut entry = state.endpoints.get(&resolved_id).map(|e| e.clone());
+    let mut entry = state.endpoints.get(&resolved_id).map(|e| e.0.clone());
 
     if query.resolve.unwrap_or(false)
         && let Some(mut record) = entry.clone()
         && record.info.endpoint_type == EndpointType::Service
     {
         if let Some(substrate_entry) = state.endpoints.get(&record.info.substrate_id) {
-            record.info.mechanisms = substrate_entry.info.mechanisms.clone();
+            record.info.mechanisms = substrate_entry.0.info.mechanisms.clone();
             entry = Some(record);
         } else {
             return Err(StatusCode::NOT_FOUND);
@@ -310,6 +338,7 @@ mod tests {
                 relay_url: Some("http://relay.example.com".to_string()),
             }],
             is_private: false,
+            ttl: None,
         };
 
         let signed_info = create_signed_info(&identity, info);
@@ -342,6 +371,7 @@ mod tests {
             nickname: None,
             mechanisms: vec![],
             is_private: false,
+            ttl: None,
         };
 
         // Sign with OTHER identity
@@ -364,6 +394,7 @@ mod tests {
             nickname: None,
             mechanisms: vec![],
             is_private: false,
+            ttl: None,
         };
 
         let signed_info = create_signed_info(&identity, info);
@@ -391,10 +422,13 @@ mod tests {
                     relay_url: None,
                 }],
                 is_private: false,
+                ttl: None,
             },
             signature: "mock-sig".to_string(),
         };
-        state.endpoints.insert(substrate_id.to_string(), substrate_info.clone());
+        state
+            .endpoints
+            .insert(substrate_id.to_string(), (substrate_info.clone(), std::time::Instant::now()));
 
         // Mock a service record pointing to that substrate
         let service_info = SignedEndpointInfo {
@@ -405,10 +439,11 @@ mod tests {
                 nickname: None,
                 mechanisms: vec![],
                 is_private: false,
+                ttl: None,
             },
             signature: "mock-sig".to_string(),
         };
-        state.endpoints.insert(service_id.to_string(), service_info);
+        state.endpoints.insert(service_id.to_string(), (service_info, std::time::Instant::now()));
 
         // Lookup service with resolve=true
         let lookup_res = lookup_endpoint(
@@ -450,6 +485,7 @@ mod tests {
             nickname: None, // No nickname
             mechanisms: vec![],
             is_private: false,
+            ttl: None,
         };
 
         let signed_info = create_signed_info(&identity, info);
@@ -479,6 +515,7 @@ mod tests {
             nickname: Some("alice".to_string()),
             mechanisms: vec![],
             is_private: false,
+            ttl: None,
         };
 
         let signed_info = create_signed_info(&identity, info);

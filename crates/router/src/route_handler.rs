@@ -88,6 +88,7 @@ impl RouteHandler {
             app_sandbox_engine,
             podman_sandbox_engine,
             registry,
+            config.hosted_apps_dir(),
         )
         .await?;
         s.register_native_service(service_id, Arc::new(substrate_service));

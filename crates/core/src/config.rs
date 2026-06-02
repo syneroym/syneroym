@@ -62,6 +62,11 @@ pub struct SubstrateConfig {
 
 /// Useful helper functions
 impl SubstrateConfig {
+    /// Returns the directory where hosted app certificates are stored
+    pub fn hosted_apps_dir(&self) -> PathBuf {
+        self.app_local_data_dir.join("hosted_apps")
+    }
+
     /// Resolves relative storage paths by prepending `app_local_data_dir`.
     pub fn resolve_paths(&mut self) {
         if self.storage.db_dir.is_relative() {

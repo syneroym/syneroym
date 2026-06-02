@@ -67,6 +67,8 @@ interface orchestrator {
         config: service-config,
         /// Type and specific configurations for the service
         service-type: service-type,
+        /// Optional serialized SignedEndpointInfo to proxy registration to the community registry
+        registry-certificate: option<string>,
     }
 
     /// Deploy a new service using a deployment manifest

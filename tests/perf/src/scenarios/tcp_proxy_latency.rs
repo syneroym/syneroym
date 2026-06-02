@@ -56,6 +56,7 @@ pub async fn run_scenario() -> Result<()> {
             vec!["default".to_string()],
             "127.0.0.1".to_string(),
             30001,
+            None,
         )
         .await?;
 
@@ -70,6 +71,7 @@ pub async fn run_scenario() -> Result<()> {
         nickname: Some("tcp-perf".to_string()),
         mechanisms,
         is_private: false,
+        ttl: None,
     };
     let info_value = serde_json::to_value(&info).unwrap();
     let canonical_value = syneroym_identity::substrate::canonicalize_json_value(&info_value);

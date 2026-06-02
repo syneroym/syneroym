@@ -53,6 +53,7 @@ pub async fn handle(command: &RegistryCommands, api_url: &str, dir: &Path) -> an
                 mechanisms: vec![], // Services resolved via substrate don't need mechanisms here
                 nickname: nickname.clone(),
                 is_private: *private,
+                ttl: None,
             };
 
             let signature = identity.sign_json(&serde_json::to_value(&info)?)?;

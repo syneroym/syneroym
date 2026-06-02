@@ -22,6 +22,12 @@ pub enum AppCommands {
         /// TCP host:port for an existing service (e.g. "localhost:8080")
         #[arg(long)]
         tcp: Option<String>,
+        /// Optional identity name for signing a registry certificate
+        #[arg(long)]
+        identity: Option<String>,
+        /// Optional nickname for the registry
+        #[arg(long)]
+        nickname: Option<String>,
     },
     /// Remove an installed `SynApp` via API
     Remove {
@@ -47,21 +53,44 @@ pub async fn handle(
     command: &AppCommands,
     api_url: &str,
     substrate_did: String,
+    dir: &std::path::Path,
 ) -> anyhow::Result<()> {
-    let mut client = syneroym_sdk::SyneroymClient::new(substrate_did, api_url.to_string());
+    let mut client = syneroym_sdk::SyneroymClient::new(substrate_did.clone(), api_url.to_string());
     client.wait_for_ready(std::time::Duration::from_secs(5)).await?;
 
     match command {
-        AppCommands::Deploy { app_id, interfaces, wasm, tcp } => {
+        AppCommands::Deploy { app_id, interfaces, wasm, tcp, identity, nickname } => {
             let ifaces: Vec<String> = interfaces.split(',').map(|s| s.trim().to_string()).collect();
+
+            let mut cert = None;
+            if let Some(name) = identity {
+                let key_path = dir.join("identities").join(format!("{name}.key"));
+                if !key_path.exists() {
+                    anyhow::bail!("Identity '{}' not found at {}", name, key_path.display());
+                }
+                let id = syneroym_identity::Identity::load_from_path(&key_path)?;
+
+                let info = syneroym_core::community_registry::EndpointInfo {
+                    service_id: app_id.clone(),
+                    substrate_id: substrate_did.clone(),
+                    endpoint_type: syneroym_core::community_registry::EndpointType::Service,
+                    mechanisms: vec![],
+                    nickname: nickname.clone(),
+                    is_private: false,
+                    ttl: None,
+                };
+                let signature = id.sign_json(&serde_json::to_value(&info)?)?;
+                cert =
+                    Some(syneroym_core::community_registry::SignedEndpointInfo { info, signature });
+            }
 
             if let Some(wasm_path) = wasm {
                 let wasm_bytes = fs::read(wasm_path)?;
-                client.deploy_wasm(app_id.clone(), ifaces, wasm_bytes).await?;
+                client.deploy_wasm(app_id.clone(), ifaces, wasm_bytes, cert).await?;
                 println!("Successfully deployed WASM app {app_id}");
             } else if let Some(tcp_addr) = tcp {
                 let (host, port) = get_host_port_from_tcp_addr(tcp_addr)?;
-                client.deploy_tcp(app_id.clone(), ifaces, host, port).await?;
+                client.deploy_tcp(app_id.clone(), ifaces, host, port, cert).await?;
                 println!("Successfully deployed TCP service {app_id}");
             } else {
                 anyhow::bail!("Either --wasm or --tcp must be provided for deployment");

@@ -81,6 +81,7 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
             app_service_id.clone(),
             vec!["syneroym-test:greeter/greet@0.1.0".to_string()],
             wasm_bytes.clone(),
+            None,
         )
         .await?;
 
@@ -98,6 +99,7 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
         nickname: Some("wasm-soak".to_string()),
         mechanisms: mechanisms.clone(),
         is_private: false,
+        ttl: None,
     };
     let info_value = serde_json::to_value(&info_reg).unwrap();
     let canonical_value = syneroym_identity::substrate::canonicalize_json_value(&info_value);
@@ -284,6 +286,7 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
                     unique_service_id.clone(),
                     vec!["syneroym-test:greeter/greet@0.1.0".to_string()],
                     wasm_bytes_clone.clone(),
+                    None,
                 )
                 .await;
 
@@ -297,6 +300,7 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
                         nickname: Some(format!("soak-deploy-{}", cycle)),
                         mechanisms: mechanisms_clone.clone(),
                         is_private: false,
+                        ttl: None,
                     };
                     let info_value = serde_json::to_value(&info_reg).unwrap();
                     let canonical_value =

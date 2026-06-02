@@ -273,6 +273,7 @@ async fn test_wasm_app_scenario(ctx: &SubstrateTestContext) {
             app_service_id.clone(),
             vec!["syneroym-test:greeter/greet@0.1.0".to_string()],
             wasm_bytes,
+            None,
         )
         .await
         .expect("SDK Deploy request failed");
@@ -362,6 +363,7 @@ async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
             vec!["default".to_string()],
             "localhost".to_string(),
             app_port,
+            None,
         )
         .await
         .expect("SDK Deploy TCP request failed");
@@ -483,6 +485,7 @@ async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
             vec!["default".to_string()],
             "localhost".to_string(),
             https_port,
+            None,
         )
         .await
         .expect("SDK Deploy TCP (HTTPS) request failed");
@@ -532,6 +535,7 @@ async fn register_app_in_registry(
         nickname: Some(nickname.to_string()),
         mechanisms: substrate_mechanisms,
         is_private: false,
+        ttl: None,
     };
     let info_value = serde_json::to_value(&info).unwrap();
     let canonical_value = syneroym_identity::substrate::canonicalize_json_value(&info_value);

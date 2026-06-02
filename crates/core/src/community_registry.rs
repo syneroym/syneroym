@@ -5,6 +5,12 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Default time-to-live for registry entries, aligned with BEP 0044 DHT expiry defaults.
+pub const DEFAULT_REGISTRY_TTL_SECS: u64 = 7200; // 2 hours
+
+/// Interval at which substrates republish their endpoints to prevent them from expiring.
+pub const HEARTBEAT_INTERVAL_SECS: u64 = 3600; // 1 hour
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EndpointType {
@@ -29,6 +35,8 @@ pub struct EndpointInfo {
     pub nickname: Option<String>,
     #[serde(default)]
     pub is_private: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ttl: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

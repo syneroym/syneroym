@@ -24,6 +24,7 @@ pub struct ControlPlaneService {
     registry: EndpointRegistry,
     app_sandbox_engine: Arc<AppSandboxEngine>,
     podman_sandbox_engine: Arc<ContainerEngine>,
+    hosted_apps_dir: std::path::PathBuf,
 }
 
 impl fmt::Debug for ControlPlaneService {
@@ -40,10 +41,21 @@ impl ControlPlaneService {
         app_sandbox_engine: Arc<AppSandboxEngine>,
         podman_sandbox_engine: Arc<ContainerEngine>,
         registry: EndpointRegistry,
+        hosted_apps_dir: std::path::PathBuf,
     ) -> Result<Self> {
         info!("Initializing ControlPlaneService (Orchestrator)...");
 
-        Ok(Self { service_id, registry, app_sandbox_engine, podman_sandbox_engine })
+        if !hosted_apps_dir.exists() {
+            std::fs::create_dir_all(&hosted_apps_dir)?;
+        }
+
+        Ok(Self {
+            service_id,
+            registry,
+            app_sandbox_engine,
+            podman_sandbox_engine,
+            hosted_apps_dir,
+        })
     }
 }
 
@@ -99,6 +111,19 @@ impl ControlPlaneService {
             serde_json::from_value(params).map_err(|e| {
                 RpcError::InvalidParams(format!("Failed to parse deploy params: {e}"))
             })?;
+
+        if let Some(cert) = &manifest.registry_certificate {
+            let cert_path = self.hosted_apps_dir.join(format!("{service_id}.json"));
+            if let Err(e) = std::fs::write(&cert_path, cert) {
+                tracing::warn!("Failed to save registry certificate for {}: {}", service_id, e);
+            } else {
+                tracing::debug!(
+                    "Saved registry certificate for {} at {}",
+                    service_id,
+                    cert_path.display()
+                );
+            }
+        }
 
         match &manifest.service_type {
             ServiceType::Wasm(_) => {
@@ -185,6 +210,13 @@ impl ControlPlaneService {
             })?;
 
         info!("Undeploying service: {}", service_id);
+
+        let cert_path = self.hosted_apps_dir.join(format!("{service_id}.json"));
+        if cert_path.exists()
+            && let Err(e) = std::fs::remove_file(&cert_path)
+        {
+            tracing::warn!("Failed to remove registry certificate for {}: {}", service_id, e);
+        }
 
         let endpoints = self.registry.lookup_by_service(&service_id);
         let mut is_wasm = false;

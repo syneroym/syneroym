@@ -347,6 +347,7 @@ async fn register_coordinator_in_registry(
             relay_url,
         }],
         is_private: false,
+        ttl: None,
     };
 
     let signature_z32 = identity.sign_json(&serde_json::to_value(&info)?)?;

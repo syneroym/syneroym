@@ -33,6 +33,7 @@ fn create_signed_info(
         nickname: Some("test-node".to_string()),
         mechanisms: vec![EndpointMechanism::Iroh { endpoint_addr_bytes, relay_url: None }],
         is_private: false,
+        ttl: None,
     };
 
     let signature_z32 = identity.sign_json(&serde_json::to_value(&info).unwrap()).unwrap();

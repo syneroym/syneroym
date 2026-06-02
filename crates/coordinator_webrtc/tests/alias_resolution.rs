@@ -30,6 +30,7 @@ async fn test_bootstrap_alias_resolution() -> anyhow::Result<()> {
             mechanisms: vec![],
             nickname: Some(nickname.clone()),
             is_private: false,
+            ttl: None,
         },
         signature: "sig".to_string(),
     };

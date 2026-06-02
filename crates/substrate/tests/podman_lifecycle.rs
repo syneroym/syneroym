@@ -173,6 +173,7 @@ async fn test_podman_lifecycle() {
             "docker.io/library/nginx:alpine".to_string(),
             ports,
             volumes,
+            None,
         )
         .await
         .expect("SDK Deploy container failed");
