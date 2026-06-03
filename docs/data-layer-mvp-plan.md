@@ -67,21 +67,25 @@ The strategy prioritizes vertical slicing: proving the end-to-end flow from a WA
 
 ## Phase 7: Inter-Service Communication & Aliasing
 
-**Goal:** Enable secure references to other services and cross-service attribute lookups.
+**Goal:** Enable secure references to other services and cross-service attribute lookups, while ensuring resilience against network partitions.
 **Why here:** Now that the local app slice works and is exposed via MCP, we can introduce the complexity of federation and external dependencies.
 1. **Service Aliases**:
    - Implement the registry lookup mechanism to resolve aliases (e.g., `org-service`) to DIDs.
 2. **Remote ABAC Lookups**:
    - Implement the remote `lookup("service:did...", ...)` Casbin function via Iroh QUIC.
+3. **Offline Outbox & Retry Queue**:
+   - Implement the local outbox pattern (SQLite + Tokio channel) for inter-service communication. Ensure that outgoing requests or messages initiated while offline are safely queued and automatically retried upon reconnection.
 
-## Phase 8: High Availability & Replication
+## Phase 8: High Availability, Replication & Backup Substrate
 
-**Goal:** Ensure data durability and prepare for primary/replica failover.
+**Goal:** Ensure data durability and prepare for primary/replica failover using the Backup Substrate model.
 **Why here:** Replication is an infrastructure concern that sits underneath the application logic. Building it last ensures it doesn't slow down the feature development cycle.
-1. **Litestream Integration**:
+1. **Litestream Integration & Backup Pool**:
    - Configure Litestream to stream WAL frames to the Replica node.
-2. **Liveness & Failover**:
-   - Implement Iroh QUIC heartbeats and manual failover sequence.
+   - Formalize the "Backup Substrate" (mutual torrent-style backup pool) concept where peers host each other's encrypted SQLite data.
+2. **Liveness & Active Failover**:
+   - Implement Iroh QUIC heartbeats.
+   - Implement the manual and automated failover sequences, allowing a backup node to actively serve cached state on behalf of a downed peer.
 
 ## Phase 9: Content-Addressed Blob Storage
 

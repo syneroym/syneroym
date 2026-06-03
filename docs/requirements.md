@@ -213,14 +213,14 @@ These requirements apply across all business domains and SynApps.
 - App Developers package SynApps (e.g. as WASM modules or OCI images), and Providers deploy them to matching container infrastructure (WASM runtime, Podman/Docker).
 - Consumers access Provider services through options the Provider makes available: app UI, browser, API, or command-line tools.
 - Service Providers move services and data across Infrastructure Providers without restriction. [Migration protocol: Architecture TBD]
-- Service Providers back up and restore app data. [Backup mechanism: Architecture TBD — Litestream is a candidate]
+- Service Providers back up and restore app data. The system supports a "Backup Substrate" model (a mutual backup pool) where nodes provide storage for others' encrypted backups in exchange for having their own backups hosted, extending local resilience into active failover. [Backup mechanism: Architecture TBD — Litestream is a candidate]
 - Service Providers install the same app on multiple secondary devices. The app works independently on those devices when disconnected, and synchronises state with the primary device when reconnected. [CRDT merge semantics: Architecture TBD]
 - Service Providers install an app such that parts (shards) of it are hosted on different hosts, each managing a subset of load.
 
 ### Connectivity & Offline Behaviour
 
 - The substrate supports direct peer-to-peer connections wherever possible, and falls back to relay-mediated encrypted connections when NAT or firewall constraints prevent direct connectivity.
-- On mobile platforms, if the substrate and embedded services are throttled by the OS, inbound requests are queued as offline notifications. The service processes them when the substrate application is next active.
+- **Offline Outbox & Retry Queue:** If a substrate, peer, or embedded service is offline (or throttled by a mobile OS), inbound and outbound requests are held in a persistent outbox queue. The system degrades gracefully under network partitions and automatically retries queued messages once reconnected.
 - For transactional workflows (order → payment → fulfilment), offline behaviour is explicitly defined: actions taken while offline are queued; conflicting state changes made by both parties during a disconnected period are resolved deterministically on reconnection. [Conflict resolution rules per entity type: Architecture TBD]
 
 ### Messaging & Data Sharing

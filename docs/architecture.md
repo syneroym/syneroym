@@ -250,7 +250,7 @@ flowchart TD
 
         subgraph STORAGE["Storage Layer"]
             CRSQL[cr-sqlite CRDT Local Store]
-            QUEUE[Offline Queue SQLite + Tokio channel]
+            QUEUE[Offline Outbox Queue SQLite + Tokio channel]
             BLOB[Content-addressed Blob Store]
             LS[Litestream WAL Replication]
         end
@@ -303,11 +303,12 @@ flowchart LR
     style JRPC fill:#2E75B6,color:#fff
 ```
 
-**Migration Protocol and Backup Mechanism**
+**Migration Protocol and Backup Substrate Mechanism**
 - `syneroym export --app <app-id>` produces a signed archive: cr-sqlite snapshot + blob store + identity keypair (optional) + App Spec
 - Archive is portable to any substrate running a compatible substrate version
 - Import validates the archive signature and replays into a fresh cr-sqlite instance
-- Litestream continuous replication can additionally keep a live replica on a secondary node
+- **Torrent-Style Backup Pool:** Litestream continuous replication can keep a live replica on a secondary node. This is formalised into a "Backup Substrate" mutual pool model. Nodes allocate storage to host symmetrically encrypted backups of others in exchange for participating in the network's backup pool.
+- **Active Failover:** In advanced configurations, a Backup Substrate can act as a hot standby, temporarily responding on a downed peer's behalf with cached state to ensure continuous discoverability.
 
 ### Storage & CRDT Merge Semantics
 
@@ -495,8 +496,8 @@ flowchart TD
 
     subgraph STORAGE_MSG["Message Storage"]
         CR[cr-sqlite append-only message log]
-        CR -->|"offline: queue locally"| Q2[Offline Queue]
-        Q2 -->|"on reconnect: replay"| PEER[Peer substrate]
+        CR -->|"offline: outbox queue locally"| Q2[Offline Outbox Queue]
+        Q2 -->|"on reconnect: replay & retry"| PEER[Peer substrate]
     end
 ```
 
