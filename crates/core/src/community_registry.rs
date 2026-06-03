@@ -14,8 +14,8 @@ pub const HEARTBEAT_INTERVAL_SECS: u64 = 3600; // 1 hour
 /// Internal pkarr DHT DNS name used in published packets
 pub const PKARR_DNS_NAME: &str = "syneroym";
 
-/// Internal pkarr DHT packet TTL
-pub const PKARR_TTL: u32 = 3600;
+/// Internal pkarr DHT packet TTL. Matches heartbeat interval so records expire if not refreshed.
+pub const PKARR_TTL: u32 = HEARTBEAT_INTERVAL_SECS as u32;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
