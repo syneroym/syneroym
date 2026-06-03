@@ -56,8 +56,7 @@ pub async fn handle(command: &RegistryCommands, api_url: &str, dir: &Path) -> an
                 ttl: None,
             };
 
-            let signature = identity.sign_json(&serde_json::to_value(&info)?)?;
-            let signed_info = SignedEndpointInfo { info, signature };
+            let signed_info = info.sign(&identity)?;
 
             let client = reqwest::Client::new();
             let url = format!("{api_url}/register");

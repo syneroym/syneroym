@@ -7,7 +7,7 @@
 use axum::{Json, Router, routing::get};
 use std::sync::Arc;
 use syneroym_coordinator_webrtc::bootstrap::{BootstrapState, start};
-use syneroym_core::community_registry::{EndpointInfo, EndpointType, SignedEndpointInfo};
+use syneroym_core::community_registry::{EndpointInfo, EndpointType};
 use syneroym_core::registry::EndpointRegistry;
 use tokio::net::TcpListener;
 // use std::time::Duration;
@@ -33,10 +33,7 @@ async fn test_bootstrap_alias_resolution() -> anyhow::Result<()> {
         ttl: None,
     };
 
-    let info_val = serde_json::to_value(&info)?;
-    let signature = identity.sign_json(&info_val)?;
-
-    let mock_info = SignedEndpointInfo { info, signature };
+    let mock_info = info.sign(&identity)?;
 
     let app =
         Router::new().route("/lookup/{id}", get(move || async move { Json(mock_info.clone()) }));

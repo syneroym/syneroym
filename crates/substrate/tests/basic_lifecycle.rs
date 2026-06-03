@@ -538,14 +538,8 @@ async fn register_app_in_registry(
         ttl: None,
     };
     let info_value = serde_json::to_value(&info).unwrap();
-    let canonical_value = syneroym_identity::substrate::canonicalize_json_value(&info_value);
-    let canonical_string = serde_json::to_string(&canonical_value).unwrap();
-    let signature = app_identity.sign(canonical_string.as_bytes());
-
-    let signed_info = syneroym_core::community_registry::SignedEndpointInfo {
-        info,
-        signature: z32::encode(&signature.to_bytes()),
-    };
+    let _canonical_value = syneroym_identity::substrate::canonicalize_json_value(&info_value);
+    let signed_info = info.sign(app_identity).unwrap();
     let res = req_client
         .post(format!("{registry_url}/register"))
         .json(&signed_info)

@@ -34,7 +34,7 @@ pub struct RouteHandlerInner {
     pub app_sandbox_engine: Option<Arc<AppSandboxEngine>>,
     pub identity: syneroym_identity::Identity,
     pub iroh_endpoint: Option<iroh::Endpoint>,
-    pub community_registry_url: Option<String>,
+    pub registry_client: syneroym_core::community_registry::RegistryClient,
     pub _parent_relay_url: Option<String>,
 }
 
@@ -71,13 +71,18 @@ impl RouteHandler {
         let parent_coordinator_url =
             config.parent_coordinator.iroh.as_ref().map(|cfg| cfg.url.clone());
 
+        let registry_client = syneroym_core::community_registry::RegistryClient::new(
+            config.substrate.enable_bep0044_dht,
+            config.substrate.registry_url.clone(),
+        );
+
         let inner = Arc::new(RouteHandlerInner {
             registry: registry.clone(),
             native_dispatch: DashMap::new(),
             app_sandbox_engine: Some(app_sandbox_engine.clone()),
             identity,
             iroh_endpoint: None,
-            community_registry_url: None,
+            registry_client,
             _parent_relay_url: parent_coordinator_url,
         });
 
@@ -99,7 +104,7 @@ impl RouteHandler {
     #[must_use]
     pub fn new_coordinator(
         iroh_endpoint: iroh::Endpoint,
-        community_registry_url: Option<String>,
+        registry_client: syneroym_core::community_registry::RegistryClient,
         parent_relay_url: Option<String>,
     ) -> Self {
         let inner = Arc::new(RouteHandlerInner {
@@ -110,7 +115,7 @@ impl RouteHandler {
             app_sandbox_engine: None,
             identity: syneroym_identity::Identity::generate().expect("coordinator identity"),
             iroh_endpoint: Some(iroh_endpoint),
-            community_registry_url,
+            registry_client,
             _parent_relay_url: parent_relay_url,
         });
         Self { inner }

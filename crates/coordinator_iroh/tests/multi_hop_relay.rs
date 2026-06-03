@@ -36,8 +36,7 @@ fn create_signed_info(
         ttl: None,
     };
 
-    let signature_z32 = identity.sign_json(&serde_json::to_value(&info).unwrap()).unwrap();
-    SignedEndpointInfo { info, signature: signature_z32 }
+    info.sign(identity).unwrap()
 }
 
 #[tokio::test]
@@ -91,11 +90,11 @@ async fn test_registry_propagation() -> Result<()> {
 
     // 4. Verify propagation to R
     let mut propagated = false;
+    let registry_client =
+        syneroym_core::community_registry::RegistryClient::new(true, Some(r_url.clone()));
     for _ in 0..10 {
         tokio::time::sleep(Duration::from_millis(100)).await;
-        if let Ok(info) =
-            syneroym_core::community_registry::RegistryClient::lookup(&r_url, &did, true).await
-        {
+        if let Ok(info) = registry_client.lookup(&did, true).await {
             assert_eq!(info.info.service_id, did);
             propagated = true;
             break;

@@ -124,10 +124,11 @@ async fn handle_bootstrap(
 
     if let Some(registry_url) = &state.registry_url {
         debug!("Attempting to resolve alias: {}", svc_name);
-        if let Ok(info) =
-            syneroym_core::community_registry::RegistryClient::lookup(registry_url, &svc_name, true)
-                .await
-        {
+        let registry_client = syneroym_core::community_registry::RegistryClient::new(
+            true,
+            Some(registry_url.to_string()),
+        );
+        if let Ok(info) = registry_client.lookup(&svc_name, true).await {
             info!(
                 "Resolved service alias '{}' to substrate DID '{}' and service DID '{}'",
                 svc_name, info.info.substrate_id, info.info.service_id
@@ -262,13 +263,11 @@ async fn resolve_iroh_endpoint_from_registry(
     registry_url: &str,
 ) -> Option<iroh::EndpointAddr> {
     debug!("[BlindTunnel] Looking up service '{}' in registry at '{}'", service_id, registry_url);
-    let info = match syneroym_core::community_registry::RegistryClient::lookup(
-        registry_url,
-        service_id,
+    let registry_client = syneroym_core::community_registry::RegistryClient::new(
         true,
-    )
-    .await
-    {
+        Some(registry_url.to_string()),
+    );
+    let info = match registry_client.lookup(service_id, true).await {
         Ok(i) => {
             debug!(
                 "[BlindTunnel] Registry OK: substrate_id='{}' service_id='{}' mechanisms={}",

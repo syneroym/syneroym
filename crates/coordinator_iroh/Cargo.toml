@@ -26,6 +26,8 @@ serde_json = { workspace = true }
 reqwest = { workspace = true }
 rand = { workspace = true }
 async-trait = { workspace = true }
+pkarr.workspace = true
+hex.workspace = true
 
 [dev-dependencies]
 iroh.workspace = true

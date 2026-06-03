@@ -160,11 +160,12 @@ impl CoordinatorIroh {
         config: &SubstrateConfig,
     ) -> iroh::protocol::Router {
         let parent_relay_url = config.parent_coordinator.iroh.as_ref().map(|u| u.url.clone());
-        let route_handler = RouteHandler::new_coordinator(
-            iroh_endpoint.clone(),
+        let registry_client = syneroym_core::community_registry::RegistryClient::new(
+            config.substrate.enable_bep0044_dht,
             iroh_cfg.community_registry_url.clone(),
-            parent_relay_url,
         );
+        let route_handler =
+            RouteHandler::new_coordinator(iroh_endpoint.clone(), registry_client, parent_relay_url);
 
         iroh::protocol::Router::builder(iroh_endpoint.clone())
             .accept(syneroym_router::SYNEROYM_ALPN, route_handler)
@@ -350,10 +351,7 @@ async fn register_coordinator_in_registry(
         ttl: None,
     };
 
-    let signature_z32 = identity.sign_json(&serde_json::to_value(&info)?)?;
-    let signed_info =
-        syneroym_core::community_registry::SignedEndpointInfo { info, signature: signature_z32 };
-
+    let signed_info = info.sign(&identity)?;
     let client = reqwest::Client::new();
     let url = format!("{registry_url}/register");
     let res = client.post(&url).json(&signed_info).send().await?;

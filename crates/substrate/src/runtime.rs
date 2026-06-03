@@ -297,12 +297,13 @@ async fn setup_connection_router(config: &SubstrateConfig) -> anyhow::Result<Con
 
     let router = setup_router(config, &service_id, secret_key).await?;
 
-    if let Some(registry_url) = &config.substrate.registry_url
+    if (config.substrate.enable_bep0044_dht || config.substrate.registry_url.is_some())
         && let Some(endpoint_addr) = router.endpoint_addr()
     {
         let relay_url = config.parent_coordinator.iroh.as_ref().map(|c| c.url.clone());
         publish_to_community_registry(
-            registry_url.clone(),
+            config.substrate.registry_url.clone(),
+            config.substrate.enable_bep0044_dht,
             service_id,
             endpoint_addr,
             relay_url,
@@ -343,8 +344,10 @@ async fn setup_router(
         .await
 }
 
+#[allow(clippy::too_many_arguments)]
 fn publish_to_community_registry<E: serde::Serialize + Send + Sync + Clone + 'static>(
-    registry_url: String,
+    registry_url: Option<String>,
+    enable_bep0044_dht: bool,
     service_id: String,
     endpoint_addr: E,
     relay_url: Option<String>,
@@ -353,20 +356,32 @@ fn publish_to_community_registry<E: serde::Serialize + Send + Sync + Clone + 'st
     hosted_apps_dir: std::path::PathBuf,
 ) {
     tokio::spawn(async move {
+        let registry_client = syneroym_core::community_registry::RegistryClient::new(
+            enable_bep0044_dht,
+            registry_url.clone(),
+        );
+
         loop {
+            // Register native substrate endpoint
+            let signed_info = match build_signed_endpoint_info(
+                &service_id,
+                &endpoint_addr,
+                relay_url.clone(),
+                &secret_key,
+                nickname.clone(),
+            ) {
+                Ok(info) => info,
+                Err(e) => {
+                    warn!("Failed to build signed endpoint info: {}", e);
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    continue;
+                }
+            };
+
             let mut attempts = 0;
             let mut success = false;
             while attempts < 30 {
-                if let Err(e) = register_substrate_endpoint(
-                    &registry_url,
-                    &service_id,
-                    &endpoint_addr,
-                    relay_url.clone(),
-                    &secret_key,
-                    nickname.clone(),
-                )
-                .await
-                {
+                if let Err(e) = registry_client.register(&signed_info).await {
                     warn!("Failed to register endpoint (attempt {}): {}", attempts + 1, e);
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                     attempts += 1;
@@ -376,11 +391,15 @@ fn publish_to_community_registry<E: serde::Serialize + Send + Sync + Clone + 'st
                 }
             }
 
-            if !success {
+            if success {
+                info!(
+                    service_id = %service_id,
+                    "Successfully registered substrate endpoint"
+                );
+            } else {
                 warn!(
                     service_id = %service_id,
-                    registry_url = %registry_url,
-                    "Exhausted registration retries. Substrate may be unreachable via community discovery."
+                    "Exhausted registration retries. Substrate may be unreachable."
                 );
             }
 
@@ -388,9 +407,6 @@ fn publish_to_community_registry<E: serde::Serialize + Send + Sync + Clone + 'st
             if hosted_apps_dir.exists()
                 && let Ok(mut entries) = tokio::fs::read_dir(&hosted_apps_dir).await
             {
-                let client = reqwest::Client::new();
-                let url = format!("{registry_url}/register");
-
                 while let Ok(Some(entry)) = entries.next_entry().await {
                     if let Ok(file_type) = entry.file_type().await
                         && file_type.is_file()
@@ -399,12 +415,11 @@ fn publish_to_community_registry<E: serde::Serialize + Send + Sync + Clone + 'st
                             syneroym_core::community_registry::SignedEndpointInfo,
                         >(&contents)
                     {
-                        let res = client.post(&url).json(&cert).send().await;
-                        log_registration_status(
-                            res,
-                            &cert.info.service_id,
-                            cert.info.nickname.as_deref(),
-                        );
+                        if let Err(e) = registry_client.register(&cert).await {
+                            warn!("Failed to register hosted app {}: {}", cert.info.service_id, e);
+                        } else {
+                            info!("Successfully registered hosted app {}", cert.info.service_id);
+                        }
                     }
                 }
             }
@@ -416,33 +431,6 @@ fn publish_to_community_registry<E: serde::Serialize + Send + Sync + Clone + 'st
             .await;
         }
     });
-}
-
-async fn register_substrate_endpoint<E: serde::Serialize>(
-    registry_url: &str,
-    service_id: &str,
-    endpoint_addr: &E,
-    relay_url: Option<String>,
-    secret_key: &[u8; 32],
-    nickname: Option<String>,
-) -> anyhow::Result<()> {
-    debug!("Registering substrate endpoint with registry at {}", registry_url);
-
-    let signed_info = build_signed_endpoint_info(
-        service_id,
-        endpoint_addr,
-        relay_url,
-        secret_key,
-        nickname.clone(),
-    )?;
-
-    let client = reqwest::Client::new();
-    let url = format!("{registry_url}/register");
-    let res = client.post(&url).json(&signed_info).send().await;
-
-    log_registration_status(res, service_id, nickname.as_deref());
-
-    Ok(())
 }
 
 fn build_signed_endpoint_info<E: serde::Serialize>(
@@ -469,41 +457,5 @@ fn build_signed_endpoint_info<E: serde::Serialize>(
     };
 
     let identity = syneroym_identity::Identity::from_bytes(secret_key);
-    let signature_z32 = identity.sign_json(&serde_json::to_value(&info)?)?;
-
-    Ok(syneroym_core::community_registry::SignedEndpointInfo { info, signature: signature_z32 })
-}
-
-fn log_registration_status(
-    res: Result<reqwest::Response, reqwest::Error>,
-    service_id: &str,
-    nickname: Option<&str>,
-) {
-    let alias = syneroym_core::util::generate_alias(nickname, service_id);
-
-    match res {
-        Ok(resp) if resp.status().is_success() => {
-            info!(
-                service_id = %service_id,
-                alias = %alias,
-                "Successfully registered substrate endpoint with registry"
-            );
-        }
-        Ok(resp) => {
-            warn!(
-                service_id = %service_id,
-                alias = %alias,
-                status = %resp.status(),
-                "Failed to register with registry"
-            );
-        }
-        Err(e) => {
-            warn!(
-                service_id = %service_id,
-                alias = %alias,
-                error = %e,
-                "Failed to reach registry"
-            );
-        }
-    }
+    info.sign(&identity)
 }

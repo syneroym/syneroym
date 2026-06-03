@@ -92,13 +92,11 @@ impl SyneroymClient {
         let mechanisms = if let Some(m) = &self.provided_mechanisms {
             m.clone()
         } else if !self.registry_url.is_empty() {
-            let info = syneroym_core::community_registry::RegistryClient::lookup(
-                &self.registry_url,
-                &self.service_id,
+            let registry_client = syneroym_core::community_registry::RegistryClient::new(
                 true,
-            )
-            .await?
-            .info;
+                Some(self.registry_url.clone()),
+            );
+            let info = registry_client.lookup(&self.service_id, true).await?.info;
             // The lookup might have been done by an alias. Update service_id to the canonical DID.
             self.service_id = info.service_id;
             info.mechanisms
@@ -409,11 +407,10 @@ impl SyneroymClient {
     }
 
     pub async fn lookup_registry(&self) -> Result<SignedEndpointInfo> {
-        syneroym_core::community_registry::RegistryClient::lookup(
-            &self.registry_url,
-            &self.service_id,
+        let registry_client = syneroym_core::community_registry::RegistryClient::new(
             true,
-        )
-        .await
+            Some(self.registry_url.clone()),
+        );
+        registry_client.lookup(&self.service_id, true).await
     }
 }

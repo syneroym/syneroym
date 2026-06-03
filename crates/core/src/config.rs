@@ -576,6 +576,7 @@ pub struct SubstrateGlobalConfig {
     pub communication_interfaces: Vec<String>,
     pub registry_url: Option<String>,
     pub coordinator_discovery_url: Option<String>,
+    pub enable_bep0044_dht: bool,
 }
 
 impl Default for SubstrateGlobalConfig {
@@ -584,6 +585,7 @@ impl Default for SubstrateGlobalConfig {
             communication_interfaces: default_communication_interfaces(),
             registry_url: None,
             coordinator_discovery_url: None,
+            enable_bep0044_dht: true,
         }
     }
 }

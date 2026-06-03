@@ -79,9 +79,7 @@ pub async fn handle(
                     is_private: false,
                     ttl: None,
                 };
-                let signature = id.sign_json(&serde_json::to_value(&info)?)?;
-                cert =
-                    Some(syneroym_core::community_registry::SignedEndpointInfo { info, signature });
+                cert = Some(info.sign(&id)?);
             }
 
             if let Some(wasm_path) = wasm {

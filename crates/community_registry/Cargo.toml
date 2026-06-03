@@ -19,3 +19,8 @@ z32.workspace = true
 ed25519-dalek.workspace = true
 syneroym-identity.workspace = true
 reqwest = { workspace = true }
+
+[dev-dependencies]
+pkarr.workspace = true
+hex.workspace = true
+

@@ -11,11 +11,10 @@ use axum::{
     routing::{get, post},
 };
 use dashmap::DashMap;
-use ed25519_dalek::{Signature, Verifier};
 use std::sync::Arc;
 use syneroym_core::community_registry::{EndpointType, SignedEndpointInfo};
 use syneroym_core::config::SubstrateConfig;
-use syneroym_identity::substrate::{canonicalize_json_value, resolve_did_key};
+use syneroym_identity::substrate::resolve_did_key;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tracing::{debug, error, info};
@@ -222,33 +221,14 @@ fn verify_endpoint_signature(
 ) -> Result<ed25519_dalek::VerifyingKey, (StatusCode, String)> {
     let service_id = &payload.info.service_id;
 
+    if let Err(e) = payload.verify() {
+        return Err((StatusCode::UNAUTHORIZED, format!("Signature verification failed: {}", e)));
+    }
+
     // Resolve public key
     let pubkey = resolve_did_key(service_id)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid service_id (did:key): {e}")))?;
     debug!("Registering public key: {:?} to registry", pubkey);
-
-    // Canonicalize EndpointInfo
-    let info_value = serde_json::to_value(&payload.info)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let canonical_value = canonicalize_json_value(&info_value);
-    let canonical_string = serde_json::to_string(&canonical_value)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    // Verify signature
-    let sig_bytes = z32::decode(payload.signature.as_bytes()).map_err(|_| {
-        (StatusCode::BAD_REQUEST, "Invalid z-base-32 signature encoding".to_string())
-    })?;
-
-    if sig_bytes.len() != 64 {
-        return Err((StatusCode::BAD_REQUEST, "Invalid signature length".to_string()));
-    }
-
-    let signature = Signature::from_slice(&sig_bytes)
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid signature format: {e}")))?;
-
-    if pubkey.verify(canonical_string.as_bytes(), &signature).is_err() {
-        return Err((StatusCode::UNAUTHORIZED, "Signature verification failed".to_string()));
-    }
 
     Ok(pubkey)
 }
@@ -312,14 +292,7 @@ mod tests {
     use syneroym_identity::substrate::derive_did_key;
 
     fn create_signed_info(identity: &Identity, info: EndpointInfo) -> SignedEndpointInfo {
-        let info_value = serde_json::to_value(&info).unwrap();
-        let canonical_value = canonicalize_json_value(&info_value);
-        let canonical_string = serde_json::to_string(&canonical_value).unwrap();
-
-        let signature = identity.sign(canonical_string.as_bytes());
-        let signature_z32 = z32::encode(&signature.to_bytes());
-
-        SignedEndpointInfo { info, signature: signature_z32 }
+        info.sign(identity).unwrap()
     }
 
     #[tokio::test]
@@ -401,7 +374,7 @@ mod tests {
 
         let res = register_endpoint(State(state), Json(signed_info)).await;
         assert!(res.is_err());
-        assert_eq!(res.unwrap_err().0, StatusCode::BAD_REQUEST);
+        assert_eq!(res.unwrap_err().0, StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
@@ -424,7 +397,7 @@ mod tests {
                 is_private: false,
                 ttl: None,
             },
-            signature: "mock-sig".to_string(),
+            pkarr_packet_hex: "mock-hex".to_string(),
         };
         state
             .endpoints
@@ -441,7 +414,7 @@ mod tests {
                 is_private: false,
                 ttl: None,
             },
-            signature: "mock-sig".to_string(),
+            pkarr_packet_hex: "mock-hex".to_string(),
         };
         state.endpoints.insert(service_id.to_string(), (service_info, std::time::Instant::now()));
 

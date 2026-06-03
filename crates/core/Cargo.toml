@@ -24,6 +24,9 @@ url.workspace = true
 tracing.workspace = true
 ed25519-dalek.workspace = true
 syneroym-identity.workspace = true
+pkarr.workspace = true
+hex.workspace = true
+bytes.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
