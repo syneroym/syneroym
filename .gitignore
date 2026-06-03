@@ -27,6 +27,7 @@ crates/*prototype
 crates/substrate/config.dev.toml
 
 workdir/
+data/
 
 # AI
 .gemini
@@ -37,4 +38,3 @@ coverage/
 *.profraw
 *.profdata
 lcov.info
-

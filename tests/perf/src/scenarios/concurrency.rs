@@ -56,15 +56,7 @@ pub async fn run_scenario() -> Result<()> {
         is_private: false,
         ttl: None,
     };
-    let info_value = serde_json::to_value(&info).unwrap();
-    let canonical_value = syneroym_identity::substrate::canonicalize_json_value(&info_value);
-    let canonical_string = serde_json::to_string(&canonical_value).unwrap();
-    let _signature = app_identity.sign(canonical_string.as_bytes());
-
-    let signed_info = syneroym_core::community_registry::SignedEndpointInfo {
-        info,
-        pkarr_packet_hex: "mock-hex".to_string(),
-    };
+    let signed_info = info.sign(&app_identity).unwrap();
 
     let res =
         http_client.post(format!("{}/register", registry_url)).json(&signed_info).send().await?;
