@@ -237,6 +237,11 @@ pub async fn run_scenario() -> Result<()> {
     let saved_path = save_concurrency_results(&json_results, &timestamp)?;
     info!("Detailed concurrency benchmark results written successfully to: {}", saved_path);
 
+    if let Ok(mut c) = Arc::try_unwrap(shared_client) {
+        let _ = c.shutdown().await;
+    }
+    let _ = orchestrator_client.shutdown().await;
+
     env.teardown().await;
     Ok(())
 }

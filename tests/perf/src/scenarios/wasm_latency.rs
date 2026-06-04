@@ -135,6 +135,9 @@ pub async fn run_scenario() -> Result<()> {
 
     print_latency_comparison("WASM Component (Execution)", baseline_stats, via_substrate_stats);
 
+    let _ = app_client.shutdown().await;
+    let _ = orchestrator_client.shutdown().await;
+
     env.teardown().await;
     Ok(())
 }

@@ -46,6 +46,14 @@ cargo run --bin roymctl -- --help
 
 Syneroym has a tiered testing and benchmarking strategy across three different suites:
 
+### Automated Performance Summary
+You can run all benchmarking suites (Criterion, Latency, Concurrency, and Soak) sequentially and automatically append a summarized report—including your machine hardware specifications—to `PERF_SUMMARY.md` via a single xtask command:
+
+* **Run via Cargo:**
+  ```bash
+  cargo xtask perf-summary
+  ```
+
 ### Suite 1: Rust Unit & Integration Tests (SUT)
 These verify code correctness in isolation. Unit tests cover individual helper modules, and integration tests cover complex multi-system flows (e.g. substrate lifecycles).
 
