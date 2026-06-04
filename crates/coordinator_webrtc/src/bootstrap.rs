@@ -5,7 +5,8 @@
 
 use std::{
     fmt::{Debug, Formatter},
-    sync::Arc,
+    io::Write,
+    sync::{Arc, OnceLock},
 };
 
 use askama::Template;
@@ -20,6 +21,7 @@ use axum::{
     response::{Html, IntoResponse},
     routing::{any, get},
 };
+use flate2::{Compression, write::GzEncoder};
 use futures::{
     SinkExt, StreamExt,
     stream::{SplitSink, SplitStream},
@@ -86,25 +88,42 @@ fn app(state: Arc<BootstrapState>) -> Router {
         .route("/__syneroym/peer-proxy.js", get(handle_peer_proxy_js))
         .route("/__syneroym/tunnel", any(handle_tunnel_upgrade))
         .fallback(handle_bootstrap)
+        .layer(tower_http::compression::CompressionLayer::new())
         .with_state(state)
+}
+
+static SW_JS_GZ: OnceLock<Vec<u8>> = OnceLock::new();
+static PEER_PROXY_JS_GZ: OnceLock<Vec<u8>> = OnceLock::new();
+
+fn compress_gzip(data: &str) -> Vec<u8> {
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::best());
+    encoder.write_all(data.as_bytes()).unwrap();
+    encoder.finish().unwrap()
 }
 
 async fn handle_sw() -> impl IntoResponse {
     info!("Serving sw.js to client");
     let sw_js = include_str!(concat!(env!("OUT_DIR"), "/sw.js"));
+    let gzipped = SW_JS_GZ.get_or_init(|| compress_gzip(sw_js));
     (
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, "application/javascript"),
+            (header::CONTENT_ENCODING, "gzip"),
             (header::HeaderName::from_static("service-worker-allowed"), "/"),
         ],
-        sw_js,
+        gzipped.clone(),
     )
 }
 
 async fn handle_peer_proxy_js() -> impl IntoResponse {
     let js = include_str!(concat!(env!("OUT_DIR"), "/peer-proxy.js"));
-    (StatusCode::OK, [(header::CONTENT_TYPE, "application/javascript")], js)
+    let gzipped = PEER_PROXY_JS_GZ.get_or_init(|| compress_gzip(js));
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/javascript"), (header::CONTENT_ENCODING, "gzip")],
+        gzipped.clone(),
+    )
 }
 
 async fn handle_bootstrap(
