@@ -3,8 +3,17 @@
 //! Manages the lifecycle of all substrate components including the App Sandbox,
 //! Observability engine, Router, Client Gateway, and Coordinators.
 
+use std::time::Duration;
 use syneroym_core::config::SubstrateConfig;
-use syneroym_core::registry::{EndpointRegistry, SubstrateEndpoint};
+use syneroym_core::dht_registry::EndpointInfo;
+use syneroym_core::dht_registry::EndpointMechanism;
+use syneroym_core::dht_registry::EndpointType;
+use syneroym_core::dht_registry::HEARTBEAT_INTERVAL_SECS;
+use syneroym_core::dht_registry::RegistryClient;
+use syneroym_core::dht_registry::SignedEndpointInfo;
+use syneroym_core::local_registry::{EndpointRegistry, SubstrateEndpoint};
+use syneroym_core::storage;
+use syneroym_identity::Identity;
 use syneroym_observability::ObservabilityEngine;
 use syneroym_router::ConnectionRouter;
 use tracing::{debug, error, info, warn};
@@ -322,7 +331,7 @@ async fn setup_identity_and_storage(
     let substrate_identity_state =
         identity::setup_substrate_identity(&config.identity, &config.app_data_dir)?;
     let substrate_secret_key = identity::get_secret(&config.identity, &config.app_data_dir)?;
-    let _data_store = syneroym_core::storage::init_store(config).await?;
+    let _data_store = storage::init_store(config).await?;
     Ok((substrate_identity_state.did, substrate_secret_key))
 }
 
@@ -331,7 +340,7 @@ async fn setup_router(
     service_id: &str,
     secret_key: [u8; 32],
 ) -> anyhow::Result<ConnectionRouter> {
-    let data_store = syneroym_core::storage::init_store(config).await?;
+    let data_store = storage::init_store(config).await?;
     let endpoint_registry = EndpointRegistry::new(data_store).await?;
 
     debug!("Registering native SubstrateService at {}", service_id);
@@ -356,10 +365,7 @@ fn publish_to_community_registry<E: serde::Serialize + Send + Sync + Clone + 'st
     hosted_apps_dir: std::path::PathBuf,
 ) {
     tokio::spawn(async move {
-        let registry_client = syneroym_core::community_registry::RegistryClient::new(
-            enable_bep0044_dht,
-            registry_url.clone(),
-        );
+        let registry_client = RegistryClient::new(enable_bep0044_dht, registry_url.clone());
 
         loop {
             // Register native substrate endpoint
@@ -373,7 +379,7 @@ fn publish_to_community_registry<E: serde::Serialize + Send + Sync + Clone + 'st
                 Ok(info) => info,
                 Err(e) => {
                     warn!("Failed to build signed endpoint info: {}", e);
-                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    tokio::time::sleep(Duration::from_secs(60)).await;
                     continue;
                 }
             };
@@ -383,7 +389,7 @@ fn publish_to_community_registry<E: serde::Serialize + Send + Sync + Clone + 'st
             while attempts < 30 {
                 if let Err(e) = registry_client.register(&signed_info).await {
                     warn!("Failed to register endpoint (attempt {}): {}", attempts + 1, e);
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    tokio::time::sleep(Duration::from_millis(500)).await;
                     attempts += 1;
                 } else {
                     success = true;
@@ -411,9 +417,7 @@ fn publish_to_community_registry<E: serde::Serialize + Send + Sync + Clone + 'st
                     if let Ok(file_type) = entry.file_type().await
                         && file_type.is_file()
                         && let Ok(contents) = tokio::fs::read_to_string(entry.path()).await
-                        && let Ok(cert) = serde_json::from_str::<
-                            syneroym_core::community_registry::SignedEndpointInfo,
-                        >(&contents)
+                        && let Ok(cert) = serde_json::from_str::<SignedEndpointInfo>(&contents)
                     {
                         if let Err(e) = registry_client.register(&cert).await {
                             warn!("Failed to register hosted app {}: {}", cert.info.service_id, e);
@@ -425,10 +429,7 @@ fn publish_to_community_registry<E: serde::Serialize + Send + Sync + Clone + 'st
             }
 
             // Sleep until the next heartbeat interval
-            tokio::time::sleep(std::time::Duration::from_secs(
-                syneroym_core::community_registry::HEARTBEAT_INTERVAL_SECS,
-            ))
-            .await;
+            tokio::time::sleep(Duration::from_secs(HEARTBEAT_INTERVAL_SECS)).await;
         }
     });
 }
@@ -439,23 +440,20 @@ fn build_signed_endpoint_info<E: serde::Serialize>(
     relay_url: Option<String>,
     secret_key: &[u8; 32],
     nickname: Option<String>,
-) -> anyhow::Result<syneroym_core::community_registry::SignedEndpointInfo> {
+) -> anyhow::Result<SignedEndpointInfo> {
     let endpoint_addr_bytes = serde_json::to_vec(endpoint_addr)
         .map_err(|e| anyhow::anyhow!("Failed to serialize endpoint addr: {e}"))?;
 
-    let info = syneroym_core::community_registry::EndpointInfo {
+    let info = EndpointInfo {
         service_id: service_id.to_string(),
         substrate_id: service_id.to_string(),
-        endpoint_type: syneroym_core::community_registry::EndpointType::Substrate,
+        endpoint_type: EndpointType::Substrate,
         nickname,
-        mechanisms: vec![syneroym_core::community_registry::EndpointMechanism::Iroh {
-            endpoint_addr_bytes,
-            relay_url,
-        }],
+        mechanisms: vec![EndpointMechanism::Iroh { endpoint_addr_bytes, relay_url }],
         is_private: false,
         ttl: None,
     };
 
-    let identity = syneroym_identity::Identity::from_bytes(secret_key);
+    let identity = Identity::from_bytes(secret_key);
     info.sign(&identity)
 }

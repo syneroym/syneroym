@@ -2,7 +2,11 @@
 //! Integration tests for the Podman sandbox lifecycle
 
 use std::time::Duration;
+use syneroym_core::config::IrohParentConfig;
+use syneroym_core::config::LogTarget;
 use syneroym_core::config::SubstrateConfig;
+use syneroym_core::dht_registry::EndpointMechanism;
+use syneroym_identity::Identity;
 use tracing::debug;
 
 const IROH_PORT: u16 = 7984;
@@ -16,7 +20,7 @@ struct SubstrateTestContext {
     substrate_service_id: String,
     gateway_port: u16,
     registry_url: String,
-    substrate_mechanisms: Vec<syneroym_core::community_registry::EndpointMechanism>,
+    substrate_mechanisms: Vec<EndpointMechanism>,
     shutdown_tx: tokio::sync::mpsc::Sender<()>,
     substrate_handle: tokio::task::JoinHandle<()>,
     temp_dir: tempfile::TempDir,
@@ -44,7 +48,7 @@ impl SubstrateTestContext {
             ..SubstrateConfig::default()
         };
         config.resolve_paths();
-        config.logging.target = syneroym_core::config::LogTarget::Stdout;
+        config.logging.target = LogTarget::Stdout;
 
         config.roles = RolesConfig {
             coordinator: Some(CoordinatorRole {
@@ -68,9 +72,8 @@ impl SubstrateTestContext {
 
         let registry_url = format!("http://localhost:{registry_port}");
         config.substrate.registry_url = Some(registry_url.clone());
-        config.parent_coordinator.iroh = Some(syneroym_core::config::IrohParentConfig {
-            url: format!("http://localhost:{iroh_port}"),
-        });
+        config.parent_coordinator.iroh =
+            Some(IrohParentConfig { url: format!("http://localhost:{iroh_port}") });
 
         let substrate_identity_state = syneroym_substrate::identity::setup_substrate_identity(
             &config.identity,
@@ -126,7 +129,7 @@ impl SubstrateTestContext {
 
 fn has_podman() -> bool {
     std::process::Command::new("podman")
-        .arg("--version")
+        .arg("info")
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
@@ -143,7 +146,7 @@ async fn test_podman_lifecycle() {
 
     let ctx = SubstrateTestContext::setup(IROH_PORT, REGISTRY_PORT, GATEWAY_PORT).await;
 
-    let app_identity = syneroym_identity::Identity::generate().unwrap();
+    let app_identity = Identity::generate().unwrap();
     let app_service_id = syneroym_identity::substrate::derive_did_key(&app_identity.public_key());
 
     // We deploy a simple alpine container that starts an HTTP echo or simple server

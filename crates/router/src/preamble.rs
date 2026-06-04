@@ -38,6 +38,9 @@
 
 use anyhow::{Result, anyhow};
 use std::fmt;
+
+/// Separator used in the routing preamble between the interface name and service ID.
+pub const PREAMBLE_SEPARATOR: &str = "|";
 use std::str::FromStr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -182,9 +185,8 @@ impl RoutePreamble {
             }
         }
 
-        let (interface, service_id) = target_clean
-            .rsplit_once(syneroym_core::constants::PREAMBLE_SEPARATOR)
-            .unwrap_or(("", target_clean));
+        let (interface, service_id) =
+            target_clean.rsplit_once(PREAMBLE_SEPARATOR).unwrap_or(("", target_clean));
 
         if service_id.is_empty() {
             return Err(anyhow!("Incomplete preamble (missing service_id): {raw}"));
@@ -267,13 +269,7 @@ impl fmt::Display for RoutePreamble {
         let mut base = if self.interface.is_empty() {
             format!("{}://{}", scheme, self.service_id)
         } else {
-            format!(
-                "{}://{}{}{}",
-                scheme,
-                self.interface,
-                syneroym_core::constants::PREAMBLE_SEPARATOR,
-                self.service_id
-            )
+            format!("{}://{}{}{}", scheme, self.interface, PREAMBLE_SEPARATOR, self.service_id)
         };
 
         if let (Some(enc), Some(pubkey)) = (&self.enc, &self.pubkey) {

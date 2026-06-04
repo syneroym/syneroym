@@ -9,7 +9,15 @@ use assert_cmd::cargo::CommandCargoExt;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::time::Duration;
+use syneroym_core::config::IrohParentConfig;
+use syneroym_core::config::LogTarget;
 use syneroym_core::config::SubstrateConfig;
+use syneroym_core::dht_registry::EndpointInfo;
+use syneroym_core::dht_registry::EndpointMechanism;
+use syneroym_core::dht_registry::EndpointType;
+use syneroym_core::test_constants;
+use syneroym_core::util;
+use syneroym_identity::Identity;
 use tempfile::NamedTempFile;
 use tracing::debug;
 
@@ -137,7 +145,7 @@ struct SubstrateTestContext {
     substrate_service_id: String,
     gateway_port: u16,
     registry_url: String,
-    substrate_mechanisms: Vec<syneroym_core::community_registry::EndpointMechanism>,
+    substrate_mechanisms: Vec<EndpointMechanism>,
     shutdown_tx: tokio::sync::mpsc::Sender<()>,
     substrate_handle: tokio::task::JoinHandle<()>,
     temp_dir: tempfile::TempDir,
@@ -162,7 +170,7 @@ impl SubstrateTestContext {
             ..SubstrateConfig::default()
         };
         config.resolve_paths();
-        config.logging.target = syneroym_core::config::LogTarget::Stdout;
+        config.logging.target = LogTarget::Stdout;
 
         config.roles.coordinator = Some(CoordinatorRole {
             iroh: Some(CoordinatorIrohConfig {
@@ -178,9 +186,8 @@ impl SubstrateTestContext {
         });
         let registry_url = format!("http://localhost:{registry_port}");
         config.substrate.registry_url = Some(registry_url.clone());
-        config.parent_coordinator.iroh = Some(syneroym_core::config::IrohParentConfig {
-            url: format!("http://localhost:{iroh_port}"),
-        });
+        config.parent_coordinator.iroh =
+            Some(IrohParentConfig { url: format!("http://localhost:{iroh_port}") });
 
         config.roles.client_gateway =
             Some(syneroym_core::config::ClientGatewayRole { http_port: gateway_port });
@@ -259,19 +266,17 @@ async fn test_substrate_lifecycle_scenarios() {
 async fn test_wasm_app_scenario(ctx: &SubstrateTestContext) {
     // Deploy a test WASM application
     debug!(">>> Starting WASM Scenario: Deploy");
-    let wasm_bytes = std::fs::read(
-        "../../test-components/greeter/target/wasm32-wasip2/release/syneroym_test_greeter.wasm",
-    )
-    .expect("Failed to read compiled test WASM component");
+    let wasm_bytes = std::fs::read(test_constants::greeter_wasm_path())
+        .expect("Failed to read compiled test WASM component");
 
     // Generate a valid DID for the app and deploy it
-    let app_identity = syneroym_identity::Identity::generate().unwrap();
+    let app_identity = Identity::generate().unwrap();
     let app_service_id = syneroym_identity::substrate::derive_did_key(&app_identity.public_key());
 
     ctx.substrate_client
         .deploy_wasm(
             app_service_id.clone(),
-            vec!["syneroym-test:greeter/greet@0.1.0".to_string()],
+            vec![test_constants::GREETER_INTERFACE_NAME.to_string()],
             wasm_bytes,
             None,
         )
@@ -285,7 +290,7 @@ async fn test_wasm_app_scenario(ctx: &SubstrateTestContext) {
     assert!(services.iter().any(|s| s.service_id == app_service_id));
     let svc = services.iter().find(|s| s.service_id == app_service_id).unwrap();
     assert_eq!(svc.endpoint_type, "wasm");
-    assert!(svc.interfaces.contains(&"syneroym-test:greeter/greet@0.1.0".to_string()));
+    assert!(svc.interfaces.contains(&test_constants::GREETER_INTERFACE_NAME.to_string()));
 
     // Interact with the running WASM application via RPC
     debug!(">>> Starting WASM Scenario: Run RPC");
@@ -296,9 +301,9 @@ async fn test_wasm_app_scenario(ctx: &SubstrateTestContext) {
     app_client.connect().await.expect("Failed to connect to app on substrate");
 
     let app_res = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
+        Duration::from_secs(30),
         app_client.request(
-            "syneroym-test:greeter/greet@0.1.0",
+            test_constants::GREETER_INTERFACE_NAME,
             "greet",
             serde_json::json!(["tester"]),
         ),
@@ -354,7 +359,7 @@ async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
     });
 
     // Deploy the app as a "tcp" service
-    let app_identity = syneroym_identity::Identity::generate().unwrap();
+    let app_identity = Identity::generate().unwrap();
     let app_service_id = syneroym_identity::substrate::derive_did_key(&app_identity.public_key());
 
     ctx.substrate_client
@@ -388,8 +393,8 @@ async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
     // Test HTTP requests through client_gateway
     let req_client = reqwest::Client::new();
     let url = format!("{}/", ctx.gateway_url());
-    let interface_hash = syneroym_core::util::short_hash("default");
-    let pubkeyhash = syneroym_core::util::short_hash(&app_service_id);
+    let interface_hash = util::short_hash("default");
+    let pubkeyhash = util::short_hash(&app_service_id);
     let host_header = format!("tcp-demo-app-p{pubkeyhash}-i{interface_hash}.localhost");
 
     // 1. GET /
@@ -475,7 +480,7 @@ async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
     // 6. HTTPS Test
     debug!(">>> TCP Scenario: HTTPS Test");
     let https_port = MOCK_APP_HTTPS_PORT;
-    let https_app_identity = syneroym_identity::Identity::generate().unwrap();
+    let https_app_identity = Identity::generate().unwrap();
     let https_app_service_id =
         syneroym_identity::substrate::derive_did_key(&https_app_identity.public_key());
 
@@ -522,16 +527,16 @@ async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
 async fn register_app_in_registry(
     app_service_id: String,
     substrate_service_id: String,
-    substrate_mechanisms: Vec<syneroym_core::community_registry::EndpointMechanism>,
-    app_identity: &syneroym_identity::Identity,
+    substrate_mechanisms: Vec<EndpointMechanism>,
+    app_identity: &Identity,
     registry_url: &str,
     nickname: &str,
 ) {
     let req_client = reqwest::Client::new();
-    let info = syneroym_core::community_registry::EndpointInfo {
+    let info = EndpointInfo {
         service_id: app_service_id,
         substrate_id: substrate_service_id,
-        endpoint_type: syneroym_core::community_registry::EndpointType::Service,
+        endpoint_type: EndpointType::Service,
         nickname: Some(nickname.to_string()),
         mechanisms: substrate_mechanisms,
         is_private: false,
@@ -566,8 +571,8 @@ async fn test_http_proxy_invocation(
 
     let req_client = reqwest::Client::new();
     let url = format!("{}/", ctx.gateway_url());
-    let interface_hash = syneroym_core::util::short_hash("syneroym-test:greeter/greet@0.1.0");
-    let pubkeyhash = syneroym_core::util::short_hash(app_service_id);
+    let interface_hash = util::short_hash(test_constants::GREETER_INTERFACE_NAME);
+    let pubkeyhash = util::short_hash(app_service_id);
     let host_header = format!("{nickname}-p{pubkeyhash}-i{interface_hash}.localhost");
 
     let proxy_res = req_client

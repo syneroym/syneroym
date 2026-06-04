@@ -4,7 +4,8 @@
 
 use clap::Subcommand;
 use std::path::Path;
-use syneroym_core::community_registry::{EndpointInfo, EndpointType, SignedEndpointInfo};
+use syneroym_core::dht_registry::{EndpointInfo, EndpointType, RegistryClient};
+use syneroym_core::util;
 use syneroym_identity::Identity;
 
 #[derive(Subcommand, Debug, Clone)]
@@ -31,6 +32,9 @@ pub enum RegistryCommands {
         /// Resolve mechanisms from the substrate (default: true)
         #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
         resolve: bool,
+        /// Also query the global P2P DHT (BEP 0044)
+        #[arg(long)]
+        dht: bool,
     },
 }
 
@@ -67,7 +71,7 @@ pub async fn handle(command: &RegistryCommands, api_url: &str, dir: &Path) -> an
                     "Successfully registered service {service_id} against substrate {substrate}"
                 );
                 if let Some(n) = nickname {
-                    let alias = syneroym_core::util::generate_alias(Some(n), &service_id);
+                    let alias = util::generate_alias(Some(n), &service_id);
                     println!("Alias: {alias}");
                 }
             } else {
@@ -75,16 +79,15 @@ pub async fn handle(command: &RegistryCommands, api_url: &str, dir: &Path) -> an
                 anyhow::bail!("Registry registration failed ({url}): {error_text}");
             }
         }
-        RegistryCommands::Lookup { service_id, resolve } => {
-            let client = reqwest::Client::new();
-            let url = format!("{api_url}/lookup/{service_id}?resolve={resolve}");
-            let response = client.get(&url).send().await?;
-
-            if response.status().is_success() {
-                let signed_info: SignedEndpointInfo = response.json().await?;
-                println!("{signed_info:#?}");
-            } else {
-                anyhow::bail!("Registry lookup failed ({}): {}", url, response.status());
+        RegistryCommands::Lookup { service_id, resolve, dht } => {
+            let registry_client = RegistryClient::new(*dht, Some(api_url.to_string()));
+            match registry_client.lookup(service_id, *resolve).await {
+                Ok(signed_info) => {
+                    println!("{signed_info:#?}");
+                }
+                Err(e) => {
+                    anyhow::bail!("Registry lookup failed for {service_id}: {e}");
+                }
             }
         }
     }

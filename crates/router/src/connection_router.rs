@@ -10,7 +10,7 @@ use iroh::protocol::Router as IrohRouter;
 use iroh::{EndpointAddr, RelayMap, RelayMode, RelayUrl, SecretKey};
 use std::sync::Arc;
 use syneroym_core::config::{IrohParentConfig, SubstrateConfig, WebRtcParentConfig};
-use syneroym_core::registry::EndpointRegistry;
+use syneroym_core::local_registry::EndpointRegistry;
 use tracing::{debug, error, info};
 use webrtc::api::APIBuilder;
 use webrtc::api::interceptor_registry::register_default_interceptors;

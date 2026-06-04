@@ -5,6 +5,9 @@
 use clap::Subcommand;
 use std::fs;
 use std::path::PathBuf;
+use syneroym_core::dht_registry::EndpointInfo;
+use syneroym_core::dht_registry::EndpointType;
+use syneroym_identity::Identity;
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum AppCommands {
@@ -41,6 +44,7 @@ pub enum AppCommands {
         #[arg(long)]
         app_id: String,
     },
+
     /// Stop a running `SynApp` via API (evict from cache)
     Stop {
         #[arg(long)]
@@ -64,16 +68,12 @@ pub async fn handle(
 
             let mut cert = None;
             if let Some(name) = identity {
-                let key_path = dir.join("identities").join(format!("{name}.key"));
-                if !key_path.exists() {
-                    anyhow::bail!("Identity '{}' not found at {}", name, key_path.display());
-                }
-                let id = syneroym_identity::Identity::load_from_path(&key_path)?;
+                let id = load_identity(dir, name)?;
 
-                let info = syneroym_core::community_registry::EndpointInfo {
+                let info = EndpointInfo {
                     service_id: app_id.clone(),
                     substrate_id: substrate_did.clone(),
-                    endpoint_type: syneroym_core::community_registry::EndpointType::Service,
+                    endpoint_type: EndpointType::Service,
                     mechanisms: vec![],
                     nickname: nickname.clone(),
                     is_private: false,
@@ -101,6 +101,7 @@ pub async fn handle(
             println!("Successfully removed app {app_id}");
         }
         AppCommands::List => {
+            // Lists all installed SynApps registered in the local substrate registry.
             let services = client.list_services().await?;
             println!("{:<50} {:<10} {:<50}", "SERVICE ID", "TYPE", "INTERFACES");
             println!("{:-<110}", "");
@@ -135,4 +136,12 @@ fn get_host_port_from_tcp_addr(tcp_addr: &str) -> anyhow::Result<(String, u16)> 
     let host = parts[0].to_string();
     let port = parts[1].parse::<u16>()?;
     Ok((host, port))
+}
+
+fn load_identity(dir: &std::path::Path, name: &str) -> anyhow::Result<Identity> {
+    let key_path = dir.join("identities").join(format!("{name}.key"));
+    if !key_path.exists() {
+        anyhow::bail!("Identity '{}' not found at {}", name, key_path.display());
+    }
+    Identity::load_from_path(&key_path)
 }

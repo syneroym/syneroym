@@ -4,6 +4,7 @@
 
 use clap::Subcommand;
 use std::path::PathBuf;
+use syneroym_core::util;
 use syneroym_identity::Identity;
 
 pub mod app;
@@ -80,13 +81,13 @@ pub async fn run(
             identity::handle(&command, &dir).await?;
         }
         Commands::Shorthash { input } => {
-            let hash = syneroym_core::util::short_hash(&input);
+            let hash = util::short_hash(&input);
             println!("{hash}");
         }
         Commands::Alias { service_id, nickname, interface } => {
-            let alias = syneroym_core::util::generate_alias(nickname.as_deref(), &service_id);
+            let alias = util::generate_alias(nickname.as_deref(), &service_id);
             if let Some(iface) = interface {
-                let iface_hash = syneroym_core::util::short_hash(&iface);
+                let iface_hash = util::short_hash(&iface);
                 println!("{alias}-i{iface_hash}.localhost");
             } else {
                 println!("{alias}");

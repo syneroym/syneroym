@@ -71,7 +71,7 @@ impl RouteHandler {
             // 2. Extract Iroh EndpointAddr from mechanisms
             let mut iroh_addr = None;
             for mech in info.info.mechanisms {
-                if let syneroym_core::community_registry::EndpointMechanism::Iroh {
+                if let syneroym_core::dht_registry::EndpointMechanism::Iroh {
                     endpoint_addr_bytes,
                     relay_url,
                 } = mech

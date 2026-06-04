@@ -58,3 +58,20 @@ impl AsyncWrite for IrohStream {
         Pin::new(&mut self.send).poll_shutdown(cx)
     }
 }
+
+pub async fn build_iroh_endpoint(
+    relay_url: Option<String>,
+    secret_key: Option<iroh::SecretKey>,
+) -> anyhow::Result<iroh::Endpoint> {
+    let mut builder = iroh::Endpoint::builder(iroh::endpoint::presets::N0);
+    if let Some(url) = relay_url
+        && let Ok(relay_url) = url.parse::<iroh::RelayUrl>()
+    {
+        builder = builder.relay_mode(iroh::RelayMode::Custom(iroh::RelayMap::from(relay_url)));
+    }
+    if let Some(sk) = secret_key {
+        builder = builder.secret_key(sk);
+    }
+    let endpoint = builder.bind().await?;
+    Ok(endpoint)
+}

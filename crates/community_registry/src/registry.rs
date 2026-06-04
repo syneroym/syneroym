@@ -12,8 +12,11 @@ use axum::{
 };
 use dashmap::DashMap;
 use std::sync::Arc;
-use syneroym_core::community_registry::{EndpointType, SignedEndpointInfo};
+use std::time::Duration;
 use syneroym_core::config::SubstrateConfig;
+use syneroym_core::dht_registry::DEFAULT_REGISTRY_TTL_SECS;
+use syneroym_core::dht_registry::SignedEndpointInfo;
+use syneroym_core::util;
 use syneroym_identity::substrate::resolve_did_key;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -45,6 +48,7 @@ struct RegistryState {
     endpoints: DashMap<String, (SignedEndpointInfo, std::time::Instant)>,
     // Map of alias -> service_id
     aliases: DashMap<String, String>,
+    // Needed when registry is not accessible from internal network and multi-hop-relays are needed for data transfer
     parent_registry_url: Option<String>,
 }
 
@@ -120,20 +124,13 @@ impl EcosystemRegistry {
 
         let state_clone = self.state.clone();
         tokio::spawn(async move {
-            let default_ttl = std::time::Duration::from_secs(
-                syneroym_core::community_registry::DEFAULT_REGISTRY_TTL_SECS,
-            );
+            let default_ttl = Duration::from_secs(DEFAULT_REGISTRY_TTL_SECS);
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(15 * 60)).await; // 15 mins
+                tokio::time::sleep(Duration::from_secs(15 * 60)).await; // 15 mins
                 let mut expired_keys = Vec::new();
                 for entry in state_clone.endpoints.iter() {
-                    let ttl = entry
-                        .value()
-                        .0
-                        .info
-                        .ttl
-                        .map(std::time::Duration::from_secs)
-                        .unwrap_or(default_ttl);
+                    let ttl =
+                        entry.value().0.info.ttl.map(Duration::from_secs).unwrap_or(default_ttl);
                     if entry.value().1.elapsed() > ttl {
                         expired_keys.push(entry.key().clone());
                     }
@@ -188,7 +185,7 @@ async fn register_endpoint(
 
     verify_endpoint_signature(&payload)?;
 
-    let alias = syneroym_core::util::generate_alias(payload.info.nickname.as_deref(), service_id);
+    let alias = util::generate_alias(payload.info.nickname.as_deref(), service_id);
 
     if let Some(existing_id) = state.aliases.get(&alias)
         && *existing_id != *service_id
@@ -257,29 +254,15 @@ fn propagate_registration(payload: SignedEndpointInfo, parent_url: String) {
 }
 
 #[derive(serde::Deserialize)]
-pub struct LookupQuery {
-    pub resolve: Option<bool>,
-}
+pub struct LookupQuery {}
 
 async fn lookup_endpoint(
     Path(service_id): Path<String>,
-    Query(query): Query<LookupQuery>,
+    Query(_query): Query<LookupQuery>,
     State(state): State<Arc<RegistryState>>,
 ) -> Result<Json<SignedEndpointInfo>, StatusCode> {
     let resolved_id = state.aliases.get(&service_id).map(|e| e.clone()).unwrap_or(service_id);
-    let mut entry = state.endpoints.get(&resolved_id).map(|e| e.0.clone());
-
-    if query.resolve.unwrap_or(false)
-        && let Some(mut record) = entry.clone()
-        && record.info.endpoint_type == EndpointType::Service
-    {
-        if let Some(substrate_entry) = state.endpoints.get(&record.info.substrate_id) {
-            record.info.mechanisms = substrate_entry.0.info.mechanisms.clone();
-            entry = Some(record);
-        } else {
-            return Err(StatusCode::NOT_FOUND);
-        }
-    }
+    let entry = state.endpoints.get(&resolved_id).map(|e| e.0.clone());
 
     if let Some(entry) = entry { Ok(Json(entry)) } else { Err(StatusCode::NOT_FOUND) }
 }
@@ -287,7 +270,9 @@ async fn lookup_endpoint(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use syneroym_core::community_registry::{EndpointInfo, EndpointMechanism};
+    use axum::http::StatusCode;
+    use syneroym_core::dht_registry::{EndpointInfo, EndpointMechanism, EndpointType};
+    use syneroym_core::util;
     use syneroym_identity::Identity;
     use syneroym_identity::substrate::derive_did_key;
 
@@ -321,10 +306,9 @@ mod tests {
         assert_eq!(res.unwrap(), StatusCode::OK);
 
         // Lookup by alias
-        let service_hash = syneroym_core::util::short_hash(&did);
+        let service_hash = util::short_hash(&did);
         let alias = format!("alice-p{service_hash}");
-        let lookup_res =
-            lookup_endpoint(Path(alias), Query(LookupQuery { resolve: None }), State(state)).await;
+        let lookup_res = lookup_endpoint(Path(alias), Query(LookupQuery {}), State(state)).await;
 
         let Json(retrieved) = lookup_res.unwrap();
         assert_eq!(retrieved.info.service_id, signed_info.info.service_id);
@@ -418,31 +402,18 @@ mod tests {
         };
         state.endpoints.insert(service_id.to_string(), (service_info, std::time::Instant::now()));
 
-        // Lookup service with resolve=true
+        // Lookup service
         let lookup_res = lookup_endpoint(
             Path(service_id.to_string()),
-            Query(LookupQuery { resolve: Some(true) }),
+            Query(LookupQuery {}),
             State(state.clone()),
         )
         .await;
 
         let Json(retrieved) = lookup_res.unwrap();
         assert_eq!(retrieved.info.service_id, service_id);
-        assert_eq!(
-            retrieved.info.mechanisms[0],
-            EndpointMechanism::Iroh { endpoint_addr_bytes: vec![42], relay_url: None }
-        );
-
-        // Lookup service with resolve=false
-        let lookup_res_no_resolve = lookup_endpoint(
-            Path(service_id.to_string()),
-            Query(LookupQuery { resolve: Some(false) }),
-            State(state),
-        )
-        .await;
-
-        let Json(retrieved_no_resolve) = lookup_res_no_resolve.unwrap();
-        assert_eq!(retrieved_no_resolve.info.service_id, service_id);
+        // Ensure mechanisms are NOT populated since we removed server-side resolution
+        assert!(retrieved.info.mechanisms.is_empty());
     }
 
     #[tokio::test]
@@ -465,10 +436,9 @@ mod tests {
         register_endpoint(State(state.clone()), Json(signed_info)).await.unwrap();
 
         // Lookup by shorthash (p{hash}) should work
-        let service_hash = syneroym_core::util::short_hash(&did);
+        let service_hash = util::short_hash(&did);
         let alias = format!("p{service_hash}");
-        let lookup_res =
-            lookup_endpoint(Path(alias), Query(LookupQuery { resolve: None }), State(state)).await;
+        let lookup_res = lookup_endpoint(Path(alias), Query(LookupQuery {}), State(state)).await;
 
         assert!(lookup_res.is_ok());
         let Json(retrieved) = lookup_res.unwrap();
@@ -495,10 +465,9 @@ mod tests {
         register_endpoint(State(state.clone()), Json(signed_info)).await.unwrap();
 
         // Lookup by shorthash-only (p{hash}) should FAIL because nickname was provided
-        let service_hash = syneroym_core::util::short_hash(&did);
+        let service_hash = util::short_hash(&did);
         let alias = format!("p{service_hash}");
-        let lookup_res =
-            lookup_endpoint(Path(alias), Query(LookupQuery { resolve: None }), State(state)).await;
+        let lookup_res = lookup_endpoint(Path(alias), Query(LookupQuery {}), State(state)).await;
 
         assert!(lookup_res.is_err());
         assert_eq!(lookup_res.unwrap_err(), StatusCode::NOT_FOUND);
@@ -507,12 +476,9 @@ mod tests {
     #[tokio::test]
     async fn test_lookup_not_found() {
         let state = Arc::new(RegistryState::default());
-        let res = lookup_endpoint(
-            Path("non-existent".to_string()),
-            Query(LookupQuery { resolve: None }),
-            State(state),
-        )
-        .await;
+        let res =
+            lookup_endpoint(Path("non-existent".to_string()), Query(LookupQuery {}), State(state))
+                .await;
 
         assert!(res.is_err());
         assert_eq!(res.unwrap_err(), StatusCode::NOT_FOUND);

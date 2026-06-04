@@ -12,7 +12,7 @@
 
 ## Project & Rust Specifics
 - Given the presence of WASM component configurations (`wasm32-wasip2`), maintain clean `wit` file boundaries and consider cross-compilation constraints.
-- Emphasize idiomatic Rust formatting, leveraging the language's strong typing to guarantee correctness.
+- Emphasize idiomatic Rust formatting, leveraging the language's strong typing to guarantee correctness. Ensure imports are idiomatic: (1) for types (structs, enums, traits), use standard `use` statements at the top of the file; (2) for function calls, import the parent module at the top of the file and call the function qualified by that module; (3) for name conflicts, either import the parent module and qualify, or alias the imports.
 - Ensure any added dependencies reflect widely supported community standards.
 
 ## Functionality, Architecture Documents

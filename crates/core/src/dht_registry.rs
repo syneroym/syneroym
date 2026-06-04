@@ -4,6 +4,7 @@
 //! resolving service/substrate endpoints in the Syneroym community registry.
 
 use serde::{Deserialize, Serialize};
+use syneroym_identity::Identity;
 
 /// Default time-to-live for registry entries, aligned with BEP 0044 DHT expiry defaults.
 pub const DEFAULT_REGISTRY_TTL_SECS: u64 = 7200; // 2 hours
@@ -58,10 +59,7 @@ pub struct SignedEndpointInfo {
 }
 
 impl EndpointInfo {
-    pub fn sign(
-        self,
-        identity: &syneroym_identity::Identity,
-    ) -> Result<SignedEndpointInfo, anyhow::Error> {
+    pub fn sign(self, identity: &Identity) -> Result<SignedEndpointInfo, anyhow::Error> {
         let keypair = pkarr::Keypair::from_secret_key(&identity.to_bytes());
         let json_str = serde_json::to_string(&self)?;
         let txt_rdata = pkarr::dns::rdata::TXT::try_from(json_str.as_str())

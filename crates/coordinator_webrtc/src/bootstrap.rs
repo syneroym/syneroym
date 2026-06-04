@@ -18,9 +18,10 @@ use axum::{
 use futures::{SinkExt, StreamExt};
 use iroh::Endpoint;
 use std::sync::Arc;
-use syneroym_core::community_registry::EndpointMechanism;
-use syneroym_core::protocol_utils::extract_service_from_host;
-use syneroym_core::registry::EndpointRegistry;
+use syneroym_core::dht_registry::EndpointMechanism;
+use syneroym_core::dht_registry::RegistryClient;
+use syneroym_core::local_registry::EndpointRegistry;
+use syneroym_core::protocol_utils::parse_target_host;
 use syneroym_identity::substrate::resolve_did_key;
 use syneroym_router::SYNEROYM_ALPN;
 use syneroym_router::net_iroh::IrohStream;
@@ -34,6 +35,7 @@ pub struct BootstrapState {
     pub signaling_port: u16,
     pub registry: EndpointRegistry,
     pub registry_url: Option<String>,
+    pub registry_client: RegistryClient,
 }
 
 impl std::fmt::Debug for BootstrapState {
@@ -103,35 +105,19 @@ async fn handle_bootstrap(
         return StatusCode::NOT_FOUND.into_response();
     }
 
-    let mut svc_name = match extract_service_from_host(&host) {
-        Ok(name) => name,
-        Err(_) => host.clone(),
+    let (mut target_peer_id, _interface) = match parse_target_host(&host) {
+        Some(res) => res,
+        None => (host.clone(), "".to_string()),
     };
 
-    let mut parts: Vec<&str> = svc_name.split('-').collect();
-    if parts.len() > 1
-        && let Some(last) = parts.last()
-        && last.starts_with('i')
-        && last.len() > 1
-    {
-        parts.pop();
-        svc_name = parts.join("-");
-    }
+    let mut target_service_id = target_peer_id.clone();
 
-    // Resolve alias to canonical DID if possible
-    let mut target_peer_id = svc_name.clone();
-    let mut target_service_id = svc_name.clone();
-
-    if let Some(registry_url) = &state.registry_url {
-        debug!("Attempting to resolve alias: {}", svc_name);
-        let registry_client = syneroym_core::community_registry::RegistryClient::new(
-            true,
-            Some(registry_url.to_string()),
-        );
-        if let Ok(info) = registry_client.lookup(&svc_name, true).await {
+    if state.registry_url.is_some() {
+        debug!("Attempting to resolve alias: {}", target_peer_id);
+        if let Ok(info) = state.registry_client.lookup(&target_peer_id, true).await {
             info!(
                 "Resolved service alias '{}' to substrate DID '{}' and service DID '{}'",
-                svc_name, info.info.substrate_id, info.info.service_id
+                target_peer_id, info.info.substrate_id, info.info.service_id
             );
             target_peer_id = info.info.substrate_id;
             target_service_id = info.info.service_id;
@@ -184,23 +170,22 @@ async fn handle_blind_tunnel(socket: WebSocket, state: Arc<BootstrapState>) {
         None => return,
     };
 
-    // 2. Resolve registry URL
-    let registry_url = if let Some(url) = &state.registry_url {
-        url
-    } else {
+    if state.registry_url.is_none() {
         error!("[BlindTunnel] No community registry configured; cannot resolve substrate");
         return;
-    };
+    }
 
     // 3. Resolve Iroh Endpoint
-    let endpoint_addr =
-        match resolve_iroh_endpoint_from_registry(&preamble.service_id, registry_url).await {
+    let target_addr =
+        match resolve_iroh_endpoint_from_registry(&preamble.service_id, &state.registry_client)
+            .await
+        {
             Some(addr) => addr,
             None => return,
         };
 
     // 4. Connect to Iroh Node and forward preamble
-    let iroh_stream = match connect_iroh_stream(&state.iroh, endpoint_addr, &preamble_str).await {
+    let iroh_stream = match connect_iroh_stream(&state.iroh, target_addr, &preamble_str).await {
         Some(stream) => stream,
         None => return,
     };
@@ -260,13 +245,9 @@ async fn read_preamble_from_ws(
 
 async fn resolve_iroh_endpoint_from_registry(
     service_id: &str,
-    registry_url: &str,
+    registry_client: &RegistryClient,
 ) -> Option<iroh::EndpointAddr> {
-    debug!("[BlindTunnel] Looking up service '{}' in registry at '{}'", service_id, registry_url);
-    let registry_client = syneroym_core::community_registry::RegistryClient::new(
-        true,
-        Some(registry_url.to_string()),
-    );
+    debug!("[BlindTunnel] Looking up service '{}' in registry", service_id);
     let info = match registry_client.lookup(service_id, true).await {
         Ok(i) => {
             debug!(

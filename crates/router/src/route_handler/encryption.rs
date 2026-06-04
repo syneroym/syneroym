@@ -7,6 +7,7 @@ use crate::routing::EncryptionStage;
 use anyhow::{Result, anyhow};
 use std::pin::Pin;
 use std::task::{Context as TaskContext, Poll};
+use syneroym_identity::Identity;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tracing::debug;
 
@@ -271,7 +272,7 @@ pub async fn apply_encryption_stage<R, W>(
     mut writer: W,
     stage: &EncryptionStage,
     preamble: &RoutePreamble,
-    identity: &syneroym_identity::Identity,
+    identity: &Identity,
 ) -> Result<OwnedStream>
 where
     R: AsyncRead + Unpin + Send + 'static,

@@ -4,6 +4,10 @@ use serde_json::json;
 use std::fs;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use syneroym_core::dht_registry::EndpointInfo;
+use syneroym_core::dht_registry::EndpointType;
+use syneroym_core::test_constants;
+use syneroym_identity::Identity;
 use tokio::sync::{Barrier, Mutex};
 use tokio::time::sleep;
 use tracing::{info, warn};
@@ -18,13 +22,12 @@ pub async fn run_scenario() -> Result<()> {
     let mut env = TestEnvironment::new().await?;
     env.start_substrate().await?;
 
-    let component_path =
-        "test-components/greeter/target/wasm32-wasip2/release/syneroym_test_greeter.wasm";
+    let component_path = test_constants::greeter_wasm_path();
     let wasm_bytes = fs::read(component_path).context(
         "Failed to read compiled test WASM component. Ensure it has been built successfully.",
     )?;
 
-    let app_identity = syneroym_identity::Identity::generate().unwrap();
+    let app_identity = Identity::generate().unwrap();
     let app_service_id = syneroym_identity::substrate::derive_did_key(&app_identity.public_key());
 
     let registry_url = "http://127.0.0.1:7961".to_string();
@@ -36,7 +39,7 @@ pub async fn run_scenario() -> Result<()> {
     orchestrator_client
         .deploy_wasm(
             app_service_id.clone(),
-            vec!["syneroym-test:greeter/greet@0.1.0".to_string()],
+            vec![test_constants::GREETER_INTERFACE_NAME.to_string()],
             wasm_bytes,
             None,
         )
@@ -47,10 +50,10 @@ pub async fn run_scenario() -> Result<()> {
     let substrate_info = orchestrator_client.lookup().await?;
     let mechanisms = substrate_info.info.mechanisms;
 
-    let info = syneroym_core::community_registry::EndpointInfo {
+    let info = EndpointInfo {
         service_id: app_service_id.clone(),
         substrate_id: env.substrate_did.clone(),
-        endpoint_type: syneroym_core::community_registry::EndpointType::Service,
+        endpoint_type: EndpointType::Service,
         nickname: Some("wasm-concurrency".to_string()),
         mechanisms,
         is_private: false,
@@ -68,7 +71,7 @@ pub async fn run_scenario() -> Result<()> {
     app_client.connect().await?;
 
     let shared_client = Arc::new(app_client);
-    let interface_name = "syneroym-test:greeter/greet@0.1.0";
+    let interface_name = test_constants::GREETER_INTERFACE_NAME;
     let method_name = "greet";
 
     // --- Start Resource Profiling Task (Category 4) ---
@@ -555,7 +558,7 @@ async fn run_connection_churn(
                     churn_client.connect().await?;
                     let _ = churn_client
                         .request(
-                            "syneroym-test:greeter/greet@0.1.0",
+                            test_constants::GREETER_INTERFACE_NAME,
                             "greet",
                             serde_json::json!(["BenchmarkUser"]),
                         )

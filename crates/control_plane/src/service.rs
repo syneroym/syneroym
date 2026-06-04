@@ -10,7 +10,7 @@ use std::sync::Arc;
 use syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::{
     DeployManifest, ServiceType,
 };
-use syneroym_core::registry::{EndpointRegistry, SubstrateEndpoint};
+use syneroym_core::local_registry::{EndpointRegistry, SubstrateEndpoint};
 use syneroym_rpc::{NativeInvocation, NativeResponse, NativeService, RpcError, RpcResult};
 use tracing::info;
 

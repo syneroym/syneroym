@@ -3,18 +3,19 @@ use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use std::fs;
 use syneroym_app_sandbox::conversions::json_to_wasm_params;
 use syneroym_app_sandbox::{AppSandboxEngine, HostState};
+use syneroym_core::test_constants;
 use wasmtime::component::Component;
 
 fn bench_wasm_engine(c: &mut Criterion) {
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
 
-    let component_path =
-        "../../test-components/greeter/target/wasm32-wasip2/release/syneroym_test_greeter.wasm";
-    let wasm_bytes = match fs::read(component_path) {
+    let component_path = test_constants::greeter_wasm_path();
+    let wasm_bytes = match fs::read(&component_path) {
         Ok(bytes) => bytes,
         Err(_) => {
-            eprintln!(
-                "Warning: syneroym_test_greeter.wasm not found at {component_path}, skipping instantiation benchmarks"
+            println!(
+                "Warning: syneroym_test_greeter.wasm not found at {}, skipping instantiation benchmarks",
+                component_path.display()
             );
             return;
         }
@@ -47,7 +48,8 @@ fn bench_wasm_engine(c: &mut Criterion) {
     let mut store: wasmtime::Store<HostState> = wasmtime::Store::new(&engine, host_state);
     let instance = runtime.block_on(linker.instantiate_async(&mut store, &component)).unwrap();
 
-    let interface_name = "syneroym-test:greeter/greet@0.1.0";
+    // pnsreview: seem to have noticed this interface and method name strings at multiple places. Should it be as is, or should move it to a constant?
+    let interface_name = test_constants::GREETER_INTERFACE_NAME;
     let method_name = "greet";
     let (_func, _results_len, item) =
         AppSandboxEngine::get_wasm_func(&mut store, &instance, interface_name, method_name)

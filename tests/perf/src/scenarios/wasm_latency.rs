@@ -1,7 +1,11 @@
 use anyhow::Result;
 use std::fs;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use syneroym_app_sandbox::{AppSandboxEngine, HostState};
+use syneroym_core::dht_registry::EndpointInfo;
+use syneroym_core::dht_registry::EndpointType;
+use syneroym_core::test_constants;
+use syneroym_identity::Identity;
 use wasmtime::component::Component;
 
 use crate::orchestrator::TestEnvironment;
@@ -11,8 +15,7 @@ pub async fn run_scenario() -> Result<()> {
     let mut env = TestEnvironment::new().await?;
     env.start_substrate().await?;
 
-    let component_path =
-        "test-components/greeter/target/wasm32-wasip2/release/syneroym_test_greeter.wasm";
+    let component_path = test_constants::greeter_wasm_path();
     let wasm_bytes = fs::read(component_path)?;
 
     // 1. In-process Baseline
@@ -22,7 +25,7 @@ pub async fn run_scenario() -> Result<()> {
     let expected_result =
         serde_json::json!("Hello, BenchmarkUser! Greetings from greeter::greet::greet");
 
-    let interface_name = "syneroym-test:greeter/greet@0.1.0";
+    let interface_name = test_constants::GREETER_INTERFACE_NAME;
     let method_name = "greet";
 
     // Warmup Baseline
@@ -68,13 +71,13 @@ pub async fn run_scenario() -> Result<()> {
     );
 
     // 2. Via Substrate
-    let app_identity = syneroym_identity::Identity::generate().unwrap();
+    let app_identity = Identity::generate().unwrap();
     let app_service_id = syneroym_identity::substrate::derive_did_key(&app_identity.public_key());
 
     let registry_url = "http://127.0.0.1:7961".to_string();
     let mut orchestrator_client =
         syneroym_sdk::SyneroymClient::new(env.substrate_did.clone(), registry_url.clone());
-    orchestrator_client.wait_for_ready(std::time::Duration::from_secs(10)).await?;
+    orchestrator_client.wait_for_ready(Duration::from_secs(10)).await?;
 
     // Deploy WASM
     orchestrator_client
@@ -86,10 +89,10 @@ pub async fn run_scenario() -> Result<()> {
     let substrate_info = orchestrator_client.lookup().await?;
     let mechanisms = substrate_info.info.mechanisms;
 
-    let info = syneroym_core::community_registry::EndpointInfo {
+    let info = EndpointInfo {
         service_id: app_service_id.clone(),
         substrate_id: env.substrate_did.clone(),
-        endpoint_type: syneroym_core::community_registry::EndpointType::Service,
+        endpoint_type: EndpointType::Service,
         nickname: Some("wasm-perf".to_string()),
         mechanisms,
         is_private: false,

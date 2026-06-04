@@ -5,6 +5,7 @@ import * as path from 'path';
 [false, true].forEach(forceTunnel => {
   test.describe(`WebRTC Substrate E2E (forceTunnel=${forceTunnel})`, () => {
     test.beforeEach(async ({ page }) => {
+      page.on('console', msg => console.log('BROWSER:', msg.text()));
       const appDid = process.env.APP_DID;
       expect(appDid).toBeDefined();
 

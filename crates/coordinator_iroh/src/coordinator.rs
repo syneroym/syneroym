@@ -5,11 +5,17 @@
 
 use anyhow::{Context, Result};
 use axum::{Router, routing::get};
-use iroh::{RelayMap, RelayMode, RelayUrl, SecretKey};
+use iroh::SecretKey;
 use iroh_relay::server::Server;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use syneroym_core::config::CoordinatorIrohConfig;
+use syneroym_core::config::CoordinatorRole;
 use syneroym_core::config::SubstrateConfig;
+use syneroym_core::dht_registry::EndpointInfo;
+use syneroym_core::dht_registry::EndpointMechanism;
+use syneroym_core::dht_registry::EndpointType;
+use syneroym_core::dht_registry::RegistryClient;
 use syneroym_identity::Identity;
 use syneroym_identity::substrate::derive_did_key;
 use syneroym_router::RouteHandler;
@@ -48,6 +54,20 @@ impl CoordinatorIroh {
         let mut info_addr = None;
 
         if let Some(role) = &config_roles {
+            // --- Architectural Note ---
+            // Syneroym Coordinators can fulfill two overlapping but distinct IROH roles:
+            //
+            // A) The standard IROH Relay Server (spawn_relay_server)
+            //    This is an infrastructure-level component that assists *other* IROH nodes
+            //    in traversing NATs and establishing peer-to-peer UDP punch-throughs.
+            //    It does not read or decrypt Syneroym application payloads.
+            //
+            // B) The Syneroym Coordinator Endpoint (build_iroh_endpoint & spawn_iroh_router)
+            //    This is an active participant in the Syneroym network. It establishes
+            //    encrypted connections with clients and other coordinators to facilitate
+            //    multi-hop E2E routing, identity verification, and service discovery.
+            //
+            // A coordinator may run A, B, or both simultaneously.
             if role.iroh.as_ref().is_some_and(|i| i.enable_relay) {
                 relay_server = Some(Self::spawn_relay_server(role).await?);
             }
@@ -108,7 +128,7 @@ impl CoordinatorIroh {
         Ok(Self { relay_server, iroh_router, http_info_handle, info_addr })
     }
 
-    async fn spawn_relay_server(role: &syneroym_core::config::CoordinatorRole) -> Result<Server> {
+    async fn spawn_relay_server(role: &CoordinatorRole) -> Result<Server> {
         let server_config = build_relay_config(role).await?;
         debug!("Iroh Relay Config built: {:?}", server_config.relay.is_some());
         let server =
@@ -118,12 +138,11 @@ impl CoordinatorIroh {
 
     async fn build_iroh_endpoint(
         config: &SubstrateConfig,
-        _role: &syneroym_core::config::CoordinatorRole,
-        iroh_cfg: &syneroym_core::config::CoordinatorIrohConfig,
+        _role: &CoordinatorRole,
+        iroh_cfg: &CoordinatorIrohConfig,
         relay_server: &Option<Server>,
     ) -> Result<(iroh::Endpoint, SecretKey)> {
         let secret_key = SecretKey::generate(&mut rand::rng());
-        let mut ep_bldr = iroh::Endpoint::builder(iroh::endpoint::presets::N0);
 
         let mut chosen_relay_url_str = None;
         if let Some(parent_url) = config.parent_coordinator.iroh.as_ref().map(|u| u.url.clone()) {
@@ -139,13 +158,11 @@ impl CoordinatorIroh {
             }
         }
 
-        if let Some(relay_url_str) = chosen_relay_url_str
-            && let Ok(relay_url) = relay_url_str.parse::<RelayUrl>()
-        {
-            ep_bldr = iroh::Endpoint::empty_builder()
-                .relay_mode(RelayMode::Custom(RelayMap::from(relay_url)));
-        }
-        let iroh_endpoint = ep_bldr.secret_key(secret_key.clone()).bind().await?;
+        let iroh_endpoint = syneroym_router::net_iroh::build_iroh_endpoint(
+            chosen_relay_url_str,
+            Some(secret_key.clone()),
+        )
+        .await?;
         iroh_endpoint.online().await;
 
         let node_id = iroh_endpoint.addr().id;
@@ -156,11 +173,11 @@ impl CoordinatorIroh {
 
     fn spawn_iroh_router(
         iroh_endpoint: &iroh::Endpoint,
-        iroh_cfg: &syneroym_core::config::CoordinatorIrohConfig,
+        iroh_cfg: &CoordinatorIrohConfig,
         config: &SubstrateConfig,
     ) -> iroh::protocol::Router {
         let parent_relay_url = config.parent_coordinator.iroh.as_ref().map(|u| u.url.clone());
-        let registry_client = syneroym_core::community_registry::RegistryClient::new(
+        let registry_client = RegistryClient::new(
             config.substrate.enable_bep0044_dht,
             iroh_cfg.community_registry_url.clone(),
         );
@@ -174,8 +191,8 @@ impl CoordinatorIroh {
 
     async fn spawn_http_info_server(
         config: &SubstrateConfig,
-        _role: &syneroym_core::config::CoordinatorRole,
-        iroh_cfg: &syneroym_core::config::CoordinatorIrohConfig,
+        _role: &CoordinatorRole,
+        iroh_cfg: &CoordinatorIrohConfig,
         iroh_endpoint: &iroh::Endpoint,
         relay_server: &Option<Server>,
     ) -> Result<(tokio::task::JoinHandle<()>, SocketAddr)> {
@@ -212,7 +229,7 @@ impl CoordinatorIroh {
         let info_state = Arc::new(InfoState {
             info: CoordinatorInfo {
                 endpoint_addr_bytes,
-                node_id: node_id.to_string(),
+                substrate_id: node_id.to_string(),
                 relay_url,
                 parent_coordinator_url: parent_relay_url.clone(),
             },
@@ -316,7 +333,9 @@ impl CoordinatorIroh {
             handle.abort();
         }
         if let Some(router) = self.iroh_router.take() {
+            let ep = router.endpoint().clone();
             let _ = router.shutdown().await;
+            let _ = ep.close().await;
         }
         if let Some(server) = self.relay_server.take() {
             server.shutdown().await.context("failed to cleanly shutdown iroh relay server")?;
@@ -338,15 +357,12 @@ async fn register_coordinator_in_registry(
     let identity = Identity::from_bytes(secret_key_bytes);
     let did = derive_did_key(&identity.public_key());
 
-    let info = syneroym_core::community_registry::EndpointInfo {
+    let info = EndpointInfo {
         service_id: did.clone(),
         substrate_id: did.clone(),
-        endpoint_type: syneroym_core::community_registry::EndpointType::Substrate,
+        endpoint_type: EndpointType::Substrate,
         nickname: Some(format!("coordinator-{}", &node_id_str[..8])),
-        mechanisms: vec![syneroym_core::community_registry::EndpointMechanism::Iroh {
-            endpoint_addr_bytes,
-            relay_url,
-        }],
+        mechanisms: vec![EndpointMechanism::Iroh { endpoint_addr_bytes, relay_url }],
         is_private: false,
         ttl: None,
     };

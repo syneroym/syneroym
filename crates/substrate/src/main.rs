@@ -4,6 +4,8 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+use syneroym_core::config::CoordinatorIrohConfig;
+use syneroym_core::config::CoordinatorRole;
 use syneroym_core::config::SubstrateConfig;
 use syneroym_substrate::run;
 use tokio::runtime::Builder;
@@ -185,8 +187,8 @@ fn dev_mode_config() -> SubstrateConfig {
     c.roles.app_sandbox = Some(Default::default());
     c.roles.community_registry = Some(Default::default());
 
-    c.roles.coordinator = Some(syneroym_core::config::CoordinatorRole {
-        iroh: Some(syneroym_core::config::CoordinatorIrohConfig {
+    c.roles.coordinator = Some(CoordinatorRole {
+        iroh: Some(CoordinatorIrohConfig {
             enable_signalling: true,
             enable_relay: true,
             ..Default::default()

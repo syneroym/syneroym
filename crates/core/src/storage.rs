@@ -6,7 +6,7 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use crate::{config::SubstrateConfig, registry::SubstrateEndpoint};
+use crate::{config::SubstrateConfig, local_registry::SubstrateEndpoint};
 use anyhow::Result;
 
 use async_trait::async_trait;

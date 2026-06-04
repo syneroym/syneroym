@@ -4,6 +4,9 @@
 
 use assert_cmd::Command;
 
+// TODO: Expand CLI argument parsing tests.
+// Consider adding unit tests for argument permutations (e.g. mutually exclusive args like --wasm/--tcp),
+// testing invalid arguments, and ensuring proper error messages are propagated.
 #[test]
 fn test_cli_parsing() -> Result<(), Box<dyn std::error::Error>> {
     // 1. Check node status help

@@ -1,7 +1,13 @@
 //! Dummy Sandbox implementation for testing
 //!
+
 //! Provides an isolated, mock execution environment for validating WASM
 //! component orchestration and workflows without invoking a full WASM runtime.
+
+#[cfg(not(feature = "app_sandbox"))]
+use syneroym_core::config::SubstrateConfig;
+#[cfg(not(feature = "app_sandbox"))]
+use syneroym_core::local_registry::SubstrateEndpoint;
 
 #[cfg(feature = "app_sandbox")]
 pub use syneroym_app_sandbox::AppSandboxEngine;
@@ -15,8 +21,8 @@ pub struct AppSandboxEngine;
 #[cfg(not(feature = "app_sandbox"))]
 impl AppSandboxEngine {
     pub async fn init(
-        _config: &syneroym_core::config::SubstrateConfig,
-        _endpoints: Vec<(String, String, syneroym_core::registry::SubstrateEndpoint)>,
+        _config: &SubstrateConfig,
+        _endpoints: Vec<(String, String, SubstrateEndpoint)>,
     ) -> anyhow::Result<Self> {
         Ok(Self)
     }

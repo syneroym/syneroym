@@ -1,7 +1,10 @@
 use anyhow::Result;
 use reqwest::Client;
 use std::time::Instant;
+use syneroym_core::dht_registry::EndpointInfo;
+use syneroym_core::dht_registry::EndpointType;
 use syneroym_core::util::short_hash;
+use syneroym_identity::Identity;
 
 use crate::orchestrator::TestEnvironment;
 use crate::reporter::print_latency_comparison;
@@ -37,7 +40,7 @@ pub async fn run_scenario() -> Result<()> {
     );
 
     // Generate an identity for the TCP app
-    let app_identity = syneroym_identity::Identity::generate().unwrap();
+    let app_identity = Identity::generate().unwrap();
     let app_service_id = syneroym_identity::substrate::derive_did_key(&app_identity.public_key());
 
     // Default ports for dev mode
@@ -64,10 +67,10 @@ pub async fn run_scenario() -> Result<()> {
     let substrate_info = orchestrator_client.lookup().await?;
     let mechanisms = substrate_info.info.mechanisms;
 
-    let info = syneroym_core::community_registry::EndpointInfo {
+    let info = EndpointInfo {
         service_id: app_service_id.clone(),
         substrate_id: env.substrate_did.clone(),
-        endpoint_type: syneroym_core::community_registry::EndpointType::Service,
+        endpoint_type: EndpointType::Service,
         nickname: Some("tcp-perf".to_string()),
         mechanisms,
         is_private: false,

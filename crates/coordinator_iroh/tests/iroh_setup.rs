@@ -22,6 +22,7 @@ use iroh::{
 };
 use n0_error::{Result, StdResultExt};
 use syneroym_coordinator_iroh::CoordinatorIroh;
+use syneroym_core::config::LogTarget;
 use syneroym_core::config::SubstrateConfig;
 
 /// Each protocol is identified by its ALPN string.
@@ -57,7 +58,7 @@ async fn test_echo() -> anyhow::Result<()> {
     // Since this test runs the substrate in-process, we can't rely on `cargo test` capturing stdout/stderr.
     // So we configure the substrate to write logs to a temporary file and avoid large outputs while running tests.
     // NOTE: Comment for debugging purpose uncomment otherwise.
-    config.logging.target = syneroym_core::config::LogTarget::File;
+    config.logging.target = LogTarget::File;
 
     config.roles.coordinator = Some(CoordinatorRole {
         iroh: Some(CoordinatorIrohConfig {

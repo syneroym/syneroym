@@ -4,6 +4,10 @@ use serde_json::json;
 use std::fs;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use syneroym_core::dht_registry::EndpointInfo;
+use syneroym_core::dht_registry::EndpointType;
+use syneroym_core::test_constants;
+use syneroym_identity::Identity;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
 use tracing::{info, warn};
@@ -60,13 +64,12 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
     let mut env = TestEnvironment::new().await?;
     env.start_substrate().await?;
 
-    let component_path =
-        "test-components/greeter/target/wasm32-wasip2/release/syneroym_test_greeter.wasm";
+    let component_path = test_constants::greeter_wasm_path();
     let wasm_bytes = fs::read(component_path).context(
         "Failed to read compiled test WASM component. Ensure it has been built successfully.",
     )?;
 
-    let app_identity = syneroym_identity::Identity::generate().unwrap();
+    let app_identity = Identity::generate().unwrap();
     let app_service_id = syneroym_identity::substrate::derive_did_key(&app_identity.public_key());
 
     let registry_url = "http://127.0.0.1:7961".to_string();
@@ -79,7 +82,7 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
     orchestrator_client
         .deploy_wasm(
             app_service_id.clone(),
-            vec!["syneroym-test:greeter/greet@0.1.0".to_string()],
+            vec![test_constants::GREETER_INTERFACE_NAME.to_string()],
             wasm_bytes.clone(),
             None,
         )
@@ -92,10 +95,10 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
 
     let _ = orchestrator_client.shutdown().await;
 
-    let info_reg = syneroym_core::community_registry::EndpointInfo {
+    let info_reg = EndpointInfo {
         service_id: app_service_id.clone(),
         substrate_id: env.substrate_did.clone(),
-        endpoint_type: syneroym_core::community_registry::EndpointType::Service,
+        endpoint_type: EndpointType::Service,
         nickname: Some("wasm-soak".to_string()),
         mechanisms: mechanisms.clone(),
         is_private: false,
@@ -113,7 +116,7 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
     app_client.connect().await?;
 
     let shared_client = Arc::new(Mutex::new(app_client));
-    let interface_name = "syneroym-test:greeter/greet@0.1.0";
+    let interface_name = test_constants::GREETER_INTERFACE_NAME;
     let method_name = "greet";
 
     // Grab initial baseline metrics
@@ -254,7 +257,7 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
             cycle += 1;
             dep_cycles_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-            let churn_identity = syneroym_identity::Identity::generate().unwrap();
+            let churn_identity = Identity::generate().unwrap();
             let unique_service_id =
                 syneroym_identity::substrate::derive_did_key(&churn_identity.public_key());
             info!("Deploy Churn Cycle {}: Deploying {}", cycle, unique_service_id);
@@ -276,7 +279,7 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
             let deploy_result = orchestrator_client
                 .deploy_wasm(
                     unique_service_id.clone(),
-                    vec!["syneroym-test:greeter/greet@0.1.0".to_string()],
+                    vec![test_constants::GREETER_INTERFACE_NAME.to_string()],
                     wasm_bytes_clone.clone(),
                     None,
                 )
@@ -285,10 +288,10 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
             match deploy_result {
                 Ok(_) => {
                     // Register the churned service in the registry first
-                    let info_reg = syneroym_core::community_registry::EndpointInfo {
+                    let info_reg = EndpointInfo {
                         service_id: unique_service_id.clone(),
                         substrate_id: substrate_did_clone.clone(),
-                        endpoint_type: syneroym_core::community_registry::EndpointType::Service,
+                        endpoint_type: EndpointType::Service,
                         nickname: Some(format!("soak-deploy-{}", cycle)),
                         mechanisms: mechanisms_clone.clone(),
                         is_private: false,
@@ -327,7 +330,7 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
                     } else {
                         if let Err(e) = temp_client
                             .request(
-                                "syneroym-test:greeter/greet@0.1.0",
+                                test_constants::GREETER_INTERFACE_NAME,
                                 "greet",
                                 json!({ "name": "soak-verify" }),
                             )
@@ -402,7 +405,7 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
 
             match churn_client
                 .request(
-                    "syneroym-test:greeter/greet@0.1.0",
+                    test_constants::GREETER_INTERFACE_NAME,
                     "greet",
                     json!({ "name": "soak-churn" }),
                 )

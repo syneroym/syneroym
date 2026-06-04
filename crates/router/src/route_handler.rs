@@ -10,7 +10,7 @@ use std::fmt;
 use std::sync::Arc;
 use syneroym_control_plane::ControlPlaneService;
 use syneroym_core::config::SubstrateConfig;
-use syneroym_core::registry::EndpointRegistry;
+use syneroym_core::local_registry::EndpointRegistry;
 use syneroym_rpc::NativeService;
 use tracing::{debug, error};
 
@@ -34,7 +34,7 @@ pub struct RouteHandlerInner {
     pub app_sandbox_engine: Option<Arc<AppSandboxEngine>>,
     pub identity: syneroym_identity::Identity,
     pub iroh_endpoint: Option<iroh::Endpoint>,
-    pub registry_client: syneroym_core::community_registry::RegistryClient,
+    pub registry_client: syneroym_core::dht_registry::RegistryClient,
     pub _parent_relay_url: Option<String>,
 }
 
@@ -71,7 +71,7 @@ impl RouteHandler {
         let parent_coordinator_url =
             config.parent_coordinator.iroh.as_ref().map(|cfg| cfg.url.clone());
 
-        let registry_client = syneroym_core::community_registry::RegistryClient::new(
+        let registry_client = syneroym_core::dht_registry::RegistryClient::new(
             config.substrate.enable_bep0044_dht,
             config.substrate.registry_url.clone(),
         );
@@ -104,7 +104,7 @@ impl RouteHandler {
     #[must_use]
     pub fn new_coordinator(
         iroh_endpoint: iroh::Endpoint,
-        registry_client: syneroym_core::community_registry::RegistryClient,
+        registry_client: syneroym_core::dht_registry::RegistryClient,
         parent_relay_url: Option<String>,
     ) -> Self {
         let inner = Arc::new(RouteHandlerInner {

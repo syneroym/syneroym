@@ -11,6 +11,10 @@ inputs:
 runs:
   using: "composite"
   steps:
+
+    - name: Install cargo-llvm-cov
+      uses: taiki-e/install-action@cargo-llvm-cov
+
     - name: Generate Code Coverage
       run: cargo llvm-cov --workspace --all-targets --all-features ${{ inputs.release_flag }} --lcov --output-path lcov.info
       shell: bash

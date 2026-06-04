@@ -8,7 +8,7 @@ use crate::signalling;
 use anyhow::Result;
 use std::sync::Arc;
 use syneroym_core::config::SubstrateConfig;
-use syneroym_core::registry::EndpointRegistry;
+use syneroym_core::local_registry::EndpointRegistry;
 use syneroym_core::storage;
 use tracing::info;
 
@@ -53,10 +53,15 @@ impl CoordinatorWebRtc {
         let actual_signalling_port = signalling_listener.local_addr()?.port();
 
         let iroh_relay_url = config.parent_coordinator.iroh.as_ref().map(|c| c.url.clone());
-        let endpoint = common::iroh_utils::bind_endpoint(iroh_relay_url).await?;
+        let endpoint = syneroym_router::net_iroh::build_iroh_endpoint(iroh_relay_url, None).await?;
 
         let data_store = storage::init_store(config).await?;
         let registry = EndpointRegistry::new(data_store).await?;
+
+        let registry_client = syneroym_core::dht_registry::RegistryClient::new(
+            true,
+            config.substrate.registry_url.clone(),
+        );
 
         let bootstrap_state = Arc::new(BootstrapState {
             iroh: endpoint,
@@ -64,6 +69,7 @@ impl CoordinatorWebRtc {
             signaling_port: actual_signalling_port,
             registry,
             registry_url: config.substrate.registry_url.clone(),
+            registry_client,
         });
 
         Ok(Self {
@@ -109,25 +115,5 @@ impl CoordinatorWebRtc {
         info!("Shutting down coordinator webrtc");
         self.bootstrap_state.iroh.close().await;
         Ok(())
-    }
-}
-
-// Internal common module for iroh utils if not available elsewhere
-mod common {
-    use anyhow::Result;
-    use iroh::Endpoint;
-    pub mod iroh_utils {
-        use super::{Endpoint, Result};
-        pub async fn bind_endpoint(relay_url: Option<String>) -> Result<Endpoint> {
-            let mut builder = Endpoint::builder(iroh::endpoint::presets::N0);
-            if let Some(url) = relay_url
-                && let Ok(relay_url) = url.parse::<iroh::RelayUrl>()
-            {
-                builder =
-                    builder.relay_mode(iroh::RelayMode::Custom(iroh::RelayMap::from(relay_url)));
-            }
-            let endpoint = builder.bind().await?;
-            Ok(endpoint)
-        }
     }
 }

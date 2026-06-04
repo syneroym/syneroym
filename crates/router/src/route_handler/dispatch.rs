@@ -7,7 +7,7 @@ use crate::preamble::{RoutePreamble, RouteProtocol};
 use crate::routing::{AdaptationStage, RoutePipeline, ServiceStage};
 use anyhow::{Result, anyhow};
 use std::sync::Arc;
-use syneroym_core::registry::SubstrateEndpoint;
+use syneroym_core::local_registry::SubstrateEndpoint;
 use syneroym_rpc::framing;
 use syneroym_rpc::{JsonRpcConverter, JsonRpcRequest, JsonRpcResponse, NativeService};
 use tokio::io::{AsyncRead, AsyncWrite, BufReader};

@@ -18,4 +18,5 @@ runs:
     - name: Security Audit
       uses: rustsec/audit-check@v2.0.0
       with:
+        # pnsreview [DONE]: Yes, token is technically optional for just failing the build, but required if we want it to create GitHub Check annotations on the PR with the audit results.
         token: ${{ inputs.github_token }}

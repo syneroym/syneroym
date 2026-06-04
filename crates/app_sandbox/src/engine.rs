@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, DeployManifest, ServiceType,
 };
-use syneroym_core::{config::SubstrateConfig, registry::SubstrateEndpoint};
+use syneroym_core::{config::SubstrateConfig, local_registry::SubstrateEndpoint};
 use syneroym_rpc::JsonRpcRequest;
 use tracing::debug;
 use wasmtime::component::{Component, Linker};
@@ -427,6 +427,7 @@ impl AppSandboxEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use syneroym_core::test_constants;
     use wasmtime::component::Component;
 
     #[tokio::test]
@@ -437,12 +438,14 @@ mod tests {
         let host_state = HostState::new("test_component".to_string());
         let mut store = wasmtime::Store::new(&engine, host_state);
 
-        let component_path =
-            "../../test-components/greeter/target/wasm32-wasip2/release/syneroym_test_greeter.wasm";
-        let wasm_bytes = if let Ok(bytes) = std::fs::read(component_path) {
+        let component_path = test_constants::greeter_wasm_path();
+        let wasm_bytes = if let Ok(bytes) = std::fs::read(&component_path) {
             bytes
         } else {
-            println!("Skipping test_list_interfaces: WASM artifact not found at {component_path}");
+            println!(
+                "Skipping test_list_interfaces: WASM artifact not found at {}",
+                component_path.display()
+            );
             return;
         };
 
@@ -454,7 +457,7 @@ mod tests {
 
         match linker.instantiate_async(&mut store, &component).await {
             Ok(instance) => {
-                let interface_name = "syneroym-test:greeter/greet@0.1.0";
+                let interface_name = test_constants::GREETER_INTERFACE_NAME;
                 let method_name = "greet";
 
                 // Use the helper function to extract function and result size

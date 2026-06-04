@@ -6,15 +6,21 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use anyhow::Result;
 use iroh::{Endpoint, RelayMap, RelayMode, RelayUrl, SecretKey};
+use syneroym_core::config::AccessControl;
+use syneroym_core::config::IrohParentConfig;
+use syneroym_core::dht_registry::RegistryClient;
+use syneroym_core::local_registry::EndpointRegistry;
+use syneroym_core::local_registry::SubstrateEndpoint;
+use syneroym_core::storage;
 
 use std::time::Duration;
 use syneroym_community_registry::EcosystemRegistry;
 use syneroym_coordinator_iroh::{CoordinatorInfo, CoordinatorIroh};
-use syneroym_core::community_registry::{
-    EndpointInfo, EndpointMechanism, EndpointType, SignedEndpointInfo,
-};
 use syneroym_core::config::{
     CoordinatorIrohConfig, CoordinatorRole, ServiceRegistryRole, SubstrateConfig,
+};
+use syneroym_core::dht_registry::{
+    EndpointInfo, EndpointMechanism, EndpointType, SignedEndpointInfo,
 };
 use syneroym_identity::Identity;
 use syneroym_identity::substrate::derive_did_key;
@@ -51,7 +57,7 @@ async fn test_registry_propagation() -> Result<()> {
         ..Default::default()
     };
     config_r.roles.community_registry = Some(ServiceRegistryRole {
-        access: syneroym_core::config::AccessControl::String("everyone".to_string()),
+        access: AccessControl::String("everyone".to_string()),
         http_bind_address: "127.0.0.1:0".to_string(),
         parent_registry_url: None,
     });
@@ -66,7 +72,7 @@ async fn test_registry_propagation() -> Result<()> {
         ..Default::default()
     };
     config_rp.roles.community_registry = Some(ServiceRegistryRole {
-        access: syneroym_core::config::AccessControl::String("everyone".to_string()),
+        access: AccessControl::String("everyone".to_string()),
         http_bind_address: "127.0.0.1:0".to_string(),
         parent_registry_url: Some(r_url.clone()),
     });
@@ -90,8 +96,7 @@ async fn test_registry_propagation() -> Result<()> {
 
     // 4. Verify propagation to R
     let mut propagated = false;
-    let registry_client =
-        syneroym_core::community_registry::RegistryClient::new(true, Some(r_url.clone()));
+    let registry_client = RegistryClient::new(true, Some(r_url.clone()));
     for _ in 0..10 {
         tokio::time::sleep(Duration::from_millis(100)).await;
         if let Ok(info) = registry_client.lookup(&did, true).await {
@@ -119,7 +124,7 @@ async fn test_inbound_relay() -> Result<()> {
         ..Default::default()
     };
     config_r.roles.community_registry = Some(ServiceRegistryRole {
-        access: syneroym_core::config::AccessControl::String("everyone".to_string()),
+        access: AccessControl::String("everyone".to_string()),
         http_bind_address: "127.0.0.1:0".to_string(),
         parent_registry_url: None,
     });
@@ -169,8 +174,7 @@ async fn test_inbound_relay() -> Result<()> {
         }),
         ..Default::default()
     });
-    config_cp.parent_coordinator.iroh =
-        Some(syneroym_core::config::IrohParentConfig { url: c_relay_url.clone() });
+    config_cp.parent_coordinator.iroh = Some(IrohParentConfig { url: c_relay_url.clone() });
     let mut cp = CoordinatorIroh::init(&config_cp).await?;
     let cp_info_addr = cp.info_addr().unwrap();
 
@@ -188,11 +192,10 @@ async fn test_inbound_relay() -> Result<()> {
         ..Default::default()
     };
     config_z.resolve_paths();
-    let data_store_z = syneroym_core::storage::init_store(&config_z).await?;
-    let endpoint_registry_z = syneroym_core::registry::EndpointRegistry::new(data_store_z).await?;
+    let data_store_z = storage::init_store(&config_z).await?;
+    let endpoint_registry_z = EndpointRegistry::new(data_store_z).await?;
 
-    let endpoint_z =
-        syneroym_core::registry::SubstrateEndpoint::NativeHostChannel { service_id: did_z.clone() };
+    let endpoint_z = SubstrateEndpoint::NativeHostChannel { service_id: did_z.clone() };
     endpoint_registry_z.register(did_z.clone(), "orchestrator".to_string(), endpoint_z).await?;
 
     let route_handler_z =
@@ -252,7 +255,7 @@ async fn test_outbound_relay() -> Result<()> {
         ..Default::default()
     };
     config_r.roles.community_registry = Some(ServiceRegistryRole {
-        access: syneroym_core::config::AccessControl::String("everyone".to_string()),
+        access: AccessControl::String("everyone".to_string()),
         http_bind_address: "127.0.0.1:0".to_string(),
         parent_registry_url: None,
     });
@@ -302,8 +305,7 @@ async fn test_outbound_relay() -> Result<()> {
         }),
         ..Default::default()
     });
-    config_cp.parent_coordinator.iroh =
-        Some(syneroym_core::config::IrohParentConfig { url: c_relay_url.clone() });
+    config_cp.parent_coordinator.iroh = Some(IrohParentConfig { url: c_relay_url.clone() });
     let mut cp = CoordinatorIroh::init(&config_cp).await?;
     let cp_info_addr = cp.info_addr().unwrap();
 
@@ -321,11 +323,10 @@ async fn test_outbound_relay() -> Result<()> {
         ..Default::default()
     };
     config_x.resolve_paths();
-    let data_store_x = syneroym_core::storage::init_store(&config_x).await?;
-    let endpoint_registry_x = syneroym_core::registry::EndpointRegistry::new(data_store_x).await?;
+    let data_store_x = storage::init_store(&config_x).await?;
+    let endpoint_registry_x = EndpointRegistry::new(data_store_x).await?;
 
-    let endpoint_x =
-        syneroym_core::registry::SubstrateEndpoint::NativeHostChannel { service_id: did_x.clone() };
+    let endpoint_x = SubstrateEndpoint::NativeHostChannel { service_id: did_x.clone() };
     endpoint_registry_x.register(did_x.clone(), "orchestrator".to_string(), endpoint_x).await?;
 
     let route_handler_x =

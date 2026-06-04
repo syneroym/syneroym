@@ -47,7 +47,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-wasip1
+          targets: wasm32-wasip2
           components: clippy, rustfmt
 
       - name: Install cargo-component
@@ -55,15 +55,12 @@ jobs:
         with:
           tool: cargo-component@0.21.1
 
-      - name: Install cargo-llvm-cov
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.coverage == true }}
-        uses: taiki-e/install-action@cargo-llvm-cov
+
 
       - name: Setup Rust Cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Install wasm32-wasip2 target
-        run: rustup target add wasm32-wasip2
+
 
       # ========================================
       # 2. Composite Actions

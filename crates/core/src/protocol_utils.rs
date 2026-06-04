@@ -60,16 +60,54 @@ pub fn extract_host_from_http(buf: &[u8]) -> Result<String> {
     }
 }
 
-pub fn extract_service_from_host(host: &str) -> Result<String> {
-    let hostname = host.split(':').next().unwrap_or(host);
-
-    if hostname == "localhost" || hostname == "127.0.0.1" {
-        return Ok(hostname.to_string());
+/// Parses the host header or SNI into `(service_id, interface_hash)`.
+/// E.g. `nickname-p<pubkeyhash>-i<interfacehash>.syneroym.io`
+/// -> `("nickname-p<pubkeyhash>", "<interfacehash>")`.
+pub fn parse_target_host(host: &str) -> Option<(String, String)> {
+    let mut host_str = host;
+    if let Some((h, p)) = host_str.rsplit_once(':')
+        && !p.is_empty()
+        && p.chars().all(|c| c.is_ascii_digit())
+    {
+        host_str = h;
     }
 
-    // Expected format: <alias-servicehash-interfacehash>.<domain>
-    match hostname.split_once('.') {
-        Some((service, _)) => Ok(service.to_string()),
-        None => Ok(hostname.to_string()),
+    let host_base = host_str.strip_suffix(".localhost").unwrap_or(host_str);
+    let subdomain = host_base.split('.').next().unwrap_or(host_base);
+
+    if subdomain == "localhost" || subdomain == "127" {
+        return None;
     }
+
+    let mut parts: Vec<&str> = subdomain.split('-').collect();
+
+    let mut interfacehash = None;
+    if let Some(last) = parts.last()
+        && last.starts_with('i')
+        && last.len() > 1
+    {
+        interfacehash = Some(&last[1..]);
+        parts.pop();
+    }
+
+    let mut pubkeyhash = None;
+    if let Some(last) = parts.last()
+        && last.starts_with('p')
+        && last.len() > 1
+    {
+        pubkeyhash = Some(&last[1..]);
+        parts.pop();
+    }
+
+    let nickname = if parts.is_empty() { None } else { Some(parts.join("-")) };
+
+    let lookup_alias = if let Some(n) = nickname {
+        format!("{n}-p{}", pubkeyhash.unwrap_or_default())
+    } else {
+        format!("p{}", pubkeyhash.unwrap_or_default())
+    };
+
+    let interface = interfacehash.unwrap_or("").to_string();
+
+    Some((lookup_alias, interface))
 }
