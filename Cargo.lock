@@ -3553,16 +3553,6 @@ dependencies = [
 
 [[package]]
 name = "metrics"
-version = "0.22.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "56d05972e8cbac2671e85aa9d04d9160d193f8bebd1a5c1a2f4542c62e65d1d0"
-dependencies = [
- "ahash",
- "portable-atomic",
-]
-
-[[package]]
-name = "metrics"
 version = "0.23.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3045b4193fbdc5b5681f32f11070da9be3609f189a79f3390706d42587f46bb5"
@@ -3582,7 +3572,7 @@ dependencies = [
  "crossbeam-utils",
  "hashbrown 0.14.5",
  "indexmap",
- "metrics 0.23.1",
+ "metrics",
  "num_cpus",
  "ordered-float",
  "quanta",
@@ -6110,7 +6100,7 @@ dependencies = [
  "criterion",
  "dashmap",
  "hex",
- "metrics 0.22.4",
+ "metrics",
  "reqwest 0.13.4",
  "serde_json",
  "sha2 0.10.9",
@@ -6310,7 +6300,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "dashmap",
- "metrics 0.22.4",
+ "metrics",
  "metrics-util",
  "serde",
  "serde_json",
@@ -6355,7 +6345,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "hex",
- "metrics 0.22.4",
+ "metrics",
  "reqwest 0.13.4",
  "serde_json",
  "sha2 0.10.9",
@@ -6382,7 +6372,7 @@ dependencies = [
  "hyper-util",
  "iroh",
  "iroh-relay",
- "metrics 0.22.4",
+ "metrics",
  "p256",
  "rand 0.9.4",
  "serde",
