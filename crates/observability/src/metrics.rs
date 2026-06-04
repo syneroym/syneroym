@@ -1,6 +1,7 @@
 use std::time::Duration;
+
 use sysinfo::System;
-use tokio::time;
+use tokio::{runtime::Handle, task::JoinHandle, time};
 use tracing::error;
 
 #[derive(Debug)]
@@ -13,7 +14,7 @@ impl SystemSampler {
         Self { interval }
     }
 
-    pub fn start(self) -> tokio::task::JoinHandle<()> {
+    pub fn start(self) -> JoinHandle<()> {
         tokio::spawn(async move {
             let mut sys = System::new();
             let pid = match sysinfo::get_current_pid() {
@@ -44,7 +45,7 @@ impl SystemSampler {
                 metrics::gauge!("substrate.system.open_fds").set(fds as f64);
 
                 // Count active tokio tasks
-                let tokio_metrics = tokio::runtime::Handle::current().metrics();
+                let tokio_metrics = Handle::current().metrics();
                 let active_tasks = tokio_metrics.num_alive_tasks();
                 metrics::gauge!("substrate.tokio.active_tasks").set(active_tasks as f64);
             }

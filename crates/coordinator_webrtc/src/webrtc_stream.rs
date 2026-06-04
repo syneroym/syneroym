@@ -3,6 +3,8 @@
 //! Implements active data channel reads/writes and framing, exposing WebRTC
 //! connections as standard async stream buffers for the router.
 
+use bytes::Bytes;
+use tokio::io;
 use std::io::Result;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -23,10 +25,10 @@ pub struct WebRTCStream {
 
 impl WebRTCStream {
     pub fn new(channel: Arc<DetachedDataChannel>) -> Self {
-        let (local, remote) = tokio::io::duplex(65536); // 64KB buffer
+        let (local, remote) = io::duplex(65536); // 64KB buffer
 
         // Split the duplex stream into read and write halves
-        let (mut remote_read, mut remote_write) = tokio::io::split(remote);
+        let (mut remote_read, mut remote_write) = io::split(remote);
         let channel_read = channel.clone();
         let channel_write = channel.clone();
 
@@ -60,7 +62,7 @@ impl WebRTCStream {
                     match remote_read.read(&mut buf_out).await {
                         Ok(0) => break, // EOF
                         Ok(n) => {
-                            let data = bytes::Bytes::copy_from_slice(&buf_out[..n]);
+                            let data = Bytes::copy_from_slice(&buf_out[..n]);
                             if let Err(e) = channel_write.write(&data).await {
                                 error!("WebRTCStream bridge: WebRTC write error: {}", e);
                                 break;

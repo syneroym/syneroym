@@ -3,37 +3,42 @@
 //! Establishes secure peer-to-peer tunnels using the Iroh protocol, hosting
 //! the local Iroh endpoint and relay server.
 
+use std::{
+    fmt::{Debug, Formatter},
+    future,
+    net::SocketAddr,
+    sync::Arc,
+    time::Duration,
+};
+
 use anyhow::{Context, Result};
 use axum::{Router, routing::get};
-use iroh::SecretKey;
+use iroh::{Endpoint, EndpointAddr, SecretKey, protocol::Router as IrohRouter};
 use iroh_relay::server::Server;
-use std::net::SocketAddr;
-use std::sync::Arc;
-use syneroym_core::config::CoordinatorIrohConfig;
-use syneroym_core::config::CoordinatorRole;
-use syneroym_core::config::SubstrateConfig;
-use syneroym_core::dht_registry::EndpointInfo;
-use syneroym_core::dht_registry::EndpointMechanism;
-use syneroym_core::dht_registry::EndpointType;
-use syneroym_core::dht_registry::RegistryClient;
-use syneroym_identity::Identity;
-use syneroym_identity::substrate::derive_did_key;
-use syneroym_router::RouteHandler;
-use tokio::net::TcpListener;
+use reqwest::Client;
+use syneroym_core::{
+    config::{CoordinatorIrohConfig, CoordinatorRole, SubstrateConfig},
+    dht_registry::{EndpointInfo, EndpointMechanism, EndpointType, RegistryClient},
+};
+use syneroym_identity::{Identity, substrate::derive_did_key};
+use syneroym_router::{RouteHandler, SYNEROYM_ALPN, net_iroh};
+use tokio::{net::TcpListener, task::JoinHandle, time};
 use tracing::{debug, info, warn};
 
-use crate::config::build_relay_config;
-use crate::info_endpoint::{CoordinatorInfo, InfoState, get_info};
+use crate::{
+    config::build_relay_config,
+    info_endpoint::{CoordinatorInfo, InfoState, get_info},
+};
 
 pub struct CoordinatorIroh {
     relay_server: Option<Server>,
-    iroh_router: Option<iroh::protocol::Router>,
-    http_info_handle: Option<tokio::task::JoinHandle<()>>,
+    iroh_router: Option<IrohRouter>,
+    http_info_handle: Option<JoinHandle<()>>,
     info_addr: Option<SocketAddr>,
 }
 
-impl std::fmt::Debug for CoordinatorIroh {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Debug for CoordinatorIroh {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CoordinatorIroh")
             .field("relay_server", &self.relay_server.as_ref().map(|_| "Server"))
             .field("iroh_router", &self.iroh_router.as_ref().map(|_| "Router"))
@@ -98,8 +103,7 @@ impl CoordinatorIroh {
                 if iroh_cfg.share_in_registry
                     && let Some(registry_url) = &iroh_cfg.community_registry_url
                 {
-                    let actual_http_addr =
-                        relay_server.as_ref().and_then(iroh_relay::server::Server::http_addr);
+                    let actual_http_addr = relay_server.as_ref().and_then(Server::http_addr);
                     let relay_url_payload = if let Some(parent_url) =
                         config.parent_coordinator.iroh.as_ref().map(|u| &u.url)
                     {
@@ -117,7 +121,7 @@ impl CoordinatorIroh {
                     Self::register_in_global_registry(
                         registry_url.clone(),
                         node_id.to_string(),
-                        iroh::EndpointAddr::new(node_id),
+                        EndpointAddr::new(node_id),
                         relay_url_payload,
                         secret_key,
                     );
@@ -141,7 +145,7 @@ impl CoordinatorIroh {
         _role: &CoordinatorRole,
         iroh_cfg: &CoordinatorIrohConfig,
         relay_server: &Option<Server>,
-    ) -> Result<(iroh::Endpoint, SecretKey)> {
+    ) -> Result<(Endpoint, SecretKey)> {
         let secret_key = SecretKey::generate(&mut rand::rng());
 
         let mut chosen_relay_url_str = None;
@@ -149,8 +153,7 @@ impl CoordinatorIroh {
             info!("Registering with parent coordinator at {}", parent_url);
             chosen_relay_url_str = Some(parent_url);
         } else if iroh_cfg.enable_relay {
-            let actual_http_addr =
-                relay_server.as_ref().and_then(iroh_relay::server::Server::http_addr);
+            let actual_http_addr = relay_server.as_ref().and_then(Server::http_addr);
             if let Some(addr) = actual_http_addr {
                 chosen_relay_url_str = Some(format!("http://{addr}"));
             } else {
@@ -158,11 +161,8 @@ impl CoordinatorIroh {
             }
         }
 
-        let iroh_endpoint = syneroym_router::net_iroh::build_iroh_endpoint(
-            chosen_relay_url_str,
-            Some(secret_key.clone()),
-        )
-        .await?;
+        let iroh_endpoint =
+            net_iroh::build_iroh_endpoint(chosen_relay_url_str, Some(secret_key.clone())).await?;
         iroh_endpoint.online().await;
 
         let node_id = iroh_endpoint.addr().id;
@@ -172,10 +172,10 @@ impl CoordinatorIroh {
     }
 
     fn spawn_iroh_router(
-        iroh_endpoint: &iroh::Endpoint,
+        iroh_endpoint: &Endpoint,
         iroh_cfg: &CoordinatorIrohConfig,
         config: &SubstrateConfig,
-    ) -> iroh::protocol::Router {
+    ) -> IrohRouter {
         let parent_relay_url = config.parent_coordinator.iroh.as_ref().map(|u| u.url.clone());
         let registry_client = RegistryClient::new(
             config.substrate.enable_bep0044_dht,
@@ -184,18 +184,16 @@ impl CoordinatorIroh {
         let route_handler =
             RouteHandler::new_coordinator(iroh_endpoint.clone(), registry_client, parent_relay_url);
 
-        iroh::protocol::Router::builder(iroh_endpoint.clone())
-            .accept(syneroym_router::SYNEROYM_ALPN, route_handler)
-            .spawn()
+        IrohRouter::builder(iroh_endpoint.clone()).accept(SYNEROYM_ALPN, route_handler).spawn()
     }
 
     async fn spawn_http_info_server(
         config: &SubstrateConfig,
         _role: &CoordinatorRole,
         iroh_cfg: &CoordinatorIrohConfig,
-        iroh_endpoint: &iroh::Endpoint,
+        iroh_endpoint: &Endpoint,
         relay_server: &Option<Server>,
-    ) -> Result<(tokio::task::JoinHandle<()>, SocketAddr)> {
+    ) -> Result<(JoinHandle<()>, SocketAddr)> {
         let mut http_info_addr: SocketAddr =
             iroh_cfg.http_bind_address.parse().context("invalid http_bind_address")?;
         // Add 10 to the port to avoid conflict, or bind to port 0 for dynamic port in tests
@@ -209,11 +207,10 @@ impl CoordinatorIroh {
 
         let endpoint_addr = iroh_endpoint.addr();
         let node_id = endpoint_addr.id;
-        let endpoint_addr_payload = iroh::EndpointAddr::new(node_id);
+        let endpoint_addr_payload = EndpointAddr::new(node_id);
         let endpoint_addr_bytes = serde_json::to_vec(&endpoint_addr_payload)?;
         let parent_relay_url = config.parent_coordinator.iroh.as_ref().map(|u| u.url.clone());
-        let actual_http_addr =
-            relay_server.as_ref().and_then(iroh_relay::server::Server::http_addr);
+        let actual_http_addr = relay_server.as_ref().and_then(Server::http_addr);
         let relay_url = if let Some(parent_url) = parent_relay_url.as_ref() {
             Some(parent_url.clone())
         } else if iroh_cfg.enable_relay {
@@ -249,7 +246,7 @@ impl CoordinatorIroh {
     fn register_in_global_registry(
         registry_url: String,
         node_id_str: String,
-        endpoint_addr_payload: iroh::EndpointAddr,
+        endpoint_addr_payload: EndpointAddr,
         relay_url_payload: Option<String>,
         secret_key: SecretKey,
     ) {
@@ -276,7 +273,7 @@ impl CoordinatorIroh {
                             attempts + 1,
                             e
                         );
-                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        time::sleep(Duration::from_millis(500)).await;
                         attempts += 1;
                     }
                 }
@@ -290,7 +287,7 @@ impl CoordinatorIroh {
     }
 
     #[must_use]
-    pub fn endpoint_addr(&self) -> Option<iroh::EndpointAddr> {
+    pub fn endpoint_addr(&self) -> Option<EndpointAddr> {
         self.iroh_router.as_ref().map(|r| r.endpoint().addr())
     }
 
@@ -302,7 +299,7 @@ impl CoordinatorIroh {
                 server.task_handle().await.context("iroh relay server task panicked")??;
                 Ok(())
             } else {
-                std::future::pending::<Result<()>>().await
+                future::pending::<Result<()>>().await
             }
         });
 
@@ -311,7 +308,7 @@ impl CoordinatorIroh {
                 router.endpoint().closed().await;
                 Ok(())
             } else {
-                std::future::pending::<Result<()>>().await
+                future::pending::<Result<()>>().await
             }
         });
 
@@ -347,7 +344,7 @@ impl CoordinatorIroh {
 async fn register_coordinator_in_registry(
     registry_url: &str,
     node_id_str: &str,
-    endpoint_addr: &iroh::EndpointAddr,
+    endpoint_addr: &EndpointAddr,
     relay_url: Option<String>,
     secret_key_bytes: &[u8; 32],
 ) -> Result<()> {
@@ -368,7 +365,7 @@ async fn register_coordinator_in_registry(
     };
 
     let signed_info = info.sign(&identity)?;
-    let client = reqwest::Client::new();
+    let client = Client::new();
     let url = format!("{registry_url}/register");
     let res = client.post(&url).json(&signed_info).send().await?;
 

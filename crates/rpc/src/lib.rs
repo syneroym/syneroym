@@ -11,10 +11,9 @@ mod types;
 
 pub use converter::JsonRpcConverter;
 pub use native::{NativeInvocation, NativeResponse, NativeService};
-pub use types::{JsonRpcError, JsonRpcErrorResponse, JsonRpcRequest, JsonRpcResponse};
-
 use serde_json::Value;
 use thiserror::Error;
+pub use types::{JsonRpcError, JsonRpcErrorResponse, JsonRpcRequest, JsonRpcResponse};
 
 #[derive(Error, Debug)]
 pub enum RpcError {

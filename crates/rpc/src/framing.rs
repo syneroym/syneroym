@@ -3,6 +3,8 @@
 //! Implements framing protocol layers over async buffers, supporting
 //! reliable message boundaries in network streams.
 
+use std::io::ErrorKind;
+
 use anyhow::Result;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -31,15 +33,16 @@ where
             Ok(frame)
         }
         Ok(_) => Ok(Vec::new()),
-        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(Vec::new()),
+        Err(e) if e.kind() == ErrorKind::UnexpectedEof => Ok(Vec::new()),
         Err(e) => Err(e.into()),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::io::Cursor;
+
+    use super::*;
 
     #[tokio::test]
     async fn test_roundtrip() {

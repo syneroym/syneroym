@@ -1,8 +1,8 @@
+use std::{fs, path::Path};
+
 use anyhow::Result;
 use reqwest::Client;
 use serde_json::Value;
-use std::fs;
-use std::path::Path;
 
 pub async fn get_substrate_metrics() -> Result<Value> {
     let client = Client::new();

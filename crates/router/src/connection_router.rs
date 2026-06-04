@@ -3,28 +3,38 @@
 //! The main connection router that accepts incoming network streams (Iroh, WebRTC),
 //! extracts protocol preambles, and forwards traffic to local endpoints or sandbox instances.
 
+use std::{future, sync::Arc};
+
 use anyhow::Result;
 use futures::{SinkExt, StreamExt};
-use iroh::endpoint::presets;
-use iroh::protocol::Router as IrohRouter;
-use iroh::{EndpointAddr, RelayMap, RelayMode, RelayUrl, SecretKey};
-use std::sync::Arc;
-use syneroym_core::config::{IrohParentConfig, SubstrateConfig, WebRtcParentConfig};
-use syneroym_core::local_registry::EndpointRegistry;
+use iroh::{
+    Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl, SecretKey,
+    endpoint::presets,
+    protocol::{Router, Router as IrohRouter},
+};
+use presets::N0;
+use syneroym_core::{
+    config::{IrohParentConfig, SubstrateConfig, WebRtcParentConfig},
+    local_registry::EndpointRegistry,
+};
+use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, error, info};
-use webrtc::api::APIBuilder;
-use webrtc::api::interceptor_registry::register_default_interceptors;
-use webrtc::api::media_engine::MediaEngine;
-use webrtc::api::setting_engine::SettingEngine;
-use webrtc::data_channel::RTCDataChannel;
-use webrtc::ice::mdns::MulticastDnsMode;
-use webrtc::interceptor::registry::Registry;
-use webrtc::peer_connection::configuration::RTCConfiguration;
-use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
-use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
+use webrtc::{
+    api::{
+        API, APIBuilder, interceptor_registry::register_default_interceptors,
+        media_engine::MediaEngine, setting_engine::SettingEngine,
+    },
+    data_channel::RTCDataChannel,
+    ice::mdns::MulticastDnsMode,
+    ice_transport::ice_server::RTCIceServer,
+    interceptor::registry::Registry,
+    peer_connection::{
+        configuration::RTCConfiguration, peer_connection_state::RTCPeerConnectionState,
+        sdp::session_description::RTCSessionDescription,
+    },
+};
 
-use crate::net_webrtc::WebRTCStream;
-use crate::route_handler::RouteHandler;
+use crate::{net_webrtc::WebRTCStream, route_handler::RouteHandler};
 
 pub const SYNEROYM_ALPN: &[u8] = b"syneroym/0.1";
 
@@ -56,7 +66,7 @@ impl ConnectionRouter {
                         let iroh_router = router
                             .init_iroh(
                                 iroh_config,
-                                iroh::SecretKey::from_bytes(&iroh_secret_key),
+                                SecretKey::from_bytes(&iroh_secret_key),
                                 route_handler.clone(),
                             )
                             .await?;
@@ -88,10 +98,10 @@ impl ConnectionRouter {
     ) -> Result<IrohRouter> {
         debug!("Initializing Iroh communication...");
 
-        let mut ep_bldr = iroh::Endpoint::builder(presets::N0);
+        let mut ep_bldr = Endpoint::builder(N0);
         if let Ok(relay_url) = config.url.parse::<RelayUrl>() {
-            ep_bldr = iroh::Endpoint::empty_builder()
-                .relay_mode(RelayMode::Custom(RelayMap::from(relay_url)));
+            ep_bldr =
+                Endpoint::empty_builder().relay_mode(RelayMode::Custom(RelayMap::from(relay_url)));
         }
 
         let ep_bldr = ep_bldr.secret_key(secret_key);
@@ -138,10 +148,7 @@ impl ConnectionRouter {
             ice_servers: webrtc_config
                 .stun_servers
                 .iter()
-                .map(|url: &String| webrtc::ice_transport::ice_server::RTCIceServer {
-                    urls: vec![url.clone()],
-                    ..Default::default()
-                })
+                .map(|url: &String| RTCIceServer { urls: vec![url.clone()], ..Default::default() })
                 .collect(),
             ..Default::default()
         };
@@ -162,11 +169,11 @@ impl ConnectionRouter {
 
     pub async fn run(&self) -> Result<()> {
         info!("running connection router");
-        let endpoint = self.iroh_router.as_ref().map(iroh::protocol::Router::endpoint);
+        let endpoint = self.iroh_router.as_ref().map(Router::endpoint);
         if let Some(endpoint) = endpoint {
             endpoint.closed().await;
         } else {
-            std::future::pending::<()>().await;
+            future::pending::<()>().await;
         }
         Ok(())
     }
@@ -190,7 +197,7 @@ impl ConnectionRouter {
 async fn connect_signaling(
     peer_id: String,
     url: &String,
-    api: Arc<webrtc::api::API>,
+    api: Arc<API>,
     config: RTCConfiguration,
     route_handler: RouteHandler,
 ) -> Result<()> {
@@ -203,9 +210,7 @@ async fn connect_signaling(
         "type": "register",
         "id": peer_id
     });
-    write
-        .send(tokio_tungstenite::tungstenite::Message::Text(register_msg.to_string().into()))
-        .await?;
+    write.send(Message::Text(register_msg.to_string().into())).await?;
     info!("Registered with signaling server as {}", peer_id);
 
     while let Some(msg) = read.next().await {
@@ -217,7 +222,7 @@ async fn connect_signaling(
             }
         };
 
-        if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
+        if let Message::Text(text) = msg {
             let v: serde_json::Value = match serde_json::from_str(&text) {
                 Ok(v) => v,
                 Err(_) => continue,
@@ -288,11 +293,7 @@ async fn connect_signaling(
                         "sender": peer_id,
                         "sdp": answer.sdp
                     });
-                    write
-                        .send(tokio_tungstenite::tungstenite::Message::Text(
-                            answer_msg.to_string().into(),
-                        ))
-                        .await?;
+                    write.send(Message::Text(answer_msg.to_string().into())).await?;
                     info!("Sent Answer to {}", sender_id);
                 }
                 _ => {

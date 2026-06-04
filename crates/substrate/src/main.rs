@@ -1,12 +1,15 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 //! CLI entry point for running the Syneroym substrate.
 
+use std::{fs, path::PathBuf, process};
+
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
-use syneroym_core::config::CoordinatorIrohConfig;
-use syneroym_core::config::CoordinatorRole;
-use syneroym_core::config::SubstrateConfig;
+use rustls::crypto::ring;
+use syneroym_core::config::{
+    CoordinatorIrohConfig, CoordinatorRole, CoordinatorWebRtcConfig, EndpointConfig,
+    ObservabilityRole, SubstrateConfig,
+};
 use syneroym_substrate::run;
 use tokio::runtime::Builder;
 
@@ -84,7 +87,7 @@ pub(crate) fn resolve_config(command: Commands) -> Result<SubstrateConfig> {
         } => {
             // Load from file if provided, otherwise use defaults
             let mut config = if let Some(path) = config_path {
-                let content = std::fs::read_to_string(&path)
+                let content = fs::read_to_string(&path)
                     .with_context(|| format!("Failed to read config file at {path:?}"))?;
                 toml::from_str(&content)
                     .with_context(|| format!("Failed to parse config file at {path:?}"))?
@@ -160,9 +163,9 @@ pub(crate) fn resolve_config(command: Commands) -> Result<SubstrateConfig> {
 }
 
 fn main() -> Result<()> {
-    if rustls::crypto::ring::default_provider().install_default().is_err() {
+    if ring::default_provider().install_default().is_err() {
         eprintln!("Failed to install rustls default crypto provider");
-        std::process::exit(1);
+        process::exit(1);
     }
 
     let cli = Cli::parse();
@@ -193,7 +196,7 @@ fn dev_mode_config() -> SubstrateConfig {
             enable_relay: true,
             ..Default::default()
         }),
-        webrtc: Some(syneroym_core::config::CoordinatorWebRtcConfig {
+        webrtc: Some(CoordinatorWebRtcConfig {
             enable_signalling: true,
             enable_relay: true,
             ..Default::default()
@@ -204,13 +207,13 @@ fn dev_mode_config() -> SubstrateConfig {
     c.roles.client_gateway = Some(Default::default());
 
     // Enable observability by default in dev mode
-    c.roles.observability = Some(syneroym_core::config::ObservabilityRole {
-        health: Some(syneroym_core::config::EndpointConfig {
+    c.roles.observability = Some(ObservabilityRole {
+        health: Some(EndpointConfig {
             enabled: true,
             bind_address: "0.0.0.0:7966".to_string(),
             endpoint: "/health".to_string(),
         }),
-        metrics: Some(syneroym_core::config::EndpointConfig {
+        metrics: Some(EndpointConfig {
             enabled: true,
             bind_address: "0.0.0.0:7967".to_string(),
             endpoint: "/metrics".to_string(),
@@ -228,9 +231,11 @@ fn dev_mode_config() -> SubstrateConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::io::Write;
+
     use tempfile::NamedTempFile;
+
+    use super::*;
 
     #[test]
     fn test_config_precedence() {

@@ -1,13 +1,15 @@
+use std::time::{Duration, Instant};
+
 use anyhow::Result;
 use reqwest::Client;
-use std::time::Instant;
-use syneroym_core::dht_registry::EndpointInfo;
-use syneroym_core::dht_registry::EndpointType;
-use syneroym_core::util::short_hash;
-use syneroym_identity::Identity;
+use syneroym_core::{
+    dht_registry::{EndpointInfo, EndpointType},
+    util::short_hash,
+};
+use syneroym_identity::{Identity, substrate};
+use syneroym_sdk::SyneroymClient;
 
-use crate::orchestrator::TestEnvironment;
-use crate::reporter::print_latency_comparison;
+use crate::{orchestrator::TestEnvironment, reporter::print_latency_comparison};
 
 pub async fn run_scenario() -> Result<()> {
     let mut env = TestEnvironment::new().await?;
@@ -41,7 +43,7 @@ pub async fn run_scenario() -> Result<()> {
 
     // Generate an identity for the TCP app
     let app_identity = Identity::generate().unwrap();
-    let app_service_id = syneroym_identity::substrate::derive_did_key(&app_identity.public_key());
+    let app_service_id = substrate::derive_did_key(&app_identity.public_key());
 
     // Default ports for dev mode
     let registry_url = "http://127.0.0.1:7961".to_string();
@@ -49,8 +51,8 @@ pub async fn run_scenario() -> Result<()> {
 
     // Connect SDK Client to the orchestrator (which is the substrate itself)
     let mut orchestrator_client =
-        syneroym_sdk::SyneroymClient::new(env.substrate_did.clone(), registry_url.clone());
-    orchestrator_client.wait_for_ready(std::time::Duration::from_secs(10)).await?;
+        SyneroymClient::new(env.substrate_did.clone(), registry_url.clone());
+    orchestrator_client.wait_for_ready(Duration::from_secs(10)).await?;
 
     // Deploy the TCP service on the substrate
     orchestrator_client

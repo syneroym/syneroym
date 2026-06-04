@@ -1,15 +1,24 @@
-use anyhow::Result;
-use std::fs;
-use std::time::{Duration, Instant};
-use syneroym_app_sandbox::{AppSandboxEngine, HostState};
-use syneroym_core::dht_registry::EndpointInfo;
-use syneroym_core::dht_registry::EndpointType;
-use syneroym_core::test_constants;
-use syneroym_identity::Identity;
-use wasmtime::component::Component;
+use std::{
+    fs,
+    time::{Duration, Instant},
+};
 
-use crate::orchestrator::TestEnvironment;
-use crate::reporter::print_latency_comparison;
+use anyhow::Result;
+use reqwest::Client;
+use syneroym_app_sandbox::{AppSandboxEngine, HostState};
+use syneroym_core::{
+    dht_registry::{EndpointInfo, EndpointType},
+    test_constants,
+};
+use syneroym_identity::{Identity, substrate};
+use syneroym_sdk::SyneroymClient;
+use test_constants::GREETER_INTERFACE_NAME;
+use wasmtime::{
+    Store,
+    component::{Component, Val},
+};
+
+use crate::{orchestrator::TestEnvironment, reporter::print_latency_comparison};
 
 pub async fn run_scenario() -> Result<()> {
     let mut env = TestEnvironment::new().await?;
@@ -25,17 +34,17 @@ pub async fn run_scenario() -> Result<()> {
     let expected_result =
         serde_json::json!("Hello, BenchmarkUser! Greetings from greeter::greet::greet");
 
-    let interface_name = test_constants::GREETER_INTERFACE_NAME;
+    let interface_name = GREETER_INTERFACE_NAME;
     let method_name = "greet";
 
     // Warmup Baseline
     for _ in 0..10 {
         let host_state = HostState::new("test_component".to_string());
-        let mut store = wasmtime::Store::new(&engine, host_state);
+        let mut store = Store::new(&engine, host_state);
         let instance = linker.instantiate_async(&mut store, &component).await?;
         let (func, results_len, _item) =
             AppSandboxEngine::get_wasm_func(&mut store, &instance, interface_name, method_name)?;
-        let mut wasm_results = vec![wasmtime::component::Val::Bool(false); results_len];
+        let mut wasm_results = vec![Val::Bool(false); results_len];
         func.call_async(
             &mut store,
             &[wasmtime::component::Val::String("BenchmarkUser".to_string())],
@@ -49,11 +58,11 @@ pub async fn run_scenario() -> Result<()> {
     for _ in 0..100 {
         let start = Instant::now();
         let host_state = HostState::new("test_component".to_string());
-        let mut store = wasmtime::Store::new(&engine, host_state);
+        let mut store = Store::new(&engine, host_state);
         let instance = linker.instantiate_async(&mut store, &component).await?;
         let (func, results_len, _item) =
             AppSandboxEngine::get_wasm_func(&mut store, &instance, interface_name, method_name)?;
-        let mut wasm_results = vec![wasmtime::component::Val::Bool(false); results_len];
+        let mut wasm_results = vec![Val::Bool(false); results_len];
         func.call_async(
             &mut store,
             &[wasmtime::component::Val::String("BenchmarkUser".to_string())],
@@ -72,11 +81,11 @@ pub async fn run_scenario() -> Result<()> {
 
     // 2. Via Substrate
     let app_identity = Identity::generate().unwrap();
-    let app_service_id = syneroym_identity::substrate::derive_did_key(&app_identity.public_key());
+    let app_service_id = substrate::derive_did_key(&app_identity.public_key());
 
     let registry_url = "http://127.0.0.1:7961".to_string();
     let mut orchestrator_client =
-        syneroym_sdk::SyneroymClient::new(env.substrate_did.clone(), registry_url.clone());
+        SyneroymClient::new(env.substrate_did.clone(), registry_url.clone());
     orchestrator_client.wait_for_ready(Duration::from_secs(10)).await?;
 
     // Deploy WASM
@@ -85,7 +94,7 @@ pub async fn run_scenario() -> Result<()> {
         .await?;
 
     // We need to register the WASM service in the registry so the client can resolve it
-    let http_client = reqwest::Client::new();
+    let http_client = Client::new();
     let substrate_info = orchestrator_client.lookup().await?;
     let mechanisms = substrate_info.info.mechanisms;
 
@@ -104,8 +113,7 @@ pub async fn run_scenario() -> Result<()> {
         http_client.post(format!("{}/register", registry_url)).json(&signed_info).send().await?;
     assert!(res.status().is_success());
 
-    let mut app_client =
-        syneroym_sdk::SyneroymClient::new(app_service_id.clone(), registry_url.clone());
+    let mut app_client = SyneroymClient::new(app_service_id.clone(), registry_url.clone());
     app_client.connect().await?;
 
     // Warmup Via Substrate

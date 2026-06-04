@@ -3,16 +3,19 @@
 //! Loads cryptographic keyfiles, resolves agreements, and initializes verified
 //! controller states during runtime boot.
 
-use std::fs;
+use std::{fs, path::Path};
+
 use syneroym_core::config::{DEFAULT_SUBSTRATE_KEY_FILE, IdentityConfig};
-use syneroym_identity::Identity;
-use syneroym_identity::substrate::{ControllerAgreement, SubstrateIdentityState};
+use syneroym_identity::{
+    Identity,
+    substrate::{ControllerAgreement, SubstrateIdentityState},
+};
 use tracing::info;
 
 /// Setup and initialize the substrate's identity and controller state.
 pub fn setup_substrate_identity(
     config: &IdentityConfig,
-    app_data_dir: &std::path::Path,
+    app_data_dir: &Path,
 ) -> anyhow::Result<SubstrateIdentityState> {
     let key_path =
         config.key.clone().unwrap_or_else(|| app_data_dir.join(DEFAULT_SUBSTRATE_KEY_FILE));
@@ -61,10 +64,7 @@ pub fn setup_substrate_identity(
     Ok(substrate_identity_state)
 }
 
-pub fn get_secret(
-    config: &IdentityConfig,
-    app_data_dir: &std::path::Path,
-) -> anyhow::Result<[u8; 32]> {
+pub fn get_secret(config: &IdentityConfig, app_data_dir: &Path) -> anyhow::Result<[u8; 32]> {
     let key_path =
         config.key.clone().unwrap_or_else(|| app_data_dir.join(DEFAULT_SUBSTRATE_KEY_FILE));
 

@@ -4,7 +4,7 @@
 //! used in RPC message serialization.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct JsonRpcRequest {
@@ -16,7 +16,7 @@ pub struct JsonRpcRequest {
 }
 
 fn default_params() -> Value {
-    Value::Object(serde_json::Map::new())
+    Value::Object(Map::new())
 }
 
 #[derive(Serialize, Deserialize, Debug)]

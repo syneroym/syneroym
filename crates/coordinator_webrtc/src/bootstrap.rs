@@ -3,6 +3,11 @@
 //! Hosts static/dynamic HTML pages and assets to assist peer discovery
 //! and WebRTC initialization inside web clients.
 
+use std::{
+    fmt::{Debug, Formatter},
+    sync::Arc,
+};
+
 use askama::Template;
 use axum::{
     Router,
@@ -15,18 +20,24 @@ use axum::{
     response::{Html, IntoResponse},
     routing::{any, get},
 };
-use futures::{SinkExt, StreamExt};
-use iroh::Endpoint;
-use std::sync::Arc;
-use syneroym_core::dht_registry::EndpointMechanism;
-use syneroym_core::dht_registry::RegistryClient;
-use syneroym_core::local_registry::EndpointRegistry;
-use syneroym_core::protocol_utils::parse_target_host;
+use futures::{
+    SinkExt, StreamExt,
+    stream::{SplitSink, SplitStream},
+};
+use header::HOST;
+use iroh::{Endpoint, EndpointAddr, PublicKey, RelayUrl};
+use syneroym_core::{
+    dht_registry::{EndpointMechanism, RegistryClient},
+    local_registry::EndpointRegistry,
+    protocol_utils::parse_target_host,
+};
 use syneroym_identity::substrate::resolve_did_key;
-use syneroym_router::SYNEROYM_ALPN;
-use syneroym_router::net_iroh::IrohStream;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
+use syneroym_router::{RoutePreamble, SYNEROYM_ALPN, net_iroh::IrohStream};
+use tokio::{
+    io,
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpListener,
+};
 use tracing::{debug, error, info};
 
 pub struct BootstrapState {
@@ -38,8 +49,8 @@ pub struct BootstrapState {
     pub registry_client: RegistryClient,
 }
 
-impl std::fmt::Debug for BootstrapState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Debug for BootstrapState {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BootstrapState")
             .field("iroh", &"iroh::Endpoint")
             .field("external_host", &self.external_host)
@@ -94,12 +105,8 @@ async fn handle_bootstrap(
     State(state): State<Arc<BootstrapState>>,
     req: Request<Body>,
 ) -> impl IntoResponse {
-    let host = req
-        .headers()
-        .get(header::HOST)
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("localhost")
-        .to_string();
+    let host =
+        req.headers().get(HOST).and_then(|h| h.to_str().ok()).unwrap_or("localhost").to_string();
     let path = req.uri().path();
     if path == "/favicon.ico" {
         return StatusCode::NOT_FOUND.into_response();
@@ -196,8 +203,8 @@ async fn handle_blind_tunnel(socket: WebSocket, state: Arc<BootstrapState>) {
 }
 
 async fn read_preamble_from_ws(
-    ws_receiver: &mut futures::stream::SplitStream<WebSocket>,
-) -> Option<(syneroym_router::RoutePreamble, String)> {
+    ws_receiver: &mut SplitStream<WebSocket>,
+) -> Option<(RoutePreamble, String)> {
     let msg = match ws_receiver.next().await {
         Some(Ok(Message::Binary(bin))) => {
             debug!("[BlindTunnel] Received binary preamble ({} bytes)", bin.len());
@@ -223,7 +230,7 @@ async fn read_preamble_from_ws(
 
     debug!("[BlindTunnel] Raw preamble: {:?}", preamble_str.trim());
 
-    let preamble = match syneroym_router::RoutePreamble::parse(&preamble_str) {
+    let preamble = match RoutePreamble::parse(&preamble_str) {
         Ok(p) => p,
         Err(e) => {
             error!("[BlindTunnel] Failed to parse preamble '{}': {e}", preamble_str.trim());
@@ -246,7 +253,7 @@ async fn read_preamble_from_ws(
 async fn resolve_iroh_endpoint_from_registry(
     service_id: &str,
     registry_client: &RegistryClient,
-) -> Option<iroh::EndpointAddr> {
+) -> Option<EndpointAddr> {
     debug!("[BlindTunnel] Looking up service '{}' in registry", service_id);
     let info = match registry_client.lookup(service_id, true).await {
         Ok(i) => {
@@ -268,11 +275,11 @@ async fn resolve_iroh_endpoint_from_registry(
     let mut iroh_addr_from_mechanism = None;
     for mechanism in &info.info.mechanisms {
         if let EndpointMechanism::Iroh { endpoint_addr_bytes, relay_url } = mechanism
-            && let Ok(addr) = serde_json::from_slice::<iroh::EndpointAddr>(endpoint_addr_bytes)
+            && let Ok(addr) = serde_json::from_slice::<EndpointAddr>(endpoint_addr_bytes)
         {
             let mut addr = addr;
             if let Some(url_str) = relay_url
-                && let Ok(url) = url_str.parse::<iroh::RelayUrl>()
+                && let Ok(url) = url_str.parse::<RelayUrl>()
             {
                 addr = addr.with_relay_url(url);
             }
@@ -290,9 +297,9 @@ async fn resolve_iroh_endpoint_from_registry(
             info.info.substrate_id
         );
         match resolve_did_key(&info.info.substrate_id) {
-            Ok(pubkey) => match iroh::PublicKey::from_bytes(pubkey.as_bytes()) {
+            Ok(pubkey) => match PublicKey::from_bytes(pubkey.as_bytes()) {
                 Ok(pk) => {
-                    let addr = iroh::EndpointAddr::from(pk);
+                    let addr = EndpointAddr::from(pk);
                     debug!("[BlindTunnel] Derived Iroh endpoint addr: {:?}", addr);
                     Some(addr)
                 }
@@ -313,8 +320,8 @@ async fn resolve_iroh_endpoint_from_registry(
 }
 
 async fn connect_iroh_stream(
-    endpoint: &iroh::Endpoint,
-    endpoint_addr: iroh::EndpointAddr,
+    endpoint: &Endpoint,
+    endpoint_addr: EndpointAddr,
     preamble_str: &str,
 ) -> Option<IrohStream> {
     debug!("[BlindTunnel] Connecting to Iroh node: {:?}", endpoint_addr);
@@ -356,12 +363,12 @@ async fn connect_iroh_stream(
 }
 
 async fn pipe_ws_and_iroh(
-    mut ws_sender: futures::stream::SplitSink<WebSocket, Message>,
-    mut ws_receiver: futures::stream::SplitStream<WebSocket>,
+    mut ws_sender: SplitSink<WebSocket, Message>,
+    mut ws_receiver: SplitStream<WebSocket>,
     iroh_stream: IrohStream,
 ) {
     debug!("[BlindTunnel] Preamble sent; starting bidirectional pipe WS<->Iroh");
-    let (mut iroh_read, mut iroh_write) = tokio::io::split(iroh_stream);
+    let (mut iroh_read, mut iroh_write) = io::split(iroh_stream);
 
     let ws_to_iroh = async move {
         while let Some(msg_res) = ws_receiver.next().await {
@@ -476,15 +483,15 @@ mod tests {
 
         // Resolve back
         let resolved_pubkey = resolve_did_key(&did).expect("Failed to resolve DID");
-        let node_id = iroh::PublicKey::from_bytes(resolved_pubkey.as_bytes())
-            .expect("Failed to create NodeId");
+        let node_id =
+            PublicKey::from_bytes(resolved_pubkey.as_bytes()).expect("Failed to create NodeId");
 
         // Manual verification of the Iroh part
         let raw_z32 = &did["did:key:h".len()..];
         let bytes = z32::decode(raw_z32.as_bytes()).expect("Failed to decode z32");
         // Skip multicodec prefix (0xed, 0x01)
         let iroh_pubkey_bytes: [u8; 32] = bytes[2..].try_into().unwrap();
-        let manual_node_id = iroh::PublicKey::from_bytes(&iroh_pubkey_bytes).unwrap();
+        let manual_node_id = PublicKey::from_bytes(&iroh_pubkey_bytes).unwrap();
 
         assert_eq!(node_id, manual_node_id);
         assert_eq!(resolved_pubkey.as_bytes(), pubkey.as_bytes());

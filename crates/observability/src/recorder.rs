@@ -1,11 +1,15 @@
+use std::{
+    cmp::Ordering,
+    collections::HashMap,
+    sync::{Arc, Mutex, OnceLock},
+};
+
 use dashmap::DashMap;
 use metrics::{
     Counter, CounterFn, Gauge, GaugeFn, Histogram, HistogramFn, Key, KeyName, Metadata, Recorder,
-    SharedString, Unit,
+    SetRecorderError, SharedString, Unit,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
 
 static GLOBAL_RECORDER: OnceLock<MemoryRecorder> = OnceLock::new();
 
@@ -72,7 +76,7 @@ impl MemoryRecorder {
     }
 
     /// Install this recorder as the global recorder.
-    pub fn install(self) -> Result<(), metrics::SetRecorderError<Self>> {
+    pub fn install(self) -> Result<(), SetRecorderError<Self>> {
         let recorder_to_set = self.clone();
         match metrics::set_global_recorder(self) {
             Ok(()) => {
@@ -120,7 +124,7 @@ impl MemoryRecorder {
                 if values.is_empty() {
                     continue;
                 }
-                values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
 
                 let count = values.len();
                 let sum: f64 = values.iter().sum();
@@ -186,8 +190,9 @@ pub struct MetricsSnapshot {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use metrics::Level;
+
+    use super::*;
 
     #[test]
     fn test_memory_recorder_snapshots() {

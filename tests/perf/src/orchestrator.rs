@@ -1,17 +1,26 @@
+use std::{
+    env,
+    path::PathBuf,
+    process::Stdio,
+    time::{Duration, Instant},
+};
+
 use anyhow::{Context, Result};
 use reqwest::Client;
-use std::process::Stdio;
-use std::time::Duration;
-use syneroym_identity::Identity;
-use tokio::process::{Child, Command};
+use syneroym_identity::{Identity, substrate};
+use tempfile::NamedTempFile;
+use tokio::{
+    process::{Child, Command},
+    time,
+};
 use tracing::info;
 
-fn get_cargo_bin(name: &str) -> std::path::PathBuf {
+fn get_cargo_bin(name: &str) -> PathBuf {
     if let Some(path) = std::env::var_os(format!("CARGO_BIN_EXE_{}", name)) {
-        std::path::PathBuf::from(path)
+        PathBuf::from(path)
     } else {
         // Fall back to target/debug or target/release based on current executable parent
-        if let Ok(current_exe) = std::env::current_exe()
+        if let Ok(current_exe) = env::current_exe()
             && let Some(parent) = current_exe.parent()
         {
             let bin_path = parent.join(name);
@@ -32,7 +41,7 @@ fn get_cargo_bin(name: &str) -> std::path::PathBuf {
             primary_path
         } else {
             let secondary_path = workspace_target.join(secondary_profile).join(name);
-            if secondary_path.exists() { secondary_path } else { std::path::PathBuf::from(name) }
+            if secondary_path.exists() { secondary_path } else { PathBuf::from(name) }
         }
     }
 }
@@ -43,15 +52,14 @@ pub struct TestEnvironment {
     http_client: Client,
     pub substrate_identity: Identity,
     pub substrate_did: String,
-    _key_file: tempfile::NamedTempFile,
+    _key_file: NamedTempFile,
 }
 
 impl TestEnvironment {
     pub async fn new() -> Result<Self> {
         let substrate_identity = Identity::generate()?;
-        let substrate_did =
-            syneroym_identity::substrate::derive_did_key(&substrate_identity.public_key());
-        let key_file = tempfile::NamedTempFile::new()?;
+        let substrate_did = substrate::derive_did_key(&substrate_identity.public_key());
+        let key_file = NamedTempFile::new()?;
         substrate_identity.save_to_path(key_file.path())?;
 
         Ok(Self {
@@ -116,7 +124,7 @@ impl TestEnvironment {
     }
 
     async fn wait_for_http(&mut self, url: &str, timeout: Duration) -> Result<()> {
-        let start = std::time::Instant::now();
+        let start = Instant::now();
         while start.elapsed() < timeout {
             // Check if process crashed
             if let Some(child) = &mut self.substrate
@@ -138,7 +146,7 @@ impl TestEnvironment {
                     return Ok(());
                 }
                 _ => {
-                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    time::sleep(Duration::from_millis(200)).await;
                 }
             }
         }

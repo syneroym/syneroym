@@ -3,11 +3,14 @@
 //!
 //! Simple guest process to run basic requests in sandbox execution tests.
 
+use std::process;
+
+use rustls::crypto::ring;
 #[tokio::main]
 async fn main() {
-    if rustls::crypto::ring::default_provider().install_default().is_err() {
+    if ring::default_provider().install_default().is_err() {
         eprintln!("Failed to install rustls default crypto provider");
-        std::process::exit(1);
+        process::exit(1);
     }
 
     miniapp_demo1_web::real_main().await;

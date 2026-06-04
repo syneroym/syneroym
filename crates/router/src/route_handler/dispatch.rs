@@ -2,16 +2,19 @@
 //!
 //! Hooks active streams up to their target local services (e.g. WASM sandbox input, native services, or TCP socket).
 
-use super::RouteHandler;
-use crate::preamble::{RoutePreamble, RouteProtocol};
-use crate::routing::{AdaptationStage, RoutePipeline, ServiceStage};
+use std::{sync::Arc, time::Instant};
+
 use anyhow::{Result, anyhow};
-use std::sync::Arc;
 use syneroym_core::local_registry::SubstrateEndpoint;
-use syneroym_rpc::framing;
-use syneroym_rpc::{JsonRpcConverter, JsonRpcRequest, JsonRpcResponse, NativeService};
+use syneroym_rpc::{JsonRpcConverter, JsonRpcRequest, JsonRpcResponse, NativeService, framing};
 use tokio::io::{AsyncRead, AsyncWrite, BufReader};
 use tracing::{debug, error};
+
+use super::RouteHandler;
+use crate::{
+    preamble::{RoutePreamble, RouteProtocol, RouteTransport},
+    routing::{AdaptationStage, RoutePipeline, ServiceStage},
+};
 
 impl RouteHandler {
     /// Looks up a native service by its channel ID.
@@ -28,7 +31,7 @@ impl RouteHandler {
         preamble: &RoutePreamble,
         body: &[u8],
     ) -> Result<Vec<u8>> {
-        let start = std::time::Instant::now();
+        let start = Instant::now();
         metrics::counter!("substrate.request.total").increment(1);
 
         let result = match (&pipeline.adaptation, &pipeline.service) {
@@ -135,9 +138,9 @@ impl RouteHandler {
         };
 
         let mut transport = match preamble.transport {
-            crate::preamble::RouteTransport::Http => TransportStage::Http,
-            crate::preamble::RouteTransport::Binary => TransportStage::Binary,
-            crate::preamble::RouteTransport::Raw => TransportStage::Raw,
+            RouteTransport::Http => TransportStage::Http,
+            RouteTransport::Binary => TransportStage::Binary,
+            RouteTransport::Raw => TransportStage::Raw,
         };
 
         // Passthrough services (like TcpProxy or direct WasmComponent passthrough (wRPC — TODO: not yet implemented))

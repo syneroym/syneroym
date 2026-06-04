@@ -2,11 +2,21 @@
 //! Integration tests for the Podman sandbox lifecycle
 
 use std::time::Duration;
-use syneroym_core::config::IrohParentConfig;
-use syneroym_core::config::LogTarget;
-use syneroym_core::config::SubstrateConfig;
-use syneroym_core::dht_registry::EndpointMechanism;
-use syneroym_identity::Identity;
+
+use rustls::crypto::ring;
+use syneroym_core::{
+    config::{ClientGatewayRole, IrohParentConfig, LogTarget, SubstrateConfig},
+    dht_registry::EndpointMechanism,
+};
+use syneroym_identity::{Identity, substrate};
+use syneroym_sdk::SyneroymClient;
+use syneroym_substrate::identity;
+use tempfile::TempDir;
+use tokio::{
+    sync::{mpsc, mpsc::Sender},
+    task::JoinHandle,
+    time,
+};
 use tracing::debug;
 
 const IROH_PORT: u16 = 7984;
@@ -16,14 +26,14 @@ const GATEWAY_PORT: u16 = 7980;
 struct SubstrateTestContext {
     #[allow(dead_code)]
     config: SubstrateConfig,
-    substrate_client: syneroym_sdk::SyneroymClient,
+    substrate_client: SyneroymClient,
     substrate_service_id: String,
     gateway_port: u16,
     registry_url: String,
     substrate_mechanisms: Vec<EndpointMechanism>,
-    shutdown_tx: tokio::sync::mpsc::Sender<()>,
-    substrate_handle: tokio::task::JoinHandle<()>,
-    temp_dir: tempfile::TempDir,
+    shutdown_tx: Sender<()>,
+    substrate_handle: JoinHandle<()>,
+    temp_dir: TempDir,
 }
 
 impl SubstrateTestContext {
@@ -63,9 +73,7 @@ impl SubstrateTestContext {
                 http_bind_address: format!("0.0.0.0:{registry_port}"),
                 ..Default::default()
             }),
-            client_gateway: Some(syneroym_core::config::ClientGatewayRole {
-                http_port: gateway_port,
-            }),
+            client_gateway: Some(ClientGatewayRole { http_port: gateway_port }),
             podman_sandbox: Some(PodmanSandboxRole { podman_path: "podman".to_string() }),
             ..Default::default()
         };
@@ -75,14 +83,12 @@ impl SubstrateTestContext {
         config.parent_coordinator.iroh =
             Some(IrohParentConfig { url: format!("http://localhost:{iroh_port}") });
 
-        let substrate_identity_state = syneroym_substrate::identity::setup_substrate_identity(
-            &config.identity,
-            &config.app_data_dir,
-        )
-        .expect("Failed to setup identity");
+        let substrate_identity_state =
+            identity::setup_substrate_identity(&config.identity, &config.app_data_dir)
+                .expect("Failed to setup identity");
         let substrate_service_id = substrate_identity_state.did.clone();
 
-        let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
+        let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
         let runtime =
             syneroym_substrate::init(config.clone()).await.expect("Failed to initialize runtime");
 
@@ -96,7 +102,7 @@ impl SubstrateTestContext {
         });
 
         let mut substrate_client =
-            syneroym_sdk::SyneroymClient::new(substrate_service_id.clone(), registry_url.clone());
+            SyneroymClient::new(substrate_service_id.clone(), registry_url.clone());
 
         substrate_client
             .wait_for_ready(Duration::from_secs(30))
@@ -137,7 +143,7 @@ fn has_podman() -> bool {
 
 #[tokio::test]
 async fn test_podman_lifecycle() {
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    let _ = ring::default_provider().install_default();
 
     if !has_podman() {
         println!("Skipping podman lifecycle integration test because podman is not available.");
@@ -147,7 +153,7 @@ async fn test_podman_lifecycle() {
     let ctx = SubstrateTestContext::setup(IROH_PORT, REGISTRY_PORT, GATEWAY_PORT).await;
 
     let app_identity = Identity::generate().unwrap();
-    let app_service_id = syneroym_identity::substrate::derive_did_key(&app_identity.public_key());
+    let app_service_id = substrate::derive_did_key(&app_identity.public_key());
 
     // We deploy a simple alpine container that starts an HTTP echo or simple server
     // or just nginx to test port mapping.
@@ -188,7 +194,7 @@ async fn test_podman_lifecycle() {
     assert_eq!(svc.endpoint_type, "tcp"); // Registered as TcpHostPort
 
     // Give it a brief moment to warm up
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    time::sleep(Duration::from_secs(3)).await;
 
     // Verify readiness
     ctx.substrate_client

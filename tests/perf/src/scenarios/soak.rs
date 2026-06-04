@@ -1,20 +1,29 @@
+use std::{
+    fs,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
+    time::{Duration, Instant},
+};
+
 use anyhow::{Context, Result};
 use chrono::Utc;
+use reqwest::Client;
 use serde_json::json;
-use std::fs;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-use syneroym_core::dht_registry::EndpointInfo;
-use syneroym_core::dht_registry::EndpointType;
-use syneroym_core::test_constants;
-use syneroym_identity::Identity;
-use tokio::sync::Mutex;
-use tokio::time::sleep;
+use syneroym_core::{
+    dht_registry::{EndpointInfo, EndpointType},
+    test_constants,
+};
+use syneroym_identity::{Identity, substrate};
+use syneroym_sdk::SyneroymClient;
+use test_constants::GREETER_INTERFACE_NAME;
+use tokio::{sync::Mutex, time, time::sleep};
 use tracing::{info, warn};
 
-use crate::orchestrator::TestEnvironment;
-use crate::reporter::{
-    SoakSummaryData, get_substrate_metrics, print_soak_summary, save_soak_results,
+use crate::{
+    orchestrator::TestEnvironment,
+    reporter::{SoakSummaryData, get_substrate_metrics, print_soak_summary, save_soak_results},
 };
 
 #[allow(dead_code)]
@@ -70,11 +79,11 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
     )?;
 
     let app_identity = Identity::generate().unwrap();
-    let app_service_id = syneroym_identity::substrate::derive_did_key(&app_identity.public_key());
+    let app_service_id = substrate::derive_did_key(&app_identity.public_key());
 
     let registry_url = "http://127.0.0.1:7961".to_string();
     let mut orchestrator_client =
-        syneroym_sdk::SyneroymClient::new(env.substrate_did.clone(), registry_url.clone());
+        SyneroymClient::new(env.substrate_did.clone(), registry_url.clone());
     orchestrator_client.wait_for_ready(Duration::from_secs(10)).await?;
 
     // Deploy primary WASM Greeter service
@@ -82,14 +91,14 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
     orchestrator_client
         .deploy_wasm(
             app_service_id.clone(),
-            vec![test_constants::GREETER_INTERFACE_NAME.to_string()],
+            vec![GREETER_INTERFACE_NAME.to_string()],
             wasm_bytes.clone(),
             None,
         )
         .await?;
 
     // Register in Registry
-    let http_client = reqwest::Client::new();
+    let http_client = Client::new();
     let substrate_info = orchestrator_client.lookup().await?;
     let mechanisms = substrate_info.info.mechanisms;
 
@@ -111,12 +120,11 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
     assert!(res.status().is_success());
 
     // Connect Primary Client to the service
-    let mut app_client =
-        syneroym_sdk::SyneroymClient::new(app_service_id.clone(), registry_url.clone());
+    let mut app_client = SyneroymClient::new(app_service_id.clone(), registry_url.clone());
     app_client.connect().await?;
 
     let shared_client = Arc::new(Mutex::new(app_client));
-    let interface_name = test_constants::GREETER_INTERFACE_NAME;
+    let interface_name = GREETER_INTERFACE_NAME;
     let method_name = "greet";
 
     // Grab initial baseline metrics
@@ -156,13 +164,13 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
 
     // --- Start Resource Sampling Task ---
     let resource_samples = Arc::new(Mutex::new(Vec::<ResourceSample>::new()));
-    let stop_sampling = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop_sampling = Arc::new(AtomicBool::new(false));
 
     let samples_clone = Arc::clone(&resource_samples);
     let stop_clone = Arc::clone(&stop_sampling);
     let sampler_handle = tokio::spawn(async move {
         let start_time = Instant::now();
-        while !stop_clone.load(std::sync::atomic::Ordering::Relaxed) {
+        while !stop_clone.load(Ordering::Relaxed) {
             if let Ok(m) = get_substrate_metrics().await
                 && let Some(gauges) = m.get("gauges")
             {
@@ -207,9 +215,9 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
     });
 
     // --- WORKLOAD A: Sustained WASM RPC Load ---
-    let rpc_requests = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let rpc_errors = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let stop_workloads = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let rpc_requests = Arc::new(AtomicU64::new(0));
+    let rpc_errors = Arc::new(AtomicU64::new(0));
+    let stop_workloads = Arc::new(AtomicBool::new(false));
 
     let rpc_req_clone = Arc::clone(&rpc_requests);
     let rpc_err_clone = Arc::clone(&rpc_errors);
@@ -217,24 +225,24 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
     let client_clone = Arc::clone(&shared_client);
 
     let workload_a_handle = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_millis(100));
-        while !stop_workloads_clone.load(std::sync::atomic::Ordering::Relaxed) {
+        let mut interval = time::interval(Duration::from_millis(100));
+        while !stop_workloads_clone.load(Ordering::Relaxed) {
             interval.tick().await;
             let client = client_clone.lock().await;
-            rpc_req_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            rpc_req_clone.fetch_add(1, Ordering::Relaxed);
             if client
                 .request(interface_name, method_name, json!({ "name": "soak-tester" }))
                 .await
                 .is_err()
             {
-                rpc_err_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                rpc_err_clone.fetch_add(1, Ordering::Relaxed);
             }
         }
     });
 
     // --- WORKLOAD B: Deploy Churn ---
-    let deploy_cycles = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let deploy_errors = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let deploy_cycles = Arc::new(AtomicU64::new(0));
+    let deploy_errors = Arc::new(AtomicU64::new(0));
 
     let dep_cycles_clone = Arc::clone(&deploy_cycles);
     let dep_err_clone = Arc::clone(&deploy_errors);
@@ -248,38 +256,35 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
 
     let workload_b_handle = tokio::spawn(async move {
         let mut cycle = 0;
-        let http_client = reqwest::Client::new();
-        while !stop_workloads_clone2.load(std::sync::atomic::Ordering::Relaxed) {
+        let http_client = Client::new();
+        while !stop_workloads_clone2.load(Ordering::Relaxed) {
             sleep(Duration::from_secs(deploy_interval_secs)).await;
-            if stop_workloads_clone2.load(std::sync::atomic::Ordering::Relaxed) {
+            if stop_workloads_clone2.load(Ordering::Relaxed) {
                 break;
             }
             cycle += 1;
-            dep_cycles_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            dep_cycles_clone.fetch_add(1, Ordering::Relaxed);
 
             let churn_identity = Identity::generate().unwrap();
-            let unique_service_id =
-                syneroym_identity::substrate::derive_did_key(&churn_identity.public_key());
+            let unique_service_id = substrate::derive_did_key(&churn_identity.public_key());
             info!("Deploy Churn Cycle {}: Deploying {}", cycle, unique_service_id);
 
-            let mut orchestrator_client = syneroym_sdk::SyneroymClient::new(
-                substrate_did_clone.clone(),
-                registry_url_clone.clone(),
-            );
+            let mut orchestrator_client =
+                SyneroymClient::new(substrate_did_clone.clone(), registry_url_clone.clone());
 
             if let Err(e) = orchestrator_client.connect().await {
                 warn!(
                     "Deploy Churn Cycle {} failed to connect orchestrator client: {:?}",
                     cycle, e
                 );
-                dep_err_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                dep_err_clone.fetch_add(1, Ordering::Relaxed);
                 continue;
             }
 
             let deploy_result = orchestrator_client
                 .deploy_wasm(
                     unique_service_id.clone(),
-                    vec![test_constants::GREETER_INTERFACE_NAME.to_string()],
+                    vec![GREETER_INTERFACE_NAME.to_string()],
                     wasm_bytes_clone.clone(),
                     None,
                 )
@@ -310,27 +315,25 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
                             "Deploy Churn Cycle {} failed to register unique service in registry",
                             cycle
                         );
-                        dep_err_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        dep_err_clone.fetch_add(1, Ordering::Relaxed);
                         let _ = orchestrator_client.undeploy(unique_service_id.clone()).await;
                         let _ = orchestrator_client.shutdown().await;
                         continue;
                     }
 
                     // Try one verify request
-                    let mut temp_client = syneroym_sdk::SyneroymClient::new(
-                        unique_service_id.clone(),
-                        registry_url_clone.clone(),
-                    );
+                    let mut temp_client =
+                        SyneroymClient::new(unique_service_id.clone(), registry_url_clone.clone());
                     if let Err(e) = temp_client.connect().await {
                         warn!(
                             "Deploy Churn verify connection failed for {}: {:?}",
                             unique_service_id, e
                         );
-                        dep_err_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        dep_err_clone.fetch_add(1, Ordering::Relaxed);
                     } else {
                         if let Err(e) = temp_client
                             .request(
-                                test_constants::GREETER_INTERFACE_NAME,
+                                GREETER_INTERFACE_NAME,
                                 "greet",
                                 json!({ "name": "soak-verify" }),
                             )
@@ -340,7 +343,7 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
                                 "Deploy Churn verify request failed for {}: {:?}",
                                 unique_service_id, e
                             );
-                            dep_err_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            dep_err_clone.fetch_add(1, Ordering::Relaxed);
                         }
                         let _ = temp_client.shutdown().await;
                     }
@@ -358,12 +361,12 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
                             "Deploy Churn Cycle {} failed to undeploy WASM service {}: {:?}",
                             cycle, unique_service_id, e
                         );
-                        dep_err_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        dep_err_clone.fetch_add(1, Ordering::Relaxed);
                     }
                 }
                 Err(e) => {
                     warn!("Deploy Churn cycle failed to deploy: {:?}", e);
-                    dep_err_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    dep_err_clone.fetch_add(1, Ordering::Relaxed);
                 }
             }
 
@@ -372,8 +375,8 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
     });
 
     // --- WORKLOAD C: Connection Churn ---
-    let conn_cycles = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let conn_errors = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let conn_cycles = Arc::new(AtomicU64::new(0));
+    let conn_errors = Arc::new(AtomicU64::new(0));
 
     let conn_cycles_clone = Arc::clone(&conn_cycles);
     let conn_err_clone = Arc::clone(&conn_errors);
@@ -385,41 +388,35 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
 
     let workload_c_handle = tokio::spawn(async move {
         let mut cycle = 0;
-        while !stop_workloads_clone3.load(std::sync::atomic::Ordering::Relaxed) {
+        while !stop_workloads_clone3.load(Ordering::Relaxed) {
             sleep(Duration::from_secs(conn_interval_secs)).await;
-            if stop_workloads_clone3.load(std::sync::atomic::Ordering::Relaxed) {
+            if stop_workloads_clone3.load(Ordering::Relaxed) {
                 break;
             }
             cycle += 1;
-            conn_cycles_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            conn_cycles_clone.fetch_add(1, Ordering::Relaxed);
 
-            let mut churn_client = syneroym_sdk::SyneroymClient::new(
-                app_service_id_clone.clone(),
-                registry_url_clone2.clone(),
-            );
+            let mut churn_client =
+                SyneroymClient::new(app_service_id_clone.clone(), registry_url_clone2.clone());
             if let Err(e) = churn_client.connect().await {
                 warn!("Connection Churn cycle {} connect failed: {:?}", cycle, e);
-                conn_err_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                conn_err_clone.fetch_add(1, Ordering::Relaxed);
                 continue;
             }
 
             match churn_client
-                .request(
-                    test_constants::GREETER_INTERFACE_NAME,
-                    "greet",
-                    json!({ "name": "soak-churn" }),
-                )
+                .request(GREETER_INTERFACE_NAME, "greet", json!({ "name": "soak-churn" }))
                 .await
             {
                 Ok(_) => {
                     if let Err(e) = churn_client.shutdown().await {
                         warn!("Connection Churn cycle {} shutdown failed: {:?}", cycle, e);
-                        conn_err_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        conn_err_clone.fetch_add(1, Ordering::Relaxed);
                     }
                 }
                 Err(e) => {
                     warn!("Connection Churn cycle {} request failed: {:?}", cycle, e);
-                    conn_err_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    conn_err_clone.fetch_add(1, Ordering::Relaxed);
                     let _ = churn_client.shutdown().await;
                 }
             }
@@ -432,8 +429,8 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
 
     // --- Tear down workloads and sampler ---
     info!("Sustained testing duration complete. Stopping workloads...");
-    stop_workloads.store(true, std::sync::atomic::Ordering::Relaxed);
-    stop_sampling.store(true, std::sync::atomic::Ordering::Relaxed);
+    stop_workloads.store(true, Ordering::Relaxed);
+    stop_sampling.store(true, Ordering::Relaxed);
 
     let _ = tokio::join!(workload_a_handle, workload_b_handle, workload_c_handle, sampler_handle);
 
@@ -529,8 +526,8 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
     let conn_stable = ending_conns <= baseline_conns + 2;
 
     // Heuristic 5: Component Cache Leak Detection
-    let successfully_deployed = deploy_cycles.load(std::sync::atomic::Ordering::Relaxed)
-        - deploy_errors.load(std::sync::atomic::Ordering::Relaxed);
+    let successfully_deployed =
+        deploy_cycles.load(Ordering::Relaxed) - deploy_errors.load(Ordering::Relaxed);
 
     // Expected cache = baseline (likely 1 or similar) + successfully churn-deployed
     let cache_expected = baseline_cache + successfully_deployed;
@@ -571,14 +568,13 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
 
     let summary_data = SoakSummaryData {
         duration_secs,
-        rpc_requests: rpc_requests.load(std::sync::atomic::Ordering::Relaxed),
-        rpc_errors: rpc_errors.load(std::sync::atomic::Ordering::Relaxed),
-        rpc_throughput: rpc_requests.load(std::sync::atomic::Ordering::Relaxed) as f64
-            / duration_secs as f64,
-        deploy_cycles: deploy_cycles.load(std::sync::atomic::Ordering::Relaxed),
-        deploy_errors: deploy_errors.load(std::sync::atomic::Ordering::Relaxed),
-        conn_cycles: conn_cycles.load(std::sync::atomic::Ordering::Relaxed),
-        conn_errors: conn_errors.load(std::sync::atomic::Ordering::Relaxed),
+        rpc_requests: rpc_requests.load(Ordering::Relaxed),
+        rpc_errors: rpc_errors.load(Ordering::Relaxed),
+        rpc_throughput: rpc_requests.load(Ordering::Relaxed) as f64 / duration_secs as f64,
+        deploy_cycles: deploy_cycles.load(Ordering::Relaxed),
+        deploy_errors: deploy_errors.load(Ordering::Relaxed),
+        conn_cycles: conn_cycles.load(Ordering::Relaxed),
+        conn_errors: conn_errors.load(Ordering::Relaxed),
         rss_baseline_mb: baseline_rss,
         rss_peak_mb: rss_peak,
         rss_end_mb: ending_rss,

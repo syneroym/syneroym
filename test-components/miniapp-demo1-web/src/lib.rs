@@ -3,6 +3,15 @@
 //!
 //! Runs a mock sandboxed client library exposing basic network interfaces.
 
+use std::{
+    fs,
+    future::Future,
+    io::Cursor,
+    net::SocketAddr,
+    path::Path as StdPath,
+    sync::{Arc, Mutex},
+};
+
 use axum::{
     Router,
     extract::{
@@ -14,13 +23,25 @@ use axum::{
     response::{Html, IntoResponse, Response},
     routing::{get, post},
 };
+use broadcast::Sender;
+use chrono::Utc;
 use clap::Parser;
+use header::CONTENT_TYPE;
+use hyper::{Request as HyperRequest, body::Incoming, service};
+use hyper_util::server::conn::auto::Builder;
 use rusqlite::{Connection, params};
 use rust_embed::Embed;
+use rustls::ServerConfig;
+use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use serde::{Deserialize, Serialize};
-use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
-use tokio::sync::broadcast;
+use tokio::{
+    fs as tokio_fs,
+    net::TcpListener,
+    sync::{broadcast, mpsc},
+    task,
+};
+use tokio_rustls::TlsAcceptor;
+use tracing_subscriber::fmt;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -50,7 +71,7 @@ struct AppState {
     // We use std::sync::Mutex because we are inside spawn_blocking mostly,
     // and rusqlite is blocking.
     conn: Arc<Mutex<Connection>>,
-    tx: broadcast::Sender<String>,
+    tx: Sender<String>,
 }
 
 #[derive(Embed)]
@@ -85,7 +106,7 @@ struct Comment {
 
 async fn get_recent_comments(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let state = state.clone();
-    let result = tokio::task::spawn_blocking(move || {
+    let result = task::spawn_blocking(move || {
         let conn = state.conn.lock().unwrap();
         let mut stmt = conn
             .prepare("SELECT id, text FROM comments ORDER BY id DESC LIMIT 5")
@@ -124,7 +145,7 @@ async fn save_comment(
     let text = payload.text.clone();
 
     // Offload blocking DB operation to a thread pool
-    let result = tokio::task::spawn_blocking(move || {
+    let result = task::spawn_blocking(move || {
         let conn = state_for_db.conn.lock().unwrap();
         conn.execute("INSERT INTO comments (text) VALUES (?)", params![text])
     })
@@ -132,7 +153,7 @@ async fn save_comment(
 
     match result {
         Ok(Ok(_)) => {
-            let _ = state.tx.send(chrono::Utc::now().to_rfc3339());
+            let _ = state.tx.send(Utc::now().to_rfc3339());
             StatusCode::CREATED
         }
         Ok(Err(e)) => {
@@ -155,7 +176,7 @@ struct FileInfo {
 async fn list_files(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let mut files = Vec::new();
     // Ensure directory exists
-    if let Ok(mut entries) = tokio::fs::read_dir(&state.data_dir).await {
+    if let Ok(mut entries) = tokio_fs::read_dir(&state.data_dir).await {
         while let Ok(Some(entry)) = entries.next_entry().await {
             if let Ok(metadata) = entry.metadata().await
                 && metadata.is_file()
@@ -184,8 +205,8 @@ async fn upload_file(
             }
 
             if let Ok(data) = field.bytes().await {
-                let file_path = std::path::Path::new(&state.data_dir).join(&file_name);
-                if let Err(e) = tokio::fs::write(&file_path, data).await {
+                let file_path = StdPath::new(&state.data_dir).join(&file_name);
+                if let Err(e) = tokio_fs::write(&file_path, data).await {
                     eprintln!("Failed to write file: {e}");
                     return StatusCode::INTERNAL_SERVER_ERROR;
                 }
@@ -204,12 +225,12 @@ async fn download_file(
         return (StatusCode::BAD_REQUEST, "Invalid filename").into_response();
     }
 
-    let file_path = std::path::Path::new(&state.data_dir).join(&filename);
+    let file_path = StdPath::new(&state.data_dir).join(&filename);
 
-    match tokio::fs::read(&file_path).await {
+    match tokio_fs::read(&file_path).await {
         Ok(file) => {
             let mime = mime_guess::from_path(&filename).first_or_octet_stream();
-            ([(header::CONTENT_TYPE, mime.as_ref())], file).into_response()
+            ([(CONTENT_TYPE, mime.as_ref())], file).into_response()
         }
         Err(_) => (StatusCode::NOT_FOUND, "File not found").into_response(),
     }
@@ -272,7 +293,7 @@ async fn static_handler(uri: Uri) -> impl IntoResponse {
     match Assets::get(path) {
         Some(content) => {
             let mime = mime_guess::from_path(path).first_or_octet_stream();
-            ([(header::CONTENT_TYPE, mime.as_ref())], content.data).into_response()
+            ([(CONTENT_TYPE, mime.as_ref())], content.data).into_response()
         }
         None => (StatusCode::NOT_FOUND, "404 Not Found").into_response(),
     }
@@ -290,11 +311,11 @@ async fn print_request_log(req: Request, next: Next) -> Response {
 use tracing::{debug, info};
 
 pub async fn real_main() {
-    tracing_subscriber::fmt::init();
+    fmt::init();
     let args = Args::parse();
     let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
 
-    let (_tx, mut rx) = tokio::sync::mpsc::channel::<()>(1);
+    let (_tx, mut rx) = mpsc::channel::<()>(1);
     run_server(args, addr, async move {
         let _ = rx.recv().await;
     })
@@ -305,9 +326,9 @@ pub async fn real_main() {
 pub async fn run_server(
     args: Args,
     addr: SocketAddr,
-    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+    shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    std::fs::create_dir_all(&args.data_dir)?;
+    fs::create_dir_all(&args.data_dir)?;
     let db_path = std::path::Path::new(&args.data_dir).join("comments.db");
     let conn = Connection::open(&db_path)?;
 
@@ -336,35 +357,34 @@ pub async fn run_server(
         .with_state(state);
 
     info!("listening on http://{}", addr);
-    let http_listener = tokio::net::TcpListener::bind(addr).await?;
+    let http_listener = TcpListener::bind(addr).await?;
 
     // HTTPS Setup
     let https_addr = SocketAddr::from(([0, 0, 0, 0], args.https_port));
     info!("listening on https://{}", https_addr);
-    let https_listener = tokio::net::TcpListener::bind(https_addr).await?;
+    let https_listener = TcpListener::bind(https_addr).await?;
 
     let cert_pem = include_str!("test_cert.pem");
     let key_pem = include_str!("test_key.pem");
 
-    let mut cert_reader = std::io::Cursor::new(cert_pem);
-    let mut key_reader = std::io::Cursor::new(key_pem);
+    let mut cert_reader = Cursor::new(cert_pem);
+    let mut key_reader = Cursor::new(key_pem);
 
     use rustls_pki_types::pem::PemObject;
 
-    let certs: Vec<rustls_pki_types::CertificateDer> =
-        rustls_pki_types::CertificateDer::pem_reader_iter(&mut cert_reader)
-            .collect::<Result<Vec<_>, _>>()?;
-    let key = rustls_pki_types::PrivateKeyDer::from_pem_reader(&mut key_reader)
+    let certs: Vec<CertificateDer> =
+        CertificateDer::pem_reader_iter(&mut cert_reader).collect::<Result<Vec<_>, _>>()?;
+    let key = PrivateKeyDer::from_pem_reader(&mut key_reader)
         .map_err(|e| format!("no private key found in test_key.pem: {e}"))?;
 
-    let tls_config = rustls::ServerConfig::builder()
+    let tls_config = ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(certs, key)
         .map_err(|e| format!("invalid certificate: {e}"))?;
 
-    let tls_acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(tls_config));
+    let tls_acceptor = TlsAcceptor::from(Arc::new(tls_config));
 
-    let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+    let (shutdown_tx, _) = broadcast::channel::<()>(1);
     let mut http_shutdown_rx = shutdown_tx.subscribe();
     let mut https_shutdown_rx = shutdown_tx.subscribe();
 
@@ -402,11 +422,11 @@ pub async fn run_server(
                 };
 
                 let io = TokioIo::new(tls_stream);
-                let hyper_service = hyper::service::service_fn(
-                    move |request: hyper::Request<hyper::body::Incoming>| app.clone().call(request),
-                );
+                let hyper_service = service::service_fn(move |request: HyperRequest<Incoming>| {
+                    app.clone().call(request)
+                });
 
-                if let Err(err) = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new())
+                if let Err(err) = Builder::new(TokioExecutor::new())
                     .serve_connection_with_upgrades(io, hyper_service)
                     .await
                 {

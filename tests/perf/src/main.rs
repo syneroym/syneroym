@@ -1,3 +1,5 @@
+use scenarios::{concurrency, soak, tcp_proxy_latency, wasm_latency};
+use tracing_subscriber::fmt;
 pub mod orchestrator;
 pub mod reporter;
 pub mod scenarios;
@@ -28,22 +30,22 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+    fmt::init();
     let cli = Cli::parse();
 
     match cli.command {
         Commands::Latency => {
             println!("Running Phase 2: Latency Overhead Tests");
-            scenarios::tcp_proxy_latency::run_scenario().await?;
-            scenarios::wasm_latency::run_scenario().await?;
+            tcp_proxy_latency::run_scenario().await?;
+            wasm_latency::run_scenario().await?;
         }
         Commands::Concurrency => {
             println!("Running Phase 3: Concurrency & Resource Profiling Tests");
-            scenarios::concurrency::run_scenario().await?;
+            concurrency::run_scenario().await?;
         }
         Commands::Soak { duration } => {
             println!("Running Phase 4: Soak / Endurance Tests (duration: {}s)", duration);
-            scenarios::soak::run_scenario(duration).await?;
+            soak::run_scenario(duration).await?;
         }
     }
 

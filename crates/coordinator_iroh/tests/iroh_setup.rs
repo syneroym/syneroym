@@ -16,14 +16,15 @@
 //!     cargo run --example echo --features=examples
 
 use iroh::{
-    Endpoint, EndpointAddr,
+    Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl,
     endpoint::Connection,
     protocol::{AcceptError, ProtocolHandler, Router},
 };
 use n0_error::{Result, StdResultExt};
 use syneroym_coordinator_iroh::CoordinatorIroh;
-use syneroym_core::config::LogTarget;
-use syneroym_core::config::SubstrateConfig;
+use syneroym_core::config::{LogTarget, SubstrateConfig};
+use tokio::io;
+use tracing_subscriber::fmt;
 
 /// Each protocol is identified by its ALPN string.
 ///
@@ -37,7 +38,7 @@ const IROH_RELAY_URL: &str = "http://localhost:3340";
 #[tokio::test]
 #[ignore = "not a required test, just a handy iroh sample for small experiments"]
 async fn test_echo() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+    fmt::init();
 
     use syneroym_core::config::{CoordinatorIrohConfig, CoordinatorRole};
 
@@ -100,14 +101,14 @@ async fn test_echo() -> anyhow::Result<()> {
 }
 
 async fn connect_side(addr: EndpointAddr) -> Result<()> {
-    let ep_bldr = iroh::Endpoint::empty_builder().relay_mode(iroh::RelayMode::Custom(
-        iroh::RelayMap::from(IROH_RELAY_URL.to_string().parse::<iroh::RelayUrl>().unwrap()),
-    ));
+    let ep_bldr = Endpoint::empty_builder().relay_mode(RelayMode::Custom(RelayMap::from(
+        IROH_RELAY_URL.to_string().parse::<RelayUrl>().unwrap(),
+    )));
 
     let endpoint = ep_bldr.bind().await.expect("Failed to bind iroh endpoint");
     // let endpoint = Endpoint::bind(presets::N0).await?;
     let endpoint_addr = EndpointAddr::new(addr.id)
-        .with_relay_url(IROH_RELAY_URL.to_string().parse::<iroh::RelayUrl>().unwrap());
+        .with_relay_url(IROH_RELAY_URL.to_string().parse::<RelayUrl>().unwrap());
     println!("Connected to endpoint: {endpoint_addr:?}");
 
     // Open a connection to the accepting endpoint
@@ -141,9 +142,9 @@ async fn connect_side(addr: EndpointAddr) -> Result<()> {
 }
 
 async fn start_accept_side() -> Result<Router> {
-    let ep_bldr = iroh::Endpoint::empty_builder().relay_mode(iroh::RelayMode::Custom(
-        iroh::RelayMap::from(IROH_RELAY_URL.to_string().parse::<iroh::RelayUrl>().unwrap()),
-    ));
+    let ep_bldr = Endpoint::empty_builder().relay_mode(RelayMode::Custom(RelayMap::from(
+        IROH_RELAY_URL.to_string().parse::<RelayUrl>().unwrap(),
+    )));
 
     let endpoint: Endpoint = ep_bldr.bind().await.expect("Failed to bind iroh endpoint");
 
@@ -174,7 +175,7 @@ impl ProtocolHandler for Echo {
 
         // Echo any bytes received back directly.
         // This will keep copying until the sender signals the end of data on the stream.
-        let bytes_sent = tokio::io::copy(&mut recv, &mut send).await?;
+        let bytes_sent = io::copy(&mut recv, &mut send).await?;
         println!("Copied over {bytes_sent} byte(s)");
 
         // By calling `finish` on the send stream we signal that we will not send anything

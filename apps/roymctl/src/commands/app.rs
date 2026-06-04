@@ -2,12 +2,16 @@
 //!
 //! Commands to package, deploy, start, list, and terminate sandboxed guest apps.
 
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    time::Duration,
+};
+
 use clap::Subcommand;
-use std::fs;
-use std::path::PathBuf;
-use syneroym_core::dht_registry::EndpointInfo;
-use syneroym_core::dht_registry::EndpointType;
+use syneroym_core::dht_registry::{EndpointInfo, EndpointType};
 use syneroym_identity::Identity;
+use syneroym_sdk::SyneroymClient;
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum AppCommands {
@@ -57,10 +61,10 @@ pub async fn handle(
     command: &AppCommands,
     api_url: &str,
     substrate_did: String,
-    dir: &std::path::Path,
+    dir: &Path,
 ) -> anyhow::Result<()> {
-    let mut client = syneroym_sdk::SyneroymClient::new(substrate_did.clone(), api_url.to_string());
-    client.wait_for_ready(std::time::Duration::from_secs(5)).await?;
+    let mut client = SyneroymClient::new(substrate_did.clone(), api_url.to_string());
+    client.wait_for_ready(Duration::from_secs(5)).await?;
 
     match command {
         AppCommands::Deploy { app_id, interfaces, wasm, tcp, identity, nickname } => {
@@ -138,7 +142,7 @@ fn get_host_port_from_tcp_addr(tcp_addr: &str) -> anyhow::Result<(String, u16)> 
     Ok((host, port))
 }
 
-fn load_identity(dir: &std::path::Path, name: &str) -> anyhow::Result<Identity> {
+fn load_identity(dir: &Path, name: &str) -> anyhow::Result<Identity> {
     let key_path = dir.join("identities").join(format!("{name}.key"));
     if !key_path.exists() {
         anyhow::bail!("Identity '{}' not found at {}", name, key_path.display());

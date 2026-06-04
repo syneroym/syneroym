@@ -1,13 +1,18 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use std::fs;
-use syneroym_app_sandbox::conversions::json_to_wasm_params;
-use syneroym_app_sandbox::{AppSandboxEngine, HostState};
+
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use syneroym_app_sandbox::{AppSandboxEngine, HostState, conversions::json_to_wasm_params};
 use syneroym_core::test_constants;
-use wasmtime::component::Component;
+use test_constants::GREETER_INTERFACE_NAME;
+use tokio::runtime::Builder;
+use wasmtime::{
+    Store,
+    component::{Component, Linker, types::ComponentItem},
+};
 
 fn bench_wasm_engine(c: &mut Criterion) {
-    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
 
     let component_path = test_constants::greeter_wasm_path();
     let wasm_bytes = match fs::read(&component_path) {
@@ -22,15 +27,14 @@ fn bench_wasm_engine(c: &mut Criterion) {
     };
 
     let engine = AppSandboxEngine::build_wasm_engine(None, None).unwrap();
-    let linker: wasmtime::component::Linker<HostState> =
-        AppSandboxEngine::build_wasm_linker(&engine).unwrap();
+    let linker: Linker<HostState> = AppSandboxEngine::build_wasm_linker(&engine).unwrap();
     let component = Component::new(&engine, &wasm_bytes).unwrap();
 
     // Benchmark 1: Wasm Store & HostState Creation
     c.bench_function("wasm_store_creation", |b| {
         b.iter(|| {
             let host_state = HostState::new(black_box("test_component".to_string()));
-            let _store = wasmtime::Store::new(&engine, host_state);
+            let _store = Store::new(&engine, host_state);
         });
     });
 
@@ -38,17 +42,17 @@ fn bench_wasm_engine(c: &mut Criterion) {
     c.bench_function("wasm_cached_instantiation", |b| {
         b.to_async(&runtime).iter(|| async {
             let host_state = HostState::new("test_component".to_string());
-            let mut store: wasmtime::Store<HostState> = wasmtime::Store::new(&engine, host_state);
+            let mut store: Store<HostState> = Store::new(&engine, host_state);
             let _instance = linker.instantiate_async(&mut store, &component).await.unwrap();
         });
     });
 
     // Extract type info for JSON parameter conversion benchmark
     let host_state = HostState::new("test_component".to_string());
-    let mut store: wasmtime::Store<HostState> = wasmtime::Store::new(&engine, host_state);
+    let mut store: Store<HostState> = Store::new(&engine, host_state);
     let instance = runtime.block_on(linker.instantiate_async(&mut store, &component)).unwrap();
 
-    let interface_name = test_constants::GREETER_INTERFACE_NAME;
+    let interface_name = GREETER_INTERFACE_NAME;
     let method_name = "greet";
     let (_func, _results_len, item) =
         AppSandboxEngine::get_wasm_func(&mut store, &instance, interface_name, method_name)
@@ -60,7 +64,7 @@ fn bench_wasm_engine(c: &mut Criterion) {
     c.bench_function("json_to_wasm_params", |b| {
         b.iter(|| {
             let params_iter = match &item {
-                wasmtime::component::types::ComponentItem::ComponentFunc(f) => f.params(),
+                ComponentItem::ComponentFunc(f) => f.params(),
                 _ => panic!("Expected a function item"),
             };
             let _ = json_to_wasm_params(params_iter, black_box(json_params.clone())).unwrap();

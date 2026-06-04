@@ -3,14 +3,15 @@
 //! Initializes, manages, and orchestrates transport coordinators (like Iroh
 //! and WebRTC) based on global Substrate configurations.
 
-use anyhow::Result;
-use syneroym_core::config::SubstrateConfig;
-use tracing::info;
+use std::future;
 
+use anyhow::Result;
 #[cfg(feature = "iroh")]
 use syneroym_coordinator_iroh::CoordinatorIroh;
 #[cfg(feature = "webrtc")]
 use syneroym_coordinator_webrtc::CoordinatorWebRtc;
+use syneroym_core::config::SubstrateConfig;
+use tracing::info;
 
 #[derive(Debug)]
 pub struct EcosystemCoordinator {
@@ -64,7 +65,7 @@ impl EcosystemCoordinator {
         }
 
         if is_empty {
-            std::future::pending::<()>().await;
+            future::pending::<()>().await;
             return Ok(());
         }
 

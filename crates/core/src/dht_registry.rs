@@ -3,8 +3,17 @@
 //! Provides structures and client methods for registering, querying, and
 //! resolving service/substrate endpoints in the Syneroym community registry.
 
+use bytes::Bytes;
+use pkarr::{
+    Client, Keypair, PublicKey, SignedPacket, Timestamp,
+    dns::{
+        CLASS, Name, ResourceRecord,
+        rdata::{RData, TXT},
+    },
+};
+use reqwest::Client as ReqwestClient;
 use serde::{Deserialize, Serialize};
-use syneroym_identity::Identity;
+use syneroym_identity::{Identity, substrate};
 
 /// Default time-to-live for registry entries, aligned with BEP 0044 DHT expiry defaults.
 pub const DEFAULT_REGISTRY_TTL_SECS: u64 = 7200; // 2 hours
@@ -55,26 +64,21 @@ pub struct EndpointInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SignedEndpointInfo {
     pub info: EndpointInfo,
-    pub pkarr_packet_hex: String, // Hex encoded pkarr::SignedPacket bytes
+    pub pkarr_packet_hex: String, // Hex encoded SignedPacket bytes
 }
 
 impl EndpointInfo {
     pub fn sign(self, identity: &Identity) -> Result<SignedEndpointInfo, anyhow::Error> {
-        let keypair = pkarr::Keypair::from_secret_key(&identity.to_bytes());
+        let keypair = Keypair::from_secret_key(&identity.to_bytes());
         let json_str = serde_json::to_string(&self)?;
-        let txt_rdata = pkarr::dns::rdata::TXT::try_from(json_str.as_str())
+        let txt_rdata = TXT::try_from(json_str.as_str())
             .map_err(|e| anyhow::anyhow!("Failed to construct TXT record: {e}"))?;
-        let name = pkarr::dns::Name::new(PKARR_DNS_NAME)
+        let name = Name::new(PKARR_DNS_NAME)
             .map_err(|e| anyhow::anyhow!("Failed to create DNS name: {e}"))?;
 
-        let records = vec![pkarr::dns::ResourceRecord::new(
-            name,
-            pkarr::dns::CLASS::IN,
-            PKARR_TTL,
-            pkarr::dns::rdata::RData::TXT(txt_rdata),
-        )];
-        let timestamp = pkarr::Timestamp::now();
-        let signed_packet = pkarr::SignedPacket::new(&keypair, &records, timestamp)
+        let records = vec![ResourceRecord::new(name, CLASS::IN, PKARR_TTL, RData::TXT(txt_rdata))];
+        let timestamp = Timestamp::now();
+        let signed_packet = SignedPacket::new(&keypair, &records, timestamp)
             .map_err(|e| anyhow::anyhow!("Failed to sign pkarr packet: {e}"))?;
         let pkarr_packet_hex = hex::encode(signed_packet.to_relay_payload());
         Ok(SignedEndpointInfo { info: self, pkarr_packet_hex })
@@ -84,19 +88,18 @@ impl EndpointInfo {
 impl SignedEndpointInfo {
     /// Verifies the pkarr packet using the public key embedded in its service_id.
     pub fn verify(&self) -> Result<(), anyhow::Error> {
-        let pubkey = syneroym_identity::substrate::resolve_did_key(&self.info.service_id)
+        let pubkey = substrate::resolve_did_key(&self.info.service_id)
             .map_err(|e| anyhow::anyhow!("Failed to parse public key from service_id DID: {e}"))?;
 
-        let expected_pkarr_pubkey = pkarr::PublicKey::try_from(pubkey.as_bytes())
+        let expected_pkarr_pubkey = PublicKey::try_from(pubkey.as_bytes())
             .map_err(|e| anyhow::anyhow!("Invalid ed25519 pubkey for pkarr: {e}"))?;
 
         let packet_bytes = hex::decode(&self.pkarr_packet_hex)
             .map_err(|_| anyhow::anyhow!("Invalid hex encoding for pkarr packet"))?;
 
-        let bytes_obj = bytes::Bytes::from(packet_bytes);
-        let signed_packet =
-            pkarr::SignedPacket::from_relay_payload(&expected_pkarr_pubkey, &bytes_obj)
-                .map_err(|e| anyhow::anyhow!("Invalid pkarr packet signature or structure: {e}"))?;
+        let bytes_obj = Bytes::from(packet_bytes);
+        let signed_packet = SignedPacket::from_relay_payload(&expected_pkarr_pubkey, &bytes_obj)
+            .map_err(|e| anyhow::anyhow!("Invalid pkarr packet signature or structure: {e}"))?;
 
         if signed_packet.public_key() != expected_pkarr_pubkey {
             return Err(anyhow::anyhow!("Signed packet public key does not match service_id"));
@@ -105,7 +108,7 @@ impl SignedEndpointInfo {
         // Extract the TXT record to ensure it matches the service_id
         let mut found_txt = false;
         for answer in signed_packet.resource_records(PKARR_DNS_NAME) {
-            if let pkarr::dns::rdata::RData::TXT(txt) = &answer.rdata
+            if let RData::TXT(txt) = &answer.rdata
                 && let Ok(full_string) = String::try_from(txt.clone())
                 && let Ok(parsed_info) = serde_json::from_str::<EndpointInfo>(&full_string)
                 && parsed_info.service_id == self.info.service_id
@@ -127,13 +130,13 @@ impl SignedEndpointInfo {
 
 #[derive(Debug)]
 pub struct RegistryClient {
-    dht_client: Option<pkarr::Client>,
+    dht_client: Option<Client>,
     registry_url: Option<String>,
 }
 
 impl RegistryClient {
     pub fn new(enable_dht: bool, registry_url: Option<String>) -> Self {
-        let dht_client = if enable_dht { pkarr::Client::builder().build().ok() } else { None };
+        let dht_client = if enable_dht { Client::builder().build().ok() } else { None };
         Self { dht_client, registry_url }
     }
 
@@ -142,7 +145,7 @@ impl RegistryClient {
         let mut http_success = self.registry_url.is_none();
 
         if let Some(url) = &self.registry_url {
-            let client = reqwest::Client::new();
+            let client = ReqwestClient::new();
             let register_url = format!("{url}/register");
             tracing::debug!("Registry register: {}", register_url);
 
@@ -167,11 +170,10 @@ impl RegistryClient {
         if let Some(dht) = &self.dht_client {
             tracing::debug!("Publishing to Mainline DHT (background)");
             let packet_bytes = hex::decode(&signed_info.pkarr_packet_hex)?;
-            let bytes_obj = bytes::Bytes::from(packet_bytes);
-            let pubkey =
-                syneroym_identity::substrate::resolve_did_key(&signed_info.info.service_id)?;
-            let pkarr_pubkey = pkarr::PublicKey::try_from(pubkey.as_bytes())?;
-            let signed_packet = pkarr::SignedPacket::from_relay_payload(&pkarr_pubkey, &bytes_obj)?;
+            let bytes_obj = Bytes::from(packet_bytes);
+            let pubkey = substrate::resolve_did_key(&signed_info.info.service_id)?;
+            let pkarr_pubkey = PublicKey::try_from(pubkey.as_bytes())?;
+            let signed_packet = SignedPacket::from_relay_payload(&pkarr_pubkey, &bytes_obj)?;
 
             let dht = dht.clone();
             tokio::spawn(async move {
@@ -198,7 +200,7 @@ impl RegistryClient {
 
         // Try HTTP registry first
         if let Some(url) = &self.registry_url {
-            let client = reqwest::Client::new();
+            let client = ReqwestClient::new();
             let lookup_url = format!("{url}/lookup/{id}?resolve=false");
             tracing::debug!("Registry lookup: {}", lookup_url);
 
@@ -217,14 +219,14 @@ impl RegistryClient {
             && let Some(dht) = &self.dht_client
         {
             // Note: DHT lookups require a public key, so shorthash aliases won't work purely on DHT
-            if let Ok(pubkey) = syneroym_identity::substrate::resolve_did_key(id) {
-                if let Ok(pkarr_pubkey) = pkarr::PublicKey::try_from(pubkey.as_bytes()) {
+            if let Ok(pubkey) = substrate::resolve_did_key(id) {
+                if let Ok(pkarr_pubkey) = PublicKey::try_from(pubkey.as_bytes()) {
                     tracing::debug!("Falling back to DHT lookup for {}", id);
                     if let Some(signed_packet) = dht.resolve(&pkarr_pubkey).await {
                         // Extract the EndpointInfo
                         let mut found_info = None;
                         for answer in signed_packet.resource_records(PKARR_DNS_NAME) {
-                            if let pkarr::dns::rdata::RData::TXT(txt) = &answer.rdata
+                            if let RData::TXT(txt) = &answer.rdata
                                 && let Ok(full_string) = String::try_from(txt.clone())
                                 && let Ok(parsed_info) =
                                     serde_json::from_str::<EndpointInfo>(&full_string)

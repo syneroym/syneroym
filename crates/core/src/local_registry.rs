@@ -3,10 +3,18 @@
 //! Tracks local running/deployed micro-services (WASM, TCP, Podman, native host),
 //! enabling internal service-to-service discovery (Internal Micro-Discovery).
 
-use crate::storage::EndpointStorage;
+use std::{
+    fmt::{Debug, Formatter},
+    sync::Arc,
+};
+
 use anyhow::Result;
 use dashmap::DashMap;
-use std::sync::Arc;
+
+use crate::{
+    storage::{EndpointStorage, MockStorage},
+    util,
+};
 
 /// A deployable entity within the Substrate.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -33,8 +41,8 @@ pub struct EndpointRegistry {
     storage: Arc<dyn EndpointStorage>,
 }
 
-impl std::fmt::Debug for EndpointRegistry {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Debug for EndpointRegistry {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EndpointRegistry")
             .field("active_endpoints", &self.active_endpoints)
             .field("interface_hashes", &self.interface_hashes)
@@ -62,7 +70,7 @@ impl EndpointRegistry {
         let endpoints = self.storage.load_all().await?;
 
         for (service_id, interface_name, endpoint) in endpoints {
-            let hash = crate::util::short_hash(&interface_name);
+            let hash = util::short_hash(&interface_name);
             self.interface_hashes.insert((service_id.clone(), hash), interface_name.clone());
             self.active_endpoints.insert((service_id, interface_name), endpoint);
         }
@@ -78,7 +86,7 @@ impl EndpointRegistry {
     ) -> Result<()> {
         self.storage.save(&service_id, &interface_name, &endpoint).await?;
 
-        let hash = crate::util::short_hash(&interface_name);
+        let hash = util::short_hash(&interface_name);
         self.interface_hashes.insert((service_id.clone(), hash), interface_name.clone());
         self.active_endpoints.insert((service_id, interface_name), endpoint);
         Ok(())
@@ -130,7 +138,7 @@ impl EndpointRegistry {
     pub async fn remove(&self, service_id: &str, interface_name: &str) -> Result<()> {
         self.storage.remove(service_id, interface_name).await?;
 
-        let hash = crate::util::short_hash(interface_name);
+        let hash = util::short_hash(interface_name);
         self.interface_hashes.remove(&(service_id.to_string(), hash));
         self.active_endpoints.remove(&(service_id.to_string(), interface_name.to_string()));
         Ok(())
@@ -150,7 +158,7 @@ impl EndpointRegistry {
 
     /// Creates a mock registry with in-memory storage for testing.
     #[must_use]
-    pub fn new_mock(storage: Arc<crate::storage::MockStorage>) -> Self {
+    pub fn new_mock(storage: Arc<MockStorage>) -> Self {
         Self {
             active_endpoints: Arc::new(DashMap::new()),
             interface_hashes: Arc::new(DashMap::new()),

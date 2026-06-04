@@ -3,18 +3,24 @@
 //! Defines the primary `Identity` struct utilizing Ed25519 dalek for key generation,
 //! secure storage, signing, and DID document generation.
 
+use std::{
+    fmt::{Debug, Formatter},
+    fs,
+    path::Path,
+};
+
 use anyhow::Context;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 
-use crate::IdentityDoc;
+use crate::{IdentityDoc, substrate};
 
 /// Represents the cryptographic identity of a Syneroym node.
 pub struct Identity {
     signing_key: SigningKey,
 }
 
-impl std::fmt::Debug for Identity {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Debug for Identity {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Identity").field("public_key", &self.public_key()).finish()
     }
 }
@@ -41,9 +47,9 @@ impl Identity {
 
     /// Load an identity from a file path.
     /// Expects a 32-byte secret key file.
-    pub fn load_from_path(path: impl AsRef<std::path::Path>) -> anyhow::Result<Self> {
+    pub fn load_from_path(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         let path = path.as_ref();
-        let bytes = std::fs::read(path)
+        let bytes = fs::read(path)
             .with_context(|| format!("Failed to read identity file at {}", path.display()))?;
         let len = bytes.len();
         let bytes_array: [u8; 32] = bytes.try_into().map_err(|_| {
@@ -54,15 +60,15 @@ impl Identity {
 
     /// Save the identity to a file path.
     /// Writes the 32-byte secret key.
-    pub fn save_to_path(&self, path: impl AsRef<std::path::Path>) -> anyhow::Result<()> {
+    pub fn save_to_path(&self, path: impl AsRef<Path>) -> anyhow::Result<()> {
         let path = path.as_ref();
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).with_context(|| {
+            fs::create_dir_all(parent).with_context(|| {
                 format!("Failed to create parent directories for {}", path.display())
             })?;
         }
         let bytes = self.to_bytes();
-        std::fs::write(path, bytes)
+        fs::write(path, bytes)
             .with_context(|| format!("Failed to write identity file to {}", path.display()))?;
         Ok(())
     }
@@ -89,7 +95,7 @@ impl Identity {
     /// Sign a JSON value using RFC 8785 (JSON Canonicalization Scheme).
     /// Returns a z-base-32 encoded signature.
     pub fn sign_json(&self, value: &serde_json::Value) -> anyhow::Result<String> {
-        let canonical_value = crate::substrate::canonicalize_json_value(value);
+        let canonical_value = substrate::canonicalize_json_value(value);
         let canonical_string = serde_json::to_string(&canonical_value)?;
         let signature = self.sign(canonical_string.as_bytes());
         Ok(z32::encode(&signature.to_bytes()))
@@ -108,8 +114,9 @@ impl Identity {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serde_json::json;
+
+    use super::*;
 
     #[test]
     fn test_sign_json_deterministic() {

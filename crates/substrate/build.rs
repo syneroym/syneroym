@@ -3,9 +3,7 @@
 //! Automatically compiles or generates WIT/WASM interfaces and bindings
 //! needed for secure app sandboxing.
 
-use std::env;
-use std::path::PathBuf;
-use std::process::Command;
+use std::{env, path::PathBuf, process::Command};
 
 fn main() {
     // Only build the component if we are in a testing or dev environment

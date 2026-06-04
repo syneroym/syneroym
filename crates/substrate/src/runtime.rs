@@ -3,19 +3,33 @@
 //! Manages the lifecycle of all substrate components including the App Sandbox,
 //! Observability engine, Router, Client Gateway, and Coordinators.
 
-use std::time::Duration;
-use syneroym_core::config::SubstrateConfig;
-use syneroym_core::dht_registry::EndpointInfo;
-use syneroym_core::dht_registry::EndpointMechanism;
-use syneroym_core::dht_registry::EndpointType;
-use syneroym_core::dht_registry::HEARTBEAT_INTERVAL_SECS;
-use syneroym_core::dht_registry::RegistryClient;
-use syneroym_core::dht_registry::SignedEndpointInfo;
-use syneroym_core::local_registry::{EndpointRegistry, SubstrateEndpoint};
-use syneroym_core::storage;
+use std::{
+    collections::HashMap,
+    fmt::{Debug, Formatter},
+    future,
+    future::Future,
+    path::PathBuf,
+    time::Duration,
+};
+
+use axum::{Json, Router, routing};
+use serde::Serialize;
+use syneroym_client_gateway::ClientGateway;
+use syneroym_community_registry::EcosystemRegistry;
+use syneroym_coordinator::EcosystemCoordinator;
+use syneroym_core::{
+    config::SubstrateConfig,
+    dht_registry::{
+        EndpointInfo, EndpointMechanism, EndpointType, HEARTBEAT_INTERVAL_SECS, RegistryClient,
+        SignedEndpointInfo,
+    },
+    local_registry::{EndpointRegistry, SubstrateEndpoint},
+    storage,
+};
 use syneroym_identity::Identity;
-use syneroym_observability::ObservabilityEngine;
+use syneroym_observability::{MemoryRecorder, MetricsSnapshot, ObservabilityEngine};
 use syneroym_router::ConnectionRouter;
+use tokio::{fs, net::TcpListener, signal, time};
 use tracing::{debug, error, info, warn};
 
 use crate::identity;
@@ -23,7 +37,7 @@ use crate::identity;
 /// Runs the substrate given the consolidated configuration, using the default ctrl-c shutdown signal.
 pub async fn run(config: SubstrateConfig) -> anyhow::Result<()> {
     init_and_run_with_signal(config, async {
-        let _ = tokio::signal::ctrl_c().await;
+        let _ = signal::ctrl_c().await;
     })
     .await
 }
@@ -34,8 +48,8 @@ pub struct InitializedRuntime {
     pub connection_router: ConnectionRouter,
 }
 
-impl std::fmt::Debug for InitializedRuntime {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Debug for InitializedRuntime {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InitializedRuntime")
             .field("observability", &"ObservabilityEngine")
             .field("services", &self.services)
@@ -50,7 +64,7 @@ pub async fn init_and_run_with_signal<F>(
     shutdown_signal: F,
 ) -> anyhow::Result<()>
 where
-    F: std::future::Future<Output = ()>,
+    F: Future<Output = ()>,
 {
     let runtime = init(config.clone()).await?;
     run_with_signal(config, runtime, shutdown_signal).await
@@ -63,7 +77,7 @@ pub async fn run_with_signal<F>(
     shutdown_signal: F,
 ) -> anyhow::Result<()>
 where
-    F: std::future::Future<Output = ()>,
+    F: Future<Output = ()>,
 {
     runtime.services.run_until_shutdown(&config, &runtime.connection_router, shutdown_signal).await;
 
@@ -87,7 +101,7 @@ pub async fn init(config: SubstrateConfig) -> anyhow::Result<InitializedRuntime>
     info!(profile = %config.profile, "initializing substrate");
 
     Ok(InitializedRuntime {
-        observability: syneroym_observability::ObservabilityEngine::init(&config)?,
+        observability: ObservabilityEngine::init(&config)?,
         services: RuntimeServices::init(&config).await?,
         connection_router: setup_connection_router(&config).await?,
     })
@@ -95,15 +109,15 @@ pub async fn init(config: SubstrateConfig) -> anyhow::Result<InitializedRuntime>
 
 pub struct RuntimeServices {
     #[cfg(feature = "community_registry")]
-    community_registry: Option<syneroym_community_registry::EcosystemRegistry>,
+    community_registry: Option<EcosystemRegistry>,
     #[cfg(feature = "coordinator")]
-    coordinator: Option<syneroym_coordinator::EcosystemCoordinator>,
+    coordinator: Option<EcosystemCoordinator>,
     #[cfg(feature = "client_gateway")]
-    client_gateway: Option<syneroym_client_gateway::ClientGateway>,
+    client_gateway: Option<ClientGateway>,
 }
 
-impl std::fmt::Debug for RuntimeServices {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Debug for RuntimeServices {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let mut debug_struct = f.debug_struct("RuntimeServices");
 
         #[cfg(feature = "community_registry")]
@@ -127,19 +141,19 @@ impl RuntimeServices {
         Ok(Self {
             #[cfg(feature = "community_registry")]
             community_registry: if config.roles.community_registry.is_some() {
-                Some(syneroym_community_registry::EcosystemRegistry::init(config).await?)
+                Some(EcosystemRegistry::init(config).await?)
             } else {
                 None
             },
             #[cfg(feature = "coordinator")]
             coordinator: if config.roles.coordinator.is_some() {
-                Some(syneroym_coordinator::EcosystemCoordinator::init(config).await?)
+                Some(EcosystemCoordinator::init(config).await?)
             } else {
                 None
             },
             #[cfg(feature = "client_gateway")]
             client_gateway: if config.roles.client_gateway.is_some() {
-                Some(syneroym_client_gateway::ClientGateway::init(config).await?)
+                Some(ClientGateway::init(config).await?)
             } else {
                 None
             },
@@ -152,7 +166,7 @@ impl RuntimeServices {
         connection_router: &ConnectionRouter,
         shutdown_signal: F,
     ) where
-        F: std::future::Future<Output = ()>,
+        F: Future<Output = ()>,
     {
         #[cfg(feature = "community_registry")]
         let mut registry_fut = std::pin::pin!(async {
@@ -189,9 +203,9 @@ impl RuntimeServices {
                 && let Some(health) = &obs.health
                 && health.enabled
             {
-                let app = axum::Router::new()
-                    .route(&health.endpoint, axum::routing::get(|| async { "OK" }));
-                match tokio::net::TcpListener::bind(&health.bind_address).await {
+                let app =
+                    Router::new().route(&health.endpoint, axum::routing::get(|| async { "OK" }));
+                match TcpListener::bind(&health.bind_address).await {
                     Ok(listener) => {
                         if let Ok(addr) = listener.local_addr() {
                             info!("observability health endpoint listening on http://{}", addr);
@@ -214,22 +228,22 @@ impl RuntimeServices {
                 && let Some(metrics_cfg) = &obs.metrics
                 && metrics_cfg.enabled
             {
-                let app = axum::Router::new().route(
+                let app = Router::new().route(
                     &metrics_cfg.endpoint,
-                    axum::routing::get(|| async {
-                        if let Some(recorder) = syneroym_observability::MemoryRecorder::global() {
+                    routing::get(|| async {
+                        if let Some(recorder) = MemoryRecorder::global() {
                             let snapshot = recorder.snapshot();
-                            axum::Json(snapshot)
+                            Json(snapshot)
                         } else {
-                            axum::Json(syneroym_observability::MetricsSnapshot {
-                                counters: std::collections::HashMap::new(),
-                                gauges: std::collections::HashMap::new(),
-                                histograms: std::collections::HashMap::new(),
+                            Json(MetricsSnapshot {
+                                counters: HashMap::new(),
+                                gauges: HashMap::new(),
+                                histograms: HashMap::new(),
                             })
                         }
                     }),
                 );
-                match tokio::net::TcpListener::bind(&metrics_cfg.bind_address).await {
+                match TcpListener::bind(&metrics_cfg.bind_address).await {
                     Ok(listener) => {
                         if let Ok(addr) = listener.local_addr() {
                             info!("observability metrics endpoint listening on http://{}", addr);
@@ -287,7 +301,7 @@ impl RuntimeServices {
 }
 
 async fn pending_component() -> anyhow::Result<()> {
-    std::future::pending().await
+    future::pending().await
 }
 
 fn log_component_exit(component: &str, result: anyhow::Result<()>) {
@@ -354,7 +368,7 @@ async fn setup_router(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn publish_to_community_registry<E: serde::Serialize + Send + Sync + Clone + 'static>(
+fn publish_to_community_registry<E: Serialize + Send + Sync + Clone + 'static>(
     registry_url: Option<String>,
     enable_bep0044_dht: bool,
     service_id: String,
@@ -362,7 +376,7 @@ fn publish_to_community_registry<E: serde::Serialize + Send + Sync + Clone + 'st
     relay_url: Option<String>,
     secret_key: [u8; 32],
     nickname: Option<String>,
-    hosted_apps_dir: std::path::PathBuf,
+    hosted_apps_dir: PathBuf,
 ) {
     tokio::spawn(async move {
         let registry_client = RegistryClient::new(enable_bep0044_dht, registry_url.clone());
@@ -379,7 +393,7 @@ fn publish_to_community_registry<E: serde::Serialize + Send + Sync + Clone + 'st
                 Ok(info) => info,
                 Err(e) => {
                     warn!("Failed to build signed endpoint info: {}", e);
-                    tokio::time::sleep(Duration::from_secs(60)).await;
+                    time::sleep(Duration::from_secs(60)).await;
                     continue;
                 }
             };
@@ -389,7 +403,7 @@ fn publish_to_community_registry<E: serde::Serialize + Send + Sync + Clone + 'st
             while attempts < 30 {
                 if let Err(e) = registry_client.register(&signed_info).await {
                     warn!("Failed to register endpoint (attempt {}): {}", attempts + 1, e);
-                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    time::sleep(Duration::from_millis(500)).await;
                     attempts += 1;
                 } else {
                     success = true;
@@ -411,12 +425,12 @@ fn publish_to_community_registry<E: serde::Serialize + Send + Sync + Clone + 'st
 
             // Proxy hosted apps
             if hosted_apps_dir.exists()
-                && let Ok(mut entries) = tokio::fs::read_dir(&hosted_apps_dir).await
+                && let Ok(mut entries) = fs::read_dir(&hosted_apps_dir).await
             {
                 while let Ok(Some(entry)) = entries.next_entry().await {
                     if let Ok(file_type) = entry.file_type().await
                         && file_type.is_file()
-                        && let Ok(contents) = tokio::fs::read_to_string(entry.path()).await
+                        && let Ok(contents) = fs::read_to_string(entry.path()).await
                         && let Ok(cert) = serde_json::from_str::<SignedEndpointInfo>(&contents)
                     {
                         if let Err(e) = registry_client.register(&cert).await {
@@ -429,12 +443,12 @@ fn publish_to_community_registry<E: serde::Serialize + Send + Sync + Clone + 'st
             }
 
             // Sleep until the next heartbeat interval
-            tokio::time::sleep(Duration::from_secs(HEARTBEAT_INTERVAL_SECS)).await;
+            time::sleep(Duration::from_secs(HEARTBEAT_INTERVAL_SECS)).await;
         }
     });
 }
 
-fn build_signed_endpoint_info<E: serde::Serialize>(
+fn build_signed_endpoint_info<E: Serialize>(
     service_id: &str,
     endpoint_addr: &E,
     relay_url: Option<String>,

@@ -3,14 +3,20 @@
 //! Defines the `EndpointStorage` trait and implements `SQLite` persistence
 //! and thread-safe in-memory mock storage for the local `EndpointRegistry`.
 
-use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::{
+    fmt::{Debug, Formatter},
+    fs,
+    path::Path,
+    sync::{Arc, Mutex, MutexGuard},
+};
+
+use anyhow::Result;
+use async_trait::async_trait;
+use dashmap::DashMap;
+use rusqlite::{Connection, params};
+use tokio::task;
 
 use crate::{config::SubstrateConfig, local_registry::SubstrateEndpoint};
-use anyhow::Result;
-
-use async_trait::async_trait;
-use rusqlite::params;
 
 /// A trait abstracting stable storage for the `EndpointRegistry`.
 #[async_trait]
@@ -33,7 +39,7 @@ pub trait EndpointStorage: Send + Sync {
 pub async fn init_store(config: &SubstrateConfig) -> Result<Arc<dyn EndpointStorage>> {
     let db_path = &config.storage.db_dir;
     if !db_path.exists() {
-        std::fs::create_dir_all(db_path)?;
+        fs::create_dir_all(db_path)?;
     }
     let db_file = db_path.join("endpoints.db");
     Ok(Arc::new(SqliteEndpointStorage::new(&db_file).await?))
@@ -42,7 +48,7 @@ pub async fn init_store(config: &SubstrateConfig) -> Result<Arc<dyn EndpointStor
 /// A thread-safe in-memory storage for testing.
 #[derive(Debug)]
 pub struct MockStorage {
-    data: Arc<dashmap::DashMap<(String, String), SubstrateEndpoint>>,
+    data: Arc<DashMap<(String, String), SubstrateEndpoint>>,
 }
 
 impl Default for MockStorage {
@@ -54,7 +60,7 @@ impl Default for MockStorage {
 impl MockStorage {
     #[must_use]
     pub fn new() -> Self {
-        Self { data: Arc::new(dashmap::DashMap::new()) }
+        Self { data: Arc::new(DashMap::new()) }
     }
 }
 
@@ -129,11 +135,11 @@ impl TryFrom<(&str, String)> for SubstrateEndpoint {
 // ---------------------------------------------------------------------------
 
 pub struct SqliteEndpointStorage {
-    conn: Arc<Mutex<rusqlite::Connection>>,
+    conn: Arc<Mutex<Connection>>,
 }
 
-impl std::fmt::Debug for SqliteEndpointStorage {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Debug for SqliteEndpointStorage {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SqliteEndpointStorage").field("conn", &"rusqlite::Connection").finish()
     }
 }
@@ -142,8 +148,8 @@ impl SqliteEndpointStorage {
     /// Create a new `SqliteEndpointStorage` with the given DB path.
     pub async fn new<P: AsRef<Path>>(db_path: P) -> Result<Self> {
         let path = db_path.as_ref().to_owned();
-        let conn = tokio::task::spawn_blocking(move || -> Result<rusqlite::Connection> {
-            let conn = rusqlite::Connection::open(path)?;
+        let conn = task::spawn_blocking(move || -> Result<Connection> {
+            let conn = Connection::open(path)?;
 
             // Basic schema creation for endpoints
             conn.execute(
@@ -164,9 +170,7 @@ impl SqliteEndpointStorage {
     }
 }
 
-fn lock_db(
-    conn: &Arc<Mutex<rusqlite::Connection>>,
-) -> Result<std::sync::MutexGuard<'_, rusqlite::Connection>> {
+fn lock_db(conn: &Arc<Mutex<Connection>>) -> Result<MutexGuard<'_, Connection>> {
     conn.lock().map_err(|e| anyhow::anyhow!("Database connection mutex poisoned: {e}"))
 }
 
@@ -174,7 +178,7 @@ fn lock_db(
 impl EndpointStorage for SqliteEndpointStorage {
     async fn load_all(&self) -> Result<Vec<(String, String, SubstrateEndpoint)>> {
         let conn_arc = self.conn.clone();
-        tokio::task::spawn_blocking(move || -> Result<Vec<(String, String, SubstrateEndpoint)>> {
+        task::spawn_blocking(move || -> Result<Vec<(String, String, SubstrateEndpoint)>> {
             let conn = lock_db(&conn_arc)?;
             let mut stmt = conn.prepare(
                 "SELECT service_id, interface_name, endpoint_type, endpoint_data FROM local_endpoints",
@@ -214,7 +218,7 @@ impl EndpointStorage for SqliteEndpointStorage {
         let e_type = endpoint.storage_key().to_string();
         let e_data = endpoint.storage_data();
 
-        tokio::task::spawn_blocking(move || -> Result<()> {
+        task::spawn_blocking(move || -> Result<()> {
             let conn = lock_db(&conn_arc)?;
             conn.execute(
                 "INSERT INTO local_endpoints (service_id, interface_name, endpoint_type, endpoint_data)
@@ -234,7 +238,7 @@ impl EndpointStorage for SqliteEndpointStorage {
         let sid = service_id.to_string();
         let iname = interface_name.to_string();
 
-        tokio::task::spawn_blocking(move || -> Result<()> {
+        task::spawn_blocking(move || -> Result<()> {
             let conn = lock_db(&conn_arc)?;
             conn.execute(
                 "DELETE FROM local_endpoints WHERE service_id = ?1 AND interface_name = ?2",
@@ -251,10 +255,11 @@ impl EndpointStorage for SqliteEndpointStorage {
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use tempfile::tempdir;
+    use tempfile::{TempDir, tempdir};
 
-    async fn make_store() -> (SqliteEndpointStorage, tempfile::TempDir) {
+    use super::*;
+
+    async fn make_store() -> (SqliteEndpointStorage, TempDir) {
         let dir = tempdir().unwrap();
         let path = dir.path().join("test.db");
         let store = SqliteEndpointStorage::new(path).await.unwrap();

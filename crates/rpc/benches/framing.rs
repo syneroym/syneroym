@@ -1,10 +1,12 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use std::io::Cursor;
+
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use syneroym_rpc::framing::{read_frame, write_frame};
+use tokio::runtime::Builder;
 
 fn bench_rpc_framing(c: &mut Criterion) {
-    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
 
     let small_payload = vec![b'A'; 100];
     let large_payload = vec![b'A'; 10 * 1024];

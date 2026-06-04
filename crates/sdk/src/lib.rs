@@ -4,17 +4,21 @@
 //! High-level APIs and traits to help third-party developers build apps
 //! that integrate seamlessly with the Syneroym runtime and services.
 
+use std::{
+    fmt::{Debug, Formatter},
+    time::{Duration, Instant},
+};
+
 use anyhow::{Context, Result};
-use iroh::endpoint::Connection;
-use std::time::Duration;
+use iroh::{Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl, endpoint::Connection};
 use syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, ContainerManifest, ContainerPortMapping, ContainerVolumeMapping,
     DeployManifest, ServiceConfig, ServiceType, TcpManifest, WasmManifest,
 };
-use syneroym_core::dht_registry::RegistryClient;
-use syneroym_core::dht_registry::{EndpointMechanism, SignedEndpointInfo};
-use syneroym_router::{RoutePreamble, RouteProtocol, RouteTransport};
-use syneroym_rpc::JsonRpcResponse;
+use syneroym_core::dht_registry::{EndpointMechanism, RegistryClient, SignedEndpointInfo};
+use syneroym_router::{RoutePreamble, RouteProtocol, RouteTransport, SYNEROYM_ALPN};
+use syneroym_rpc::{JsonRpcRequest, JsonRpcResponse, framing};
+use tokio::{io, net::TcpStream, time};
 use tracing::debug;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -31,8 +35,8 @@ pub struct SyneroymClient {
     connection: Option<TransportConnection>,
 }
 
-impl std::fmt::Debug for SyneroymClient {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Debug for SyneroymClient {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SyneroymClient")
             .field("service_id", &self.service_id)
             .field("registry_url", &self.registry_url)
@@ -47,13 +51,13 @@ pub enum TransportConnection {
     Iroh {
         /// The endpoint must be kept alive for the duration of the connection.
         /// Dropping it closes the underlying QUIC socket, terminating all streams.
-        endpoint: iroh::Endpoint,
+        endpoint: Endpoint,
         conn: Connection,
     },
 }
 
-impl std::fmt::Debug for TransportConnection {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Debug for TransportConnection {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Iroh { conn, .. } => f
                 .debug_struct("TransportConnection::Iroh")
@@ -113,20 +117,20 @@ impl SyneroymClient {
         for mechanism in mechanisms {
             match mechanism {
                 EndpointMechanism::Iroh { endpoint_addr_bytes, relay_url } => {
-                    let mut endpoint_addr: iroh::EndpointAddr =
+                    let mut endpoint_addr: EndpointAddr =
                         serde_json::from_slice(&endpoint_addr_bytes)?;
 
-                    let mut ep_bldr = iroh::Endpoint::empty_builder();
+                    let mut ep_bldr = Endpoint::empty_builder();
                     if let Some(relay) = relay_url
-                        && let Ok(url) = relay.parse::<iroh::RelayUrl>()
+                        && let Ok(url) = relay.parse::<RelayUrl>()
                     {
-                        ep_bldr = ep_bldr
-                            .relay_mode(iroh::RelayMode::Custom(iroh::RelayMap::from(url.clone())));
+                        ep_bldr =
+                            ep_bldr.relay_mode(RelayMode::Custom(RelayMap::from(url.clone())));
                         endpoint_addr = endpoint_addr.with_relay_url(url);
                     }
 
                     let endpoint = ep_bldr.bind().await?;
-                    match endpoint.connect(endpoint_addr, syneroym_router::SYNEROYM_ALPN).await {
+                    match endpoint.connect(endpoint_addr, SYNEROYM_ALPN).await {
                         Ok(conn) => {
                             self.connection = Some(TransportConnection::Iroh { endpoint, conn });
                             return Ok(());
@@ -151,18 +155,18 @@ impl SyneroymClient {
     }
 
     pub async fn wait_for_discovery(&mut self, timeout: Duration) -> Result<()> {
-        let start = std::time::Instant::now();
+        let start = Instant::now();
         while start.elapsed() < timeout {
             if self.lookup_registry().await.is_ok() {
                 return Ok(());
             }
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            time::sleep(Duration::from_millis(500)).await;
         }
         Err(anyhow::anyhow!("Timed out waiting for {} to be discovered", self.service_id))
     }
 
     pub async fn wait_for_ready(&mut self, timeout: Duration) -> Result<()> {
-        let start = std::time::Instant::now();
+        let start = Instant::now();
         while start.elapsed() < timeout {
             match self.connect().await {
                 Ok(()) => {
@@ -179,7 +183,7 @@ impl SyneroymClient {
                     debug!("Connect attempt failed, retrying: {}", e);
                 }
             }
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            time::sleep(Duration::from_millis(500)).await;
         }
         Err(anyhow::anyhow!("Timed out waiting for {} to become ready", self.service_id))
     }
@@ -207,7 +211,7 @@ impl SyneroymClient {
         method: &str,
         params: serde_json::Value,
     ) -> Result<JsonRpcResponse> {
-        let request = syneroym_rpc::JsonRpcRequest {
+        let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             method: method.to_string(),
             params,
@@ -219,7 +223,7 @@ impl SyneroymClient {
     pub async fn request_raw(
         &self,
         interface_name: &str,
-        request: syneroym_rpc::JsonRpcRequest,
+        request: JsonRpcRequest,
     ) -> Result<JsonRpcResponse> {
         let conn_wrapper = self.connection.as_ref().context("Not connected")?;
         match conn_wrapper {
@@ -231,11 +235,11 @@ impl SyneroymClient {
                 send.write_all(preamble.to_preamble_line().as_bytes()).await?;
 
                 let req_bytes = serde_json::to_vec(&request)?;
-                syneroym_rpc::framing::write_frame(&mut send, &req_bytes).await?;
+                framing::write_frame(&mut send, &req_bytes).await?;
                 debug!(">>> Wrote request for method: {} to {}", request.method, self.service_id);
                 send.finish()?;
 
-                let frame = syneroym_rpc::framing::read_frame(&mut recv).await?;
+                let frame = framing::read_frame(&mut recv).await?;
                 if frame.is_empty() {
                     return Err(anyhow::anyhow!(
                         "Empty response from stream for method {}",
@@ -356,7 +360,7 @@ impl SyneroymClient {
         &self,
         interface_name: &str,
         initial_bytes: &[u8],
-        tcp_stream: &mut tokio::net::TcpStream,
+        tcp_stream: &mut TcpStream,
     ) -> Result<()> {
         let conn_wrapper = self.connection.as_ref().context("Not connected")?.clone();
         Self::passthrough_with_conn(
@@ -374,7 +378,7 @@ impl SyneroymClient {
         service_id: &str,
         interface_name: &str,
         initial_bytes: &[u8],
-        tcp_stream: &mut tokio::net::TcpStream,
+        tcp_stream: &mut TcpStream,
     ) -> Result<()> {
         match conn_wrapper {
             TransportConnection::Iroh { conn, .. } => {
@@ -394,8 +398,8 @@ impl SyneroymClient {
 
                 send.write_all(initial_bytes).await?;
 
-                let mut joined_iroh = tokio::io::join(recv, send);
-                if let Err(e) = tokio::io::copy_bidirectional(tcp_stream, &mut joined_iroh).await {
+                let mut joined_iroh = io::join(recv, send);
+                if let Err(e) = io::copy_bidirectional(tcp_stream, &mut joined_iroh).await {
                     debug!("Bidirectional copy error between TCP and Iroh: {}", e);
                 }
 

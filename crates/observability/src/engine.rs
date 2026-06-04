@@ -6,24 +6,29 @@
 //! TODO: The current implementation is more of a placeholder/basic shell.
 //! We need to integrate full OTLP/OpenTelemetry exports and live metrics collection later.
 
-use anyhow::{Context, Result};
-use std::fs;
-use syneroym_core::config::{LogFormat, LogLevel, LogTarget, SubstrateConfig};
-use tracing::info;
-use tracing_appender::non_blocking::WorkerGuard;
-use tracing_subscriber::{EnvFilter, fmt, prelude::*};
+use std::{
+    fmt::{Debug, Formatter},
+    fs,
+    sync::Mutex,
+    time::Duration,
+};
 
-use crate::metrics::SystemSampler;
-use crate::recorder::MemoryRecorder;
-use std::sync::Mutex;
+use anyhow::{Context, Result};
+use syneroym_core::config::{LogFormat, LogLevel, LogTarget, SubstrateConfig};
+use tokio::task::JoinHandle;
+use tracing::{Subscriber, info};
+use tracing_appender::non_blocking::{NonBlocking, WorkerGuard};
+use tracing_subscriber::{EnvFilter, Layer, fmt, prelude::*, registry::LookupSpan};
+
+use crate::{metrics::SystemSampler, recorder::MemoryRecorder};
 
 pub struct ObservabilityEngine {
     log_guard: Option<WorkerGuard>,
-    sampler_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    sampler_handle: Mutex<Option<JoinHandle<()>>>,
 }
 
-impl std::fmt::Debug for ObservabilityEngine {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Debug for ObservabilityEngine {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ObservabilityEngine")
             .field("log_guard", &self.log_guard.as_ref().map(|_| "WorkerGuard"))
             .field("sampler_handle", &"JoinHandle")
@@ -74,7 +79,7 @@ impl ObservabilityEngine {
         }
 
         // Start system resource metrics sampler
-        let sampler = SystemSampler::new(std::time::Duration::from_secs(1));
+        let sampler = SystemSampler::new(Duration::from_secs(1));
         let sampler_handle = Mutex::new(Some(sampler.start()));
 
         info!(
@@ -111,9 +116,9 @@ const fn default_directive(level: &LogLevel) -> &'static str {
     }
 }
 
-fn stdout_layer<S>(config: &SubstrateConfig) -> Box<dyn tracing_subscriber::Layer<S> + Send + Sync>
+fn stdout_layer<S>(config: &SubstrateConfig) -> Box<dyn Layer<S> + Send + Sync>
 where
-    S: tracing::Subscriber + for<'span> tracing_subscriber::registry::LookupSpan<'span>,
+    S: Subscriber + for<'span> LookupSpan<'span>,
 {
     match config.logging.format {
         LogFormat::Json => Box::new(fmt::layer().json()),
@@ -121,12 +126,9 @@ where
     }
 }
 
-fn file_layer<S>(
-    config: &SubstrateConfig,
-    writer: tracing_appender::non_blocking::NonBlocking,
-) -> Box<dyn tracing_subscriber::Layer<S> + Send + Sync>
+fn file_layer<S>(config: &SubstrateConfig, writer: NonBlocking) -> Box<dyn Layer<S> + Send + Sync>
 where
-    S: tracing::Subscriber + for<'span> tracing_subscriber::registry::LookupSpan<'span>,
+    S: Subscriber + for<'span> LookupSpan<'span>,
 {
     match config.logging.format {
         LogFormat::Json => Box::new(fmt::layer().json().with_writer(writer)),

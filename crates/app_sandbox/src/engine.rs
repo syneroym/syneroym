@@ -3,17 +3,31 @@
 //! Sets up the sandboxed environment with strict CPU/memory quotas,
 //! registers host capabilities, and runs WASM component binaries.
 
+use std::{
+    fmt::{Debug, Formatter},
+    path::PathBuf,
+    time::Instant,
+};
+
 use anyhow::{Context, Result};
 use dashmap::DashMap;
-use std::path::PathBuf;
-use syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::{
-    ArtifactSource, DeployManifest, ServiceType,
+use syneroym_bindings::{
+    control_plane::exports::syneroym::control_plane::orchestrator::{
+        ArtifactSource, DeployManifest, ServiceType,
+    },
+    host::syneroym::host::{context, context::Host},
 };
 use syneroym_core::{config::SubstrateConfig, local_registry::SubstrateEndpoint};
 use syneroym_rpc::JsonRpcRequest;
+use tokio::fs as tokio_fs;
 use tracing::debug;
-use wasmtime::component::{Component, Linker};
-use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxView};
+use wasmtime::{
+    Config, Engine, InstanceAllocationStrategy, PoolingAllocationConfig, Store,
+    component::{
+        Component, Func, HasSelf, Instance, InstancePre, Linker, Val, types::ComponentItem,
+    },
+};
+use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxView, WasiView, p2};
 
 use crate::conversions::{json_to_wasm_params, wasm_results_to_json_string};
 
@@ -26,8 +40,8 @@ pub struct HostState {
     pub request_ctx: Option<String>,
 }
 
-impl std::fmt::Debug for HostState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Debug for HostState {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HostState")
             .field("component_id", &self.component_id)
             .field("request_ctx", &self.request_ctx)
@@ -44,13 +58,13 @@ impl HostState {
     }
 }
 
-impl wasmtime_wasi::WasiView for HostState {
+impl WasiView for HostState {
     fn ctx(&mut self) -> WasiCtxView<'_> {
         WasiCtxView { ctx: &mut self.wasi, table: &mut self.table }
     }
 }
 
-impl syneroym_bindings::host::syneroym::host::context::Host for HostState {
+impl Host for HostState {
     async fn get_test_context(&mut self, request_ctx: String) -> String {
         let component_ctx = format!("Component: {}", self.component_id);
         if let Some(existing) = &self.request_ctx {
@@ -65,14 +79,14 @@ impl syneroym_bindings::host::syneroym::host::context::Host for HostState {
 /// to spin up Wasmtime or Podman instances.
 pub struct AppSandboxEngine {
     blobs_dir: PathBuf,
-    engine: wasmtime::Engine,
+    engine: Engine,
     linker: Linker<HostState>,
     // Cache of pre-linked instances for fast instantiation
-    components: DashMap<String, wasmtime::component::InstancePre<HostState>>,
+    components: DashMap<String, InstancePre<HostState>>,
 }
 
-impl std::fmt::Debug for AppSandboxEngine {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Debug for AppSandboxEngine {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AppSandboxEngine")
             .field("blobs_dir", &self.blobs_dir)
             .field("components_len", &self.components.len())
@@ -90,7 +104,7 @@ impl AppSandboxEngine {
 
         // Ensure blobs directory exists
         if !component_dir.exists() {
-            tokio::fs::create_dir_all(&component_dir).await?;
+            tokio_fs::create_dir_all(&component_dir).await?;
         }
 
         // Read these limits from `config` based on the hardware tier
@@ -129,30 +143,27 @@ impl AppSandboxEngine {
     pub fn build_wasm_engine(
         max_instances: Option<u32>,
         max_memory: Option<usize>,
-    ) -> Result<wasmtime::Engine> {
-        let mut wasmtime_config = wasmtime::Config::new();
+    ) -> Result<Engine> {
+        let mut wasmtime_config = Config::new();
         wasmtime_config.wasm_component_model(true);
 
         if let (Some(instances), Some(memory)) = (max_instances, max_memory) {
             wasmtime_config.memory_init_cow(true);
-            let mut pooling_config = wasmtime::PoolingAllocationConfig::default();
+            let mut pooling_config = PoolingAllocationConfig::default();
             pooling_config.total_component_instances(instances);
             pooling_config.max_memory_size(memory);
             wasmtime_config
-                .allocation_strategy(wasmtime::InstanceAllocationStrategy::Pooling(pooling_config));
+                .allocation_strategy(InstanceAllocationStrategy::Pooling(pooling_config));
         }
 
-        wasmtime::Engine::new(&wasmtime_config).map_err(Into::into)
+        Engine::new(&wasmtime_config).map_err(Into::into)
     }
 
     /// Helper to build the Wasmtime Linker
-    pub fn build_wasm_linker(engine: &wasmtime::Engine) -> Result<Linker<HostState>> {
+    pub fn build_wasm_linker(engine: &Engine) -> Result<Linker<HostState>> {
         let mut linker = Linker::new(engine);
-        wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
-        syneroym_bindings::host::syneroym::host::context::add_to_linker::<
-            _,
-            wasmtime::component::HasSelf<HostState>,
-        >(&mut linker, |state| state)?;
+        p2::add_to_linker_async(&mut linker)?;
+        context::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
         Ok(linker)
     }
 
@@ -196,11 +207,11 @@ impl AppSandboxEngine {
 
     /// Helper to extract WASM function and its result length
     pub fn get_wasm_func(
-        store: &mut wasmtime::Store<HostState>,
-        instance: &wasmtime::component::Instance,
+        store: &mut Store<HostState>,
+        instance: &Instance,
         interface_name: &str,
         method_name: &str,
-    ) -> Result<(wasmtime::component::Func, usize, wasmtime::component::types::ComponentItem)> {
+    ) -> Result<(Func, usize, ComponentItem)> {
         let (_, instance_idx) = instance
             .get_export(&mut *store, None, interface_name)
             .ok_or_else(|| anyhow::anyhow!("Interface '{interface_name}' not found"))?;
@@ -216,7 +227,7 @@ impl AppSandboxEngine {
             .ok_or_else(|| anyhow::anyhow!("Method is not a function"))?;
 
         let results_len = match &item {
-            wasmtime::component::types::ComponentItem::ComponentFunc(f) => f.results().len(),
+            ComponentItem::ComponentFunc(f) => f.results().len(),
             _ => 0,
         };
 
@@ -279,7 +290,7 @@ impl AppSandboxEngine {
 
         // Parse parameters based on ComponentFunc signature
         let params_iter = match &item {
-            wasmtime::component::types::ComponentItem::ComponentFunc(f) => f.params(),
+            ComponentItem::ComponentFunc(f) => f.params(),
             _ => return Err(anyhow::anyhow!("Expected a function item")),
         };
 
@@ -295,10 +306,10 @@ impl AppSandboxEngine {
 
         debug!("created input types");
 
-        let mut wasm_results = vec![wasmtime::component::Val::Bool(false); results_len];
+        let mut wasm_results = vec![Val::Bool(false); results_len];
         debug!("created result types");
 
-        let exec_start = std::time::Instant::now();
+        let exec_start = Instant::now();
         func.call_async(&mut store, &wasm_params, &mut wasm_results).await?;
         metrics::histogram!("substrate.wasm.execution_ms")
             .record(exec_start.elapsed().as_secs_f64() * 1000.0);
@@ -314,12 +325,7 @@ impl AppSandboxEngine {
         service_id: &str,
         interface_name: &str,
         method_name: &str,
-    ) -> Result<(
-        wasmtime::Store<HostState>,
-        wasmtime::component::Func,
-        usize,
-        wasmtime::component::types::ComponentItem,
-    )> {
+    ) -> Result<(Store<HostState>, Func, usize, ComponentItem)> {
         // Look up the pre-linked component instance
         let instance_pre = self
             .components
@@ -333,9 +339,9 @@ impl AppSandboxEngine {
         debug!("created wasi ctx and host state");
 
         // Create a new store
-        let mut store = wasmtime::Store::new(&self.engine, host_state);
+        let mut store = Store::new(&self.engine, host_state);
 
-        let inst_start = std::time::Instant::now();
+        let inst_start = Instant::now();
         let instance = instance_pre.instantiate_async(&mut store).await?;
         metrics::histogram!("substrate.wasm.instantiation_ms")
             .record(inst_start.elapsed().as_secs_f64() * 1000.0);
@@ -380,7 +386,7 @@ impl AppSandboxEngine {
         tracing::info!(service_id = %service_id, "AppSandboxEngine: removing Wasm component");
         let file_path = self.blobs_dir.join(format!("{service_id}.wasm"));
         if file_path.exists() {
-            tokio::fs::remove_file(&file_path)
+            tokio_fs::remove_file(&file_path)
                 .await
                 .with_context(|| format!("Failed to remove WASM file {file_path:?}"))?;
         }
@@ -391,7 +397,7 @@ impl AppSandboxEngine {
     async fn load_cached_wasm(&self, service_id: &str) -> Result<()> {
         let file_path = self.blobs_dir.join(format!("{service_id}.wasm"));
         if file_path.exists() {
-            let bytes = tokio::fs::read(&file_path)
+            let bytes = tokio_fs::read(&file_path)
                 .await
                 .context(format!("Failed to read WASM file {file_path:?}"))?;
             self.compile_and_cache_wasm(service_id, &bytes)?;
@@ -426,9 +432,12 @@ impl AppSandboxEngine {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::fs;
+
     use syneroym_core::test_constants;
     use wasmtime::component::Component;
+
+    use super::*;
 
     #[tokio::test]
     async fn test_list_interfaces() {
@@ -436,10 +445,10 @@ mod tests {
         let linker = AppSandboxEngine::build_wasm_linker(&engine).unwrap();
 
         let host_state = HostState::new("test_component".to_string());
-        let mut store = wasmtime::Store::new(&engine, host_state);
+        let mut store = Store::new(&engine, host_state);
 
         let component_path = test_constants::greeter_wasm_path();
-        let wasm_bytes = if let Ok(bytes) = std::fs::read(&component_path) {
+        let wasm_bytes = if let Ok(bytes) = fs::read(&component_path) {
             bytes
         } else {
             println!(
@@ -469,8 +478,7 @@ mod tests {
                 ) {
                     Ok((func, results_len, _item)) => {
                         println!("Function export: {func:?}");
-                        let mut wasm_results =
-                            vec![wasmtime::component::Val::Bool(false); results_len];
+                        let mut wasm_results = vec![Val::Bool(false); results_len];
 
                         let result = func
                             .call_async(

@@ -2,11 +2,15 @@
 //!
 //! Commands for querying, registering, and listing endpoints in the community registry.
 
-use clap::Subcommand;
 use std::path::Path;
-use syneroym_core::dht_registry::{EndpointInfo, EndpointType, RegistryClient};
-use syneroym_core::util;
-use syneroym_identity::Identity;
+
+use clap::Subcommand;
+use reqwest::Client;
+use syneroym_core::{
+    dht_registry::{EndpointInfo, EndpointType, RegistryClient},
+    util,
+};
+use syneroym_identity::{Identity, substrate};
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum RegistryCommands {
@@ -48,7 +52,7 @@ pub async fn handle(command: &RegistryCommands, api_url: &str, dir: &Path) -> an
             }
 
             let identity = Identity::load_from_path(&key_path)?;
-            let service_id = syneroym_identity::substrate::derive_did_key(&identity.public_key());
+            let service_id = substrate::derive_did_key(&identity.public_key());
 
             let info = EndpointInfo {
                 service_id: service_id.clone(),
@@ -62,7 +66,7 @@ pub async fn handle(command: &RegistryCommands, api_url: &str, dir: &Path) -> an
 
             let signed_info = info.sign(&identity)?;
 
-            let client = reqwest::Client::new();
+            let client = Client::new();
             let url = format!("{api_url}/register");
             let response = client.post(&url).json(&signed_info).send().await?;
 

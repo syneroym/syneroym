@@ -1,8 +1,10 @@
 //! Configuration types for the Syneroym substrate.
 
+use std::{collections::HashMap, path::PathBuf};
+
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::path::PathBuf;
+
+use crate::util;
 
 pub const DEFAULT_SUBSTRATE_KEY_FILE: &str = "substrate.key";
 
@@ -322,7 +324,7 @@ pub struct AppSandboxRole {
 impl AppSandboxRole {
     #[must_use]
     pub fn memory_limit_bytes(&self) -> u64 {
-        crate::util::parse_size_string(&self.memory_limit, 128 * 1024 * 1024)
+        util::parse_size_string(&self.memory_limit, 128 * 1024 * 1024)
     }
 }
 
@@ -592,8 +594,9 @@ impl Default for SubstrateGlobalConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::path::Path;
+
+    use super::*;
 
     #[test]
     fn test_resolve_paths() {

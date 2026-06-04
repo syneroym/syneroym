@@ -3,14 +3,17 @@
 //!
 //! Handles lifecycle of Podman containers using std::process::Command.
 
-use anyhow::{Context, Result, anyhow};
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use tracing::{info, warn};
+use std::{
+    fs,
+    path::{Component, Path, PathBuf},
+    process::Command,
+};
 
+use anyhow::{Context, Result, anyhow};
 use syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::{
     DeployManifest, ServiceType,
 };
+use tracing::{info, warn};
 
 #[derive(Debug, Clone)]
 pub struct ContainerEngine {
@@ -36,8 +39,8 @@ impl ContainerEngine {
         let mut path = container_base.clone();
         for component in Path::new(host_path).components() {
             match component {
-                std::path::Component::Normal(c) => path.push(c),
-                std::path::Component::ParentDir if path != container_base => {
+                Component::Normal(c) => path.push(c),
+                Component::ParentDir if path != container_base => {
                     path.pop();
                 }
                 _ => {}
@@ -64,7 +67,7 @@ impl ContainerEngine {
         let mut volume_args = Vec::new();
         for vol in &container_manifest.volumes {
             let host_path = self.resolve_host_path(service_id, &vol.host_path);
-            std::fs::create_dir_all(&host_path)
+            fs::create_dir_all(&host_path)
                 .with_context(|| format!("Failed to create host path directory {:?}", host_path))?;
 
             volume_args.push("-v".to_string());
@@ -210,7 +213,7 @@ impl ContainerEngine {
         // Clean up the sandboxed volumes directory
         let container_dir = self.containers_dir.join(&sanitized_id);
         if container_dir.exists() {
-            let _ = std::fs::remove_dir_all(&container_dir);
+            let _ = fs::remove_dir_all(&container_dir);
         }
 
         Ok(())

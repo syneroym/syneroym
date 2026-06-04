@@ -4,21 +4,36 @@
 //! Validates proper boot flow, identity checks, role starting,
 //! and clean shutdown sequences of the Substrate.
 
-use assert_cmd::assert::OutputAssertExt;
-use assert_cmd::cargo::CommandCargoExt;
-use std::io::{BufRead, BufReader, Write};
-use std::process::{Command, Stdio};
-use std::time::Duration;
-use syneroym_core::config::IrohParentConfig;
-use syneroym_core::config::LogTarget;
-use syneroym_core::config::SubstrateConfig;
-use syneroym_core::dht_registry::EndpointInfo;
-use syneroym_core::dht_registry::EndpointMechanism;
-use syneroym_core::dht_registry::EndpointType;
-use syneroym_core::test_constants;
-use syneroym_core::util;
-use syneroym_identity::Identity;
-use tempfile::NamedTempFile;
+use std::{
+    fs,
+    io::{BufRead, BufReader, Read, Write},
+    net::SocketAddr,
+    process::{Command, Stdio},
+    time::Duration,
+};
+
+use assert_cmd::{assert::OutputAssertExt, cargo::CommandCargoExt};
+use libc::SIGINT;
+use miniapp_demo1_web::Args;
+use reqwest::Client;
+use rustls::crypto::ring;
+use syneroym_core::{
+    config::{ClientGatewayRole, IrohParentConfig, LogTarget, SubstrateConfig},
+    dht_registry::{EndpointInfo, EndpointMechanism, EndpointType},
+    test_constants, util,
+};
+use syneroym_identity::{Identity, substrate};
+use syneroym_rpc::{JsonRpcRequest, JsonRpcResponse};
+use syneroym_sdk::SyneroymClient;
+use syneroym_substrate::identity;
+use tempfile::{NamedTempFile, TempDir};
+use test_constants::GREETER_INTERFACE_NAME;
+use tokio::{
+    sync::{mpsc, mpsc::Sender},
+    task::JoinHandle,
+    time,
+};
+use tokio_tungstenite::tungstenite::Message;
 use tracing::debug;
 
 fn send_ctrl_c(#[allow(unused_variables)] pid: u32) {
@@ -30,7 +45,7 @@ fn send_ctrl_c(#[allow(unused_variables)] pid: u32) {
         // The function is safe when PID is valid (which it is from Child::id())
         // and the signal number is correct. No memory is modified by this call.
         unsafe {
-            libc::kill(pid as i32, libc::SIGINT);
+            libc::kill(pid as i32, SIGINT);
         }
     }
     #[cfg(windows)]
@@ -103,7 +118,7 @@ async fn test_run_finishes_on_ctrl_c() {
         match reader.read_line(&mut line) {
             Ok(0) => {
                 let mut err_output = String::new();
-                std::io::Read::read_to_string(&mut BufReader::new(stderr), &mut err_output).ok();
+                Read::read_to_string(&mut BufReader::new(stderr), &mut err_output).ok();
                 panic!(
                     "Process closed stdout before reaching running state. Stderr:\n{err_output}"
                 );
@@ -118,7 +133,7 @@ async fn test_run_finishes_on_ctrl_c() {
     }
 
     // Give the process a brief moment to ensure signal handler registration completes
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    time::sleep(Duration::from_millis(100)).await;
 
     // Send SIGINT (Ctrl-C) to the child process
     send_ctrl_c(child.id());
@@ -141,14 +156,14 @@ const MOCK_APP_HTTPS_PORT: u16 = 30002;
 struct SubstrateTestContext {
     #[allow(dead_code)]
     config: SubstrateConfig,
-    substrate_client: syneroym_sdk::SyneroymClient,
+    substrate_client: SyneroymClient,
     substrate_service_id: String,
     gateway_port: u16,
     registry_url: String,
     substrate_mechanisms: Vec<EndpointMechanism>,
-    shutdown_tx: tokio::sync::mpsc::Sender<()>,
-    substrate_handle: tokio::task::JoinHandle<()>,
-    temp_dir: tempfile::TempDir,
+    shutdown_tx: Sender<()>,
+    substrate_handle: JoinHandle<()>,
+    temp_dir: TempDir,
 }
 
 impl SubstrateTestContext {
@@ -189,17 +204,14 @@ impl SubstrateTestContext {
         config.parent_coordinator.iroh =
             Some(IrohParentConfig { url: format!("http://localhost:{iroh_port}") });
 
-        config.roles.client_gateway =
-            Some(syneroym_core::config::ClientGatewayRole { http_port: gateway_port });
+        config.roles.client_gateway = Some(ClientGatewayRole { http_port: gateway_port });
 
-        let substrate_identity_state = syneroym_substrate::identity::setup_substrate_identity(
-            &config.identity,
-            &config.app_data_dir,
-        )
-        .expect("Failed to setup identity");
+        let substrate_identity_state =
+            identity::setup_substrate_identity(&config.identity, &config.app_data_dir)
+                .expect("Failed to setup identity");
         let substrate_service_id = substrate_identity_state.did.clone();
 
-        let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
+        let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
         let runtime =
             syneroym_substrate::init(config.clone()).await.expect("Failed to initialize runtime");
 
@@ -213,7 +225,7 @@ impl SubstrateTestContext {
         });
 
         let mut substrate_client =
-            syneroym_sdk::SyneroymClient::new(substrate_service_id.clone(), registry_url.clone());
+            SyneroymClient::new(substrate_service_id.clone(), registry_url.clone());
 
         substrate_client
             .wait_for_ready(Duration::from_secs(30))
@@ -247,7 +259,7 @@ impl SubstrateTestContext {
 #[tokio::test]
 #[cfg(feature = "app_sandbox")]
 async fn test_substrate_lifecycle_scenarios() {
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    let _ = ring::default_provider().install_default();
 
     // We use a single substrate instance to run multiple scenarios.
     // Use non-standard ports to avoid conflicts with other tests.
@@ -266,17 +278,17 @@ async fn test_substrate_lifecycle_scenarios() {
 async fn test_wasm_app_scenario(ctx: &SubstrateTestContext) {
     // Deploy a test WASM application
     debug!(">>> Starting WASM Scenario: Deploy");
-    let wasm_bytes = std::fs::read(test_constants::greeter_wasm_path())
+    let wasm_bytes = fs::read(test_constants::greeter_wasm_path())
         .expect("Failed to read compiled test WASM component");
 
     // Generate a valid DID for the app and deploy it
     let app_identity = Identity::generate().unwrap();
-    let app_service_id = syneroym_identity::substrate::derive_did_key(&app_identity.public_key());
+    let app_service_id = substrate::derive_did_key(&app_identity.public_key());
 
     ctx.substrate_client
         .deploy_wasm(
             app_service_id.clone(),
-            vec![test_constants::GREETER_INTERFACE_NAME.to_string()],
+            vec![GREETER_INTERFACE_NAME.to_string()],
             wasm_bytes,
             None,
         )
@@ -290,23 +302,19 @@ async fn test_wasm_app_scenario(ctx: &SubstrateTestContext) {
     assert!(services.iter().any(|s| s.service_id == app_service_id));
     let svc = services.iter().find(|s| s.service_id == app_service_id).unwrap();
     assert_eq!(svc.endpoint_type, "wasm");
-    assert!(svc.interfaces.contains(&test_constants::GREETER_INTERFACE_NAME.to_string()));
+    assert!(svc.interfaces.contains(&GREETER_INTERFACE_NAME.to_string()));
 
     // Interact with the running WASM application via RPC
     debug!(">>> Starting WASM Scenario: Run RPC");
-    let mut app_client = syneroym_sdk::SyneroymClient::new_with_mechanisms(
+    let mut app_client = SyneroymClient::new_with_mechanisms(
         app_service_id.clone(),
         ctx.substrate_mechanisms.clone(),
     );
     app_client.connect().await.expect("Failed to connect to app on substrate");
 
-    let app_res = tokio::time::timeout(
+    let app_res = time::timeout(
         Duration::from_secs(30),
-        app_client.request(
-            test_constants::GREETER_INTERFACE_NAME,
-            "greet",
-            serde_json::json!(["tester"]),
-        ),
+        app_client.request(GREETER_INTERFACE_NAME, "greet", serde_json::json!(["tester"])),
     )
     .await
     .expect("app run request timed out")
@@ -340,12 +348,12 @@ async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
 
     // Start miniapp-demo1-web on a specific port
     let app_port = MOCK_APP_PORT;
-    let app_addr = std::net::SocketAddr::from(([127, 0, 0, 1], app_port));
-    let (app_shutdown_tx, mut app_shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
+    let app_addr = SocketAddr::from(([127, 0, 0, 1], app_port));
+    let (app_shutdown_tx, mut app_shutdown_rx) = mpsc::channel::<()>(1);
 
     let app_data_dir = ctx.temp_dir.path().join("app_data_tcp").to_string_lossy().to_string();
     let app_handle = tokio::spawn(async move {
-        let args = miniapp_demo1_web::Args {
+        let args = Args {
             service_name: "tcp-demo-app".to_string(),
             port: app_port,
             https_port: MOCK_APP_HTTPS_PORT,
@@ -360,7 +368,7 @@ async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
 
     // Deploy the app as a "tcp" service
     let app_identity = Identity::generate().unwrap();
-    let app_service_id = syneroym_identity::substrate::derive_did_key(&app_identity.public_key());
+    let app_service_id = substrate::derive_did_key(&app_identity.public_key());
 
     ctx.substrate_client
         .deploy_tcp(
@@ -391,7 +399,7 @@ async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
     .await;
 
     // Test HTTP requests through client_gateway
-    let req_client = reqwest::Client::new();
+    let req_client = Client::new();
     let url = format!("{}/", ctx.gateway_url());
     let interface_hash = util::short_hash("default");
     let pubkeyhash = util::short_hash(&app_service_id);
@@ -438,15 +446,12 @@ async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
     let (mut ws_stream, _) = connect_async(request).await.expect("Failed to connect to websocket");
 
     let test_msg = "hello from websocket";
-    ws_stream
-        .send(tokio_tungstenite::tungstenite::Message::Text(test_msg.into()))
-        .await
-        .expect("Failed to send websocket message");
+    ws_stream.send(Message::Text(test_msg.into())).await.expect("Failed to send websocket message");
 
     let response =
         ws_stream.next().await.expect("No response from websocket").expect("Websocket error");
 
-    if let tokio_tungstenite::tungstenite::Message::Text(text) = response {
+    if let Message::Text(text) = response {
         let ws_resp: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert!(ws_resp["recdMsg"].as_str().unwrap().contains(test_msg));
     } else {
@@ -470,7 +475,7 @@ async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
         .expect("No broadcast message from websocket")
         .expect("Websocket error");
 
-    if let tokio_tungstenite::tungstenite::Message::Text(text) = response {
+    if let Message::Text(text) = response {
         let ws_resp: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert!(ws_resp["commentUpdateTimestamp"].is_string());
     } else {
@@ -481,8 +486,7 @@ async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
     debug!(">>> TCP Scenario: HTTPS Test");
     let https_port = MOCK_APP_HTTPS_PORT;
     let https_app_identity = Identity::generate().unwrap();
-    let https_app_service_id =
-        syneroym_identity::substrate::derive_did_key(&https_app_identity.public_key());
+    let https_app_service_id = substrate::derive_did_key(&https_app_identity.public_key());
 
     ctx.substrate_client
         .deploy_tcp(
@@ -506,8 +510,7 @@ async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
     .await;
 
     // Use a client that accepts invalid certs (since we use a self-signed cert)
-    let https_req_client =
-        reqwest::Client::builder().danger_accept_invalid_certs(true).build().unwrap();
+    let https_req_client = Client::builder().danger_accept_invalid_certs(true).build().unwrap();
 
     // Note: The gateway currently only supports plain HTTP/WS proxying via Host header.
     // For now, we test the HTTPS endpoint directly to ensure it works.
@@ -532,7 +535,7 @@ async fn register_app_in_registry(
     registry_url: &str,
     nickname: &str,
 ) {
-    let req_client = reqwest::Client::new();
+    let req_client = Client::new();
     let info = EndpointInfo {
         service_id: app_service_id,
         substrate_id: substrate_service_id,
@@ -543,7 +546,7 @@ async fn register_app_in_registry(
         ttl: None,
     };
     let info_value = serde_json::to_value(&info).unwrap();
-    let _canonical_value = syneroym_identity::substrate::canonicalize_json_value(&info_value);
+    let _canonical_value = substrate::canonicalize_json_value(&info_value);
     let signed_info = info.sign(app_identity).unwrap();
     let res = req_client
         .post(format!("{registry_url}/register"))
@@ -562,16 +565,16 @@ async fn test_http_proxy_invocation(
     app_service_id: &str,
     nickname: &str,
 ) {
-    let json_req = syneroym_rpc::JsonRpcRequest {
+    let json_req = JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
         method: "greet".to_string(),
         params: serde_json::json!(["proxy-tester"]),
         id: Some(serde_json::Value::Number(42.into())),
     };
 
-    let req_client = reqwest::Client::new();
+    let req_client = Client::new();
     let url = format!("{}/", ctx.gateway_url());
-    let interface_hash = util::short_hash(test_constants::GREETER_INTERFACE_NAME);
+    let interface_hash = util::short_hash(GREETER_INTERFACE_NAME);
     let pubkeyhash = util::short_hash(app_service_id);
     let host_header = format!("{nickname}-p{pubkeyhash}-i{interface_hash}.localhost");
 
@@ -585,7 +588,7 @@ async fn test_http_proxy_invocation(
 
     assert!(proxy_res.status().is_success(), "Expected 200 OK, got {}", proxy_res.status());
 
-    let proxy_json: syneroym_rpc::JsonRpcResponse = proxy_res.json().await.unwrap();
+    let proxy_json: JsonRpcResponse = proxy_res.json().await.unwrap();
     assert_eq!(
         proxy_json.result,
         serde_json::json!("Hello, proxy-tester! Greetings from greeter::greet::greet")

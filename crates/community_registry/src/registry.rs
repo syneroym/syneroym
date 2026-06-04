@@ -3,6 +3,12 @@
 //! A public/shared registry server allowing nodes to register their network addresses
 //! and nicknames, enabling global peer lookup.
 
+use std::{
+    fmt::{Debug, Formatter},
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
 use anyhow::{Context, Result};
 use axum::{
     Json, Router,
@@ -11,27 +17,28 @@ use axum::{
     routing::{get, post},
 };
 use dashmap::DashMap;
-use std::sync::Arc;
-use std::time::Duration;
-use syneroym_core::config::SubstrateConfig;
-use syneroym_core::dht_registry::DEFAULT_REGISTRY_TTL_SECS;
-use syneroym_core::dht_registry::SignedEndpointInfo;
-use syneroym_core::util;
+use ed25519_dalek::VerifyingKey;
+use oneshot::Sender;
+use reqwest::Client;
+use syneroym_core::{
+    config::SubstrateConfig,
+    dht_registry::{DEFAULT_REGISTRY_TTL_SECS, SignedEndpointInfo},
+    util,
+};
 use syneroym_identity::substrate::resolve_did_key;
-use tokio::net::TcpListener;
-use tokio::sync::oneshot;
+use tokio::{net::TcpListener, sync::oneshot, task::JoinHandle, time};
 use tracing::{debug, error, info};
 
 pub struct EcosystemRegistry {
     bind_address: String,
     state: Arc<RegistryState>,
-    shutdown_tx: Option<oneshot::Sender<()>>,
-    server_handle: Option<tokio::task::JoinHandle<()>>,
+    shutdown_tx: Option<Sender<()>>,
+    server_handle: Option<JoinHandle<()>>,
     listener: Option<TcpListener>,
 }
 
-impl std::fmt::Debug for EcosystemRegistry {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Debug for EcosystemRegistry {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EcosystemRegistry")
             .field("bind_address", &self.bind_address)
             .field("state", &self.state)
@@ -45,7 +52,7 @@ impl std::fmt::Debug for EcosystemRegistry {
 #[derive(Debug)]
 struct RegistryState {
     // Map of service_id -> (SignedEndpointInfo, std::time::Instant)
-    endpoints: DashMap<String, (SignedEndpointInfo, std::time::Instant)>,
+    endpoints: DashMap<String, (SignedEndpointInfo, Instant)>,
     // Map of alias -> service_id
     aliases: DashMap<String, String>,
     // Needed when registry is not accessible from internal network and multi-hop-relays are needed for data transfer
@@ -126,7 +133,7 @@ impl EcosystemRegistry {
         tokio::spawn(async move {
             let default_ttl = Duration::from_secs(DEFAULT_REGISTRY_TTL_SECS);
             loop {
-                tokio::time::sleep(Duration::from_secs(15 * 60)).await; // 15 mins
+                time::sleep(Duration::from_secs(15 * 60)).await; // 15 mins
                 let mut expired_keys = Vec::new();
                 for entry in state_clone.endpoints.iter() {
                     let ttl =
@@ -202,7 +209,7 @@ async fn register_endpoint(
 
     // Store in DashMap
     state.aliases.insert(alias, service_id.clone());
-    state.endpoints.insert(service_id.clone(), (payload.clone(), std::time::Instant::now()));
+    state.endpoints.insert(service_id.clone(), (payload.clone(), Instant::now()));
 
     if let Some(parent_url) = &state.parent_registry_url
         && !payload.info.is_private
@@ -215,7 +222,7 @@ async fn register_endpoint(
 
 fn verify_endpoint_signature(
     payload: &SignedEndpointInfo,
-) -> Result<ed25519_dalek::VerifyingKey, (StatusCode, String)> {
+) -> Result<VerifyingKey, (StatusCode, String)> {
     let service_id = &payload.info.service_id;
 
     if let Err(e) = payload.verify() {
@@ -232,7 +239,7 @@ fn verify_endpoint_signature(
 
 fn propagate_registration(payload: SignedEndpointInfo, parent_url: String) {
     tokio::spawn(async move {
-        let client = reqwest::Client::new();
+        let client = Client::new();
         let url = format!("{parent_url}/register");
         debug!("Propagating registration to parent registry at: {}", url);
         match client.post(&url).json(&payload).send().await {
@@ -269,12 +276,14 @@ async fn lookup_endpoint(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use axum::http::StatusCode;
-    use syneroym_core::dht_registry::{EndpointInfo, EndpointMechanism, EndpointType};
-    use syneroym_core::util;
-    use syneroym_identity::Identity;
-    use syneroym_identity::substrate::derive_did_key;
+    use syneroym_core::{
+        dht_registry::{EndpointInfo, EndpointMechanism, EndpointType},
+        util,
+    };
+    use syneroym_identity::{Identity, substrate::derive_did_key};
+
+    use super::*;
 
     fn create_signed_info(identity: &Identity, info: EndpointInfo) -> SignedEndpointInfo {
         info.sign(identity).unwrap()
@@ -383,9 +392,7 @@ mod tests {
             },
             pkarr_packet_hex: "mock-hex".to_string(),
         };
-        state
-            .endpoints
-            .insert(substrate_id.to_string(), (substrate_info.clone(), std::time::Instant::now()));
+        state.endpoints.insert(substrate_id.to_string(), (substrate_info.clone(), Instant::now()));
 
         // Mock a service record pointing to that substrate
         let service_info = SignedEndpointInfo {
@@ -400,7 +407,7 @@ mod tests {
             },
             pkarr_packet_hex: "mock-hex".to_string(),
         };
-        state.endpoints.insert(service_id.to_string(), (service_info, std::time::Instant::now()));
+        state.endpoints.insert(service_id.to_string(), (service_info, Instant::now()));
 
         // Lookup service
         let lookup_res = lookup_endpoint(

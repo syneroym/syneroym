@@ -2,9 +2,9 @@
 //!
 //! Commands to boot up or manage the main substrate execution node.
 
+use std::{fs, path::Path};
+
 use clap::Subcommand;
-use std::fs;
-use std::path::Path;
 use syneroym_identity::Identity;
 
 #[derive(Subcommand, Debug, Clone)]

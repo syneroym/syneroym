@@ -3,14 +3,21 @@
 //! Proxies external client requests into the internal Syneroym network,
 //! managing routing, protocol translation, and error boundaries.
 
+use std::{
+    fmt::{Debug, Formatter},
+    sync::Arc,
+};
+
 use anyhow::Result;
 use dashmap::DashMap;
-use std::sync::Arc;
+use httparse::{EMPTY_HEADER, Request, Status};
 use syneroym_core::config::SubstrateConfig;
 use syneroym_sdk::SyneroymClient;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
-use tokio::sync::Mutex;
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{TcpListener, TcpStream},
+    sync::{Mutex, oneshot, oneshot::Sender},
+};
 use tracing::{debug, error, info};
 
 #[derive(Debug)]
@@ -26,11 +33,11 @@ struct GatewayState {
 pub struct ClientGateway {
     port: u16,
     state: Arc<GatewayState>,
-    shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    shutdown_tx: Option<Sender<()>>,
 }
 
-impl std::fmt::Debug for ClientGateway {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Debug for ClientGateway {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ClientGateway")
             .field("port", &self.port)
             .field("state", &self.state)
@@ -59,7 +66,7 @@ impl ClientGateway {
         let addr = format!("127.0.0.1:{}", self.port);
         let listener = TcpListener::bind(&addr).await?;
 
-        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        let (tx, mut rx) = oneshot::channel();
         self.shutdown_tx = Some(tx);
 
         loop {
@@ -97,10 +104,7 @@ impl ClientGateway {
     }
 }
 
-async fn handle_connection(
-    mut stream: tokio::net::TcpStream,
-    state: Arc<GatewayState>,
-) -> Result<()> {
+async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> Result<()> {
     // Limit header reads to 8 KB — the conventional maximum for HTTP/1.1 headers.
     // Requests with larger headers (e.g. very large JWTs) will receive a 400 response.
     const MAX_HEADER_BYTES: usize = 8 * 1024;
@@ -116,11 +120,11 @@ async fn handle_connection(
         bytes_read += n;
         debug!("gateway read {} bytes, total {}", n, bytes_read);
 
-        let mut headers = [httparse::EMPTY_HEADER; 64];
-        let mut req = httparse::Request::new(&mut headers);
+        let mut headers = [EMPTY_HEADER; 64];
+        let mut req = Request::new(&mut headers);
 
         match req.parse(&buf[..bytes_read]) {
-            Ok(httparse::Status::Complete(_header_len)) => {
+            Ok(Status::Complete(_header_len)) => {
                 let (service_id, interface) = match parse_target_service_and_interface(&req) {
                     Some(res) => res,
                     None => {
@@ -171,7 +175,7 @@ async fn handle_connection(
                 .await?;
                 return Ok(());
             }
-            Ok(httparse::Status::Partial) => {
+            Ok(Status::Partial) => {
                 if bytes_read >= buf.len() {
                     return write_json_rpc_error(&mut stream, 400, "Headers too large").await;
                 }
@@ -189,7 +193,7 @@ async fn handle_connection(
     }
 }
 
-fn parse_target_service_and_interface(req: &httparse::Request) -> Option<(String, String)> {
+fn parse_target_service_and_interface(req: &Request) -> Option<(String, String)> {
     let host_header = req
         .headers
         .iter()
@@ -247,11 +251,7 @@ fn parse_target_service_and_interface(req: &httparse::Request) -> Option<(String
 }
 
 /// Writes a JSON-RPC error response as an HTTP response.
-async fn write_json_rpc_error(
-    stream: &mut tokio::net::TcpStream,
-    status: u16,
-    message: &str,
-) -> Result<()> {
+async fn write_json_rpc_error(stream: &mut TcpStream, status: u16, message: &str) -> Result<()> {
     let body =
         format!(r#"{{"jsonrpc":"2.0","error":{{"code":-32603,"message":{message:?}}},"id":null}}"#);
     let response = format!(

@@ -2,14 +2,23 @@
 //!
 //! Handles bidirectional copy tasks and framing adapters for bridged streams.
 
-use super::RouteHandler;
-use crate::preamble::RoutePreamble;
-use crate::route_handler::encryption::{OwnedStream, apply_encryption_stage};
-use crate::routing::{RoutePipeline, ServiceStage, TransportStage};
 use anyhow::{Result, anyhow};
 use hyper_util::rt::TokioIo;
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
+use iroh::{EndpointAddr, RelayUrl};
+use syneroym_core::dht_registry::EndpointMechanism;
+use tokio::{
+    io,
+    io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader},
+};
 use tracing::debug;
+
+use super::{super::SYNEROYM_ALPN, RouteHandler, dispatch, encryption::ReaderWriter};
+use crate::{
+    net_iroh::IrohStream,
+    preamble::RoutePreamble,
+    route_handler::encryption::{OwnedStream, apply_encryption_stage},
+    routing::{RoutePipeline, ServiceStage, TransportStage},
+};
 
 /// Reads a single line from the reader and parses it as a `RoutePreamble`.
 pub async fn read_preamble<R>(reader: &mut BufReader<R>) -> Result<RoutePreamble>
@@ -39,7 +48,7 @@ impl RouteHandler {
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         // 1. Parse preamble
-        let (read_half, write_half) = tokio::io::split(stream);
+        let (read_half, write_half) = io::split(stream);
         let mut reader = BufReader::new(read_half);
         let writer = write_half;
 
@@ -71,15 +80,10 @@ impl RouteHandler {
             // 2. Extract Iroh EndpointAddr from mechanisms
             let mut iroh_addr = None;
             for mech in info.info.mechanisms {
-                if let syneroym_core::dht_registry::EndpointMechanism::Iroh {
-                    endpoint_addr_bytes,
-                    relay_url,
-                } = mech
-                {
-                    let mut addr: iroh::EndpointAddr =
-                        serde_json::from_slice(&endpoint_addr_bytes)?;
+                if let EndpointMechanism::Iroh { endpoint_addr_bytes, relay_url } = mech {
+                    let mut addr: EndpointAddr = serde_json::from_slice(&endpoint_addr_bytes)?;
                     if let Some(r_url_str) = relay_url
-                        && let Ok(relay_url) = r_url_str.parse::<iroh::RelayUrl>()
+                        && let Ok(relay_url) = r_url_str.parse::<RelayUrl>()
                     {
                         addr = addr.with_relay_url(relay_url);
                     }
@@ -98,7 +102,7 @@ impl RouteHandler {
                 .as_ref()
                 .ok_or_else(|| anyhow!("No Iroh endpoint configured for relay forwarding"))?;
             debug!("[Router] Relay connecting to next hop: {:?}", next_hop_addr.id);
-            let conn = ep.connect(next_hop_addr, super::super::SYNEROYM_ALPN).await?;
+            let conn = ep.connect(next_hop_addr, SYNEROYM_ALPN).await?;
             let (mut out_send, out_recv) = conn.open_bi().await?;
 
             // 4. Send original preamble
@@ -106,9 +110,9 @@ impl RouteHandler {
             out_send.write_all(preamble.to_preamble_line().as_bytes()).await?;
 
             // 5. Blind bidirectional pipe
-            let mut inbound = super::encryption::ReaderWriter { reader, writer };
-            let mut outbound = crate::net_iroh::IrohStream::new(out_send, out_recv);
-            tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await?;
+            let mut inbound = ReaderWriter { reader, writer };
+            let mut outbound = IrohStream::new(out_send, out_recv);
+            io::copy_bidirectional(&mut inbound, &mut outbound).await?;
             debug!("[Router] Relay copy completed successfully");
             return Ok(());
         };
@@ -118,7 +122,7 @@ impl RouteHandler {
 
         // 3. Plan the pipeline stages
         let pipeline = self.plan_pipeline(&preamble, &endpoint);
-        super::dispatch::log_pipeline(&preamble, &pipeline, &endpoint);
+        dispatch::log_pipeline(&preamble, &pipeline, &endpoint);
 
         // 4. Apply encryption stage -> OwnedStream
         let stream = apply_encryption_stage(
@@ -155,7 +159,7 @@ impl RouteHandler {
                 debug!("[Router] TCP connection to {}:{} established", host, port);
 
                 let mut client = stream;
-                tokio::io::copy_bidirectional(&mut client, &mut target)
+                io::copy_bidirectional(&mut client, &mut target)
                     .await
                     .map_err(|e| anyhow!("Error in bidirectional copy for {host}:{port}: {e}"))?;
                 Ok(())

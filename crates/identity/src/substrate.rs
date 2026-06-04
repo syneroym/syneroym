@@ -4,8 +4,10 @@
 //! controller agreement verification, and cryptographic status checks.
 
 use anyhow::{Context, Result, anyhow};
+use chrono::{DateTime, Utc};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
+use serde_json::Map;
 
 use crate::Identity;
 
@@ -102,7 +104,7 @@ pub fn resolve_did_key(did: &str) -> Result<VerifyingKey> {
 pub fn canonicalize_json_value(value: &serde_json::Value) -> serde_json::Value {
     match value {
         serde_json::Value::Object(map) => {
-            let mut sorted_map = serde_json::Map::new();
+            let mut sorted_map = Map::new();
             let mut keys: Vec<_> = map.keys().collect();
             keys.sort();
             for key in keys {
@@ -206,8 +208,8 @@ impl SubstrateIdentityState {
 
             if controller_valid && substrate_valid {
                 if let Some(expires_at) = &agr.expires_at
-                    && let Ok(dt) = chrono::DateTime::parse_from_rfc3339(expires_at)
-                    && dt < chrono::Utc::now()
+                    && let Ok(dt) = DateTime::parse_from_rfc3339(expires_at)
+                    && dt < Utc::now()
                 {
                     if require_agreement {
                         return Err(anyhow!("Agreement expired"));

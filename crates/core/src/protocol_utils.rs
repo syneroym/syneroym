@@ -4,6 +4,7 @@
 //! and HTTP (Host headers) protocols to assist routing and address translation.
 
 use anyhow::{Result, anyhow};
+use httparse::{EMPTY_HEADER, Request, Status};
 use tls_parser::{TlsClientHelloContents, TlsExtension, TlsMessage, TlsMessageHandshake};
 
 #[must_use]
@@ -45,10 +46,10 @@ fn extract_sni_from_hello(hello: &TlsClientHelloContents) -> Result<String> {
 }
 
 pub fn extract_host_from_http(buf: &[u8]) -> Result<String> {
-    let mut headers = [httparse::EMPTY_HEADER; 64];
-    let mut req = httparse::Request::new(&mut headers);
+    let mut headers = [EMPTY_HEADER; 64];
+    let mut req = Request::new(&mut headers);
     match req.parse(buf) {
-        Ok(httparse::Status::Complete(_) | httparse::Status::Partial) => {
+        Ok(Status::Complete(_) | Status::Partial) => {
             for header in req.headers {
                 if header.name.eq_ignore_ascii_case("Host") {
                     return Ok(String::from_utf8_lossy(header.value).to_string());

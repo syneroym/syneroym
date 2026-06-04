@@ -1,11 +1,16 @@
+use std::{
+    cmp::Reverse,
+    fs::{self, OpenOptions},
+    io::Write,
+    path::Path,
+    process::{Command, Stdio},
+};
+
 use anyhow::Result;
 use chrono::Utc;
 use serde_json::Value;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
-use std::path::Path;
-use std::process::{Command, Stdio};
 use sysinfo::System;
+use walkdir::WalkDir;
 
 fn get_git_commit() -> String {
     Command::new("git")
@@ -54,7 +59,7 @@ fn main() -> Result<()> {
     let mut bench_rows = Vec::new();
     let criterion_dir = Path::new("target/criterion");
     if criterion_dir.exists() {
-        for entry in walkdir::WalkDir::new(criterion_dir).into_iter().filter_map(|e| e.ok()) {
+        for entry in WalkDir::new(criterion_dir).into_iter().filter_map(|e| e.ok()) {
             if entry.path().ends_with("new/estimates.json")
                 && let Ok(content) = fs::read_to_string(entry.path())
                 && let Ok(json) = serde_json::from_str::<Value>(&content)
@@ -106,8 +111,7 @@ fn main() -> Result<()> {
             .filter_map(|e| e.ok())
             .filter(|e| e.file_name().to_string_lossy().starts_with("concurrency_"))
             .collect();
-        concurrency_files
-            .sort_by_key(|a| std::cmp::Reverse(a.metadata().unwrap().modified().unwrap()));
+        concurrency_files.sort_by_key(|a| Reverse(a.metadata().unwrap().modified().unwrap()));
         if let Some(file) = concurrency_files.first()
             && let Ok(content) = fs::read_to_string(file.path())
             && let Ok(json) = serde_json::from_str::<Value>(&content)
@@ -138,7 +142,7 @@ fn main() -> Result<()> {
             .filter_map(|e| e.ok())
             .filter(|e| e.file_name().to_string_lossy().starts_with("soak_"))
             .collect();
-        soak_files.sort_by_key(|a| std::cmp::Reverse(a.metadata().unwrap().modified().unwrap()));
+        soak_files.sort_by_key(|a| Reverse(a.metadata().unwrap().modified().unwrap()));
         if let Some(file) = soak_files.first()
             && let Ok(content) = fs::read_to_string(file.path())
             && let Ok(json) = serde_json::from_str::<Value>(&content)

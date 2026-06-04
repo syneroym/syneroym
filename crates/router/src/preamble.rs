@@ -36,8 +36,10 @@
 //! preamble itself; they are **derived** at planning time (`plan_pipeline`) from the combination
 //! of preamble fields and target registry capability entries.
 
+use std::{convert::Infallible, fmt};
+
 use anyhow::{Result, anyhow};
-use std::fmt;
+use fmt::{Display, Formatter};
 
 /// Separator used in the routing preamble between the interface name and service ID.
 pub const PREAMBLE_SEPARATOR: &str = "|";
@@ -66,8 +68,8 @@ impl FromStr for RouteTransport {
     }
 }
 
-impl fmt::Display for RouteTransport {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for RouteTransport {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::Binary => write!(f, "binary"),
             Self::Http => write!(f, "http"),
@@ -89,7 +91,7 @@ pub enum RouteProtocol {
 }
 
 impl FromStr for RouteProtocol {
-    type Err = std::convert::Infallible;
+    type Err = Infallible;
 
     fn from_str(raw: &str) -> std::result::Result<Self, Self::Err> {
         Ok(match raw {
@@ -101,8 +103,8 @@ impl FromStr for RouteProtocol {
     }
 }
 
-impl fmt::Display for RouteProtocol {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for RouteProtocol {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::JsonRpc => write!(f, "json-rpc"),
             Self::Wrpc => write!(f, "wrpc"),
@@ -254,8 +256,8 @@ impl RoutePreamble {
     }
 }
 
-impl fmt::Display for RoutePreamble {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for RoutePreamble {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let scheme = match (self.transport, &self.protocol) {
             (RouteTransport::Http, RouteProtocol::JsonRpc) => "http".to_string(),
             (RouteTransport::Http, p) => format!("http-{p}"),

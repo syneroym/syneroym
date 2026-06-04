@@ -2,8 +2,13 @@
 //!
 //! Registers CLI parsing hooks and routes input options to command modules.
 
-use clap::Subcommand;
 use std::path::PathBuf;
+
+use app::AppCommands;
+use clap::Subcommand;
+use identity::IdentityCommands;
+use registry::RegistryCommands;
+use substrate::SubstrateCommands;
 use syneroym_core::util;
 use syneroym_identity::Identity;
 
@@ -18,17 +23,17 @@ pub enum Commands {
     #[command(alias = "node")]
     Substrate {
         #[command(subcommand)]
-        command: substrate::SubstrateCommands,
+        command: SubstrateCommands,
     },
     /// Manage `SynApps` on the local node
     App {
         #[command(subcommand)]
-        command: app::AppCommands,
+        command: AppCommands,
     },
     /// Manage local cryptographic identities
     Identity {
         #[command(subcommand)]
-        command: identity::IdentityCommands,
+        command: IdentityCommands,
     },
     /// Compute the 8-character short hash of an input string
     Shorthash {
@@ -49,7 +54,7 @@ pub enum Commands {
     /// Manage entries in the community registry
     Registry {
         #[command(subcommand)]
-        command: registry::RegistryCommands,
+        command: RegistryCommands,
     },
 }
 

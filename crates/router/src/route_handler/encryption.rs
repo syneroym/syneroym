@@ -2,20 +2,27 @@
 //!
 //! Encapsulates ECDH-P256 handshakes, signature verification, and AES-256-GCM chunk framing.
 
-use crate::preamble::RoutePreamble;
-use crate::routing::EncryptionStage;
+use std::{
+    cmp,
+    io::ErrorKind,
+    pin::Pin,
+    task::{Context as TaskContext, Poll},
+};
+
+use aes_gcm::{Aes256Gcm, Key, Nonce, aead::OsRng};
 use anyhow::{Result, anyhow};
-use std::pin::Pin;
-use std::task::{Context as TaskContext, Poll};
+use p256::{EncodedPoint, PublicKey, ecdh::EphemeralSecret};
 use syneroym_identity::Identity;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tracing::debug;
 
+use crate::{preamble::RoutePreamble, routing::EncryptionStage};
+
 macro_rules! ready {
     ($e:expr $(,)?) => {
         match $e {
-            std::task::Poll::Ready(t) => t,
-            std::task::Poll::Pending => return std::task::Poll::Pending,
+            Poll::Ready(t) => t,
+            Poll::Pending => return Poll::Pending,
         }
     };
 }
@@ -60,10 +67,8 @@ impl<R: Unpin, W: AsyncWrite + Unpin> AsyncWrite for ReaderWriter<R, W> {
 /// A type-erased bidirectional stream, owned by the caller.
 /// Used after the encryption stage to allow downstream stages to be
 /// generic over whether the stream is encrypted or plaintext.
-pub type OwnedStream = ReaderWriter<
-    Box<dyn tokio::io::AsyncRead + Unpin + Send>,
-    Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
->;
+pub type OwnedStream =
+    ReaderWriter<Box<dyn AsyncRead + Unpin + Send>, Box<dyn AsyncWrite + Unpin + Send>>;
 
 enum ReadState {
     ReadLen { buf: [u8; 2], bytes_read: usize },
@@ -74,7 +79,7 @@ enum ReadState {
 
 struct EncryptedReader<R> {
     reader: R,
-    cipher: aes_gcm::Aes256Gcm,
+    cipher: Aes256Gcm,
     state: ReadState,
 }
 
@@ -89,7 +94,7 @@ impl<R: AsyncRead + Unpin> AsyncRead for EncryptedReader<R> {
             match &mut this.state {
                 ReadState::Decrypted { buf: decrypted_buf, pos } => {
                     if *pos < decrypted_buf.len() {
-                        let to_read = std::cmp::min(decrypted_buf.len() - *pos, buf.remaining());
+                        let to_read = cmp::min(decrypted_buf.len() - *pos, buf.remaining());
                         buf.put_slice(&decrypted_buf[*pos..*pos + to_read]);
                         *pos += to_read;
                         return Poll::Ready(Ok(()));
@@ -107,7 +112,7 @@ impl<R: AsyncRead + Unpin> AsyncRead for EncryptedReader<R> {
                                 return Poll::Ready(Ok(()));
                             }
                             return Poll::Ready(Err(std::io::Error::new(
-                                std::io::ErrorKind::UnexpectedEof,
+                                ErrorKind::UnexpectedEof,
                                 "unexpected EOF reading chunk length",
                             )));
                         }
@@ -116,7 +121,7 @@ impl<R: AsyncRead + Unpin> AsyncRead for EncryptedReader<R> {
                     let payload_len = u16::from_be_bytes(*len_buf);
                     if payload_len < 12 {
                         return Poll::Ready(Err(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
+                            ErrorKind::InvalidData,
                             "invalid chunk length",
                         )));
                     }
@@ -134,19 +139,19 @@ impl<R: AsyncRead + Unpin> AsyncRead for EncryptedReader<R> {
                         let n = temp_buf.filled().len();
                         if n == 0 {
                             return Poll::Ready(Err(std::io::Error::new(
-                                std::io::ErrorKind::UnexpectedEof,
+                                ErrorKind::UnexpectedEof,
                                 "unexpected EOF reading chunk payload",
                             )));
                         }
                         *bytes_read += n;
                     }
                     // Decrypt payload
-                    let nonce = aes_gcm::Nonce::from_slice(&payload_buf[..12]);
+                    let nonce = Nonce::from_slice(&payload_buf[..12]);
                     let ciphertext = &payload_buf[12..];
                     use aes_gcm::aead::Aead;
                     let plaintext = this.cipher.decrypt(nonce, ciphertext).map_err(|e| {
                         std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
+                            ErrorKind::InvalidData,
                             format!("Decryption failed: {e}"),
                         )
                     })?;
@@ -167,7 +172,7 @@ struct PendingWrite {
 
 struct EncryptedWriter<W> {
     writer: W,
-    cipher: aes_gcm::Aes256Gcm,
+    cipher: Aes256Gcm,
     write_buf: Vec<u8>,
     pending_write: Option<PendingWrite>,
 }
@@ -181,7 +186,7 @@ impl<W: AsyncWrite + Unpin> EncryptedWriter<W> {
         use rand::RngCore;
         let mut nonce_bytes = [0u8; 12];
         rand::rng().fill_bytes(&mut nonce_bytes);
-        let nonce = aes_gcm::Nonce::from_slice(&nonce_bytes);
+        let nonce = Nonce::from_slice(&nonce_bytes);
 
         let ciphertext = self
             .cipher
@@ -206,7 +211,7 @@ impl<W: AsyncWrite + Unpin> EncryptedWriter<W> {
                     ready!(Pin::new(&mut self.writer).poll_write(cx, &pending.buf[pending.pos..]))?;
                 if n == 0 {
                     return Poll::Ready(Err(std::io::Error::new(
-                        std::io::ErrorKind::WriteZero,
+                        ErrorKind::WriteZero,
                         "failed to write encrypted chunk to underlying stream",
                     )));
                 }
@@ -230,7 +235,7 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for EncryptedWriter<W> {
 
         // Buffer the incoming plaintext
         let space = 8192 - this.write_buf.len();
-        let to_write = std::cmp::min(space, buf.len());
+        let to_write = cmp::min(space, buf.len());
         this.write_buf.extend_from_slice(&buf[..to_write]);
 
         // If the buffer is full, encrypt and start writing it
@@ -293,14 +298,14 @@ where
             let client_pub_key_bytes = hex::decode(pubkey_hex)
                 .map_err(|e| anyhow!("Invalid hex pubkey in preamble: {e}"))?;
 
-            let client_pub_key = p256::EncodedPoint::from_bytes(&client_pub_key_bytes)
+            let client_pub_key = EncodedPoint::from_bytes(&client_pub_key_bytes)
                 .map_err(|e| anyhow!("Invalid public key bytes: {e}"))?;
 
-            let public_key = p256::PublicKey::from_sec1_bytes(client_pub_key.as_bytes())
+            let public_key = PublicKey::from_sec1_bytes(client_pub_key.as_bytes())
                 .map_err(|e| anyhow!("Invalid public key point: {e}"))?;
 
-            let secret = p256::ecdh::EphemeralSecret::random(&mut aes_gcm::aead::OsRng);
-            let server_pub_key = p256::EncodedPoint::from(secret.public_key());
+            let secret = EphemeralSecret::random(&mut OsRng);
+            let server_pub_key = EncodedPoint::from(secret.public_key());
 
             let shared = secret.diffie_hellman(&public_key);
             let shared_bytes = shared.raw_secret_bytes();
@@ -309,8 +314,7 @@ where
             key.copy_from_slice(&shared_bytes[..32]);
 
             use aes_gcm::KeyInit;
-            let cipher =
-                aes_gcm::Aes256Gcm::new(aes_gcm::Key::<aes_gcm::Aes256Gcm>::from_slice(&key));
+            let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
 
             // Send our server public key and signature
             let mut payload = Vec::with_capacity(130);

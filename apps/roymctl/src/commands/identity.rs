@@ -2,10 +2,10 @@
 //!
 //! Commands to generate node keypairs, create agreements, and inspect node DIDs.
 
+use std::{fs, path::Path};
+
 use clap::Subcommand;
-use std::fs;
-use std::path::Path;
-use syneroym_identity::Identity;
+use syneroym_identity::{Identity, substrate};
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum IdentityCommands {
@@ -39,7 +39,7 @@ pub async fn handle(command: &IdentityCommands, dir: &Path) -> anyhow::Result<()
             let identity = Identity::generate()?;
             identity.save_to_path(&key_path)?;
 
-            let did = syneroym_identity::substrate::derive_did_key(&identity.public_key());
+            let did = substrate::derive_did_key(&identity.public_key());
 
             println!("Created new local identity: {name}");
             println!("DID: {did}");
@@ -65,8 +65,7 @@ pub async fn handle(command: &IdentityCommands, dir: &Path) -> anyhow::Result<()
                     && let Some(name) = path.file_stem().and_then(|s| s.to_str())
                 {
                     if let Ok(identity) = Identity::load_from_path(&path) {
-                        let did =
-                            syneroym_identity::substrate::derive_did_key(&identity.public_key());
+                        let did = substrate::derive_did_key(&identity.public_key());
                         println!("{name:<20} {did:<60}");
                     } else {
                         println!("{:<20} {:<60}", name, "[Invalid Key File]");
@@ -81,7 +80,7 @@ pub async fn handle(command: &IdentityCommands, dir: &Path) -> anyhow::Result<()
             }
 
             let identity = Identity::load_from_path(&key_path)?;
-            let did = syneroym_identity::substrate::derive_did_key(&identity.public_key());
+            let did = substrate::derive_did_key(&identity.public_key());
 
             println!("Identity: {name}");
             println!("DID:      {did}");

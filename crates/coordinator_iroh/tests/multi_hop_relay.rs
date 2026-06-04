@@ -4,32 +4,36 @@
 //! which organizes relays, registries, substrates across network boundaries in a hierarchy
 //! and tests bidirectional e2e connectivity between clients and substrates across networks.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-use anyhow::Result;
-use iroh::{Endpoint, RelayMap, RelayMode, RelayUrl, SecretKey};
-use syneroym_core::config::AccessControl;
-use syneroym_core::config::IrohParentConfig;
-use syneroym_core::dht_registry::RegistryClient;
-use syneroym_core::local_registry::EndpointRegistry;
-use syneroym_core::local_registry::SubstrateEndpoint;
-use syneroym_core::storage;
-
 use std::time::Duration;
+
+use anyhow::Result;
+use iroh::{
+    Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl, SecretKey, endpoint::presets::N0,
+    protocol::Router,
+};
+use reqwest::Client;
 use syneroym_community_registry::EcosystemRegistry;
 use syneroym_coordinator_iroh::{CoordinatorInfo, CoordinatorIroh};
-use syneroym_core::config::{
-    CoordinatorIrohConfig, CoordinatorRole, ServiceRegistryRole, SubstrateConfig,
+use syneroym_core::{
+    config::{
+        AccessControl, CoordinatorIrohConfig, CoordinatorRole, IrohParentConfig,
+        ServiceRegistryRole, SubstrateConfig,
+    },
+    dht_registry::{
+        EndpointInfo, EndpointMechanism, EndpointType, RegistryClient, SignedEndpointInfo,
+    },
+    local_registry::{EndpointRegistry, SubstrateEndpoint},
+    storage,
 };
-use syneroym_core::dht_registry::{
-    EndpointInfo, EndpointMechanism, EndpointType, SignedEndpointInfo,
-};
-use syneroym_identity::Identity;
-use syneroym_identity::substrate::derive_did_key;
-use syneroym_router::RouteHandler;
+use syneroym_identity::{Identity, substrate::derive_did_key};
+use syneroym_router::{RouteHandler, SYNEROYM_ALPN};
+use syneroym_sdk::SyneroymClient;
+use tokio::time;
 
 fn create_signed_info(
     identity: &Identity,
     service_id: &str,
-    endpoint_addr: &iroh::EndpointAddr,
+    endpoint_addr: &EndpointAddr,
 ) -> SignedEndpointInfo {
     let endpoint_addr_bytes = serde_json::to_vec(endpoint_addr).unwrap();
     let info = EndpointInfo {
@@ -84,13 +88,12 @@ async fn test_registry_propagation() -> Result<()> {
     let identity = Identity::generate()?;
     let did = derive_did_key(&identity.public_key());
     let dummy_secret = SecretKey::generate(&mut rand::rng());
-    let dummy_ep =
-        Endpoint::builder(iroh::endpoint::presets::N0).secret_key(dummy_secret).bind().await?;
+    let dummy_ep = Endpoint::builder(N0).secret_key(dummy_secret).bind().await?;
     let dummy_addr = dummy_ep.addr();
 
     let signed_info = create_signed_info(&identity, &did, &dummy_addr);
 
-    let client = reqwest::Client::new();
+    let client = Client::new();
     let res = client.post(format!("{rp_url}/register")).json(&signed_info).send().await?;
     assert!(res.status().is_success());
 
@@ -98,7 +101,7 @@ async fn test_registry_propagation() -> Result<()> {
     let mut propagated = false;
     let registry_client = RegistryClient::new(true, Some(r_url.clone()));
     for _ in 0..10 {
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        time::sleep(Duration::from_millis(100)).await;
         if let Ok(info) = registry_client.lookup(&did, true).await {
             assert_eq!(info.info.service_id, did);
             propagated = true;
@@ -152,7 +155,7 @@ async fn test_inbound_relay() -> Result<()> {
     let mut c = CoordinatorIroh::init(&config_c).await?;
     let c_info_addr = c.info_addr().unwrap();
 
-    let info_client = reqwest::Client::new();
+    let info_client = Client::new();
     let c_info: CoordinatorInfo =
         info_client.get(format!("http://{c_info_addr}/v1/info")).send().await?.json().await?;
     let c_relay_url = c_info.relay_url.clone().unwrap();
@@ -202,7 +205,7 @@ async fn test_inbound_relay() -> Result<()> {
         RouteHandler::init(did_z.clone(), &config_z, endpoint_registry_z, secret_z_bytes).await?;
 
     // Bind Sz to Iroh so Cp can connect to it (Sz uses Cp's relay url)
-    let mut ep_z_bldr = Endpoint::builder(iroh::endpoint::presets::N0);
+    let mut ep_z_bldr = Endpoint::builder(N0);
     if let Some(relay_url) = cp_info.relay_url.as_ref().and_then(|r| r.parse::<RelayUrl>().ok()) {
         ep_z_bldr = ep_z_bldr.relay_mode(RelayMode::Custom(RelayMap::from(relay_url)));
     }
@@ -211,9 +214,7 @@ async fn test_inbound_relay() -> Result<()> {
     ep_z.online().await;
 
     let ep_z_addr = ep_z.addr();
-    let router_z = iroh::protocol::Router::builder(ep_z)
-        .accept(syneroym_router::SYNEROYM_ALPN, route_handler_z)
-        .spawn();
+    let router_z = Router::builder(ep_z).accept(SYNEROYM_ALPN, route_handler_z).spawn();
 
     // Register Sz in community registry R
     let signed_info_z = create_signed_info(&identity_z, &did_z, &ep_z_addr);
@@ -221,7 +222,7 @@ async fn test_inbound_relay() -> Result<()> {
     assert!(res.status().is_success());
 
     // 5. Connect from a client in public network (under C) to Sz via C -> Cp
-    let mut sdk_client = syneroym_sdk::SyneroymClient::new_with_mechanisms(
+    let mut sdk_client = SyneroymClient::new_with_mechanisms(
         did_z.clone(),
         vec![EndpointMechanism::Iroh {
             endpoint_addr_bytes: c_info.endpoint_addr_bytes,
@@ -283,7 +284,7 @@ async fn test_outbound_relay() -> Result<()> {
     let mut c = CoordinatorIroh::init(&config_c).await?;
     let c_info_addr = c.info_addr().unwrap();
 
-    let info_client = reqwest::Client::new();
+    let info_client = Client::new();
     let c_info: CoordinatorInfo =
         info_client.get(format!("http://{c_info_addr}/v1/info")).send().await?.json().await?;
     let c_relay_url = c_info.relay_url.clone().unwrap();
@@ -333,7 +334,7 @@ async fn test_outbound_relay() -> Result<()> {
         RouteHandler::init(did_x.clone(), &config_x, endpoint_registry_x, secret_x_bytes).await?;
 
     // Bind Sx to Iroh so C can connect to it (Sx uses C's relay url)
-    let mut ep_x_bldr = Endpoint::builder(iroh::endpoint::presets::N0);
+    let mut ep_x_bldr = Endpoint::builder(N0);
     ep_x_bldr = ep_x_bldr
         .relay_mode(RelayMode::Custom(RelayMap::from(c_relay_url.parse::<RelayUrl>().unwrap())));
     let secret_key_x = SecretKey::generate(&mut rand::rng());
@@ -341,9 +342,7 @@ async fn test_outbound_relay() -> Result<()> {
     ep_x.online().await;
 
     let ep_x_addr = ep_x.addr();
-    let router_x = iroh::protocol::Router::builder(ep_x)
-        .accept(syneroym_router::SYNEROYM_ALPN, route_handler_x)
-        .spawn();
+    let router_x = Router::builder(ep_x).accept(SYNEROYM_ALPN, route_handler_x).spawn();
 
     // Register Sx in community registry R
     let signed_info_x = create_signed_info(&identity_x, &did_x, &ep_x_addr);
@@ -351,7 +350,7 @@ async fn test_outbound_relay() -> Result<()> {
     assert!(res.status().is_success());
 
     // 5. Connect from a client in private network (under Cp) to Sx via Cp -> C
-    let mut sdk_client = syneroym_sdk::SyneroymClient::new_with_mechanisms(
+    let mut sdk_client = SyneroymClient::new_with_mechanisms(
         did_x.clone(),
         vec![EndpointMechanism::Iroh {
             endpoint_addr_bytes: cp_info.endpoint_addr_bytes,

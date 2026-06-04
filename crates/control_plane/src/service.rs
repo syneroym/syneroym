@@ -3,16 +3,18 @@
 //! Handles requests for registering, deploying, listing, and destroying
 //! sandbox instances or services running on the node.
 
-use crate::dummy_sandbox::{AppSandboxEngine, ContainerEngine};
+use std::{collections::HashMap, fmt, fs, path::PathBuf, sync::Arc};
+
 use anyhow::Result;
-use std::fmt;
-use std::sync::Arc;
+use fmt::{Debug, Formatter};
 use syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::{
     DeployManifest, ServiceType,
 };
 use syneroym_core::local_registry::{EndpointRegistry, SubstrateEndpoint};
 use syneroym_rpc::{NativeInvocation, NativeResponse, NativeService, RpcError, RpcResult};
 use tracing::info;
+
+use crate::dummy_sandbox::{AppSandboxEngine, ContainerEngine};
 
 const ORCHESTRATOR_INTERFACE: &str = "orchestrator";
 
@@ -24,11 +26,11 @@ pub struct ControlPlaneService {
     registry: EndpointRegistry,
     app_sandbox_engine: Arc<AppSandboxEngine>,
     podman_sandbox_engine: Arc<ContainerEngine>,
-    hosted_apps_dir: std::path::PathBuf,
+    hosted_apps_dir: PathBuf,
 }
 
-impl fmt::Debug for ControlPlaneService {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Debug for ControlPlaneService {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("ControlPlaneService")
             .field("service_id", &self.service_id)
             .finish_non_exhaustive()
@@ -41,12 +43,12 @@ impl ControlPlaneService {
         app_sandbox_engine: Arc<AppSandboxEngine>,
         podman_sandbox_engine: Arc<ContainerEngine>,
         registry: EndpointRegistry,
-        hosted_apps_dir: std::path::PathBuf,
+        hosted_apps_dir: PathBuf,
     ) -> Result<Self> {
         info!("Initializing ControlPlaneService (Orchestrator)...");
 
         if !hosted_apps_dir.exists() {
-            std::fs::create_dir_all(&hosted_apps_dir)?;
+            fs::create_dir_all(&hosted_apps_dir)?;
         }
 
         Ok(Self {
@@ -114,7 +116,7 @@ impl ControlPlaneService {
 
         if let Some(cert) = &manifest.registry_certificate {
             let cert_path = self.hosted_apps_dir.join(format!("{service_id}.json"));
-            if let Err(e) = std::fs::write(&cert_path, cert) {
+            if let Err(e) = fs::write(&cert_path, cert) {
                 tracing::warn!("Failed to save registry certificate for {}: {}", service_id, e);
             } else {
                 tracing::debug!(
@@ -213,7 +215,7 @@ impl ControlPlaneService {
 
         let cert_path = self.hosted_apps_dir.join(format!("{service_id}.json"));
         if cert_path.exists()
-            && let Err(e) = std::fs::remove_file(&cert_path)
+            && let Err(e) = fs::remove_file(&cert_path)
         {
             tracing::warn!("Failed to remove registry certificate for {}: {}", service_id, e);
         }
@@ -261,8 +263,7 @@ impl ControlPlaneService {
 
     async fn list(&self) -> RpcResult<NativeResponse> {
         let endpoints = self.registry.get_all_endpoints();
-        let mut services: std::collections::HashMap<String, DeployedService> =
-            std::collections::HashMap::new();
+        let mut services: HashMap<String, DeployedService> = HashMap::new();
 
         for (service_id, interface, endpoint) in endpoints {
             let entry = services.entry(service_id.clone()).or_insert_with(|| DeployedService {

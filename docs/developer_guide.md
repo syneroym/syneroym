@@ -31,6 +31,15 @@ pnpm install
 cargo build
 ```
 
+### Formatting the Project
+
+To ensure all files adhere to the project's strict idiomatic guidelines—including grouping and separating imports by module, crate, and external libraries—use the nightly formatting command. Note that standard stable `cargo fmt` will ignore these unstable features, which can lead to disjointed newlines.
+
+```bash
+# Aggressively format all Rust code, merging and strictly grouping imports
+cargo +nightly fmt --all -- --unstable-features --config imports_granularity=Crate,group_imports=StdExternalCrate
+```
+
 ### Run Commands
 
 To run local CLI and substrate nodes:

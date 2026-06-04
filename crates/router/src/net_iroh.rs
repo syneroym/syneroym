@@ -3,17 +3,25 @@
 //! Adapts Iroh peer endpoints to the connection router, handling secure tunnel
 //! connection requests.
 
-use std::pin::Pin;
-use std::task::{Context as TaskContext, Poll};
+use std::{
+    fmt::{Debug, Formatter},
+    pin::Pin,
+    task::{Context as TaskContext, Poll},
+};
+
+use iroh::{
+    Endpoint, RelayMap, RelayMode, RelayUrl, SecretKey,
+    endpoint::{RecvStream, SendStream, presets::N0},
+};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 pub struct IrohStream {
-    send: iroh::endpoint::SendStream,
-    recv: iroh::endpoint::RecvStream,
+    send: SendStream,
+    recv: RecvStream,
 }
 
-impl std::fmt::Debug for IrohStream {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Debug for IrohStream {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("IrohStream")
             .field("send", &"iroh::endpoint::SendStream")
             .field("recv", &"iroh::endpoint::RecvStream")
@@ -23,7 +31,7 @@ impl std::fmt::Debug for IrohStream {
 
 impl IrohStream {
     #[must_use]
-    pub const fn new(send: iroh::endpoint::SendStream, recv: iroh::endpoint::RecvStream) -> Self {
+    pub const fn new(send: SendStream, recv: RecvStream) -> Self {
         Self { send, recv }
     }
 }
@@ -61,13 +69,13 @@ impl AsyncWrite for IrohStream {
 
 pub async fn build_iroh_endpoint(
     relay_url: Option<String>,
-    secret_key: Option<iroh::SecretKey>,
-) -> anyhow::Result<iroh::Endpoint> {
-    let mut builder = iroh::Endpoint::builder(iroh::endpoint::presets::N0);
+    secret_key: Option<SecretKey>,
+) -> anyhow::Result<Endpoint> {
+    let mut builder = Endpoint::builder(N0);
     if let Some(url) = relay_url
-        && let Ok(relay_url) = url.parse::<iroh::RelayUrl>()
+        && let Ok(relay_url) = url.parse::<RelayUrl>()
     {
-        builder = builder.relay_mode(iroh::RelayMode::Custom(iroh::RelayMap::from(relay_url)));
+        builder = builder.relay_mode(RelayMode::Custom(RelayMap::from(relay_url)));
     }
     if let Some(sk) = secret_key {
         builder = builder.secret_key(sk);

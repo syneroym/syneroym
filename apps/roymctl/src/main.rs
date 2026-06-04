@@ -1,8 +1,11 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 //! Command-line control interface for operations on, and through, a Syneroym substrate.
 
+use std::{path::PathBuf, process};
+
 use clap::Parser;
-use std::path::PathBuf;
+use commands::Commands;
+use rustls::crypto::ring;
 
 mod commands;
 
@@ -14,7 +17,7 @@ const DEFAULT_API_URL: &str = "http://localhost:7961";
 #[command(about = "Syneroym Control CLI (API Client)", long_about = None)]
 struct Cli {
     #[command(subcommand)]
-    command: commands::Commands,
+    command: Commands,
 
     /// The base URL of the Syneroym Community Registry
     #[arg(global = true, long, default_value = DEFAULT_API_URL)]
@@ -31,9 +34,9 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    if rustls::crypto::ring::default_provider().install_default().is_err() {
+    if ring::default_provider().install_default().is_err() {
         eprintln!("Failed to install rustls default crypto provider");
-        std::process::exit(1);
+        process::exit(1);
     }
 
     let cli = Cli::parse();

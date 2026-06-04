@@ -1,21 +1,36 @@
+use std::{
+    fs,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
+    time::{Duration, Instant},
+};
+
 use anyhow::{Context, Result};
 use chrono::Utc;
+use reqwest::Client;
 use serde_json::json;
-use std::fs;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-use syneroym_core::dht_registry::EndpointInfo;
-use syneroym_core::dht_registry::EndpointType;
-use syneroym_core::test_constants;
-use syneroym_identity::Identity;
-use tokio::sync::{Barrier, Mutex};
-use tokio::time::sleep;
+use syneroym_core::{
+    dht_registry::{EndpointInfo, EndpointType},
+    test_constants,
+};
+use syneroym_identity::{Identity, substrate};
+use syneroym_sdk::SyneroymClient;
+use test_constants::GREETER_INTERFACE_NAME;
+use tokio::{
+    sync::{Barrier, Mutex},
+    task, time,
+    time::sleep,
+};
 use tracing::{info, warn};
 
-use crate::orchestrator::TestEnvironment;
-use crate::reporter::{
-    ScenarioResultSummary, get_substrate_metrics, print_concurrency_summary,
-    save_concurrency_results,
+use crate::{
+    orchestrator::TestEnvironment,
+    reporter::{
+        ScenarioResultSummary, get_substrate_metrics, print_concurrency_summary,
+        save_concurrency_results,
+    },
 };
 
 pub async fn run_scenario() -> Result<()> {
@@ -28,25 +43,25 @@ pub async fn run_scenario() -> Result<()> {
     )?;
 
     let app_identity = Identity::generate().unwrap();
-    let app_service_id = syneroym_identity::substrate::derive_did_key(&app_identity.public_key());
+    let app_service_id = substrate::derive_did_key(&app_identity.public_key());
 
     let registry_url = "http://127.0.0.1:7961".to_string();
     let mut orchestrator_client =
-        syneroym_sdk::SyneroymClient::new(env.substrate_did.clone(), registry_url.clone());
+        SyneroymClient::new(env.substrate_did.clone(), registry_url.clone());
     orchestrator_client.wait_for_ready(Duration::from_secs(10)).await?;
 
     // Deploy WASM Greeter service
     orchestrator_client
         .deploy_wasm(
             app_service_id.clone(),
-            vec![test_constants::GREETER_INTERFACE_NAME.to_string()],
+            vec![GREETER_INTERFACE_NAME.to_string()],
             wasm_bytes,
             None,
         )
         .await?;
 
     // Register in Registry
-    let http_client = reqwest::Client::new();
+    let http_client = Client::new();
     let substrate_info = orchestrator_client.lookup().await?;
     let mechanisms = substrate_info.info.mechanisms;
 
@@ -66,18 +81,17 @@ pub async fn run_scenario() -> Result<()> {
     assert!(res.status().is_success());
 
     // Connect Client to the service
-    let mut app_client =
-        syneroym_sdk::SyneroymClient::new(app_service_id.clone(), registry_url.clone());
+    let mut app_client = SyneroymClient::new(app_service_id.clone(), registry_url.clone());
     app_client.connect().await?;
 
     let shared_client = Arc::new(app_client);
-    let interface_name = test_constants::GREETER_INTERFACE_NAME;
+    let interface_name = GREETER_INTERFACE_NAME;
     let method_name = "greet";
 
     // --- Start Resource Profiling Task (Category 4) ---
     info!("Starting background resource metrics profiling task");
     let resource_samples = Arc::new(Mutex::new(Vec::new()));
-    let stop_profiling = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop_profiling = Arc::new(AtomicBool::new(false));
 
     // Capture initial baseline metrics
     let mut baseline_rss = 0.0;
@@ -96,7 +110,7 @@ pub async fn run_scenario() -> Result<()> {
     let stop = Arc::clone(&stop_profiling);
     let sampler_handle = tokio::spawn(async move {
         let start_time = Instant::now();
-        while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+        while !stop.load(Ordering::Relaxed) {
             if let Ok(m) = get_substrate_metrics().await {
                 let elapsed = start_time.elapsed().as_secs_f64();
                 if let Some(gauges) = m.get("gauges") {
@@ -162,7 +176,7 @@ pub async fn run_scenario() -> Result<()> {
         run_connection_churn(registry_url, app_service_id, 10, Duration::from_secs(15)).await?;
 
     // --- Teardown & Stop Profiling ---
-    stop_profiling.store(true, std::sync::atomic::Ordering::Relaxed);
+    stop_profiling.store(true, Ordering::Relaxed);
     let _ = sampler_handle.await;
 
     // Collect collected metrics samples
@@ -247,7 +261,7 @@ pub async fn run_scenario() -> Result<()> {
 }
 
 async fn run_sustained_concurrency(
-    client: Arc<syneroym_sdk::SyneroymClient>,
+    client: Arc<SyneroymClient>,
     interface: &'static str,
     method: &'static str,
     duration: Duration,
@@ -255,8 +269,8 @@ async fn run_sustained_concurrency(
 ) -> Result<ScenarioResultSummary> {
     let start_time = Instant::now();
     let latencies = Arc::new(Mutex::new(Vec::new()));
-    let success_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let failure_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let success_count = Arc::new(AtomicU64::new(0));
+    let failure_count = Arc::new(AtomicU64::new(0));
     let mut handles = Vec::new();
 
     for _ in 0..concurrency {
@@ -271,17 +285,17 @@ async fn run_sustained_concurrency(
                 match client.request(interface, method, serde_json::json!(["BenchmarkUser"])).await
                 {
                     Ok(_) => {
-                        success.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        success.fetch_add(1, Ordering::Relaxed);
                         let elapsed_us = req_start.elapsed().as_micros() as u64;
                         let mut l = latencies.lock().await;
                         l.push(elapsed_us);
                     }
                     Err(e) => {
-                        failure.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        failure.fetch_add(1, Ordering::Relaxed);
                         warn!("Sustained load request failed: {:?}", e);
                     }
                 }
-                tokio::task::yield_now().await;
+                task::yield_now().await;
             }
         });
         handles.push(handle);
@@ -292,8 +306,8 @@ async fn run_sustained_concurrency(
     }
 
     let actual_duration = start_time.elapsed().as_secs_f64();
-    let s_count = success_count.load(std::sync::atomic::Ordering::Relaxed);
-    let f_count = failure_count.load(std::sync::atomic::Ordering::Relaxed);
+    let s_count = success_count.load(Ordering::Relaxed);
+    let f_count = failure_count.load(Ordering::Relaxed);
     let total = s_count + f_count;
 
     let mut l = latencies.lock().await;
@@ -318,7 +332,7 @@ async fn run_sustained_concurrency(
 }
 
 async fn run_spike_load(
-    client: Arc<syneroym_sdk::SyneroymClient>,
+    client: Arc<SyneroymClient>,
     interface: &'static str,
     method: &'static str,
     steady_duration: Duration,
@@ -327,8 +341,8 @@ async fn run_spike_load(
 ) -> Result<(ScenarioResultSummary, Vec<serde_json::Value>)> {
     let start_time = Instant::now();
     let timeline = Arc::new(Mutex::new(Vec::new()));
-    let success_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let failure_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let success_count = Arc::new(AtomicU64::new(0));
+    let failure_count = Arc::new(AtomicU64::new(0));
     let latencies = Arc::new(Mutex::new(Vec::new()));
 
     // 1. Start steady state worker (1 task)
@@ -339,14 +353,14 @@ async fn run_spike_load(
     let timeline_clone = Arc::clone(&timeline);
 
     let steady_handle = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_millis(50));
+        let mut interval = time::interval(Duration::from_millis(50));
         while start_time.elapsed() < (steady_duration + spike_duration) {
             interval.tick().await;
             let req_start = Instant::now();
             let elapsed_secs = start_time.elapsed().as_secs_f64();
             match s_client.request(interface, method, serde_json::json!(["BenchmarkUser"])).await {
                 Ok(_) => {
-                    s_success.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    s_success.fetch_add(1, Ordering::Relaxed);
                     let elapsed_ms = req_start.elapsed().as_secs_f64() * 1000.0;
                     {
                         let mut l = s_latencies.lock().await;
@@ -361,7 +375,7 @@ async fn run_spike_load(
                     }));
                 }
                 Err(e) => {
-                    s_failure.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    s_failure.fetch_add(1, Ordering::Relaxed);
                     let mut t = timeline_clone.lock().await;
                     t.push(json!({
                         "elapsed_secs": elapsed_secs,
@@ -396,7 +410,7 @@ async fn run_spike_load(
                     .await
                 {
                     Ok(_) => {
-                        s_success.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        s_success.fetch_add(1, Ordering::Relaxed);
                         let elapsed_ms = req_start.elapsed().as_secs_f64() * 1000.0;
                         {
                             let mut l = s_latencies.lock().await;
@@ -411,7 +425,7 @@ async fn run_spike_load(
                         }));
                     }
                     Err(e) => {
-                        s_failure.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        s_failure.fetch_add(1, Ordering::Relaxed);
                         let mut t = timeline_clone.lock().await;
                         t.push(json!({
                             "elapsed_secs": elapsed_secs,
@@ -421,7 +435,7 @@ async fn run_spike_load(
                         }));
                     }
                 }
-                tokio::task::yield_now().await;
+                task::yield_now().await;
             }
         });
         spike_handles.push(handle);
@@ -433,8 +447,8 @@ async fn run_spike_load(
     }
 
     let actual_duration = start_time.elapsed().as_secs_f64();
-    let s_count = success_count.load(std::sync::atomic::Ordering::Relaxed);
-    let f_count = failure_count.load(std::sync::atomic::Ordering::Relaxed);
+    let s_count = success_count.load(Ordering::Relaxed);
+    let f_count = failure_count.load(Ordering::Relaxed);
     let total = s_count + f_count;
 
     let mut l = latencies.lock().await;
@@ -464,15 +478,15 @@ async fn run_spike_load(
 }
 
 async fn run_wasm_pool_exhaustion(
-    client: Arc<syneroym_sdk::SyneroymClient>,
+    client: Arc<SyneroymClient>,
     interface: &'static str,
     method: &'static str,
     concurrency: usize,
 ) -> Result<ScenarioResultSummary> {
     let barrier = Arc::new(Barrier::new(concurrency));
     let latencies = Arc::new(Mutex::new(Vec::new()));
-    let success_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let failure_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let success_count = Arc::new(AtomicU64::new(0));
+    let failure_count = Arc::new(AtomicU64::new(0));
     let mut handles = Vec::new();
 
     let start_time = Instant::now();
@@ -490,13 +504,13 @@ async fn run_wasm_pool_exhaustion(
             let req_start = Instant::now();
             match client.request(interface, method, serde_json::json!(["BenchmarkUser"])).await {
                 Ok(_) => {
-                    success.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    success.fetch_add(1, Ordering::Relaxed);
                     let elapsed_us = req_start.elapsed().as_micros() as u64;
                     let mut l = latencies.lock().await;
                     l.push(elapsed_us);
                 }
                 Err(e) => {
-                    failure.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    failure.fetch_add(1, Ordering::Relaxed);
                     warn!("WASM Pool Exhaustion request failed gracefully: {:?}", e);
                 }
             }
@@ -509,8 +523,8 @@ async fn run_wasm_pool_exhaustion(
     }
 
     let actual_duration = start_time.elapsed().as_secs_f64();
-    let s_count = success_count.load(std::sync::atomic::Ordering::Relaxed);
-    let f_count = failure_count.load(std::sync::atomic::Ordering::Relaxed);
+    let s_count = success_count.load(Ordering::Relaxed);
+    let f_count = failure_count.load(Ordering::Relaxed);
     let total = s_count + f_count;
 
     let mut l = latencies.lock().await;
@@ -542,8 +556,8 @@ async fn run_connection_churn(
 ) -> Result<ScenarioResultSummary> {
     let start_time = Instant::now();
     let latencies = Arc::new(Mutex::new(Vec::new()));
-    let success_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let failure_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let success_count = Arc::new(AtomicU64::new(0));
+    let failure_count = Arc::new(AtomicU64::new(0));
     let mut handles = Vec::new();
 
     for _ in 0..concurrency {
@@ -557,30 +571,30 @@ async fn run_connection_churn(
             while start_time.elapsed() < duration {
                 let cycle_start = Instant::now();
                 let mut churn_client =
-                    syneroym_sdk::SyneroymClient::new(service_id.clone(), registry_url.clone());
+                    SyneroymClient::new(service_id.clone(), registry_url.clone());
 
                 let run_cycle = async {
                     churn_client.connect().await?;
                     let _ = churn_client
                         .request(
-                            test_constants::GREETER_INTERFACE_NAME,
+                            GREETER_INTERFACE_NAME,
                             "greet",
                             serde_json::json!(["BenchmarkUser"]),
                         )
                         .await?;
                     churn_client.shutdown().await?;
-                    anyhow::Ok(())
+                    Ok::<(), anyhow::Error>(())
                 };
 
                 match run_cycle.await {
                     Ok(_) => {
-                        success.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        success.fetch_add(1, Ordering::Relaxed);
                         let elapsed_us = cycle_start.elapsed().as_micros() as u64;
                         let mut l = latencies.lock().await;
                         l.push(elapsed_us);
                     }
                     Err(e) => {
-                        failure.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        failure.fetch_add(1, Ordering::Relaxed);
                         warn!("Connection churn cycle failed: {:?}", e);
                     }
                 }
@@ -595,8 +609,8 @@ async fn run_connection_churn(
     }
 
     let actual_duration = start_time.elapsed().as_secs_f64();
-    let s_count = success_count.load(std::sync::atomic::Ordering::Relaxed);
-    let f_count = failure_count.load(std::sync::atomic::Ordering::Relaxed);
+    let s_count = success_count.load(Ordering::Relaxed);
+    let f_count = failure_count.load(Ordering::Relaxed);
     let total = s_count + f_count;
 
     let mut l = latencies.lock().await;

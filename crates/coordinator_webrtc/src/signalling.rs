@@ -3,6 +3,11 @@
 //! Implements the WebRTC signaling logic over WebSocket, helping peers
 //! exchange SDP offers/answers and ICE candidates to establish direct connections.
 
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
+
 use axum::{
     Router,
     extract::{
@@ -12,20 +17,17 @@ use axum::{
     response::IntoResponse,
     routing::get,
 };
+use broadcast::Sender;
 use futures::{sink::SinkExt, stream::StreamExt};
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
-use tokio::sync::broadcast;
+use tokio::{net::TcpListener, sync::broadcast};
 use tracing::{debug, info, warn};
 
 struct SignallingState {
     // Map of connected peers: PeerID -> Tx channel
-    peers: Mutex<HashMap<String, broadcast::Sender<String>>>,
+    peers: Mutex<HashMap<String, Sender<String>>>,
 }
 
-pub async fn start(listener: tokio::net::TcpListener) -> anyhow::Result<()> {
+pub async fn start(listener: TcpListener) -> anyhow::Result<()> {
     let state = Arc::new(SignallingState { peers: Mutex::new(HashMap::new()) });
 
     let app = Router::new().route("/ws", get(ws_handler)).with_state(state);
