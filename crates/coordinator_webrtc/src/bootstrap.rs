@@ -92,38 +92,60 @@ fn app(state: Arc<BootstrapState>) -> Router {
         .with_state(state)
 }
 
-static SW_JS_GZ: OnceLock<Vec<u8>> = OnceLock::new();
-static PEER_PROXY_JS_GZ: OnceLock<Vec<u8>> = OnceLock::new();
+static SW_JS_GZ: OnceLock<Option<Vec<u8>>> = OnceLock::new();
+static PEER_PROXY_JS_GZ: OnceLock<Option<Vec<u8>>> = OnceLock::new();
 
-fn compress_gzip(data: &str) -> Vec<u8> {
+fn compress_gzip(data: &str) -> Result<Vec<u8>, std::io::Error> {
     let mut encoder = GzEncoder::new(Vec::new(), Compression::best());
-    encoder.write_all(data.as_bytes()).unwrap();
-    encoder.finish().unwrap()
+    encoder.write_all(data.as_bytes())?;
+    encoder.finish()
+}
+fn serve_cached_js(
+    js_content: &'static str,
+    name: &str,
+    cache: &OnceLock<Option<Vec<u8>>>,
+) -> axum::response::Response {
+    let gzipped_opt = cache.get_or_init(|| {
+        compress_gzip(js_content).inspect_err(|e| error!("Failed to compress {}: {}", name, e)).ok()
+    });
+
+    let mut response = match gzipped_opt {
+        Some(gzipped) => {
+            let mut res = gzipped.clone().into_response();
+            res.headers_mut()
+                .insert(header::CONTENT_ENCODING, header::HeaderValue::from_static("gzip"));
+            res
+        }
+        None => {
+            let mut res = js_content.as_bytes().to_vec().into_response();
+            res.headers_mut().insert(
+                header::HeaderName::from_static("x-compression-failed"),
+                header::HeaderValue::from_static("true"),
+            );
+            res
+        }
+    };
+
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, header::HeaderValue::from_static("application/javascript"));
+    response
 }
 
 async fn handle_sw() -> impl IntoResponse {
     info!("Serving sw.js to client");
     let sw_js = include_str!(concat!(env!("OUT_DIR"), "/sw.js"));
-    let gzipped = SW_JS_GZ.get_or_init(|| compress_gzip(sw_js));
-    (
-        StatusCode::OK,
-        [
-            (header::CONTENT_TYPE, "application/javascript"),
-            (header::CONTENT_ENCODING, "gzip"),
-            (header::HeaderName::from_static("service-worker-allowed"), "/"),
-        ],
-        gzipped.clone(),
-    )
+    let mut response = serve_cached_js(sw_js, "sw.js", &SW_JS_GZ);
+    response.headers_mut().insert(
+        header::HeaderName::from_static("service-worker-allowed"),
+        header::HeaderValue::from_static("/"),
+    );
+    response
 }
 
 async fn handle_peer_proxy_js() -> impl IntoResponse {
     let js = include_str!(concat!(env!("OUT_DIR"), "/peer-proxy.js"));
-    let gzipped = PEER_PROXY_JS_GZ.get_or_init(|| compress_gzip(js));
-    (
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, "application/javascript"), (header::CONTENT_ENCODING, "gzip")],
-        gzipped.clone(),
-    )
+    serve_cached_js(js, "peer-proxy.js", &PEER_PROXY_JS_GZ)
 }
 
 async fn handle_bootstrap(
