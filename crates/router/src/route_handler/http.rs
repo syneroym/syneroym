@@ -1,6 +1,7 @@
 //! HTTP router request interception
 //!
-//! Handles incoming HTTP traffic, performing URL host rewrite parsing and proxy forwarding.
+//! Handles incoming HTTP traffic, performing URL host rewrite parsing and proxy
+//! forwarding.
 
 use std::{convert::Infallible, sync::Arc};
 
@@ -21,7 +22,8 @@ use crate::{preamble::RoutePreamble, routing::RoutePipeline};
 
 /// A handler for HTTP-based JSON-RPC requests.
 ///
-/// It wraps a `RouteHandler`, a connection-level `RoutePreamble`, and the planned `RoutePipeline`.
+/// It wraps a `RouteHandler`, a connection-level `RoutePreamble`, and the
+/// planned `RoutePipeline`.
 pub struct HttpHandler {
     pub route_handler: RouteHandler,
     pub preamble: RoutePreamble,

@@ -50,15 +50,17 @@ fn send_ctrl_c(#[allow(unused_variables)] pid: u32) {
     }
     #[cfg(windows)]
     {
-        // On Windows, there is no direct equivalent to sending SIGINT to a specific PID.
-        // GenerateConsoleCtrlEvent sends a Ctrl+C event to the console group.
+        // On Windows, there is no direct equivalent to sending SIGINT to a specific
+        // PID. GenerateConsoleCtrlEvent sends a Ctrl+C event to the console
+        // group.
         #[link(name = "kernel32")]
         extern "system" {
             fn GenerateConsoleCtrlEvent(dwCtrlEvent: u32, dwProcessGroupId: u32) -> i32;
         }
-        // SAFETY: GenerateConsoleCtrlEvent is a stable Windows API that only sends a console event.
-        // Parameters: 0 = CTRL_C_EVENT, 0 = broadcast to all processes in current console group.
-        // No memory access or modification occurs. Function is thread-safe.
+        // SAFETY: GenerateConsoleCtrlEvent is a stable Windows API that only sends a
+        // console event. Parameters: 0 = CTRL_C_EVENT, 0 = broadcast to all
+        // processes in current console group. No memory access or modification
+        // occurs. Function is thread-safe.
         unsafe {
             GenerateConsoleCtrlEvent(0, 0);
         }
@@ -132,7 +134,8 @@ async fn test_run_finishes_on_ctrl_c() {
         }
     }
 
-    // Give the process a brief moment to ensure signal handler registration completes
+    // Give the process a brief moment to ensure signal handler registration
+    // completes
     time::sleep(Duration::from_millis(100)).await;
 
     // Send SIGINT (Ctrl-C) to the child process
@@ -151,8 +154,8 @@ const GATEWAY_PORT: u16 = 7990;
 const MOCK_APP_PORT: u16 = 30001;
 const MOCK_APP_HTTPS_PORT: u16 = 30002;
 
-/// This in-process integration test context manages the lifecycle of a substrate
-/// for testing purposes.
+/// This in-process integration test context manages the lifecycle of a
+/// substrate for testing purposes.
 struct SubstrateTestContext {
     #[allow(dead_code)]
     config: SubstrateConfig,
@@ -512,8 +515,8 @@ async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
     // Use a client that accepts invalid certs (since we use a self-signed cert)
     let https_req_client = Client::builder().danger_accept_invalid_certs(true).build().unwrap();
 
-    // Note: The gateway currently only supports plain HTTP/WS proxying via Host header.
-    // For now, we test the HTTPS endpoint directly to ensure it works.
+    // Note: The gateway currently only supports plain HTTP/WS proxying via Host
+    // header. For now, we test the HTTPS endpoint directly to ensure it works.
     let app_https_url = format!("https://localhost:{https_port}");
     let res = https_req_client.get(&app_https_url).send().await.expect("HTTPS GET / failed");
 

@@ -21,7 +21,8 @@ where
 }
 
 /// Reads a length-prefixed frame from the reader.
-/// The frame is expected to be prefixed with its length as a `u32` in big-endian format.
+/// The frame is expected to be prefixed with its length as a `u32` in
+/// big-endian format.
 pub async fn read_frame<R>(reader: &mut R) -> Result<Vec<u8>>
 where
     R: AsyncRead + Unpin + Send,
@@ -83,7 +84,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_binary_payload_preserved() {
-        // Ensures no byte stripping occurs on arbitrary payloads including trailing newlines
+        // Ensures no byte stripping occurs on arbitrary payloads including trailing
+        // newlines
         let payload = b"{\"jsonrpc\":\"2.0\",\"result\":null,\"id\":1}\n";
         let mut buf = Vec::new();
         write_frame(&mut buf, payload).await.unwrap();

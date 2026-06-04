@@ -19,7 +19,8 @@ fn get_cargo_bin(name: &str) -> PathBuf {
     if let Some(path) = std::env::var_os(format!("CARGO_BIN_EXE_{}", name)) {
         PathBuf::from(path)
     } else {
-        // Fall back to target/debug or target/release based on current executable parent
+        // Fall back to target/debug or target/release based on current executable
+        // parent
         if let Ok(current_exe) = env::current_exe()
             && let Some(parent) = current_exe.parent()
         {
@@ -28,7 +29,8 @@ fn get_cargo_bin(name: &str) -> PathBuf {
                 return bin_path;
             }
         }
-        // Fall back to workspace target/debug or target/release based on compilation profile
+        // Fall back to workspace target/debug or target/release based on compilation
+        // profile
         let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
         let workspace_target =
             std::path::Path::new(&manifest_dir).parent().unwrap().parent().unwrap().join("target");

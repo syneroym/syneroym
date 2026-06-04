@@ -1,7 +1,8 @@
 //! Wire protocol and payload utility functions
 //!
-//! Provides parsing and extraction functions for low-level TLS (SNI/ClientHello)
-//! and HTTP (Host headers) protocols to assist routing and address translation.
+//! Provides parsing and extraction functions for low-level TLS
+//! (SNI/ClientHello) and HTTP (Host headers) protocols to assist routing and
+//! address translation.
 
 use anyhow::{Result, anyhow};
 use httparse::{EMPTY_HEADER, Request, Status};

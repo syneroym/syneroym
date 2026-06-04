@@ -1,8 +1,9 @@
 //! Integration tests for the multi-hop relay functionality
 //!
 //! Simulates the scenario described in the multi-hop-relay-scenario.md
-//! which organizes relays, registries, substrates across network boundaries in a hierarchy
-//! and tests bidirectional e2e connectivity between clients and substrates across networks.
+//! which organizes relays, registries, substrates across network boundaries in
+//! a hierarchy and tests bidirectional e2e connectivity between clients and
+//! substrates across networks.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use std::time::Duration;
 

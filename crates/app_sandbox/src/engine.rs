@@ -254,7 +254,8 @@ impl AppSandboxEngine {
 
         tracing::info!("WASM binary stored at {:?}", file_path);
 
-        // 4. Compile and cache the component; drop the raw bytes immediately to free memory
+        // 4. Compile and cache the component; drop the raw bytes immediately to free
+        //    memory
         self.compile_and_cache_wasm(service_id, &bytes)?;
         drop(bytes);
 
@@ -284,7 +285,8 @@ impl AppSandboxEngine {
         let _guard = ActiveInstanceGuard::new();
         debug!("starting to execute wasm");
 
-        // TODO: Later optimize this by caching things like function parameter details on first execution, so we don't have to do the same lookups every time.
+        // TODO: Later optimize this by caching things like function parameter details
+        // on first execution, so we don't have to do the same lookups every time.
         let (mut store, func, results_len, item) =
             self.prepare_wasm_execution(service_id, interface_name, &request.method).await?;
 

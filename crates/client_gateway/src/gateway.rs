@@ -26,10 +26,11 @@ struct GatewayState {
     clients: DashMap<String, Arc<Mutex<SyneroymClient>>>,
 }
 
-/// `ClientGateway`: Acts as an entry point for local HTTP/WebSocket clients to reach the wider Syneroym network.
+/// `ClientGateway`: Acts as an entry point for local HTTP/WebSocket clients to
+/// reach the wider Syneroym network.
 ///
-/// It accepts TCP traffic, reads the HTTP headers to extract the routing target from the `Host` header,
-/// and streams the raw bytes over the Syneroym network.
+/// It accepts TCP traffic, reads the HTTP headers to extract the routing target
+/// from the `Host` header, and streams the raw bytes over the Syneroym network.
 pub struct ClientGateway {
     port: u16,
     state: Arc<GatewayState>,
@@ -62,7 +63,8 @@ impl ClientGateway {
         info!("running client gateway on port {}", self.port);
         let state = self.state.clone();
 
-        // TODO: For now, basic security via access from local machine only instead of 0.0.0.0 interface
+        // TODO: For now, basic security via access from local machine only instead of
+        // 0.0.0.0 interface
         let addr = format!("127.0.0.1:{}", self.port);
         let listener = TcpListener::bind(&addr).await?;
 
@@ -106,7 +108,8 @@ impl ClientGateway {
 
 async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> Result<()> {
     // Limit header reads to 8 KB — the conventional maximum for HTTP/1.1 headers.
-    // Requests with larger headers (e.g. very large JWTs) will receive a 400 response.
+    // Requests with larger headers (e.g. very large JWTs) will receive a 400
+    // response.
     const MAX_HEADER_BYTES: usize = 8 * 1024;
     let mut buf = [0u8; MAX_HEADER_BYTES];
     let mut bytes_read = 0;
@@ -213,8 +216,9 @@ fn parse_target_service_and_interface(req: &Request) -> Option<(String, String)>
     }
     let host_base = host.strip_suffix(".localhost").unwrap_or(host);
 
-    // Parse host_base according to `<nickname>-p<pubkeyhash>-i<interfacehash>` or `<nickname>-p<pubkeyhash>`
-    // Split by '-' and parse from the right to support nicknames with dashes
+    // Parse host_base according to `<nickname>-p<pubkeyhash>-i<interfacehash>` or
+    // `<nickname>-p<pubkeyhash>` Split by '-' and parse from the right to
+    // support nicknames with dashes
     let mut parts: Vec<&str> = host_base.split('-').collect();
 
     let mut interfacehash = None;

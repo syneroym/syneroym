@@ -80,7 +80,8 @@ struct Assets;
 
 async fn index_handler(State(state): State<Arc<AppState>>) -> Html<String> {
     Html(format!(
-        "<h1>Hello world from {}</h1><p><a href='/comments'>Comments etc.</a></p><p><a href='/page1.html'>Static Page 1</a></p>",
+        "<h1>Hello world from {}</h1><p><a href='/comments'>Comments etc.</a></p><p><a \
+         href='/page1.html'>Static Page 1</a></p>",
         state.service_name
     ))
 }

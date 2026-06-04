@@ -1,7 +1,7 @@
 //! Cryptographic identity and keypair management
 //!
-//! Defines the primary `Identity` struct utilizing Ed25519 dalek for key generation,
-//! secure storage, signing, and DID document generation.
+//! Defines the primary `Identity` struct utilizing Ed25519 dalek for key
+//! generation, secure storage, signing, and DID document generation.
 
 use std::{
     fmt::{Debug, Formatter},
@@ -29,7 +29,8 @@ impl Identity {
     /// Generate a new random Ed25519 identity keypair.
     ///
     /// # Errors
-    /// Returns an error if the system's random number generator fails (e.g., in sandboxed environments).
+    /// Returns an error if the system's random number generator fails (e.g., in
+    /// sandboxed environments).
     pub fn generate() -> anyhow::Result<Self> {
         let mut bytes = [0u8; 32];
         getrandom::fill(&mut bytes)

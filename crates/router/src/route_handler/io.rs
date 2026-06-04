@@ -55,7 +55,8 @@ impl RouteHandler {
         debug!("[Router] Reading preamble from incoming stream");
         let mut preamble = read_preamble(&mut reader).await?;
         debug!(
-            "[Router] Preamble received: transport={:?} protocol={:?} interface='{}' service_id='{}' enc={:?}",
+            "[Router] Preamble received: transport={:?} protocol={:?} interface='{}' \
+             service_id='{}' enc={:?}",
             preamble.transport,
             preamble.protocol,
             preamble.interface,

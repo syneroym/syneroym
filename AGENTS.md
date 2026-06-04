@@ -2,7 +2,7 @@
 
 ## General Instructions
 - Focus religiously on these code aspects: Simplicity, performance, readability, testability, overall beauty, robustness, scalability, reliability.
-- Follow standard Rust `clippy` guidelines. Before completion, confirm that `cargo +nightly fmt --all -- --unstable-features --config imports_granularity=Crate,group_imports=StdExternalCrate`, `cargo clippy --workspace --all-targets --all-features`, and `cargo test --workspace` succeed.
+- Follow standard Rust `clippy` guidelines. Before completion, confirm that `cargo +nightly fmt --all`, `cargo clippy --workspace --all-targets --all-features`, and `cargo test --workspace` succeed.
 - Try to use the latest stable versions of any library added.
 - Have extensive integration and end to end tests for end user facing interfaces.
 - Have solid unit tests for internal code if it is complex and delicate, even if it is not user facing.
@@ -40,4 +40,4 @@
   - `bindings/`: WASM/WebAssembly interfaces.
 - **Apps**: `roymctl/`: Command-line tool.
 - **Other**: `observability/`, `control_plane/`, `client_gateway/`, etc., for monitoring, control, and client interactions.
-- **Build and Test**: Use `cargo` for Rust builds. WASM targets (`wasm32-wasip2`) require special handling. Ensure `cargo +nightly fmt --all -- --unstable-features --config imports_granularity=Crate,group_imports=StdExternalCrate`, `clippy`, and `test` pass before completion.
+- **Build and Test**: Use `cargo` for Rust builds. WASM targets (`wasm32-wasip2`) require special handling. Ensure `cargo +nightly fmt --all`, `clippy`, and `test` pass before completion.

@@ -1,5 +1,6 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
-//! Service registry for discovering and managing services within a Syneroym ecosystem.
+//! Service registry for discovering and managing services within a Syneroym
+//! ecosystem.
 
 mod registry;
 

@@ -119,13 +119,15 @@ pub(crate) fn resolve_config(command: Commands) -> Result<SubstrateConfig> {
             // Consistency checks for identity configuration
             if config.identity.require_agreement && config.identity.agreement.is_none() {
                 anyhow::bail!(
-                    "Inconsistent configuration: `require_agreement` is true, but no `agreement` path is provided."
+                    "Inconsistent configuration: `require_agreement` is true, but no `agreement` \
+                     path is provided."
                 );
             }
 
             if config.identity.agreement.is_some() && config.identity.controller_did.is_some() {
                 anyhow::bail!(
-                    "Inconsistent configuration: Both `agreement` and `controller_did` are provided. Please provide only one."
+                    "Inconsistent configuration: Both `agreement` and `controller_did` are \
+                     provided. Please provide only one."
                 );
             }
 
@@ -171,7 +173,8 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let config = resolve_config(cli.command)?;
 
-    // Since all tokio tuning options are not available in the #[tokio::main] macro, configure it explicitly
+    // Since all tokio tuning options are not available in the #[tokio::main] macro,
+    // configure it explicitly
     Builder::new_multi_thread()
         // More tokio tuning needed later, tune via config or environment variables.
         //.worker_threads(4)
@@ -256,7 +259,8 @@ mod tests {
 
         // 2. Setup CLI arguments overriding some config file values and some defaults
         // - Override config file: iroh_relay_url ("http://cli.relay:3340" vs "http://config.relay:3340")
-        // - Override default (not in config): enable_coordinator_webrtc (true vs default false)
+        // - Override default (not in config): enable_coordinator_webrtc (true vs
+        //   default false)
         let config_path_str =
             config_file.path().to_str().expect("Failed to convert config path to string");
         let args = vec![
@@ -329,7 +333,8 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err().to_string(),
-            "Inconsistent configuration: `require_agreement` is true, but no `agreement` path is provided."
+            "Inconsistent configuration: `require_agreement` is true, but no `agreement` path is \
+             provided."
         );
 
         // Test agreement and controller_did provided together
@@ -346,7 +351,8 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err().to_string(),
-            "Inconsistent configuration: Both `agreement` and `controller_did` are provided. Please provide only one."
+            "Inconsistent configuration: Both `agreement` and `controller_did` are provided. \
+             Please provide only one."
         );
     }
 }

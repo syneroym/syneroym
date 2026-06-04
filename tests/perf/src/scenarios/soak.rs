@@ -47,7 +47,8 @@ fn calculate_median(values: &mut [f64]) -> f64 {
     if values.len().is_multiple_of(2) { (values[mid - 1] + values[mid]) / 2.0 } else { values[mid] }
 }
 
-// Calculate the slope of the simple linear regression line (best-fit line) for a sequence of data points
+// Calculate the slope of the simple linear regression line (best-fit line) for
+// a sequence of data points
 fn calculate_slope(values: &[f64]) -> f64 {
     let n = values.len() as f64;
     if n < 2.0 {
@@ -434,7 +435,8 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
 
     let _ = tokio::join!(workload_a_handle, workload_b_handle, workload_c_handle, sampler_handle);
 
-    // Shutdown the primary client to close its Iroh connection and release its sockets/FDs
+    // Shutdown the primary client to close its Iroh connection and release its
+    // sockets/FDs
     let _ = shared_client.lock().await.shutdown().await;
 
     // --- Wait a few seconds for metrics stabilization ---
@@ -478,7 +480,8 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
     }
 
     info!(
-        "Ending metrics captured: RSS={:.1}MB, CPU={:.1}%, FDs={}, Tasks={}, Connections={}, Cache={}",
+        "Ending metrics captured: RSS={:.1}MB, CPU={:.1}%, FDs={}, Tasks={}, Connections={}, \
+         Cache={}",
         ending_rss, ending_cpu, ending_fds, ending_tasks, ending_conns, ending_cache
     );
 
@@ -516,7 +519,8 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
         }
     }
 
-    // Heuristic 2: FDs Leak Detection (Ending should be close to baseline, not leaking)
+    // Heuristic 2: FDs Leak Detection (Ending should be close to baseline, not
+    // leaking)
     let fd_stable = ending_fds <= baseline_fds + 25;
 
     // Heuristic 3: Tokio Tasks Leak Detection (Ending task count stable)

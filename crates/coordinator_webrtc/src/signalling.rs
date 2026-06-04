@@ -1,7 +1,8 @@
 //! WebRTC Signaling Server
 //!
 //! Implements the WebRTC signaling logic over WebSocket, helping peers
-//! exchange SDP offers/answers and ICE candidates to establish direct connections.
+//! exchange SDP offers/answers and ICE candidates to establish direct
+//! connections.
 
 use std::{
     collections::HashMap,

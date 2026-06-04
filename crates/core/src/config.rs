@@ -361,7 +361,8 @@ impl Default for ServiceRegistryRole {
     }
 }
 
-/// Represents configurations like `access = "everyone"` OR `access = ["did1", "did2"]`
+/// Represents configurations like `access = "everyone"` OR `access = ["did1",
+/// "did2"]`
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum AccessControl {

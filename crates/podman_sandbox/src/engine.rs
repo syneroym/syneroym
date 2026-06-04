@@ -31,7 +31,8 @@ impl ContainerEngine {
         Self { podman_path, containers_dir }
     }
 
-    /// Safely resolve host path relative to the container's isolated local directory.
+    /// Safely resolve host path relative to the container's isolated local
+    /// directory.
     fn resolve_host_path(&self, service_id: &str, host_path: &str) -> PathBuf {
         let container_base = self.containers_dir.join(sanitize_id(service_id));
 
@@ -163,7 +164,8 @@ impl ContainerEngine {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let line = stdout.trim();
-        // The output is typically something like "0.0.0.0:49153" or "[::]:49153" or "49153"
+        // The output is typically something like "0.0.0.0:49153" or "[::]:49153" or
+        // "49153"
         let port_part = line
             .split(':')
             .next_back()
@@ -219,7 +221,8 @@ impl ContainerEngine {
         Ok(())
     }
 
-    /// Check the readiness by running `podman inspect` to verify container is running
+    /// Check the readiness by running `podman inspect` to verify container is
+    /// running
     pub async fn readyz(&self, service_id: &str) -> Result<()> {
         let sanitized_id = sanitize_id(service_id);
         let output = Command::new(&self.podman_path)

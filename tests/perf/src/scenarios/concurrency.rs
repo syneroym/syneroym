@@ -160,7 +160,8 @@ pub async fn run_scenario() -> Result<()> {
     )
     .await?;
 
-    // --- Scenario 3: WASM Pool Exhaustion (20 concurrent calls vs pool limit of 10) ---
+    // --- Scenario 3: WASM Pool Exhaustion (20 concurrent calls vs pool limit of
+    // 10) ---
     info!("Running Scenario 3: WASM Pool Exhaustion");
     let exhaustion_summary = run_wasm_pool_exhaustion(
         Arc::clone(&shared_client),

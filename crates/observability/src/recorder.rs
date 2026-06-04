@@ -16,10 +16,11 @@ static GLOBAL_RECORDER: OnceLock<MemoryRecorder> = OnceLock::new();
 /// An in-memory metrics recorder that implements the `metrics::Recorder` trait.
 ///
 /// **Architecture Note**:
-/// This recorder captures counters, gauges, and histograms internally using thread-safe DashMaps.
-/// Instead of pushing metrics directly to an external service (like Prometheus or Datadog),
-/// it enables an active-pull or snapshotting model. The Substrate control plane can invoke
-/// `.snapshot()` to retrieve the current state and serve it via HTTP (e.g., `/metrics` endpoint)
+/// This recorder captures counters, gauges, and histograms internally using
+/// thread-safe DashMaps. Instead of pushing metrics directly to an external
+/// service (like Prometheus or Datadog), it enables an active-pull or
+/// snapshotting model. The Substrate control plane can invoke `.snapshot()` to
+/// retrieve the current state and serve it via HTTP (e.g., `/metrics` endpoint)
 /// or periodically push it to an aggregator.
 #[derive(Debug, Default, Clone)]
 pub struct MemoryRecorder {

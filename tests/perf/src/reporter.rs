@@ -63,7 +63,7 @@ pub fn print_concurrency_summary(
         "\n=========================================================================================="
     );
     println!(
-        "                           PHASE 3 CONCURRENCY TEST SUMMARY                               "
+        "                           PHASE 3 CONCURRENCY TEST SUMMARY                              "
     );
     println!(
         "=========================================================================================="

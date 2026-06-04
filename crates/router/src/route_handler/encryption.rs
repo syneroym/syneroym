@@ -1,6 +1,7 @@
 //! Stream encryption and decryption stages
 //!
-//! Encapsulates ECDH-P256 handshakes, signature verification, and AES-256-GCM chunk framing.
+//! Encapsulates ECDH-P256 handshakes, signature verification, and AES-256-GCM
+//! chunk framing.
 
 use std::{
     cmp,
@@ -27,7 +28,8 @@ macro_rules! ready {
     };
 }
 
-/// A simple wrapper that combines an `AsyncRead` and `AsyncWrite` into a single type.
+/// A simple wrapper that combines an `AsyncRead` and `AsyncWrite` into a single
+/// type.
 pub struct ReaderWriter<R, W> {
     pub reader: R,
     pub writer: W,

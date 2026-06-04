@@ -1,9 +1,10 @@
 //! Build script for `syneroym-coordinator-webrtc`.
 //!
-//! This script is responsible for preparing JavaScript assets (`sw.js` and `peer-proxy.js`).
-//! In development mode, it simply copies the assets. In release mode, it aggressively
-//! parses and minifies the JavaScript using `swc_core` to reduce payload sizes, applying
-//! dead-code elimination, tree-shaking, and top-level mangling.
+//! This script is responsible for preparing JavaScript assets (`sw.js` and
+//! `peer-proxy.js`). In development mode, it simply copies the assets. In
+//! release mode, it aggressively parses and minifies the JavaScript using
+//! `swc_core` to reduce payload sizes, applying dead-code elimination,
+//! tree-shaking, and top-level mangling.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use std::{env, fs, path::Path};

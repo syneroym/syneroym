@@ -1,6 +1,7 @@
 //! Identity management subcommands
 //!
-//! Commands to generate node keypairs, create agreements, and inspect node DIDs.
+//! Commands to generate node keypairs, create agreements, and inspect node
+//! DIDs.
 
 use std::{fs, path::Path};
 

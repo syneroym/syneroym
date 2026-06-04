@@ -37,7 +37,7 @@ To ensure all files adhere to the project's strict idiomatic guidelines—includ
 
 ```bash
 # Aggressively format all Rust code, merging and strictly grouping imports
-cargo +nightly fmt --all -- --unstable-features --config imports_granularity=Crate,group_imports=StdExternalCrate
+cargo +nightly fmt --all
 ```
 
 ### Run Commands

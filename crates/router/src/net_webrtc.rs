@@ -1,6 +1,7 @@
 //! WebRTC network client/server channel routing
 //!
-//! Adapts active WebRTC data channels to the connection router, mapping SDP/ICE candidates.
+//! Adapts active WebRTC data channels to the connection router, mapping SDP/ICE
+//! candidates.
 
 use std::{
     pin::Pin,
@@ -19,9 +20,9 @@ use webrtc::data::data_channel::DataChannel as DetachedDataChannel;
 /// A wrapper around WebRTC `DetachedDataChannel` that implements
 /// `tokio::io::AsyncRead` and `tokio::io::AsyncWrite`.
 ///
-/// Since `DetachedDataChannel` exposes an async API (not poll-based) and is message-oriented,
-/// this wrapper spawns a background task to bridge the data between the channel and
-/// a `tokio::io::duplex` stream.
+/// Since `DetachedDataChannel` exposes an async API (not poll-based) and is
+/// message-oriented, this wrapper spawns a background task to bridge the data
+/// between the channel and a `tokio::io::duplex` stream.
 #[derive(Debug)]
 pub struct WebRTCStream {
     inner: DuplexStream,
@@ -80,7 +81,8 @@ impl WebRTCStream {
                     }
                 }
                 // Explicitly close the DataChannel so the browser-side dc.onclose fires.
-                // Without this, the TransformStream body is never closed and response.text() hangs.
+                // Without this, the TransformStream body is never closed and response.text()
+                // hangs.
                 if let Err(e) = channel_write.close().await {
                     debug!("WebRTCStream bridge: DataChannel close error: {}", e);
                 }

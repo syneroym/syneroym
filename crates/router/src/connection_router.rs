@@ -1,7 +1,8 @@
 //! Connection Router orchestrator
 //!
-//! The main connection router that accepts incoming network streams (Iroh, WebRTC),
-//! extracts protocol preambles, and forwards traffic to local endpoints or sandbox instances.
+//! The main connection router that accepts incoming network streams (Iroh,
+//! WebRTC), extracts protocol preambles, and forwards traffic to local
+//! endpoints or sandbox instances.
 
 use std::{future, sync::Arc};
 

@@ -4,7 +4,8 @@
 //! and handles OTLP trace exports to ensure system visibility.
 //!
 //! TODO: The current implementation is more of a placeholder/basic shell.
-//! We need to integrate full OTLP/OpenTelemetry exports and live metrics collection later.
+//! We need to integrate full OTLP/OpenTelemetry exports and live metrics
+//! collection later.
 
 use std::{
     fmt::{Debug, Formatter},
@@ -48,7 +49,8 @@ impl ObservabilityEngine {
                     tracing_subscriber::registry().with(filter).with(stdout_layer(config));
                 if let Err(e) = subscriber.try_init() {
                     // TODO: Handle process-global tracing initialization more cleanly.
-                    // This often fails in tests when multiple substrate instances are initialized in the same process.
+                    // This often fails in tests when multiple substrate instances are initialized
+                    // in the same process.
                     eprintln!("Warning: Failed to initialize stdout tracing subscriber: {e}");
                 }
                 None
@@ -65,7 +67,8 @@ impl ObservabilityEngine {
                     tracing_subscriber::registry().with(filter).with(file_layer(config, writer));
                 if let Err(e) = subscriber.try_init() {
                     // TODO: Handle process-global tracing initialization more cleanly.
-                    // This often fails in tests when multiple substrate instances are initialized in the same process.
+                    // This often fails in tests when multiple substrate instances are initialized
+                    // in the same process.
                     eprintln!("Warning: Failed to initialize file tracing subscriber: {e}");
                 }
                 Some(guard)

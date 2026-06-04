@@ -3,8 +3,8 @@
 /// Parses a string representing a size into a number of bytes.
 ///
 /// Supports common suffixes like `Ki`, `Mi`, `Gi`, `K`, `M`, `G`.
-/// If the string cannot be parsed as a number, it returns `default_if_unparseable`
-/// multiplied by the parsed suffix multiplier.
+/// If the string cannot be parsed as a number, it returns
+/// `default_if_unparseable` multiplied by the parsed suffix multiplier.
 #[must_use]
 pub fn parse_size_string(s: &str, default_if_unparseable: u64) -> u64 {
     let s = s.trim();
@@ -35,7 +35,8 @@ pub fn parse_size_string(s: &str, default_if_unparseable: u64) -> u64 {
 }
 
 /// Generates a short z32-encoded hash from the given data.
-/// It uses SHA256 and takes the first 5 bytes, resulting in an 8-character string.
+/// It uses SHA256 and takes the first 5 bytes, resulting in an 8-character
+/// string.
 #[must_use]
 pub fn short_hash(data: &str) -> String {
     use sha2::{Digest, Sha256};

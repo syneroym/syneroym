@@ -34,7 +34,8 @@ use tracing::{debug, error, info, warn};
 
 use crate::identity;
 
-/// Runs the substrate given the consolidated configuration, using the default ctrl-c shutdown signal.
+/// Runs the substrate given the consolidated configuration, using the default
+/// ctrl-c shutdown signal.
 pub async fn run(config: SubstrateConfig) -> anyhow::Result<()> {
     init_and_run_with_signal(config, async {
         let _ = signal::ctrl_c().await;
@@ -58,7 +59,8 @@ impl Debug for InitializedRuntime {
     }
 }
 
-/// Runs the substrate given the consolidated configuration and a custom shutdown signal.
+/// Runs the substrate given the consolidated configuration and a custom
+/// shutdown signal.
 pub async fn init_and_run_with_signal<F>(
     config: SubstrateConfig,
     shutdown_signal: F,
@@ -70,7 +72,8 @@ where
     run_with_signal(config, runtime, shutdown_signal).await
 }
 
-/// Runs the substrate given the consolidated configuration and a custom shutdown signal.
+/// Runs the substrate given the consolidated configuration and a custom
+/// shutdown signal.
 pub async fn run_with_signal<F>(
     config: SubstrateConfig,
     mut runtime: InitializedRuntime,
@@ -96,7 +99,8 @@ where
     Ok(())
 }
 
-/// Runs the substrate given the consolidated configuration and a custom shutdown signal.
+/// Runs the substrate given the consolidated configuration and a custom
+/// shutdown signal.
 pub async fn init(config: SubstrateConfig) -> anyhow::Result<InitializedRuntime> {
     info!(profile = %config.profile, "initializing substrate");
 
@@ -313,8 +317,9 @@ fn log_component_exit(component: &str, result: anyhow::Result<()>) {
     }
 }
 
-/// Sets up the connection router and its tightly coupled dependencies, including
-/// the substrate identity, data store, endpoint registry, and the native service.
+/// Sets up the connection router and its tightly coupled dependencies,
+/// including the substrate identity, data store, endpoint registry, and the
+/// native service.
 async fn setup_connection_router(config: &SubstrateConfig) -> anyhow::Result<ConnectionRouter> {
     let (service_id, secret_key) = setup_identity_and_storage(config).await?;
 

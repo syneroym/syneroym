@@ -1,15 +1,16 @@
 //! Route preamble parsing and types.
 //!
-//! A preamble is the prefix of a route that specifies transport, application protocol,
-//! interface, and service information.
+//! A preamble is the prefix of a route that specifies transport, application
+//! protocol, interface, and service information.
 //!
 //! The full preamble grammar is:
 //! `<scheme>://<interface>.<service_id>[?enc=<alg>&pubkey=<hex>]`
 //!
 //! ## Scheme Overloading
 //!
-//! To keep the URL compact, well-known scheme tokens overload both the wire transport
-//! framing and the application-level protocol initiated by the client:
+//! To keep the URL compact, well-known scheme tokens overload both the wire
+//! transport framing and the application-level protocol initiated by the
+//! client:
 //!
 //! | Preamble Scheme | Wire Transport | Application Protocol | Notes |
 //! |-----------------|----------------|----------------------|-------|
@@ -30,18 +31,21 @@
 //! ## Encryption Query Parameters
 //!
 //! Encryption is orthogonal to the scheme and applies to any transport:
-//! `raw://my-interface.my-service?enc=ecdh-p256&pubkey=<hex-encoded-client-pubkey>`
+//! `raw://my-interface.my-service?enc=ecdh-p256&
+//! pubkey=<hex-encoded-client-pubkey>`
 //!
-//! The `RoutePipeline`'s `EncryptionStage` and `AdaptationStage` are **not** encoded in the
-//! preamble itself; they are **derived** at planning time (`plan_pipeline`) from the combination
-//! of preamble fields and target registry capability entries.
+//! The `RoutePipeline`'s `EncryptionStage` and `AdaptationStage` are **not**
+//! encoded in the preamble itself; they are **derived** at planning time
+//! (`plan_pipeline`) from the combination of preamble fields and target
+//! registry capability entries.
 
 use std::{convert::Infallible, fmt};
 
 use anyhow::{Result, anyhow};
 use fmt::{Display, Formatter};
 
-/// Separator used in the routing preamble between the interface name and service ID.
+/// Separator used in the routing preamble between the interface name and
+/// service ID.
 pub const PREAMBLE_SEPARATOR: &str = "|";
 use std::str::FromStr;
 
@@ -135,8 +139,9 @@ impl RoutePreamble {
     ///
     /// The preamble format is: `scheme://[interface.]service_id[?query]`
     ///
-    /// Schemes can be well-known overloaded aliases (e.g. `json-rpc`, `http`, `wrpc`, `raw`)
-    /// or explicit composable tokens separated by a dash (e.g. `http-wrpc`).
+    /// Schemes can be well-known overloaded aliases (e.g. `json-rpc`, `http`,
+    /// `wrpc`, `raw`) or explicit composable tokens separated by a dash
+    /// (e.g. `http-wrpc`).
     ///
     /// # Examples
     ///
@@ -153,7 +158,8 @@ impl RoutePreamble {
             .ok_or_else(|| anyhow!("Invalid preamble format: {raw}"))?;
 
         // Scheme mapping: well-known aliases take precedence over the combined-scheme
-        // splitter so that `json-rpc` and `wrpc` are never mistakenly split on their dash.
+        // splitter so that `json-rpc` and `wrpc` are never mistakenly split on their
+        // dash.
         let (transport, protocol) = match scheme {
             "http" => (RouteTransport::Http, RouteProtocol::JsonRpc),
             "json-rpc" => (RouteTransport::Binary, RouteProtocol::JsonRpc),
@@ -206,9 +212,9 @@ impl RoutePreamble {
 
     /// Constructs a preamble for the canonical binary JSON-RPC case.
     ///
-    /// This is the default transport used by `SyneroymClient::request_raw`. Using this
-    /// constructor ensures that the framing choice is defined in one place and callers
-    /// don't need to know the internal defaults.
+    /// This is the default transport used by `SyneroymClient::request_raw`.
+    /// Using this constructor ensures that the framing choice is defined in
+    /// one place and callers don't need to know the internal defaults.
     pub fn binary_json_rpc(service_id: impl Into<String>, interface: impl Into<String>) -> Self {
         Self {
             transport: RouteTransport::Binary,
@@ -220,10 +226,12 @@ impl RoutePreamble {
         }
     }
 
-    /// Parses a preamble from an HTTP request path of the form `/v1/{service_id}/{interface}`.
+    /// Parses a preamble from an HTTP request path of the form
+    /// `/v1/{service_id}/{interface}`.
     ///
-    /// HTTP is treated purely as a framing concern; the resulting `RouteProtocol` is still
-    /// `JsonRpc` so the same routing logic applies regardless of how the bytes arrived.
+    /// HTTP is treated purely as a framing concern; the resulting
+    /// `RouteProtocol` is still `JsonRpc` so the same routing logic applies
+    /// regardless of how the bytes arrived.
     pub fn from_http_path(path: &str) -> Result<Self> {
         let rest = path
             .strip_prefix("/v1/")
@@ -247,9 +255,11 @@ impl RoutePreamble {
         })
     }
 
-    /// Returns the preamble as a newline-terminated string, suitable for sending over the wire.
+    /// Returns the preamble as a newline-terminated string, suitable for
+    /// sending over the wire.
     ///
-    /// This is used by clients to prefix their streams so the router knows how to handle them.
+    /// This is used by clients to prefix their streams so the router knows how
+    /// to handle them.
     #[must_use]
     pub fn to_preamble_line(&self) -> String {
         format!("{self}\n")

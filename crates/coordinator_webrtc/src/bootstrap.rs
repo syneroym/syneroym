@@ -286,7 +286,8 @@ async fn read_preamble_from_ws(
     };
 
     debug!(
-        "[BlindTunnel] Preamble parsed: transport={:?} protocol={:?} interface='{}' service_id='{}' enc={:?}",
+        "[BlindTunnel] Preamble parsed: transport={:?} protocol={:?} interface='{}' \
+         service_id='{}' enc={:?}",
         preamble.transport,
         preamble.protocol,
         preamble.interface,
@@ -318,7 +319,8 @@ async fn resolve_iroh_endpoint_from_registry(
         }
     };
 
-    // Prefer an explicit Iroh mechanism; fall back to deriving from the substrate DID.
+    // Prefer an explicit Iroh mechanism; fall back to deriving from the substrate
+    // DID.
     let mut iroh_addr_from_mechanism = None;
     for mechanism in &info.info.mechanisms {
         if let EndpointMechanism::Iroh { endpoint_addr_bytes, relay_url } = mechanism

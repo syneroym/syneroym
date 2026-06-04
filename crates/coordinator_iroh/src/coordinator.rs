@@ -67,10 +67,11 @@ impl CoordinatorIroh {
             //    in traversing NATs and establishing peer-to-peer UDP punch-throughs.
             //    It does not read or decrypt Syneroym application payloads.
             //
-            // B) The Syneroym Coordinator Endpoint (build_iroh_endpoint & spawn_iroh_router)
-            //    This is an active participant in the Syneroym network. It establishes
-            //    encrypted connections with clients and other coordinators to facilitate
-            //    multi-hop E2E routing, identity verification, and service discovery.
+            // B) The Syneroym Coordinator Endpoint (build_iroh_endpoint &
+            // spawn_iroh_router)    This is an active participant in the
+            // Syneroym network. It establishes    encrypted connections with
+            // clients and other coordinators to facilitate    multi-hop E2E
+            // routing, identity verification, and service discovery.
             //
             // A coordinator may run A, B, or both simultaneously.
             if role.iroh.as_ref().is_some_and(|i| i.enable_relay) {
@@ -196,7 +197,8 @@ impl CoordinatorIroh {
     ) -> Result<(JoinHandle<()>, SocketAddr)> {
         let mut http_info_addr: SocketAddr =
             iroh_cfg.http_bind_address.parse().context("invalid http_bind_address")?;
-        // Add 10 to the port to avoid conflict, or bind to port 0 for dynamic port in tests
+        // Add 10 to the port to avoid conflict, or bind to port 0 for dynamic port in
+        // tests
         if http_info_addr.port() != 0 {
             http_info_addr.set_port(http_info_addr.port() + 10);
         }

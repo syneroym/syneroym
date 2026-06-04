@@ -1,6 +1,7 @@
 //! Local endpoint stream dispatcher
 //!
-//! Hooks active streams up to their target local services (e.g. WASM sandbox input, native services, or TCP socket).
+//! Hooks active streams up to their target local services (e.g. WASM sandbox
+//! input, native services, or TCP socket).
 
 use std::{sync::Arc, time::Instant};
 
@@ -22,7 +23,8 @@ impl RouteHandler {
         self.inner.native_dispatch.get(channel_id).as_deref().cloned()
     }
 
-    /// Dispatches a single JSON-RPC request based on the provided routing pipeline.
+    /// Dispatches a single JSON-RPC request based on the provided routing
+    /// pipeline.
     ///
     /// This handles Native, Wasm, and Adapted execution modes.
     pub async fn dispatch_json_rpc_once(
@@ -92,7 +94,8 @@ impl RouteHandler {
             _ => {
                 metrics::counter!("substrate.request.errors").increment(1);
                 Err(anyhow!(
-                    "Execution stage {:?} with adaptation {:?} not supported in request-response mode",
+                    "Execution stage {:?} with adaptation {:?} not supported in request-response \
+                     mode",
                     pipeline.service,
                     pipeline.adaptation
                 ))
@@ -143,24 +146,28 @@ impl RouteHandler {
             RouteTransport::Raw => TransportStage::Raw,
         };
 
-        // Passthrough services (like TcpProxy or direct WasmComponent passthrough (wRPC — TODO: not yet implemented))
-        // do not perform substrate-level wire framing; they bypass transport decoding
-        // and stream raw bytes directly.
+        // Passthrough services (like TcpProxy or direct WasmComponent passthrough (wRPC
+        // — TODO: not yet implemented)) do not perform substrate-level wire
+        // framing; they bypass transport decoding and stream raw bytes
+        // directly.
         if let ServiceStage::TcpProxy { .. } = &service {
             transport = TransportStage::Raw;
         } else if let (RouteProtocol::Wrpc, ServiceStage::WasmComponent { .. }) =
             (&preamble.protocol, &service)
         {
-            // NOTE: wRPC is not yet implemented, so this block is more of a placeholder for future logic.
+            // NOTE: wRPC is not yet implemented, so this block is more of a placeholder for
+            // future logic.
             transport = TransportStage::Raw;
         }
 
         RoutePipeline { encryption, transport, adaptation, service }
     }
 
-    /// Runs a loop that reads JSON-RPC frames from the reader and dispatches them.
+    /// Runs a loop that reads JSON-RPC frames from the reader and dispatches
+    /// them.
     ///
-    /// This is used for binary streams where multiple requests can be sent sequentially.
+    /// This is used for binary streams where multiple requests can be sent
+    /// sequentially.
     pub async fn handle_json_rpc_loop<R, W>(
         &self,
         mut reader: BufReader<R>,

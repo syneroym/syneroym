@@ -121,8 +121,9 @@ pub fn canonicalize_json_value(value: &serde_json::Value) -> serde_json::Value {
     }
 }
 
-/// Validate a signature against the agreement's canonicalized form using RFC 8785 (JSON Canonicalization Scheme).
-/// This ensures deterministic, spec-compliant signature verification compatible with external systems.
+/// Validate a signature against the agreement's canonicalized form using RFC
+/// 8785 (JSON Canonicalization Scheme). This ensures deterministic,
+/// spec-compliant signature verification compatible with external systems.
 fn verify_signature(
     agreement: &ControllerAgreement,
     proof: &Proof,
@@ -152,7 +153,8 @@ fn verify_signature(
 }
 
 impl SubstrateIdentityState {
-    /// Initialize the `SubstrateIdentityState` according to the boot flow rules.
+    /// Initialize the `SubstrateIdentityState` according to the boot flow
+    /// rules.
     pub fn init(
         substrate_identity: &Identity,
         agreement: Option<&ControllerAgreement>,

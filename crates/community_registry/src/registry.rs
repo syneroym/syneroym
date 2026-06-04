@@ -1,7 +1,7 @@
 //! Community Service Registry
 //!
-//! A public/shared registry server allowing nodes to register their network addresses
-//! and nicknames, enabling global peer lookup.
+//! A public/shared registry server allowing nodes to register their network
+//! addresses and nicknames, enabling global peer lookup.
 
 use std::{
     fmt::{Debug, Formatter},
@@ -55,7 +55,8 @@ struct RegistryState {
     endpoints: DashMap<String, (SignedEndpointInfo, Instant)>,
     // Map of alias -> service_id
     aliases: DashMap<String, String>,
-    // Needed when registry is not accessible from internal network and multi-hop-relays are needed for data transfer
+    // Needed when registry is not accessible from internal network and multi-hop-relays are needed
+    // for data transfer
     parent_registry_url: Option<String>,
 }
 

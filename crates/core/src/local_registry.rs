@@ -1,7 +1,8 @@
 //! Substrate Service discovery registry
 //!
-//! Tracks local running/deployed micro-services (WASM, TCP, Podman, native host),
-//! enabling internal service-to-service discovery (Internal Micro-Discovery).
+//! Tracks local running/deployed micro-services (WASM, TCP, Podman, native
+//! host), enabling internal service-to-service discovery (Internal
+//! Micro-Discovery).
 
 use std::{
     fmt::{Debug, Formatter},
@@ -33,9 +34,11 @@ pub enum SubstrateEndpoint {
 /// It acts as Internal Micro-Discovery.
 #[derive(Clone)]
 pub struct EndpointRegistry {
-    /// Thread-safe shared map of (`service_id`, `interface_name`) to `LocalEndpoint`
+    /// Thread-safe shared map of (`service_id`, `interface_name`) to
+    /// `LocalEndpoint`
     active_endpoints: Arc<DashMap<(String, String), SubstrateEndpoint>>,
-    /// Secondary map for fast lookup by interface hash: (`service_id`, `interface_hash`) -> `interface_name`
+    /// Secondary map for fast lookup by interface hash: (`service_id`,
+    /// `interface_hash`) -> `interface_name`
     interface_hashes: Arc<DashMap<(String, String), String>>,
     /// Stable storage connection for persistence
     storage: Arc<dyn EndpointStorage>,
@@ -93,8 +96,9 @@ impl EndpointRegistry {
     }
 
     /// Lookup a destination for an incoming request.
-    /// Returns the endpoint and the canonical interface name it was registered under.
-    /// The canonical interface name may differ from `interface_name` when a short hash is provided.
+    /// Returns the endpoint and the canonical interface name it was registered
+    /// under. The canonical interface name may differ from `interface_name`
+    /// when a short hash is provided.
     #[must_use]
     pub fn lookup(
         &self,

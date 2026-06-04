@@ -1,5 +1,6 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
-//! Command-line control interface for operations on, and through, a Syneroym substrate.
+//! Command-line control interface for operations on, and through, a Syneroym
+//! substrate.
 
 use std::{path::PathBuf, process};
 
@@ -27,7 +28,8 @@ struct Cli {
     #[arg(global = true, long)]
     substrate: Option<String>,
 
-    /// Local directory for configuration and offline identities (defaults to current dir)
+    /// Local directory for configuration and offline identities (defaults to
+    /// current dir)
     #[arg(global = true, long, default_value = ".")]
     dir: PathBuf,
 }

@@ -1,6 +1,7 @@
 //! Protocol-specific routing handlers
 //!
-//! Defines dispatch pipelines for HTTP, JSON-RPC, and raw TCP traffic (wRPC — TODO: not yet implemented).
+//! Defines dispatch pipelines for HTTP, JSON-RPC, and raw TCP traffic (wRPC —
+//! TODO: not yet implemented).
 
 use std::{fmt, sync::Arc};
 

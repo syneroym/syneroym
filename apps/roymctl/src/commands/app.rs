@@ -1,6 +1,7 @@
 //! App sandbox deployment and lifecycle subcommands
 //!
-//! Commands to package, deploy, start, list, and terminate sandboxed guest apps.
+//! Commands to package, deploy, start, list, and terminate sandboxed guest
+//! apps.
 
 use std::{
     fs,

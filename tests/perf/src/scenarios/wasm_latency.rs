@@ -93,7 +93,8 @@ pub async fn run_scenario() -> Result<()> {
         .deploy_wasm(app_service_id.clone(), vec![interface_name.to_string()], wasm_bytes, None)
         .await?;
 
-    // We need to register the WASM service in the registry so the client can resolve it
+    // We need to register the WASM service in the registry so the client can
+    // resolve it
     let http_client = Client::new();
     let substrate_info = orchestrator_client.lookup().await?;
     let mechanisms = substrate_info.info.mechanisms;

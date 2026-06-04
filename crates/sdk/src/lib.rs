@@ -50,7 +50,8 @@ impl Debug for SyneroymClient {
 pub enum TransportConnection {
     Iroh {
         /// The endpoint must be kept alive for the duration of the connection.
-        /// Dropping it closes the underlying QUIC socket, terminating all streams.
+        /// Dropping it closes the underlying QUIC socket, terminating all
+        /// streams.
         endpoint: Endpoint,
         conn: Connection,
     },
@@ -99,7 +100,8 @@ impl SyneroymClient {
         } else if !self.registry_url.is_empty() {
             let registry_client = RegistryClient::new(true, Some(self.registry_url.clone()));
             let info = registry_client.lookup(&self.service_id, true).await?.info;
-            // The lookup might have been done by an alias. Update service_id to the canonical DID.
+            // The lookup might have been done by an alias. Update service_id to the
+            // canonical DID.
             self.service_id = info.service_id;
             info.mechanisms
         } else {

@@ -19,7 +19,8 @@ fn bench_wasm_engine(c: &mut Criterion) {
         Ok(bytes) => bytes,
         Err(_) => {
             println!(
-                "Warning: syneroym_test_greeter.wasm not found at {}, skipping instantiation benchmarks",
+                "Warning: syneroym_test_greeter.wasm not found at {}, skipping instantiation \
+                 benchmarks",
                 component_path.display()
             );
             return;

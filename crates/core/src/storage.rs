@@ -21,7 +21,8 @@ use crate::{config::SubstrateConfig, local_registry::SubstrateEndpoint};
 /// A trait abstracting stable storage for the `EndpointRegistry`.
 #[async_trait]
 pub trait EndpointStorage: Send + Sync {
-    /// Load all endpoints from stable storage. Returns a vector of (`service_id`, `interface_name`, endpoint).
+    /// Load all endpoints from stable storage. Returns a vector of
+    /// (`service_id`, `interface_name`, endpoint).
     async fn load_all(&self) -> Result<Vec<(String, String, SubstrateEndpoint)>>;
 
     /// Save an endpoint into stable storage.
@@ -181,7 +182,8 @@ impl EndpointStorage for SqliteEndpointStorage {
         task::spawn_blocking(move || -> Result<Vec<(String, String, SubstrateEndpoint)>> {
             let conn = lock_db(&conn_arc)?;
             let mut stmt = conn.prepare(
-                "SELECT service_id, interface_name, endpoint_type, endpoint_data FROM local_endpoints",
+                "SELECT service_id, interface_name, endpoint_type, endpoint_data FROM \
+                 local_endpoints",
             )?;
 
             let endpoints = stmt
@@ -221,7 +223,8 @@ impl EndpointStorage for SqliteEndpointStorage {
         task::spawn_blocking(move || -> Result<()> {
             let conn = lock_db(&conn_arc)?;
             conn.execute(
-                "INSERT INTO local_endpoints (service_id, interface_name, endpoint_type, endpoint_data)
+                "INSERT INTO local_endpoints (service_id, interface_name, endpoint_type, \
+                 endpoint_data)
                  VALUES (?1, ?2, ?3, ?4)
                  ON CONFLICT(service_id, interface_name) DO UPDATE SET
                     endpoint_type = excluded.endpoint_type,

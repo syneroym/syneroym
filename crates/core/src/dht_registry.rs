@@ -15,16 +15,19 @@ use reqwest::Client as ReqwestClient;
 use serde::{Deserialize, Serialize};
 use syneroym_identity::{Identity, substrate};
 
-/// Default time-to-live for registry entries, aligned with BEP 0044 DHT expiry defaults.
+/// Default time-to-live for registry entries, aligned with BEP 0044 DHT expiry
+/// defaults.
 pub const DEFAULT_REGISTRY_TTL_SECS: u64 = 7200; // 2 hours
 
-/// Interval at which substrates republish their endpoints to prevent them from expiring.
+/// Interval at which substrates republish their endpoints to prevent them from
+/// expiring.
 pub const HEARTBEAT_INTERVAL_SECS: u64 = 3600; // 1 hour
 
 /// Internal pkarr DHT DNS name used in published packets
 pub const PKARR_DNS_NAME: &str = "syneroym";
 
-/// Internal pkarr DHT packet TTL. Matches heartbeat interval so records expire if not refreshed.
+/// Internal pkarr DHT packet TTL. Matches heartbeat interval so records expire
+/// if not refreshed.
 pub const PKARR_TTL: u32 = HEARTBEAT_INTERVAL_SECS as u32;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,7 +89,8 @@ impl EndpointInfo {
 }
 
 impl SignedEndpointInfo {
-    /// Verifies the pkarr packet using the public key embedded in its service_id.
+    /// Verifies the pkarr packet using the public key embedded in its
+    /// service_id.
     pub fn verify(&self) -> Result<(), anyhow::Error> {
         let pubkey = substrate::resolve_did_key(&self.info.service_id)
             .map_err(|e| anyhow::anyhow!("Failed to parse public key from service_id DID: {e}"))?;
@@ -166,7 +170,8 @@ impl RegistryClient {
             return Err(anyhow::anyhow!("Failed to register endpoint via HTTP registry"));
         }
 
-        // Publish to DHT (fire-and-forget in background) if HTTP succeeded or wasn't configured
+        // Publish to DHT (fire-and-forget in background) if HTTP succeeded or wasn't
+        // configured
         if let Some(dht) = &self.dht_client {
             tracing::debug!("Publishing to Mainline DHT (background)");
             let packet_bytes = hex::decode(&signed_info.pkarr_packet_hex)?;
@@ -190,7 +195,8 @@ impl RegistryClient {
 
     /// Look up a service or substrate in the community registry.
     /// Handles both full DIDs and shorthash aliases.
-    /// If `resolve` is true, it will follow service-to-substrate mappings to get mechanisms.
+    /// If `resolve` is true, it will follow service-to-substrate mappings to
+    /// get mechanisms.
     pub async fn lookup(
         &self,
         id: &str,
@@ -218,7 +224,8 @@ impl RegistryClient {
         if result.is_none()
             && let Some(dht) = &self.dht_client
         {
-            // Note: DHT lookups require a public key, so shorthash aliases won't work purely on DHT
+            // Note: DHT lookups require a public key, so shorthash aliases won't work
+            // purely on DHT
             if let Ok(pubkey) = substrate::resolve_did_key(id) {
                 if let Ok(pkarr_pubkey) = PublicKey::try_from(pubkey.as_bytes()) {
                     tracing::debug!("Falling back to DHT lookup for {}", id);

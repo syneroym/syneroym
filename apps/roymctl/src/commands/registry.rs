@@ -1,6 +1,7 @@
 //! Registry management subcommands
 //!
-//! Commands for querying, registering, and listing endpoints in the community registry.
+//! Commands for querying, registering, and listing endpoints in the community
+//! registry.
 
 use std::path::Path;
 
@@ -16,7 +17,8 @@ use syneroym_identity::{Identity, substrate};
 pub enum RegistryCommands {
     /// Register a service DID against a substrate DID
     Register {
-        /// The name of the local identity to register (from identities/ directory)
+        /// The name of the local identity to register (from identities/
+        /// directory)
         #[arg(long)]
         identity: String,
         /// The DID of the substrate that hosts this service
@@ -25,7 +27,8 @@ pub enum RegistryCommands {
         /// Optional nickname for the service
         #[arg(long)]
         nickname: Option<String>,
-        /// Make this registration private (will not propagate to parent registries)
+        /// Make this registration private (will not propagate to parent
+        /// registries)
         #[arg(long)]
         private: bool,
     },

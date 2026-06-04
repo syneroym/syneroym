@@ -21,7 +21,8 @@ fn main() {
     println!("cargo:rerun-if-changed={}", component_dir.join("Cargo.toml").display());
 
     // Build WASM component. Failure is non-fatal: print a warning and continue.
-    // This allows builds to succeed on environments without cargo-component installed.
+    // This allows builds to succeed on environments without cargo-component
+    // installed.
     let status = Command::new(env!("CARGO"))
         .arg("component")
         .arg("build")
@@ -40,16 +41,16 @@ fn main() {
         }
         Ok(s) => {
             println!(
-                "cargo:warning=Failed to build WASM component in {component_dir:?} : {s}. \
-                 Install cargo-component to rebuild: `cargo install cargo-component`. \
-                 Continuing build without updated WASM component."
+                "cargo:warning=Failed to build WASM component in {component_dir:?} : {s}. Install \
+                 cargo-component to rebuild: `cargo install cargo-component`. Continuing build \
+                 without updated WASM component."
             );
         }
         Err(e) => {
             println!(
-                "cargo:warning=Failed to execute WASM component build: {e}. \
-                 Ensure 'cargo' is available and cargo-component is installed. \
-                 Continuing build without WASM component."
+                "cargo:warning=Failed to execute WASM component build: {e}. Ensure 'cargo' is \
+                 available and cargo-component is installed. Continuing build without WASM \
+                 component."
             );
         }
     }

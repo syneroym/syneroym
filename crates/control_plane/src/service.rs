@@ -19,8 +19,9 @@ use crate::dummy_sandbox::{AppSandboxEngine, ContainerEngine};
 const ORCHESTRATOR_INTERFACE: &str = "orchestrator";
 
 /// The Substrate Service (The Control Plane Orchestrator)
-/// This service handles the deployment and lifecycle of applications (`SynApps`)
-/// within the substrate. It interacts with sandbox environments like Podman or Wasmtime.
+/// This service handles the deployment and lifecycle of applications
+/// (`SynApps`) within the substrate. It interacts with sandbox environments
+/// like Podman or Wasmtime.
 pub struct ControlPlaneService {
     service_id: String,
     registry: EndpointRegistry,
@@ -105,10 +106,11 @@ impl ControlPlaneService {
     }
 
     async fn deploy(&self, params: serde_json::Value) -> RpcResult<NativeResponse> {
-        // NOTE: We use a positional tuple for parameters here because WASM component-model
-        // metadata often strips argument names during compilation, making named parameter
-        // matching unreliable for cross-platform toolchains. Positional parameters ensure
-        // consistent behavior across all guest environments.
+        // NOTE: We use a positional tuple for parameters here because WASM
+        // component-model metadata often strips argument names during
+        // compilation, making named parameter matching unreliable for
+        // cross-platform toolchains. Positional parameters ensure consistent
+        // behavior across all guest environments.
         let (service_id, interfaces, manifest): (String, Vec<String>, DeployManifest) =
             serde_json::from_value(params).map_err(|e| {
                 RpcError::InvalidParams(format!("Failed to parse deploy params: {e}"))

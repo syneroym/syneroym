@@ -47,7 +47,8 @@ pub enum Commands {
         /// Optional nickname
         #[arg(long)]
         nickname: Option<String>,
-        /// Optional interface name to include in the alias (outputs full hostname)
+        /// Optional interface name to include in the alias (outputs full
+        /// hostname)
         #[arg(long)]
         interface: Option<String>,
     },
@@ -70,15 +71,22 @@ pub async fn run(
             substrate::handle(&command, &dir).await?;
         }
         Commands::App { command } => {
-            let substrate_did = substrate_opt.or_else(|| {
-                // Try to load local substrate DID from key file if it exists
-                let key_path = dir.join("substrate.key");
-                Identity::load_from_path(&key_path)
-                    .map(|identity| syneroym_identity::substrate::derive_did_key(&identity.public_key()))
-                    .ok()
-            }).ok_or_else(|| {
-                anyhow::anyhow!("Substrate DID not provided and substrate.key not found. Use --substrate <did>")
-            })?;
+            let substrate_did = substrate_opt
+                .or_else(|| {
+                    // Try to load local substrate DID from key file if it exists
+                    let key_path = dir.join("substrate.key");
+                    Identity::load_from_path(&key_path)
+                        .map(|identity| {
+                            syneroym_identity::substrate::derive_did_key(&identity.public_key())
+                        })
+                        .ok()
+                })
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Substrate DID not provided and substrate.key not found. Use --substrate \
+                         <did>"
+                    )
+                })?;
 
             app::handle(&command, &api_url, substrate_did, &dir).await?;
         }

@@ -1,7 +1,8 @@
 use anyhow::Result;
 use wasmtime::component::{Val, types::Type};
 
-// TODO: This is a very basic implementation. We need to handle more complex types and also consider using named parameters instead of positional ones.
+// TODO: This is a very basic implementation. We need to handle more complex
+// types and also consider using named parameters instead of positional ones.
 
 /// Convert JSON parameters to wasmtime Val vector based on function signature
 pub fn json_to_wasm_params<'a>(
@@ -10,7 +11,8 @@ pub fn json_to_wasm_params<'a>(
 ) -> Result<Vec<Val>> {
     let mut wasm_params = Vec::new();
 
-    // TODO: Instead of positional params, better to use named params. Since we use WIT, the names should be available in the loaded component
+    // TODO: Instead of positional params, better to use named params. Since we use
+    // WIT, the names should be available in the loaded component
     for (i, (_param_name, ty)) in params_iter.enumerate() {
         let val = json_params.get(i).unwrap_or(&serde_json::Value::Null);
         match ty {

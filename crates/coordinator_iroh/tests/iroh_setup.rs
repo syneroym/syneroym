@@ -9,7 +9,8 @@
 
 //! Very basic example to showcase how to use iroh's APIs.
 //!
-//! This example implements a simple protocol that echos any data sent to it in the first stream.
+//! This example implements a simple protocol that echos any data sent to it in
+//! the first stream.
 //!
 //! ## Usage
 //!
@@ -28,8 +29,9 @@ use tracing_subscriber::fmt;
 
 /// Each protocol is identified by its ALPN string.
 ///
-/// The ALPN, or application-layer protocol negotiation, is exchanged in the connection handshake,
-/// and the connection is aborted unless both endpoints pass the same bytestring.
+/// The ALPN, or application-layer protocol negotiation, is exchanged in the
+/// connection handshake, and the connection is aborted unless both endpoints
+/// pass the same bytestring.
 const ALPN: &[u8] = b"iroh-example/echo/0";
 
 const IROH_PORT: u16 = 3340;
@@ -56,9 +58,10 @@ async fn test_echo() -> anyhow::Result<()> {
     };
     config.resolve_paths();
 
-    // Since this test runs the substrate in-process, we can't rely on `cargo test` capturing stdout/stderr.
-    // So we configure the substrate to write logs to a temporary file and avoid large outputs while running tests.
-    // NOTE: Comment for debugging purpose uncomment otherwise.
+    // Since this test runs the substrate in-process, we can't rely on `cargo test`
+    // capturing stdout/stderr. So we configure the substrate to write logs to a
+    // temporary file and avoid large outputs while running tests. NOTE: Comment
+    // for debugging purpose uncomment otherwise.
     config.logging.target = LogTarget::File;
 
     config.roles.coordinator = Some(CoordinatorRole {
@@ -130,14 +133,15 @@ async fn connect_side(addr: EndpointAddr) -> Result<()> {
     // Explicitly close the whole connection.
     conn.close(0u32.into(), b"bye!");
 
-    // The above call only queues a close message to be sent (see how it's not async!).
-    // We need to actually call this to make sure this message is sent out.
+    // The above call only queues a close message to be sent (see how it's not
+    // async!). We need to actually call this to make sure this message is sent
+    // out.
     endpoint.close().await;
     // If we don't call this, but continue using the endpoint, we then the queued
     // close call will eventually be picked up and sent.
-    // But always try to wait for endpoint.close().await to go through before dropping
-    // the endpoint to ensure any queued messages are sent through and connections are
-    // closed gracefully.
+    // But always try to wait for endpoint.close().await to go through before
+    // dropping the endpoint to ensure any queued messages are sent through and
+    // connections are closed gracefully.
     Ok(())
 }
 
@@ -150,7 +154,8 @@ async fn start_accept_side() -> Result<Router> {
 
     //let endpoint = Endpoint::bind(presets::N0).await?;
 
-    // Build our protocol handler and add our protocol, identified by its ALPN, and spawn the endpoint.
+    // Build our protocol handler and add our protocol, identified by its ALPN, and
+    // spawn the endpoint.
     let router = Router::builder(endpoint).accept(ALPN, Echo).spawn();
 
     Ok(router)
@@ -162,8 +167,8 @@ struct Echo;
 impl ProtocolHandler for Echo {
     /// The `accept` method is called for each incoming connection for our ALPN.
     ///
-    /// The returned future runs on a newly spawned tokio task, so it can run as long as
-    /// the connection lasts.
+    /// The returned future runs on a newly spawned tokio task, so it can run as
+    /// long as the connection lasts.
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         // We can get the remote's endpoint id from the connection.
         let endpoint_id = connection.remote_id();
@@ -174,12 +179,14 @@ impl ProtocolHandler for Echo {
         let (mut send, mut recv) = connection.accept_bi().await?;
 
         // Echo any bytes received back directly.
-        // This will keep copying until the sender signals the end of data on the stream.
+        // This will keep copying until the sender signals the end of data on the
+        // stream.
         let bytes_sent = io::copy(&mut recv, &mut send).await?;
         println!("Copied over {bytes_sent} byte(s)");
 
-        // By calling `finish` on the send stream we signal that we will not send anything
-        // further, which makes the receive stream on the other end terminate.
+        // By calling `finish` on the send stream we signal that we will not send
+        // anything further, which makes the receive stream on the other end
+        // terminate.
         send.finish()?;
 
         // Wait until the remote closes the connection, which it does once it
