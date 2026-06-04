@@ -48,7 +48,6 @@ fn bench_wasm_engine(c: &mut Criterion) {
     let mut store: wasmtime::Store<HostState> = wasmtime::Store::new(&engine, host_state);
     let instance = runtime.block_on(linker.instantiate_async(&mut store, &component)).unwrap();
 
-    // pnsreview: seem to have noticed this interface and method name strings at multiple places. Should it be as is, or should move it to a constant?
     let interface_name = test_constants::GREETER_INTERFACE_NAME;
     let method_name = "greet";
     let (_func, _results_len, item) =
