@@ -2485,9 +2485,6 @@ name = "hashbrown"
 version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
-dependencies = [
- "ahash",
-]
 
 [[package]]
 name = "hashbrown"
@@ -3562,18 +3559,27 @@ dependencies = [
 ]
 
 [[package]]
-name = "metrics-util"
-version = "0.17.0"
+name = "metrics"
+version = "0.24.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4259040465c955f9f2f1a4a8a16dc46726169bca0f88e8fb2dbeced487c3e828"
+checksum = "89550ee9f79e88fef3119de263694973a8adb26c21d75322164fb8c493039fe2"
+dependencies = [
+ "portable-atomic",
+ "rapidhash",
+]
+
+[[package]]
+name = "metrics-util"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15b482df36c13dd1869d73d14d28cd4855fbd6cfc32294bee109908a9f4a4ed7"
 dependencies = [
  "aho-corasick",
  "crossbeam-epoch",
  "crossbeam-utils",
- "hashbrown 0.14.5",
+ "hashbrown 0.15.5",
  "indexmap",
- "metrics",
- "num_cpus",
+ "metrics 0.24.6",
  "ordered-float",
  "quanta",
  "radix_trie",
@@ -4047,16 +4053,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
-]
-
-[[package]]
-name = "num_cpus"
-version = "1.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91df4bbde75afed763b708b7eee1e8e7651e02d97f6d5dd763e89367e957b23b"
-dependencies = [
- "hermit-abi",
- "libc",
 ]
 
 [[package]]
@@ -4942,6 +4938,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "76afc826de14238e6e8c374ddcc1fa19e374fd8dd986b0d2af0d02377261d83c"
 dependencies = [
  "getrandom 0.3.4",
+]
+
+[[package]]
+name = "rapidhash"
+version = "4.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b5e48930979c155e2f33aa36ab3119b5ee81332beb6482199a8ecd6029b80b59"
+dependencies = [
+ "rustversion",
 ]
 
 [[package]]
@@ -5875,9 +5880,9 @@ checksum = "8ee5873ec9cce0195efcb7a4e9507a04cd49aec9c83d0389df45b1ef7ba2e649"
 
 [[package]]
 name = "sketches-ddsketch"
-version = "0.2.2"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85636c14b73d81f541e525f585c0a2109e6744e1565b5c1668e31c70c10ed65c"
+checksum = "0c6f73aeb92d671e0cc4dca167e59b2deb6387c375391bc99ee743f326994a2b"
 
 [[package]]
 name = "slab"
@@ -6100,7 +6105,7 @@ dependencies = [
  "criterion",
  "dashmap",
  "hex",
- "metrics",
+ "metrics 0.23.1",
  "reqwest 0.13.4",
  "serde_json",
  "sha2 0.10.9",
@@ -6300,7 +6305,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "dashmap",
- "metrics",
+ "metrics 0.23.1",
  "metrics-util",
  "serde",
  "serde_json",
@@ -6345,7 +6350,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "hex",
- "metrics",
+ "metrics 0.23.1",
  "reqwest 0.13.4",
  "serde_json",
  "sha2 0.10.9",
@@ -6372,7 +6377,7 @@ dependencies = [
  "hyper-util",
  "iroh",
  "iroh-relay",
- "metrics",
+ "metrics 0.23.1",
  "p256",
  "rand 0.9.4",
  "serde",
