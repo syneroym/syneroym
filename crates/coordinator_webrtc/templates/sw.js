@@ -1,5 +1,7 @@
 // Service Worker Logic
 
+const CACHE_NAME = 'peer-proxy-shell-v1';
+
 self.addEventListener('install', (event) => {
     console.debug('[SW] Installing');
     self.skipWaiting();
@@ -7,22 +9,45 @@ self.addEventListener('install', (event) => {
 
 self.addEventListener('activate', (event) => {
     console.debug('[SW] Activating');
-    event.waitUntil(clients.claim());
+    event.waitUntil(
+        caches.keys().then((cacheNames) => {
+            return Promise.all(
+                cacheNames.map((cacheName) => {
+                    if (cacheName !== CACHE_NAME) {
+                        return caches.delete(cacheName);
+                    }
+                })
+            );
+        }).then(() => self.clients.claim())
+    );
 });
 
 self.addEventListener('fetch', (event) => {
     const url = new URL(event.request.url);
     if (url.origin !== self.location.origin) return;
     if (url.searchParams.has('sw')) return;
-    if (url.pathname === '/__syneroym/sw.js') return;
+    if (url.pathname.startsWith('/__syneroym/')) return;
     console.debug("[SW] ----- Starting overridden Fetch for", event)
 
     event.respondWith(
         (async () => {
             // Always serve App Shell for navigation to keep the proxy logic alive
             if (event.request.mode === 'navigate') {
-                console.debug("[SW] Navigation request detected. Serving App Shell.");
-                return fetch(event.request);
+                console.debug("[SW] Navigation request detected. Serving App Shell from cache if available.");
+                const cache = await caches.open(CACHE_NAME);
+                const cachedResponse = await cache.match(event.request);
+                
+                const networkFetch = fetch(event.request).then((networkResponse) => {
+                    cache.put(event.request, networkResponse.clone());
+                    return networkResponse;
+                }).catch(err => {
+                    console.debug("[SW] Network fetch failed, relying on cache.", err);
+                    if (!cachedResponse) {
+                        return new Response("<h1>Offline</h1><p>Failed to fetch App Shell.</p>", { status: 502, headers: { 'Content-Type': 'text/html' } });
+                    }
+                });
+
+                return cachedResponse || await networkFetch;
             }
 
             try {

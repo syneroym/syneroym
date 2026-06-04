@@ -38,3 +38,14 @@ hex.workspace = true
 reqwest = { workspace = true, features = ["json"] }
 tempfile.workspace = true
 tracing-subscriber.workspace = true
+
+[build-dependencies]
+swc_core = { version = "68.0.5", features = [
+    "common",
+    "ecma_parser",
+    "ecma_codegen",
+    "ecma_minifier",
+    "ecma_visit",
+    "ecma_ast",
+    "ecma_transforms",
+] }

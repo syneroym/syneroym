@@ -83,6 +83,7 @@ fn app(state: Arc<BootstrapState>) -> Router {
     Router::new()
         .route("/sw.js", get(handle_sw))
         .route("/__syneroym/sw.js", get(handle_sw))
+        .route("/__syneroym/peer-proxy.js", get(handle_peer_proxy_js))
         .route("/__syneroym/tunnel", any(handle_tunnel_upgrade))
         .fallback(handle_bootstrap)
         .with_state(state)
@@ -90,7 +91,7 @@ fn app(state: Arc<BootstrapState>) -> Router {
 
 async fn handle_sw() -> impl IntoResponse {
     info!("Serving sw.js to client");
-    let sw_js = include_str!("../templates/sw.js");
+    let sw_js = include_str!(concat!(env!("OUT_DIR"), "/sw.js"));
     (
         StatusCode::OK,
         [
@@ -99,6 +100,11 @@ async fn handle_sw() -> impl IntoResponse {
         ],
         sw_js,
     )
+}
+
+async fn handle_peer_proxy_js() -> impl IntoResponse {
+    let js = include_str!(concat!(env!("OUT_DIR"), "/peer-proxy.js"));
+    (StatusCode::OK, [(header::CONTENT_TYPE, "application/javascript")], js)
 }
 
 async fn handle_bootstrap(
