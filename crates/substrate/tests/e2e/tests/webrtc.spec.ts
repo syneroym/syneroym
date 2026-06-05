@@ -34,6 +34,7 @@ import * as path from 'path';
 
     test('POST /api/comments and verify recent comments', async ({ page }) => {
       await page.click('text=Comments etc.');
+      await expect(page.locator('h2')).toContainText('Comments', { timeout: 35000 });
       const commentText = `Test comment from Playwright ${Date.now()}`;
       
       await page.fill('textarea[placeholder="Write a comment..."]', commentText);
@@ -47,7 +48,11 @@ import * as path from 'path';
 
     test('WebSocket Echo and Broadcast', async ({ page }) => {
       await page.click('text=Comments etc.');
+      await expect(page.locator('h2')).toContainText('Comments', { timeout: 35000 });
       
+      // Wait for WebSocket to connect before submitting, to avoid missing the broadcast
+      await expect(page.locator('text=Live Updates: Connected')).toBeVisible({ timeout: 15000 });
+
       // The miniapp-demo1-web has a WebSocket echo feature.
       // When a comment is saved, it broadcasts a timestamp.
       
@@ -56,9 +61,6 @@ import * as path from 'path';
       // We expect a broadcast message in the "Live Updates" component
       const lastUpdatedLocator = page.locator('div:has-text("Live Updates:") span').first();
       const lastUpdatedBefore = await lastUpdatedLocator.innerText();
-      
-      // Wait for WebSocket to connect before submitting, to avoid missing the broadcast
-      await expect(page.locator('text=Live Updates: Connected')).toBeVisible({ timeout: 15000 });
       
       await page.fill('textarea[placeholder="Write a comment..."]', commentText);
       await page.click('button:has-text("Submit")');
@@ -69,6 +71,7 @@ import * as path from 'path';
 
     test('File Upload and Download', async ({ page }) => {
       await page.click('text=Comments etc.');
+      await expect(page.locator('h2')).toContainText('Comments', { timeout: 35000 });
       
       const fileName = `test-file-${Date.now()}.txt`;
       const filePath = path.join(__dirname, fileName);

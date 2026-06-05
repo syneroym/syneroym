@@ -12,7 +12,7 @@ use std::{
 use anyhow::{Context, Result};
 use axum::{
     Json, Router,
-    extract::{Path, Query, State},
+    extract::{Path, State},
     http::StatusCode,
     routing::{get, post},
 };
@@ -261,12 +261,8 @@ fn propagate_registration(payload: SignedEndpointInfo, parent_url: String) {
     });
 }
 
-#[derive(serde::Deserialize)]
-pub struct LookupQuery {}
-
 async fn lookup_endpoint(
     Path(service_id): Path<String>,
-    Query(_query): Query<LookupQuery>,
     State(state): State<Arc<RegistryState>>,
 ) -> Result<Json<SignedEndpointInfo>, StatusCode> {
     let resolved_id = state.aliases.get(&service_id).map(|e| e.clone()).unwrap_or(service_id);
@@ -318,7 +314,7 @@ mod tests {
         // Lookup by alias
         let service_hash = util::short_hash(&did);
         let alias = format!("alice-p{service_hash}");
-        let lookup_res = lookup_endpoint(Path(alias), Query(LookupQuery {}), State(state)).await;
+        let lookup_res = lookup_endpoint(Path(alias), State(state)).await;
 
         let Json(retrieved) = lookup_res.unwrap();
         assert_eq!(retrieved.info.service_id, signed_info.info.service_id);
@@ -411,12 +407,7 @@ mod tests {
         state.endpoints.insert(service_id.to_string(), (service_info, Instant::now()));
 
         // Lookup service
-        let lookup_res = lookup_endpoint(
-            Path(service_id.to_string()),
-            Query(LookupQuery {}),
-            State(state.clone()),
-        )
-        .await;
+        let lookup_res = lookup_endpoint(Path(service_id.to_string()), State(state.clone())).await;
 
         let Json(retrieved) = lookup_res.unwrap();
         assert_eq!(retrieved.info.service_id, service_id);
@@ -446,7 +437,7 @@ mod tests {
         // Lookup by shorthash (p{hash}) should work
         let service_hash = util::short_hash(&did);
         let alias = format!("p{service_hash}");
-        let lookup_res = lookup_endpoint(Path(alias), Query(LookupQuery {}), State(state)).await;
+        let lookup_res = lookup_endpoint(Path(alias), State(state)).await;
 
         assert!(lookup_res.is_ok());
         let Json(retrieved) = lookup_res.unwrap();
@@ -475,7 +466,7 @@ mod tests {
         // Lookup by shorthash-only (p{hash}) should FAIL because nickname was provided
         let service_hash = util::short_hash(&did);
         let alias = format!("p{service_hash}");
-        let lookup_res = lookup_endpoint(Path(alias), Query(LookupQuery {}), State(state)).await;
+        let lookup_res = lookup_endpoint(Path(alias), State(state)).await;
 
         assert!(lookup_res.is_err());
         assert_eq!(lookup_res.unwrap_err(), StatusCode::NOT_FOUND);
@@ -484,9 +475,7 @@ mod tests {
     #[tokio::test]
     async fn test_lookup_not_found() {
         let state = Arc::new(RegistryState::default());
-        let res =
-            lookup_endpoint(Path("non-existent".to_string()), Query(LookupQuery {}), State(state))
-                .await;
+        let res = lookup_endpoint(Path("non-existent".to_string()), State(state)).await;
 
         assert!(res.is_err());
         assert_eq!(res.unwrap_err(), StatusCode::NOT_FOUND);

@@ -8,10 +8,7 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use iroh::{
-    Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl, SecretKey, endpoint::presets::N0,
-    protocol::Router,
-};
+use iroh::{Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl, SecretKey, protocol::Router};
 use reqwest::Client;
 use syneroym_community_registry::EcosystemRegistry;
 use syneroym_coordinator_iroh::{CoordinatorInfo, CoordinatorIroh};
@@ -89,7 +86,7 @@ async fn test_registry_propagation() -> Result<()> {
     let identity = Identity::generate()?;
     let did = derive_did_key(&identity.public_key());
     let dummy_secret = SecretKey::generate(&mut rand::rng());
-    let dummy_ep = Endpoint::builder(N0).secret_key(dummy_secret).bind().await?;
+    let dummy_ep = Endpoint::empty_builder().secret_key(dummy_secret).bind().await?;
     let dummy_addr = dummy_ep.addr();
 
     let signed_info = create_signed_info(&identity, &did, &dummy_addr);
@@ -206,7 +203,7 @@ async fn test_inbound_relay() -> Result<()> {
         RouteHandler::init(did_z.clone(), &config_z, endpoint_registry_z, secret_z_bytes).await?;
 
     // Bind Sz to Iroh so Cp can connect to it (Sz uses Cp's relay url)
-    let mut ep_z_bldr = Endpoint::builder(N0);
+    let mut ep_z_bldr = Endpoint::empty_builder();
     if let Some(relay_url) = cp_info.relay_url.as_ref().and_then(|r| r.parse::<RelayUrl>().ok()) {
         ep_z_bldr = ep_z_bldr.relay_mode(RelayMode::Custom(RelayMap::from(relay_url)));
     }
@@ -335,7 +332,7 @@ async fn test_outbound_relay() -> Result<()> {
         RouteHandler::init(did_x.clone(), &config_x, endpoint_registry_x, secret_x_bytes).await?;
 
     // Bind Sx to Iroh so C can connect to it (Sx uses C's relay url)
-    let mut ep_x_bldr = Endpoint::builder(N0);
+    let mut ep_x_bldr = Endpoint::empty_builder();
     ep_x_bldr = ep_x_bldr
         .relay_mode(RelayMode::Custom(RelayMap::from(c_relay_url.parse::<RelayUrl>().unwrap())));
     let secret_key_x = SecretKey::generate(&mut rand::rng());

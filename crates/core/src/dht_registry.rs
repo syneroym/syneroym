@@ -207,14 +207,17 @@ impl RegistryClient {
         // Try HTTP registry first
         if let Some(url) = &self.registry_url {
             let client = ReqwestClient::new();
-            let lookup_url = format!("{url}/lookup/{id}?resolve=false");
+            let lookup_url = format!("{url}/lookup/{id}");
             tracing::debug!("Registry lookup: {}", lookup_url);
 
             if let Ok(response) = client.get(&lookup_url).send().await
                 && response.status().is_success()
                 && let Ok(info) = response.json::<SignedEndpointInfo>().await
-                && info.verify().is_ok()
             {
+                if let Err(e) = info.verify() {
+                    // FAIL FAST: Don't fall back to DHT if registry returned invalid data
+                    return Err(anyhow::anyhow!("Registry returned invalid data for {id}: {e}"));
+                }
                 result = Some(info);
             }
         }

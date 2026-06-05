@@ -419,7 +419,7 @@ async fn pipe_ws_and_iroh(
     debug!("[BlindTunnel] Preamble sent; starting bidirectional pipe WS<->Iroh");
     let (mut iroh_read, mut iroh_write) = io::split(iroh_stream);
 
-    let ws_to_iroh = async move {
+    let ws_to_iroh = async {
         while let Some(msg_res) = ws_receiver.next().await {
             match msg_res {
                 Ok(Message::Binary(bin)) => {
@@ -441,13 +441,16 @@ async fn pipe_ws_and_iroh(
                     error!("[BlindTunnel][WS->Iroh] WS reader error: {e}");
                     break;
                 }
-                _ => {}
+                t => {
+                    error!("[BlindTunnel][WS->Iroh] Unknown WS message type: {t:?}");
+                    break;
+                }
             }
         }
         let _ = iroh_write.shutdown().await;
     };
 
-    let iroh_to_ws = async move {
+    let iroh_to_ws = async {
         let mut buf = vec![0u8; 16384];
         loop {
             match iroh_read.read(&mut buf).await {
@@ -465,12 +468,10 @@ async fn pipe_ws_and_iroh(
                 }
             }
         }
+        let _ = ws_sender.close().await;
     };
 
-    tokio::select! {
-        () = ws_to_iroh => {}
-        () = iroh_to_ws => {}
-    }
+    tokio::join!(ws_to_iroh, iroh_to_ws);
 }
 
 fn construct_signaling_url(

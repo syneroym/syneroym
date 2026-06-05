@@ -75,7 +75,8 @@ pub async fn build_iroh_endpoint(
     if let Some(url) = relay_url
         && let Ok(relay_url) = url.parse::<RelayUrl>()
     {
-        builder = builder.relay_mode(RelayMode::Custom(RelayMap::from(relay_url)));
+        builder =
+            Endpoint::empty_builder().relay_mode(RelayMode::Custom(RelayMap::from(relay_url)));
     }
     if let Some(sk) = secret_key {
         builder = builder.secret_key(sk);

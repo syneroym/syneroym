@@ -192,6 +192,47 @@ let peerConnection;
 let ws;
 let isConnected = false;
 let connectionPromise = null;
+const activeWebSockets = new Set();
+const activeDataChannels = new Set();
+
+function cleanupPageConnections(reason = "Page navigation") {
+    console.log(`[Page] Cleaning up page-specific connections: ${reason}`);
+    for (const dc of activeDataChannels) {
+        try {
+            dc.close();
+        } catch (e) {}
+    }
+    activeDataChannels.clear();
+
+    for (const socket of activeWebSockets) {
+        try {
+            socket.close(1000, reason);
+        } catch (e) {}
+    }
+    activeWebSockets.clear();
+}
+
+function cleanupAllConnections() {
+    console.log("[Page] Cleaning up all connections on page unload/reload...");
+    cleanupPageConnections("Page unloading");
+
+    if (ws) {
+        try {
+            ws.close(1000, "Page unloading");
+        } catch (e) {}
+        ws = null;
+    }
+
+    if (peerConnection) {
+        try {
+            peerConnection.close();
+        } catch (e) {}
+        peerConnection = null;
+    }
+}
+
+window.addEventListener('beforeunload', cleanupAllConnections);
+window.addEventListener('pagehide', cleanupAllConnections);
 
 async function verifyAndDeriveSharedSecret(serverKeyBytes, clientKeyPair, clientPubRaw) {
     if (serverKeyBytes.length < 129) {
@@ -261,6 +302,7 @@ async function connectTunnel(preamble, isRaw, onData, onClose) {
             return await new Promise((resolve, reject) => {
                 const dcLabel = "tunnel-" + Math.random().toString(36).substr(2, 5);
                 const dc = peerConnection.createDataChannel(dcLabel);
+                activeDataChannels.add(dc);
                 let closed = false;
 
                 dc.onopen = () => {
@@ -277,6 +319,7 @@ async function connectTunnel(preamble, isRaw, onData, onClose) {
                         },
                         close: () => {
                             closed = true;
+                            activeDataChannels.delete(dc);
                             dc.close();
                         }
                     });
@@ -288,6 +331,7 @@ async function connectTunnel(preamble, isRaw, onData, onClose) {
                 };
 
                 dc.onclose = () => {
+                    activeDataChannels.delete(dc);
                     if (closed) return;
                     closed = true;
                     onClose();
@@ -295,6 +339,7 @@ async function connectTunnel(preamble, isRaw, onData, onClose) {
 
                 dc.onerror = (e) => {
                     console.error("DC Error:", e);
+                    activeDataChannels.delete(dc);
                     dc.close();
                     reject(e);
                 };
@@ -332,6 +377,7 @@ async function connectTunnel(preamble, isRaw, onData, onClose) {
             console.debug(`[Page][BlindTunnel] Connecting WebSocket to tunnel URL: ${tunnelUrl}`);
 
             const tunnelWS = new NativeWebSocket(tunnelUrl);
+            activeWebSockets.add(tunnelWS);
             tunnelWS.binaryType = 'arraybuffer';
 
             let serverKeyBytes = new Uint8Array(0);
@@ -348,6 +394,7 @@ async function connectTunnel(preamble, isRaw, onData, onClose) {
                         },
                         close: () => {
                             closed = true;
+                            activeWebSockets.delete(tunnelWS);
                             tunnelWS.close();
                         }
                     });
@@ -390,6 +437,7 @@ async function connectTunnel(preamble, isRaw, onData, onClose) {
                                     },
                                     close: () => {
                                         closed = true;
+                                        activeWebSockets.delete(tunnelWS);
                                         tunnelWS.close();
                                     }
                                 });
@@ -401,6 +449,7 @@ async function connectTunnel(preamble, isRaw, onData, onClose) {
                         } catch (e) {
                             console.error("[Page][BlindTunnel] Handshake error:", e);
                             closed = true;
+                            activeWebSockets.delete(tunnelWS);
                             tunnelWS.close();
                             reject(e);
                         }
@@ -416,6 +465,7 @@ async function connectTunnel(preamble, isRaw, onData, onClose) {
 
             tunnelWS.onclose = () => {
                 console.debug("[Page][BlindTunnel] WS closed");
+                activeWebSockets.delete(tunnelWS);
                 if (closed) return;
                 closed = true;
                 onClose();
@@ -423,6 +473,7 @@ async function connectTunnel(preamble, isRaw, onData, onClose) {
 
             tunnelWS.onerror = (e) => {
                 console.error("[Page][BlindTunnel] WS error:", e);
+                activeWebSockets.delete(tunnelWS);
                 tunnelWS.close();
                 reject(e);
             };
@@ -932,6 +983,8 @@ async function reloadContent() {
         setTimeout(reloadContent, 100);
         return;
     }
+
+    cleanupPageConnections();
 
     console.debug('[Page] Fetching actual content...');
     const controller = new AbortController();

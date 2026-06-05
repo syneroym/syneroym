@@ -9,11 +9,9 @@ use std::{future, sync::Arc};
 use anyhow::Result;
 use futures::{SinkExt, StreamExt};
 use iroh::{
-    Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl, SecretKey,
-    endpoint::presets,
+    EndpointAddr, SecretKey,
     protocol::{Router, Router as IrohRouter},
 };
-use presets::N0;
 use syneroym_core::{
     config::{IrohParentConfig, SubstrateConfig, WebRtcParentConfig},
     local_registry::EndpointRegistry,
@@ -35,7 +33,7 @@ use webrtc::{
     },
 };
 
-use crate::{net_webrtc::WebRTCStream, route_handler::RouteHandler};
+use crate::{net_iroh, net_webrtc::WebRTCStream, route_handler::RouteHandler};
 
 pub const SYNEROYM_ALPN: &[u8] = b"syneroym/0.1";
 
@@ -99,14 +97,7 @@ impl ConnectionRouter {
     ) -> Result<IrohRouter> {
         debug!("Initializing Iroh communication...");
 
-        let mut ep_bldr = Endpoint::builder(N0);
-        if let Ok(relay_url) = config.url.parse::<RelayUrl>() {
-            ep_bldr =
-                Endpoint::empty_builder().relay_mode(RelayMode::Custom(RelayMap::from(relay_url)));
-        }
-
-        let ep_bldr = ep_bldr.secret_key(secret_key);
-        let ep = ep_bldr.bind().await?;
+        let ep = net_iroh::build_iroh_endpoint(Some(config.url.clone()), Some(secret_key)).await?;
 
         let iroh_router: IrohRouter =
             IrohRouter::builder(ep).accept(SYNEROYM_ALPN, route_handler).spawn();
