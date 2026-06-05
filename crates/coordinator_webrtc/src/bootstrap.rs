@@ -399,7 +399,7 @@ async fn connect_iroh_stream(
         }
     };
 
-    let mut iroh_stream = IrohStream::new(send, recv);
+    let mut iroh_stream = IrohStream::new(send, recv).with_conn(connection);
 
     // Forward the preamble to the Iroh stream
     debug!("[BlindTunnel] Forwarding preamble to Iroh ({} bytes)", preamble_str.len());
@@ -471,7 +471,14 @@ async fn pipe_ws_and_iroh(
         let _ = ws_sender.close().await;
     };
 
-    tokio::join!(ws_to_iroh, iroh_to_ws);
+    tokio::select! {
+        _ = ws_to_iroh => {
+            debug!("[BlindTunnel] ws_to_iroh finished, tearing down tunnel");
+        }
+        _ = iroh_to_ws => {
+            debug!("[BlindTunnel] iroh_to_ws finished, tearing down tunnel");
+        }
+    }
 }
 
 fn construct_signaling_url(

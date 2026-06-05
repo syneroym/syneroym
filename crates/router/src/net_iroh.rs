@@ -18,6 +18,8 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 pub struct IrohStream {
     send: SendStream,
     recv: RecvStream,
+    finished: bool,
+    conn: Option<iroh::endpoint::Connection>,
 }
 
 impl Debug for IrohStream {
@@ -25,14 +27,21 @@ impl Debug for IrohStream {
         f.debug_struct("IrohStream")
             .field("send", &"iroh::endpoint::SendStream")
             .field("recv", &"iroh::endpoint::RecvStream")
+            .field("conn", &self.conn.is_some())
             .finish()
     }
 }
 
 impl IrohStream {
     #[must_use]
-    pub const fn new(send: SendStream, recv: RecvStream) -> Self {
-        Self { send, recv }
+    pub fn new(send: SendStream, recv: RecvStream) -> Self {
+        Self { send, recv, finished: false, conn: None }
+    }
+
+    #[must_use]
+    pub fn with_conn(mut self, conn: iroh::endpoint::Connection) -> Self {
+        self.conn = Some(conn);
+        self
     }
 }
 
@@ -59,11 +68,13 @@ impl AsyncWrite for IrohStream {
         Pin::new(&mut self.send).poll_flush(cx)
     }
 
-    fn poll_shutdown(
-        mut self: Pin<&mut Self>,
-        cx: &mut TaskContext<'_>,
-    ) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.send).poll_shutdown(cx)
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        if !this.finished {
+            let _ = this.send.finish(); // Ignore error if it's already closed
+            this.finished = true;
+        }
+        Pin::new(&mut this.send).poll_shutdown(cx)
     }
 }
 

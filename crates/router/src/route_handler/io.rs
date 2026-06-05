@@ -112,9 +112,19 @@ impl RouteHandler {
 
             // 5. Blind bidirectional pipe
             let mut inbound = ReaderWriter { reader, writer };
-            let mut outbound = IrohStream::new(out_send, out_recv);
-            io::copy_bidirectional(&mut inbound, &mut outbound).await?;
-            debug!("[Router] Relay copy completed successfully");
+            let mut outbound = IrohStream::new(out_send, out_recv).with_conn(conn);
+            if let Err(e) = io::copy_bidirectional(&mut inbound, &mut outbound).await {
+                if super::is_expected_disconnect(&e) {
+                    debug!(
+                        "[Router] Relay tunnel for {} closed by peer ({e})",
+                        preamble.service_id
+                    );
+                } else {
+                    return Err(anyhow!("Error in relay copy for {}: {e}", preamble.service_id));
+                }
+            } else {
+                debug!("[Router] Relay copy completed successfully");
+            }
             return Ok(());
         };
 
@@ -160,9 +170,13 @@ impl RouteHandler {
                 debug!("[Router] TCP connection to {}:{} established", host, port);
 
                 let mut client = stream;
-                io::copy_bidirectional(&mut client, &mut target)
-                    .await
-                    .map_err(|e| anyhow!("Error in bidirectional copy for {host}:{port}: {e}"))?;
+                if let Err(e) = io::copy_bidirectional(&mut client, &mut target).await {
+                    if super::is_expected_disconnect(&e) {
+                        debug!("[Router] Proxy tunnel for {}:{} closed by peer ({e})", host, port);
+                    } else {
+                        return Err(anyhow!("Error in bidirectional copy for {host}:{port}: {e}"));
+                    }
+                }
                 Ok(())
             }
             ServiceStage::WasmComponent { service_id } => {

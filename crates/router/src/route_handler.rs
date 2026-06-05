@@ -36,6 +36,15 @@ pub struct RouteHandler {
     pub(crate) inner: Arc<RouteHandlerInner>,
 }
 
+/// Returns true if the error represents an expected client disconnect.
+pub fn is_expected_disconnect<E: fmt::Display>(e: E) -> bool {
+    let err_msg = e.to_string();
+    err_msg.contains("connection lost")
+        || err_msg.contains("closed stream")
+        || err_msg.contains("Broken pipe")
+        || err_msg.contains("Connection reset by peer")
+}
+
 pub struct RouteHandlerInner {
     pub registry: EndpointRegistry,
     pub native_dispatch: DashMap<String, Arc<dyn NativeService>>,
@@ -148,10 +157,14 @@ impl IrohProtocolHandler for RouteHandler {
                     let handler = self.clone();
                     tokio::spawn(async move {
                         if let Err(e) = handler.handle_stream(iroh_stream).await {
-                            error!(
-                                "[Router] Error handling Iroh stream from {}: {}",
-                                endpoint_id, e
-                            );
+                            if is_expected_disconnect(&e) {
+                                debug!("[Router] Stream from {endpoint_id} closed by peer ({e})");
+                            } else {
+                                error!(
+                                    "[Router] Error handling Iroh stream from {}: {}",
+                                    endpoint_id, e
+                                );
+                            }
                         }
                         debug!("[Router] Stream from {} completed", endpoint_id);
                     });
