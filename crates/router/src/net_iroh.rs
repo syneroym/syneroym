@@ -80,11 +80,16 @@ pub async fn build_iroh_endpoint(
     secret_key: Option<SecretKey>,
 ) -> anyhow::Result<Endpoint> {
     let mut builder = Endpoint::builder(N0);
-    if let Some(url) = relay_url
-        && let Ok(relay_url) = url.parse::<RelayUrl>()
-    {
-        builder =
-            Endpoint::empty_builder().relay_mode(RelayMode::Custom(RelayMap::from(relay_url)));
+    if let Some(url) = relay_url {
+        match url.parse::<RelayUrl>() {
+            Ok(relay_url) => {
+                builder = Endpoint::empty_builder()
+                    .relay_mode(RelayMode::Custom(RelayMap::from(relay_url)));
+            }
+            Err(e) => {
+                tracing::warn!("Failed to parse relay URL '{}': {}, falling back to N0", url, e);
+            }
+        }
     }
     if let Some(sk) = secret_key {
         builder = builder.secret_key(sk);
