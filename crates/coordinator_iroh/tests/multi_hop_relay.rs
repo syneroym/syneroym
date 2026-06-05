@@ -34,7 +34,8 @@ fn create_signed_info(
     endpoint_addr: &EndpointAddr,
     relay_url: Option<String>,
 ) -> SignedEndpointInfo {
-    let endpoint_addr_bytes = serde_json::to_vec(endpoint_addr).unwrap();
+    let pruned_addr = EndpointAddr::new(endpoint_addr.id);
+    let endpoint_addr_bytes = serde_json::to_vec(&pruned_addr).unwrap();
     let info = EndpointInfo {
         service_id: service_id.to_string(),
         substrate_id: service_id.to_string(),

@@ -23,6 +23,7 @@ interface orchestrator {
     record wasm-manifest {
         source: artifact-source,
         hash: option<string>,
+        interfaces: list<string>,
     }
 
     /// Port mapping for container
@@ -48,10 +49,16 @@ interface orchestrator {
         volumes: list<container-volume-mapping>,
     }
 
-    /// Manifest details for an existing TCP service.
-    record tcp-manifest {
+    /// Endpoint configuration for network services
+    record network-endpoint {
+        interface-name: string,
         host: string,
         port: u16,
+    }
+
+    /// Manifest details for an existing TCP service.
+    record tcp-manifest {
+        endpoints: list<network-endpoint>,
     }
 
     /// Defines the specific type of service and carries its specific payload.
@@ -71,14 +78,20 @@ interface orchestrator {
         registry-certificate: option<string>,
     }
 
+    record deployed-service {
+        service-id: string,
+        interfaces: list<string>,
+        endpoint-type: string,
+    }
+
     /// Deploy a new service using a deployment manifest
     deploy: func(service-id: string, manifest: deploy-manifest) -> result<_, string>;
 
-    /// Stop a currently running service gracefully
-    stop: func(service-id: string) -> result<_, string>;
+    /// Undeploy a service, stopping it and cleaning up resources
+    undeploy: func(service-id: string) -> result<_, string>;
 
-    /// Completely remove a stopped service and its resources
-    remove: func(service-id: string) -> result<_, string>;
+    /// List currently deployed services
+    %list: func() -> result<list<deployed-service>, string>;
 
     /// Check the readiness of the orchestrator
     readyz: func(service-id: string) -> result<_, string>;

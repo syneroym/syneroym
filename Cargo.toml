@@ -99,6 +99,7 @@ iroh-relay = { version = "0.97", features = ["server"] }
 wasmtime = { version = "44", features = ["component-model"] }
 wasmtime-wasi = "44"
 wit-bindgen = "0.57"
+wit-parser = "0.251"
 
 # Test / Dev
 criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }

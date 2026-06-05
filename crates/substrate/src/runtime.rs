@@ -13,7 +13,6 @@ use std::{
 };
 
 use axum::{Json, Router, routing};
-use serde::Serialize;
 use syneroym_client_gateway::ClientGateway;
 use syneroym_community_registry::EcosystemRegistry;
 use syneroym_coordinator::EcosystemCoordinator;
@@ -373,11 +372,11 @@ async fn setup_router(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn publish_to_community_registry<E: Serialize + Send + Sync + Clone + 'static>(
+fn publish_to_community_registry(
     registry_url: Option<String>,
     enable_bep0044_dht: bool,
     service_id: String,
-    endpoint_addr: E,
+    endpoint_addr: iroh::EndpointAddr,
     relay_url: Option<String>,
     secret_key: [u8; 32],
     nickname: Option<String>,
@@ -453,14 +452,17 @@ fn publish_to_community_registry<E: Serialize + Send + Sync + Clone + 'static>(
     });
 }
 
-fn build_signed_endpoint_info<E: Serialize>(
+fn build_signed_endpoint_info(
     service_id: &str,
-    endpoint_addr: &E,
+    endpoint_addr: &iroh::EndpointAddr,
     relay_url: Option<String>,
     secret_key: &[u8; 32],
     nickname: Option<String>,
 ) -> anyhow::Result<SignedEndpointInfo> {
-    let endpoint_addr_bytes = serde_json::to_vec(endpoint_addr)
+    // Prune direct addresses to keep the serialized PKARR record under the
+    // 1000-byte DNS limit
+    let pruned_addr = iroh::EndpointAddr::new(endpoint_addr.id);
+    let endpoint_addr_bytes = serde_json::to_vec(&pruned_addr)
         .map_err(|e| anyhow::anyhow!("Failed to serialize endpoint addr: {e}"))?;
 
     let info = EndpointInfo {

@@ -11,6 +11,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use iroh::{Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl, endpoint::Connection};
+pub use syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::NetworkEndpoint;
 use syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, ContainerManifest, ContainerPortMapping, ContainerVolumeMapping,
     DeployManifest, ServiceConfig, ServiceType, TcpManifest, WasmManifest,
@@ -271,10 +272,11 @@ impl SyneroymClient {
             service_type: ServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(wasm_bytes),
                 hash: None,
+                interfaces,
             }),
             registry_certificate,
         };
-        let params = serde_json::to_value((service_id, interfaces, manifest))?;
+        let params = serde_json::to_value((service_id, manifest))?;
         let res = self.request("orchestrator", "deploy", params).await?;
         if res.result == serde_json::json!({"status": "deployed"}) {
             Ok(())
@@ -286,9 +288,7 @@ impl SyneroymClient {
     pub async fn deploy_tcp(
         &self,
         service_id: String,
-        interfaces: Vec<String>,
-        host: String,
-        port: u16,
+        endpoints: Vec<NetworkEndpoint>,
         registry_certificate: Option<SignedEndpointInfo>,
     ) -> Result<()> {
         let registry_certificate = registry_certificate
@@ -297,10 +297,10 @@ impl SyneroymClient {
             .map_err(|e| anyhow::anyhow!("Failed to serialize registry certificate: {e}"))?;
         let manifest = DeployManifest {
             config: ServiceConfig { env: vec![], args: vec![], custom_config: None },
-            service_type: ServiceType::Tcp(TcpManifest { host, port }),
+            service_type: ServiceType::Tcp(TcpManifest { endpoints }),
             registry_certificate,
         };
-        let params = serde_json::to_value((service_id, interfaces, manifest))?;
+        let params = serde_json::to_value((service_id, manifest))?;
         let res = self.request("orchestrator", "deploy", params).await?;
         if res.result == serde_json::json!({"status": "deployed"}) {
             Ok(())
@@ -312,7 +312,6 @@ impl SyneroymClient {
     pub async fn deploy_container(
         &self,
         service_id: String,
-        interfaces: Vec<String>,
         image: String,
         ports: Vec<ContainerPortMapping>,
         volumes: Vec<ContainerVolumeMapping>,
@@ -333,7 +332,7 @@ impl SyneroymClient {
             }),
             registry_certificate,
         };
-        let params = serde_json::to_value((service_id, interfaces, manifest))?;
+        let params = serde_json::to_value((service_id, manifest))?;
         let res = self.request("orchestrator", "deploy", params).await?;
         if res.result == serde_json::json!({"status": "deployed"}) {
             Ok(())

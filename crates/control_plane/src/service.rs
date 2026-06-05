@@ -8,8 +8,16 @@ use std::{collections::HashMap, fmt, fs, path::PathBuf, sync::Arc};
 use anyhow::Result;
 use fmt::{Debug, Formatter};
 use syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::{
-    DeployManifest, ServiceType,
+    DeployManifest, DeployedService, ServiceType,
 };
+
+#[async_trait::async_trait]
+pub trait OrchestratorInterface {
+    async fn readyz(&self, service_id: String) -> Result<(), String>;
+    async fn deploy(&self, service_id: String, manifest: DeployManifest) -> Result<(), String>;
+    async fn undeploy(&self, service_id: String) -> Result<(), String>;
+    async fn list(&self) -> Result<Vec<DeployedService>, String>;
+}
 use syneroym_core::local_registry::{EndpointRegistry, SubstrateEndpoint};
 use syneroym_rpc::{NativeInvocation, NativeResponse, NativeService, RpcError, RpcResult};
 use tracing::info;
@@ -67,128 +75,60 @@ impl NativeService for ControlPlaneService {
     async fn dispatch(&self, invocation: NativeInvocation) -> RpcResult<NativeResponse> {
         info!("Orchestrator received dispatch: {}.{}", invocation.interface, invocation.method);
 
-        match (invocation.interface.as_str(), invocation.method.as_str()) {
-            (ORCHESTRATOR_INTERFACE, "readyz") => self.readyz(invocation.params).await,
-            (ORCHESTRATOR_INTERFACE, "deploy") => self.deploy(invocation.params).await,
-            (ORCHESTRATOR_INTERFACE, "undeploy") => self.undeploy(invocation.params).await,
-            (ORCHESTRATOR_INTERFACE, "list") => self.list().await,
-            (ORCHESTRATOR_INTERFACE, _) => Err(RpcError::MethodNotFound(invocation.method.clone())),
-            _ => Err(RpcError::InternalError(format!(
+        if invocation.interface.as_str() != ORCHESTRATOR_INTERFACE {
+            return Err(RpcError::InternalError(format!(
                 "Interface {} not handled by orchestrator",
                 invocation.interface
-            ))),
+            )));
+        }
+
+        match invocation.method.as_str() {
+            "readyz" => {
+                let service_id = serde_json::from_value::<(String,)>(invocation.params.clone())
+                    .map(|(s,)| s)
+                    .or_else(|_| serde_json::from_value::<String>(invocation.params.clone()))
+                    .or_else(|_| {
+                        #[derive(serde::Deserialize)]
+                        struct ReadyzPayload {
+                            #[serde(alias = "service-id")]
+                            service_id: String,
+                        }
+                        serde_json::from_value::<ReadyzPayload>(invocation.params)
+                            .map(|p| p.service_id)
+                    })
+                    .unwrap_or_default();
+                self.readyz(service_id).await.map_err(RpcError::InternalError)?;
+                Ok(ready_response())
+            }
+            "deploy" => {
+                let (service_id, manifest): (String, DeployManifest) =
+                    serde_json::from_value(invocation.params).map_err(|e| {
+                        RpcError::InvalidParams(format!("Failed to parse deploy params: {e}"))
+                    })?;
+                self.deploy(service_id, manifest).await.map_err(RpcError::InternalError)?;
+                Ok(NativeResponse { payload: serde_json::json!({"status": "deployed"}) })
+            }
+            "undeploy" => {
+                let (service_id,): (String,) = serde_json::from_value(invocation.params.clone())
+                    .or_else(|_| serde_json::from_value::<String>(invocation.params).map(|s| (s,)))
+                    .map_err(|e| {
+                        RpcError::InvalidParams(format!("Failed to parse undeploy params: {e}"))
+                    })?;
+                self.undeploy(service_id).await.map_err(RpcError::InternalError)?;
+                Ok(NativeResponse { payload: serde_json::json!({"status": "undeployed"}) })
+            }
+            "list" => {
+                let services = self.list().await.map_err(RpcError::InternalError)?;
+                Ok(NativeResponse {
+                    payload: serde_json::to_value(services).unwrap_or(serde_json::Value::Null),
+                })
+            }
+            method => Err(RpcError::MethodNotFound(method.to_string())),
         }
     }
 }
 
 impl ControlPlaneService {
-    async fn readyz(&self, params: serde_json::Value) -> RpcResult<NativeResponse> {
-        let (service_id,): (String,) = serde_json::from_value(params.clone())
-            .or_else(|_| serde_json::from_value::<String>(params.clone()).map(|s| (s,)))
-            .unwrap_or((String::new(),));
-
-        if !service_id.is_empty() {
-            let endpoints = self.registry.lookup_by_service(&service_id);
-            let mut is_container = false;
-            for (_, endpoint) in endpoints {
-                if matches!(endpoint, SubstrateEndpoint::TcpHostPort { .. }) {
-                    is_container = true;
-                    break;
-                }
-            }
-            if is_container {
-                self.podman_sandbox_engine.readyz(&service_id).await.map_err(|e| {
-                    RpcError::InternalError(format!("Container readiness check failed: {e}"))
-                })?;
-            }
-        }
-        Ok(ready_response())
-    }
-
-    async fn deploy(&self, params: serde_json::Value) -> RpcResult<NativeResponse> {
-        // NOTE: We use a positional tuple for parameters here because WASM
-        // component-model metadata often strips argument names during
-        // compilation, making named parameter matching unreliable for
-        // cross-platform toolchains. Positional parameters ensure consistent
-        // behavior across all guest environments.
-        let (service_id, interfaces, manifest): (String, Vec<String>, DeployManifest) =
-            serde_json::from_value(params).map_err(|e| {
-                RpcError::InvalidParams(format!("Failed to parse deploy params: {e}"))
-            })?;
-
-        if let Some(cert) = &manifest.registry_certificate {
-            let cert_path = self.hosted_apps_dir.join(format!("{service_id}.json"));
-            if let Err(e) = fs::write(&cert_path, cert) {
-                tracing::warn!("Failed to save registry certificate for {}: {}", service_id, e);
-            } else {
-                tracing::debug!(
-                    "Saved registry certificate for {} at {}",
-                    service_id,
-                    cert_path.display()
-                );
-            }
-        }
-
-        match &manifest.service_type {
-            ServiceType::Wasm(_) => {
-                self.app_sandbox_engine
-                    .deploy_wasm(&service_id, &manifest)
-                    .await
-                    .map_err(|e| RpcError::InternalError(format!("WASM deployment failed: {e}")))?;
-
-                self.register_wasm_endpoints(&service_id, interfaces).await.map_err(|e| {
-                    RpcError::InternalError(format!("Endpoint registration failed: {e}"))
-                })?;
-            }
-            ServiceType::Tcp(manifest) => {
-                info!("Deploying TCP service {}: {}:{}", service_id, manifest.host, manifest.port);
-                for interface in interfaces {
-                    self.registry
-                        .register(
-                            service_id.clone(),
-                            interface,
-                            SubstrateEndpoint::TcpHostPort {
-                                host: manifest.host.clone(),
-                                port: manifest.port,
-                            },
-                        )
-                        .await
-                        .map_err(|e| {
-                            RpcError::InternalError(format!("Endpoint registration failed: {e}"))
-                        })?;
-                }
-            }
-            ServiceType::Container(container_manifest) => {
-                info!(
-                    "Deploying container service {}: image={}",
-                    service_id, container_manifest.image
-                );
-                let actual_mappings =
-                    self.podman_sandbox_engine.deploy(&service_id, &manifest).await.map_err(
-                        |e| RpcError::InternalError(format!("Container deployment failed: {e}")),
-                    )?;
-
-                for (interface_name, host_port) in actual_mappings {
-                    self.registry
-                        .register(
-                            service_id.clone(),
-                            interface_name,
-                            SubstrateEndpoint::TcpHostPort {
-                                host: "127.0.0.1".to_string(),
-                                port: host_port,
-                            },
-                        )
-                        .await
-                        .map_err(|e| {
-                            RpcError::InternalError(format!("Endpoint registration failed: {e}"))
-                        })?;
-                }
-            }
-        }
-
-        Ok(NativeResponse { payload: serde_json::json!({"status": "deployed"}) })
-    }
-
     async fn register_wasm_endpoints(
         &self,
         service_id: &str,
@@ -205,14 +145,105 @@ impl ControlPlaneService {
         }
         Ok(())
     }
+}
 
-    async fn undeploy(&self, params: serde_json::Value) -> RpcResult<NativeResponse> {
-        let (service_id,): (String,) = serde_json::from_value(params.clone())
-            .or_else(|_| serde_json::from_value::<String>(params.clone()).map(|s| (s,)))
-            .map_err(|e| {
-                RpcError::InvalidParams(format!("Failed to parse undeploy params: {e}"))
-            })?;
+#[async_trait::async_trait]
+impl OrchestratorInterface for ControlPlaneService {
+    async fn readyz(&self, service_id: String) -> Result<(), String> {
+        if !service_id.is_empty() {
+            let endpoints = self.registry.lookup_by_service(&service_id);
+            let mut is_container = false;
+            for (_, endpoint) in endpoints {
+                if matches!(endpoint, SubstrateEndpoint::TcpHostPort { .. }) {
+                    is_container = true;
+                    break;
+                }
+            }
+            if is_container {
+                self.podman_sandbox_engine
+                    .readyz(&service_id)
+                    .await
+                    .map_err(|e| format!("Container readiness check failed: {e}"))?;
+            }
+        }
+        Ok(())
+    }
 
+    async fn deploy(&self, service_id: String, manifest: DeployManifest) -> Result<(), String> {
+        if let Some(cert) = &manifest.registry_certificate {
+            let cert_path = self.hosted_apps_dir.join(format!("{service_id}.json"));
+            if let Err(e) = fs::write(&cert_path, cert) {
+                tracing::warn!("Failed to save registry certificate for {}: {}", service_id, e);
+            } else {
+                tracing::debug!(
+                    "Saved registry certificate for {} at {}",
+                    service_id,
+                    cert_path.display()
+                );
+            }
+        }
+
+        match &manifest.service_type {
+            ServiceType::Wasm(wasm_manifest) => {
+                self.app_sandbox_engine
+                    .deploy_wasm(&service_id, &manifest)
+                    .await
+                    .map_err(|e| format!("WASM deployment failed: {e}"))?;
+
+                self.register_wasm_endpoints(&service_id, wasm_manifest.interfaces.clone())
+                    .await
+                    .map_err(|e| format!("Endpoint registration failed: {e}"))?;
+            }
+            ServiceType::Tcp(tcp_manifest) => {
+                for endpoint in &tcp_manifest.endpoints {
+                    info!(
+                        "Deploying TCP service {} endpoint {}: {}:{}",
+                        service_id, endpoint.interface_name, endpoint.host, endpoint.port
+                    );
+                    self.registry
+                        .register(
+                            service_id.clone(),
+                            endpoint.interface_name.clone(),
+                            SubstrateEndpoint::TcpHostPort {
+                                host: endpoint.host.clone(),
+                                port: endpoint.port,
+                            },
+                        )
+                        .await
+                        .map_err(|e| format!("Endpoint registration failed: {e}"))?;
+                }
+            }
+            ServiceType::Container(container_manifest) => {
+                info!(
+                    "Deploying container service {}: image={}",
+                    service_id, container_manifest.image
+                );
+                let actual_mappings = self
+                    .podman_sandbox_engine
+                    .deploy(&service_id, &manifest)
+                    .await
+                    .map_err(|e| format!("Container deployment failed: {e}"))?;
+
+                for (interface_name, host_port) in actual_mappings {
+                    self.registry
+                        .register(
+                            service_id.clone(),
+                            interface_name,
+                            SubstrateEndpoint::TcpHostPort {
+                                host: "127.0.0.1".to_string(),
+                                port: host_port,
+                            },
+                        )
+                        .await
+                        .map_err(|e| format!("Endpoint registration failed: {e}"))?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn undeploy(&self, service_id: String) -> Result<(), String> {
         info!("Undeploying service: {}", service_id);
 
         let cert_path = self.hosted_apps_dir.join(format!("{service_id}.json"));
@@ -260,10 +291,10 @@ impl ControlPlaneService {
             }
         }
 
-        Ok(NativeResponse { payload: serde_json::json!({"status": "undeployed"}) })
+        Ok(())
     }
 
-    async fn list(&self) -> RpcResult<NativeResponse> {
+    async fn list(&self) -> Result<Vec<DeployedService>, String> {
         let endpoints = self.registry.get_all_endpoints();
         let mut services: HashMap<String, DeployedService> = HashMap::new();
 
@@ -284,19 +315,78 @@ impl ControlPlaneService {
         let mut result: Vec<DeployedService> = services.into_values().collect();
         result.sort_by(|a, b| a.service_id.cmp(&b.service_id));
 
-        Ok(NativeResponse {
-            payload: serde_json::to_value(result).unwrap_or(serde_json::Value::Null),
-        })
+        Ok(result)
     }
-}
-
-#[derive(serde::Serialize)]
-struct DeployedService {
-    service_id: String,
-    interfaces: Vec<String>,
-    endpoint_type: String,
 }
 
 fn ready_response() -> NativeResponse {
     NativeResponse { payload: serde_json::json!({"status": "ok"}) }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use wit_parser::Resolve;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_wit_adherence() {
+        let wit_path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../bindings/wit/control-plane.wit");
+
+        let mut resolve = Resolve::default();
+        let content = std::fs::read_to_string(&wit_path).expect("Failed to read WIT file");
+        let group = wit_parser::UnresolvedPackageGroup::parse(&wit_path, &content)
+            .expect("Failed to parse WIT file");
+        let pkg = group.main;
+        let pkg_id = resolve.push(pkg, 0).expect("Failed to resolve package");
+
+        let package = &resolve.packages[pkg_id];
+        let interface_id = package
+            .interfaces
+            .get("orchestrator")
+            .copied()
+            .expect("orchestrator interface not found in WIT");
+
+        let interface = &resolve.interfaces[interface_id];
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = syneroym_core::config::SubstrateConfig::default();
+        let app_sandbox = Arc::new(AppSandboxEngine::init(&config, vec![]).await.unwrap());
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path()));
+        let registry =
+            EndpointRegistry::new_mock(Arc::new(syneroym_core::storage::MockStorage::new()));
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+        )
+        .await
+        .unwrap();
+
+        assert!(!interface.functions.is_empty(), "Orchestrator interface should have functions");
+
+        for (name, _func) in &interface.functions {
+            let method_name = name.strip_prefix('%').unwrap_or(name);
+
+            let invocation = NativeInvocation {
+                interface: "orchestrator".to_string(),
+                method: method_name.to_string(),
+                params: serde_json::Value::Null,
+            };
+
+            let res = service.dispatch(invocation).await;
+            if let Err(RpcError::MethodNotFound(m)) = res {
+                panic!(
+                    "WIT function '{}' maps to method name '{}' but was NOT found in dispatcher",
+                    name, m
+                );
+            }
+        }
+    }
 }

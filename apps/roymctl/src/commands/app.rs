@@ -89,11 +89,19 @@ pub async fn handle(
 
             if let Some(wasm_path) = wasm {
                 let wasm_bytes = fs::read(wasm_path)?;
-                client.deploy_wasm(app_id.clone(), ifaces, wasm_bytes, cert).await?;
+                let interfaces_list =
+                    if ifaces.is_empty() { vec!["default".to_string()] } else { ifaces };
+                client.deploy_wasm(app_id.clone(), interfaces_list, wasm_bytes, cert).await?;
                 println!("Successfully deployed WASM app {app_id}");
             } else if let Some(tcp_addr) = tcp {
+                if ifaces.len() > 1 {
+                    anyhow::bail!("TCP deployments only support a single interface for now");
+                }
                 let (host, port) = get_host_port_from_tcp_addr(tcp_addr)?;
-                client.deploy_tcp(app_id.clone(), ifaces, host, port, cert).await?;
+                let iface = ifaces.first().cloned().unwrap_or_else(|| "default".to_string());
+                let endpoints =
+                    vec![syneroym_sdk::NetworkEndpoint { interface_name: iface, host, port }];
+                client.deploy_tcp(app_id.clone(), endpoints, cert).await?;
                 println!("Successfully deployed TCP service {app_id}");
             } else {
                 anyhow::bail!("Either --wasm or --tcp must be provided for deployment");

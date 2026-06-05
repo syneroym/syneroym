@@ -58,9 +58,11 @@ pub async fn run_scenario() -> Result<()> {
     orchestrator_client
         .deploy_tcp(
             app_service_id.clone(),
-            vec!["default".to_string()],
-            "127.0.0.1".to_string(),
-            30001,
+            vec![syneroym_sdk::NetworkEndpoint {
+                interface_name: "default".to_string(),
+                host: "127.0.0.1".to_string(),
+                port: 30001,
+            }],
             None,
         )
         .await?;

@@ -376,9 +376,11 @@ async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
     ctx.substrate_client
         .deploy_tcp(
             app_service_id.clone(),
-            vec!["default".to_string()],
-            "localhost".to_string(),
-            app_port,
+            vec![syneroym_sdk::NetworkEndpoint {
+                interface_name: "default".to_string(),
+                host: "localhost".to_string(),
+                port: app_port,
+            }],
             None,
         )
         .await
@@ -494,9 +496,11 @@ async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
     ctx.substrate_client
         .deploy_tcp(
             https_app_service_id.clone(),
-            vec!["default".to_string()],
-            "localhost".to_string(),
-            https_port,
+            vec![syneroym_sdk::NetworkEndpoint {
+                interface_name: "default".to_string(),
+                host: "localhost".to_string(),
+                port: https_port,
+            }],
             None,
         )
         .await

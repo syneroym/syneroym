@@ -178,7 +178,6 @@ async fn test_podman_lifecycle() {
     ctx.substrate_client
         .deploy_container(
             app_service_id.clone(),
-            vec!["default".to_string()],
             "docker.io/library/nginx:alpine".to_string(),
             ports,
             volumes,

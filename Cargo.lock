@@ -6860,8 +6860,10 @@ dependencies = [
  "syneroym-core",
  "syneroym-podman-sandbox",
  "syneroym-rpc",
+ "tempfile",
  "tokio",
  "tracing",
+ "wit-parser 0.251.0",
 ]
 
 [[package]]
@@ -9423,6 +9425,25 @@ dependencies = [
  "serde_json",
  "unicode-xid",
  "wasmparser 0.247.0",
+]
+
+[[package]]
+name = "wit-parser"
+version = "0.251.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e960732e824fab95099971a09e638979347c94ca48568d3c854c945729196947"
+dependencies = [
+ "anyhow",
+ "hashbrown 0.17.1",
+ "id-arena",
+ "indexmap",
+ "log",
+ "semver",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "unicode-xid",
+ "wasmparser 0.251.0",
 ]
 
 [[package]]
