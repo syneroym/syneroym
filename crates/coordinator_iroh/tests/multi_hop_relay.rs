@@ -32,6 +32,7 @@ fn create_signed_info(
     identity: &Identity,
     service_id: &str,
     endpoint_addr: &EndpointAddr,
+    relay_url: Option<String>,
 ) -> SignedEndpointInfo {
     let endpoint_addr_bytes = serde_json::to_vec(endpoint_addr).unwrap();
     let info = EndpointInfo {
@@ -39,7 +40,7 @@ fn create_signed_info(
         substrate_id: service_id.to_string(),
         endpoint_type: EndpointType::Substrate,
         nickname: Some("test-node".to_string()),
-        mechanisms: vec![EndpointMechanism::Iroh { endpoint_addr_bytes, relay_url: None }],
+        mechanisms: vec![EndpointMechanism::Iroh { endpoint_addr_bytes, relay_url }],
         is_private: false,
         ttl: None,
     };
@@ -89,7 +90,7 @@ async fn test_registry_propagation() -> Result<()> {
     let dummy_ep = Endpoint::empty_builder().secret_key(dummy_secret).bind().await?;
     let dummy_addr = dummy_ep.addr();
 
-    let signed_info = create_signed_info(&identity, &did, &dummy_addr);
+    let signed_info = create_signed_info(&identity, &did, &dummy_addr, None);
 
     let client = Client::new();
     let res = client.post(format!("{rp_url}/register")).json(&signed_info).send().await?;
@@ -215,7 +216,8 @@ async fn test_inbound_relay() -> Result<()> {
     let router_z = Router::builder(ep_z).accept(SYNEROYM_ALPN, route_handler_z).spawn();
 
     // Register Sz in community registry R
-    let signed_info_z = create_signed_info(&identity_z, &did_z, &ep_z_addr);
+    let signed_info_z =
+        create_signed_info(&identity_z, &did_z, &ep_z_addr, cp_info.relay_url.clone());
     let res = info_client.post(format!("{r_url}/register")).json(&signed_info_z).send().await?;
     assert!(res.status().is_success());
 
@@ -343,7 +345,8 @@ async fn test_outbound_relay() -> Result<()> {
     let router_x = Router::builder(ep_x).accept(SYNEROYM_ALPN, route_handler_x).spawn();
 
     // Register Sx in community registry R
-    let signed_info_x = create_signed_info(&identity_x, &did_x, &ep_x_addr);
+    let signed_info_x =
+        create_signed_info(&identity_x, &did_x, &ep_x_addr, Some(c_relay_url.clone()));
     let res = info_client.post(format!("{r_url}/register")).json(&signed_info_x).send().await?;
     assert!(res.status().is_success());
 

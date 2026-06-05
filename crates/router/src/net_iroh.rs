@@ -18,7 +18,6 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 pub struct IrohStream {
     send: SendStream,
     recv: RecvStream,
-    finished: bool,
     conn: Option<iroh::endpoint::Connection>,
 }
 
@@ -35,7 +34,7 @@ impl Debug for IrohStream {
 impl IrohStream {
     #[must_use]
     pub fn new(send: SendStream, recv: RecvStream) -> Self {
-        Self { send, recv, finished: false, conn: None }
+        Self { send, recv, conn: None }
     }
 
     #[must_use]
@@ -68,13 +67,11 @@ impl AsyncWrite for IrohStream {
         Pin::new(&mut self.send).poll_flush(cx)
     }
 
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<std::io::Result<()>> {
-        let this = self.get_mut();
-        if !this.finished {
-            let _ = this.send.finish(); // Ignore error if it's already closed
-            this.finished = true;
-        }
-        Pin::new(&mut this.send).poll_shutdown(cx)
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.send).poll_shutdown(cx)
     }
 }
 
