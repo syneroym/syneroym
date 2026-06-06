@@ -218,7 +218,38 @@ Plain SQLite + WAL mode. Litestream streams WAL frames from primary → replica 
 
 ---
 
-## 11. Out of Scope (for now)
+## 11. Component Configuration & Secrets
+
+### Delivery Mechanism
+Configuration defined in the SynApp/Endpoint manifest is delivered seamlessly to both execution environments:
+- **Podman**: Substrate injects configuration as standard environment variables (`-e`) and read-only volume mounts (`-v`).
+- **WASM**: Substrate injects configuration using the Component Model's `wasi:cli/environment` and `wasi:filesystem` (pre-opened directories). 
+
+### Secrets (MVP)
+For the MVP, secrets are treated as standard environment variables defined in the manifest. Advanced secret stores (e.g., Vault integrations) are deferred to later phases.
+
+### Cold Restarts & State
+WASM components are fundamentally stateless. The `SessionContext` (containing ABAC permissions and claims) is tied to the incoming request and held securely within the Wasmtime host's `Store`. Therefore, **cold restarts to apply new configuration are perfectly safe** and do not result in any loss of session state or security context.
+
+---
+
+## 12. Inter-Component RPC (The Universal Proxy)
+
+The Syneroym Substrate acts as a dynamic, protocol-translating proxy, shielding WASM developers from heterogeneous networking complexities.
+
+### The Developer Experience
+Developers do not use generic, untyped call interfaces (which would defeat the safety and performance of WASM). Instead, they use strongly typed WIT imports (e.g., `import acme:booking/service;`). `wit-bindgen` generates native types for the developer.
+
+### The Substrate Translation (wRPC vs JSON-RPC)
+When the WASM component calls an imported function, the Wasmtime engine traps to the Substrate. The Substrate intercepts the in-memory `WASM Val` and dynamically translates it based on the destination:
+- **Target is another Substrate (WASM)**: The host serializes the `WASM Val` into **wRPC** (binary, fast) and transmits it over Iroh QUIC.
+- **Target is a Podman Container (Non-WASM)**: The host serializes the `WASM Val` into **JSON-RPC** (text, universal) and transmits it over HTTP/WebSocket.
+
+This ensures P2P WASM execution remains incredibly fast while maintaining full interoperability with legacy/heterogeneous container services.
+
+---
+
+## 13. Out of Scope (for now)
 
 - cr-sqlite CRDT (revisit for multi-device sync use case)
 - Field-level ABAC
