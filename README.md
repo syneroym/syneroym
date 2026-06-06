@@ -40,14 +40,14 @@ cargo build
 mise run test:all
 ```
 
-For more detailed workflows, port references, test suites (unit, e2e, and micro-benchmarks), and API examples, refer to the [Developer Guide](docs/developer_guide.md).
+For more detailed workflows, port references, test suites (unit, e2e, and micro-benchmarks), and API examples, refer to the [Developer Guide](docs/developer-guide.md).
 
 ## Related Documentation
 
 - [VISION.md](docs/VISION.md) — Product vision mapping
 - [requirements.md](docs/requirements.md) — Requirement specifications
 - [architecture.md](docs/architecture.md) — Substrate architectural design
-- [Developer Guide](docs/developer_guide.md) — Detailed setup, testing, and API examples
+- [Developer Guide](docs/developer-guide.md) — Detailed setup, testing, and API examples
 
 ## Contributing
 
