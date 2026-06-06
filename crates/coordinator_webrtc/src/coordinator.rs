@@ -77,6 +77,7 @@ impl CoordinatorWebRtc {
             registry,
             registry_url: config.substrate.registry_url.clone(),
             registry_client,
+            connection_cache: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         });
 
         Ok(Self {
