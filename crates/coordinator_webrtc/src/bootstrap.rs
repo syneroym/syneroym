@@ -398,12 +398,12 @@ async fn connect_iroh_stream(
     let mut connection = cache.get(&peer_id).cloned();
 
     // If we have a cached connection, check if it's still alive/usable.
-    if let Some(ref conn) = connection {
-        if let Some(err) = conn.close_reason() {
-            debug!("[BlindTunnel] Cached connection is closed ({err:?}), discarding");
-            cache.remove(&peer_id);
-            connection = None;
-        }
+    if let Some(ref conn) = connection
+        && let Some(err) = conn.close_reason()
+    {
+        debug!("[BlindTunnel] Cached connection is closed ({err:?}), discarding");
+        cache.remove(&peer_id);
+        connection = None;
     }
 
     let conn = match connection {
