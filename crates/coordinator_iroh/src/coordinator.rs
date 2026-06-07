@@ -138,6 +138,11 @@ impl CoordinatorIroh {
         debug!("Iroh Relay Config built: {:?}", server_config.relay.is_some());
         let server =
             Server::spawn(server_config).await.context("failed to spawn iroh relay server")?;
+
+        if let Some(addr) = server.http_addr() {
+            wait_for_relay_server(addr).await?;
+        }
+
         Ok(server)
     }
 
@@ -375,5 +380,24 @@ async fn register_coordinator_in_registry(
         return Err(anyhow::anyhow!("Registry registration returned status: {}", res.status()));
     }
 
+    Ok(())
+}
+
+async fn wait_for_relay_server(addr: std::net::SocketAddr) -> Result<()> {
+    let url = format!("http://{}", addr);
+    let client = reqwest::Client::new();
+    let mut attempts = 0;
+    loop {
+        // We don't care about the status code (e.g. 404), just that the server accepts
+        // the connection and responds.
+        if client.get(&url).send().await.is_ok() {
+            break;
+        }
+        attempts += 1;
+        if attempts > 30 {
+            anyhow::bail!("Relay server failed to start accepting connections at {}", url);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
     Ok(())
 }

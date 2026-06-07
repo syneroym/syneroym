@@ -4,6 +4,7 @@
 //! and WebRTC initialization inside web clients.
 
 use std::{
+    collections::HashMap,
     fmt::{Debug, Formatter},
     io::Write,
     sync::{Arc, OnceLock},
@@ -39,6 +40,7 @@ use tokio::{
     io,
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
+    sync::Mutex,
 };
 use tracing::{debug, error, info};
 
@@ -49,6 +51,14 @@ pub struct BootstrapState {
     pub registry: EndpointRegistry,
     pub registry_url: Option<String>,
     pub registry_client: RegistryClient,
+    /// Cache of active peer connections to prevent concurrent, redundant QUIC
+    /// handshake requests. When multiple web resources are requested
+    /// simultaneously through a service worker tunnel, they can trigger
+    /// concurrent connection attempts at the exact same millisecond. Without
+    /// serialization, these overlapping `endpoint.connect()` calls can
+    /// initiate competing handshakes to the same target peer,
+    /// causing protocol conflicts and timeouts in the underlying QUIC stack.
+    pub connection_cache: Mutex<HashMap<PublicKey, iroh::endpoint::Connection>>,
 }
 
 impl Debug for BootstrapState {
@@ -239,13 +249,14 @@ async fn handle_blind_tunnel(socket: WebSocket, state: Arc<BootstrapState>) {
         };
 
     // 4. Connect to Iroh Node and forward preamble
-    let iroh_stream = match connect_iroh_stream(&state.iroh, target_addr, &preamble_str).await {
-        Some(stream) => stream,
-        None => return,
-    };
+    let (iroh_stream, connection) =
+        match connect_iroh_stream(state.clone(), target_addr, &preamble_str).await {
+            Some(res) => res,
+            None => return,
+        };
 
     // 5. Pipe bidirectionally WS <-> Iroh
-    pipe_ws_and_iroh(ws_sender, ws_receiver, iroh_stream).await;
+    pipe_ws_and_iroh(ws_sender, ws_receiver, iroh_stream, connection).await;
     debug!("[BlindTunnel] Tunnel closed for service '{}'", preamble.service_id);
 }
 
@@ -369,37 +380,78 @@ async fn resolve_iroh_endpoint_from_registry(
 }
 
 async fn connect_iroh_stream(
-    endpoint: &Endpoint,
+    state: Arc<BootstrapState>,
     endpoint_addr: EndpointAddr,
     preamble_str: &str,
-) -> Option<IrohStream> {
+) -> Option<(IrohStream, iroh::endpoint::Connection)> {
+    let peer_id = endpoint_addr.id;
     debug!("[BlindTunnel] Connecting to Iroh node: {:?}", endpoint_addr);
-    let connection = match endpoint.connect(endpoint_addr, SYNEROYM_ALPN).await {
-        Ok(c) => {
-            debug!(
-                "[BlindTunnel] Iroh connection established (ALPN={})",
-                std::str::from_utf8(SYNEROYM_ALPN).unwrap_or("<invalid>")
-            );
-            c
+
+    // Acquire lock on the connection cache.
+    // Serializing here prevents multiple concurrent HTTP requests from attempting
+    // to initiate overlapping QUIC handshakes to the same peer node
+    // simultaneously, which causes Iroh/QUIC protocol conflicts and handshake
+    // failures.
+    let mut cache = state.connection_cache.lock().await;
+
+    // Check if we have a cached connection
+    let mut connection = cache.get(&peer_id).cloned();
+
+    // If we have a cached connection, check if it's still alive/usable.
+    if let Some(ref conn) = connection
+        && let Some(err) = conn.close_reason()
+    {
+        debug!("[BlindTunnel] Cached connection is closed ({err:?}), discarding");
+        cache.remove(&peer_id);
+        connection = None;
+    }
+
+    let conn = match connection {
+        Some(conn) => {
+            debug!("[BlindTunnel] Reusing cached connection for peer {:?}", peer_id);
+            conn
         }
-        Err(e) => {
-            error!("[BlindTunnel] Failed to connect to Iroh node: {e}");
-            return None;
+        None => {
+            let conn = match state.iroh.connect(endpoint_addr, SYNEROYM_ALPN).await {
+                Ok(c) => {
+                    debug!(
+                        "[BlindTunnel] Iroh connection established (ALPN={})",
+                        std::str::from_utf8(SYNEROYM_ALPN).unwrap_or("<invalid>")
+                    );
+                    c
+                }
+                Err(e) => {
+                    error!("[BlindTunnel] Failed to connect to Iroh node: {e}");
+                    return None;
+                }
+            };
+            cache.insert(peer_id, conn.clone());
+            conn
         }
     };
 
-    let (send, recv) = match connection.open_bi().await {
+    // Drop the cache lock before performing potentially long stream operations!
+    drop(cache);
+
+    let (send, recv) = match conn.open_bi().await {
         Ok(streams) => {
             debug!("[BlindTunnel] Bi-directional Iroh stream opened");
             streams
         }
         Err(e) => {
             error!("[BlindTunnel] Failed to open bi-directional stream: {e}");
+            // Remove the failed connection from cache
+            let mut cache = state.connection_cache.lock().await;
+            if let Some(existing) = cache.get(&peer_id)
+                && existing.stable_id() == conn.stable_id()
+            {
+                cache.remove(&peer_id);
+            }
             return None;
         }
     };
 
-    let mut iroh_stream = IrohStream::new(send, recv).with_conn(connection);
+    let mut iroh_stream = IrohStream::new(send, recv).with_conn(conn.clone());
 
     // Forward the preamble to the Iroh stream
     debug!("[BlindTunnel] Forwarding preamble to Iroh ({} bytes)", preamble_str.len());
@@ -407,16 +459,22 @@ async fn connect_iroh_stream(
         error!("[BlindTunnel] Failed to write preamble to Iroh stream: {e}");
         return None;
     }
+    if let Err(e) = iroh_stream.flush().await {
+        error!("[BlindTunnel] Failed to flush preamble to Iroh stream: {e}");
+        return None;
+    }
 
-    Some(iroh_stream)
+    Some((iroh_stream, conn))
 }
 
 async fn pipe_ws_and_iroh(
     mut ws_sender: SplitSink<WebSocket, Message>,
     mut ws_receiver: SplitStream<WebSocket>,
     iroh_stream: IrohStream,
+    connection: iroh::endpoint::Connection,
 ) {
     debug!("[BlindTunnel] Preamble sent; starting bidirectional pipe WS<->Iroh");
+    let _conn_ref = &connection;
     let (mut iroh_read, mut iroh_write) = io::split(iroh_stream);
 
     let ws_to_iroh = async {

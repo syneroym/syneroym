@@ -588,7 +588,7 @@ impl Default for SubstrateGlobalConfig {
             communication_interfaces: default_communication_interfaces(),
             registry_url: None,
             coordinator_discovery_url: None,
-            enable_bep0044_dht: true,
+            enable_bep0044_dht: !cfg!(test),
         }
     }
 }
