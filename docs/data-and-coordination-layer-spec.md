@@ -4,7 +4,7 @@
 
 The Data & Coordination layer provides a complete foundation for distributed applications, focusing on simplicity, correctness, and a manageable operational surface area. It is composed of four core services:
 
-1. **REST Data Service**: Structured data and metadata.
+1. **REST Data Service**: Structured data and metadata. 
 2. **Object Service**: S3-compatible object storage with built-in HTTP serving.
 3. **MQTT Event Service**: Asynchronous communication and state propagation.
 4. **Registry Service**: Authoritative control plane for cluster coordination.
@@ -14,20 +14,7 @@ The Data & Coordination layer provides a complete foundation for distributed app
 ## 2. Service Definitions
 
 ### 2.1. REST Data Service
-Manages structured data and metadata.
-
-* **Capabilities:**
-  * CRUD (Create, Read, Update, Delete)
-  * Filtering and querying
-  * Pagination and sorting
-  * Batch operations
-  * Transactions (optional)
-  * File/object metadata
-* **Examples:**
-  * `GET /users/123`
-  * `POST /orders`
-  * `POST /users:batchUpsert`
-  * `GET /files?tag=invoice`
+Manages structured data and metadata. This is already described in the [data-layer-design.md](data-layer-design.md), so we won't describe it here.
 
 ### 2.2. Object Service
 S3-compatible object storage with built-in HTTP serving. Note that object metadata remains in the REST service.
