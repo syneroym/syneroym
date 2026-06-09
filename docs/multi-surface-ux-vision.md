@@ -19,7 +19,7 @@ This means a provider, consumer, or autonomous agent are all operating on the ex
 The core WASM mini-apps, routing protocols, and identity crates. Everything here is an auditable, permissioned object. This layer natively enforces zero-trust access controls and maintains a chronological **Trust Timeline** of all interactions.
 
 #### 2. Layer 2: The Action & Agent Gateway (The Headless Layer)
-The bridge that translates human intent into substrate objects. By exposing Syneroym via protocols like MCP (Model Context Protocol), external LLMs (Gemini, ChatGPT) or local on-device agents can act as "Concierges", calling APIs and generating actionable UI cards.
+The bridge that translates human intent into substrate objects. By exposing Syneroym via protocols like MCP (Model Context Protocol), external LLMs (Gemini, ChatGPT) or local on-device agents like Rig (rig-core, Rust native equivalent to Langchain) can act as "Concierges", calling APIs and generating actionable UI cards. 
 
 #### 3. Layer 3: The Multi-Surface UI (Frontend)
 Users interact with the substrate through the surface that fits their current need:
