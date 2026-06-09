@@ -1149,7 +1149,7 @@ This section is an index of every `[TBD]` marker in the requirements spec, that 
 5. ABAC policies prevent unauthorised reads/writes across at least two independent users and two services
 6. At least one trust signal (VC, vouch count, or reputation score) is visible to the consumer before payment confirmation
 
-### Requirements Traceability (requirements.md -> architecture.md)
+### Requirements Traceability (system-requirements-spec.md -> system-architecture-design.md)
 
 | Requirement Theme | Architecture Coverage |
 |---|---|

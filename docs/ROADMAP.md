@@ -1,6 +1,6 @@
 # Roadmap
 
-This is a placeholder roadmap. The authoritative Phase 1 scope is in `requirements.md`.
+This is a placeholder roadmap. The authoritative Phase 1 scope is in `system-requirements-spec.md`.
 
 ## Near-Term
 - Lock Phase 1 scope

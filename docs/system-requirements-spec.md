@@ -89,7 +89,7 @@ The following scope boundary is added to keep implementation decisions focused.
 
 ### Explicitly Out of Scope for MVP
 
-- Syneroym-native coin or mutual credit issuance.
+- Syneroym-native coin or mutual credit issuance (See [Dynamic Ledger Network Specification](./dynamic-ledger-network-spec.md) for future vision).
 - Advanced ad auction and marketplace economics.
 - Complex AI-assisted workflow synthesis.
 
@@ -478,7 +478,7 @@ The system accommodates the following variation axes across workflows:
 
 **Booking:** Event slots, consulting time slots, open-ended job requests.
 
-**Payment:** One-time; pre- or post-delivery; multi-part; negotiated; subscription; escrow; system coins; mutual credit systems. [Coin and mutual credit mechanics: Architecture TBD]
+**Payment:** One-time; pre- or post-delivery; multi-part; negotiated; subscription; escrow; system coins; mutual credit systems. [See the Dynamic Ledger Network Specification](./dynamic-ledger-network-spec.md) for mutual credit mechanics.
 
 **Product type:** Time-bound (e.g. prepared food), digital content, physical goods.
 
@@ -558,7 +558,7 @@ The following questions require decisions before or during detailed architecture
 
 4. **Payment rail selection.** Which payment rails are supported at launch? How are cross-border payments handled? Is escrow centralised (a trusted third party) or implemented via smart contract or protocol?
 
-5. **Coin and mutual credit system.** Is this a cryptocurrency, an internal ledger, or a mutual credit protocol? What are the regulatory implications in target markets?
+5. **Coin and mutual credit system.** Is this a cryptocurrency, an internal ledger, or a mutual credit protocol? What are the regulatory implications in target markets? *(Note: The [Dynamic Ledger Network Specification](./dynamic-ledger-network-spec.md) outlines the core mechanics for a peer-to-peer, cashless offset network without public blockchain tokens).*
 
 6. **Aggregator accountability.** What obligations does a Provider Aggregator take on toward the providers it manages? How are disputes between an aggregator and a provider resolved?
 

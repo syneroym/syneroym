@@ -44,9 +44,9 @@ For more detailed workflows, port references, test suites (unit, e2e, and micro-
 
 ## Related Documentation
 
-- [VISION.md](docs/VISION.md) — Product vision mapping
-- [requirements.md](docs/requirements.md) — Requirement specifications
-- [architecture.md](docs/architecture.md) — Substrate architectural design
+- [Product vision mapping ](docs/VISION.md) 
+- [Requirement specifications](docs/system-requirements-spec.md) 
+- [System Architecture](docs/system-architecture-design.md)
 - [Developer Guide](docs/developer-guide.md) — Detailed setup, testing, and API examples
 
 ## Contributing

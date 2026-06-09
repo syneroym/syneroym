@@ -17,8 +17,8 @@
 
 ## Functionality, Architecture Documents
 - The [vision doc](docs/VISION.md) contains the vision for Syneroym
-- The [requirements](docs/requirements.md) contains high-level function requirements
-- The [architecture](docs/architecture.md) contains high-level architecture
+- The [requirements](docs/system-requirements-spec.md) contains high-level function requirements
+- The [architecture](docs/system-architecture-design.md) contains high-level architecture
 - The above docs are starting points for the implementation. It is likely that during implementation we deviate and improvise from those, and later get them in sync.
 
 ## AI Agent Guidelines

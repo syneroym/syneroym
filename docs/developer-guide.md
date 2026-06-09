@@ -148,7 +148,7 @@ These run long-duration endurance scenarios to detect slow memory/FD/task/cache 
   ```
 
 > [!NOTE]
-> For a full design, layout of the metrics, leak detection heuristics, and results gating, refer to the comprehensive [Performance & Robustness Testing Report](performance-and-robustness-measure.md).
+> For a full design, layout of the metrics, leak detection heuristics, and results gating, refer to the comprehensive [Performance & Robustness Testing Report](performance-and-robustness-spec.md).
 
 
 ---
