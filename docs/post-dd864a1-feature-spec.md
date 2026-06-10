@@ -74,23 +74,27 @@ Not all apps require a live, queryable registry at runtime (e.g., trivial backgr
 *   It records the mapping of `App Name > Explicit Service ID(s)` at deploy time.
 *   This static inventory is sufficient for lifecycle management (listing, stopping, uninstalling) without the overhead of spinning up a live Registry `SynSvc`.
 
+*Phase 1: Foundation & Core Infrastructure*
+
+## Deployment/Operations
+- Deployment of Open Registry, Relay on lightsail
+
+## Security
+- Encryption at rest with key negotiation with service owner.
+- Ensuring correct fingerprint of syneroym binary itself with TPM 2.0 and others
+
 ## Service configuration
 - Environment vars, Config, Secrets (dynamically pulled from registry/vault?)
-
-## SynApp Deployment Management App
-- Deploy SynApp resistry, inventory on any substrate as another SynApp
-- Track services expected vs actual status 
-
-## SynApp Substrate lease app
-Allow substrate lease with configured criteria, quotas, capabilities etc
-
-## Data Layer
-All types REST, Pub/Sub, S3 blobs, Content addressed?
 
 ## Access Control
 - Various Casbin scenarios. At synapp level, synapp management level,
 - Consent first data and service access with delegation
 - Support multiple authentication/authorization schemes
+
+*Phase 2: Core Platform Capabilities*
+
+## Data Layer
+- All types REST, Pub/Sub, S3 blobs, Content addressed?
 
 ## Offline operation
 - Outbox and periodic sync
@@ -104,23 +108,32 @@ All types REST, Pub/Sub, S3 blobs, Content addressed?
 - Backup and restore of stateful data for cold start cases
 - Ensure redundancy is maintained on failure with additional replication
 
-## AI
-- Ollama local
-- rig-core agent with vector store (in sqlite?) and Mem0 for long term memory
+*Phase 3: Substrate & Application Lifecycle*
 
-## Chat
-- Agentic flow, agent-human or agent-agent chats, UI in chat context, trusted rooms
+## SynApp Substrate lease app
+- Allow substrate lease with configured criteria, quotas, capabilities etc
+
+## SynApp Deployment Management App
+- Deploy SynApp resistry, inventory on any substrate as another SynApp
+- Track services expected vs actual status 
 
 ## Versioning support overall
 - Substrate upgrades
 - Synapp, SynSvc upgrades, migration
 
-## Security
-- Encryption at rest with key negotiation with service owner.
-- Ensuring correct fingerprint of syneroym binary itself with TPM 2.0 and others
+*Phase 4: Advanced Services & Tooling*
 
 ## Observability enhancements
 - Dashboard of Overall service/app, resource utilization, metering
+
+## AI
+- Ollama local
+- rig-core agent with vector store (in sqlite?) and Mem0 for long term memory
+
+*Phase 5: High-Level Applications (SynApps)*
+
+## Chat
+- Agentic flow, agent-human or agent-agent chats, UI in chat context, trusted rooms
 
 ## Dynamic ledger network app
 - Mutual credit ledger and chains, with continuous/periodic cyclic settlement based on settlement rules and multi-party-signing, tags with tag-hierarchies
@@ -129,9 +142,28 @@ All types REST, Pub/Sub, S3 blobs, Content addressed?
 - Listings, Intents, Offers, Transactions, 
 - Discovery, scoring/reputation within trust network, 
 
+*Phase 6: Edge Expansion*
+
 ## Mobile operation 
 - Syneroym on Android/IOS
 - Additional things like TPM 2.0 equivalent on mobile
 
-## Deployment/Operations
-- Deployment of Open Registry, Relay on lightsail
+---
+
+## Substrate Feature Coverage Matrix
+*(Ensuring core platform primitives are battle-tested across the application suite)*
+
+| Substrate Capability | Primary App | How it is exercised |
+| :--- | :--- | :--- |
+| **Data Layer: Pub/Sub** | **Chat** | Real-time message delivery and typing presence. |
+| **Data Layer: S3 Blobs** | **Marketplace** | Storing and serving high-res images/videos for listings. |
+| **Data Layer: Content Addressed** | **Ledger** | Storing immutable blocks and transaction receipts. |
+| **Offline Operation** | **Chat** | Outbox message queuing and syncing upon reconnection. |
+| **AI (Agents/Vector Store)** | **Chat** | AI participants with long-term memory in group chats. |
+| **Access Control (Casbin/Consent)** | **Chat** | Enforcing read/write rules for trusted rooms and AI delegation. |
+| **Service Redundancy (Sharding)** | **Ledger** | High availability and partition tolerance for the credit network. |
+| **Security (TPM 2.0)** | **Ledger** | Hardware-backed multi-party signing for high-value settlements. |
+| **Versioning & Migrations** | **Ledger** | Upgrading complex, stateful settlement rules without downtime. |
+| **Substrate Lease & Quotas** | **Marketplace** | Dynamically leasing external nodes to handle flash-sale traffic spikes. |
+| **Observability (Metering)** | **Marketplace** | Tracking exact resource utilization to bill storefront owners. |
+| **Service Config (Secrets)** | **Marketplace** | Dynamically pulling external API keys (shipping/fiat gateways) from the vault. |
