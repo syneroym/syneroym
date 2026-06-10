@@ -228,7 +228,24 @@ Configuration defined in the SynApp/Endpoint manifest is delivered seamlessly to
 ### Secrets (MVP)
 For the MVP, secrets are treated as standard environment variables defined in the manifest. Advanced secret stores (e.g., Vault integrations) are deferred to later phases.
 
-### Cold Restarts & State
+---
+
+## 12. Storage Security (Data at Rest)
+
+In Syneroym's "uncontrolled cloud" model, node operators have physical/root access to the hardware. To protect data at rest (SQLite DBs and blobs) from casual peeping and compromised hard drives, the data layer employs optional transparent encryption (e.g., SQLCipher and AES-GCM).
+
+### The "Unlock" Model & Per-Service Keys
+- **Per-Service Keys**: Encryption keys are scoped to individual services, not the entire substrate. The substrate operator's identity key is *not* used for this, ensuring they cannot automatically decipher the data.
+- **Network Provisioning**: Keys are *never* stored on the substrate's disk. If encryption is a hard constraint for a service, that service remains "offline" or locked upon node restart. The Service Owner (or their trusted agent) must securely provision the key into the substrate's RAM over the network to unlock the service.
+
+### RAM Dumping Mitigations
+While perfectly securing a key in RAM from a determined root-level attacker is theoretically impossible without hardware enclaves (TEEs), the substrate raises the technical bar significantly:
+- **Memory Protections**: Keys held in memory are protected using OS-level features like `mlock` (preventing swapping to disk) and `madvise(MADV_DONTDUMP)` (excluding the key from core dumps).
+- **Key Obfuscation/Splitting**: Keys can be obfuscated or split in memory when not actively executing queries, ensuring that a naive RAM scraper does not easily find contiguous valid key bytes.
+
+---
+
+## 13. Cold Restarts & State
 WASM components are fundamentally stateless. The `SessionContext` (containing ABAC permissions and claims) is tied to the incoming request and held securely within the Wasmtime host's `Store`. Therefore, **cold restarts to apply new configuration are perfectly safe** and do not result in any loss of session state or security context.
 
 ---

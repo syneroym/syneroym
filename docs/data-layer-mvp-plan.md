@@ -24,6 +24,9 @@ The strategy prioritizes vertical slicing: proving the end-to-end flow from a WA
    - Ensure all operations are strictly sandboxed to the `app_id` retrieved from the host context.
 2. **Filter & Query Engine**:
    - Implement translation of abstract `FilterExpr` into parameterized SQLite queries.
+3. **Data-at-Rest Encryption (Optional)**:
+   - Integrate SQLCipher to support encrypted SQLite databases.
+   - Implement the "Unlock" model: allow specific services to remain offline until a per-service encryption key is securely provisioned into RAM over the network. Implement memory protections (e.g., `MADV_DONTDUMP`) for these keys.
 
 ## Phase 3: Security & ABAC Engine
 
@@ -74,7 +77,7 @@ The strategy prioritizes vertical slicing: proving the end-to-end flow from a WA
 2. **Remote ABAC Lookups**:
    - Implement the remote `lookup("service:did...", ...)` Casbin function via Iroh QUIC.
 3. **Offline Outbox & Retry Queue**:
-   - Implement the local outbox pattern (SQLite + Tokio channel) for inter-service communication. Ensure that outgoing requests or messages initiated while offline are safely queued and automatically retried upon reconnection.
+   - Implement the local outbox pattern (SQLite + Tokio channel) for inter-service communication. Ensure that outgoing requests or messages initiated while offline are safely queued and automatically retried upon reconnection. Treat request and response as equivalent (e.g. server on mobile can queue respond to client query if it is woken by notification when still throttled by OS, or a requester might queue data if service is currently reachable).
 
 ## Phase 8: High Availability, Replication & Backup Substrate
 
