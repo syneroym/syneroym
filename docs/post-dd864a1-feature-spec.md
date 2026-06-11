@@ -100,9 +100,11 @@ Not all apps require a live, queryable registry at runtime (e.g., trivial backgr
 - **Smoke Testing:** Automated integration/smoke tests that run against release candidates (binaries and Docker images) to verify they can successfully connect to and interact with the deployed coordinator and registry at `syneroym.xyz`.
 
 ### [FND-SEC] Substrate Security
-- **Data at Rest Encryption (Key Negotiation):** 
-  - Keys are never stored on the substrate disk. At startup, the service owner negotiates and injects the encryption key securely into substrate RAM.
-  - The `SynApp` manifest includes explicit configuration flags (e.g., `encrypt_local_db: true`, `encrypt_backups: true`) to allow opting out of encryption overhead when performance is prioritized over secrecy.
+- **Data at Rest Encryption (Envelope Encryption):** 
+  - To prevent catastrophic re-encryption of gigabytes of data during key rotation, the substrate uses Envelope Encryption. Unique Data Encryption Keys (DEKs) are generated to encrypt the actual blobs and `cr-sqlite` databases.
+  - The service owner negotiates and injects a Master Key (Key Encryption Key or KEK) securely into substrate RAM at startup. The KEK only encrypts the tiny DEKs stored on disk. Key rotation is instantaneous as only the DEKs are re-encrypted with the new KEK.
+  - **Secret Vault:** Application secrets (API keys, credentials) and configurations are stored securely inside a dedicated Vault table within the encrypted `cr-sqlite` database, rather than as vulnerable flat files on disk.
+  - The `SynApp` manifest includes configuration flags (e.g., `encrypt_local_db: true`, `encrypt_backups: true`) to allow opting out of encryption overhead when performance is prioritized over secrecy.
   - Remote backups (e.g., Litestream WAL frames) are streamed to other S3-protocol-compatible substrates, encrypted locally before transit if configured.
 - **Hardware Attestation (Deployer-Led):** 
   - The substrate exposes a `substrate.attest(nonce)` API to the network.
@@ -121,7 +123,7 @@ Not all apps require a live, queryable registry at runtime (e.g., trivial backgr
 
 
 ### [FND-CFG] Service configuration
-- Environment vars, Config, Secrets (dynamically pulled from registry/vault?)
+- Environment vars, Config, and Secrets are stored natively within the encrypted `cr-sqlite` database via a dedicated Vault table, rather than in vulnerable flat `.env` files. This centralizes access control (governed by Casbin) and ensures secrets are backed up seamlessly via Litestream alongside application state.
 
 ### [FND-IAM] Access Control
 - **Deployment Authorization:** By default, only the substrate owner (authenticated via the node's root keypair) can deploy `SynApps` to the node. The owner can delegate deployment capabilities to other identities. These deployment permissions (e.g., Casbin policies) are stored durably in the substrate's core `cr-sqlite` database. Open (permissionless) deployments are supported but require an explicit configuration flag.
