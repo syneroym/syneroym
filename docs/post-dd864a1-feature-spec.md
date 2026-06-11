@@ -99,9 +99,27 @@ Not all apps require a live, queryable registry at runtime (e.g., trivial backgr
 - **Dockerized Substrate:** Provide official Docker images of the Syneroym substrate for the community, pre-configured to point their local registries and coordinators to the public `syneroym.xyz` node.
 - **Smoke Testing:** Automated integration/smoke tests that run against release candidates (binaries and Docker images) to verify they can successfully connect to and interact with the deployed coordinator and registry at `syneroym.xyz`.
 
-### [FND-SEC] Security
-- Encryption at rest with key negotiation with service owner.
-- Ensuring correct fingerprint of syneroym binary itself with TPM 2.0 and others
+### [FND-SEC] Substrate Security
+- **Data at Rest Encryption (Key Negotiation):** 
+  - Keys are never stored on the substrate disk. At startup, the service owner negotiates and injects the encryption key securely into substrate RAM.
+  - The `SynApp` manifest includes explicit configuration flags (e.g., `encrypt_local_db: true`, `encrypt_backups: true`) to allow opting out of encryption overhead when performance is prioritized over secrecy.
+  - Remote backups (e.g., Litestream WAL frames) are streamed to other S3-protocol-compatible substrates, encrypted locally before transit if configured.
+- **Hardware Attestation (Deployer-Led):** 
+  - The substrate exposes a `substrate.attest(nonce)` API to the network.
+  - The App Deployer/Owner externally challenges the node (at deployment or periodically) and mathematically verifies the hardware quote (TPM, KeyAttestation, AppAttest).
+  - The deployer alone decides whether to deploy the service in a degraded trust environment or halt execution if attestation fails. 
+- **Memory Protection & Key Splitting:**
+  - OS-level memory locking (e.g., `mlock`) prevents injected cryptographic keys from being swapped to disk.
+  - The `zeroize` crate is used to explicitly wipe sensitive variables from RAM when dropped.
+  - Keys in substrate memory are split or fragmented to mitigate extraction via buffer over-read vulnerabilities.
+- **Resource Exhaustion & Quotas:**
+  - Network edge protection: Strict connection and payload limits at the Iroh/QUIC boundary.
+  - Runtime execution limits: The substrate enforces the physical capabilities of the host alongside strict quotas defined in the `SynApp` manifest (e.g., `max_memory`, `max_instructions`). Wasmtime's fuel metering deterministically traps components exceeding their gas limits without stalling the node.
+- **Supply Chain Integrity:**
+  - Syneroym binaries are distributed with simple, native Ed25519 signatures. The public key is hardcoded, and the auto-updater mathematically verifies the signature before applying any new binary.
+
+### [FND-UPD] Auto-Updater
+*(Placeholder: Specifications for the Syneroym auto-update agent, including binary download, signature verification, and seamless restart mechanics to be defined.)*
 
 ### [FND-CFG] Service configuration
 - Environment vars, Config, Secrets (dynamically pulled from registry/vault?)
