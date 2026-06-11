@@ -118,8 +118,7 @@ Not all apps require a live, queryable registry at runtime (e.g., trivial backgr
 - **Supply Chain Integrity:**
   - Syneroym binaries are distributed with simple, native Ed25519 signatures. The public key is hardcoded, and the auto-updater mathematically verifies the signature before applying any new binary.
 
-### [FND-UPD] Auto-Updater
-*(Placeholder: Specifications for the Syneroym auto-update agent, including binary download, signature verification, and seamless restart mechanics to be defined.)*
+
 
 ### [FND-CFG] Service configuration
 - Environment vars, Config, Secrets (dynamically pulled from registry/vault?)
@@ -154,7 +153,7 @@ Not all apps require a live, queryable registry at runtime (e.g., trivial backgr
 - Track services expected vs actual status 
 
 ### [LFC-VER] Versioning support overall
-- Substrate upgrades
+- Substrate upgrades, auto-upgrade
 - Synapp, SynSvc upgrades, migration
 
 ## Phase 4: Advanced Services & Tooling
