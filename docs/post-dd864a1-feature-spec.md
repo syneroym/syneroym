@@ -1,9 +1,10 @@
 # Pending Features Master Spec
 This document describes the pending features for Syneroym post git commit hash `dd864a18902bb8e71da0ff56bba4523688ad8ba1`. 
 
-## [TOP-ARC] SynApp and Service Topology Spec
+## Phase 0: Core Architecture Implementation (SynApp & Topology)
 
-This specification redefines the architectural boundary between Syneroym Applications (`SynApp`) and Syneroym Services (`SynSvc`), and outlines the addressing and registry systems required for robust service discovery and deployment.
+This phase implements the architectural boundary between Syneroym Applications (`SynApp`) and Syneroym Services (`SynSvc`), and the pending addressing and registry systems required for robust service discovery.
+*(Note: Service IDs, Global Identity Registries, and Endpoint Registries are currently implemented. The remaining app-level topologies, logical names, and orchestrators fall under this phase).*
 
 ### [TOP-PRM] Core Primitives (`SynSvc`) vs. Control Plane Overlay (`SynApp`)
 
