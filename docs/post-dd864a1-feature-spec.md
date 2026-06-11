@@ -125,9 +125,10 @@ Not all apps require a live, queryable registry at runtime (e.g., trivial backgr
 - Environment vars, Config, Secrets (dynamically pulled from registry/vault?)
 
 ### [FND-IAM] Access Control
-- Various Casbin scenarios. At synapp level, synapp management level,
-- Consent first data and service access with delegation
-- Support multiple authentication/authorization schemes
+- **Deployment Authorization:** By default, only the substrate owner (authenticated via the node's root keypair) can deploy `SynApps` to the node. The owner can delegate deployment capabilities to other identities. These deployment permissions (e.g., Casbin policies) are stored durably in the substrate's core `cr-sqlite` database. Open (permissionless) deployments are supported but require an explicit configuration flag.
+- **Granular Scenarios:** Various Casbin scenarios are enforced at both the SynApp execution level (user access to app features) and the SynApp management level (deployment, lifecycle operations).
+- **Consent and Delegation:** Consent-first data and service access, utilizing delegation tokens.
+- **Pluggable Auth:** Support for multiple authentication/authorization schemes.
 
 ## Phase 2: Core Platform Capabilities
 
@@ -147,9 +148,6 @@ Not all apps require a live, queryable registry at runtime (e.g., trivial backgr
 - Ensure redundancy is maintained on failure with additional replication
 
 ## Phase 3: Substrate & Application Lifecycle
-
-### [LFC-LES] SynApp Substrate lease app
-- Allow substrate lease with configured criteria, quotas, capabilities etc
 
 ### [LFC-MGT] SynApp Deployment Management App
 - Deploy SynApp resistry, inventory on any substrate as another SynApp
@@ -179,6 +177,7 @@ Not all apps require a live, queryable registry at runtime (e.g., trivial backgr
 ### [APP-MKT] Marketplace App
 - Listings, Intents, Offers, Transactions, 
 - Discovery, scoring/reputation within trust network, 
+- Special case provider: - Allow substrate lease with configured criteria, quotas, capabilities etc
 
 ## Phase 6: Edge Expansion
 
