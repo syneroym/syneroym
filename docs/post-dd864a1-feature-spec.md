@@ -122,8 +122,23 @@ Not all apps require a live, queryable registry at runtime (e.g., trivial backgr
 
 
 
-### [FND-CFG] Service configuration
-- Environment vars, Config, and Secrets are stored natively within the encrypted `cr-sqlite` database via a dedicated Vault table, rather than in vulnerable flat `.env` files. This centralizes access control (governed by Casbin) and ensures secrets are backed up seamlessly via Litestream alongside application state.
+### [FND-CFG] Service Configuration
+
+Given that Syneroym supports both native WASM components and legacy Podman containers, configuration and secret management use a dual-target approach:
+
+- **Configuration Delivery**:
+  - **WASM (Native)**: Services retrieve their hierarchical configuration on-demand via a standard host function (e.g., `syneroym:config/get`).
+  - **Podman (Legacy)**: Because third-party containers expect specific formats, the `SynApp` manifest dictates how the orchestrator exposes the config. The orchestrator will either flatten the config into standard environment variables or serialize nested configurations (JSON/TOML/YAML) into temporary files and mount them read-only into the container.
+- **Secret Management**:
+  - **WASM (Native)**: Strictly adheres to `[FND-SEC]`. The service pulls secrets directly into locked RAM via `syneroym:vault/reveal`. Secrets never touch the filesystem or environment variables.
+  - **Podman (Legacy)**: The orchestrator resolves the secret from the Vault at deployment and injects it as an environment variable or via an ephemeral `tmpfs` mount. This accepts a degraded security posture (secrets visible in process lists) as a necessary tradeoff for running legacy software.
+- **Dynamic Updates & Restarts**: Configuration is immutable. For WASM, configuration changes instantly apply to the next component invocation. For Podman, the orchestrator must gracefully restart/recreate the long-lived container to apply the new configuration or secrets.
+- **App Composition (Bind vs. Spawn)**: When a parent `SynApp` depends on another app, the configuration resolves based on the dependency mode:
+  - **Spawn**: If the dependency must be spun up alongside the parent, `roymctl` inlines the child manifest into the parent at deploy-time, creating a single flattened deployment graph.
+  - **Bind**: If the parent depends on an *already running* app instance, the parent manifest references it. The orchestrator resolves the target's Explicit Service IDs via the App Registry and injects those connection details into the parent's configuration, rather than spawning new instances.
+- **Schema Validation & Defaults**: To prevent runtime crashes, `SynSvc` manifests can define a schema (e.g., JSON Schema) for their expected configuration. `roymctl` and the Orchestrator validate the user-provided configuration against this schema at deploy-time, catching missing keys or type mismatches early.
+- **Out-of-Band Secret Rotation**: While regular configuration changes happen via explicit manifest deployments (which naturally trigger a restart), secrets live independently in the Vault. If a secret is rotated *out-of-band* by an admin, the manifest's `rotation_policy` dictates whether the orchestrator automatically restarts the affected service or waits for the next manual deployment.
+- **Anti-Goal: "Helm-ification"**: The `SynApp` manifest is strictly a "dumb", fully-resolved document. Syneroym rejects complex in-manifest templating (like Helm). If developers need environment-specific overrides, they should use external tools (like `cue`, `ytt`, or simple scripts) to generate a static manifest *before* passing it to `roymctl deploy`. The only dynamic variables supported are standard host parameters (e.g., `SYNEROYM_NODE_IP`) that the orchestrator inherently injects at runtime.
 
 ### [FND-IAM] Access Control
 - **Deployment Authorization:** By default, only the substrate owner (authenticated via the node's root keypair) can deploy `SynApps` to the node. The owner can delegate deployment capabilities to other identities. These deployment permissions (e.g., Casbin policies) are stored durably in the substrate's core `cr-sqlite` database. Open (permissionless) deployments are supported but require an explicit configuration flag.
