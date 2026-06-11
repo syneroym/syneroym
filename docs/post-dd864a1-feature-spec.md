@@ -1,11 +1,11 @@
 # Pending Features Master Spec
 This document describes the pending features for Syneroym post git commit hash `dd864a18902bb8e71da0ff56bba4523688ad8ba1`. 
 
-## SynApp and Service Topology Spec
+## [TOP-ARC] SynApp and Service Topology Spec
 
 This specification redefines the architectural boundary between Syneroym Applications (`SynApp`) and Syneroym Services (`SynSvc`), and outlines the addressing and registry systems required for robust service discovery and deployment.
 
-### Core Primitives (`SynSvc`) vs. Control Plane Overlay (`SynApp`)
+### [TOP-PRM] Core Primitives (`SynSvc`) vs. Control Plane Overlay (`SynApp`)
 
 #### `SynSvc` (The Execution Primitive)
 The `SynSvc` is the absolute foundational primitive of the Syneroym Substrate. 
@@ -27,7 +27,7 @@ Similar to Erlang OTP applications, `SynApps` are highly composable. A `SynApp` 
 
 ---
 
-### Service Addressing and Resolution Topology
+### [TOP-ADR] Service Addressing and Resolution Topology
 
 Services communicate using a multi-tiered addressing model to support mobility, redundancy, and explicit targeting.
 
@@ -48,7 +48,7 @@ When registering a Logical Service Name, the local registry tracks its underlyin
 
 ---
 
-### Types of Registries in the Ecosystem
+### [TOP-REG] Types of Registries in the Ecosystem
 
 Rather than a strictly monolithic system, service discovery naturally emerges across different registry scopes:
 
@@ -58,7 +58,7 @@ Rather than a strictly monolithic system, service discovery naturally emerges ac
 
 ---
 
-### Discovery Mechanisms and Inventory
+### [TOP-DSC] Discovery Mechanisms and Inventory
 
 #### The `syneroym-core/registry` Default Service
 To provide "batteries-included" service discovery, the platform provides a canonical Registry `SynSvc`.
@@ -74,32 +74,34 @@ Not all apps require a live, queryable registry at runtime (e.g., trivial backgr
 *   It records the mapping of `App Name > Explicit Service ID(s)` at deploy time.
 *   This static inventory is sufficient for lifecycle management (listing, stopping, uninstalling) without the overhead of spinning up a live Registry `SynSvc`.
 
-*Phase 1: Foundation & Core Infrastructure*
+---
 
-## Deployment/Operations
+## Phase 1: Foundation & Core Infrastructure
+
+### [FND-DEP] Deployment/Operations
 - Deployment of Open Registry, Relay on lightsail
 
-## Security
+### [FND-SEC] Security
 - Encryption at rest with key negotiation with service owner.
 - Ensuring correct fingerprint of syneroym binary itself with TPM 2.0 and others
 
-## Service configuration
+### [FND-CFG] Service configuration
 - Environment vars, Config, Secrets (dynamically pulled from registry/vault?)
 
-## Access Control
+### [FND-IAM] Access Control
 - Various Casbin scenarios. At synapp level, synapp management level,
 - Consent first data and service access with delegation
 - Support multiple authentication/authorization schemes
 
-*Phase 2: Core Platform Capabilities*
+## Phase 2: Core Platform Capabilities
 
-## Data Layer
+### [PLT-DAT] Data Layer
 - All types REST, Pub/Sub, S3 blobs, Content addressed?
 
-## Offline operation
+### [PLT-OFF] Offline operation
 - Outbox and periodic sync
 
-## Service Redundancy
+### [PLT-RED] Service Redundancy
 - Support shards, replicated stateless services, primary-secondary backups
 - Blob storage with redundancy
 - Service registry, and manual replacement of failed instances, and quarantining failed instances in case they come up again. Epoch based ownership techniques.
@@ -108,43 +110,43 @@ Not all apps require a live, queryable registry at runtime (e.g., trivial backgr
 - Backup and restore of stateful data for cold start cases
 - Ensure redundancy is maintained on failure with additional replication
 
-*Phase 3: Substrate & Application Lifecycle*
+## Phase 3: Substrate & Application Lifecycle
 
-## SynApp Substrate lease app
+### [LFC-LES] SynApp Substrate lease app
 - Allow substrate lease with configured criteria, quotas, capabilities etc
 
-## SynApp Deployment Management App
+### [LFC-MGT] SynApp Deployment Management App
 - Deploy SynApp resistry, inventory on any substrate as another SynApp
 - Track services expected vs actual status 
 
-## Versioning support overall
+### [LFC-VER] Versioning support overall
 - Substrate upgrades
 - Synapp, SynSvc upgrades, migration
 
-*Phase 4: Advanced Services & Tooling*
+## Phase 4: Advanced Services & Tooling
 
-## Observability enhancements
+### [ADV-OBS] Observability enhancements
 - Dashboard of Overall service/app, resource utilization, metering
 
-## AI
+### [ADV-AI] AI
 - Ollama local
 - rig-core agent with vector store (in sqlite?) and Mem0 for long term memory
 
-*Phase 5: High-Level Applications (SynApps)*
+## Phase 5: High-Level Applications (SynApps)
 
-## Chat
+### [APP-CHT] Chat
 - Agentic flow, agent-human or agent-agent chats, UI in chat context, trusted rooms
 
-## Dynamic ledger network app
+### [APP-LDG] Dynamic ledger network app
 - Mutual credit ledger and chains, with continuous/periodic cyclic settlement based on settlement rules and multi-party-signing, tags with tag-hierarchies
 
-## Marketplace App
+### [APP-MKT] Marketplace App
 - Listings, Intents, Offers, Transactions, 
 - Discovery, scoring/reputation within trust network, 
 
-*Phase 6: Edge Expansion*
+## Phase 6: Edge Expansion
 
-## Mobile operation 
+### [EDG-MOB] Mobile operation 
 - Syneroym on Android/IOS
 - Additional things like TPM 2.0 equivalent on mobile
 
