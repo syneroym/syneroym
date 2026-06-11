@@ -1,6 +1,16 @@
 # Pending Features Master Spec
 This document describes the pending features for Syneroym post git commit hash `dd864a18902bb8e71da0ff56bba4523688ad8ba1`. 
 
+### Tag Legend
+To ensure stable cross-referencing across commits and PRs, features are prefixed with category tags:
+- **`[TOP]`**: **Topology** (Core Architecture Primitives)
+- **`[FND]`**: **Foundation** (Core Infrastructure & Security)
+- **`[PLT]`**: **Platform** (Data Layer & Resilience)
+- **`[LFC]`**: **Lifecycle** (Substrate & Application Management)
+- **`[ADV]`**: **Advanced** (Advanced Services & Tooling)
+- **`[APP]`**: **Applications** (High-Level SynApps)
+- **`[EDG]`**: **Edge** (Edge Expansion & Mobile)
+
 ## Phase 0: Core Architecture Implementation (SynApp & Topology)
 
 This phase implements the architectural boundary between Syneroym Applications (`SynApp`) and Syneroym Services (`SynSvc`), and the pending addressing and registry systems required for robust service discovery.
