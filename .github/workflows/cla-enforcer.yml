@@ -1,0 +1,27 @@
+name: "Enforce CLA Checkbox"
+on:
+  pull_request:
+    types: [opened, edited, synchronize]
+
+jobs:
+  check-cla:
+    name: Check CLA Agreement
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify PR description for checked CLA box
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const body = context.payload.pull_request.body || "";
+            
+            // Regex to check if the specific CLA box has an 'x' or 'X' in it
+            const claRegex = /- \[[xX]\] I have read and agree to the \[Syneroym CLA\]/i;
+            const hasAgreed = claRegex.test(body);
+            
+            if (!hasAgreed) {
+              core.setFailed(
+                "❌ CLA Agreement Missing! Please edit your Pull Request description and check the box indicating you agree to the Syneroym Contributor License Agreement."
+              );
+            } else {
+              console.log("✅ CLA Agreement checkbox is checked.");
+            }
