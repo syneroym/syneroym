@@ -55,4 +55,6 @@ Contributions are welcome once the Phase 1 scope is locked. See `CONTRIBUTING.md
 
 ## License
 
-Apache-2.0
+Syneroym is dual-licensed:
+1. **Open Source**: Licensed under the GNU Affero General Public License v3.0 ([AGPL-3.0](LICENSE)). This ensures that any improvements to the core substrate remain open and accessible to the community.
+2. **Commercial**: For enterprises and organizations that wish to embed Syneroym into proprietary, closed-source products without being subject to the AGPL's copyleft provisions, Commercial Licenses are available. Please contact the maintainers for details.
