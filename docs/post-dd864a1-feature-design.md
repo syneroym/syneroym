@@ -1,0 +1,107 @@
+# Syneroym: Substrate Feature Implementation Design
+
+This document details the "How"—the concrete engineering designs and implementation strategies—that map to the features defined in the [Feature Specification](post-dd864a1-feature-spec.md).
+
+> **Note:** Only sections with complex architectural considerations are expanded here. Trivial mappings are omitted.
+
+---
+
+## Phase 1: Foundation & Core Infrastructure
+
+### [FND-SEC] Substrate Security
+The Substrate relies on multiple cryptographic and hardware-level techniques to guarantee a zero-trust environment.
+
+*   **Data at Rest & Envelope Encryption:** 
+    *   **Design:** `sqlite_db` and blob storage are encrypted using Data Encryption Keys (DEKs). A Master Key (KEK) is injected into RAM at startup to unlock the DEKs, ensuring instant key rotation without massive re-encryption.
+    *   **The "Unlock" Model:** Encryption keys are scoped to individual services, not the entire substrate. Keys are *never* stored on the substrate's disk. If encryption is required, the service remains locked upon node restart until the Service Owner provisions the key into RAM over the network.
+*   **Memory Protection & RAM Dumping Mitigations:** 
+    *   **Design:** Perfectly securing a key in RAM from a determined root-level attacker is theoretically impossible without hardware enclaves, but the substrate raises the bar significantly. The Substrate uses OS-level memory locking (`mlock`) to prevent swapping to disk, and `madvise(MADV_DONTDUMP)` to exclude the key from core dumps.
+    *   **Key Splitting:** Keys can be obfuscated or split in the `zeroize` memory vault when not actively executing queries, ensuring a naive RAM scraper does not easily find contiguous valid key bytes.
+
+### [FND-CFG] Service Configuration
+
+*   **Dual-Target Configuration Delivery:** Configuration defined in the SynApp/Endpoint manifest is delivered seamlessly to both execution environments:
+    *   **Podman**: Substrate injects configuration as standard environment variables (`-e`) and read-only volume mounts (`-v`).
+    *   **WASM**: Substrate injects configuration using the Component Model's `wasi:cli/environment` and `wasi:filesystem` (pre-opened directories).
+*   **Cold Restarts & State:** WASM components are fundamentally stateless. The `SessionContext` (containing UCAN capabilities and claims) is tied to the incoming request and held securely within the Wasmtime host's `Store`. Therefore, cold restarts to apply new configuration are perfectly safe and do not result in any loss of session state or security context.
+*   **Secrets (MVP):** For the MVP, secrets are treated as standard environment variables defined in the manifest. Advanced secret stores (e.g., Vault integrations) are deferred.
+
+### [FND-IAM] Access Control
+The Access Control architecture relies on the Federated Data-Aware Authorization Engine (FDAE) to combine cryptographic capabilities with massive-scale relational data filtering.
+
+*   **SynApp Access (Host Function):**
+    *   **Design:** WASM applications do not query databases directly. The WASM linker exposes the data-layer as a strictly typed WIT import (`import syneroym:data-layer/store;`).
+    *   **Identity Injection:** The host function implementation automatically injects the caller identity as `synapp:<app_id>:<component_id>`. This cannot be spoofed by the guest.
+    *   **Execution:** It dynamically compiles the FDAE ReBAC policies directly into the SQL query before execution, and explicitly scopes all operations to the SynApp's namespace.
+*   **Comprehensive Schema Specification (No-Parser AST Config):**
+    *   **Design:** To eliminate the runtime overhead of string lexers in the Wasm host framework, the Domain Specific Language (DSL) is written as a fully structured configuration tree (YAML/JSON). Deserializing this file directly produces the actionable Abstract Syntax Tree (AST) for the query planner.
+    *   **Registry:** Maps logical keys to physical storage engines (e.g., `sqlite_db` vs `hr_api` which triggers a Wasm Host Extension).
+    *   **Hierarchies:** Maps unbounded graph pathways (e.g., `management_chain`).
+    *   **Definitions:** Defines objects, data joins, and boolean permission paths (e.g., a `union` of direct ownership vs transitive manager chain checks).
+*   **Engine Evaluation Steps & The Pushdown Sieve:**
+    *   **Lookahead Optimization:** The engine reviews the permission block. If nodes share the same physical SQLite storage driver, it flags them for "Join Tree Collapse".
+    *   **SQL Generation (The Pushdown):** The engine merges the relationship hops into a singular, cycle-protected `WITH RECURSIVE` SQLite query.
+    *   **Global Logic Short-Circuiting:** If a path evaluates to a true state (e.g., under a `union` operator), the engine instantly returns an Allowed state, bypassing further external checks.
+    *   **Cross-Service Parameter Fetch:** If a step crosses a boundary (e.g., requires external HR data), the engine halts local SQL execution, marshals the intermediate value across the Wasm runtime memory boundary, fires the native host extension function to fetch remote proofs, and resumes execution.
+*   **Dual-Mode Capability:**
+    *   **Mode A (Point-In-Time Evaluation):** When verifying a specific resource handle ("Can Alice view document 12?"), the engine appends an absolute constraint (`WHERE documents.id = ?`).
+    *   **Mode B (Relational Data Filtering):** When requesting a dashboard index ("Show me all documents I can see"), the engine wraps the user's base command in the compiled `WHERE EXISTS` security block as a global subquery. This forces SQLite to perform index-level pruning before the data ever reaches the Wasm guest.
+*   **Performance Safeguards & Security:**
+    *   **Strict Parameter Isolation:** The query compiler strictly uses native parameterized binding (`?` or `:name`) to prevent SQL injection.
+    *   **Deterministic Cycle Protections:** Every recursive configuration block includes a path concatenation tracker (`visited_track`) to break execution if cyclic loops are introduced in the user data.
+    *   **Instruction Watchdogs:** Generated queries execute alongside an active instruction cycle watchdog (`sqlite3_progress_handler`). If execution takes longer than 15ms, the transaction is immediately rolled back with a "Default Denied" state.
+
+---
+
+## Phase 2: Core Platform Capabilities
+
+### [PLT-DAT] Data Layer
+
+The Data Layer provides a complete foundation for distributed application state and communication, securely accessed via typed host functions.
+
+#### 1. REST Data Service (Structured Database)
+A platform-managed persistent store that SynApps use via the API. The substrate owns the store; SynApps borrow a namespaced view of it.
+
+*   **Resource Model:** 
+    *   **Collection:** A named set of records within a SynApp's namespace, declared with a lightweight schema.
+    *   **Record:** One JSON object identified by a caller-supplied string `id`.
+    *   **`creator_id`:** A first-class field on every record, set automatically by the service at write time (spoof-proof).
+    *   **Schema:** Declares indexed fields explicitly. Enforced loosely (unknown fields rejected; declared fields type-checked).
+*   **CRUD Operations:** Operations include `create_collection`, `drop_collection`, `put` (upsert), `patch` (merge), `get`, `query` (list), `delete`, and `delete_many`. 
+*   **Filter Model:** Queries use a structured model (e.g., `Eq`, `In`, `Contains`), not raw SQL. This is translated to parameterized SQLite internally. Pagination is strictly cursor-based (no offset).
+*   **Service Aliases:** 
+    *   **Problem:** Service IDs are DIDs. Policies need human-readable names.
+    *   **Design:** The community registry holds an alias record signed by the owner DID (e.g., `org-service -> did:syn:serviceXYZ`). Resolution order is: `local cache → registry → manifest-pinned DID`.
+*   **Object Service (Blob Store):** 
+    *   **Design:** Stored content-addressed (keyed by SHA-256 hash). One blob store per SynApp. Blob hashes are stored as standard string fields in the REST Data Service records. Replicas pull missing blobs lazily from primaries on first access.
+
+#### 2. MQTT Event Service (Asynchronous Coordination)
+To provide real-time Pub/Sub without relying on heavy external infrastructure, the Substrate acts as the broker.
+
+*   **Embedded Broker Design:** The Syneroym Rust host embeds an MQTT broker natively using the `rumqttd` crate. It runs as a background Tokio task alongside the Wasmtime engine.
+*   **The WASM Boundary (WIT):** WASM applications interact with the broker via a lightweight host boundary:
+    ```wit
+    interface pubsub {
+        publish: func(topic: string, payload: list<u8>);
+        subscribe: func(topic: string);
+    }
+    ```
+*   **Execution Flow:** When a WASM component calls `pubsub::publish`, the host traps the call and routes it directly into the embedded `rumqttd` broker. Subscriptions trigger an exported WASM callback to push payloads into the guest.
+
+#### 3. Universal Proxy (Inter-Component RPC)
+The Substrate guarantees zero-overhead, strictly typed networking between services.
+
+*   **Protocol Translation Architecture:**
+    *   **Design:** The Substrate traps the typed WIT function call. If the target is another native WASM component, it serializes the call into **wRPC** (a highly efficient binary streaming protocol) and transmits it over encrypted **Iroh QUIC** streams.
+    *   **JSON-RPC Adapter:** If the target is a legacy Podman container or an external web/mobile client, the proxy dynamically translates the strict WIT calls into universal JSON-RPC 2.0 over HTTP/WebSockets.
+
+### [PLT-RED] Service Redundancy
+
+*   **Replication Topology:** The data layer utilizes an N=2 topology: one primary (read-write), one replica (read-only). Each SynApp has one SQLite DB running in WAL mode. Litestream streams WAL frames from the primary to the replica continuously.
+*   **Registry & Coordination Model:** The Registry Service acts as the authoritative control plane for membership and ownership.
+    *   **Node States:** Nodes progress through strict states: `ACTIVE` → `SUSPECT` (communication issues) → `QUARANTINED` (no new work/traffic, but management allowed) → `RETIRED`. Quarantine is a global registry decision, not a local node guess.
+    *   **Epoch Fencing (Ownership):** Every resource has exactly one owner assigned in the registry (e.g., `{"resource": "orders-shard-1", "owner": "nodeA", "epoch": 42}`). Epochs increment on every transfer, and stale epochs are strictly rejected to provide fencing without leases.
+    *   **Failure Philosophy (CP > AP):** Syneroym prioritizes Consistency over Availability. There is no automatic failover to prevent split-brain. Instead, the promotion workflow requires explicitly quarantining the failed node, propagating the update, waiting for acknowledgments from all remaining `ACTIVE` nodes, and then promoting the replacement.
+*   **Control Plane vs Data Plane Isolation:**
+    *   If the Registry itself fails, the Control Plane freezes (no new deployments or ownership transfers), but the Data Plane continues unaffected. Existing shard ownership, routing, MQTT flows, and HTTP access operate seamlessly using cached state.
+    *   *Registry Recovery:* Requires out-of-band verification to confirm the old registry is truly dead before a replacement is manually promoted and the global epoch is incremented.

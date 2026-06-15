@@ -21,12 +21,12 @@ This phase implements the architectural boundary between Syneroym Applications (
 #### `SynSvc` (The Execution Primitive)
 The `SynSvc` is the absolute foundational primitive of the Syneroym Substrate. 
 *   **Zero-Trust Execution:** Represents an isolated, zero-trust execution boundary (often a WASM component, but could also be a Podman container or a native OS service sitting behind a platform gatekeeper). It does not implicitly trust other services, even those deployed alongside it.
-*   **State & Capabilities:** It owns its state and enforces capability-based security (Casbin policies) on all incoming requests.
+*   **State & Capabilities:** It owns its state and enforces capability-based security (FDAE ReBAC policies and UCANs) on all incoming requests.
 
 #### `SynApp` (The Control Plane Overlay)
 `SynApp` is removed as a runtime execution boundary and is redefined as a **Deployment Manifest and Control Plane Overlay**.
 *   **Lifecycle Management:** Acts as a blueprint to deploy, update, and remove a cohesive graph of `SynSvcs` as a single unit.
-*   **Capability Bootstrapping:** Orchestrates the initial injection of permissions (Casbin policies) that allow internal services within the app to communicate.
+*   **Capability Bootstrapping:** Orchestrates the initial injection of permissions (ReBAC relations/policies) that allow internal services within the app to communicate.
 *   **Resource Accounting:** Serves as a logical grouping for tracking quotas, billing, and telemetry across a designated graph of services.
 *   **SynApp Instances:** Unlike Erlang applications (which are singletons), deploying a `SynApp` manifest creates a unique **SynApp Instance** with an isolated namespace. A single substrate can host multiple distinct instances of the same `SynApp` (e.g., Personal Task Manager vs. Work Task Manager).
 *   **UI Decoupling:** User Interfaces are simply specialized `SynSvcs` or external clients. A `SynApp` may contain zero UIs (headless processes), one UI, or multiple specialized UIs (Admin, Storefront, Mobile Gateway).
@@ -120,6 +120,8 @@ Not all apps require a live, queryable registry at runtime (e.g., trivial backgr
 - **Supply Chain Integrity:**
   - Syneroym binaries are distributed with simple, native Ed25519 signatures. The public key is hardcoded, and the auto-updater mathematically verifies the signature before applying any new binary.
 
+> **Implementation Design:** For technical details covering Envelope Encryption and Memory Protection, see [Feature Design: FND-SEC](post-dd864a1-feature-design.md#fnd-sec-substrate-security).
+
 
 
 ### [FND-CFG] Service Configuration
@@ -140,22 +142,48 @@ Given that Syneroym supports both native WASM components and legacy Podman conta
 - **Out-of-Band Secret Rotation**: While regular configuration changes happen via explicit manifest deployments (which naturally trigger a restart), secrets live independently in the Vault. If a secret is rotated *out-of-band* by an admin, the manifest's `rotation_policy` dictates whether the orchestrator automatically restarts the affected service or waits for the next manual deployment.
 - **Anti-Goal: "Helm-ification"**: The `SynApp` manifest is strictly a "dumb", fully-resolved document. Syneroym rejects complex in-manifest templating (like Helm). If developers need environment-specific overrides, they should use external tools (like `cue`, `ytt`, or simple scripts) to generate a static manifest *before* passing it to `roymctl deploy`. The only dynamic variables supported are standard host parameters (e.g., `SYNEROYM_NODE_IP`) that the orchestrator inherently injects at runtime.
 
+> **Implementation Design:** For technical details regarding the dual-target configuration delivery and cold restart behavior, see [Feature Design: FND-CFG](post-dd864a1-feature-design.md#fnd-cfg-service-configuration).
+
 ### [FND-IAM] Access Control
-- **FDAE-Lite (Policy-to-SQL Compiler):** Adopts a focused subset of the [Federated Data-Aware Authorization Engine (FDAE)](authorization-engine-spec.md) vision. It utilizes a declarative, Zanzibar-style structured configuration (e.g., YAML/JSON) to map relationship chains, but strictly restricts data sources to **local SQL databases** (the service's own SQLite DB and the core substrate's SQLite DB). By intentionally dropping FDAE's complex cross-boundary WASM lookups (heterogeneous sources), execution is kept entirely within the hyper-fast database engine. The Substrate directly deserializes this configuration—avoiding custom parsers or ASTs—and dynamically compiles it into parameterized `WITH RECURSIVE` SQLite queries.
-- **Solving the Data Fetching Problem (Pushdown Sieve):** By compiling ReBAC policies directly into SQL `WHERE EXISTS` clauses, the engine eliminates the "Data Fetching Problem". The SQLite engine performs massive-scale relationship filtering at the C-level, handing only authorized rows back to the WASM guest, eliminating the need to synchronize data to an external graph.
+- **FDAE (Federated Data-Aware Authorization Engine):** Adopts the FDAE architecture, which decouples the authorization specification (the "What") from the environment-specific execution (the "How"). It avoids the traditional PBAC vs. ReBAC dilemma by acting as an intelligent, distributed routing engine. It utilizes a declarative, Zanzibar-style structured configuration (e.g., YAML/JSON) to map relationship chains across fragmented data sources. The Substrate directly deserializes this configuration—avoiding custom parsers or ASTs—and acts as a distributed query planner.
+- **Solving the Data Fetching Problem (Pushdown Sieve):** For local contiguous relationships, FDAE collapses the graph into a single, deeply nested query. By compiling ReBAC policies directly into SQL `WHERE EXISTS` clauses, the SQLite engine performs massive-scale relationship filtering at the C-level, handing only authorized rows back to the WASM guest.
+- **Dual-Mode Execution:** FDAE natively handles both **Point-In-Time Evaluation** (returning a swift Allowed/Denied flag for a specific resource check) and **Relational Data Filtering** (applying the security policies as a global subquery to prune index-level datasets before they ever reach the Wasm guest).
 - **UCAN Integration (Normalized Claims, Capabilities, Scopes):** Access control is a robust synthesis of cryptographic capabilities and relational data state.
-  - **Context Initialization:** When a request arrives, the gateway mathematically verifies the UCAN chain, normalizing external authentications (OIDC, DIDs, WebAuthn) into internal DIDs. It extracts the proven **claims**, **capabilities**, and **scopes** (e.g., capability to read a specific document, or act on behalf of a delegator).
-  - **Relational Verification:** The SQL Compiler uses these normalized UCAN scopes and claims as the bound parameters (`?`) for its query. The SQL query then verifies if the structural ReBAC rules (e.g., "is the UCAN delegator actually in the management chain of the resource creator?") legally support the cryptographic capability claimed in the token.
-- **The Extensible 3-Stage Pipeline (WASM + SQL):** While core ReBAC relationship data remains strictly in SQLite for maximum performance, the authorization pipeline supports custom WASM plugins to handle dynamic ABAC logic or explicit overrides:
-  1. **Pre-Step (Context & UCAN Verification):** The substrate verifies the UCAN chain, extracting normalized claims, capabilities, and scopes into a secure execution context. A WASM interceptor can further mutate this context before SQL compilation.
-  2. **SQL Execution (The Relational Sieve):** SQLite natively filters candidate rows based on the ReBAC policies and the UCAN context.
-  3. **After-Step (ABAC & Override Filter):** An optional custom WASM function performs fine-grained, non-relational ABAC checks on the candidate rows. This empowers developers to enforce dynamic rules (e.g., external API billing checks, time/location fencing) or implement explicit `should_override` logic before the data is returned to the guest.
+  - **Context Initialization:** When a request arrives, the gateway mathematically verifies the UCAN chain, normalizing external authentications (OIDC, DIDs, WebAuthn) into internal DIDs. It extracts the proven **claims**, **capabilities**, and **scopes**.
+  - **Relational Verification:** The SQL Compiler uses these normalized UCAN scopes and claims as bound parameters (`?`) for its query.
+- **The Extensible 4-Stage Hybrid Pipeline (Federated + SQL + WASM):** The authorization pipeline handles complex cross-boundary logic seamlessly:
+  1. **Pre-Step (Context & UCAN Verification):** The substrate verifies the UCAN chain into a secure execution context.
+  2. **Cross-Service Parameter Fetch:** If a relationship step crosses an asset boundary (e.g., requires data from a centralized security or org-service), the engine pauses, triggers an RPC/Wasm host function to fetch the remote relationship proofs or parameters, and injects them into the local evaluation context.
+  3. **SQL Execution (The Relational Sieve):** SQLite natively filters candidate rows based on the ReBAC policies, UCAN context, and any parameters fetched during the cross-service fetch.
+  4. **After-Step (ABAC & Override Filter):** An optional custom WASM function performs fine-grained, non-relational ABAC checks on the candidate rows.
+
+> **Implementation Design:** For technical details regarding the FDAE architecture and the 4-stage hybrid pipeline, see [Feature Design: FND-IAM](post-dd864a1-feature-design.md#fnd-iam-access-control).
 
 ## Phase 2: Core Platform Capabilities
 
 ### [PLT-DAT] Data Layer
-- All types REST, Pub/Sub, S3 blobs, Content addressed?
-- Support nested record serialization deserialization in wasm calls. Currently only some basic types are supported.
+The Data Layer provides a complete foundation for distributed application state and communication, securely accessed via typed host functions or APIs without exposing raw database engines to the applications.
+
+- **REST Data Service (Structured Database):**
+  - **Namespaced Views:** The canonical primitive for structured state (backed by SQLite). The substrate owns the store; SynApps borrow a securely namespaced view (`app_id`).
+  - **Resource Model:** Collections with lightweight schemas (loose enforcement of types, explicit indexed fields) containing JSON records. The data layer automatically injects a spoof-proof `creator_id` into every record.
+  - **Operations & Queries:** Full CRUD operations (`create_collection`, `put`, `patch`, `get`, `delete`, `delete_many`). The query engine translates an abstract `FilterExpr` (supporting `Eq`, `In`, `Contains` for full-text, etc.) into parameterized SQL queries with cursor-based pagination.
+  - **WASM Serialization & WIT Boundary:** Expand the `syneroym:data-layer/store` WIT boundary to support robust nested record serialization/deserialization. Currently, only basic types are supported; this enables seamless passing of complex JSON object graphs between WASM components and the host.
+
+- **Object Service (Content-Addressed Blobs):**
+  - **S3-Compatible Storage:** Dedicated blob storage for large media and software artifacts, natively content-addressed (keyed by SHA-256).
+  - **Data Integration:** Blob hashes are stored as standard string fields in the REST Data Service records.
+  - **HTTP File Serving:** Built-in HTTP serving of public/private objects (with signed URLs), supporting static website hosting and CDN-friendly delivery directly from the blob store.
+
+- **MQTT Event Service (Asynchronous Coordination):**
+  - **Pub/Sub Broker:** Handles asynchronous communication, state propagation, and device workflows.
+  - **Features:** Supports wildcard topics, retained messages, and real-time change notifications to trigger workflows or invalidate caches.
+
+- **Universal Proxy (Inter-Component RPC):**
+  - **Typed Interactions:** Developers use strongly typed WIT imports (`import acme:booking/service;`) rather than generic untyped APIs.
+  - **Protocol Translation:** The substrate traps the WASM call and dynamically proxies it. It serializes the call into fast, binary **wRPC** (over Iroh QUIC) if the target is another WASM substrate, or universal **JSON-RPC** (over HTTP/WebSocket) if targeting a legacy Podman container.
+
+> **Implementation Design:** For technical details regarding the embedded MQTT broker and the wRPC Universal Proxy architecture, see [Feature Design: PLT-DAT](post-dd864a1-feature-design.md#plt-dat-data-layer).
 
 ### [PLT-OFF] Offline operation
 - Outbox and periodic sync
@@ -168,6 +196,8 @@ Given that Syneroym supports both native WASM components and legacy Podman conta
 - Data plane continues even if control plane down.
 - Backup and restore of stateful data for cold start cases
 - Ensure redundancy is maintained on failure with additional replication
+
+> **Implementation Design:** For technical details regarding the N=2 Litestream replication topology and manual failover sequence, see [Feature Design: PLT-RED](post-dd864a1-feature-design.md#plt-red-service-redundancy).
 
 ## Phase 3: Substrate & Application Lifecycle
 
@@ -219,7 +249,7 @@ Given that Syneroym supports both native WASM components and legacy Podman conta
 | **Data Layer: Content Addressed** | **Ledger** | Storing immutable blocks and transaction receipts. |
 | **Offline Operation** | **Chat** | Outbox message queuing and syncing upon reconnection. |
 | **AI (Agents/Vector Store)** | **Chat** | AI participants with long-term memory in group chats. |
-| **Access Control (Casbin/Consent)** | **Chat** | Enforcing read/write rules for trusted rooms and AI delegation. |
+| **Access Control (FDAE/Consent)** | **Chat** | Enforcing read/write rules for trusted rooms and AI delegation. |
 | **Service Redundancy (Sharding)** | **Ledger** | High availability and partition tolerance for the credit network. |
 | **Security (TPM 2.0)** | **Ledger** | Hardware-backed multi-party signing for high-value settlements. |
 | **Versioning & Migrations** | **Ledger** | Upgrading complex, stateful settlement rules without downtime. |
