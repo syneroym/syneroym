@@ -95,6 +95,24 @@ The Substrate guarantees zero-overhead, strictly typed networking between servic
     *   **Design:** The Substrate traps the typed WIT function call. If the target is another native WASM component, it serializes the call into **wRPC** (a highly efficient binary streaming protocol) and transmits it over encrypted **Iroh QUIC** streams.
     *   **JSON-RPC Adapter:** If the target is a legacy Podman container or an external web/mobile client, the proxy dynamically translates the strict WIT calls into universal JSON-RPC 2.0 over HTTP/WebSockets.
 
+### [PLT-ASY] Asynchronous Operations & Scheduling
+
+The Substrate handles offline behavior, long-running execution, and periodic scheduling uniformly by delegating explicit workflow management to the business logic, rather than attempting to build complex infrastructure-level "durable execution".
+
+*   **Resilient RPC & Dead Letter Queues (DLQ):**
+    *   **Design:** The Universal Proxy automatically handles retries with exponential backoff for transient failures. The retry limits are configurable per service. If the maximum limit is reached, the proxy traps the failure and routes the serialized message into a local SQLite-backed DLQ for later analysis or replay.
+*   **The Outbox & Fire-and-Forget Semantics:**
+    *   **Design:** Offline-capable endpoints are strictly opt-in. A client uses an outbox queue and sends a fire-and-forget message, marking the operation as optimistically successful in its local UI.
+    *   **Client IDs:** To support this stateless offline creation, the Data Layer's CRUD operations support client-generated UUIDs (rather than strictly database-generated serial IDs).
+*   **Long-Running Tasks (In-Memory Execution):**
+    *   **Design:** Long-running workflows run as native asynchronous Tokio tasks executing WASM guest functions. The platform guarantees the *intent* to run is recorded durably, but the active WASM memory state is ephemeral. If the substrate crashes, the task is aborted and either restarted or compensated upon recovery. This avoids the massive engineering overhead of building event-sourced deterministic memory snapshotting.
+*   **Periodic & Scheduled Tasks (Lease-Based Delegation):**
+    *   **Design:** To eliminate load skew caused by clock drift in a replicated environment, cron-triggered execution is decoupled from scheduling. When a cron timer ticks across the cluster, nodes race to acquire a specific execution lease from the Registry.
+    *   **Execution:** The node that wins the lease acts purely as the scheduler for that tick. It selects a target node from the active cluster (randomly or via load metrics) and dispatches the execution payload. The lease is held in the Registry until execution finishes, which naturally prevents overlapping execution if the task spans multiple cron periods.
+*   **Saga Compensations (`undo` endpoints):**
+    *   **Design:** Services participating in distributed workflows or offline operations expose standard `undo_<operation>` functions in their WIT boundary.
+    *   **Execution:** When a multi-step operation or queued task hits a terminal failure, the orchestrator invokes the corresponding `undo_` function for each previously completed step. The orchestrator passes the exact same arguments (plus the generated resource ID) to the `undo` endpoint to accurately reverse the specific state change.
+
 ### [PLT-RED] Service Redundancy
 
 *   **Replication Topology:** The data layer utilizes an N=2 topology: one primary (read-write), one replica (read-only). Each SynApp has one SQLite DB running in WAL mode. Litestream streams WAL frames from the primary to the replica continuously.
