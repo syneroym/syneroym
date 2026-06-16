@@ -148,3 +148,22 @@ Both operational modes rely on an identical set of core orchestration libraries 
 A critical function of Lifecycle Management is translating Explicit Bindings defined in the manifest into physical, routable identities (e.g., Iroh Pubkeys or DIDs) for inter-service communication.
 *   **Static Injection (CLI Mode)**: When operating in standalone mode, `roymctl` acts as a static compiler for routing. During deployment or manual reconciliation, it determines the physical identities of the target substrates. It then explicitly injects these physical IDs into the configuration payload of the dependent `SynSvc` components. Without a Server SynApp, there is no dynamic load balancing or self-healing routing—if a service moves, a new `roymctl reconcile` is required to push the updated configuration.
 *   **Dynamic Pull (Server SynApp Mode)**: When the Server SynApp is active, it functions as a dynamic Registry Service. The client SDKs embedded within each `SynSvc` query this registry at runtime to resolve logical IDs to physical addresses. This enables dynamic load-balancing, auto-discovery of newly scaled instances, and seamless failover without requiring static configuration updates.
+
+### [LFC-VER] Versioning & Migration Flow
+
+#### 1. WASM Component Database Migration Lifecycle
+To handle data schema evolution securely, the system utilizes a lifecycle hook within the WASM component, executed with elevated capabilities.
+
+*   **1. Pause & Snapshot**: When an upgrade is initiated, the Substrate pauses traffic to the specific `SynSvc` endpoint. The internal router temporarily buffers requests or returns a `503 Service Unavailable`. The Substrate takes a filesystem-level snapshot of the component's underlying SQLite database.
+*   **2. Elevated Init Execution**: The Substrate loads the new version of the WASM binary and invokes its exported `init()` (or `migrate()`) lifecycle hook. Crucially, the Substrate injects an elevated capability (e.g., an Admin UCAN) into this execution context.
+*   **3. DDL and Transformation**: Within `init()`, the WASM code leverages generic data-layer host functions (e.g., `execute_sql`) to perform its schema changes (DDL) and any necessary data transformations. The elevated capability allows the execution of DDL, whereas standard REST/RPC invocations are sandboxed to restricted CRUD operations.
+*   **4. Commit or Rollback**:
+    *   If `init()` returns `Ok`, the Substrate considers the upgrade successful, drops the old database snapshot, and resumes routing traffic to the new component.
+    *   If `init()` returns `Err` (or panics), the Substrate aborts the upgrade, unloads the new WASM module, restores the SQLite database from the snapshot, and resumes routing traffic to the previous WASM binary.
+
+#### 2. Network Protocol Handshake & Capability Matrix
+To avoid rigid (and brittle) version matching across a decentralized network, Substrates negotiate network capabilities dynamically.
+
+*   **1. Handshake Negotiation**: During the initial connection phase over Iroh, node A and node B exchange a list of their supported protocol profiles (e.g., `["syneroym/rpc/v1", "syneroym/rpc/v2"]`).
+*   **2. Capability Resolution**: The routing layer inspects the shared protocols and establishes communication using the most capable, mutually understood protocol. If the intersection is empty, the connection is cleanly rejected.
+*   **3. Case-by-Case Deprecation**: Rather than an automatic sliding-window (N-x) deprecation policy, the core team removes older protocol handlers from the Substrate binary on a deliberate, case-by-case basis as the network matures.
