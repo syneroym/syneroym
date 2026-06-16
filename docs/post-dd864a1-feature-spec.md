@@ -217,15 +217,28 @@ The Asynchronous Operations component ensures reliable execution of offline inte
 > - **Saga Arguments:** The compensating `undo` functions generally accept the identical arguments as the original forward operation (along with the generated resource ID) to precisely reverse the specific action.
 
 ### [PLT-RED] Service Redundancy
-- Support shards, replicated stateless services, primary-secondary backups
-- Blob storage with redundancy
-- Service registry, and manual replacement of failed instances, and quarantining failed instances in case they come up again. Epoch based ownership techniques.
-- Stress on CP trading off Availability
-- Data plane continues even if control plane down.
-- Backup and restore of stateful data for cold start cases
-- Ensure redundancy is maintained on failure with additional replication
+This feature guarantees data durability, service continuity, and split-brain prevention for the Syneroym network, strictly prioritizing Consistency over Availability (CP) during network partitions.
 
-> **Implementation Design:** For technical details regarding the N=2 Litestream replication topology and manual failover sequence, see [Feature Design: PLT-RED](post-dd864a1-feature-design.md#plt-red-service-redundancy).
+**Database Redundancy**
+- **N=2 Stateful Replication:** Every stateful SynApp service (backed by SQLite) must maintain a minimum N=2 topology (one Primary, one Secondary replica). The Primary accepts all write operations, while the Secondary maintains an identical read-only state.
+- **Low-Latency Streaming:** Replication must be near-instantaneous. Changes committed to the Primary must be streamed directly to the Secondary without relying on high-latency batching or third-party storage intermediaries for the live replication path.
+- **Disaster Recovery:** In addition to live node-to-node replication, the system must support periodic asynchronous backups to external object storage (S3-compatible) to enable cold starts and disaster recovery.
+
+**Blob Storage Redundancy**
+- Large files and blobs are not replicated via SQLite. Instead, the platform relies on external, configurable S3-compatible storage backends. The underlying S3 provider is responsible for ensuring the redundancy of these blobs.
+
+**Registry & Topology Management**
+- **Single Source of Truth:** The Registry Service is the authoritative control plane for all cluster membership and routing topology.
+- **Manual Promotion (CP Focus):** To prevent split-brain scenarios, there is strictly no automatic failover. If a Primary fails, the system deliberately drops to N=1 (Availability impact) to preserve data Consistency. Promoting a Secondary to Primary requires explicit operator intervention via the Registry.
+- **Strict Quarantining:** When a failed node is deposed, the Registry must permanently mark its Node ID as `QUARANTINED`.
+- **Routing-Level Fencing:** The system must enforce split-brain prevention at the routing layer. `QUARANTINED` nodes must be completely isolated:
+    - *Ingress:* All other nodes and clients must clear their routing caches and immediately cease sending requests to the quarantined node.
+    - *Egress:* Any outbound requests originating from a quarantined node (e.g., if it is merely network-partitioned) must be strictly rejected by all receiving services.
+
+**Control Plane vs Data Plane Isolation**
+- The Data Plane must be fully decoupled from the availability of the Control Plane. If the Registry service goes offline, all data plane routing, MQTT message flows, and HTTP access must continue functioning indefinitely using the last known cached topology until the control plane is restored.
+
+> **Implementation Design:** For technical details regarding the Iroh-based WAL replication and routing-level fencing, see [Feature Design: PLT-RED](post-dd864a1-feature-design.md#plt-red-service-redundancy).
 
 ## Phase 3: Substrate & Application Lifecycle
 
