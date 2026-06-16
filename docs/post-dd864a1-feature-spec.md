@@ -220,7 +220,7 @@ The Asynchronous Operations component ensures reliable execution of offline inte
 This feature guarantees data durability, service continuity, and split-brain prevention for the Syneroym network, strictly prioritizing Consistency over Availability (CP) during network partitions.
 
 **Database Redundancy**
-- **N=2 Stateful Replication:** Every stateful SynApp service (backed by SQLite) must maintain a minimum N=2 topology (one Primary, one Secondary replica). The Primary accepts all write operations, while the Secondary maintains an identical read-only state.
+- **Configurable Stateful Replication:** The replication factor (e.g., N=1, N=2, N=3) is configurable at service deployment time via the application manifest. For replicated setups (N>=2), there is exactly one Primary accepting write operations, while the Secondaries maintain an identical read-only state. The Registry reflects the topology defined by the manifest.
 - **Low-Latency Streaming:** Replication must be near-instantaneous. Changes committed to the Primary must be streamed directly to the Secondary without relying on high-latency batching or third-party storage intermediaries for the live replication path.
 - **Disaster Recovery:** In addition to live node-to-node replication, the system must support periodic asynchronous backups to external object storage (S3-compatible) to enable cold starts and disaster recovery.
 
@@ -229,7 +229,7 @@ This feature guarantees data durability, service continuity, and split-brain pre
 
 **Registry & Topology Management**
 - **Single Source of Truth:** The Registry Service is the authoritative control plane for all cluster membership and routing topology.
-- **Manual Promotion (CP Focus):** To prevent split-brain scenarios, there is strictly no automatic failover. If a Primary fails, the system deliberately drops to N=1 (Availability impact) to preserve data Consistency. Promoting a Secondary to Primary requires explicit operator intervention via the Registry.
+- **Manual Promotion (CP Focus):** To prevent split-brain scenarios, there is strictly no automatic failover. If a Primary fails, the system deliberately drops its redundancy level (Availability impact) to preserve data Consistency. Promoting a Secondary to Primary requires explicit operator intervention via the Registry.
 - **Strict Quarantining:** When a failed node is deposed, the Registry must permanently mark its Node ID as `QUARANTINED`.
 - **Routing-Level Fencing:** The system must enforce split-brain prevention at the routing layer. `QUARANTINED` nodes must be completely isolated:
     - *Ingress:* All other nodes and clients must clear their routing caches and immediately cease sending requests to the quarantined node.
