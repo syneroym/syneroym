@@ -242,9 +242,16 @@ This feature guarantees data durability, service continuity, and split-brain pre
 
 ## Phase 3: Substrate & Application Lifecycle
 
-### [LFC-MGT] SynApp Deployment Management App
-- Deploy SynApp resistry, inventory on any substrate as another SynApp
-- Track services expected vs actual status 
+### [LFC-MGT] SynApp Lifecycle Management
+- Orchestrates the deployment, configuration, and monitoring of SynApps and their constituent SynSvcs across a decentralized network of substrates.
+- **Application Manifests**: A SynApp is defined by a declarative manifest containing:
+  - A list of required `SynSvc` instances (WASM components).
+  - Explicit configurations for each service, including resource quotas and limits.
+  - **Explicit Bindings**: First-class declarations of logical network dependencies (e.g., `requires: backend_api`). The orchestrator uses these to construct a dependency graph and resolve physical addresses *before* injecting them into the service's configuration.
+- **Substrate Inventory**: The control plane maintains a user-defined inventory of target substrates, tracking their known capabilities to facilitate intelligent deployment scheduling. Target substrates enforce access control to ensure only authorized deployments are accepted.
+- **Operational Modes**: Lifecycle management is supported via two distinct operational modes utilizing a shared set of core orchestration libraries:
+  1. **CLI Standalone Mode (roymctl)**: Designed for **one-shot decentralized deployment**. The CLI reads a manifest, synchronously deploys services to available online substrates, and records an installation trace in a local SQLite database. It does not queue tasks for offline substrates. Drift from the desired state is resolved manually via a single-pass `reconcile` command.
+  2. **Active Control Plane Mode (Server SynApp)**: A specialized SynApp deployed onto the network that acts as a continuous controller. It accepts manifests via an API, stores the desired state in its replicated SQLite database, and runs a continuous background reconciliation loop to watch the actual state of services and trigger deployments/undeployments automatically.
 
 ### [LFC-VER] Versioning support overall
 - Substrate upgrades, auto-upgrade

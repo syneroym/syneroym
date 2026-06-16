@@ -127,3 +127,24 @@ The Substrate handles offline behavior, long-running execution, and periodic sch
     *   **Failure Philosophy (CP > AP):** Syneroym strictly prioritizes Consistency over Availability. There is no automatic failover. The promotion workflow requires an operator to manually quarantine the failed node in the Registry, wait for the topology update to propagate across the cluster, and then manually promote an existing Secondary to `ACTIVE` Primary. Finally, the operator provisions a replacement node to restore the desired redundancy level defined in the manifest.
 *   **Control Plane vs Data Plane Isolation:**
     *   If the Registry itself fails, the Control Plane freezes (no new deployments or topology changes). However, the Data Plane continues unaffected indefinitely. Existing routing paths, MQTT flows, and HTTP access operate seamlessly using the last known cached registry state.
+
+## Phase 3: Substrate & Application Lifecycle
+
+### [LFC-MGT] SynApp Lifecycle Management Design
+This section details the internal mechanics of the dual-mode Orchestration and Lifecycle Management system.
+
+#### 1. Control Plane Architecture & Bootstrapping
+Syneroym supports both a decentralized CLI workflow and a centralized stateful controller.
+*   **CLI Standalone (`roymctl`)**: Acts as a thick client. It parses the SynApp manifest, directly initiates connections to target substrates via Iroh/WebRTC, and executes deployment commands.
+*   **Server SynApp (Active Control Plane)**: A specialized, long-running SynApp that exposes a REST/RPC API for orchestration.
+*   **Bootstrapping**: The Server SynApp is deployed identically to any other application via `roymctl`. Once deployed, the user configures their local `roymctl` to proxy subsequent commands to the Server SynApp's API endpoint rather than pushing to substrates directly.
+
+#### 2. State Management (SQLite)
+Both operational modes rely on an identical set of core orchestration libraries and utilize SQLite for state tracking, but with different semantics:
+*   **Local Installation Trace (`roymctl`)**: In CLI mode, the local SQLite database acts merely as an installation trace. It records what was deployed, where, and when. This allows subsequent `roymctl reconcile` commands to compute the diff between the manifest and the known deployments, but there is no background monitoring.
+*   **Authoritative Ledger (Server SynApp)**: The Server SynApp utilizes the platform's standard stateful replication (via Iroh WAL shipping) for its internal SQLite database. This database stores the authoritative Desired State (manifests) vs. Actual State (live telemetry from substrates), driving its continuous background reconciliation loop.
+
+#### 3. Service Discovery & Logical Routing Resolution
+A critical function of Lifecycle Management is translating Logical Networking Pointers defined in the manifest into physical, routable identities (e.g., Iroh Pubkeys or DIDs) for inter-service communication.
+*   **Static Injection (CLI Mode)**: When operating in standalone mode, `roymctl` acts as a static compiler for routing. During deployment or manual reconciliation, it determines the physical identities of the target substrates. It then explicitly injects these physical IDs into the configuration payload of the dependent `SynSvc` components. Without a Server SynApp, there is no dynamic load balancing or self-healing routing—if a service moves, a new `roymctl reconcile` is required to push the updated configuration.
+*   **Dynamic Pull (Server SynApp Mode)**: When the Server SynApp is active, it functions as a dynamic Registry Service. The client SDKs embedded within each `SynSvc` query this registry at runtime to resolve logical IDs to physical addresses. This enables dynamic load-balancing, auto-discovery of newly scaled instances, and seamless failover without requiring static configuration updates.
