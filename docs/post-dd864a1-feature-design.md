@@ -115,11 +115,36 @@ The Substrate handles offline behavior, long-running execution, and periodic sch
 
 ### [PLT-RED] Service Redundancy
 
-*   **Replication Topology:** The data layer utilizes an N=2 topology: one primary (read-write), one replica (read-only). Each SynApp has one SQLite DB running in WAL mode. Litestream streams WAL frames from the primary to the replica continuously.
-*   **Registry & Coordination Model:** The Registry Service acts as the authoritative control plane for membership and ownership.
+*   **Database Replication Mechanism (Iroh WAL Shipping):** The data layer utilizes a configurable N-replica topology (typically one primary, and zero or more read-only secondaries, as defined by the app manifest) for SQLite state. Instead of relying on Litestream or FUSE-dependent LiteFS for live node-to-node replication, Syneroym leverages its native Iroh transport for near-instant, zero-batching replication.
+    *   **The Shipper (Primary):** A background Rust task monitors the `database.db-wal` file. Unlike Litestream which batches frames into segments to save on S3 `PUT` requests, our tailer reads the 24-byte frame header and 4KB page the moment it is committed by SQLite. It pipes these raw bytes directly into an open, persistent **Iroh multiplexed stream**.
+    *   **The Lifter (Secondary):** The Secondary receives the byte stream from Iroh and directly appends it to its own local `database.db-wal` file. To ensure the local SQLite process instantly sees the new data without restarting, the Secondary runs a tiny routine to safely update the SQLite Shared Memory (`-shm`) index header, immediately making the new frames visible to read-only queries.
+*   **Disaster Recovery:** While live, low-latency replication uses Iroh, periodic full backups and WAL segments are still asynchronously pushed to an external S3-compatible object store using a library like `wal-backup` for cold starts and disaster recovery.
+*   **Registry & Coordination Model:** The Registry Service acts as the authoritative control plane for membership and topology.
     *   **Node States:** Nodes progress through strict states: `ACTIVE` → `SUSPECT` (communication issues) → `QUARANTINED` (no new work/traffic, but management allowed) → `RETIRED`. Quarantine is a global registry decision, not a local node guess.
-    *   **Epoch Fencing (Ownership):** Every resource has exactly one owner assigned in the registry (e.g., `{"resource": "orders-shard-1", "owner": "nodeA", "epoch": 42}`). Epochs increment on every transfer, and stale epochs are strictly rejected to provide fencing without leases.
-    *   **Failure Philosophy (CP > AP):** Syneroym prioritizes Consistency over Availability. There is no automatic failover to prevent split-brain. Instead, the promotion workflow requires explicitly quarantining the failed node, propagating the update, waiting for acknowledgments from all remaining `ACTIVE` nodes, and then promoting the replacement.
+    *   **Routing-Level Fencing:** Split-brain mitigation is handled purely at the network/routing layer. When a primary is deposed due to failure, the Registry marks it `QUARANTINED` and propagates this topology update to all clients and routers.
+        *   *Ingress Protection:* Clients and upstream services clear their caches and stop routing writes to the deposed primary.
+        *   *Egress Protection:* Even if the deposed primary is network-partitioned but still alive, any outbound requests or I/O it attempts to make to other services are rejected because its Node ID is verified against the cluster-wide blacklist.
+    *   **Failure Philosophy (CP > AP):** Syneroym strictly prioritizes Consistency over Availability. There is no automatic failover. The promotion workflow requires an operator to manually quarantine the failed node in the Registry, wait for the topology update to propagate across the cluster, and then manually promote an existing Secondary to `ACTIVE` Primary. Finally, the operator provisions a replacement node to restore the desired redundancy level defined in the manifest.
 *   **Control Plane vs Data Plane Isolation:**
-    *   If the Registry itself fails, the Control Plane freezes (no new deployments or ownership transfers), but the Data Plane continues unaffected. Existing shard ownership, routing, MQTT flows, and HTTP access operate seamlessly using cached state.
-    *   *Registry Recovery:* Requires out-of-band verification to confirm the old registry is truly dead before a replacement is manually promoted and the global epoch is incremented.
+    *   If the Registry itself fails, the Control Plane freezes (no new deployments or topology changes). However, the Data Plane continues unaffected indefinitely. Existing routing paths, MQTT flows, and HTTP access operate seamlessly using the last known cached registry state.
+
+## Phase 3: Substrate & Application Lifecycle
+
+### [LFC-MGT] SynApp Lifecycle Management Design
+This section details the internal mechanics of the dual-mode Orchestration and Lifecycle Management system.
+
+#### 1. Control Plane Architecture & Bootstrapping
+Syneroym supports both a decentralized CLI workflow and a centralized stateful controller.
+*   **CLI Standalone (`roymctl`)**: Acts as a thick client. It parses the SynApp manifest, directly initiates connections to target substrates via Iroh/WebRTC, and executes deployment commands.
+*   **Server SynApp (Active Control Plane)**: A specialized, long-running SynApp that exposes a REST/RPC API for orchestration.
+*   **Bootstrapping**: The Server SynApp is deployed identically to any other application via `roymctl`. Once deployed, the user configures their local `roymctl` to proxy subsequent commands to the Server SynApp's API endpoint rather than pushing to substrates directly.
+
+#### 2. State Management (SQLite)
+Both operational modes rely on an identical set of core orchestration libraries and utilize SQLite for state tracking, but with different semantics:
+*   **Local Installation Trace (`roymctl`)**: In CLI mode, the local SQLite database acts merely as an installation trace. It records what was deployed, where, and when. This allows subsequent `roymctl reconcile` commands to compute the diff between the manifest and the known deployments, but there is no background monitoring.
+*   **Authoritative Ledger (Server SynApp)**: The Server SynApp utilizes the platform's standard stateful replication (via Iroh WAL shipping) for its internal SQLite database. This database stores the authoritative Desired State (manifests) vs. Actual State (live telemetry from substrates), driving its continuous background reconciliation loop.
+
+#### 3. Service Discovery & Logical Routing Resolution
+A critical function of Lifecycle Management is translating Explicit Bindings defined in the manifest into physical, routable identities (e.g., Iroh Pubkeys or DIDs) for inter-service communication.
+*   **Static Injection (CLI Mode)**: When operating in standalone mode, `roymctl` acts as a static compiler for routing. During deployment or manual reconciliation, it determines the physical identities of the target substrates. It then explicitly injects these physical IDs into the configuration payload of the dependent `SynSvc` components. Without a Server SynApp, there is no dynamic load balancing or self-healing routing—if a service moves, a new `roymctl reconcile` is required to push the updated configuration.
+*   **Dynamic Pull (Server SynApp Mode)**: When the Server SynApp is active, it functions as a dynamic Registry Service. The client SDKs embedded within each `SynSvc` query this registry at runtime to resolve logical IDs to physical addresses. This enables dynamic load-balancing, auto-discovery of newly scaled instances, and seamless failover without requiring static configuration updates.
