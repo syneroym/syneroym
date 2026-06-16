@@ -217,21 +217,41 @@ The Asynchronous Operations component ensures reliable execution of offline inte
 > - **Saga Arguments:** The compensating `undo` functions generally accept the identical arguments as the original forward operation (along with the generated resource ID) to precisely reverse the specific action.
 
 ### [PLT-RED] Service Redundancy
-- Support shards, replicated stateless services, primary-secondary backups
-- Blob storage with redundancy
-- Service registry, and manual replacement of failed instances, and quarantining failed instances in case they come up again. Epoch based ownership techniques.
-- Stress on CP trading off Availability
-- Data plane continues even if control plane down.
-- Backup and restore of stateful data for cold start cases
-- Ensure redundancy is maintained on failure with additional replication
+This feature guarantees data durability, service continuity, and split-brain prevention for the Syneroym network, strictly prioritizing Consistency over Availability (CP) during network partitions.
 
-> **Implementation Design:** For technical details regarding the N=2 Litestream replication topology and manual failover sequence, see [Feature Design: PLT-RED](post-dd864a1-feature-design.md#plt-red-service-redundancy).
+**Database Redundancy**
+- **Configurable Stateful Replication:** The replication factor (e.g., N=1, N=2, N=3) is configurable at service deployment time via the application manifest. For replicated setups (N>=2), there is exactly one Primary accepting write operations, while the Secondaries maintain an identical read-only state. The Registry reflects the topology defined by the manifest.
+- **Low-Latency Streaming:** Replication must be near-instantaneous. Changes committed to the Primary must be streamed directly to the Secondary without relying on high-latency batching or third-party storage intermediaries for the live replication path.
+- **Disaster Recovery:** In addition to live node-to-node replication, the system must support periodic asynchronous backups to external object storage (S3-compatible) to enable cold starts and disaster recovery.
+
+**Blob Storage Redundancy**
+- Large files and blobs are not replicated via SQLite. Instead, the platform relies on external, configurable S3-compatible storage backends. The underlying S3 provider is responsible for ensuring the redundancy of these blobs.
+
+**Registry & Topology Management**
+- **Single Source of Truth:** The Registry Service is the authoritative control plane for all cluster membership and routing topology.
+- **Manual Promotion (CP Focus):** To prevent split-brain scenarios, there is strictly no automatic failover. If a Primary fails, the system deliberately drops its redundancy level (Availability impact) to preserve data Consistency. Promoting a Secondary to Primary requires explicit operator intervention via the Registry.
+- **Strict Quarantining:** When a failed node is deposed, the Registry must permanently mark its Node ID as `QUARANTINED`.
+- **Routing-Level Fencing:** The system must enforce split-brain prevention at the routing layer. `QUARANTINED` nodes must be completely isolated:
+    - *Ingress:* All other nodes and clients must clear their routing caches and immediately cease sending requests to the quarantined node.
+    - *Egress:* Any outbound requests originating from a quarantined node (e.g., if it is merely network-partitioned) must be strictly rejected by all receiving services.
+
+**Control Plane vs Data Plane Isolation**
+- The Data Plane must be fully decoupled from the availability of the Control Plane. If the Registry service goes offline, all data plane routing, MQTT message flows, and HTTP access must continue functioning indefinitely using the last known cached topology until the control plane is restored.
+
+> **Implementation Design:** For technical details regarding the Iroh-based WAL replication and routing-level fencing, see [Feature Design: PLT-RED](post-dd864a1-feature-design.md#plt-red-service-redundancy).
 
 ## Phase 3: Substrate & Application Lifecycle
 
-### [LFC-MGT] SynApp Deployment Management App
-- Deploy SynApp resistry, inventory on any substrate as another SynApp
-- Track services expected vs actual status 
+### [LFC-MGT] SynApp Lifecycle Management
+- Orchestrates the deployment, configuration, and monitoring of SynApps and their constituent SynSvcs across a decentralized network of substrates.
+- **Application Manifests**: A SynApp is defined by a declarative manifest containing:
+  - A list of required `SynSvc` instances (WASM components).
+  - Explicit configurations for each service, including resource quotas and limits.
+  - **Explicit Bindings**: First-class declarations of logical network dependencies (e.g., `requires: backend_api`). The orchestrator uses these to construct a dependency graph and resolve physical addresses *before* injecting them into the service's configuration.
+- **Substrate Inventory**: The control plane maintains a user-defined inventory of target substrates, tracking their known capabilities to facilitate intelligent deployment scheduling. Target substrates enforce access control to ensure only authorized deployments are accepted.
+- **Operational Modes**: Lifecycle management is supported via two distinct operational modes utilizing a shared set of core orchestration libraries:
+  1. **CLI Standalone Mode (roymctl)**: Designed for **one-shot decentralized deployment**. The CLI reads a manifest, synchronously deploys services to available online substrates, and records an installation trace in a local SQLite database. It does not queue tasks for offline substrates. Drift from the desired state is resolved manually via a single-pass `reconcile` command.
+  2. **Active Control Plane Mode (Server SynApp)**: A specialized SynApp deployed onto the network that acts as a continuous controller. It accepts manifests via an API, stores the desired state in its replicated SQLite database, and runs a continuous background reconciliation loop to watch the actual state of services and trigger deployments/undeployments automatically.
 
 ### [LFC-VER] Versioning support overall
 - Substrate upgrades, auto-upgrade
