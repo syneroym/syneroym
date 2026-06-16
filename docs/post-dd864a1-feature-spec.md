@@ -277,7 +277,7 @@ This feature guarantees data durability, service continuity, and split-brain pre
 - Mutual credit ledger and chains, with continuous/periodic cyclic settlement based on settlement rules and multi-party-signing, tags with tag-hierarchies
 
 ### [APP-MKT] Marketplace App
-- Listings, Intents, Offers, Transactions, 
+- Listings, Intents, Offers, Transactions with various Payment types
 - Discovery, scoring/reputation within trust network, 
 - Special case provider: - Allow substrate lease with configured criteria, quotas, capabilities etc
 
