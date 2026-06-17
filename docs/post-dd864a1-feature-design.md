@@ -59,7 +59,7 @@ The Access Control architecture relies on the Federated Data-Aware Authorization
 
 The Data Layer provides a complete foundation for distributed application state and communication, securely accessed via typed host functions.
 
-#### 1. REST Data Service (Structured Database)
+#### 1. Structured Data Service (Document API)
 A platform-managed persistent store that SynApps use via the API.
 
 *   **Database Isolation (One DB per Service):** Instead of a monolithic combined database, every service gets its own independent SQLite `.db` file (and WAL). The substrate also maintains its own separate database.
@@ -72,14 +72,19 @@ A platform-managed persistent store that SynApps use via the API.
     *   **Collection:** A named set of records within a SynApp's namespace, declared with a lightweight schema.
     *   **Record:** One JSON object identified by a caller-supplied string `id`.
     *   **`creator_id`:** A first-class field on every record, set automatically by the service at write time (spoof-proof).
-    *   **Schema:** Declares indexed fields explicitly. Enforced loosely (unknown fields rejected; declared fields type-checked).
-*   **CRUD Operations:** Operations include `create_collection`, `drop_collection`, `put` (upsert), `patch` (merge), `get`, `query` (list), `delete`, and `delete_many`. 
-*   **Filter Model:** Queries use a structured model (e.g., `Eq`, `In`, `Contains`), not raw SQL. This is translated to parameterized SQLite internally. Pagination is strictly cursor-based (no offset).
+    *   **Schema & Indexing:** Declares indexed fields explicitly. Enforced loosely (unknown fields rejected; declared fields type-checked). *Constraint:* In SQLite, `CREATE INDEX` requires an exclusive write lock. For very large collections, background schema evolution will temporarily block the single writer thread for that specific service, though read pools remain unaffected.
+*   **CRUD & Batch Operations:** Operations include `create_collection`, `drop_collection`, `put` (upsert), `patch` (merge), `get`, `query` (list), `delete`, and `delete_many`. It also includes a `batch_mutate` function to perform atomic, multi-record mutations within a single SQLite transaction.
+*   **Query & Aggregation Model:** Queries use a structured model (e.g., `Eq`, `In`, `Contains`) rather than raw SQL. This translates into parameterized SQLite internally with cursor-based pagination. It also supports an `AggregationPipeline` for advanced querying (`group_by`, `having`, `sum()`, projections) leveraging the full power of the WIT boundary. Aggregations can target both physical collections and logical views defined during init.
+*   **Schema Initialization (DDL Variant):**
+    *   *Design:* During the `init` hook of deployment, a SynApp provides DDL as a `variant ddl { sql(string), model(data-model) }`. The current implementation supports only the `sql(string)` arm, allowing standard SQLite DDL (`CREATE TABLE`, `CREATE VIEW`, `CREATE INDEX`).
+    *   *Safety:* Plain SQL is safe to start with because each service has its own fully isolated `.db` file. A buggy or malicious DDL statement can only affect the service's own database, which is already gated by IAM access control.
+    *   *Views in Init:* `CREATE VIEW` statements in the init DDL are instantaneous (zero write-lock penalty) and can be referenced by runtime `AggregationPipeline` queries just like physical collections.
+    *   *Future:* The `model(data-model)` variant arm is reserved for when the platform is opened to untrusted third-party developers who should not be permitted to run arbitrary DDL. At that point, `sql(string)` can be restricted via IAM policy.
 *   **Service Aliases:** 
     *   **Problem:** Service IDs are DIDs. Policies need human-readable names.
     *   **Design:** The community registry holds an alias record signed by the owner DID (e.g., `org-service -> did:syn:serviceXYZ`). Resolution order is: `local cache → registry → manifest-pinned DID`.
 *   **Object Service (Blob Store):** 
-    *   **Design:** Stored content-addressed (keyed by SHA-256 hash). One blob store per SynApp. Blob hashes are stored as standard string fields in the REST Data Service records. Replicas pull missing blobs lazily from primaries on first access.
+    *   **Design:** Stored content-addressed (keyed by SHA-256 hash). One blob store per SynApp. Blob hashes are stored as standard string fields in the Structured Data Service records. Replicas pull missing blobs lazily from primaries on first access.
 
 #### 2. MQTT Event Service (Asynchronous Coordination)
 To provide real-time Pub/Sub without relying on heavy external infrastructure, the Substrate acts as the broker.

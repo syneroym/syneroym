@@ -164,16 +164,17 @@ Given that Syneroym supports both native WASM components and legacy Podman conta
 ### [PLT-DAT] Data Layer
 The Data Layer provides a complete foundation for distributed application state and communication, securely accessed via typed host functions or APIs without exposing raw database engines to the applications.
 
-- **REST Data Service (Structured Database):**
+- **Structured Data Service (Document Database):**
   - **Database Isolation (One DB per Service):** The canonical primitive for structured state (backed by SQLite). Instead of a monolithic combined database, every SynApp service gets a fully isolated, separate SQLite database file (and WAL). The substrate also maintains its own separate database. This guarantees true concurrent write scaling across services, allows selective WAL replication, and isolates failure domains.
   - **Concurrency Model:** Designed for high throughput using a Single-Writer Thread / Multiple-Reader Pool architecture per database. This perfectly aligns with SQLite's WAL mode, eliminating `SQLITE_BUSY` lock contention and maximizing performance in asynchronous Rust.
   - **Resource Model:** Collections with lightweight schemas (loose enforcement of types, explicit indexed fields) containing JSON records. The data layer automatically injects a spoof-proof `creator_id` into every record.
-  - **Operations & Queries:** Full CRUD operations (`create_collection`, `put`, `patch`, `get`, `delete`, `delete_many`). The query engine translates an abstract `FilterExpr` (supporting `Eq`, `In`, `Contains` for full-text, etc.) into parameterized SQL queries with cursor-based pagination.
+  - **Schema Initialization (DDL):** During the `init` phase of deployment, SynApps supply DDL as a variant: initially plain SQL strings (e.g., `CREATE TABLE`, `CREATE VIEW`, `CREATE INDEX`) and, in the future, a structured data model object. Starting with plain SQL is safe because each service owns an isolated database, and access is gated by IAM. Views defined during init are instantaneous (no write-lock penalty, unlike index creation) and can be targeted by the `AggregationPipeline` at runtime.
+  - **Operations & Queries:** Full CRUD operations (`create_collection`, `put`, `patch`, `get`, `delete`, `delete_many`). It also supports `batch_mutate` for atomic transactions across multiple records. The query engine translates an abstract `FilterExpr` (supporting `Eq`, `In`, `Contains` for full-text, etc.) and `AggregationPipeline` (for projections, `group_by`, `having`) into parameterized SQL queries with cursor-based pagination. Aggregations can target both physical collections and logical views.
   - **WASM Serialization & WIT Boundary:** Expand the `syneroym:data-layer/store` WIT boundary to support robust nested record serialization/deserialization. Currently, only basic types are supported; this enables seamless passing of complex JSON object graphs between WASM components and the host.
 
 - **Object Service (Content-Addressed Blobs):**
   - **S3-Compatible Storage:** Dedicated blob storage for large media and software artifacts, natively content-addressed (keyed by SHA-256).
-  - **Data Integration:** Blob hashes are stored as standard string fields in the REST Data Service records.
+  - **Data Integration:** Blob hashes are stored as standard string fields in the Structured Data Service records.
   - **HTTP File Serving:** Built-in HTTP serving of public/private objects (with signed URLs), supporting static website hosting and CDN-friendly delivery directly from the blob store.
 
 - **MQTT Event Service (Asynchronous Coordination):**
