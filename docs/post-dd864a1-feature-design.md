@@ -60,9 +60,15 @@ The Access Control architecture relies on the Federated Data-Aware Authorization
 The Data Layer provides a complete foundation for distributed application state and communication, securely accessed via typed host functions.
 
 #### 1. REST Data Service (Structured Database)
-A platform-managed persistent store that SynApps use via the API. The substrate owns the store; SynApps borrow a namespaced view of it.
+A platform-managed persistent store that SynApps use via the API.
 
-*   **Resource Model:** 
+*   **Database Isolation (One DB per Service):** Instead of a monolithic combined database, every service gets its own independent SQLite `.db` file (and WAL). The substrate also maintains its own separate database.
+    *   *Benefits:* Maximizes write parallelism across the system (since each service has its own independent WAL lock), enables selective Iroh WAL replication per service, and isolates failure blast radiuses.
+*   **Concurrency Architecture (Actor/Pool Model):** To handle high concurrency within a single service's database without hitting `SQLITE_BUSY` contention in Tokio, the platform utilizes **`rusqlite`** combined with **`deadpool-sqlite`**:
+    *   *Why `rusqlite`:* The data layer requires raw access to the SQLite C API for advanced WAL/SHM replication mechanics and dynamic query generation (which invalidates `sqlx`'s compile-time macro benefits).
+    *   *Reader Pool:* Read queries (e.g., `GET`, `LIST`) are dispatched across a `deadpool-sqlite` connection pool. This enables parallel, non-blocking reads and seamlessly bridges synchronous `rusqlite` calls into the Tokio runtime via `spawn_blocking`.
+    *   *Single Writer Thread:* All mutations (`PUT`, `DELETE`) are routed via an `mpsc` channel to a single, dedicated background task holding an exclusive `rusqlite` write connection. This strictly aligns with SQLite's single-writer WAL design, eliminating lock contention entirely and allowing for optimized transaction batching.
+*   **Resource Model:**  
     *   **Collection:** A named set of records within a SynApp's namespace, declared with a lightweight schema.
     *   **Record:** One JSON object identified by a caller-supplied string `id`.
     *   **`creator_id`:** A first-class field on every record, set automatically by the service at write time (spoof-proof).
