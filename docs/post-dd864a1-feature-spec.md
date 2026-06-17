@@ -264,7 +264,14 @@ This feature guarantees data durability, service continuity, and split-brain pre
 ## Phase 4: Advanced Services & Tooling
 
 ### [ADV-OBS] Observability enhancements
-- Dashboard of Overall service/app, resource utilization, metering
+- **Comprehensive Metric Types**: Beyond system-level resources, track Application Metrics (SynSvc call counts, error rates, response times) and Network Metering (bytes transferred, connection durations, relayed byte amounts for multi-hop routing). The metric pipeline is extensible to support future infrastructure additions like GPU usage, LLM token counts, or specific AI service utilization.
+- **Granularity & Retention**: Implement automatic data rollups to balance storage costs. The system defaults to storing raw events for 24 hours, which then roll up directly into 1-hour buckets retained for 30 days (skipping minute-level granularity for simplicity and storage efficiency).
+- **Data Mashups & Flexible Metadata**: Metrics are tagged with Substrate ID, Service Owner ID (DID), and Datetime. The underlying format incorporates extensible JSON properties to support dynamic metadata, allowing for future additions such as applying "agreed rates" for billing without rigid schema coupling.
+- **Access Control Enforcement**: 
+  - Substrate owners have root access to all metrics on their node.
+  - Service owners are restricted to viewing metrics exclusively for their deployed SynApps/SynSvcs.
+  - Relay providers have access to routing byte counts to log charges against source/destination nodes.
+- **External API Strategy**: Substrates do not render internal dashboards. Instead, metric data is exposed securely via an access-controlled RPC endpoint, designed to be consumed by external visualization SynApps or dedicated metering applications.
 
 ### [ADV-AI] AI
 - Ollama local
