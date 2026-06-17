@@ -210,3 +210,30 @@ Accessing the `metrics.db` is securely gatekept by the unified `authorization-en
 *   **Root Capabilities**: The Substrate owner uses an administrative UCAN, resulting in queries running without restrictions against `metrics.db`.
 *   **Scoped Capabilities**: SynApp/SynSvc owners invoking the metrics RPC present a UCAN bound to their identity. The engine transparently injects a `WHERE service_owner_did = ?` clause into the underlying SQL query.
 *   **Data Consumption**: The Substrate does not host its own visualizations. Instead, the metric data is consumed by standalone SynApps or dedicated BI tools acting as external clients.
+
+### [ADV-AI] Advanced AI & Agentic Workflows
+
+*   **Local Inference Engine (Ollama / Candle):**
+    *   **Design:** The substrate orchestrates **Ollama** as a managed process, exposing its API through the Universal Proxy. Alternatively, for tighter integration without external daemons, HuggingFace's **Candle** framework could be embedded directly into a Rust host extension for in-process inference of GGUF models.
+*   **The Concierge Agent Architecture:**
+    *   **Design:** A native WASM `SynSvc` built using **`rig-core`**. Crucially, `rig-core` remains the foundational bedrock for *all* agentic workflows. It provides the core abstractions for communicating with LLMs, generating embeddings, and defining MCP tools in Rust. The different "Architectures" below are simply routing logic built *on top* of `rig-core`'s completion API.
+    *   **Workflow Architectures (Hybrid Approach):**
+        *   **1. Plan-and-Solve (Generic Fallback):** For open-ended queries, the agent uses `rig-core` to generate a sequential plan, then executes a generic loop against that plan.
+        *   **2. Finite State Machines (FSM):** For critical workflows (e.g., "Checkout Process"), developers define explicit stages. The Concierge Agent uses `rig-core` to execute the specific prompt and tool bindings for the active stage, guaranteeing safe recovery points.
+        *   **3. Multi-Agent Delegation:** For highly compartmentalized tasks, the Concierge Agent uses `rig-core` to spin up and orchestrate specialized sub-agents.
+*   **Retrieval Augmented Tool Discovery:**
+    *   **Execution:** The agent provides a `search_tools` function. When called, it searches `sqlite-vec`, dynamically appends matching MCP definitions to the LLM's context array, and prompts the LLM to continue.
+*   **Human-in-the-Loop & Execution Validation:**
+    *   **Design:** HITL and Observability are strictly configuration-driven. If a tool schema explicitly defines `requires_consent=true`, the agent suspends its Tokio task and pushes a Consent Request.
+*   **Agent-to-Agent Delegation Protocol:**
+    *   **Design:** Agents utilize the Universal Proxy and Global Registry to establish encrypted Iroh streams and exchange structured negotiation intents.
+*   **Vector Database & Long-Term Memory (sqlite-vec):**
+    *   **Design:** The Ecosystem Vector Directory and Long-Term Memory are backed by **`sqlite-vec`**, integrating seamlessly with the existing `cr-sqlite` infrastructure.
+
+## Phase 5: High-Level Applications (SynApps)
+
+### [APP-AGG] The Aggregator SynApp Architecture
+
+*   **Design:** Aggregators are fundamentally robust indexing engines. Providers and users push structured data to the Aggregator via standard RPC.
+*   **Client Sync & Discovery:** Local nodes run background cron tasks to pull schemas from trusted Aggregator SynApps into their local `sqlite-vec` database.
+*   **Fuel Quota Execution:** When a provider pushes a listing, the Aggregator consults its local SQLite database to check the provider's remaining "fuel" balance. If sufficient fuel exists, the listing is committed, and the fuel is decremented.

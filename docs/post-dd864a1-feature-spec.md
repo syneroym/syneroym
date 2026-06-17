@@ -275,14 +275,35 @@ This feature guarantees data durability, service continuity, and split-brain pre
   - Relay providers have access to routing byte counts to log charges against source/destination nodes.
 - **External API Strategy**: Substrates do not render internal dashboards. Instead, metric data is exposed securely via an access-controlled RPC endpoint, designed to be consumed by external visualization SynApps or dedicated metering applications.
 
-### [ADV-AI] AI
-- Ollama local
-- rig-core agent with vector store (in sqlite?) and Mem0 for long term memory
+### [ADV-AI] Advanced AI & Agentic Workflows
+- **Local Model Inference Service:** Configurable local LLMs running within the substrate, exposed natively as an inference service. Supports dynamic model loading and is accessible by other `SynApp` services via the Universal Proxy.
+- **The Concierge Agent (Rig-core):** The core agentic `SynSvc` running natively on the substrate. Frontend clients (like Trusted Rooms) send natural language intent directly to this agent.
+- **Dynamic Tool Retrieval Loop:** The agent uses a dynamic "Retrieval Augmented Tool" approach to avoid context bloat:
+  1. The loop starts by giving the LLM exactly **one** meta-tool: `search_ecosystem_tools`.
+  2. The LLM calls `search_ecosystem_tools(query)`.
+  3. The Concierge Agent executes a semantic search against its local Ecosystem Vector Directory.
+  4. The agent dynamically injects matching tool schemas into the LLM's context.
+  5. The LLM selects the best tool and generates the execution command.
+  6. The agent invokes the target service via the Universal Proxy, returning **Action Cards**.
+- **Human-in-the-Loop (HITL) Consent:** For high-stakes tool calls, the Concierge Agent pauses execution and yields a "Proposal Card" to the Trusted Room. The user must cryptographically sign (consent) before the loop resumes. This is configured natively via tool arguments.
+- **Agent Observability (Thought Streaming):** Configurable thought streaming where the Concierge Agent broadcasts its intermediate reasoning steps back to the UI.
+- **MCP Gateway:** A headless gateway layer that exposes the substrate's local capabilities to *external* desktop clients using the Model Context Protocol (MCP).
+- **Agent-to-Agent Delegation:** The capability for a user's Concierge Agent to autonomously negotiate with external provider agents across the Syneroym substrate.
+- **Ecosystem Vector Directory & Memory:** A specialized local data store (`sqlite-vec`) indexing available tools and storing episodic memory.
 
 ## Phase 5: High-Level Applications (SynApps)
 
 ### [APP-CHT] Chat
 - Agentic flow, agent-human or agent-agent chats, UI in chat context, trusted rooms
+
+### [APP-AGG] Aggregator Networks & Discovery
+- **Decentralized Discovery Engine:** A class of first-party SynApps ("Aggregator Billboards") that solve the discovery problem in a federated network. They act as voluntary, pull-based search engines or directories.
+- **Multi-Faceted Catalogs:** Depending on configuration, an Aggregator SynApp can index and serve:
+  - **Service & Provider Directories:** A localized "Yellow Pages".
+  - **AI Tool Schemas (MCP):** Centralized registries of capabilities that local Concierge Agents sync to populate their own vector databases.
+  - **Opportunity Streams & Classifieds:** Aggregating user requests and provider offers into searchable feeds.
+  - **Reputation & Web of Trust:** Aggregating cryptographic proofs of good service to build public reputation graphs.
+- **Subscription & Fuel Quotas (Anti-Spam):** Providers establish a subscription with the Aggregator. The Aggregator tracks the provider's DID and deducts from their allocated "fuel" whenever they publish a new listing, rejecting writes when the quota is exhausted.
 
 ### [APP-LDG] Dynamic ledger network app
 - Mutual credit ledger and chains, with continuous/periodic cyclic settlement based on settlement rules and multi-party-signing, tags with tag-hierarchies
