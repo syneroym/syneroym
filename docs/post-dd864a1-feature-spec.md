@@ -183,7 +183,9 @@ The Data Layer provides a complete foundation for distributed application state 
 
 - **Universal Proxy (Inter-Component RPC):**
   - **Typed Interactions:** Developers use strongly typed WIT imports (`import acme:booking/service;`) rather than generic untyped APIs.
-  - **Protocol Translation:** The substrate traps the WASM call and dynamically proxies it. It serializes the call into fast, binary **wRPC** (over Iroh QUIC) if the target is another WASM substrate, or universal **JSON-RPC** (over HTTP/WebSocket) if targeting a legacy Podman container.
+  - **Interception & Instance Mapping:** The Substrate injects a proxy host function during component instantiation to satisfy the WIT import. It resolves the generic import to a specific running `service_id` by consulting the application manifest and Orchestrator Registry.
+  - **Protocol Translation:** The substrate traps the WASM call and dynamically proxies it to the specific instance. It serializes the call into fast, binary **wRPC** (over Iroh QUIC) if the target is another WASM substrate, or universal **JSON-RPC** (over HTTP/WebSocket) if targeting a legacy Podman container.
+  - **Static Composition Bypass:** Dependencies can be statically composed (e.g., via `wasm-tools compose`) into a single binary before deployment. In this case, imports are satisfied internally, the Substrate is completely bypassed, and execution occurs with zero overhead within the sandbox.
 
 > **Implementation Design:** For technical details regarding the embedded MQTT broker and the wRPC Universal Proxy architecture, see [Feature Design: PLT-DAT](post-dd864a1-feature-design.md#plt-dat-data-layer).
 
