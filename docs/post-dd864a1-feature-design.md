@@ -330,3 +330,18 @@ Escrow on a local CRDT ledger uses a 2-of-3 Multi-Signature scheme. An Invoice I
 *Addresses how Aggregators prevent spam when indexing catalogs.*
 **Design Approach:**
 Aggregators are fundamentally just Providers offering a horizontal service. They use the same internal CR-SQLite ledger to track API consumption. A provider establishes a DID-based session with the Aggregator. The Aggregator maintains an internal table mapping the DID to an integer "fuel quota". Every incoming `publish_listing` or `search` API request is processed by middleware that atomically decrements the fuel quota in the local SQLite DB, rejecting requests when the balance hits zero. Providers top up fuel via standard Flexible Payment integrations.
+
+## Phase 7: Edge Expansion
+
+### 1. Mobile Operation Limitations (EDG-MOB)
+*Addresses how to maintain true P2P functionality under strict mobile OS resource constraints.*
+**Design Approach:**
+- **Network Throttling Strategies**: 
+  - Avoid persistent background services (aggressively killed by iOS).
+  - Rely on `PLT-OFF` (Offline Operation) continuous retries as the default mechanism for reaching offline mobile nodes.
+  - Use APN/FCM push notifications as an optional trigger to wake a mobile node for urgent incoming requests.
+  - **Deferred Responses**: When woken by a push notification, the mobile app processes the request locally but defers the network response transmission until its next OS-scheduled background window. The sender fetches this response via its continuous `PLT-OFF` retries.
+- **Hardware Enclave Abstraction**:
+  - The Substrate exposes a platform-agnostic `SecureStorage` and `KeyManagement` WIT interface.
+  - The native Rust host bridges this to the specific OS API (Android StrongBox Keystore, iOS Secure Enclave, Linux TPM 2.0).
+  - This allows a single SynApp (WASM) binary to perform secure cryptographic operations across all platforms natively.

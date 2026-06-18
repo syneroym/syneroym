@@ -369,8 +369,14 @@ Because Syneroym can be utilized as a general open cloud, this dedicated phase s
 ## Phase 7: Edge Expansion
 
 ### [EDG-MOB] Mobile operation 
-- Syneroym on Android/IOS
-- Additional things like TPM 2.0 equivalent on mobile
+- **Platform Support**: Native Syneroym Substrate execution on Android and iOS.
+- **Background Execution & Throttling**:
+  - Baseline communication relies on `PLT-OFF` (Offline Operation) where remote clients continuously retry connecting to the mobile node.
+  - For urgent requests, clients can optionally send an out-of-band push notification (APN/FCM) to silently wake the suspended mobile app.
+  - The woken app processes requests locally but defers outbound network responses until the mobile OS schedules a background task window.
+- **Hardware Security (TPM 2.0 Equivalent)**:
+  - Unified `SecureStorage` and `KeyManagement` WIT abstractions for SynApps.
+  - Host implementations map these to Android StrongBox, iOS Secure Enclave, and Linux TPM 2.0.
 
 ---
 
