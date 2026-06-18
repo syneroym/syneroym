@@ -254,6 +254,15 @@ Accessing the `metrics.db` is securely gatekept by the unified `authorization-en
 *   **Vector Database & Long-Term Memory (sqlite-vec):**
     *   **Design:** The Ecosystem Vector Directory and Long-Term Memory are backed by **`sqlite-vec`**, integrating seamlessly with the existing `cr-sqlite` infrastructure.
 
+### [ADV-DEV] SynApp Developer Tooling & SDKs
+
+*   **Transparent Developer Experience Design:**
+    *   **Architecture:** Avoid introducing custom opaque CLI wrappers for compilation. Instead, the ecosystem relies on `cargo-component` and standard `build.rs` to compile `wasm32-wasip2` targets. This design guarantees that `rust-analyzer` and AI IDEs continue to work perfectly, as they understand standard `Cargo.toml` dependencies and macros. We provide boilerplate generators like `cargo generate --git syneroym/synapp-template`.
+*   **Local Substrate Integration:**
+    *   **Architecture:** The core design philosophy is to leverage the actual Syneroym Substrate node for local development and end-to-end testing, rather than building a redundant "Dev Host" environment. Because SynApps are strictly decoupled from the Substrate via WASM WIT imports, no compile-time host integration is necessary. Developers simply deploy their compiled `.wasm` to a local `roymctl` instance for execution.
+*   **Pure Unit Testing Mocks (`syneroym-dev-sdk`):**
+    *   **Architecture:** For fast, isolated unit testing, we provide a lightweight mock SDK. This library contains pure, in-memory implementations of the WIT interfaces (e.g., a `HashMap`-backed key-value store instead of real SQLite). It does not embed any complex host execution logic. Developers link these mocks in their test configuration, allowing them to verify their core WASM application logic instantly without spinning up a node.
+
 ## Phase 5: High-Level Applications (SynApps)
 
 ### [APP-AGG] The Aggregator SynApp Architecture
