@@ -329,26 +329,34 @@ Because Syneroym can be utilized as a general open cloud, this dedicated phase s
 - **Provider-Hosted Reputation Graph:** Signals are *not* pushed to a global, public DHT. They are appended to the Provider's local immutable CRDT ledger. Providers share their verified, signed reputation graph directly with consumers upon request.
 
 ## Phase 6: High-Level Applications (SynApps)
+*In this phase, individual mini-apps (Chat, Ledger, Marketplace, Aggregator) are unified into seamless, actor-centric activities executing across a multi-surface UX.*
 
-### [APP-CHT] Chat
-- Agentic flow, agent-human or agent-agent chats, UI in chat context, trusted rooms
+### Everyday Users (Consumers)
+*Activities focused on social connection, discovering services, secure negotiation, and seamless payment.*
+- **Social & Group Messaging:** Chat with friends, family, or local community groups using a simple, WhatsApp-style interface to share messages, media, and provider recommendations.
+- **AI-Assisted Discovery:** Ask a personal AI assistant to find local services (like a plumber or doctor) by automatically searching community directories and understanding what each provider offers.
+- **Service Bundling:** Combine multiple services into a single request (e.g., ordering food from a restaurant and requesting a separate delivery driver to pick it up).
+- **Interactive Negotiation:** Chat directly with service providers in secure rooms to discuss details, negotiate prices, and instantly approve interactive "Quote Cards" dropped into the chat.
+- **Flexible Payments:** Finalize services by approving an interactive "Invoice Card". Payments primarily route through the network's built-in digital ledger to clear debts automatically, but can seamlessly integrate with external payment gateways (like Stripe, UPI, or crypto) when needed.
+- **Portable Data & Privacy:** Securely share personal information (like medical records or delivery addresses) with a provider for a limited time, and seamlessly take your service history with you if you switch providers.
+- **Trust Radar:** Check a visual neighborhood map to see which providers are trusted and highly rated by your direct friends and community connections before hiring them.
 
-### [APP-LDG] Dynamic ledger network app
-- Mutual credit ledger and chains, with continuous/periodic cyclic settlement based on settlement rules and multi-party-signing, tags with tag-hierarchies
+### Service Creators (Primary Providers)
+*Activities focused on setting up shop, generating leads, and delivering services.*
+- **Digital Storefront Setup:** Create a business profile and publish menus, service catalogs, and availability calendars to local discovery directories.
+- **Advertising & Outreach:** Pay a small, refundable "digital stamp" to send promotional offers to new customers without spamming them, or pay for elevated placement on local community noticeboards.
+- **Lead Engagement:** Browse a live feed of local customer requests and respond by dropping interactive forms, booking widgets, or quotes directly into the customer's chat.
+- **Service Delivery & Billing:** Execute the contracted service and instantly push an invoice into the chat. The invoice can feed directly into the network's automated debt-clearing ledger or route through traditional payment gateways depending on your business configuration.
+- **Professional Guilds:** Join private group chats with other professionals in your industry to share excess work, refer clients, and team up on large projects.
+- **Reputation Building:** Collect verified reviews from completed jobs to build a portable, public reputation score that stays with you even if you change hosting platforms.
 
-### [APP-MKT] Marketplace App
-- Listings, Intents, Offers, Transactions with various Payment types
-- Discovery, scoring/reputation within trust network, 
-- Special case provider: - Allow substrate lease with configured criteria, quotas, capabilities etc
-
-### [APP-AGG] Aggregator Networks & Discovery
-- **Decentralized Discovery Engine:** A class of first-party SynApps ("Aggregator Billboards") that solve the discovery problem in a federated network. They act as voluntary, pull-based search engines or directories, functioning as optional, high-performance "super-peers" to accelerate discovery for regular clients.
-- **Multi-Faceted Catalogs:** Depending on configuration, an Aggregator SynApp can index and serve:
-  - **Service & Provider Directories:** A localized "Yellow Pages".
-  - **AI Tool Schemas (MCP):** Centralized registries of capabilities that local Concierge Agents sync to populate their own vector databases.
-  - **Opportunity Streams & Classifieds:** Aggregating user requests and provider offers into searchable feeds.
-  - **Reputation & Web of Trust:** Aggregating cryptographic proofs of good service to curate results and build public reputation graphs.
-- **Subscription & Fuel Quotas (Anti-Spam):** Providers establish a subscription with the Aggregator. The Aggregator tracks the provider's DID and deducts from their allocated "fuel" whenever they publish a new listing, rejecting writes when the quota is exhausted.
+### Network Enablers (Aggregators & Facilitators)
+*Activities focused on making the market run smoothly, providing infrastructure, and resolving disputes.*
+- **Discovery Directories (Aggregator):** Run high-performance search engines and community noticeboards that collect user requests and provider listings, making it easy for everyone to find each other.
+- **Spam Prevention (Aggregator):** Manage the "fuel" system, deducting small amounts of digital quota from providers when they publish new listings or send cold messages, to ensure the network remains spam-free.
+- **Reputation Computation (Aggregator):** Analyze the history of successful payments and interactions to calculate and publish reliable trust scores for the community.
+- **Escrow & Dispute Resolution (Facilitator):** Act as a neutral third party that temporarily holds funds or digital credits during a transaction, releasing them only when both parties are satisfied, or stepping in to arbitrate if a refund or cancellation policy is disputed.
+- **Financial Gateways (Facilitator):** Provide specialized financial services, like converting digital network credits into traditional fiat currency (bank money), or automating tax and accounting records by plugging directly into a provider's local ledger.
 
 ## Phase 7: Edge Expansion
 

@@ -280,4 +280,44 @@ Accessing the `metrics.db` is securely gatekept by the unified `authorization-en
 *   **Provider-Hosted Presentation:** When Consumer A evaluates Provider B, B's substrate serves its local CRDT reputation log directly to A. Consumer A's substrate mathematically verifies the `interaction_receipt` signatures against the network. If valid, Consumer A's local AI (`[ADV-AI]`) reads the pre-computed rolling summaries and presents them to the user.
 
 ## Phase 6: High-Level Applications (SynApps)
-*(App-specific designs will be documented as their respective Phase 6 milestones are approached.)*
+
+### 1. Service Bundling & Sub-Workflow Composition
+*Addresses the Consumer activity of combining multiple services (e.g., Food + Delivery).*
+**Design Approach:** 
+Syneroym has no central coordinator. To execute distributed sagas across independent providers, we employ a loosely coupled "State-Channel" approach. The consumer's local node acts as the orchestrator. It holds a composite intent state machine. When sub-task A (Food prep) signals completion via the messaging layer, the consumer's local node automatically triggers the next state transition, issuing an event to Provider B (Delivery). If a sub-task fails, the consumer's node executes compensating logic (e.g., requesting a refund via Escrow).
+
+### 2. Action Card Architecture
+*Addresses the interactive widgets (Quotes, Invoices, Forms) dropped into Trusted Rooms.*
+**Design Approach:** 
+Action Cards are strictly defined as standardized JSON schemas, similar to Microsoft's Adaptive Cards, rather than arbitrary portable WASM components. This prevents malicious UI execution on the client device. A provider sends a JSON payload representing the UI layout and an array of `actions`. When a user taps a button, the local substrate translates that action into a predefined Substrate Capability request (e.g., `grant_fdae_access` or `sign_mutual_credit_transaction`).
+
+### 3. Flexible Payment Integration
+*Addresses integrating external gateways (Stripe/UPI) alongside the internal Mutual Credit ledger.*
+**Design Approach:** 
+The substrate defines an abstract `PaymentIntent` interface for Invoice Cards. An Invoice Card payload contains an array of acceptable settlement methods.
+- **Native Mutual Credit:** Payload contains the exact DLN multi-sig hash to be counter-signed.
+- **External Gateway:** Payload contains a standard Web2 webhook/checkout URL (e.g., a Stripe session ID or UPI deep link). Upon external completion, the client submits the resulting receipt token back into the chat as proof. The provider's node verifies the receipt against the external API before updating local state.
+
+### 4. Portable Data & Reputation Envelopes
+*Addresses taking service history and reputation across hosting platforms.*
+**Design Approach:**
+Data portability is achieved via standardized Export/Import Envelopes. A provider compiles a user's service history into an archive of Verifiable Credentials (signed JSON-LD) or pkarr-signed IPFS blobs. The user imports this envelope into their new data homebase. When interacting with a new Aggregator, the user cryptographically proves their past reputation by submitting these pre-signed blobs, which the new node verifies against the original provider's public key without needing to contact the original provider.
+
+### 5. Staked Messaging & Spam Deterrence (Digital Stamps)
+*Addresses the Provider activity of paying a refundable stamp to send promotional offers.*
+**Design Approach:**
+Without a public blockchain, staking relies on the mutual-credit DLN. A provider initiates a "locked" multi-sig transaction representing the micro-credit stamp. This intent is attached to the cold-message payload. 
+- If the consumer accepts the message, they counter-sign the intent, claiming the credit.
+- If the consumer reports it as spam, the consumer signs a "slash" transaction, destroying the locked credit and logging a negative reputation signal against the provider on the DHT.
+
+### 6. Decentralized Escrow & Dispute Resolution
+*Addresses the Facilitator activity of holding funds or arbitrating.*
+**Design Approach:**
+Escrow on a local CRDT ledger uses a 2-of-3 Multi-Signature scheme. An Invoice Intent is created requiring signatures from any two of the three parties: Consumer, Provider, and a designated Facilitator (Arbitrator). The funds/credits sit in a pending state on the DLN.
+- **Happy Path:** Consumer and Provider both sign the completion state.
+- **Dispute Path:** If they disagree, the Arbitrator reviews the case off-chain or via chat logs, and signs a final settling transaction alongside the winning party, forcing the CRDT merge.
+
+### 7. Aggregator Fuel Quotas
+*Addresses how Aggregators prevent spam when indexing catalogs.*
+**Design Approach:**
+Aggregators are fundamentally just Providers offering a horizontal service. They use the same internal CR-SQLite ledger to track API consumption. A provider establishes a DID-based session with the Aggregator. The Aggregator maintains an internal table mapping the DID to an integer "fuel quota". Every incoming `publish_listing` or `search` API request is processed by middleware that atomically decrements the fuel quota in the local SQLite DB, rejecting requests when the balance hits zero. Providers top up fuel via standard Flexible Payment integrations.
