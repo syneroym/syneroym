@@ -263,10 +263,21 @@ Accessing the `metrics.db` is securely gatekept by the unified `authorization-en
 *   **Pure Unit Testing Mocks (`syneroym-dev-sdk`):**
     *   **Architecture:** For fast, isolated unit testing, we provide a lightweight mock SDK. This library contains pure, in-memory implementations of the WIT interfaces (e.g., a `HashMap`-backed key-value store instead of real SQLite). It does not embed any complex host execution logic. Developers link these mocks in their test configuration, allowing them to verify their core WASM application logic instantly without spinning up a node.
 
-## Phase 5: High-Level Applications (SynApps)
+## Phase 5: Peer-to-Peer Community Primitives
 
-### [APP-AGG] The Aggregator SynApp Architecture
+### [P2P-DSC] Tag-Routed Discovery Routing Mechanics
+*   **Routing Execution:** Discovery intents are formatted as standard RPC messages containing a payload and a set of `Hierarchical Tags` (e.g., `["community", "tech", "rust-devs"]`). When a node receives an intent, it checks its local registries. If a match is found, it returns the explicit ID.
+*   **Query Forwarding & Hop-Limits:** If no local match exists, the node evaluates its active connections for peers that match the requested hierarchical tags. It forwards the intent to those peers. To prevent infinite loops and network flooding, every intent includes a strict `Time-To-Live (TTL)` counter that decrements on each hop.
+*   **Aggregator Integration:** If a node configures a known Aggregator as a "super-peer", it simply maps a broad hierarchical tag (like `["global"]`) to that Aggregator's explicit ID, naturally routing unmatched queries to the heavy index without requiring custom substrate logic.
 
-*   **Design:** Aggregators are fundamentally robust indexing engines. Providers and users push structured data to the Aggregator via standard RPC.
-*   **Client Sync & Discovery:** Local nodes run background cron tasks to pull schemas from trusted Aggregator SynApps into their local `sqlite-vec` database.
-*   **Fuel Quota Execution:** When a provider pushes a listing, the Aggregator consults its local SQLite database to check the provider's remaining "fuel" balance. If sufficient fuel exists, the listing is committed, and the fuel is decremented.
+### [P2P-REP] Satisfaction Signal Mechanics
+*   **Signal Payload Structure:** A valid satisfaction signal consists of:
+    *   `interaction_receipt`: A cryptographic hash pointing to a mutually signed entry in the local Dynamic Ledger.
+    *   `score`: An integer strictly bounded to `0`, `1`, or `2`.
+    *   `note`: An optional, short text description.
+*   **Time-Decay Algorithm:** The substrate maintains a rolling Exponential Moving Average (EMA). The formula anchors to `1.0`. As signals age past defined thresholds (e.g., 30 days, 90 days), their weight in the EMA computation approaches 0, pulling the provider's overall score back to `1.0`.
+*   **Incremental Rolling Summaries:** Instead of recalculating summaries from scratch, the substrate triggers a background task upon receiving a new signal. It updates simple counters (e.g., `total_ratings`, `moving_average`) and maintains 3 small text fields (e.g., `summary_last_30_days`, `summary_all_time`). This bounded approach guarantees O(1) performance for reputation queries.
+*   **Provider-Hosted Presentation:** When Consumer A evaluates Provider B, B's substrate serves its local CRDT reputation log directly to A. Consumer A's substrate mathematically verifies the `interaction_receipt` signatures against the network. If valid, Consumer A's local AI (`[ADV-AI]`) reads the pre-computed rolling summaries and presents them to the user.
+
+## Phase 6: High-Level Applications (SynApps)
+*(App-specific designs will be documented as their respective Phase 6 milestones are approached.)*

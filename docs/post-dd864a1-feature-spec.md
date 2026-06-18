@@ -8,6 +8,7 @@ To ensure stable cross-referencing across commits and PRs, features are prefixed
 - **`[PLT]`**: **Platform** (Data Layer & Resilience)
 - **`[LFC]`**: **Lifecycle** (Substrate & Application Management)
 - **`[ADV]`**: **Advanced** (Advanced Services & Tooling)
+- **`[P2P]`**: **Peer-to-Peer** (Community Primitives)
 - **`[APP]`**: **Applications** (High-Level SynApps)
 - **`[EDG]`**: **Edge** (Edge Expansion & Mobile)
 
@@ -311,19 +312,26 @@ This feature guarantees data durability, service continuity, and split-brain pre
 - **Local Substrate for Integration & Dev**: To ensure zero-drift execution, developers use an actual local Syneroym node (e.g., `roymctl dev`) for local integration testing and development. This completely avoids the massive engineering effort of duplicating the WASMTIME host, SQLite, and network logic into a standalone developer SDK. The SynApp couples to the Substrate entirely through standard WIT interfaces, not compile-time bindings.
 - **Pure Mock SDK for Unit Testing**: We provide a minimal `syneroym-dev-sdk` intended exclusively for isolated unit testing. This SDK provides simple, purely in-memory mock implementations of the Substrate interfaces (Data, Blobs, AI). Developers can write `#[test]` functions that link against these mocks for fast, offline verification of application logic without needing to spawn a real Substrate node.
 
-## Phase 5: High-Level Applications (SynApps)
+## Phase 5: Peer-to-Peer Community Primitives
+
+Because Syneroym can be utilized as a general open cloud, this dedicated phase separates purely foundational low-level network connectivity (`[TOP]`) from higher-level community-driven peer networking primitives.
+
+### [P2P-DSC] Federated Tag-Routed Discovery
+- **Native P2P Message-Passing Graph:** High-level discovery is built directly into a federated routing graph. Nodes send discovery intents to their direct peers. If a peer cannot fulfill the request locally, it forwards the intent.
+- **Hierarchical Tags:** Intents are routed using hierarchical tags representing composed logical groups (e.g., `#close-friends`, `#office-network`). Queries are pushed only to relevant active connections matching the tag, which uniformly encompass both individual peers and service substrates.
+- **Aggregators as Super-Peers:** Centralized directory applications ("Aggregators") are supported, but from the substrate's perspective, they simply present the identical standard interface as any other peer. The Syneroym community registry can point to default aggregators, which individual substrates can optionally configure as default "super-peers" to enhance discovery performance.
+
+### [P2P-REP] Peer Reputation & Trust
+- **Coarse-Grained Satisfaction Signal:** Reputation is implemented as a low-resolution scale (e.g., 0=Poor, 1=Decent, 2=Great) to minimize cognitive load and mathematical complexity.
+- **Cryptographic Tying:** To prevent Sybil attacks and gaming, a satisfaction signal can only be submitted if strictly tied to a mutually signed interaction receipt (leveraging the Dynamic Ledger Network mechanics).
+- **Time-Decay:** A peer's reputation naturally decays to the center ("decent") over time, prioritizing recent interactions over historical legacy.
+- **Incremental Rolling Summaries:** The substrate runs continuous, compute-light incremental aggregations (e.g., updating total user counts, moving averages, and maintaining a small, tiered summary paragraph based on timeframes). This avoids the need to process heavy LLM summarization on massive blocks of raw text.
+- **Provider-Hosted Reputation Graph:** Signals are *not* pushed to a global, public DHT. They are appended to the Provider's local immutable CRDT ledger. Providers share their verified, signed reputation graph directly with consumers upon request.
+
+## Phase 6: High-Level Applications (SynApps)
 
 ### [APP-CHT] Chat
 - Agentic flow, agent-human or agent-agent chats, UI in chat context, trusted rooms
-
-### [APP-AGG] Aggregator Networks & Discovery
-- **Decentralized Discovery Engine:** A class of first-party SynApps ("Aggregator Billboards") that solve the discovery problem in a federated network. They act as voluntary, pull-based search engines or directories.
-- **Multi-Faceted Catalogs:** Depending on configuration, an Aggregator SynApp can index and serve:
-  - **Service & Provider Directories:** A localized "Yellow Pages".
-  - **AI Tool Schemas (MCP):** Centralized registries of capabilities that local Concierge Agents sync to populate their own vector databases.
-  - **Opportunity Streams & Classifieds:** Aggregating user requests and provider offers into searchable feeds.
-  - **Reputation & Web of Trust:** Aggregating cryptographic proofs of good service to build public reputation graphs.
-- **Subscription & Fuel Quotas (Anti-Spam):** Providers establish a subscription with the Aggregator. The Aggregator tracks the provider's DID and deducts from their allocated "fuel" whenever they publish a new listing, rejecting writes when the quota is exhausted.
 
 ### [APP-LDG] Dynamic ledger network app
 - Mutual credit ledger and chains, with continuous/periodic cyclic settlement based on settlement rules and multi-party-signing, tags with tag-hierarchies
@@ -333,7 +341,7 @@ This feature guarantees data durability, service continuity, and split-brain pre
 - Discovery, scoring/reputation within trust network, 
 - Special case provider: - Allow substrate lease with configured criteria, quotas, capabilities etc
 
-## Phase 6: Edge Expansion
+## Phase 7: Edge Expansion
 
 ### [EDG-MOB] Mobile operation 
 - Syneroym on Android/IOS
