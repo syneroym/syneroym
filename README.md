@@ -55,4 +55,10 @@ Contributions are welcome once the Phase 1 scope is locked. See `CONTRIBUTING.md
 
 ## License
 
-Syneroym is licensed under the [Apache-2.0](LICENSE) License.
+Syneroym is licensed under the **AGPLv3** with a **Linking Exception**.
+
+- **AGPLv3 (Core Substrate):** The core Syneroym substrate is licensed under the GNU Affero General Public License v3.0. If you modify the substrate itself and make it available over a network, you must share those modifications under the same license.
+- **Linking Exception (SynApps & SynSvcs):** As a special exception, you may run independent applications on top of Syneroym—including WebAssembly components, containerized applications (like Podman images), independent external services, or future application types—without those applications being subject to the AGPL. They communicate over standard interfaces and remain your own independent work. You are free to keep their source code closed or license them however you wish.
+- **Commercial Licensing:** If your use case requires an alternative license, a Commercial License is available. For commercial licensing inquiries, please fill out our [Commercial License Inquiry Form](https://forms.gle/wztMPRTXkc1QioPo8).
+
+See the [LICENSE](LICENSE) file for the full text of the AGPLv3 and the Syneroym Linking Exception.
