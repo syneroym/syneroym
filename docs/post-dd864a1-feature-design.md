@@ -281,6 +281,15 @@ Accessing the `metrics.db` is securely gatekept by the unified `authorization-en
 
 ## Phase 6: High-Level Applications (SynApps)
 
+### 0. Core Client Architecture (The Syneroym Hub)
+*Addresses the architecture of the universal UI shell.*
+**Design Approach:**
+To achieve the "Hybrid Headless Substrate" vision, the Syneroym Hub is designed as a "dumb" cross-platform frontend utilizing standard web technologies (HTML/CSS/JS). Because the UI acts purely as a renderer for JSON Action Cards, this stack ensures rapid, unified development across all multi-surface views.
+- **Desktop (Tauri):** We use Tauri because its native Rust backend allows us to compile the core Rust-based Syneroym substrate (`roymctl`) directly into the app with zero overhead, while using the OS's native webview for an incredibly lightweight footprint.
+- **Mobile (Native WebView Wrapper):** We use a thin native shell (Swift/Kotlin or Capacitor) wrapping a WebView. This allows HTML/CSS/JS to handle the dynamic UI, while the native layer handles heavy background tasks like P2P networking, cryptography, and CR-SQLite sync.
+- **Data Isolation:** The UI shell does not execute complex business rules and never caches database state. It maintains a persistent, authenticated WebSocket/gRPC connection to the local `roymctl` daemon to serve views dynamically.
+- **Surface Rendering & Intent Translation:** When a user interacts with a Trusted Room or the Agentic Concierge, the UI simply renders the Action Cards or relays raw text/audio to the Substrate's local Rig-core agent, which handles translation into API calls.
+
 ### 1. Service Bundling & Sub-Workflow Composition
 *Addresses the Consumer activity of combining multiple services (e.g., Food + Delivery).*
 **Design Approach:** 

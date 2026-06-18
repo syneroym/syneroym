@@ -331,6 +331,14 @@ Because Syneroym can be utilized as a general open cloud, this dedicated phase s
 ## Phase 6: High-Level Applications (SynApps)
 *In this phase, individual mini-apps (Chat, Ledger, Marketplace, Aggregator) are unified into seamless, actor-centric activities executing across a multi-surface UX.*
 
+### The Syneroym Hub (Core Client Application)
+*The universal, multi-surface shell that connects the user to their local WASM substrate and orchestrates all ecosystem activities.*
+- **The Personal Data Homebase:** A secure vault interface managing the user's digital identity, portable service history, and active FDAE access grants.
+- **The Trusted Room Inbox:** A unified messaging view combining human-to-human social chats, professional guild groups, and interactive business-to-consumer service threads.
+- **The Agentic Concierge:** A persistent text/voice interface powered by the local AI agent, allowing users to parse natural language into complex, multi-provider API workflows.
+- **The Opportunity & Discovery Radar:** A visual, map-based interface to browse local mesh networks, assess neighborhood trust proximity, and consume localized opportunity streams.
+- **The Headless Native Shell:** A cross-platform UI containing zero core business logic, acting purely as a thin renderer for JSON Action Cards securely pushed by the underlying local Substrate node.
+
 ### Everyday Users (Consumers)
 *Activities focused on social connection, discovering services, secure negotiation, and seamless payment.*
 - **Social & Group Messaging:** Chat with friends, family, or local community groups using a simple, WhatsApp-style interface to share messages, media, and provider recommendations.
