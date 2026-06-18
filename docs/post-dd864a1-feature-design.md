@@ -6,6 +6,21 @@ This document details the "How"—the concrete engineering designs and implement
 
 ---
 
+## Phase 0: Core Architecture Implementation
+
+### [TOP-ROB] Network & Connection Robustness
+
+*   **Idiomatic Iroh Connection Pooling:** 
+    *   **Design:** Instead of maintaining a custom `connection_cache` (with locks and state machines) in the coordinator to deduplicate connections, we leverage Iroh's native `Endpoint` behavior. Iroh inherently tracks active connections by `NodeId` and transparently multiplexes new requests over existing QUIC connections.
+    *   **Rationale (Discarded Alternative):** We deliberately *do not* implement a custom connection cache. Adding a custom cache in front of Iroh introduces race conditions, lock contention, and redundant state tracking. By relying on Iroh's internal pooling, we avoid these issues and simplify the implementation.
+*   **Retry Logic Integration:** 
+    *   **Design:** Connection establishment is wrapped in a standard asynchronous retry loop. If `endpoint.connect()` fails, it enters a backoff loop (up to the configured `max_retries`, defaulting to 3). This handles scenarios where the Iroh relay or direct peer is momentarily unreachable.
+*   **Reactive Eviction & Fault Tolerance:**
+    *   **Design:** Connections are not proactively monitored. When an operation (e.g., `accept_bi()` or `write()`) returns a `ConnectionClosed` or timeout error, the system traps the error, reactively evicts any localized references, and optionally triggers a retry of the workflow depending on idempotency. Stream-level errors (like an abruptly closed stream) will fail that specific stream without tearing down the underlying Iroh `Connection`, allowing subsequent multiplexed streams to succeed.
+    *   **Rationale (Discarded Alternative):** We deliberately *do not* implement application-level ping/pong heartbeats to validate connection health. Standard transport-level timeouts (QUIC idle timeouts, WebRTC SCTP timeouts) are sufficient. "Evict when found out" (reactive eviction) saves bandwidth, reduces battery drain on mobile devices, and avoids the complexity of managing parallel heartbeat tasks.
+
+---
+
 ## Phase 1: Foundation & Core Infrastructure
 
 ### [FND-SEC] Substrate Security
@@ -224,6 +239,7 @@ Accessing the `metrics.db` is securely gatekept by the unified `authorization-en
             2.  **Custom Trait Implementation:** The custom `SyneroymModel` must implement `rig::completion::CompletionModel`. Inside the `completion()` async function, construct a WIT RPC payload using the generated bindings (e.g., `syneroym::rpc::invoke(...)`) targeting the local LLM inference `SynSvc`.
             3.  **JSON Serialization:** Rely on `serde_json` to marshal `rig-core`'s `Prompt` structs into byte arrays before sending them over the WIT boundary, and to deserialize the raw proxy response back into `rig-core`'s `CompletionResponse`.
             4.  **Async Execution Limits:** `wasm32-wasip2` components execute asynchronously via WASI event loops. Ensure internal agent loops yield correctly without relying on heavy multi-threaded runtimes (like `tokio::spawn` with work-stealing), which are incompatible with the single-threaded WASM component model.
+            5.  **Adapter Crate (`syneroym-rig-adapter`):** To abstract this complexity from SynApp developers, the platform will provide a lightweight `syneroym-rig-adapter` crate. This crate will pre-configure `rig-core` with the correct WASM-compatible flags and automatically inject the `SyneroymModel` proxy bridge, allowing developers to write agent logic without fighting the WASM compilation toolchain.
     *   **Workflow Architectures (Hybrid Approach):**
         *   **1. Plan-and-Solve (Generic Fallback):** For open-ended queries, the agent uses `rig-core` to generate a sequential plan, then executes a generic loop against that plan.
         *   **2. Finite State Machines (FSM):** For critical workflows (e.g., "Checkout Process"), developers define explicit stages. The Concierge Agent uses `rig-core` to execute the specific prompt and tool bindings for the active stage, guaranteeing safe recovery points.

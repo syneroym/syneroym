@@ -87,6 +87,19 @@ Not all apps require a live, queryable registry at runtime (e.g., trivial backgr
 
 ---
 
+### [TOP-ROB] Network & Connection Robustness
+
+This defines the baseline resilience required for underlying node-to-node and client-to-node transport links, ensuring Syneroym handles transient network partitions gracefully before falling back to application-layer offline queues.
+
+- **Transport Resilience & Retries:** 
+  - The system must gracefully handle transient network drops. Any failed connection attempt must not immediately fail the higher-level request.
+  - Implement automatic retries for establishing connections. The retry count should be configurable per-SynApp, defaulting to 3 retries with a simple exponential backoff.
+- **Reactive Connection Management:**
+  - Standard transport-level timeouts (e.g., QUIC idle timeouts, WebRTC SCTP timeouts) are used to detect dropped peers. We do not implement custom application-level ping/pong heartbeats to save bandwidth and complexity.
+  - Stale connections are handled reactively: "evict when found out." If a read or write operation fails due to a disconnected peer, the connection is instantly marked as dead and retried or surfaced as an error.
+
+---
+
 ## Phase 1: Foundation & Core Infrastructure
 
 ### [FND-DEP] Deployment/Operations
