@@ -341,6 +341,15 @@ Because Syneroym can be utilized as a general open cloud, this dedicated phase s
 - Discovery, scoring/reputation within trust network, 
 - Special case provider: - Allow substrate lease with configured criteria, quotas, capabilities etc
 
+### [APP-AGG] Aggregator Networks & Discovery
+- **Decentralized Discovery Engine:** A class of first-party SynApps ("Aggregator Billboards") that solve the discovery problem in a federated network. They act as voluntary, pull-based search engines or directories, functioning as optional, high-performance "super-peers" to accelerate discovery for regular clients.
+- **Multi-Faceted Catalogs:** Depending on configuration, an Aggregator SynApp can index and serve:
+  - **Service & Provider Directories:** A localized "Yellow Pages".
+  - **AI Tool Schemas (MCP):** Centralized registries of capabilities that local Concierge Agents sync to populate their own vector databases.
+  - **Opportunity Streams & Classifieds:** Aggregating user requests and provider offers into searchable feeds.
+  - **Reputation & Web of Trust:** Aggregating cryptographic proofs of good service to curate results and build public reputation graphs.
+- **Subscription & Fuel Quotas (Anti-Spam):** Providers establish a subscription with the Aggregator. The Aggregator tracks the provider's DID and deducts from their allocated "fuel" whenever they publish a new listing, rejecting writes when the quota is exhausted.
+
 ## Phase 7: Edge Expansion
 
 ### [EDG-MOB] Mobile operation 
