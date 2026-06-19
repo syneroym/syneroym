@@ -1,5 +1,7 @@
 # Syneroym Ecosystem — Architecture Document
 
+> **Migration Note:** The architectural designs and roadmap have been significantly updated post-dd864a1. See the **Post-DD864A1 Target Designs (Addendum)** at the bottom of this document for the canonical Layer 1-4 definitions.
+
 > [!WARNING]
 > **Implementation Note:** Several core elements defined in this architecture, including the **wRPC protocol layers/surface** and **multi-hop relay routing**, are currently **NOT YET IMPLEMENTED** in the codebase. The current implementation is centered around JSON-RPC 2.0 and direct TCP/IP or single-hop Iroh/WebRTC streams. See open items and progress trackers for ongoing development.
 
@@ -1231,56 +1233,7 @@ This section is an index of every `[TBD]` marker in the requirements spec, that 
 
 ---
 
-## MVP Phase 1 Scope & Acceptance Criteria
 
-### In Scope
-
-- Substrate: setup, keypair generation, relay registration, Wasmtime + Podman sandboxing
-- Identity + access control: Ed25519 identity, ABAC policy enforcement, UCAN delegation tokens
-- P2P: Iroh QUIC + DERP relay fallback; WebRTC for browsers
-- Discovery: local index cache, DHT participation, keyword + geo + attribute search
-- Messaging: 1-to-1 E2E encrypted chat; structured service messages
-- Storage: cr-sqlite; Litestream backup; offline queue with deterministic replay
-- SynApp 1 MVP: Space setup, catalog browse, full order state machine (DRAFT → COMPLETE), Stripe payment integration
-- Consumer App: discover, browse, order, pay
-- Data portability: `SynExport` format; export and import CLI commands
-
-### Explicitly Out of Scope (MVP)
-
-- Syneroym-native coin or mutual credit
-- Advanced ad auction mechanics (ad boost field is present but auction engine is not)
-- Fully decentralised bootstrap replacement (DHT mirror is built; full replacement is not)
-- AI-assisted workflow synthesis
-
-### Acceptance Criteria
-
-1. A provider deploys SynApp 1 on a single node and creates a Space with catalog entries
-2. A consumer on a separate node discovers that Space via DHT and completes an order end-to-end including payment
-3. If either side goes offline during the order flow, queued actions synchronise and resolve deterministically on reconnection
-4. Provider exports service and transaction data via `syneroym export` and restores it on a new node without data loss in core entities
-5. ABAC policies prevent unauthorised reads/writes across at least two independent users and two services
-6. At least one trust signal (VC, vouch count, or reputation score) is visible to the consumer before payment confirmation
-
-### Requirements Traceability (system-requirements-spec.md -> system-architecture-design.md)
-
-| Requirement Theme | Architecture Coverage |
-|---|---|
-| P2P-first with relay fallback | [P2P Networking: Iroh](#p2p-networking-iroh), [Relay Node Architecture](#relay-node-architecture) |
-| Bootstrap survivability | [Bootstrap Server & DHT Fallback](#bootstrap-server--dht-fallback) |
-| Substrate lifecycle and service orchestration | [Substrate Internal Architecture](#substrate-internal-architecture), [SynApp Packaging & API Pipeline](#synapp-packaging--api-pipeline) |
-| Offline queue + deterministic reconciliation | [Storage & CRDT Merge Semantics](#storage--crdt-merge-semantics) |
-| Multi-device app operation + reconnection sync | [Multi-Device Sync and Sharded Deployment](#multi-device-sync-and-sharded-deployment) |
-| Sharded app deployment across hosts | [Multi-Device Sync and Sharded Deployment](#multi-device-sync-and-sharded-deployment) |
-| Identity, delegation, key lifecycle | [Identity](#identity) |
-| Discovery index partitioning + ranking transparency | [Discovery & DHT](#discovery--dht) |
-| Messaging modes and E2E encryption | [Messaging](#messaging), [Encryption at Every Layer](#encryption-at-every-layer) |
-| Trust layers and reputation portability | [Trust & Reputation](#trust--reputation) |
-| Payment and escrow integration | [Payments](#payments) |
-| Consumer unified app model | [Consumer App Architecture](#consumer-app-architecture) |
-| Multi-tenant isolation and access control | [Isolation Guarantees](#isolation-guarantees) |
-| Phase 1 acceptance criteria alignment | [Acceptance Criteria](#acceptance-criteria) |
-
----
 
 
 ## Connectivity Substrate In Heteregenous networks
@@ -1746,6 +1699,368 @@ write
 Additional transports, gateways, and protocol adapters can be added later without changing the core architecture.
 
 ---
+
+
+
+---
+
+## Post-DD864A1 Target Designs (Addendum)
+# Syneroym: Substrate Feature Implementation Design
+
+This document details the "How"—the concrete engineering designs and implementation strategies—that map to the features defined in the [Feature Specification](post-dd864a1-feature-spec.md).
+
+> **Note:** Only sections with complex architectural considerations are expanded here. Trivial mappings are omitted.
+>
+> **Implementation Status:** This document describes target implementation. The current codebase already contains the walking skeleton for DID-key identities, local endpoint registration, the community registry client, JSON-RPC routing, Iroh/WebRTC coordinators, Wasmtime execution, and Podman lifecycle support. It does not yet contain the full wRPC surface, topology-aware app registry, vault, data-layer API, MQTT broker, or replication system described here.
+
+---
+
+## Phase 0: Core Architecture Implementation
+
+### [TOP-ROB] Network & Connection Robustness
+
+*   **Idiomatic Iroh Connection Pooling:** 
+    *   **Design:** Instead of maintaining a custom `connection_cache` (with locks and state machines) in the coordinator to deduplicate connections, we leverage Iroh's native `Endpoint` behavior. Iroh inherently tracks active connections by `NodeId` and transparently multiplexes new requests over existing QUIC connections.
+    *   **Rationale (Discarded Alternative):** We deliberately *do not* implement a custom connection cache. Adding a custom cache in front of Iroh introduces race conditions, lock contention, and redundant state tracking. By relying on Iroh's internal pooling, we avoid these issues and simplify the implementation.
+*   **Retry Logic Integration:** 
+    *   **Design:** Connection establishment is wrapped in a standard asynchronous retry loop. If `endpoint.connect()` fails, it enters a backoff loop (up to the configured `max_retries`, defaulting to 3). This handles scenarios where the Iroh relay or direct peer is momentarily unreachable.
+*   **Reactive Eviction & Fault Tolerance:**
+    *   **Design:** Connections are not proactively monitored. When an operation (e.g., `accept_bi()` or `write()`) returns a `ConnectionClosed` or timeout error, the system traps the error, reactively evicts any localized references, and optionally triggers a retry of the workflow depending on idempotency. Stream-level errors (like an abruptly closed stream) will fail that specific stream without tearing down the underlying Iroh `Connection`, allowing subsequent multiplexed streams to succeed.
+    *   **Rationale (Discarded Alternative):** We deliberately *do not* implement application-level ping/pong heartbeats to validate connection health. Standard transport-level timeouts (QUIC idle timeouts, WebRTC SCTP timeouts) are sufficient. "Evict when found out" (reactive eviction) saves bandwidth, reduces battery drain on mobile devices, and avoids the complexity of managing parallel heartbeat tasks.
+
+---
+
+## Phase 1: Foundation & Core Infrastructure
+
+### [FND-SEC] Substrate Security
+The Substrate relies on multiple cryptographic and hardware-level techniques to guarantee a zero-trust environment.
+
+*   **Data at Rest & Envelope Encryption:** 
+    *   **Design:** Per-service SQLite/`cr-sqlite` database files and blob objects are encrypted using Data Encryption Keys (DEKs). A Master Key (KEK) is injected into RAM at startup to unlock the DEKs, ensuring instant key rotation without massive re-encryption.
+    *   **The "Unlock" Model:** Encryption keys are scoped to individual services, not the entire substrate. Keys are *never* stored on the substrate's disk in plaintext. If encryption is required, the service remains locked upon node restart until the Service Owner provisions the KEK into RAM through an authenticated management channel, optionally after attestation.
+    *   **Secret Vault:** Service secrets are stored as encrypted vault rows inside the service or app-instance metadata database. Host functions reveal secrets only into the target invocation's protected memory; the vault never materializes secret values as flat files unless a legacy Podman compatibility mode explicitly requests a degraded injection path.
+*   **Memory Protection & RAM Dumping Mitigations:** 
+    *   **Design:** Perfectly securing a key in RAM from a determined root-level attacker is theoretically impossible without hardware enclaves, but the substrate raises the bar significantly. The Substrate uses OS-level memory locking (`mlock`) to prevent swapping to disk, and `madvise(MADV_DONTDUMP)` to exclude the key from core dumps.
+    *   **Key Splitting:** Keys can be obfuscated or split in the `zeroize` memory vault when not actively executing queries, making naive RAM scraping harder. This is a mitigation, not a formal boundary against a compromised kernel or root-level attacker.
+
+### [FND-CFG] Service Configuration
+
+*   **Versioned Configuration Store:** The orchestrator writes a fully resolved, schema-validated configuration generation for each `SynSvc`. Running invocations keep the generation they started with; new WASM invocations read the newest active generation.
+*   **Dual-Target Configuration Delivery:** Configuration defined in the SynApp/Endpoint manifest is delivered differently for each execution environment:
+    *   **WASM:** The preferred path is a typed host function such as `syneroym:config/get`, which returns hierarchical non-secret configuration on demand. WASI `environment` variables or pre-opened read-only files are compatibility shims only for non-secret values.
+    *   **Podman:** The orchestrator may flatten non-secret configuration into environment variables or mount generated config files read-only, because legacy containers usually expect those interfaces.
+*   **Secret Delivery:** Secrets are resolved from the Vault at invocation or deployment time.
+    *   **WASM:** Services call `syneroym:vault/reveal` and receive the value only inside the current invocation's host-managed memory. The secret is never written to the filesystem or environment.
+    *   **Podman:** The orchestrator may inject a secret through an environment variable or ephemeral `tmpfs` file only when the manifest explicitly allows the degraded legacy mode. Such services should be labeled as having weaker secret isolation.
+*   **Cold Restarts & State:** WASM component instances are disposable, but service state lives in host-managed storage. The `SessionContext` (containing UCAN capabilities and claims) is tied to the incoming request and held securely within the Wasmtime host's `Store`. Applying a new configuration generation is safe for new invocations; long-running tasks follow the `[PLT-ASY]` restart or compensation rules.
+
+### [FND-IAM] Access Control
+The Access Control architecture relies on the Federated Data-Aware Authorization Engine (FDAE) to combine cryptographic capabilities with massive-scale relational data filtering.
+
+*   **SynSvc Access (Host Function):**
+    *   **Design:** WASM applications do not query databases directly. The WASM linker exposes the data-layer as a strictly typed WIT import (`import syneroym:data-layer/store;`).
+    *   **Identity Injection:** The host function implementation automatically injects the caller identity as `synapp:<app_instance_id>:svc:<service_id>`. This cannot be spoofed by the guest.
+    *   **Execution:** It dynamically compiles the FDAE ReBAC policies directly into the SQL query before execution, and explicitly scopes all operations to the app-instance namespace and the service's database.
+*   **Comprehensive Schema Specification (Structured Policy Model):**
+    *   **Design:** To eliminate runtime string lexers in the Wasm host framework, the policy language is written as a fully structured configuration tree (YAML/JSON). Deserializing this file directly produces a typed policy model for the query planner.
+    *   **Registry:** Maps logical keys to physical storage engines (e.g., `sqlite_db` vs `hr_api` which triggers a Wasm Host Extension).
+    *   **Hierarchies:** Maps unbounded graph pathways (e.g., `management_chain`).
+    *   **Definitions:** Defines objects, data joins, and boolean permission paths (e.g., a `union` of direct ownership vs transitive manager chain checks).
+*   **Engine Evaluation Steps & The Pushdown Sieve:**
+    *   **Lookahead Optimization:** The engine reviews the permission block. If nodes share the same physical SQLite storage driver, it flags them for "Join Tree Collapse".
+    *   **SQL Generation (The Pushdown):** The engine merges the relationship hops into a singular, cycle-protected `WITH RECURSIVE` SQLite query.
+    *   **Global Logic Short-Circuiting:** If a path evaluates to a true state (e.g., under a `union` operator), the engine instantly returns an Allowed state, bypassing further external checks.
+    *   **Cross-Service Parameter Fetch:** If a step crosses a boundary (e.g., requires external HR data), the engine halts local SQL execution, marshals the intermediate value across the Wasm runtime memory boundary, fires the native host extension function to fetch remote proofs, and resumes execution.
+*   **Dual-Mode Capability:**
+    *   **Mode A (Point-In-Time Evaluation):** When verifying a specific resource handle ("Can Alice view document 12?"), the engine appends an absolute constraint (`WHERE documents.id = ?`).
+    *   **Mode B (Relational Data Filtering):** When requesting a dashboard index ("Show me all documents I can see"), the engine wraps the user's base command in the compiled `WHERE EXISTS` security block as a global subquery. This forces SQLite to perform index-level pruning before the data ever reaches the Wasm guest.
+*   **Performance Safeguards & Security:**
+    *   **Strict Parameter Isolation:** The query compiler strictly uses native parameterized binding (`?` or `:name`) to prevent SQL injection.
+    *   **Deterministic Cycle Protections:** Every recursive configuration block includes a path concatenation tracker (`visited_track`) to break execution if cyclic loops are introduced in the user data.
+    *   **Instruction Watchdogs:** Generated queries execute alongside an active instruction cycle watchdog (`sqlite3_progress_handler`) and a policy-configurable time budget. If execution exceeds the budget, the transaction is rolled back with a "Default Denied" state. The default must be conservative but not hard-coded into the architecture.
+
+---
+
+## Phase 2: Core Platform Capabilities
+
+### [PLT-DAT] Data Layer
+
+The Data Layer provides a complete foundation for distributed application state and communication, securely accessed via typed host functions.
+
+#### 1. Structured Data Service (Document API)
+A platform-managed persistent store that `SynSvcs` use via typed host functions or RPC APIs.
+
+*   **Database Isolation (One DB per Service):** Instead of a monolithic combined database, every service gets its own independent SQLite `.db` file (and WAL). The substrate also maintains its own separate database.
+    *   *Benefits:* Maximizes write parallelism across the system (since each service has its own independent WAL lock), enables selective Iroh WAL replication per service, and isolates failure blast radiuses.
+*   **Concurrency Architecture (Actor/Pool Model):** To handle high concurrency within a single service's database without hitting `SQLITE_BUSY` contention in Tokio, the platform utilizes **`rusqlite`** combined with **`deadpool-sqlite`**:
+    *   *Why `rusqlite`:* The data layer requires raw access to the SQLite C API for dynamic query generation, progress handlers, extension loading (including `cr-sqlite` where CRDT semantics are enabled), WAL inspection hooks, and explicit checkpoint control. These use cases reduce the value of `sqlx`'s compile-time query macros.
+    *   *Reader Pool:* Read queries (e.g., `GET`, `LIST`) are dispatched across a `deadpool-sqlite` connection pool. This enables parallel, non-blocking reads and seamlessly bridges synchronous `rusqlite` calls into the Tokio runtime via `spawn_blocking`.
+    *   *Single Writer Thread:* All mutations (`PUT`, `DELETE`) are routed via an `mpsc` channel to a single, dedicated background task holding an exclusive `rusqlite` write connection. This strictly aligns with SQLite's single-writer WAL design, eliminating lock contention entirely and allowing for optimized transaction batching.
+*   **Resource Model:**  
+    *   **Collection:** A named set of records within a `SynApp Instance` namespace and a specific service database, declared with a lightweight schema.
+    *   **Record:** One JSON object identified by a caller-supplied string `id`.
+    *   **`creator_id`:** A first-class field on every record, set automatically by the service at write time (spoof-proof).
+    *   **Schema & Indexing:** Declares indexed fields explicitly. Enforced loosely (unknown fields rejected; declared fields type-checked). *Constraint:* In SQLite, `CREATE INDEX` requires an exclusive write lock. For very large collections, background schema evolution will temporarily block the single writer thread for that specific service, though read pools remain unaffected.
+*   **CRUD & Batch Operations:** Operations include `create_collection`, `drop_collection`, `put` (upsert), `patch` (merge), `get`, `query` (list), `delete`, and `delete_many`. It also includes a `batch_mutate` function to perform atomic, multi-record mutations within a single SQLite transaction.
+*   **Query & Aggregation Model:** Queries use a structured model (e.g., `Eq`, `In`, `Contains`) rather than raw SQL. This translates into parameterized SQLite internally with cursor-based pagination. It also supports an `AggregationPipeline` for advanced querying (`group_by`, `having`, `sum()`, projections) leveraging the full power of the WIT boundary. Aggregations can target both physical collections and logical views defined during init.
+*   **Schema Initialization (DDL Variant):**
+    *   *Design:* During the `init` hook of deployment, each stateful `SynSvc` provides DDL as a `variant ddl { sql(string), model(data-model) }` collected by the `SynApp` manifest. The initial target supports the `sql(string)` arm for trusted services, allowing standard SQLite DDL (`CREATE TABLE`, `CREATE VIEW`, `CREATE INDEX`).
+    *   *Safety:* Plain SQL is safe to start with because each service has its own fully isolated `.db` file. A buggy or malicious DDL statement can only affect the service's own database, which is already gated by IAM access control.
+    *   *Views in Init:* `CREATE VIEW` statements in the init DDL are instantaneous (zero write-lock penalty) and can be referenced by runtime `AggregationPipeline` queries just like physical collections.
+    *   *Future:* The `model(data-model)` variant arm is reserved for when the platform is opened to untrusted third-party developers who should not be permitted to run arbitrary DDL. At that point, `sql(string)` can be restricted via IAM policy.
+*   **Logical Names and Public Aliases:** 
+    *   **Problem:** Service IDs are DIDs. Manifests and policies need human-readable role names.
+    *   **Design:** The app-context registry maps logical names (for example, `org-service`) to explicit service IDs inside a `SynApp Instance`. Public aliases can also be published to the community registry as owner-signed records, but those are discovery hints, not a replacement for manifest-pinned dependency resolution. Resolution order is: `manifest pin → app-context registry/cache → optional public alias lookup`.
+*   **Object Service (Blob Store):** 
+    *   **Design:** Blob content is addressed by SHA-256 hash. Each `SynApp Instance` receives a blob namespace and quota, while individual services store blob hashes as ordinary fields in structured records.
+    *   **Durability:** The durable backend is configurable S3-compatible object storage or a peer backup substrate exposing the same semantics. Local replicas may keep opportunistic caches or pull missing blobs lazily, but blob durability is not guaranteed by SQLite WAL replication.
+
+#### 2. MQTT Event Service (Asynchronous Coordination)
+To provide real-time Pub/Sub without relying on heavy external infrastructure, the Substrate acts as the broker.
+
+*   **Embedded Broker Design:** The Syneroym Rust host embeds an MQTT broker natively using the `rumqttd` crate. It runs as a background Tokio task alongside the Wasmtime engine.
+*   **The WASM Boundary (WIT):** WASM applications interact with the broker via a lightweight host boundary:
+    ```wit
+    interface pubsub {
+        publish: func(topic: string, payload: list<u8>);
+        subscribe: func(topic: string);
+    }
+    ```
+*   **Execution Flow:** When a WASM component calls `pubsub::publish`, the host traps the call and routes it directly into the embedded `rumqttd` broker. Subscriptions are persisted by the host. Delivery invokes a declared component handler through the normal Wasmtime invocation path (or a currently live store when explicitly supported), rather than mutating arbitrary guest memory.
+
+#### 3. Universal Proxy (Inter-Component RPC)
+The Substrate provides strictly typed networking between services. Static composition can be zero-overhead; dynamic proxying adds host and transport overhead by design.
+
+*   **Protocol Translation Architecture:**
+    *   **WIT Interception and Late Binding:** Dependencies are declared as generic WIT imports (e.g., `import acme:booking/service;`). At instantiation, the Substrate satisfies these imports by injecting dynamically generated proxy host functions. When the WASM component invokes the import, execution traps to the host proxy. 
+    *   **Instance Routing:** The proxy relies on the application manifest and the Orchestrator's App Registry to resolve the generic WIT import to a specific deployed instance's `service_id`. It bakes this route into the proxy, meaning the developer codes against generic contracts, but the Substrate handles disambiguated instance routing automatically.
+    *   **Design:** Once trapped, if the target is another native WASM component, the target design serializes the call into **wRPC** (a highly efficient binary streaming protocol) and transmits it over encrypted **Iroh QUIC** streams to the correct instance. Until the wRPC surface is implemented, this path remains an explicit future target and JSON-RPC remains the available bridge.
+    *   **Native Host Service Proxying:** If the target is a native host service (e.g., the `syneroym:data-layer/store` WIT import) mapped to a remote instance, the Substrate behaves identically. It proxies the call via wRPC to the remote Substrate, which receives the call and executes its *own* native host service implementation (e.g., executing against its local `cr-sqlite` file).
+    *   **JSON-RPC Adapter:** If the target is a legacy Podman container or an external web/mobile client, the proxy dynamically translates the strict WIT calls into universal JSON-RPC 2.0 over HTTP/WebSockets.
+    *   **Static Composition Bypass:** If the component and its dependency are statically composed into a single `.wasm` binary prior to deployment (e.g., via `wasm-tools compose`), the import is satisfied internally. The Substrate never sees the import, no proxy is injected, and the call executes entirely within the WebAssembly sandbox with zero-overhead.
+
+### [PLT-ASY] Asynchronous Operations & Scheduling
+
+The Substrate handles offline behavior, long-running execution, and periodic scheduling uniformly by delegating explicit workflow management to the business logic, rather than attempting to build complex infrastructure-level "durable execution".
+
+*   **Resilient RPC & Dead Letter Queues (DLQ):**
+    *   **Design:** The Universal Proxy automatically handles connection-establishment retries and idempotent call retries with exponential backoff for transient failures. Retry limits are configurable per service and per request. If the maximum limit is reached, retryable or outbox-backed messages are routed into a local SQLite-backed DLQ for later analysis or replay. Non-idempotent calls fail directly unless the caller supplied an idempotency key and opted into queuing.
+*   **The Outbox & Fire-and-Forget Semantics:**
+    *   **Design:** Offline-capable endpoints are strictly opt-in. A client uses an outbox queue and sends a fire-and-forget message, marking the operation as optimistically successful in its local UI.
+    *   **Client IDs:** To support this stateless offline creation, the Data Layer's CRUD operations support client-generated UUIDs (rather than strictly database-generated serial IDs).
+*   **Long-Running Tasks (In-Memory Execution):**
+    *   **Design:** Long-running workflows run as native asynchronous Tokio tasks executing WASM guest functions. The platform guarantees the *intent* to run is recorded durably, but the active WASM memory state is ephemeral. If the substrate crashes, the task is aborted. On recovery it restarts only when declared idempotent/restartable; otherwise it fails and triggers compensations. This avoids the massive engineering overhead of building event-sourced deterministic memory snapshotting.
+*   **Periodic & Scheduled Tasks (Lease-Based Delegation):**
+    *   **Design:** To eliminate load skew caused by clock drift in a replicated environment, cron-triggered execution is decoupled from scheduling. When a cron timer ticks across the cluster, nodes race to acquire a specific execution lease from the Registry.
+    *   **Execution:** The node that wins the lease acts purely as the scheduler for that tick. It selects a target node from the active cluster (randomly or via load metrics) and dispatches the execution payload. The lease is held in the Registry until execution finishes, which naturally prevents overlapping execution if the task spans multiple cron periods.
+    *   **Registry Outage Behavior:** Cluster-wide schedules fail closed while the Registry is unavailable. Single-node schedules may continue against a local lease only when the manifest marks them as safe without cluster coordination.
+*   **Saga Compensations (`undo` endpoints):**
+    *   **Design:** Services participating in distributed workflows or offline operations expose standard `undo_<operation>` functions in their WIT boundary.
+    *   **Execution:** When a multi-step operation or queued task hits a terminal failure, the orchestrator invokes the corresponding `undo_` function for each previously completed step. The orchestrator passes the exact same arguments (plus the generated resource ID) to the `undo` endpoint to accurately reverse the specific state change.
+
+### [PLT-RED] Service Redundancy
+
+*   **Database Replication Mechanism (Iroh WAL Shipping):** The data layer utilizes a configurable N-replica topology (typically one primary, and zero or more read-only secondaries, as defined by the app manifest) for SQLite state. Instead of relying on Litestream or FUSE-dependent LiteFS for the live node-to-node path, Syneroym leverages its native Iroh transport for low-latency replication while keeping SQLite file invariants intact.
+    *   **The Shipper (Primary):** A background Rust task receives committed WAL/frame notifications from SQLite, derives the frame size from the database page size, validates ordering/checksums, and streams ordered frame batches over a persistent **Iroh multiplexed stream**. The stream format carries a database identity, epoch, frame sequence, page size, salts, checksums, and checkpoint markers so the secondary can reject torn or stale data.
+    *   **The Applier (Secondary):** The Secondary receives ordered frame batches and applies them through a SQLite-safe applier path. It must not directly mutate a live SQLite connection's `-wal` or `-shm` files. Acceptable approaches include applying frames while the database is closed to readers, publishing read-only snapshots after a verified checkpoint, or using a well-tested SQLite extension/API path that preserves WAL-index invariants. Readers observe a new state only after the applier publishes a consistent snapshot.
+*   **Disaster Recovery:** While live, low-latency replication uses Iroh, periodic full backups and WAL segments are still asynchronously pushed to an external S3-compatible object store using a library like `wal-backup` for cold starts and disaster recovery.
+*   **Registry & Coordination Model:** The Registry Service acts as the authoritative control plane for membership and topology.
+    *   **Node States:** Nodes progress through strict states: `ACTIVE` → `SUSPECT` (communication issues) → `QUARANTINED` (no data-plane work/traffic, but management allowed) → `RETIRED`. Quarantine is a registry decision for a topology epoch, not a local node guess.
+    *   **Routing-Level Fencing:** Split-brain mitigation is handled purely at the network/routing layer. When a primary is deposed due to failure, the Registry marks it `QUARANTINED` and propagates this topology update to all clients and routers.
+        *   *Ingress Protection:* Clients and upstream services clear their caches and stop routing writes to the deposed primary.
+        *   *Egress Protection:* Even if the deposed primary is network-partitioned but still alive, any outbound requests or I/O it attempts to make to other services are rejected because its Node ID is verified against the cluster-wide denylist.
+    *   **Failure Philosophy (CP > AP):** Syneroym strictly prioritizes Consistency over Availability. There is no automatic failover. The promotion workflow requires an operator to manually quarantine the failed node in the Registry, wait for the topology update to propagate across the cluster, and then manually promote an existing Secondary to `ACTIVE` Primary. Finally, the operator provisions a replacement node to restore the desired redundancy level defined in the manifest.
+*   **Control Plane vs Data Plane Isolation:**
+    *   If the Registry itself fails, the Control Plane freezes (no new deployments, promotions, quarantine decisions, or clustered leases). Existing healthy routing paths, MQTT flows, and HTTP access continue using the last known cached registry state. Requests to failed routes still fail normally; no new topology decision is made until the Registry returns.
+
+## Phase 3: Substrate & Application Lifecycle
+
+### [LFC-MGT] SynApp Lifecycle Management Design
+This section details the internal mechanics of the dual-mode Orchestration and Lifecycle Management system.
+
+#### 1. Control Plane Architecture & Bootstrapping
+Syneroym supports both a decentralized CLI workflow and an optional stateful controller for a specific owner or cluster.
+*   **CLI Standalone (`roymctl`)**: Acts as a thick client. It parses the SynApp manifest, directly initiates connections to target substrates via local JSON-RPC management APIs, Iroh, or WebRTC, and executes deployment commands.
+*   **Server SynApp (Active Control Plane)**: A specialized, long-running `SynApp Instance` whose controller services run as ordinary `SynSvcs` and expose a REST/RPC API for orchestration.
+*   **Bootstrapping**: The Server SynApp is deployed identically to any other application via `roymctl`. Once deployed, the user configures their local `roymctl` to proxy subsequent commands to the Server SynApp's API endpoint rather than pushing to substrates directly.
+
+#### 2. State Management (SQLite)
+Both operational modes rely on an identical set of core orchestration libraries and utilize SQLite for state tracking, but with different semantics:
+*   **Local Installation Trace (`roymctl`)**: In CLI mode, the local SQLite database acts merely as an installation trace. It records what was deployed, where, and when. This allows subsequent `roymctl reconcile` commands to compute the diff between the manifest and the known deployments, but there is no background monitoring.
+*   **Authoritative Ledger (Server SynApp)**: The Server SynApp utilizes the platform's standard stateful replication (via Iroh WAL shipping) for its internal SQLite database. This database stores the authoritative Desired State (manifests) vs. Actual State (live telemetry from substrates), driving its continuous background reconciliation loop.
+
+#### 3. Service Discovery & Logical Routing Resolution
+A critical function of Lifecycle Management is translating Explicit Bindings defined in the manifest into physical, routable identities (e.g., Iroh Pubkeys or DIDs) for inter-service communication.
+*   **Static Injection (CLI Mode)**: When operating in standalone mode, `roymctl` acts as a static compiler for routing. During deployment or manual reconciliation, it determines the physical identities of the target substrates. It then explicitly injects these physical IDs into the configuration payload of the dependent `SynSvc` components. Without a Server SynApp, there is no dynamic load balancing or self-healing routing—if a service moves, a new `roymctl reconcile` is required to push the updated configuration.
+*   **Dynamic Pull (Server SynApp Mode)**: When the Server SynApp is active, it functions as a contextual App Registry Service. The client SDKs embedded within each `SynSvc` query this registry at runtime to resolve logical IDs to physical addresses. This enables dynamic load-balancing and auto-discovery of newly scaled instances. It does not imply automatic primary failover for stateful services; `[PLT-RED]` still requires manual promotion.
+
+### [LFC-VER] Versioning & Migration Flow
+
+#### 1. WASM Component Database Migration Lifecycle
+To handle data schema evolution securely, the system utilizes a lifecycle hook within the WASM component, executed with elevated capabilities.
+
+*   **1. Pause & Snapshot**: When an upgrade is initiated, the Substrate pauses traffic to the specific `SynSvc` endpoint. The internal router temporarily buffers requests or returns a `503 Service Unavailable`. The Substrate takes a filesystem-level snapshot of the component's underlying SQLite database.
+    *   For replicated services, the primary first records a replication epoch and waits for configured secondaries to acknowledge the latest safe frame, or the operator explicitly accepts an upgrade with degraded redundancy.
+*   **2. Elevated Init Execution**: The Substrate loads the new version of the WASM binary and invokes its exported `init()` (or `migrate()`) lifecycle hook. Crucially, the Substrate injects an elevated capability (e.g., an Admin UCAN) into this execution context.
+*   **3. DDL and Transformation**: Within `init()`, the WASM code leverages generic data-layer host functions (e.g., `execute_sql`) to perform its schema changes (DDL) and any necessary data transformations. The elevated capability allows the execution of DDL, whereas standard REST/RPC invocations are sandboxed to restricted CRUD operations.
+*   **4. Commit or Rollback**:
+    *   If `init()` returns `Ok`, the Substrate considers the upgrade successful, drops the old database snapshot, and resumes routing traffic to the new component.
+    *   If `init()` returns `Err` (or panics), the Substrate aborts the upgrade, unloads the new WASM module, restores the SQLite database from the snapshot, and resumes routing traffic to the previous WASM binary.
+
+#### 2. Network Protocol Handshake & Capability Matrix
+To avoid rigid (and brittle) version matching across a decentralized network, Substrates negotiate network capabilities dynamically.
+
+*   **1. Handshake Negotiation**: During the initial connection phase over Iroh, node A and node B exchange a list of their supported protocol profiles (e.g., `["syneroym/rpc/v1", "syneroym/rpc/v2"]`).
+*   **2. Capability Resolution**: The routing layer inspects the shared protocols and establishes communication using the most capable, mutually understood protocol. If the intersection is empty, the connection is cleanly rejected.
+*   **3. Case-by-Case Deprecation**: Rather than an automatic sliding-window (N-x) deprecation policy, the core team removes older protocol handlers from the Substrate binary on a deliberate, case-by-case basis as the network matures.
+
+## Phase 4: Advanced Services & Tooling
+
+### [ADV-OBS] Observability enhancements
+
+#### 1. Observability Pipeline & Non-Blocking Emission
+To prevent observability from adding latency to the hot paths (WASM execution and Iroh/WebRTC network routing), the metrics pipeline relies on an asynchronous, decoupled architecture:
+*   **Event Emitters**: The core components (Router, WASM runtime, and Gateway) emit raw metrics as lightweight data structs.
+*   **MPSC Channels**: These structs are sent over non-blocking `tokio::sync::mpsc` channels to a dedicated, low-priority `Observability Engine` background task running within the Substrate.
+*   **Buffering**: The channel buffers smooth out high-throughput spikes, preventing hot-path execution delays even during heavy load.
+
+#### 2. Dedicated Time-Series Storage (metrics.db)
+Observability data is high-volume and append-heavy. To prevent these operations from contending with the critical operational state of the network (`substrate.db`), metrics are directed to a dedicated embedded database:
+*   **File Isolation**: A separate `metrics.db` SQLite database is maintained.
+*   **Rollup Engine (Cron Task)**: A background Tokio cron task wakes up periodically (e.g., every 5 minutes) to perform aggregations. It selects raw events older than a certain threshold, aggregates them into 1-hour buckets, inserts the buckets into a `metrics_1h` table, and prunes the raw events to reclaim space.
+*   **Extensible Schema**: The tables (`metrics_raw`, `metrics_1h`) feature an extensible JSON or BLOB column (`metadata`) to dynamically accommodate new attributes like AI/LLM token usage, GPU execution metrics, and future billing parameters ("agreed rates") without requiring strict schema migrations.
+
+#### 3. Metering & Relays
+For multi-hop scenarios and standard data routing, measuring data transfer is crucial:
+*   **Stream Counting**: The routing proxy layer maintains byte counters (`bytes_tx`, `bytes_rx`) for every active stream.
+*   **Identity Tagging**: These counters are strongly associated with the authenticated Peer IDs (DIDs) of the connection.
+*   **Periodic Flush**: Counts are flushed to the `Observability Engine` when a stream closes or at set intervals for long-lived streams. Cryptographic receipts are intentionally excluded in this phase to maintain simplicity; logging the attested counts provides sufficient baseline trust for standard metering.
+
+#### 4. Authorized Access
+Accessing the `metrics.db` is securely gatekept by the unified `authorization-engine` via standard RPC endpoints:
+*   **Root Capabilities**: The Substrate owner uses an administrative UCAN, resulting in queries running without restrictions against `metrics.db`.
+*   **Scoped Capabilities**: SynApp/SynSvc owners invoking the metrics RPC present a UCAN bound to their identity. The engine transparently injects a `WHERE service_owner_did = ?` clause into the underlying SQL query.
+*   **Data Consumption**: The Substrate does not host its own visualizations. Instead, the metric data is consumed by standalone SynApps or dedicated BI tools acting as external clients.
+
+### [ADV-AI] Advanced AI & Agentic Workflows
+
+*   **Local Inference Engine Wrapper (Ollama / Candle):**
+    *   **Design:** The substrate provides a lightweight wrapper service that orchestrates the underlying AI engine (e.g., **Ollama** as a managed process). This wrapper is responsible for ordering the AI engine to download/install base models (strictly gated by a node-operator-defined allow-list to prevent bandwidth/storage exhaustion) and transparently proxying inference calls from agents to the correct model combination. Alternatively, for tighter integration without external daemons, HuggingFace's **Candle** framework could be embedded directly into a Rust host extension for in-process inference of GGUF models.
+    *   **Hardware Capability Gating & Decoupled Architecture:** The ability to download, install, and serve models locally is dynamically gated by automatic hardware capability checks (e.g., detecting GPU/NPU presence, system RAM capacity) combined with explicit owner configuration override flags during substrate startup. If the hardware lacks the requisite capabilities or the feature is manually disabled, the local inference wrapper is deactivated. Because the Agent logic (WASM) and LLM Inference (GPU) are fully decoupled, a node can still execute local Concierge Agents while routing their raw inference requests via the Universal Proxy to designated remote LLM providers. Alternatively, a node can outsource the entire agent-and-LLM stack remotely. Crucially, to prevent the core substrate from depending on application-layer discovery mechanisms, these remote fallback endpoints are explicitly set within the proxy agent service configuration.
+*   **The Concierge Agent Architecture:**
+    *   **Design:** A native WASM `SynSvc` built using **`rig-core`**. Crucially, `rig-core` remains the foundational bedrock for *all* agentic workflows. It provides the core abstractions for communicating with LLMs, generating embeddings, and defining MCP tools in Rust. The different "Architectures" below are simply routing logic built *on top* of `rig-core`'s completion API.
+    *   **WASM Component Compilation:** To compile `rig-core` to `wasm32-wasip2` without relying on disallowed host socket networking (like `reqwest`), Syneroym implements a custom `SyneroymModel` struct that fulfills `rig-core`'s `CompletionModel` and `EmbeddingModel` traits. This custom implementation routes all LLM requests through the **Universal Proxy's WIT interface** instead of over standard HTTP, maintaining strict WASM sandbox compliance while retaining the full ergonomic power of `rig-core`.
+        *   **Implementation Pointers for WASM Targeting:**
+            1.  **Disable Default Features:** When importing `rig-core` in `Cargo.toml`, strictly use `default-features = false` to avoid pulling in `reqwest`, `tokio` multi-threading, or platform-specific TLS libraries that will fail to compile or link under `wasm32-wasip2`.
+            2.  **Custom Trait Implementation:** The custom `SyneroymModel` must implement `rig::completion::CompletionModel`. Inside the `completion()` async function, construct a WIT RPC payload using the generated bindings (e.g., `syneroym::rpc::invoke(...)`) targeting the local LLM inference `SynSvc`.
+            3.  **JSON Serialization:** Rely on `serde_json` to marshal `rig-core`'s `Prompt` structs into byte arrays before sending them over the WIT boundary, and to deserialize the raw proxy response back into `rig-core`'s `CompletionResponse`.
+            4.  **Async Execution Limits:** `wasm32-wasip2` components execute asynchronously via WASI event loops. Ensure internal agent loops yield correctly without relying on heavy multi-threaded runtimes (like `tokio::spawn` with work-stealing), which are incompatible with the single-threaded WASM component model.
+            5.  **Adapter Crate (`syneroym-rig-adapter`):** To abstract this complexity from SynApp developers, the platform will provide a lightweight `syneroym-rig-adapter` crate. This crate will pre-configure `rig-core` with the correct WASM-compatible flags and automatically inject the `SyneroymModel` proxy bridge, allowing developers to write agent logic without fighting the WASM compilation toolchain.
+    *   **Workflow Architectures (Hybrid Approach):**
+        *   **1. Plan-and-Solve (Generic Fallback):** For open-ended queries, the agent uses `rig-core` to generate a sequential plan, then executes a generic loop against that plan.
+        *   **2. Finite State Machines (FSM):** For critical workflows (e.g., "Checkout Process"), developers define explicit stages. The Concierge Agent uses `rig-core` to execute the specific prompt and tool bindings for the active stage, guaranteeing safe recovery points.
+        *   **3. Multi-Agent Delegation:** For highly compartmentalized tasks, the Concierge Agent uses `rig-core` to spin up and orchestrate specialized sub-agents.
+        *   **4. Orchestrated Loopcraft & Nested Sub-Agents:** To move beyond brittle single-agent loops, the architecture embraces "Loopcraft." Using `rig-core`, developers define primitives (specialized sub-agents and tool loops). Crucially, these specialized loops are packaged as standard WASM `SynSvc` components and expose their entry points via WIT interfaces. During execution, the Concierge Agent acts as a stateful orchestrator, conditionally routing work to these nested WASM components via the Universal Proxy. If it drafts an Action Card, it yields to a strict "Verification Loop" component to check FDAE constraints. Because each loop is a distinct WASM component, it natively inherits Syneroym's zero-trust isolation, access controls, and observability metrics.
+*   **Retrieval Augmented Tool Discovery:**
+    *   **Execution:** The agent provides a `search_tools` function. When called, it searches `sqlite-vec`, dynamically appends matching MCP definitions to the LLM's context array, and prompts the LLM to continue.
+*   **Human-in-the-Loop & Execution Validation:**
+    *   **Design:** HITL and observability are strictly configuration-driven. If a tool schema or capability policy explicitly defines `requires_consent=true`, the agent suspends its Tokio task and pushes a consent request. Progress events expose tool traces, requested capabilities, and validation outcomes rather than raw private model reasoning.
+*   **Agent-to-Agent Delegation Protocol:**
+    *   **Design:** Agents utilize the Universal Proxy and Community Identity/Endpoint Registry to establish encrypted Iroh streams and exchange structured negotiation intents.
+*   **Vector Database & Long-Term Memory (sqlite-vec):**
+    *   **Design:** The Ecosystem Vector Directory and Long-Term Memory are backed by **`sqlite-vec`**, integrating seamlessly with the existing `cr-sqlite` infrastructure.
+
+### [ADV-DEV] SynApp Developer Tooling & SDKs
+
+*   **Transparent Developer Experience Design:**
+    *   **Architecture:** Avoid introducing custom opaque CLI wrappers for compilation. Instead, the ecosystem relies on `cargo-component` and standard `build.rs` to compile `wasm32-wasip2` targets. This design guarantees that `rust-analyzer` and AI IDEs continue to work perfectly, as they understand standard `Cargo.toml` dependencies and macros. We provide boilerplate generators like `cargo generate --git syneroym/synapp-template`.
+*   **Local Substrate Integration:**
+    *   **Architecture:** The core design philosophy is to leverage the actual Syneroym Substrate node for local development and end-to-end testing, rather than building a redundant "Dev Host" environment. Because SynApps are strictly decoupled from the Substrate via WASM WIT imports, no compile-time host integration is necessary. Developers simply deploy their compiled `.wasm` to a local `roymctl` instance for execution.
+*   **Pure Unit Testing Mocks (`syneroym-dev-sdk`):**
+    *   **Architecture:** For fast, isolated unit testing, we provide a lightweight mock SDK. This library contains pure, in-memory implementations of the WIT interfaces (e.g., a `HashMap`-backed key-value store instead of real SQLite). It does not embed any complex host execution logic. Developers link these mocks in their test configuration, allowing them to verify their core WASM application logic instantly without spinning up a node.
+
+## Phase 5: Peer-to-Peer Community Primitives
+
+### [P2P-DSC] Tag-Routed Discovery Routing Mechanics
+*   **Routing Execution:** Discovery intents are formatted as standard RPC messages containing a payload and a set of `Hierarchical Tags` (e.g., `["community", "tech", "rust-devs"]`). When a node receives an intent, it checks its local registries. If a match is found, it returns the explicit ID.
+*   **Query Forwarding & Hop-Limits:** If no local match exists, the node evaluates its active connections for peers that match the requested hierarchical tags. It forwards the intent to those peers. To prevent infinite loops and network flooding, every intent includes a strict `Time-To-Live (TTL)` counter that decrements on each hop.
+*   **Aggregator Integration:** If a node configures a known Aggregator as a "super-peer", it simply maps a broad hierarchical tag (like `["global"]`) to that Aggregator's explicit ID, naturally routing unmatched queries to the heavy index without requiring custom substrate logic.
+
+### [P2P-REP] Satisfaction Signal Mechanics
+*   **Signal Payload Structure:** A valid satisfaction signal consists of:
+    *   `interaction_receipt`: A cryptographic hash pointing to a mutually signed entry in the local Dynamic Ledger.
+    *   `score`: An integer strictly bounded to `0`, `1`, or `2`.
+    *   `note`: An optional, short text description.
+*   **Time-Decay Algorithm:** The substrate maintains a rolling Exponential Moving Average (EMA). The formula anchors to `1.0`. As signals age past defined thresholds (e.g., 30 days, 90 days), their weight in the EMA computation approaches 0, pulling the provider's overall score back to `1.0`.
+*   **Incremental Rolling Summaries:** Instead of recalculating summaries from scratch, the substrate triggers a background task upon receiving a new signal. It updates simple counters (e.g., `total_ratings`, `moving_average`) and maintains 3 small text fields (e.g., `summary_last_30_days`, `summary_all_time`). This bounded approach guarantees O(1) performance for reputation queries.
+*   **Provider-Hosted Presentation:** When Consumer A evaluates Provider B, B's substrate serves its local CRDT reputation log directly to A. Consumer A's substrate mathematically verifies the `interaction_receipt` signatures against the network. If valid, Consumer A's local AI (`[ADV-AI]`) reads the pre-computed rolling summaries and presents them to the user.
+
+## Phase 6: High-Level Applications (SynApps)
+
+### 0. Core Client Architecture (The Syneroym Hub)
+*Addresses the architecture of the universal UI shell.*
+**Design Approach:**
+To achieve the "Hybrid Headless Substrate" vision, the Syneroym Hub is designed as a "dumb" cross-platform frontend utilizing standard web technologies (HTML/CSS/JS). Because the UI acts purely as a renderer for JSON Action Cards, this stack ensures rapid, unified development across all multi-surface views.
+- **Desktop (Tauri):** We use Tauri because its native Rust backend can embed the substrate runtime library or supervise a local substrate daemon, while using the OS's native webview for an incredibly lightweight footprint. `roymctl` remains the CLI/control surface rather than the long-running daemon itself.
+- **Mobile (Native WebView Wrapper):** We use a thin native shell (Swift/Kotlin or Capacitor) wrapping a WebView. This allows HTML/CSS/JS to handle the dynamic UI, while the native layer handles heavy background tasks like P2P networking, cryptography, and `cr-sqlite` sync.
+- **Data Isolation:** The UI shell does not execute complex business rules and does not own authoritative database state. It may cache presentation data and outbox state for responsiveness. It maintains a persistent, authenticated WebSocket/gRPC connection to the local substrate API to serve views dynamically.
+- **Surface Rendering & Intent Translation:** When a user interacts with a Trusted Room or the Agentic Concierge, the UI simply renders the Action Cards or relays raw text/audio to the Substrate's local Rig-core agent, which handles translation into API calls.
+
+### 1. Service Bundling & Sub-Workflow Composition
+*Addresses the Consumer activity of combining multiple services (e.g., Food + Delivery).*
+**Design Approach:** 
+Syneroym has no central coordinator. To execute distributed sagas across independent providers, we employ a loosely coupled "State-Channel" approach. The consumer's local node acts as the orchestrator. It holds a composite intent state machine. When sub-task A (Food prep) signals completion via the messaging layer, the consumer's local node automatically triggers the next state transition, issuing an event to Provider B (Delivery). If a sub-task fails, the consumer's node executes compensating logic (e.g., requesting a refund via Escrow).
+
+### 2. Action Card Architecture
+*Addresses the interactive widgets (Quotes, Invoices, Forms) dropped into Trusted Rooms.*
+**Design Approach:** 
+Action Cards are strictly defined as standardized JSON schemas, similar to Microsoft's Adaptive Cards, rather than arbitrary portable WASM components. This prevents malicious UI execution on the client device. A provider sends a JSON payload representing the UI layout and an array of `actions`. When a user taps a button, the local substrate translates that action into a predefined Substrate Capability request (e.g., `grant_fdae_access` or `sign_mutual_credit_transaction`).
+
+### 3. Flexible Payment Integration
+*Addresses integrating external gateways (Stripe/UPI) alongside the internal Mutual Credit ledger.*
+**Design Approach:** 
+The substrate defines an abstract `PaymentIntent` interface for Invoice Cards. An Invoice Card payload contains an array of acceptable settlement methods.
+- **Native Mutual Credit:** Payload contains the exact DLN multi-sig hash to be counter-signed.
+- **External Gateway:** Payload contains a standard Web2 webhook/checkout URL (e.g., a Stripe session ID or UPI deep link). Upon external completion, the client submits the resulting receipt token back into the chat as proof. The provider's node verifies the receipt against the external API before updating local state.
+
+### 4. Portable Data & Reputation Envelopes
+*Addresses taking service history and reputation across hosting platforms.*
+**Design Approach:**
+Data portability is achieved via standardized Export/Import Envelopes. A provider compiles a user's service history into an archive of Verifiable Credentials (signed JSON-LD) or pkarr-signed IPFS blobs. The user imports this envelope into their new data homebase. When interacting with a new Aggregator, the user cryptographically proves their past reputation by submitting these pre-signed blobs, which the new node verifies against the original provider's public key without needing to contact the original provider.
+
+### 5. Staked Messaging & Spam Deterrence (Digital Stamps)
+*Addresses the Provider activity of paying a refundable stamp to send promotional offers.*
+**Design Approach:**
+Without a public blockchain, staking relies on the mutual-credit DLN. A provider initiates a "locked" multi-sig transaction representing the micro-credit stamp. This intent is attached to the cold-message payload. 
+- If the consumer accepts the message, they counter-sign the intent, claiming the credit.
+- If the consumer reports it as spam, the consumer signs a "slash" transaction, destroying the locked credit and creating a signed negative reputation signal. That signal is stored in the relevant participant or provider-hosted reputation log and can be shared with aggregators or peers; it is not written to a global public DHT.
+
+### 6. Decentralized Escrow & Dispute Resolution
+*Addresses the Facilitator activity of holding funds or arbitrating.*
+**Design Approach:**
+Escrow on a local CRDT ledger uses a 2-of-3 Multi-Signature scheme. An Invoice Intent is created requiring signatures from any two of the three parties: Consumer, Provider, and a designated Facilitator (Arbitrator). The funds/credits sit in a pending state on the DLN.
+- **Happy Path:** Consumer and Provider both sign the completion state.
+- **Dispute Path:** If they disagree, the Arbitrator reviews the case off-chain or via chat logs, and signs a final settling transaction alongside the winning party, forcing the CRDT merge.
+
+### 7. Aggregator Fuel Quotas
+*Addresses how Aggregators prevent spam when indexing catalogs.*
+**Design Approach:**
+Aggregators are fundamentally just Providers offering a horizontal service. They use the same internal SQLite/`cr-sqlite` ledger to track API consumption. A provider establishes a DID-based session with the Aggregator. The Aggregator maintains an internal table mapping the DID to an integer "fuel quota". Every incoming `publish_listing` or `search` API request is processed by middleware that atomically decrements the fuel quota in the local SQLite DB, rejecting requests when the balance hits zero. Providers top up fuel via standard Flexible Payment integrations.
+
+## Phase 7: Edge Expansion
+
+### 1. Mobile Operation Limitations (EDG-MOB)
+*Addresses how to maintain true P2P functionality under strict mobile OS resource constraints.*
+**Design Approach:**
+- **Network Throttling Strategies**: 
+  - Avoid persistent background services (aggressively killed by iOS).
+  - Rely on `[PLT-ASY]` outbox and retry semantics as the default mechanism for reaching offline mobile nodes.
+  - Use APN/FCM push notifications as an optional trigger to wake a mobile node for urgent incoming requests.
+  - **Deferred Responses**: When woken by a push notification, the mobile app processes the request locally but defers the network response transmission until its next OS-scheduled background window. The sender fetches this response via its continuous `[PLT-ASY]` retries.
+- **Hardware Enclave Abstraction**:
+  - The Substrate exposes a platform-agnostic `SecureStorage` and `KeyManagement` WIT interface.
+  - The native Rust host bridges this to the specific OS API (Android StrongBox Keystore, iOS Secure Enclave, Linux TPM 2.0).
+  - This allows a single SynApp (WASM) binary to perform secure cryptographic operations across all platforms natively.
 
 ## Open Questions & Recommendations
 
