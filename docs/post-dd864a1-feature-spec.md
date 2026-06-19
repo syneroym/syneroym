@@ -1,5 +1,13 @@
 # Pending Features Master Spec
-This document describes the pending features for Syneroym post git commit hash `dd864a18902bb8e71da0ff56bba4523688ad8ba1`. 
+This document describes the pending features for Syneroym post git commit hash `dd864a18902bb8e71da0ff56bba4523688ad8ba1`.
+
+This is a forward-looking target specification. It refines the older
+[system requirements](system-requirements-spec.md) and
+[architecture design](system-architecture-design.md) documents, but the older
+documents still describe broader product context and several implemented
+walking-skeleton choices. Where this document differs from those older docs,
+the intent is to capture the next architecture to implement and then reconcile
+the older docs after implementation.
 
 ### Tag Legend
 To ensure stable cross-referencing across commits and PRs, features are prefixed with category tags:
@@ -15,7 +23,7 @@ To ensure stable cross-referencing across commits and PRs, features are prefixed
 ## Phase 0: Core Architecture Implementation (SynApp & Topology)
 
 This phase implements the architectural boundary between Syneroym Applications (`SynApp`) and Syneroym Services (`SynSvc`), and the pending addressing and registry systems required for robust service discovery.
-*(Note: Service IDs, Global Identity Registries, and Endpoint Registries are currently implemented. The remaining app-level topologies, logical names, and orchestrators fall under this phase).*
+*(Current baseline: the codebase already has DID-key service identities, a community endpoint registry client backed by HTTP/pkarr, and an in-process local `EndpointRegistry`. This phase adds app-instance namespaces, topology-aware logical names, and orchestration on top of those primitives.)*
 
 ### [TOP-PRM] Core Primitives (`SynSvc`) vs. Control Plane Overlay (`SynApp`)
 
@@ -31,6 +39,7 @@ The `SynSvc` is the absolute foundational primitive of the Syneroym Substrate.
 *   **Resource Accounting:** Serves as a logical grouping for tracking quotas, billing, and telemetry across a designated graph of services.
 *   **SynApp Instances:** Unlike Erlang applications (which are singletons), deploying a `SynApp` manifest creates a unique **SynApp Instance** with an isolated namespace. A single substrate can host multiple distinct instances of the same `SynApp` (e.g., Personal Task Manager vs. Work Task Manager).
 *   **UI Decoupling:** User Interfaces are simply specialized `SynSvcs` or external clients. A `SynApp` may contain zero UIs (headless processes), one UI, or multiple specialized UIs (Admin, Storefront, Mobile Gateway).
+*   **Terminology Reconciliation:** Older docs sometimes say a `SynApp` "runs on" a substrate. In this model, only `SynSvcs` execute. A `SynApp Instance` is the manifest, namespace, capability bootstrap, dependency graph, and accounting context for those executing services.
 
 #### Composable SynApps (App Dependencies)
 Similar to Erlang OTP applications, `SynApps` are highly composable. A `SynApp` manifest is not restricted to explicitly declaring raw `SynSvcs`; it can declare dependencies on other `SynApps`.
@@ -45,18 +54,18 @@ Services communicate using a multi-tiered addressing model to support mobility, 
 
 #### Addressing Types
 1.  **Explicit Service ID (Physical ID):** 
-    *   An immutable, cryptographic identifier (e.g., UUID, hash, or Ed25519 public key) representing a specific, running instance of a `SynSvc` (e.g., `svc_8a7b6c5d...`).
-    *   Provider ownership of the service is proven via cryptographic certificates or UCANs, not the routing ID itself.
+    *   A stable cryptographic identifier for a deployed `SynSvc` instance. The current implementation uses DID-key identities derived from Ed25519 public keys; future encodings may wrap that in a shorter service identifier for ergonomics.
+    *   Provider ownership of the service is proven via the service identity and its signed endpoint records, UCANs, or deployment certificates. The route to that service may change without changing the service identity.
     *   Used for stateful interactions, direct replies, and underlying substrate routing.
 2.  **Logical Service Name:** 
-    *   A human-readable or contextual identifier (e.g., `profile-svc`, `ledger-primary`) representing a *role*.
+    *   A human-readable or contextual identifier (e.g., `profile-svc`, `ledger-primary`) representing a *role* within a `SynApp Instance` namespace.
     *   Used by developers in code to ensure high availability, load balancing, and decoupling.
 
 #### Service Topologies
 When registering a Logical Service Name, the local registry tracks its underlying topology:
 *   **Singleton:** Maps to exactly one Explicit ID.
-*   **Redundant (Load Balanced):** Maps to an array of Explicit IDs. The registry or caller load-balances requests across them.
-*   **Sharded:** Maps to multiple Explicit IDs based on a routing key (e.g., `user_id % 3 > explicit_id_X`).
+*   **Redundant (Load Balanced):** Maps to an array of Explicit IDs. The resolver returns the eligible set and the caller/proxy selects a target using the manifest's policy.
+*   **Sharded:** Maps to multiple Explicit IDs based on a stable routing key (for example, consistent hashing on `user_id`).
 
 ---
 
@@ -64,26 +73,26 @@ When registering a Logical Service Name, the local registry tracks its underlyin
 
 Rather than a strictly monolithic system, service discovery naturally emerges across different registry scopes:
 
-1.  **Global Identity Registry (DHT):** Resolves top-level Provider/Node identities to physical network addresses (e.g., WebRTC sockets, Iroh ALPNs, IP addresses).
-2.  **Contextual/App Registry:** Resolves Logical Service Names to Explicit Service IDs within a specific app overlay context or shared node namespace.
-3.  **Endpoint/Router Registry:** The internal substrate routing table. Maps an Explicit Service ID to actual execution boundaries (e.g., local WASM host functions or remote network sockets).
+1.  **Community Identity/Endpoint Registry (HTTP + pkarr/DHT):** Resolves top-level Provider, Node, and public Service identities to signed endpoint records (for example, Iroh endpoint addresses, WebRTC peer hints, or public gateway URLs).
+2.  **Contextual/App Registry:** Resolves Logical Service Names to Explicit Service IDs within a specific `SynApp Instance` overlay context or shared node namespace.
+3.  **Endpoint/Router Registry:** The internal substrate routing table. Maps an Explicit Service ID and interface to actual execution boundaries (for example, local WASM channels, native host functions, Podman sockets, TCP host/ports, or remote network sockets).
 
 ---
 
 ### [TOP-DSC] Discovery Mechanisms and Inventory
 
 #### The `syneroym-core/registry` Default Service
-To provide "batteries-included" service discovery, the platform provides a canonical Registry `SynSvc`.
+To provide "batteries-included" service discovery, the platform provides a canonical Registry capability. It may run as a native substrate service or as an isolated Registry `SynSvc`, but it is distinct from the in-process local `EndpointRegistry`.
 *   **Purpose:** Acts as the local source of truth for service inventory, logical-to-physical mapping, and health tracking.
 *   **Manifest Configuration:** A `SynApp` manifest dictates how the Orchestrator handles this:
     1.  **Spawn:** Boot a dedicated, isolated instance of the Registry `SynSvc` exclusively for this app. To handle this correctly, the `SynApp` manifest must support a service dependency graph (either explicitly declared or inferred via references) so the Orchestrator boots the registry *before* the services that depend on it.
     2.  **Bind:** Register the app's services with a pre-existing, shared node-level Registry `SynSvc` (saving resources).
-*   **Client Caching (Refresh-on-Failure):** Service clients query the registry to resolve a logical name, **cache** the resulting Explicit ID locally, and communicate directly with the Explicit ID. The cache is only evicted and refreshed if a connection failure occurs.
+*   **Client Caching (Refresh-on-Failure):** Service clients query the registry to resolve a logical name, **cache** the resulting Explicit ID locally, and communicate directly with the Explicit ID. Cache entries carry a topology epoch or TTL and are refreshed on connection failure, registry update notifications, or expiry.
 
 #### Static Deployment Inventory (`roymctl`)
 Not all apps require a live, queryable registry at runtime (e.g., trivial background cron jobs or standalone static UIs).
 *   For these trivial apps, the orchestrator/CLI (`roymctl`) maintains a static, local state file (or local host DB).
-*   It records the mapping of `App Name > Explicit Service ID(s)` at deploy time.
+*   It records the mapping of `SynApp Instance ID / logical role > Explicit Service ID(s)` at deploy time.
 *   This static inventory is sufficient for lifecycle management (listing, stopping, uninstalling) without the overhead of spinning up a live Registry `SynSvc`.
 
 ---
@@ -94,7 +103,8 @@ This defines the baseline resilience required for underlying node-to-node and cl
 
 - **Transport Resilience & Retries:** 
   - The system must gracefully handle transient network drops. Any failed connection attempt must not immediately fail the higher-level request.
-  - Implement automatic retries for establishing connections. The retry count should be configurable per-SynApp, defaulting to 3 retries with a simple exponential backoff.
+  - Implement automatic retries for establishing connections. The retry count should be configurable per service dependency or manifest default, defaulting to 3 retries with a simple exponential backoff.
+  - Automatic request retries are only safe for connection setup, idempotent operations, or calls explicitly marked retryable with idempotency keys. Non-idempotent calls must surface failure or enter an opt-in outbox workflow.
 - **Reactive Connection Management:**
   - Standard transport-level timeouts (e.g., QUIC idle timeouts, WebRTC SCTP timeouts) are used to detect dropped peers. We do not implement custom application-level ping/pong heartbeats to save bandwidth and complexity.
   - Stale connections are handled reactively: "evict when found out." If a read or write operation fails due to a disconnected peer, the connection is instantly marked as dead and retried or surfaced as an error.
@@ -106,7 +116,7 @@ This defines the baseline resilience required for underlying node-to-node and cl
 ### [FND-DEP] Deployment/Operations
 - **Cloud-Agnostic Bare-Metal Deployment:** Single Rust binary deployed to a standard Linux instance (e.g., AWS Lightsail) using native `systemd` to minimize virtualization overhead.
 - **In-Repo Provisioning & Deployment:** `scripts/deploy/setup_linux.sh` handles initial machine setup (certbot, limits, systemd), while `scripts/deploy/deploy.sh` handles local compilation and rsync transfer. GitHub Actions (`.github/workflows/deploy.yml`) acts merely as a trigger to run the local deploy script.
-- **Native TLS:** Direct binding to port 443 within the Syneroym substrate using `rustls`. Certificates are fetched/renewed via an OS-level `certbot` timer. The substrate restarts to reload certificates.
+- **Native TLS:** Direct or systemd-socket-activated binding to port 443 within the Syneroym substrate using `rustls`. Certificates are fetched/renewed via an OS-level `certbot` timer. The substrate restarts or reloads configuration to pick up renewed certificates.
 - **Resource Protection:** Configuration parameters for connection caps and cache limits ensure the node gracefully refuses excess traffic instead of crashing (OOM).
 - **Observability:** Phase 1 relies purely on SSH access. Operators monitor via `journalctl -u syneroym -f` and local `curl` requests against built-in endpoints (e.g., Iroh relay metrics).
 - **Cross-Platform Distribution:** Automated build pipelines to compile and release Syneroym binaries for different architectures (Linux, macOS, Windows).
@@ -117,9 +127,9 @@ This defines the baseline resilience required for underlying node-to-node and cl
 - **Data at Rest Encryption (Envelope Encryption):** 
   - To prevent catastrophic re-encryption of gigabytes of data during key rotation, the substrate uses Envelope Encryption. Unique Data Encryption Keys (DEKs) are generated to encrypt the actual blobs and `cr-sqlite` databases.
   - The service owner negotiates and injects a Master Key (Key Encryption Key or KEK) securely into substrate RAM at startup. The KEK only encrypts the tiny DEKs stored on disk. Key rotation is instantaneous as only the DEKs are re-encrypted with the new KEK.
-  - **Secret Vault:** Application secrets (API keys, credentials) and configurations are stored securely inside a dedicated Vault table within the encrypted `cr-sqlite` database, rather than as vulnerable flat files on disk.
-  - The `SynApp` manifest includes configuration flags (e.g., `encrypt_local_db: true`, `encrypt_backups: true`) to allow opting out of encryption overhead when performance is prioritized over secrecy.
-  - Remote backups (e.g., Litestream WAL frames) are streamed to other S3-protocol-compatible substrates, encrypted locally before transit if configured.
+  - **Secret Vault:** Application secrets (API keys, credentials) are stored securely inside a dedicated Vault table within the encrypted per-service SQLite/`cr-sqlite` database, rather than as vulnerable flat files on disk. Non-secret configuration may share the same encrypted store for convenience, but it is not treated as a secret unless marked as such.
+  - The `SynApp` manifest includes configuration flags (e.g., `encrypt_local_db: true`, `encrypt_backups: true`) to allow explicit opt-out only for non-sensitive development or performance-sensitive deployments where the owner accepts the risk.
+  - Remote backups (e.g., WAL frames or object snapshots) are streamed to S3-compatible stores or peer backup substrates and are encrypted locally before transit when configured.
 - **Hardware Attestation (Deployer-Led):** 
   - The substrate exposes a `substrate.attest(nonce)` API to the network.
   - The App Deployer/Owner externally challenges the node (at deployment or periodically) and mathematically verifies the hardware quote (TPM, KeyAttestation, AppAttest).
@@ -127,7 +137,7 @@ This defines the baseline resilience required for underlying node-to-node and cl
 - **Memory Protection & Key Splitting:**
   - OS-level memory locking (e.g., `mlock`) prevents injected cryptographic keys from being swapped to disk.
   - The `zeroize` crate is used to explicitly wipe sensitive variables from RAM when dropped.
-  - Keys in substrate memory are split or fragmented to mitigate extraction via buffer over-read vulnerabilities.
+  - Keys in substrate memory are split or fragmented as a best-effort mitigation against naive RAM scraping or buffer over-read vulnerabilities. This does not replace hardware-backed key protection.
 - **Resource Exhaustion & Quotas:**
   - Network edge protection: Strict connection and payload limits at the Iroh/QUIC boundary.
   - Runtime execution limits: The substrate enforces the physical capabilities of the host alongside strict quotas defined in the `SynApp` manifest (e.g., `max_memory`, `max_instructions`). Wasmtime's fuel metering deterministically traps components exceeding their gas limits without stalling the node.
@@ -143,12 +153,12 @@ This defines the baseline resilience required for underlying node-to-node and cl
 Given that Syneroym supports both native WASM components and legacy Podman containers, configuration and secret management use a dual-target approach:
 
 - **Configuration Delivery**:
-  - **WASM (Native)**: Services retrieve their hierarchical configuration on-demand via a standard host function (e.g., `syneroym:config/get`).
+  - **WASM (Native)**: Services retrieve their hierarchical configuration on-demand via a standard host function (e.g., `syneroym:config/get`). WASI environment variables or pre-opened files may be exposed only as an explicit compatibility mode for non-secret values.
   - **Podman (Legacy)**: Because third-party containers expect specific formats, the `SynApp` manifest dictates how the orchestrator exposes the config. The orchestrator will either flatten the config into standard environment variables or serialize nested configurations (JSON/TOML/YAML) into temporary files and mount them read-only into the container.
 - **Secret Management**:
   - **WASM (Native)**: Strictly adheres to `[FND-SEC]`. The service pulls secrets directly into locked RAM via `syneroym:vault/reveal`. Secrets never touch the filesystem or environment variables.
   - **Podman (Legacy)**: The orchestrator resolves the secret from the Vault at deployment and injects it as an environment variable or via an ephemeral `tmpfs` mount. This accepts a degraded security posture (secrets visible in process lists) as a necessary tradeoff for running legacy software.
-- **Dynamic Updates & Restarts**: Configuration is immutable. For WASM, configuration changes instantly apply to the next component invocation. For Podman, the orchestrator must gracefully restart/recreate the long-lived container to apply the new configuration or secrets.
+- **Dynamic Updates & Restarts**: Configuration is versioned and immutable for a running invocation. For WASM, a new configuration generation applies to the next component invocation; already-running invocations continue with the generation they started with. For Podman, the orchestrator must gracefully restart/recreate the long-lived container to apply the new configuration or secrets.
 - **App Composition (Bind vs. Spawn)**: When a parent `SynApp` depends on another app, the configuration resolves based on the dependency mode:
   - **Spawn**: If the dependency must be spun up alongside the parent, `roymctl` inlines the child manifest into the parent at deploy-time, creating a single flattened deployment graph.
   - **Bind**: If the parent depends on an *already running* app instance, the parent manifest references it. The orchestrator resolves the target's Explicit Service IDs via the App Registry and injects those connection details into the parent's configuration, rather than spawning new instances.
@@ -159,7 +169,7 @@ Given that Syneroym supports both native WASM components and legacy Podman conta
 > **Implementation Design:** For technical details regarding the dual-target configuration delivery and cold restart behavior, see [Feature Design: FND-CFG](post-dd864a1-feature-design.md#fnd-cfg-service-configuration).
 
 ### [FND-IAM] Access Control
-- **FDAE (Federated Data-Aware Authorization Engine):** Adopts the FDAE architecture, which decouples the authorization specification (the "What") from the environment-specific execution (the "How"). It avoids the traditional PBAC vs. ReBAC dilemma by acting as an intelligent, distributed routing engine. It utilizes a declarative, Zanzibar-style structured configuration (e.g., YAML/JSON) to map relationship chains across fragmented data sources. The Substrate directly deserializes this configuration—avoiding custom parsers or ASTs—and acts as a distributed query planner.
+- **FDAE (Federated Data-Aware Authorization Engine):** Adopts the FDAE architecture, which decouples the authorization specification (the "What") from the environment-specific execution (the "How"). It avoids the traditional PBAC vs. ReBAC dilemma by acting as an intelligent, distributed routing engine. It utilizes a declarative, Zanzibar-style structured configuration (e.g., YAML/JSON) to map relationship chains across fragmented data sources. The Substrate directly deserializes this configuration into a typed policy model, avoiding custom string parsers while still giving the query planner a structured representation to execute.
 - **Solving the Data Fetching Problem (Pushdown Sieve):** For local contiguous relationships, FDAE collapses the graph into a single, deeply nested query. By compiling ReBAC policies directly into SQL `WHERE EXISTS` clauses, the SQLite engine performs massive-scale relationship filtering at the C-level, handing only authorized rows back to the WASM guest.
 - **Dual-Mode Execution:** FDAE natively handles both **Point-In-Time Evaluation** (returning a swift Allowed/Denied flag for a specific resource check) and **Relational Data Filtering** (applying the security policies as a global subquery to prune index-level datasets before they ever reach the Wasm guest).
 - **UCAN Integration (Normalized Claims, Capabilities, Scopes):** Access control is a robust synthesis of cryptographic capabilities and relational data state.
@@ -179,10 +189,10 @@ Given that Syneroym supports both native WASM components and legacy Podman conta
 The Data Layer provides a complete foundation for distributed application state and communication, securely accessed via typed host functions or APIs without exposing raw database engines to the applications.
 
 - **Structured Data Service (Document Database):**
-  - **Database Isolation (One DB per Service):** The canonical primitive for structured state (backed by SQLite). Instead of a monolithic combined database, every SynApp service gets a fully isolated, separate SQLite database file (and WAL). The substrate also maintains its own separate database. This guarantees true concurrent write scaling across services, allows selective WAL replication, and isolates failure domains.
+  - **Database Isolation (One DB per Service):** The canonical primitive for structured state (backed by SQLite). Instead of a monolithic combined database, every stateful `SynSvc` gets a fully isolated, separate SQLite database file (and WAL). The substrate also maintains its own separate database. This guarantees true concurrent write scaling across services, allows selective WAL replication, and isolates failure domains.
   - **Concurrency Model:** Designed for high throughput using a Single-Writer Thread / Multiple-Reader Pool architecture per database. This perfectly aligns with SQLite's WAL mode, eliminating `SQLITE_BUSY` lock contention and maximizing performance in asynchronous Rust.
   - **Resource Model:** Collections with lightweight schemas (loose enforcement of types, explicit indexed fields) containing JSON records. The data layer automatically injects a spoof-proof `creator_id` into every record.
-  - **Schema Initialization (DDL):** During the `init` phase of deployment, SynApps supply DDL as a variant: initially plain SQL strings (e.g., `CREATE TABLE`, `CREATE VIEW`, `CREATE INDEX`) and, in the future, a structured data model object. Starting with plain SQL is safe because each service owns an isolated database, and access is gated by IAM. Views defined during init are instantaneous (no write-lock penalty, unlike index creation) and can be targeted by the `AggregationPipeline` at runtime.
+  - **Schema Initialization (DDL):** During the `init` phase of deployment, `SynSvc` manifests supply DDL as a variant collected by the `SynApp` manifest: initially plain SQL strings (e.g., `CREATE TABLE`, `CREATE VIEW`, `CREATE INDEX`) and, in the future, a structured data model object. Starting with plain SQL is safe for trusted services because each service owns an isolated database, and access is gated by IAM. Views defined during init are instantaneous (no write-lock penalty, unlike index creation) and can be targeted by the `AggregationPipeline` at runtime.
   - **Operations & Queries:** Full CRUD operations (`create_collection`, `put`, `patch`, `get`, `delete`, `delete_many`). It also supports `batch_mutate` for atomic transactions across multiple records. The query engine translates an abstract `FilterExpr` (supporting `Eq`, `In`, `Contains` for full-text, etc.) and `AggregationPipeline` (for projections, `group_by`, `having`) into parameterized SQL queries with cursor-based pagination. Aggregations can target both physical collections and logical views.
   - **WASM Serialization & WIT Boundary:** Expand the `syneroym:data-layer/store` WIT boundary to support robust nested record serialization/deserialization. Currently, only basic types are supported; this enables seamless passing of complex JSON object graphs between WASM components and the host.
 
@@ -198,7 +208,7 @@ The Data Layer provides a complete foundation for distributed application state 
 - **Universal Proxy (Inter-Component RPC):**
   - **Typed Interactions:** Developers use strongly typed WIT imports (`import acme:booking/service;`) rather than generic untyped APIs.
   - **Interception & Instance Mapping:** The Substrate injects a proxy host function during component instantiation to satisfy the WIT import. It resolves the generic import to a specific running `service_id` by consulting the application manifest and Orchestrator Registry.
-  - **Protocol Translation:** The substrate traps the WASM call and dynamically proxies it to the specific instance. It serializes the call into fast, binary **wRPC** (over Iroh QUIC) if the target is another WASM substrate, or universal **JSON-RPC** (over HTTP/WebSocket) if targeting a legacy Podman container.
+  - **Protocol Translation:** The substrate traps the WASM call and dynamically proxies it to the specific instance. The target design serializes native WASM-to-WASM calls into fast, binary **wRPC** over Iroh QUIC. Until the wRPC surface is implemented, JSON-RPC remains the available external bridge. Legacy Podman containers and external clients use universal **JSON-RPC** over HTTP/WebSocket unless an adapter provides a richer interface.
   - **Static Composition Bypass:** Dependencies can be statically composed (e.g., via `wasm-tools compose`) into a single binary before deployment. In this case, imports are satisfied internally, the Substrate is completely bypassed, and execution occurs with zero overhead within the sandbox.
 
 > **Implementation Design:** For technical details regarding the embedded MQTT broker and the wRPC Universal Proxy architecture, see [Feature Design: PLT-DAT](post-dd864a1-feature-design.md#plt-dat-data-layer).
@@ -209,7 +219,7 @@ The Asynchronous Operations component ensures reliable execution of offline inte
 
 - **Resilient RPC & Retries:**
   - **Configurable Policies:** Retry policies (e.g., exponential backoff, maximum attempts) are defined at the service level by default, but can be overridden per-request.
-  - **Dead Letter Queue (DLQ):** When the maximum retry limit is reached, failed messages are routed to a Dead Letter Queue for auditing, manual intervention, or later replay, preventing silent data loss.
+  - **Dead Letter Queue (DLQ):** When the maximum retry limit is reached, retryable or outbox-backed messages are routed to a Dead Letter Queue for auditing, manual intervention, or later replay, preventing silent data loss. Non-idempotent synchronous calls fail directly unless the caller supplied an idempotency key and opted into queuing.
 
 - **Offline Message Semantics & Outbox:**
   - **Optimistic Local Execution (Fire-and-Forget):** Clients can trigger operations using a fire-and-forget flag (or wrapper API) indicating it is "ok to send later". The client UI treats the request as optimistically successful. 
@@ -218,12 +228,13 @@ The Asynchronous Operations component ensures reliable execution of offline inte
 
 - **Long-Running Tasks:**
   - **Uniform Execution:** Long-running tasks composed of multiple compute and service calls are supported uniformly (e.g., executed as standard Wasm functions).
-  - **In-Memory State Management:** The request to start the task is durably recorded, but the active execution state resides in the asynchronous engine's memory. If the process is interrupted, the task restarts or fails rather than resuming from a mid-execution disk snapshot.
+  - **In-Memory State Management:** The request to start the task is durably recorded, but the active execution state resides in the asynchronous engine's memory. If the process is interrupted, the task restarts from the beginning only when the task is idempotent or explicitly restartable; otherwise it fails and runs compensations rather than resuming from a mid-execution disk snapshot.
 
 - **Periodic & Scheduled Tasks:**
   - **Lease-Based Scheduler:** To prevent load skew and overlapping executions in a clustered environment, cron/periodic triggers use an execution lease mechanism backed by the Registry.
   - **Delegated Execution:** The node that wins the lease acts only as the "Orchestrator" for that tick. It selects a target worker node (e.g., randomly or via load metrics) and dispatches the actual execution command to it.
   - **Overlap Prevention:** The lease is held in the Registry until the executing node completes the work. If the task exceeds its cron interval, subsequent timer ticks across the cluster will fail to acquire the lease and safely skip the run.
+  - **Registry Availability:** Cluster-wide lease acquisition is a control-plane dependency. If the Registry is unavailable, new clustered schedule ticks pause or skip safely; single-node schedules may continue using local leases if the manifest permits.
 
 - **Compensating Transactions (Saga Pattern):**
   - **Undo Interfaces:** To handle permanent failures in distributed scenarios without leaving the system in an inconsistent state, services can expose `undo_<operation>()` endpoints in their WIT interfaces.
@@ -240,6 +251,7 @@ This feature guarantees data durability, service continuity, and split-brain pre
 **Database Redundancy**
 - **Configurable Stateful Replication:** The replication factor (e.g., N=1, N=2, N=3) is configurable at service deployment time via the application manifest. For replicated setups (N>=2), there is exactly one Primary accepting write operations, while the Secondaries maintain an identical read-only state. The Registry reflects the topology defined by the manifest.
 - **Low-Latency Streaming:** Replication must be near-instantaneous. Changes committed to the Primary must be streamed directly to the Secondary without relying on high-latency batching or third-party storage intermediaries for the live replication path.
+- **SQLite-Safe Application:** The replication layer must respect SQLite WAL and shared-memory invariants. It must not depend on ad hoc mutation of another live SQLite process's `-wal` or `-shm` files.
 - **Disaster Recovery:** In addition to live node-to-node replication, the system must support periodic asynchronous backups to external object storage (S3-compatible) to enable cold starts and disaster recovery.
 
 **Blob Storage Redundancy**
@@ -248,13 +260,13 @@ This feature guarantees data durability, service continuity, and split-brain pre
 **Registry & Topology Management**
 - **Single Source of Truth:** The Registry Service is the authoritative control plane for all cluster membership and routing topology.
 - **Manual Promotion (CP Focus):** To prevent split-brain scenarios, there is strictly no automatic failover. If a Primary fails, the system deliberately drops its redundancy level (Availability impact) to preserve data Consistency. Promoting a Secondary to Primary requires explicit operator intervention via the Registry.
-- **Strict Quarantining:** When a failed node is deposed, the Registry must permanently mark its Node ID as `QUARANTINED`.
+- **Strict Quarantining:** When a failed node is deposed, the Registry must mark its Node ID as `QUARANTINED` for the current topology epoch. It cannot rejoin data-plane service under the same identity until an explicit operator re-provisioning or retirement workflow clears the condition.
 - **Routing-Level Fencing:** The system must enforce split-brain prevention at the routing layer. `QUARANTINED` nodes must be completely isolated:
     - *Ingress:* All other nodes and clients must clear their routing caches and immediately cease sending requests to the quarantined node.
     - *Egress:* Any outbound requests originating from a quarantined node (e.g., if it is merely network-partitioned) must be strictly rejected by all receiving services.
 
 **Control Plane vs Data Plane Isolation**
-- The Data Plane must be fully decoupled from the availability of the Control Plane. If the Registry service goes offline, all data plane routing, MQTT message flows, and HTTP access must continue functioning indefinitely using the last known cached topology until the control plane is restored.
+- The Data Plane must be fully decoupled from the availability of the Control Plane for already-known healthy routes. If the Registry service goes offline, existing data plane routing, MQTT message flows, and HTTP access continue using the last known cached topology until the control plane is restored. New deployments, promotions, quarantine decisions, and clustered scheduler leases pause or fail closed while the Registry is unavailable.
 
 > **Implementation Design:** For technical details regarding the Iroh-based WAL replication and routing-level fencing, see [Feature Design: PLT-RED](post-dd864a1-feature-design.md#plt-red-service-redundancy).
 
@@ -263,13 +275,13 @@ This feature guarantees data durability, service continuity, and split-brain pre
 ### [LFC-MGT] SynApp Lifecycle Management
 - Orchestrates the deployment, configuration, and monitoring of SynApps and their constituent SynSvcs across a decentralized network of substrates.
 - **Application Manifests**: A SynApp is defined by a declarative manifest containing:
-  - A list of required `SynSvc` instances (WASM components).
+  - A list of required `SynSvc` instances (WASM components, Podman containers, native host services, or external TCP/HTTP services).
   - Explicit configurations for each service, including resource quotas and limits.
   - **Explicit Bindings**: First-class declarations of logical network dependencies (e.g., `requires: backend_api`). The orchestrator uses these to construct a dependency graph and resolve physical addresses *before* injecting them into the service's configuration.
 - **Substrate Inventory**: The control plane maintains a user-defined inventory of target substrates, tracking their known capabilities to facilitate intelligent deployment scheduling. Target substrates enforce access control to ensure only authorized deployments are accepted.
 - **Operational Modes**: Lifecycle management is supported via two distinct operational modes utilizing a shared set of core orchestration libraries:
   1. **CLI Standalone Mode (roymctl)**: Designed for **one-shot decentralized deployment**. The CLI reads a manifest, synchronously deploys services to available online substrates, and records an installation trace in a local SQLite database. It does not queue tasks for offline substrates. Drift from the desired state is resolved manually via a single-pass `reconcile` command.
-  2. **Active Control Plane Mode (Server SynApp)**: A specialized SynApp deployed onto the network that acts as a continuous controller. It accepts manifests via an API, stores the desired state in its replicated SQLite database, and runs a continuous background reconciliation loop to watch the actual state of services and trigger deployments/undeployments automatically.
+  2. **Active Control Plane Mode (Server SynApp)**: An optional controller `SynApp Instance` deployed onto an owner or cluster's network. Its control services run as ordinary `SynSvcs`. It accepts manifests via an API, stores the desired state in its replicated SQLite database, and runs a continuous background reconciliation loop to watch the actual state of services and trigger deployments/undeployments automatically. It is not a global central coordinator.
 
 ### [LFC-VER] Versioning support overall
 - **Substrate Upgrades**: Substrate binaries are updated via conscious, operator-driven actions rather than automatic, unverified polling. The system must support rollback to previous binaries (e.g., via `roymctl revert`) in case an upgrade introduces instability or fails health checks.
@@ -301,7 +313,7 @@ This feature guarantees data durability, service continuity, and split-brain pre
   5. The LLM selects the best tool and generates the execution command.
   6. The agent invokes the target service via the Universal Proxy, returning **Action Cards**.
 - **Human-in-the-Loop (HITL) Consent:** For high-stakes tool calls, the Concierge Agent pauses execution and yields a "Proposal Card" to the Trusted Room. The user must cryptographically sign (consent) before the loop resumes. This is configured natively via tool arguments.
-- **Agent Observability (Thought Streaming):** Configurable thought streaming where the Concierge Agent broadcasts its intermediate reasoning steps back to the UI.
+- **Agent Observability (Progress Streaming):** Configurable progress streaming where the Concierge Agent broadcasts structured status, tool calls, citations, and validation events back to the UI. Raw private model reasoning is not exposed as an application contract.
 - **MCP Gateway:** A headless gateway layer that exposes the substrate's local capabilities to *external* desktop clients using the Model Context Protocol (MCP).
 - **Agent-to-Agent Delegation:** The capability for a user's Concierge Agent to autonomously negotiate with external provider agents across the Syneroym substrate.
 - **Ecosystem Vector Directory & Memory:** A specialized local data store (`sqlite-vec`) indexing available tools and storing episodic memory.
@@ -319,7 +331,7 @@ Because Syneroym can be utilized as a general open cloud, this dedicated phase s
 ### [P2P-DSC] Federated Tag-Routed Discovery
 - **Native P2P Message-Passing Graph:** High-level discovery is built directly into a federated routing graph. Nodes send discovery intents to their direct peers. If a peer cannot fulfill the request locally, it forwards the intent.
 - **Hierarchical Tags:** Intents are routed using hierarchical tags representing composed logical groups (e.g., `#close-friends`, `#office-network`). Queries are pushed only to relevant active connections matching the tag, which uniformly encompass both individual peers and service substrates.
-- **Aggregators as Super-Peers:** Centralized directory applications ("Aggregators") are supported, but from the substrate's perspective, they simply present the identical standard interface as any other peer. The Syneroym community registry can point to default aggregators, which individual substrates can optionally configure as default "super-peers" to enhance discovery performance.
+- **Aggregators as Super-Peers:** Directory applications ("Aggregators") are supported, but from the substrate's perspective, they simply present the identical standard interface as any other peer. The Syneroym community registry can point to default aggregators, which individual substrates can optionally configure as default "super-peers" to enhance discovery performance.
 
 ### [P2P-REP] Peer Reputation & Trust
 - **Coarse-Grained Satisfaction Signal:** Reputation is implemented as a low-resolution scale (e.g., 0=Poor, 1=Decent, 2=Great) to minimize cognitive load and mathematical complexity.
@@ -331,8 +343,10 @@ Because Syneroym can be utilized as a general open cloud, this dedicated phase s
 ## Phase 6: High-Level Applications (SynApps)
 *In this phase, individual mini-apps (Chat, Ledger, Marketplace, Aggregator) are unified into seamless, actor-centric activities executing across a multi-surface UX.*
 
+Phase 6 assumes post-MVP platform primitives such as the Dynamic Ledger Network where explicitly referenced. The MVP boundary in the system requirements still treats native mutual credit and fully integrated escrow as out of scope.
+
 ### The Syneroym Hub (Core Client Application)
-*The universal, multi-surface shell that connects the user to their local WASM substrate and orchestrates all ecosystem activities.*
+*The universal, multi-surface shell that connects the user to their local substrate and orchestrates all ecosystem activities.*
 - **The Personal Data Homebase:** A secure vault interface managing the user's digital identity, portable service history, and active FDAE access grants.
 - **The Trusted Room Inbox:** A unified messaging view combining human-to-human social chats, professional guild groups, and interactive business-to-consumer service threads.
 - **The Agentic Concierge:** A persistent text/voice interface powered by the local AI agent, allowing users to parse natural language into complex, multi-provider API workflows.
@@ -371,7 +385,7 @@ Because Syneroym can be utilized as a general open cloud, this dedicated phase s
 ### [EDG-MOB] Mobile operation 
 - **Platform Support**: Native Syneroym Substrate execution on Android and iOS.
 - **Background Execution & Throttling**:
-  - Baseline communication relies on `PLT-OFF` (Offline Operation) where remote clients continuously retry connecting to the mobile node.
+  - Baseline communication relies on `[PLT-ASY]` outbox and retry semantics where remote clients continuously retry connecting to the mobile node.
   - For urgent requests, clients can optionally send an out-of-band push notification (APN/FCM) to silently wake the suspended mobile app.
   - The woken app processes requests locally but defers outbound network responses until the mobile OS schedules a background task window.
 - **Hardware Security (TPM 2.0 Equivalent)**:
