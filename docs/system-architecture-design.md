@@ -477,37 +477,97 @@ To support diverse caller types (WASM components, peer substrates, CLI, browsers
 
 ### Identity
 
-Every entity has an **Ed25519** keypair. Identity documents are self-describing JSON-LD structures signed by the entity key.
+The system implements a **Three-Tier Identity Architecture** to decouple the persistent, high-trust root identity from ephemeral day-to-day operations.
+
+1. **Government Identity (Optional):** Pure physical data with a state signature, verified via a Zero-Knowledge Proof (Method B).
+2. **Master Key (DID):** A persistent `did:key` (Ed25519) stored securely (encrypted local file or OS enclave). Used strictly to issue `Verifiable Credential Bonds` tying the Master Key to the National ID (or acting as a self-sovereign root) and issuing delegation/revocation certificates.
+3. **Temporary Key (DID):** A short-lived (e.g., 3-month) `did:key` (Ed25519). **This Temporary Key acts as the primary `NodeId` routing index in the DHT (pkarr).**
 
 ```mermaid
 flowchart TD
-    subgraph IDENTITY["Identity Document Structure"]
+    subgraph TIER1["Tier 1: Government Identity (Black Box)"]
         direction LR
-        ID_DOC["IdentityDoc {
-          id: did:syn:&lt;pubkey&gt;
-          pubkey: Ed25519
-          created: HLC timestamp
-          endpoints: [relay URLs]
-          credentials: [VC references]
-          revoked_keys: [signed list]
-          signature: self-signed
-        }"]
+        ID_DATA["Attestation Claims + Uniqueness Anchor + Root Signature"]
     end
 
-    subgraph LIFECYCLE["Key Lifecycle"]
-        GEN[Generate keypair on first run] --> REG[Register identity doc in DHT]
-        REG --> USE[Sign all messages and actions]
-        USE --> ROT[Key rotation: new key signed by old key]
-        ROT --> REV[Old key published as revoked in DHT]
-        REV --> USE
+    subgraph TIER2["Tier 2: Master Identity"]
+        direction LR
+        MASTER["Master Key (did:key)"]
+        VC_BOND["Verifiable Credential: Master Key signs Uniqueness Anchor"]
+        MASTER -->|Signs| VC_BOND
+    end
+    
+    subgraph TIER3["Tier 3: Temporary Routing Identity"]
+        direction LR
+        TEMP["Temporary Key (did:key)"]
+        DEL_CERT["Delegation Certificate (Valid e.g., 3 months)"]
+        MASTER -->|Issues| DEL_CERT
+        DEL_CERT -.->|Authorizes| TEMP
+    end
+    
+    TIER1 -.->|"Verified via ZK Plugin (Method B)"| VC_BOND
+```
+
+#### Cryptographic Delegation (Method A)
+For standard operations, the Master Key issues a "Delegation Certificate" to a generated Temporary Key. Handshakes (e.g., `verifyAndDeriveSharedSecret`) validate this chain:
+1. Did the Temporary Key sign the active request?
+2. Did the Master Key authorize this Temporary Key?
+3. (Optional) Is the Master Key bound to a verified National ID?
+
+#### Zero-Knowledge Architecture (Method B)
+To prove National ID bindings without revealing the DID or Uniqueness Anchor, the substrate utilizes an **Optional ZK Runtime Plugin** (WASM-based). 
+- It accepts the National ID file, root signature, Master Key, and Temporary Key (as Public Input) into a dynamic proving scheme (e.g., `anon-aadhaar` downloaded on demand).
+- Verifiers check the output proof string against public parameters.
+
+#### Identity Resolution & Revocation (The Master Anchor)
+To maintain strict security without modifying standard DHT signature mechanics (BEP 44), the **Master Key acts as the persistent anchor**. Both keys utilize standard `pkarr` DHT records signed by their respective private keys.
+
+**Secure Resolution Flow:**
+1. **Registry Lookup:** A client queries the Community/App Registry for a Logical Service Name. The registry returns the **Master Key DID** that owns the service.
+2. **Authorization Check (DHT):** The client looks up `pkarr:<Master Key DID>`. The signed payload contains an array of authorized, active **Temporary Key DIDs** (representing the user's active devices/servers).
+3. **Routing Lookup (DHT):** The client finds the matching Temporary Key in the array, looks up `pkarr:<Temporary Key DID>`, and retrieves the actual IP/Relay endpoints.
+
+**Passive Revocation:**
+If a Temporary Key is compromised (e.g., a stolen laptop), the Master Key updates its own DHT record array to omit the compromised key. 
+- The compromised key's individual `pkarr` record might technically still exist in the DHT, but **clients will instantly reject it** because it is no longer authorized by the Master Anchor.
+- Dependent clients with cached routes perform a "Refresh-on-Failure" lookup: they query the Master Key again, see the new authorized Temporary Key, and securely reconnect.
+
+**Master Key Compromise (Tier 1 Fallback):**
+If the Master Key itself is compromised, the true user falls back to **Tier 1 (The Physical Identity)**. 
+- Because an attacker possesses the digital `did:key` but not the physical identity card (e.g., the NFC chip on an e-passport or Aadhaar biometrics), the attacker cannot generate a fresh ZK Proof.
+- The user generates a *new* Master Key and binds it to the same Uniqueness Anchor by creating a new Verifiable Credential Bond (or ZK Proof) that includes a modern timestamp/epoch. 
+- The Community Registry and network resolve conflicts by always trusting the Master Key that provides the most recent, cryptographically valid ZK Proof tied to the physical Uniqueness Anchor. 
+- **Orphaned DHT Records:** The attacker's compromised Master Key will technically still maintain its `pkarr` DHT record. However, this record becomes entirely orphaned and irrelevant because the higher-level routing layers (e.g., the Community Registry, peer contact lists) update their internal pointers to resolve the Logical Service/Identity exclusively to the *new* Master Key. This effectively severs the attacker's access and re-establishes the new Master Key as the anchor without needing to "delete" the old DHT entry.
+
+```mermaid
+flowchart TD
+    subgraph RESOLUTION["Secure Connection Resolution"]
+        direction TB
+        REG[Registry: Logical Name -> Master Key]
+        MAST_DHT[DHT pkarr:MasterKey -> Array of Authorized TempKeys]
+        TEMP_DHT[DHT pkarr:TempKey -> IP/Relay Endpoints]
+        
+        REG --> MAST_DHT
+        MAST_DHT -->|Validates| TEMP_DHT
+    end
+
+    subgraph REVOCATION["Passive Revocation"]
+        direction TB
+        COMP{TempKey Compromised?}
+        COMP -->|Yes| UPD[Master Key updates its DHT payload array to drop TempKey]
+        UPD --> FAIL[Clients re-query Master Key and drop connections to old TempKey]
     end
 
     subgraph DELEGATION["Capability Delegation"]
-        ROOT[Root keypair] -->|"issue UCAN"| APP[SynApp component scoped token]
+        ROOT[Temporary Key] -->|"issue UCAN"| APP[SynApp component scoped token]
         ROOT -->|"issue UCAN"| CONSUMER_TOK[Consumer time-limited token]
         APP --> INVOKE[Invoke substrate APIs within granted scope]
     end
 ```
+
+---
+
+## Layer 3 — Shared Substrate Utilities
 
 ### Discovery & DHT
 

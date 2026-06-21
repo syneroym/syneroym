@@ -227,7 +227,7 @@ These requirements apply across all business domains and SynApps.
 ### Non-Functional Requirements
 
 - **Security:** All inter-node and client-node traffic is encrypted in transit. Sensitive data at rest supports encryption with keys controlled by the data owner or designated operator.
-- **Identity Security:** Key rotation and key revocation are supported without requiring complete account recreation.
+- **Identity Security:** Key rotation and key revocation are supported without requiring complete account recreation. Temporary active keys have a configurable expiration (defaulting to several months) and are supported by a decentralized revocation registry (e.g., via DHT or Gossip) for rapid invalidation if compromised.
 - **Availability:** The substrate continues serving read operations during temporary relay or bootstrap unavailability when cached or local data is sufficient.
 - **Durability:** Provider data backups are restorable to a new node without proprietary dependencies.
 - **Observability:** Substrate and SynApps expose health status, structured logs, and basic metrics suitable for UI and CLI monitoring.
@@ -254,7 +254,14 @@ Minimum requirement at transaction time:
 
 Trust in the Syneroym ecosystem operates at multiple levels:
 
-**Layer 1: Cryptographic Identity.** Every entity (person, service, substrate node) has a keypair-based identity. Messages and actions are signed. This proves authenticity but not trustworthiness.
+**Layer 1: Cryptographic Identity.** The system uses a **Three-Tier Architecture**:
+1. **Government Identity (Optional):** Physical data with a state signature acting as a verifiable root.
+2. **Master Key (DID):** A persistent cryptographic anchor (`did:key`) bound to the government identity (or self-sovereign). It is kept securely offline or in protected storage.
+3. **Temporary Key:** A short-lived, task-specific key explicitly delegated by the Master Key. This acts as the primary identity for day-to-day operations and network routing.
+
+Every entity uses these keypair-based identities to sign messages and actions. This proves authenticity and enables flexible revocation but does not inherently prove trustworthiness.
+
+**Handling Master Key Compromise:** If the Master Key is compromised, the user utilizes Tier 1 (the physical hardware card or biometric data) to generate a new Master Key and a new Verifiable Credential Bond with a newer epoch. The network automatically resolves to the Master Key presenting the most recent ZK Proof for a given physical identity, effectively self-healing without manual administrative intervention.
 
 **Layer 2: Referral and Vouching.** Entities vouch for other entities within their network. A consumer who transacts with a provider vouches for them. A provider aggregator vouches for the providers it manages. Vouching creates a web of trust that consumers and automated systems traverse. [Vouching mechanics and weighting: Architecture TBD]
 
@@ -375,7 +382,7 @@ Description of the core Syneroym substrate functionality, key protocols, and imp
 
 **Discovery.** Nodes store a partition of a distributed search index to aid federated service discovery. [Partitioning and consistency model: Architecture TBD]
 
-**Identity.** Each entity is identified by a cryptographic keypair. The substrate manages key storage, rotation, and delegation on behalf of the node owner.
+**Identity.** Each entity is identified by a Three-Tier cryptographic keypair hierarchy (Master and Temporary keys). The substrate manages key storage, rotation, and delegation. Master keys are stored in a highly secure, exportable encrypted local file (optionally backed by OS enclaves where exportability permits) to allow multi-device sync. The substrate optionally supports Zero-Knowledge (ZK) Proof plugins (e.g., `anon-aadhaar`) dynamically loaded via WASM to verify government identity attachments without leaking personal data.
 
 **Access Control.** The substrate enforces access control policies on all inter-service and client-service communication. Policies are owned by the entity owner and are not overridable by the infrastructure provider.
 
@@ -601,6 +608,11 @@ To provide "batteries-included" service discovery, the platform provides a canon
     1.  **Spawn:** Boot a dedicated, isolated instance of the Registry `SynSvc` exclusively for this app. To handle this correctly, the `SynApp` manifest must support a service dependency graph (either explicitly declared or inferred via references) so the Orchestrator boots the registry *before* the services that depend on it.
     2.  **Bind:** Register the app's services with a pre-existing, shared node-level Registry `SynSvc` (saving resources).
 *   **Client Caching (Refresh-on-Failure):** Service clients query the registry to resolve a logical name, **cache** the resulting Explicit ID locally, and communicate directly with the Explicit ID. Cache entries carry a topology epoch or TTL and are refreshed on connection failure, registry update notifications, or expiry.
+*   **Master Anchor Resolution (Revocation Handling):** To maintain secure identity revocation without breaking standard DHT signatures, the ecosystem enforces the **Master Anchor** pattern:
+    *   Registries map Logical Service Names exclusively to the **Master Key**.
+    *   The Master Key maintains a single `pkarr` DHT record containing an array of currently authorized **Temporary Keys** (the actual routing `NodeId`s).
+    *   **Passive Revocation:** If a Temporary Key is compromised, the Master Key simply updates its DHT array to drop the compromised key. The registry and DHT mechanics themselves do not change.
+    *   Dependent clients cache the route. Upon a connection failure (or periodically), they perform a "Refresh-on-Failure" by looking up the Master Key's DHT record again, instantly dropping the compromised key since it is no longer authorized.
 
 #### Static Deployment Inventory (`roymctl`)
 Not all apps require a live, queryable registry at runtime (e.g., trivial background cron jobs or standalone static UIs).
