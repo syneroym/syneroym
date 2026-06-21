@@ -254,14 +254,8 @@ Minimum requirement at transaction time:
 
 Trust in the Syneroym ecosystem operates at multiple levels:
 
-**Layer 1: Cryptographic Identity.** The system uses a **Three-Tier Architecture**:
-1. **Government Identity (Optional):** Physical data with a state signature acting as a verifiable root.
-2. **Master Key (DID):** A persistent cryptographic anchor (`did:key`) bound to the government identity (or self-sovereign). It is kept securely offline or in protected storage.
-3. **Temporary Key:** A short-lived, task-specific key explicitly delegated by the Master Key. This acts as the primary identity for day-to-day operations and network routing.
-
-Every entity uses these keypair-based identities to sign messages and actions. This proves authenticity and enables flexible revocation but does not inherently prove trustworthiness.
-
-**Handling Master Key Compromise:** If the Master Key is compromised, the user utilizes Tier 1 (the physical hardware card or biometric data) to generate a new Master Key and a new Verifiable Credential Bond with a newer epoch. The network automatically resolves to the Master Key presenting the most recent ZK Proof for a given physical identity, effectively self-healing without manual administrative intervention.
+**Layer 1: Cryptographic Identity.** The system uses a decoupled keypair hierarchy allowing day-to-day ephemeral routing while anchoring ultimate trust to an offline or hardware-backed root (e.g., a physical Government ID card). 
+*Note: See `[FND-IDT]` in the Phase 1 Addendum and the `Identity Resolution` section in the Architecture Design document for the explicit "Three-Tier Architecture" and "Master Anchor" compromise fallback mechanisms.*
 
 **Layer 2: Referral and Vouching.** Entities vouch for other entities within their network. A consumer who transacts with a provider vouches for them. A provider aggregator vouches for the providers it manages. Vouching creates a web of trust that consumers and automated systems traverse. [Vouching mechanics and weighting: Architecture TBD]
 
@@ -382,7 +376,7 @@ Description of the core Syneroym substrate functionality, key protocols, and imp
 
 **Discovery.** Nodes store a partition of a distributed search index to aid federated service discovery. [Partitioning and consistency model: Architecture TBD]
 
-**Identity.** Each entity is identified by a Three-Tier cryptographic keypair hierarchy (Master and Temporary keys). The substrate manages key storage, rotation, and delegation. Master keys are stored in a highly secure, exportable encrypted local file (optionally backed by OS enclaves where exportability permits) to allow multi-device sync. The substrate optionally supports Zero-Knowledge (ZK) Proof plugins (e.g., `anon-aadhaar`) dynamically loaded via WASM to verify government identity attachments without leaking personal data.
+**Identity.** The substrate manages key storage, rotation, and delegation. It isolates long-term identity anchors from ephemeral routing keys and supports dynamic WASM plugins for Zero-Knowledge (ZK) proofs. *(See `[FND-IDT]` in the Addendum for explicit implementation tasks)*.
 
 **Access Control.** The substrate enforces access control policies on all inter-service and client-service communication. Policies are owned by the entity owner and are not overridable by the infrastructure provider.
 
@@ -671,6 +665,11 @@ This defines the baseline resilience required for underlying node-to-node and cl
 
 > **Implementation Design:** For technical details covering Envelope Encryption and Memory Protection, see [Feature Design: FND-SEC](post-dd864a1-feature-design.md#fnd-sec-substrate-security).
 
+### [FND-IDT] Cryptographic Identity Primitives
+- **Three-Tier Key Management:** Implement the core library for managing the Three-Tier Identity Architecture (Government ID -> Master Key -> Temporary Key).
+  - The substrate must securely generate and manage local Master Keys (`did:key`) and enforce the Master Anchor pattern, where Master Keys delegate Temporary Keys for daily routing.
+- **Master Key Export & Recovery:** Implement the ability to securely export the Master Key (encrypted at rest) for multi-device synchronization. Implement the **Tier 1 Fallback** mechanism, ensuring the system can process and broadcast new ZK Proofs to override compromised Master Keys.
+- **ZK Plugin Interface (Method B):** Implement a WASM extension point that allows the substrate to dynamically load Zero-Knowledge Proof schemes (e.g., `anon-aadhaar`) on demand for identity verification without bloating the core binary.
 
 
 ### [FND-CFG] Service Configuration
