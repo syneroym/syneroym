@@ -1767,7 +1767,7 @@ Additional transports, gateways, and protocol adapters can be added later withou
 ## Post-DD864A1 Target Designs (Addendum)
 # Syneroym: Substrate Feature Implementation Design
 
-This document details the "How"—the concrete engineering designs and implementation strategies—that map to the features defined in the [Feature Specification](post-dd864a1-feature-spec.md).
+This document details the "How"—the concrete engineering designs and implementation strategies—that map to the features defined in the [Feature Specification](system-requirements-spec.md#post-dd864a1-target-specifications-addendum).
 
 > **Note:** Only sections with complex architectural considerations are expanded here. Trivial mappings are omitted.
 >
@@ -1776,6 +1776,44 @@ This document details the "How"—the concrete engineering designs and implement
 ---
 
 ## Phase 0: Core Architecture Implementation
+
+### [TOP-PRM] Core Primitives (`SynSvc`) vs. Control Plane Overlay (`SynApp`)
+
+*   **Manifest Compiler & Orchestrator Boundary:**
+    *   **Design:** `SynApp` is redefined as an immutable `DeploymentPlan` generated from a versioned `SynAppManifest`. The orchestrator (`crates/orchestration`) acts as the compiler. It parses TOML/JSON manifests, resolves topological constraints, and enforces cycle detection.
+    *   **Domain Models:** Introduces strongly typed definitions for `AppBlueprintId`, `AppInstanceId`, `LogicalServiceName`, `ServiceId` (the Explicit physical ID), `LogicalServiceRef`, and `InterfaceName` to firmly decouple roles from execution instances.
+    *   **Dependency Resolution (ManifestCatalog):** To avoid network/filesystem I/O inside the pure planning phase, dependency resolution relies on a `ManifestCatalog` trait. `SynApp` dependencies use explicit `Spawn` (inline instantiation) or `Bind` (reference an existing `AppInstanceId`) modes.
+
+### [TOP-ADR] Service Addressing and Resolution Topology
+
+*   **Logical Resolution Integration (Above the Router):**
+    *   **Design:** Logical resolution sits strictly *above* the physical network router. The router continues to rely on explicit `ServiceId`s (DID-keys). The resolver translates a `LogicalServiceRef` to an explicit `ServiceId` via the App Registry.
+    *   **Selection Topology:** The Resolver/Selector supports three modes:
+        *   **Singleton:** Returns the sole eligible member.
+        *   **Redundant:** Uses round-robin selection for unkeyed calls; rendezvous selection for keyed calls.
+        *   **Sharded:** Supports two sub-strategies declared in the manifest:
+            *   **Hash Sharding (compute-oriented):** Uses deterministic rendezvous hashing over a `routing_key`. The member with the highest `hash(routing_key, service_id)` weight is selected. This ensures uniform load distribution and mathematically even failure redistribution across all remaining members if one drops—without requiring virtual nodes or a sorted ring. Use this when requests are self-contained and range queries are not needed.
+            *   **Composite Partitioning (data-oriented):** Used when the service must support range scans (e.g., time-series events, alphabetic key ranges). Range-adjacent keys must co-locate on the same node, which pure rendezvous hashing destroys (since it uniformly scatters lexically adjacent keys). The solution is a two-level hierarchy:
+                1.  **Bucket by Range First:** The manifest declares discrete, contiguous `PartitionBucket`s (e.g., `sales_2026_Q1`, `users_A_C`). All items within a bucket share the same `bucket_id`.
+                2.  **Rendezvous Hash the Bucket:** The Resolver applies rendezvous hashing to the `bucket_id` (not the item key) to select a member. This guarantees all items in the same contiguous range co-locate on one node (enabling fast single-node range queries), while the buckets themselves are evenly distributed and fail over safely via rendezvous semantics.
+                *   **Trade-off:** Range queries that span multiple buckets still require scatter-gather across the involved nodes. Bucket sizing is therefore a data-access design decision: buckets that are too coarse will cause hot spots; buckets that are too fine will produce excessive scatter-gather. The manifest must explicitly declare the `partition_strategy: composite` to signal this mode, which static CLI mode rejects unless the member set is fixed.
+    *   **Caching Keys:** Topology caches are keyed by `AppInstanceId + LogicalServiceName` (storing the `ResolvedTopology`, not the selected member), while Route caches are keyed by `ServiceId + InterfaceName`. Invalidation triggers on `topology_epoch` updates, `cache_ttl` expiry, or terminal connection failures.
+
+### [TOP-REG] Types of Registries in the Ecosystem
+
+*   **Contextual App Registry & Topology Resolver:**
+    *   **Design:** A registry abstraction (`AppRegistry` trait) resides outside the router to manage topology state, while a separate Selector routes requests. This keeps mutable state out of the resolution path.
+    *   **Persistence:** The registry persists `AppInstanceId + LogicalServiceName` records detailing the topology mode, member `ServiceId`s, health/eligibility, `topology_epoch`, `cache_ttl`, and membership leases.
+    *   **Static vs. Native Mode:** In `StaticInventory` mode (Phase 0 standalone), resolved bindings are persisted only in the installation trace and injected directly into service config. `Native` mode registers topologies into a live registry backend.
+
+### [TOP-DSC] Discovery Mechanisms and Inventory
+
+*   **Journaled Standalone Orchestration (`roymctl`):**
+    *   **Design:** `roymctl` manages static inventory deployments via a strict Crash Consistency Deployment Journal (`PLANNED → APPLYING → ACTIVE → ROLLING_BACK → ROLLED_BACK / ROLLBACK_FAILED`).
+    *   **Crash Consistency:** If a deployment fails midway, `roymctl reconcile` can recover or rollback the deployment to prevent orphaned services. Static mode explicitly rejects dynamic load balancing/sharding manifests unless the service can handle a fixed member set.
+*   **Master Anchor Resolution (Phase 0 Contract):**
+    *   **Design:** Phase 0 implements the resolver contract to handle Master Anchor endpoint-resolution logically, distinguishing the Master Key from the Temporary Key.
+    *   *Note: Production Master Anchor DHT authorization and signed record formats are deferred to Phase 1 `[FND-IDT]`.*
 
 ### [TOP-ROB] Network & Connection Robustness
 
