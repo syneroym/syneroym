@@ -50,7 +50,7 @@ For more detailed workflows, port references, test suites (unit, e2e, and micro-
 
 - [Product vision mapping ](docs/VISION.md) 
 - [Requirement specifications](docs/system-requirements-spec.md) 
-- [System Architecture](docs/system-architecture-design.md)
+- [System Architecture](docs/system-architecture.md)
 - [Developer Guide](docs/developer-guide.md) — Detailed setup, testing, and API examples
 
 ## Contributing

@@ -8,7 +8,7 @@ To demonstrate these capabilities in a real-world scenario, our initial referenc
 
 **Last product review:** 2026-06-22
 
-**Companion documents:** [Vision](./VISION.md) · [Architecture](./system-architecture-design.md)
+**Companion documents:** [Vision](./VISION.md) · [Architecture](./system-architecture.md)
 
 This document is the canonical statement of **who Syneroym serves, what outcomes
 it must enable, and which constraints a conforming implementation must honour**.
@@ -949,7 +949,7 @@ This defines the baseline resilience required for underlying node-to-node and cl
     and rollback protection are documented; one permanently hardcoded project
     key must not be the ecosystem's unrecoverable trust root.
 
-> **Implementation Design:** For technical details covering Envelope Encryption and Memory Protection, see [Feature Design: FND-SEC](system-architecture-design.md#fnd-sec-substrate-security).
+> **Implementation Design:** For technical details covering Envelope Encryption and Memory Protection, see [Feature Design: FND-SEC](system-architecture.md#fnd-sec-substrate-security).
 
 ### [FND-IDT] Cryptographic Identity Primitives
 - **Issuer-Neutral Key Hierarchy:** Implement stable owner-controlled identity
@@ -985,7 +985,7 @@ Given that Syneroym supports both native WASM components and legacy Podman conta
 - **Out-of-Band Secret Rotation**: While regular configuration changes happen via explicit manifest deployments (which naturally trigger a restart), secrets live independently in the Vault. If a secret is rotated *out-of-band* by an admin, the manifest's `rotation_policy` dictates whether the orchestrator automatically restarts the affected service or waits for the next manual deployment.
 - **Anti-Goal: "Helm-ification"**: The `SynApp` manifest is strictly a "dumb", fully-resolved document. Syneroym rejects complex in-manifest templating (like Helm). If developers need environment-specific overrides, they should use external tools (like `cue`, `ytt`, or simple scripts) to generate a static manifest *before* passing it to `roymctl deploy`. The only dynamic variables supported are standard host parameters (e.g., `SYNEROYM_NODE_IP`) that the orchestrator inherently injects at runtime.
 
-> **Implementation Design:** For technical details regarding the dual-target configuration delivery and cold restart behavior, see [Feature Design: FND-CFG](system-architecture-design.md#fnd-cfg-service-configuration).
+> **Implementation Design:** For technical details regarding the dual-target configuration delivery and cold restart behavior, see [Feature Design: FND-CFG](system-architecture.md#fnd-cfg-service-configuration).
 
 ### [FND-IAM] Access Control
 - **FDAE (Federated Data-Aware Authorization Engine):** Adopts the FDAE architecture, which decouples the authorization specification (the "What") from the environment-specific execution (the "How"). It avoids the traditional PBAC vs. ReBAC dilemma by acting as an intelligent, distributed routing engine. It utilizes a declarative, Zanzibar-style structured configuration (e.g., YAML/JSON) to map relationship chains across fragmented data sources. The Substrate directly deserializes this configuration into a typed policy model, avoiding custom string parsers while still giving the query planner a structured representation to execute.
@@ -1000,7 +1000,7 @@ Given that Syneroym supports both native WASM components and legacy Podman conta
   3. **SQL Execution (The Relational Sieve):** SQLite natively filters candidate rows based on the ReBAC policies, UCAN context, and any parameters fetched during the cross-service fetch.
   4. **After-Step (ABAC & Override Filter):** An optional custom WASM function performs fine-grained, non-relational ABAC checks on the candidate rows.
 
-> **Implementation Design:** For technical details regarding the FDAE architecture and the 4-stage hybrid pipeline, see [Feature Design: FND-IAM](system-architecture-design.md#fnd-iam-access-control).
+> **Implementation Design:** For technical details regarding the FDAE architecture and the 4-stage hybrid pipeline, see [Feature Design: FND-IAM](system-architecture.md#fnd-iam-access-control).
 
 ## Phase 2: Core Platform Capabilities
 
@@ -1030,7 +1030,7 @@ The Data Layer provides a complete foundation for distributed application state 
   - **Protocol Translation:** The substrate traps the WASM call and dynamically proxies it to the specific instance. The target design serializes native WASM-to-WASM calls into fast, binary **wRPC** over Iroh QUIC. Until the wRPC surface is implemented, JSON-RPC remains the available external bridge. Legacy Podman containers and external clients use universal **JSON-RPC** over HTTP/WebSocket unless an adapter provides a richer interface.
   - **Static Composition Bypass:** Dependencies can be statically composed (e.g., via `wasm-tools compose`) into a single binary before deployment. In this case, imports are satisfied internally, the Substrate is completely bypassed, and execution occurs with zero overhead within the sandbox.
 
-> **Implementation Design:** For technical details regarding the embedded MQTT broker and the wRPC Universal Proxy architecture, see [Feature Design: PLT-DAT](system-architecture-design.md#plt-dat-data-layer).
+> **Implementation Design:** For technical details regarding the embedded MQTT broker and the wRPC Universal Proxy architecture, see [Feature Design: PLT-DAT](system-architecture.md#plt-dat-data-layer).
 
 ### [PLT-ASY] Asynchronous Operations & Scheduling
 
@@ -1093,7 +1093,7 @@ the primary.
 **Control Plane vs Data Plane Isolation**
 - The Data Plane must be fully decoupled from the availability of the Control Plane for already-known healthy routes. If the Registry service goes offline, existing data plane routing, MQTT message flows, and HTTP access continue using the last known cached topology until the control plane is restored. New deployments, promotions, quarantine decisions, and clustered scheduler leases pause or fail closed while the Registry is unavailable.
 
-> **Implementation Design:** For technical details regarding the Iroh-based WAL replication and routing-level fencing, see [Feature Design: PLT-RED](system-architecture-design.md#plt-red-service-redundancy).
+> **Implementation Design:** For technical details regarding the Iroh-based WAL replication and routing-level fencing, see [Feature Design: PLT-RED](system-architecture.md#plt-red-service-redundancy).
 
 ## Phase 3: Substrate & Application Lifecycle
 
