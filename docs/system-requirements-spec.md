@@ -1,13 +1,37 @@
-# Syneroym Ecosystem Requirements Specification [WIP]
+# Syneroym Ecosystem Requirements Specification
 
-> **Migration Note:** The architectural roadmap and target specifications have been significantly updated post-dd864a1. See the **Post-DD864A1 Target Specifications (Addendum)** at the bottom of this document for the canonical Phase 0-7 breakdown and feature details.
-This document expands on the vision described [here](./VISION.md). Please go through that to understand the bigger picture. Following from there, our objective is to build a technology substrate that enables diverse classes of provider ecosystems to emerge through `Autonomous SynApps (Mini-apps) Cooperating over a common technology substrate`. We also build initial SynApps that kickstart these new ecosystems and demonstrate various interaction patterns.
+Syneroym is a decentralized, peer-to-peer technology ecosystem that empowers individuals and small groups to run their own autonomous applications (SynApps) without relying on centralized platform monopolies. At its core, it provides a secure, identity-native substrate that handles complex networking, discovery, and trust, enabling these independent apps to seamlessly cooperate and interact directly with one another. Whether operating on a smartphone or a server, Syneroym facilitates diverse federated ecosystems—spanning private communications, community governance, and collaborative peer networks—where participants retain absolute control over their data and digital relationships, while still enjoying the powerful network effects of a unified platform.
 
-> **Document scope note:** This is a *requirements* document. It specifies *what* the system does and *why*, not *how*. Sections marked `[Architecture TBD]` indicate areas where the approach is intentionally deferred to a separate Architecture Design Document. These include: reputation mechanisms, federated discoverability, coin/credit systems, DHT design, CRDT merge semantics, and relay topology.
+To demonstrate these capabilities in a real-world scenario, our initial reference application is the **Provider Space**—a decentralized professional services network built entirely on the Syneroym substrate.
+
+**Status:** Draft product baseline
+
+**Last product review:** 2026-06-22
+
+**Companion documents:** [Vision](./VISION.md) · [Architecture](./system-architecture-design.md)
+
+This document is the canonical statement of **who Syneroym serves, what outcomes
+it must enable, and which constraints a conforming implementation must honour**.
+It expands the vision of *autonomous SynApps cooperating over a common
+technology substrate* into testable product and ecosystem requirements.
+
+### Requirement conventions
+
+- **Must** denotes a release or conformance requirement.
+- **Should** denotes an important default that may be deferred with a documented
+  product or operational reason.
+- **May** denotes an optional capability.
+- Product releases are vertical, end-to-end increments. Capability backlog
+  phases are engineering sequencing bands and do not independently constitute a
+  usable product release.
+- Unresolved choices are recorded in [Decision Register](#decision-register),
+  with a decision gate. Vague `[Architecture TBD]` markers do not waive the
+  product requirement.
 
 This requirements spec is structured as follows:
 
 - Philosophy & Design Constraints
+- Product Outcomes, Guardrails, and Release Scope
 - Requirements Overview
 - Personas
 - Glossary / Terminology
@@ -18,7 +42,7 @@ This requirements spec is structured as follows:
 - Shared Utilities and Services
 - SynApp Specs:
     - Reference Application: Business, Professional, and Retail Spaces (covering Home Services and Small Retail)
-- Open Questions
+- Post-DD864A1 Specifications
 
 ---
 
@@ -28,13 +52,13 @@ A key difference in the newly envisioned provider ecosystem compared to large-sc
 
 ### Preserving Benefits
 
-- Technology enablement of business without managed infrastructure
-- Massive discovery & distribution
+- Technology enablement without requiring every provider to operate infrastructure
+- Useful local discovery and distribution, with federation as reach grows
 - Streamlining, standardization of interaction patterns
-- Institutional trust
+- Legible, independently verifiable trust signals
 - Security at scale
 - Fault tolerance
-- Legal shielding
+- Clear accountability and support for appropriate local legal structures
 - Reputation aggregation
 - Economies of scale
 - Network effects
@@ -55,15 +79,59 @@ A key difference in the newly envisioned provider ecosystem compared to large-sc
 
 The following principles guide design decisions throughout the system:
 
-**Locality-first.** The system is optimised for scenarios where providers and consumers are geographically proximate. Federation beyond local clusters is a secondary concern.
+**Locality-first.** The system is optimised for scenarios where providers and consumers are geographically proximate. Federation between local clusters is important; undifferentiated global reach is not an initial goal.
 
 **Progressive decentralisation.** A provider starts with a single device and no federation. Complexity is introduced incrementally as their needs grow. The system does not require full federation to be useful.
 
-**Data sovereignty.** All provider data lives on infrastructure the provider controls or has explicitly chosen to lease. No provider data is stored on Syneroym-operated infrastructure except transiently for routing.
+**Data sovereignty.** Authoritative private provider data lives on infrastructure
+the provider controls or has explicitly chosen. Public listings and records the
+provider deliberately shares may be cached or replicated under disclosed
+retention rules. Syneroym-operated infrastructure receives no special right to
+store or monetise provider data.
 
 **Transparency over opaqueness.** Ranking, discovery, and reputation algorithms are either open source or provider-auditable. No hidden algorithmic black boxes determining outcomes for providers.
 
 **Interoperability by convention.** SynApps cooperate through shared substrate primitives and open protocols. No SynApp requires a central coordinator to interoperate with another.
+
+**Human-operable by default.** A provider must be able to start small, understand
+the system's current state, recover from common failures, and leave without
+specialist assistance. Decentralisation that only experts can operate does not
+satisfy the product goal.
+
+**User agency over ecosystem purity.** Self-hosting is always available, but
+managed hosting, familiar payment rails, and lightweight consumer identities are
+valid adoption paths when their trade-offs are explicit and exit remains
+possible.
+
+**End-to-end slices before platform breadth.** New substrate capabilities are
+validated through a real provider-consumer workflow before adjacent generality
+is added.
+
+---
+
+## Product Outcomes, Guardrails, and Release Scope
+
+### Product outcomes
+
+Syneroym succeeds when it creates a credible third option between a large
+centralised marketplace and running an isolated website or messaging account.
+The product must deliver these outcomes:
+
+1. **Provider autonomy without an operations burden.** A small provider or guild
+   can publish, transact, retain its customer relationships, and change operators
+   without rebuilding its digital business.
+2. **A coherent consumer experience across independent operators.** A consumer
+   can discover, assess, contact, agree with, and later return to providers
+   without understanding substrates, relays, or federation.
+3. **Cooperation without surrendering control.** Independent providers can share
+   discovery, referrals, infrastructure, and composed workflows while retaining
+   their own identity, data, policies, and right to exit.
+4. **Useful operation under real local constraints.** Core workflows tolerate
+   intermittent connectivity, modest hardware, and varying technical skill.
+5. **An ecosystem developers can safely extend.** Stable contracts, conformance
+   tests, capability negotiation, and transparent governance allow third parties
+   to build interoperable SynApps without privileged access.
+
 
 ---
 
@@ -71,36 +139,48 @@ The following principles guide design decisions throughout the system:
 
 High-level requirement highlights:
 
-- Providers self-host business applications on commodity hardware (PCs, phones, Raspberry Pi) without requiring cloud accounts or deep technical expertise.
+- Providers either self-host on commodity hardware or choose a managed operator,
+  without requiring a cloud account or deep technical expertise.
 - Providers federate with others to share infrastructure and improve resilience and discovery reach.
 - Consumers discover and transact with providers through a unified experience regardless of which substrate hosts the provider.
-- The substrate provides shared primitives (identity, messaging, discovery, payments, reputation) that SynApps build on rather than re-implement.
+- Consumers can participate with a lightweight device-bound identity; running a
+  personal substrate is an optional upgrade path, not an entry requirement.
+- The substrate provides shared contracts for identity, messaging, discovery,
+  agreements, receipts, trust signals, and data portability. Payment execution
+  remains pluggable and outside the system trust boundary.
 - The system degrades gracefully under network partition — queuing, offline-first storage, and async workflows keep transactions progressing.
 - All provider participants retain the ability to exit — migrating data and services to a different infrastructure provider or running independently.
+- Ecosystem protocols are open, versioned, testable, and governed through a
+  published process that does not privilege Syneroym-operated services.
 
-## MVP Boundary (Phase 1)
-
-*The historical MVP Boundary has been superseded. Please see the **Post-DD864A1 Target Specifications (Addendum)** section at the bottom of this document for the comprehensive Phase 0 through Phase 7 roadmap and acceptance criteria.*
+---|---|---|
+| **PRD-AUT** | Provider identity, data, policy, and operator choice remain under provider control. | Delegation-revocation and operator-migration journeys. |
+| **PRD-CUX** | Consumers complete the reference journey without understanding hosting or federation. | Moderated task-success test and accessibility audit. |
+| **PRD-FED** | Independent implementations interoperate without a mandatory central data-plane or authority. | Two-node federation and bootstrap-outage tests. |
+| **PRD-OFF** | Safe workflows remain intelligible and converge after disconnection; unsafe retries fail explicitly. | Fault-injection, idempotency, and state-model tests. |
+| **PRD-POR** | Participants can export, verify, and restore in-scope identity-linked data through versioned open formats. | Clean-node export/import drill and cross-version fixtures. |
+| **PRD-TRU** | Trust evidence is sourced, scoped, fresh, explainable, and correctable; uncertainty remains visible. | Trust-display, revocation, omission, and abuse cases. |
+| **PRD-OPS** | A non-specialist can install or join, understand health, recover, update, and exit within the declared operating profile. | Timed onboarding and incident-recovery exercises. |
+| **PRD-EXT** | Third-party SynApps can declare capabilities and pass public compatibility tests. | Package inspection and protocol conformance suite. |
+| **PRD-SAF** | Consent, data lifecycle, moderation boundaries, and responsible parties are explicit throughout a transaction. | Policy-version, grant, report, dispute, and deletion scenarios. |
 
 ---
 
 ## Personas in the Syneroym Ecosystem
 
-The following are key personas. A single person or organisation may play multiple roles simultaneously.
+The following are key personas. A single person or organisation may play
+multiple roles, but the product must make the active role and its powers clear.
 
-**Individual Service Provider.** Provides a service to others — e.g. plumber, photographer, consultant. Or even supporting providers like logistics, warehouse, insurance, finance. May self-host or use a Provider Aggregator.
-
-**Self-hosted Service Provider.** A provider who hosts their own online services on hardware they control.
-
-**Service Provider Aggregator.** Takes responsibility for managing online services for multiple providers. E.g. a plumber cooperative that manages booking for all its members.
-
-**Infrastructure Provider.** Makes hardware infrastructure available for others to use or lease. E.g. an individual with a spare PC or a small hosting co-op.
-
-**Consumer / General User.** Uses the Syneroym ecosystem to discover and purchase services or products, or to interact with other entities (chat, follow, collaborate).
-
-**App Developer.** Builds business SynApps and makes them available for others to deploy on their infrastructure.
-
-**Space Manager.** A persona within a SynApp — the person (often the provider or aggregator) responsible for configuring and managing a Space, its catalog, branding, and operational policies.
+| Persona | Primary job to be done | Adoption constraint |
+|---|---|---|
+| **Individual Service Provider** | Publish an offering, receive qualified local work, serve repeat customers, and retain business history. | Limited time and technical skill; may have only a phone and intermittent connectivity. |
+| **Self-hosting Provider / Node Owner** | Run the provider's digital business without dependence on an aggregator. | Needs safe defaults, understandable health, backups, and recovery—not a miniature SRE role. |
+| **Guild or Provider Aggregator** | Onboard and support multiple providers, provide local discovery and trust context, and operate shared services. | Must earn trust without acquiring irrevocable control over provider identity or data. |
+| **Infrastructure Provider** | Offer bounded compute, storage, and connectivity with auditable usage and responsibilities. | Needs isolation, quotas, abuse controls, and an explicit service agreement. |
+| **Consumer** | Find a suitable provider, understand why they are trustworthy, agree terms, communicate, pay, and keep records. | Will not install infrastructure or learn federation concepts before receiving value. |
+| **SynApp Developer** | Build once against stable contracts, test locally, distribute safely, and interoperate with other apps. | Needs concise contracts, compatibility signals, examples, and conformance tooling. |
+| **Space Manager** | Configure a provider or guild presence, policies, catalog, availability, and staff access. | Needs delegated permissions and an audit trail without access to unrelated provider data. |
+| **Facilitator** | Offer an optional bounded service such as delivery, payment gateway, credential issuance, backup, or dispute handling. | Must disclose terms and authority; cannot become an implicit mandatory intermediary. |
 
 ---
 
@@ -119,6 +199,10 @@ The following are key personas. A single person or organisation may play multipl
 **Home Relay.** A Relay assigned to a Substrate or SYN-SVC as its primary connectivity point.
 
 **Infrastructure Provider.** A person or organisation that makes hardware or virtual infrastructure available for Service Providers to host applications on a leased basis.
+
+**Operator.** The person or organisation responsible for administering a
+Substrate or managed SynApp Instance. An Operator may also be a Provider,
+Aggregator, or Infrastructure Provider, but those roles confer different duties.
 
 **Node.** A physical or virtual machine running one Substrate instance. May run multiple SVC-Sandboxes.
 
@@ -139,9 +223,13 @@ The following are key personas. A single person or organisation may play multipl
 
 **SynApp (SYN-APP, Syneroym Application).** A deployment manifest and control plane overlay that defines a cohesive graph of SYN-SVCs. It acts as a blueprint to deploy, update, and manage capabilities, quotas, and namespaces. It is not an execution boundary.
 
+**SynApp Instance.** One deployment of a SynApp blueprint, with its own stable
+instance identifier, namespace, bindings, policy grants, configuration, and
+accounting context.
+
 **SynApp Owner.** The provider who deploys a SynApp to provide services to their clients. Distinct from the Developer who develops it.
 
-**Syneroym Module (SYN-MOD)).** A reusable, independently deployable unit of business logic. Packaged as a WASM component or OCI image.
+**Syneroym Module (SYN-MOD).** A reusable, independently deployable unit of business logic. Packaged as a WASM component or OCI image.
 
 **Syneroym Service (SYN-SVC).** A running instance of a module, executing within a SVC-SANDBOX on a Node. It is the absolute foundational zero-trust execution primitive of the Syneroym Substrate. Managed and proxied by the Substrate.
 
@@ -196,44 +284,171 @@ These requirements apply across all business domains and SynApps.
 
 ### Infrastructure & Hosting
 
-- Service Providers run business applications on PCs or mobiles they control, even when those machines are not reachable on the external internet or are behind network firewalls.
+- Service Providers run business applications on supported commodity computers
+  they control, or on infrastructure operated under an explicit agreement, even
+  when the host is behind NAT or a firewall.
 - Infrastructure Providers make hardware (old PCs, cloud VMs, etc.) available for Service Providers to host applications or application components on a leased basis.
-- Service Providers monitor online service health and react to notifications about service status through UI, CLI, or other tools that leverage substrate-provided hooks.
-- Infrastructure Providers monitor infrastructure health, control access to nodes, and react to notifications about infrastructure status through similar tooling.
+- Service Providers see a plain-language service status and receive actionable
+  notification when their intervention is required. Routine managed operation
+  must not require shell access.
+- Infrastructure Providers monitor infrastructure health and resource usage,
+  control node access, and see which obligations are affected by an incident.
 - App Developers package SynApps (e.g. as WASM modules or OCI images), and Providers deploy them to matching container infrastructure (WASM runtime, Podman/Docker).
 - Consumers access Provider services through options the Provider makes available: app UI, browser, API, or command-line tools.
-- Service Providers move services and data across Infrastructure Providers without restriction. [Migration protocol: Architecture TBD]
-- Service Providers back up and restore app data. The system supports a "Backup Substrate" model (a mutual backup pool) where nodes provide storage for others' encrypted backups in exchange for having their own backups hosted, extending local resilience into active failover. [Backup mechanism: Architecture TBD — Litestream is a candidate]
-- Service Providers install the same app on multiple secondary devices. The app works independently on those devices when disconnected, and synchronises state with the primary device when reconnected. [CRDT merge semantics: Architecture TBD]
-- Service Providers install an app such that parts (shards) of it are hosted on different hosts, each managing a subset of load.
+- Service Providers export and restore all in-scope data, configuration, grants,
+  and signed history using documented, versioned, non-proprietary formats. An
+  export includes a manifest and completeness report; secrets may require a
+  separately protected transfer.
+- Every production profile supports encrypted backup and tested restore. Backup
+  destination is operator-selectable; peer backup pools are optional and must
+  not be required for portability.
+- The system reports recovery-point and recovery-time expectations before a
+  provider chooses a hosting profile. Backup success is never inferred merely
+  from upload success; restorability is tested.
+- Multi-device clients may work offline using local caches and outboxes. Running
+  independent writable copies of the same authoritative service state is a later
+  capability and must not be implied by the baseline requirement.
+- Sharding and multi-node service placement are optional scale capabilities.
+  They must not complicate the single-node deployment or portability contract.
 
 ### Connectivity & Offline Behaviour
 
 - The substrate supports direct peer-to-peer connections wherever possible, and falls back to relay-mediated encrypted connections when NAT or firewall constraints prevent direct connectivity.
-- **Offline Outbox & Retry Queue:** If a substrate, peer, or embedded service is offline (or throttled by a mobile OS), inbound and outbound requests are held in a persistent outbox queue. The system degrades gracefully under network partitions and automatically retries queued messages once reconnected.
-- For transactional workflows (order → payment → fulfilment), offline behaviour is explicitly defined: actions taken while offline are queued; conflicting state changes made by both parties during a disconnected period are resolved deterministically on reconnection. [Conflict resolution rules per entity type: Architecture TBD]
+- **Offline outbox and retry queue:** Operations explicitly declared safe for
+  deferred delivery are stored durably, expose `pending`, `delivered`, or
+  `failed` status to the user, and retry when connectivity returns. The UI must
+  not present `pending` as final success.
+- Automatic retries require an idempotency contract. The system must not replay
+  a non-idempotent operation merely because a connection failed.
+- Each transactional entity defines permitted state transitions, authority,
+  expiry, idempotency, and conflict behaviour. Reconnection either reaches the
+  same valid final state for all parties or exposes a conflict requiring a named
+  party's decision; silent last-write-wins is not acceptable for agreements,
+  payments, fulfilment, or access grants.
+- Users can cancel a still-pending operation when doing so is safe, and can see
+  when cancellation is no longer guaranteed because delivery may have occurred.
 
 ### Messaging & Data Sharing
 
-- All entities (Providers, Consumers, Services) exchange messages with each other, subject to access control policies set by the entity owner.
-- Message types include: one-to-one multimedia chat, group chat, discussion threads around a pivot context (e.g. a blog post, a project), structured service messages (e.g. booking requests, record access grants), and collaborative content editing.
-- Examples:
-    - A provider and consumer text/audio/video chat, or exchange structured booking messages.
-    - A medical provider shares patient records with the patient, or grants access to another provider with patient consent.
-    - Two substrate owners chat or share media.
-    - Multiple entities participate in a discussion thread around a shared context.
-    - Multiple entities collaborate over shared content (e.g. collective project artifact editing).
+- Providers, Consumers, and Services exchange messages only within an explicit
+  conversation or capability context and subject to owner-approved access
+  policy.
+- The system supports one-to-one text, attachments, and structured service cards
+  for requests, quotes, agreements, status, receipts, and grants. Group chat,
+  audio/video, social feeds, and collaborative editing are optional later
+  SynApps, not substrate conformance requirements.
+- A structured message has a stable type, schema version, sender, intended
+  recipients, creation time, idempotency identifier where applicable, and
+  verification status. Clients render unknown types safely without executing
+  arbitrary sender code.
+- The product states which message content and metadata are end-to-end encrypted,
+  which operator can observe remaining metadata, and why. Transport encryption
+  alone must not be described to users as end-to-end message privacy.
+- Unsolicited contact is rate-limited and user-controlled. Recipients can block,
+  report, and leave a conversation without surrendering their transaction
+  records.
 
 ### Non-Functional Requirements
 
-- **Security:** All inter-node and client-node traffic is encrypted in transit. Sensitive data at rest supports encryption with keys controlled by the data owner or designated operator.
-- **Identity Security:** Key rotation and key revocation are supported without requiring complete account recreation. Temporary active keys have a configurable expiration (defaulting to several months) and are supported by a decentralized revocation registry (e.g., via DHT or Gossip) for rapid invalidation if compromised.
-- **Availability:** The substrate continues serving read operations during temporary relay or bootstrap unavailability when cached or local data is sufficient.
-- **Durability:** Provider data backups are restorable to a new node without proprietary dependencies.
-- **Observability:** Substrate and SynApps expose health status, structured logs, and basic metrics suitable for UI and CLI monitoring.
-- **Performance:** Normal user actions (discover, browse, message send, order submit) complete within acceptable interactive latency on consumer broadband/mobile networks; exact SLO values are defined in architecture and test plans.
-- **Interoperability:** SynApps claiming federation compatibility implement the shared interoperability schemas and version negotiation rules.
-- **Portability:** Export/import formats for identity-linked service history are documented and versioned to avoid lock-in.
+Unless superseded by a stricter vertical requirement, the reference client uses these
+measurable baselines. Test profiles and measurement methods belong in the
+Architecture and test plans.
+
+| Quality | Requirement |
+|---|---|
+| **Security** | All inter-node and client-node traffic is encrypted in transit. Sensitive production data and backups are encrypted at rest by default. No default credential is shared across installations. Critical actions are authenticated, authorised, and audit-recorded. |
+| **Identity security** | Routine key rotation and device loss do not require a new public identity. Revocation freshness, recovery authority, and the consequence of losing every recovery factor are shown to the owner. Government identity is optional, never the universal root of participation. |
+| **Availability** | Local and cached reads remain available during temporary bootstrap or relay loss. Already-known peers continue the reference flow during the 24-hour bootstrap outage test when a viable direct or cached relay route exists. |
+| **Durability** | The disconnect/reconnect and process-restart suites lose no acknowledged in-scope transaction message. Backup restore is verified on a clean node before initial release. |
+| **Performance** | On the documented standard-node and mobile-network profiles, local UI actions reach p95 under 1 second and remote browse, search, message acknowledgement, and request submission reach p95 under 3 seconds, excluding an offline peer or external payment provider. |
+| **Operability** | Health output identifies the affected user capability, likely cause, and safe next action. Updates are reversible; failed migrations automatically preserve or restore the last known-good state. |
+| **Interoperability** | A claimed protocol version passes published conformance tests. Unknown optional capabilities fail gracefully; incompatible mandatory capabilities are rejected before a workflow begins. |
+| **Privacy** | The system minimises observable metadata, documents every operator-visible category, and provides purpose, retention, export, and deletion behaviour for personal data. Telemetry is off or local by default unless the operator or user knowingly enables export. |
+| **Portability** | Export/import formats and identity-linked history are documented, versioned, integrity-checked, and covered by cross-version fixtures. |
+
+---
+
+## User Experience, Agency, and Accountability
+
+### Onboarding and recovery
+
+- A provider can choose a managed-guild path or a self-hosted path. The product
+  explains control, cost, availability, privacy, and support trade-offs before
+  the choice is committed.
+- Joining a guild must not transfer ownership of the provider's root identity,
+  signed history, or export rights to the guild. Delegated administration is
+  scoped, visible, revocable, and audit-recorded.
+- Consumer onboarding creates or imports a lightweight identity on the consumer's
+  device. Backup is strongly prompted after first value, not made a blocker to
+  browsing. The recovery model does not claim self-sovereignty if an operator can
+  unilaterally recover or impersonate the consumer.
+- Destructive actions state their scope and recovery consequences. Common
+  recovery flows are available through a guided UI as well as an expert CLI.
+
+### Data rights and lifecycle
+
+- Every durable record has a documented owner or controller, permitted writers,
+  retention policy, export representation, and deletion or tombstone behaviour.
+- Shared records such as agreements, receipts, reviews, and revocations cannot be
+  unilaterally rewritten. A participant may remove its local copy or personal
+  presentation where law permits, while the protocol preserves the other party's
+  legitimate signed record and records later corrections separately.
+- Access grants are purpose- and scope-limited, expire by default for sensitive
+  data, and can be revoked. The UI shows who currently has access and what
+  revocation can and cannot retract from already-received data.
+- Export and account deletion are distinct actions. Deletion identifies data
+  held by the provider, operator, backup destination, peers, and legally required
+  records; the product must not promise deletion it cannot enforce.
+
+### Safety, support, and disputes
+
+- Before production use, the system has a reviewed threat model and privacy data
+  inventory covering malicious packages, peers, clients and operators;
+  compromised keys; metadata leakage; denial of service; backup exposure; and
+  recovery abuse. Residual risks and unsupported deployment profiles are stated.
+- Syneroym supplies evidence and workflow primitives; it does not imply that
+  every listed provider, guild, credential issuer, or facilitator has been vetted
+  by the Syneroym project.
+- Provider terms, price, cancellation rules, data use, payment method, and named
+  dispute path are captured before agreement. A material change requires renewed
+  consent and produces a new version.
+- Users can report impersonation, fraud, harassment, unsafe service, and illegal
+  content to the relevant operator or community. Reports have a status, an
+  appeal or correction path where appropriate, and safeguards against publicising
+  unverified allegations as fact.
+- Emergency response, guaranteed refunds, insurance, professional licensing, and
+  legal arbitration are not implied platform services. A guild or facilitator
+  offering them must state jurisdiction, limits, and responsible legal entity.
+
+---
+
+## Ecosystem Contracts and Governance
+
+- The minimum federation contract consists of versioned identity resolution,
+  endpoint discovery, provider/catalog publication, service request, agreement,
+  receipt, trust-signal, capability negotiation, and export schemas plus their
+  security and error semantics.
+- Each normative contract has a stable identifier, compatibility policy, test
+  vectors, and an executable conformance suite. A third-party implementation can
+  verify compatibility without contacting a privileged Syneroym service.
+- Protocol changes follow a public proposal process with rationale, security and
+  privacy impact, migration plan, reference fixtures, and a defined review
+  period. Urgent security changes may be expedited but are documented afterward.
+- No public Syneroym-operated bootstrap, relay, registry, app store, model
+  service, or certificate authority is the sole permitted implementation of its
+  role. Defaults may be convenient; replacement and export remain supported.
+- Compatibility claims are capability-specific (for example, "Guild Requests
+  v1") rather than a blanket "Syneroym compatible" label. Certification does not
+  imply provider quality, legal compliance, or financial safety.
+- SynApp packages are content-addressed or signed, declare publisher, requested
+  capabilities, data migrations, supported interfaces, resource bounds, and
+  update policy. Owners approve material capability expansion before update.
+- The project's sustainable business model may charge for hosting, support,
+  certification, or optional services, but protocol participation and data exit
+  cannot depend on paying a mandatory Syneroym toll.
+- The project publishes a vulnerability-reporting channel, supported-version
+  policy, security advisory format, package revocation mechanism, and emergency
+  update/rollback procedure before the public production launch.
 
 ---
 
@@ -247,23 +462,54 @@ When a consumer discovers a provider through Syneroym, they have no prior relati
 
 Minimum requirement at transaction time:
 
-- Before payment confirmation, the consumer inspects provider identity, at least one trust signal (credential, vouch, or verified transaction history), policy terms, and dispute/cancellation policy.
-- Before accepting high-risk orders, providers require consumer-side trust signals (verified identity level, prior transaction history, or escrow commitment).
+- Before accepting an agreement, the consumer can inspect the provider's stable
+  identity, the provenance and freshness of available trust signals, material
+  policy terms, payment recipient, and dispute/cancellation path. Absence of a
+  trust signal is shown as unknown, never converted into a positive default.
+- Providers can configure proportionate consumer-side requirements for higher
+  risk work, such as a verified contact method, prior receipt, deposit, or named
+  facilitator. The product avoids collecting stronger identity than the risk
+  warrants.
+- Trust displays separate facts (credential, completed interaction, vouch,
+  report, recency) rather than hiding them behind one universal score. Any
+  summary or ranking is explainable and can be recalculated from disclosed input
+  categories.
 
 ### Trust Layers
 
 Trust in the Syneroym ecosystem operates at multiple levels:
 
-**Layer 1: Cryptographic Identity.** The system uses a decoupled keypair hierarchy allowing day-to-day ephemeral routing while anchoring ultimate trust to an offline or hardware-backed root (e.g., a physical Government ID card). 
-*Note: See `[FND-IDT]` in the Phase 1 Addendum and the `Identity Resolution` section in the Architecture Design document for the explicit "Three-Tier Architecture" and "Master Anchor" compromise fallback mechanisms.*
+**Layer 1: Cryptographic continuity.** A stable, issuer-neutral identity delegates
+to rotatable device and routing keys. Hardware protection, social recovery, or a
+government credential may strengthen recovery or identity assurance, but none is
+required universally. Cryptographic continuity proves control of keys—not a
+person's legal name, quality, or honesty.
 
-**Layer 2: Referral and Vouching.** Entities vouch for other entities within their network. A consumer who transacts with a provider vouches for them. A provider aggregator vouches for the providers it manages. Vouching creates a web of trust that consumers and automated systems traverse. [Vouching mechanics and weighting: Architecture TBD]
+**Layer 2: Referral and vouching.** Entities issue signed, scoped, expiring
+statements about other entities. A guild may attest membership or a consumer may
+recommend a completed service. The display preserves who said what and in which
+context; a vouch is not silently treated as objective verification.
 
-**Layer 3: Verifiable Credentials.** Providers attach verifiable credentials to their profile — e.g. a trade licence, a government ID, a certification. The system supports attaching and displaying such credentials without requiring a central verifier. The consuming party decides which credential issuers they trust. [Credential format and verification: Architecture TBD]
+**Layer 3: Verifiable credentials.** Providers attach credentials such as a trade
+licence or certification. Verification checks signature, issuer, scope, expiry,
+and revocation. The consuming party or community decides which issuers it trusts;
+the UI does not reduce "valid signature" to "trusted claim".
 
-**Layer 4: Transaction History and Reputation.** Completed transactions generate a reputation record that is portable across the ecosystem. A provider's reputation is not locked to a single platform. [Reputation portability mechanism: Architecture TBD]
+**Layer 4: Interaction receipts and feedback.** Completed interactions can produce
+mutually signed receipts and separately signed feedback. A receipt proves that
+the parties acknowledged a workflow event, not that every off-system claim is
+true. Portable bundles preserve provenance and allow selective disclosure.
 
-**Layer 5: Community Moderation.** Provider Aggregators and local communities maintain their own block/trust lists. Bad actor reports propagate across the federation with appropriate weighting. [Propagation protocol: Architecture TBD]
+**Layer 5: Community moderation.** Guilds and communities maintain their own
+policies and signed block, warning, or trust lists. Reports are scoped and do not
+automatically propagate as global truth. Consumers see the policy source; people
+affected by a published decision have a correction or appeal mechanism where
+safety and law permit.
+
+Trust mechanisms must be evaluated against collusion, selective omission,
+replay, identity farming, review coercion, compromised keys, malicious issuers,
+and discriminatory community policies. Tying feedback to a signed interaction
+reduces casual spam but does not by itself solve Sybil attacks or collusion.
 
 ### Legal Liability Boundary
 
@@ -277,7 +523,11 @@ The system does not provide legal shielding in the way centralised platforms do 
 
 ## Conceptual Model
 
-The following ER diagram shows the formal entity model for the Syneroym ecosystem, with full relationship cardinalities. See the [Glossary](#glossary) for definitions of all entities. See the [Ecosystem Orientation](#ecosystem-orientation) diagram for a higher-level overview.
+The following ER diagram shows the formal entity model for the Syneroym
+ecosystem, with full relationship cardinalities. See the
+[Glossary](#glossary--terminology) for definitions of all entities. See the
+[Ecosystem & Domain Model](#ecosystem--domain-model) diagram for a higher-level
+overview.
 
 ```mermaid
 ---
@@ -352,7 +602,10 @@ Description of the core Syneroym substrate functionality, key protocols, and imp
 ### Substrate Setup
 
 - Node owner installs the substrate on a node.
-- Substrate generates admin keypair on first run. Private key never leaves the node.
+- Substrate creates a protected initial administrator credential on first run and
+  requires the owner to establish a tested recovery method before production
+  use. Routine administration uses revocable delegated credentials rather than
+  exposing a root key.
 - Substrate registers with a Relay:
     - Contacts a bootstrap service to obtain a home relay assignment.
     - Publishes its node public key and associated relay routing information to a distributed registry or p2p network (used for the node's control plane, e.g. SYN-SVC deploy/remove).
@@ -372,13 +625,25 @@ Description of the core Syneroym substrate functionality, key protocols, and imp
 
 ### Core Substrate Services
 
-**Messaging.** Substrate enables general messaging and data sharing across all entities, pivoted around a specific context — one-to-one multimedia chat, group chat, discussion threads around a pivot context (blog, post), social media follow/subscribe, browsing content.
+**Messaging.** The substrate supplies secure, typed, durable delivery primitives.
+Conversation products such as chat, groups, feeds, and collaboration remain
+SynApps built on those primitives.
 
-**Discovery.** Nodes store a partition of a distributed search index to aid federated service discovery. [Partitioning and consistency model: Architecture TBD]
+**Discovery.** The substrate exposes capability and endpoint discovery. Guild
+directories, referrals, federated catalogs, and ranking are replaceable SynApps
+or services that implement the common publication and query contracts; no one
+global index is required.
 
-**Identity.** The substrate manages key storage, rotation, and delegation. It isolates long-term identity anchors from ephemeral routing keys and supports dynamic WASM plugins for Zero-Knowledge (ZK) proofs. *(See `[FND-IDT]` in the Addendum for explicit implementation tasks)*.
+**Identity.** The substrate manages protected key storage, rotation, revocation,
+recovery, and delegation while separating stable identity from ephemeral routing
+keys. Optional credential and privacy-preserving proof systems plug into this
+issuer-neutral foundation.
 
-**Access Control.** The substrate enforces access control policies on all inter-service and client-service communication. Policies are owned by the entity owner and are not overridable by the infrastructure provider.
+**Access Control.** The substrate enforces deny-by-default policy on inter-service
+and client-service communication. The product accurately documents the
+infrastructure operator's technical powers; policy enforcement alone must not be
+presented as protection from a fully compromised host. Sensitive deployments may
+require owner-held encryption keys or attested hardware.
 
 ---
 
@@ -402,15 +667,23 @@ Description of the core Syneroym substrate functionality, key protocols, and imp
 - Periodically audits registered relays and expires stale entries.
 - For node ID lookups, checks internal cache or DHT fallback and returns the relay. For HTTP URL lookups from browsers, finds the relay and issues an HTTP redirect.
 
-> **Single point of failure note.** The bootstrap server is a governance and availability dependency. Requirement: the bootstrap server's registry is exportable to a decentralised alternative (e.g. a well-known DHT namespace) so the ecosystem can survive bootstrap server unavailability. [Decentralised bootstrap fallback: Architecture TBD]
+> **Single point of failure note.** A default bootstrap service is a governance
+> and availability dependency. Its signed records must be exportable and
+> publishable through alternative operators or discovery mechanisms. Known peers
+> and cached routes must satisfy the bootstrap outage release gate; one
+> Syneroym-controlled service must not be required to authorise continued use.
 
 ### Consumer-Facing Aggregation
 
 > This section addresses a gap in the prior spec. Centralised platforms provide consumers a single app. In Syneroym, providers may run on different substrates operated by different entities. The consumer experience remains coherent.
 
 - A Consumer App (web or mobile) allows consumers to discover, browse, and transact with providers across multiple substrates and SynApps from a single interface.
-- The Consumer App queries the distributed discovery index; it does not need to know which substrate hosts a given provider.
-- A consumer's identity, transaction history, and preferences are portable and self-owned — stored on a substrate the consumer controls or has designated.
+- The Consumer App can query one or more community directories, follow referrals
+  and direct links, and merge results with visible source and ranking provenance;
+  it does not need to know which substrate hosts a provider.
+- A consumer's identity, signed receipts, grants, and preferences are portable
+  and controlled from the consumer's device or a store the consumer has
+  explicitly designated. Running a personal substrate is optional.
 - The Consumer App is itself a thin client; business logic runs on provider substrates. The Consumer App is not a privileged participant in the ecosystem.
 
 ---
@@ -426,42 +699,74 @@ Description of the core Syneroym substrate functionality, key protocols, and imp
 ### Deployment
 
 - An Application Specification composes components into a SynApp and declares dependencies, resource requirements, and configuration schema.
+- The specification declares package identity and signature, supported protocol
+  versions, requested capabilities, data classifications, migrations, backup
+  expectations, health checks, and rollback behaviour.
 - Provider applies the Application Specification to chosen substrate(s).
-- Substrate validates resource availability and access permissions before deploying.
+- Before deployment, the substrate validates resource availability,
+  compatibility, access permissions, and capability expansion and presents a
+  comprehensible approval summary.
+- A partially failed deployment is recoverable or rolled back without leaving
+  undeclared services or grants. Installation state is inspectable and exportable.
 
 ### Monitoring
 
-- Substrate monitors the application and provides health information, notifications, and automated redeploy on failure.
+- Substrate monitors the application and provides health information,
+  notifications, and policy-controlled restart or redeploy on failure.
 - Providers receive alerts through UI, CLI, or webhook integrations of their choice.
+- Updates preserve a last known-good package and state snapshot until health and
+  migration checks pass. A capability increase requires renewed owner approval.
 
 ---
 
-## SynApp 1: Business, Professional, and Retail Spaces
+## Reference Vertical Contracts
 
-*Covers Home Services Guild and Food & Small Retailer Mesh*
+The two reference SynApps validate common ecosystem contracts without forcing
+unrelated domains into one generic application. They may share modules and
+schemas, but each has its own language, workflow, policy, and usability tests.
 
-### Setup and Configuration
+### Home Services Guild
 
-- The Small Retail & Services SynApp is available as a deployable package for Service Providers or Aggregators.
-- Provider configures deployment parameters and deploys the SynApp on chosen infrastructure.
-- Provider creates one or more online Spaces. (Aggregators typically create one Space per managed provider.)
-- Space Manager sets up access controls for who can manage the Space.
-- Space Manager configures common Space settings: branding, payment method setup, cancellation policy defaults.
-- Space Manager sets up the catalog schema and populates the service or product catalog:
-    - Per-item info: title, description, images, pricing, cancellation policy.
-    - Order-to-fulfilment workflow configuration: select and compose from available workflow types.
-- Space Manager ingests digital content corresponding to catalog items where applicable (movies, courses, books, etc.).
+#### Provider and guild setup
 
-### Consumer-Provider Transaction Flow
+- A guild operator deploys a signed release profile and creates a guild with
+  public identity, service area, membership policy, support contact, dispute
+  path, directory policy, and data retention policy.
+- A provider joins through an invitation or application, controls a stable
+  provider identity, and grants the guild only the administration rights needed
+  for the chosen managed service.
+- A provider publishes name, description, service categories, service area,
+  availability or response expectation, price style (fixed, range, or quote),
+  cancellation policy, supported payment rails, and trust evidence. Required
+  fields and provenance are machine-readable.
+- One operator can manage multiple provider Spaces without obtaining undeclared
+  read access across their private conversations or histories.
 
-- **Discovery.** Consumer discovers provider Space through the distributed index, direct link, or referral.
-- **Browsing.** Consumer browses catalog. Space may offer contextual recommendations. [Recommendation algorithm: Architecture TBD]
-- **Terms and Pricing.** Consumer selects from available options; negotiation protocols allow price tuning within provider-configured bounds.
-- **Order Confirmation.** Pickup/delivery location, time window, and any service-specific parameters are agreed.
-- **Payment.** Payment is processed per the agreed model. [Payment rails and escrow: Architecture TBD]
-- **Fulfilment.** Digital content is delivered via DRM-respecting players where applicable; physical or in-person services proceed per agreement.
-- **Cancellation, Return, Refund.** Handled per Space-configured policy and applicable workflow rules.
-- **Sub-workflow composition.** Complex orders (e.g. food + delivery) are handled by composing multiple sub-workflows.
+#### Consumer-provider workflow
+
+- **Discover.** Consumers reach a provider by direct link, referral, or one or
+  more guild directories. Results show source, freshness, filters, and the reason
+  for ordering; paid placement is absent from the initial release.
+- **Assess.** Consumers see relevant services, price basis, availability,
+  provider identity continuity, trust evidence, guild relationship, and material
+  policies before sharing personal details.
+- **Request and clarify.** A request captures category, description, approximate
+  area, preferred window, attachments, and a data-use notice. Exact address is
+  disclosed only when needed. Parties can clarify in the linked conversation.
+- **Quote and agree.** A versioned quote states scope, price, taxes or fees,
+  schedule, location, payment method, cancellation/refund terms, expiry, and
+  dispute path. Both parties' acceptance produces a signed agreement receipt.
+- **Fulfil.** Permitted states and actors are explicit. State changes are
+  idempotent and append-only in the audit history; corrections do not rewrite
+  previously signed facts.
+- **Settle.** The system opens or records an external or out-of-band payment and
+  captures acknowledgement. It never presents an unverified return from a
+  payment app as final settlement.
+- **Close and return.** Completion produces a portable receipt. Feedback is
+  optional, tied to the receipt, and remains distinct from guild membership or
+  platform ranking. Either party can start a repeat request without re-entering
+  information it still consents to retain.
+
 
 ### Service Variation Dimensions
 
@@ -481,47 +786,17 @@ The system accommodates the following variation axes across workflows:
 
 **Service record:** Long-term (doctor-patient), engagement-specific (courses), tracking-required (delivery).
 
-### Data and History
-
-- Service record history is maintained per provider-consumer pair, with configurable expiry.
-- Data sharing across providers and users leverages substrate primitives for structured sharing and access control. Provider and consumer both consent to and control what is shared with whom.
-- Long-term relationship data (e.g. medical records, job history) is provider-hosted but consumer-portable on request.
-
-### Discovery
-
-- Entities discover other entities via keyword search, attribute-value point search, and interval/range search.
-- Discovery results are drawn from the distributed index maintained by participating substrate nodes.
-- Discovery ranking is transparent and configurable by the Space Manager within published bounds. [Discovery ranking algorithm: Architecture TBD]
-
-### Reputation
-
-- Consumers leave reviews and ratings for completed transactions.
-- Reputation scores are portable — a provider's reputation is not lost if they move substrates.
-- Referral-based reputation mechanisms allow trusted community members to amplify or contextualise reputation signals.
-- [Reputation portability protocol, visibility, anti-gaming mechanisms, Sybil resistance: Architecture TBD]
-
-### Advertising
-
-- Contextual advertising is matched client-side: the consumer's device evaluates ad relevance against the local index without sending consumer query data to a third party.
-- Elevated placement in discovery results is available to Space Managers within their local cluster. Placement weighting is disclosed to consumers.
-- [Ad auction mechanics and placement limits: Architecture TBD]
-
-
 
 
 
 ---
 
-## Post-DD864A1 Target Specifications (Addendum)
-This document describes the pending features for Syneroym post git commit hash `dd864a18902bb8e71da0ff56bba4523688ad8ba1`.
+<a id="post-dd864a1-target-specifications-addendum"></a>
 
-This is a forward-looking target specification. It refines the older
-[system requirements](system-requirements-spec.md) and
-[architecture design](system-architecture-design.md) documents, but the older
-documents still describe broader product context and several implemented
-walking-skeleton choices. Where this document differs from those older docs,
-the intent is to capture the next architecture to implement and then reconcile
-the older docs after implementation.
+## Post-DD864A1 Specifications
+This section describes  pending features post git commit hash `dd864a18902bb8e71da0ff56bba4523688ad8ba1`.
+
+The earlier part of this doc describes broader product context and several implemented walking-skeleton choices. Where this captures features not yet implemented till the above commit id. 
 
 ### Tag Legend
 To ensure stable cross-referencing across commits and PRs, features are prefixed with category tags:
@@ -533,6 +808,7 @@ To ensure stable cross-referencing across commits and PRs, features are prefixed
 - **`[P2P]`**: **Peer-to-Peer** (Community Primitives)
 - **`[APP]`**: **Applications** (High-Level SynApps)
 - **`[EDG]`**: **Edge** (Edge Expansion & Mobile)
+
 
 ## Phase 0: Core Architecture Implementation (SynApp & Topology)
 
@@ -638,7 +914,8 @@ This defines the baseline resilience required for underlying node-to-node and cl
 - **In-Repo Provisioning & Deployment:** `scripts/deploy/setup_linux.sh` handles initial machine setup (certbot, limits, systemd), while `scripts/deploy/deploy.sh` handles local compilation and rsync transfer. GitHub Actions (`.github/workflows/deploy.yml`) acts merely as a trigger to run the local deploy script.
 - **Native TLS:** Direct or systemd-socket-activated binding to port 443 within the Syneroym substrate using `rustls`. Certificates are fetched/renewed via an OS-level `certbot` timer. The substrate restarts or reloads configuration to pick up renewed certificates.
 - **Resource Protection:** Configuration parameters for connection caps and cache limits ensure the node gracefully refuses excess traffic instead of crashing (OOM).
-- **Observability:** Phase 1 relies purely on SSH access. Operators monitor via `journalctl -u syneroym -f` and local `curl` requests against built-in endpoints (e.g., Iroh relay metrics).
+- **Operator Experience:** SSH, `journalctl`, and local health endpoints remain
+  expert diagnostic tools. Production operation additionally requires guided install, plain-language health, backup/restore, update/rollback, and actionable incident notifications through a local or securely delegated admin surface.
 - **Cross-Platform Distribution:** Automated build pipelines to compile and release Syneroym binaries for different architectures (Linux, macOS, Windows).
 - **Dockerized Substrate:** Provide official Docker images of the Syneroym substrate for the community, pre-configured to point their local registries and coordinators to the public `syneroym.xyz` node.
 - **Smoke Testing:** Automated integration/smoke tests that run against release candidates (binaries and Docker images) to verify they can successfully connect to and interact with the deployed coordinator and registry at `syneroym.xyz`.
@@ -648,29 +925,46 @@ This defines the baseline resilience required for underlying node-to-node and cl
   - To prevent catastrophic re-encryption of gigabytes of data during key rotation, the substrate uses Envelope Encryption. Unique Data Encryption Keys (DEKs) are generated to encrypt the actual blobs and `cr-sqlite` databases.
   - The service owner negotiates and injects a Master Key (Key Encryption Key or KEK) securely into substrate RAM at startup. The KEK only encrypts the tiny DEKs stored on disk. Key rotation is instantaneous as only the DEKs are re-encrypted with the new KEK.
   - **Secret Vault:** Application secrets (API keys, credentials) are stored securely inside a dedicated Vault table within the encrypted per-service SQLite/`cr-sqlite` database, rather than as vulnerable flat files on disk. Non-secret configuration may share the same encrypted store for convenience, but it is not treated as a secret unless marked as such.
-  - The `SynApp` manifest includes configuration flags (e.g., `encrypt_local_db: true`, `encrypt_backups: true`) to allow explicit opt-out only for non-sensitive development or performance-sensitive deployments where the owner accepts the risk.
+  - Production profiles default local databases and all remote backups to
+    encryption. Opt-out is limited to explicitly marked non-sensitive
+    development profiles and produces a persistent insecure-state warning.
   - Remote backups (e.g., WAL frames or object snapshots) are streamed to S3-compatible stores or peer backup substrates and are encrypted locally before transit when configured.
-- **Hardware Attestation (Deployer-Led):** 
+- **Hardware Attestation (Optional, later unless required by a vertical):**
   - The substrate exposes a `substrate.attest(nonce)` API to the network.
   - The App Deployer/Owner externally challenges the node (at deployment or periodically) and mathematically verifies the hardware quote (TPM, KeyAttestation, AppAttest).
   - The deployer alone decides whether to deploy the service in a degraded trust environment or halt execution if attestation fails. 
 - **Memory Protection & Key Splitting:**
   - OS-level memory locking (e.g., `mlock`) prevents injected cryptographic keys from being swapped to disk.
   - The `zeroize` crate is used to explicitly wipe sensitive variables from RAM when dropped.
-  - Keys in substrate memory are split or fragmented as a best-effort mitigation against naive RAM scraping or buffer over-read vulnerabilities. This does not replace hardware-backed key protection.
+  - Key fragmentation may be investigated as defence in depth but is not treated
+    as a security guarantee or release requirement. The threat model assumes a
+    fully compromised host can observe plaintext while it is in use unless
+    stronger hardware isolation is proven.
 - **Resource Exhaustion & Quotas:**
   - Network edge protection: Strict connection and payload limits at the Iroh/QUIC boundary.
   - Runtime execution limits: The substrate enforces the physical capabilities of the host alongside strict quotas defined in the `SynApp` manifest (e.g., `max_memory`, `max_instructions`). Wasmtime's fuel metering deterministically traps components exceeding their gas limits without stalling the node.
 - **Supply Chain Integrity:**
-  - Syneroym binaries are distributed with simple, native Ed25519 signatures. The public key is hardcoded, and the auto-updater mathematically verifies the signature before applying any new binary.
+  - Released binaries and SynApp packages are signed and verifiable offline.
+    Trust-root rotation, compromise recovery, publisher identity, provenance,
+    and rollback protection are documented; one permanently hardcoded project
+    key must not be the ecosystem's unrecoverable trust root.
 
 > **Implementation Design:** For technical details covering Envelope Encryption and Memory Protection, see [Feature Design: FND-SEC](system-architecture-design.md#fnd-sec-substrate-security).
 
 ### [FND-IDT] Cryptographic Identity Primitives
-- **Three-Tier Key Management:** Implement the core library for managing the Three-Tier Identity Architecture (Government ID -> Master Key -> Temporary Key).
-  - The substrate must securely generate and manage local Master Keys (`did:key`) and enforce the Master Anchor pattern, where Master Keys delegate Temporary Keys for daily routing.
-- **Master Key Export & Recovery:** Implement the ability to securely export the Master Key (encrypted at rest) for multi-device synchronization. Implement the **Tier 1 Fallback** mechanism, ensuring the system can process and broadcast new ZK Proofs to override compromised Master Keys.
-- **ZK Plugin Interface (Method B):** Implement a WASM extension point that allows the substrate to dynamically load Zero-Knowledge Proof schemes (e.g., `anon-aadhaar`) on demand for identity verification without bloating the core binary.
+- **Issuer-Neutral Key Hierarchy:** Implement stable owner-controlled identity
+  anchors that delegate rotatable device and routing keys. Government IDs,
+  community credentials, hardware keys, and social recovery are optional
+  assurance or recovery methods; none is the universal Tier 1 root.
+- **Identity Export & Recovery:** Securely export or recover identity authority
+  without silently granting an operator impersonation power. Recovery rotates
+  compromised delegates, publishes revocation, preserves an auditable continuity
+  chain, and tells the user when continuity cannot be proven.
+- **Lightweight Consumer Identity:** Support device-bound consumer keys and an
+  encrypted backup/import path without requiring a personal substrate.
+- **Privacy-Preserving Credential Plugins:** A sandboxed extension point may load
+  proof schemes such as `anon-aadhaar` when a vertical and jurisdiction justify
+  them. This is not release-blocking and must not enlarge the default trust base.
 
 
 ### [FND-CFG] Service Configuration
@@ -773,6 +1067,12 @@ The Asynchronous Operations component ensures reliable execution of offline inte
 ### [PLT-RED] Service Redundancy
 This feature guarantees data durability, service continuity, and split-brain prevention for the Syneroym network, strictly prioritizing Consistency over Availability (CP) during network partitions.
 
+This is a **P1 hardening track**, not a production Release 1 prerequisite beyond
+encrypted backup/restore and an operator-run node replacement drill. Before a
+replicated profile is offered, it declares measured RPO, RTO, quorum/control-plane
+dependencies, promotion authority, and the user-visible behaviour during loss of
+the primary.
+
 **Database Redundancy**
 - **Configurable Stateful Replication:** The replication factor (e.g., N=1, N=2, N=3) is configurable at service deployment time via the application manifest. For replicated setups (N>=2), there is exactly one Primary accepting write operations, while the Secondaries maintain an identical read-only state. The Registry reflects the topology defined by the manifest.
 - **Low-Latency Streaming:** Replication must be near-instantaneous. Changes committed to the Primary must be streamed directly to the Secondary without relying on high-latency batching or third-party storage intermediaries for the live replication path.
@@ -860,21 +1160,29 @@ Because Syneroym can be utilized as a general open cloud, this dedicated phase s
 
 ### [P2P-REP] Peer Reputation & Trust
 - **Coarse-Grained Satisfaction Signal:** Reputation is implemented as a low-resolution scale (e.g., 0=Poor, 1=Decent, 2=Great) to minimize cognitive load and mathematical complexity.
-- **Cryptographic Tying:** To prevent Sybil attacks and gaming, a satisfaction signal can only be submitted if strictly tied to a mutually signed interaction receipt (leveraging the Dynamic Ledger Network mechanics).
+- **Cryptographic Tying:** To reduce unsolicited review spam, a verified-
+  interaction satisfaction signal references a mutually signed interaction
+  receipt. Other feedback is labelled separately. Receipt tying does not prevent
+  collusion, coercion, selective disclosure, or identity farming.
 - **Time-Decay:** A peer's reputation naturally decays to the center ("decent") over time, prioritizing recent interactions over historical legacy.
 - **Incremental Rolling Summaries:** The substrate runs continuous, compute-light incremental aggregations (e.g., updating total user counts, moving averages, and maintaining a small, tiered summary paragraph based on timeframes). This avoids the need to process heavy LLM summarization on massive blocks of raw text.
-- **Provider-Hosted Reputation Graph:** Signals are *not* pushed to a global, public DHT. They are appended to the Provider's local immutable CRDT ledger. Providers share their verified, signed reputation graph directly with consumers upon request.
+- **Portable Reputation Evidence:** Signals are not pushed to one global public
+  DHT. Providers may serve signed evidence, but clients preserve provenance,
+  detect gaps where possible, and may compare guild, consumer-held, or other
+  authorised sources. Provider hosting must not imply that the presented set is
+  complete.
 
 ## Phase 6: High-Level Applications (SynApps)
 *In this phase, individual mini-apps (Chat, Ledger, Marketplace, Aggregator) are unified into seamless, actor-centric activities executing across a multi-surface UX.*
 
-Phase 6 assumes post-MVP platform primitives such as the Dynamic Ledger Network where explicitly referenced. The MVP boundary in the system requirements still treats native mutual credit and fully integrated escrow as out of scope.
 
 ### The Syneroym Hub (Core Client Application)
 *The universal, multi-surface shell that connects the user to their local substrate and orchestrates all ecosystem activities.*
 - **The Personal Data Homebase:** A secure vault interface managing the user's digital identity, portable service history, and active FDAE access grants.
 - **The Trusted Room Inbox:** A unified messaging view combining human-to-human social chats, professional guild groups, and interactive business-to-consumer service threads.
-- **The Agentic Concierge:** A persistent text/voice interface powered by the local AI agent, allowing users to parse natural language into complex, multi-provider API workflows.
+- **The Agentic Concierge (optional):** A text/voice interface powered by a local
+  or user-chosen AI service. It remains subordinate to deterministic workflows,
+  explicit consent, and a fully usable non-AI path.
 - **The Opportunity & Discovery Radar:** A visual, map-based interface to browse local mesh networks, assess neighborhood trust proximity, and consume localized opportunity streams.
 - **The Headless Native Shell:** A cross-platform UI containing zero core business logic, acting purely as a thin renderer for JSON Action Cards securely pushed by the underlying local Substrate node.
 
@@ -884,31 +1192,46 @@ Phase 6 assumes post-MVP platform primitives such as the Dynamic Ledger Network 
 - **AI-Assisted Discovery:** Ask a personal AI assistant to find local services (like a plumber or doctor) by automatically searching community directories and understanding what each provider offers.
 - **Service Bundling:** Combine multiple services into a single request (e.g., ordering food from a restaurant and requesting a separate delivery driver to pick it up).
 - **Interactive Negotiation:** Chat directly with service providers in secure rooms to discuss details, negotiate prices, and instantly approve interactive "Quote Cards" dropped into the chat.
-- **Flexible Payments:** Finalize services by approving an interactive "Invoice Card". Payments primarily route through the network's built-in digital ledger to clear debts automatically, but can seamlessly integrate with external payment gateways (like Stripe, UPI, or crypto) when needed.
+- **Flexible Payments:** Finalize services by approving a versioned Invoice Card.
+  External or out-of-band rails remain the default until a separately validated
+  ledger product is approved; every method identifies the responsible payment
+  or settlement provider.
 - **Portable Data & Privacy:** Securely share personal information (like medical records or delivery addresses) with a provider for a limited time, and seamlessly take your service history with you if you switch providers.
-- **Trust Radar:** Check a visual neighborhood map to see which providers are trusted and highly rated by your direct friends and community connections before hiring them.
+- **Trust Context:** Inspect sourced credentials, referrals, receipts, feedback,
+  and community context without exposing private social graphs or implying a
+  universal objective score.
 
 ### Service Creators (Primary Providers)
 *Activities focused on setting up shop, generating leads, and delivering services.*
 - **Digital Storefront Setup:** Create a business profile and publish menus, service catalogs, and availability calendars to local discovery directories.
-- **Advertising & Outreach:** Pay a small, refundable "digital stamp" to send promotional offers to new customers without spamming them, or pay for elevated placement on local community noticeboards.
+- **Advertising & Outreach (evidence-gated):** Any cold outreach or paid placement
+  requires recipient controls, rate limits, disclosure, and community policy.
+  Digital stamps are one later hypothesis, not the default solution.
 - **Lead Engagement:** Browse a live feed of local customer requests and respond by dropping interactive forms, booking widgets, or quotes directly into the customer's chat.
 - **Service Delivery & Billing:** Execute the contracted service and instantly push an invoice into the chat. The invoice can feed directly into the network's automated debt-clearing ledger or route through traditional payment gateways depending on your business configuration.
 - **Professional Guilds:** Join private group chats with other professionals in your industry to share excess work, refer clients, and team up on large projects.
-- **Reputation Building:** Collect verified reviews from completed jobs to build a portable, public reputation score that stays with you even if you change hosting platforms.
+- **Reputation Building:** Collect portable, receipt-linked feedback and other
+  signed trust evidence that preserves provenance when hosting changes.
 
 ### Network Enablers (Aggregators & Facilitators)
 *Activities focused on making the market run smoothly, providing infrastructure, and resolving disputes.*
 - **Discovery Directories (Aggregator):** Run high-performance search engines and community noticeboards that collect user requests and provider listings, making it easy for everyone to find each other.
-- **Spam Prevention (Aggregator):** Manage the "fuel" system, deducting small amounts of digital quota from providers when they publish new listings or send cold messages, to ensure the network remains spam-free.
-- **Reputation Computation (Aggregator):** Analyze the history of successful payments and interactions to calculate and publish reliable trust scores for the community.
-- **Escrow & Dispute Resolution (Facilitator):** Act as a neutral third party that temporarily holds funds or digital credits during a transaction, releasing them only when both parties are satisfied, or stepping in to arbitrate if a refund or cancellation policy is disputed.
+- **Spam Prevention (Aggregator):** Enforce disclosed publication and contact
+  limits. Fuel quotas or economic costs are optional mechanisms and do not
+  replace blocking, abuse response, or anti-collusion controls.
+- **Trust Summaries (Aggregator):** Publish explainable, sourced summaries under a
+  declared community policy. An aggregator's output is an opinion or computation,
+  not a guaranteed reliable truth score.
+
 - **Financial Gateways (Facilitator):** Provide specialized financial services, like converting digital network credits into traditional fiat currency (bank money), or automating tax and accounting records by plugging directly into a provider's local ledger.
 
 ## Phase 7: Edge Expansion
 
 ### [EDG-MOB] Mobile operation 
-- **Platform Support**: Native Syneroym Substrate execution on Android and iOS.
+- **Platform Support**: Mobile-friendly consumer and provider clients are
+  release-blocking. Native Syneroym Substrate execution on Android and iOS is a
+  separate, later hosting profile and must first prove acceptable reliability,
+  battery use, background behaviour, and key recovery on supported OS versions.
 - **Background Execution & Throttling**:
   - Baseline communication relies on `[PLT-ASY]` outbox and retry semantics where remote clients continuously retry connecting to the mobile node.
   - For urgent requests, clients can optionally send an out-of-band push notification (APN/FCM) to silently wake the suspended mobile app.
@@ -919,44 +1242,37 @@ Phase 6 assumes post-MVP platform primitives such as the Dynamic Ledger Network 
 
 ---
 
-## Substrate Feature Coverage Matrix
+## Appendix: Future Backlog
+
+Items deferred from the initial baseline requirements until detailed specifications are created.
+
+### Accessibility and Localisation
+
+- **Accessibility:** Base substrate capability flows (onboarding, recovery, Hub UI) must target a baseline standard (e.g., WCAG 2.1 AA) to ensure independent operation by disabled users.
+- **Localisation:** Base architecture must be internationalisation-ready (i18n) to support local community clusters, even if initial releases populate only the English locale.
+
+### Substrate Feature Coverage Matrix
 *(Ensuring core platform primitives are battle-tested across the application suite)*
 
 | Substrate Capability | Primary App | How it is exercised |
 | :--- | :--- | :--- |
-| **Data Layer: Pub/Sub** | **Chat** | Real-time message delivery and typing presence. |
-| **Data Layer: S3 Blobs** | **Marketplace** | Storing and serving high-res images/videos for listings. |
-| **Data Layer: Content Addressed** | **Ledger** | Storing immutable blocks and transaction receipts. |
-| **Offline Operation** | **Chat** | Outbox message queuing and syncing upon reconnection. |
-| **AI (Agents/Vector Store)** | **Chat** | AI participants with long-term memory in group chats. |
-| **Access Control (FDAE/Consent)** | **Chat** | Enforcing read/write rules for trusted rooms and AI delegation. |
-| **Service Redundancy (Sharding)** | **Ledger** | High availability and partition tolerance for the credit network. |
-| **Security (TPM 2.0)** | **Ledger** | Hardware-backed multi-party signing for high-value settlements. |
-| **Versioning & Migrations** | **Ledger** | Upgrading complex, stateful settlement rules without downtime. |
-| **Substrate Lease & Quotas** | **Marketplace** | Dynamically leasing external nodes to handle flash-sale traffic spikes. |
-| **Observability (Metering)** | **Marketplace** | Tracking exact resource utilization to bill storefront owners. |
-| **Service Config (Secrets)** | **Marketplace** | Dynamically pulling external API keys (shipping/fiat gateways) from the vault. |
-
-## Open Questions
-
-The following questions require decisions before or during detailed architecture design:
-
-1. **Governance of shared protocols.** Who maintains the interoperability protocols and schema versions that SynApps implement to federate? What is the process for evolving them? How are breaking changes managed?
-
-2. **Bootstrap server continuity.** Who operates and funds the bootstrap server long-term? What is the fallback if the Syneroym organisation cannot maintain it?
-
-3. **Consumer identity and wallet.** Does a consumer need to run their own substrate to have a self-sovereign identity and history? Or is there a lightweight identity option for consumers who cannot or will not self-host?
-
-4. **Payment rail selection.** Which payment rails are supported at launch? How are cross-border payments handled? Is escrow centralised (a trusted third party) or implemented via smart contract or protocol?
-
-5. **Coin and mutual credit system.** Is this a cryptocurrency, an internal ledger, or a mutual credit protocol? What are the regulatory implications in target markets? *(Note: The [Dynamic Ledger Network Specification](./dynamic-ledger-network-spec.md) outlines the core mechanics for a peer-to-peer, cashless offset network without public blockchain tokens).*
-
-6. **Aggregator accountability.** What obligations does a Provider Aggregator take on toward the providers it manages? How are disputes between an aggregator and a provider resolved?
-
-7. **Infrastructure Provider SLA.** What guarantees, if any, might an Infrastructure Provider make to a Service Provider? How is breach of those guarantees resolved?
-
-8. **Minimum viable federation.** What is the minimum a third-party developer implements to build a compliant SynApp that federates with existing Syneroym SynApps?
-
-9. **Consumer UX ownership.** Who builds and maintains the consumer-facing aggregation app? Is it open source and community-maintained, or Syneroym-operated?
-
-10. **Multi-tenancy security boundary.** What are the formal isolation guarantees between SynApps sharing a substrate node? Can a malicious SynApp exfiltrate data from another co-hosted SynApp?
+| **[PLT-DAT] Pub/Sub** | **Chat** | Real-time message delivery and typing presence. |
+| **[PLT-DAT] S3 Blobs** | **Marketplace** | Storing and serving high-res images/videos for listings. |
+| **[PLT-DAT] Content Addressed** | **Ledger** | Storing immutable blocks and transaction receipts. |
+| **[PLT-ASY] Offline Operation** | **Chat** | Outbox message queuing and syncing upon reconnection. |
+| **[APP-AGI] AI (Agents/Vector Store)** | **Chat** | AI participants with long-term memory in group chats. |
+| **[FND-FDA] Access Control (FDAE/Consent)** | **Chat** | Enforcing read/write rules for trusted rooms and AI delegation. |
+| **[PLT-RED] Service Redundancy (Sharding)** | **Ledger** | High availability and partition tolerance for the credit network. |
+| **[FND-SEC] Security (TPM 2.0)** | **Ledger** | Hardware-backed multi-party signing for high-value settlements. |
+| **[FND-VER] Versioning & Migrations** | **Ledger** | Upgrading complex, stateful settlement rules without downtime. |
+| **[FND-LEA] Substrate Lease & Quotas** | **Marketplace** | Dynamically leasing external nodes to handle flash-sale traffic spikes. |
+| **[FND-OBS] Observability (Metering)** | **Marketplace** | Tracking exact resource utilization to bill storefront owners. |
+| **[FND-CFG] Service Config (Secrets)** | **Marketplace** | Dynamically pulling external API keys (shipping/fiat gateways) from the vault. |
+| **[TOP-*] Routing & Relays** | **Substrate Core** | Establishing secure p2p connections across NATs and resolving cryptographic node IDs. |
+| **[FND-IDT/IAM] Identity & Access** | **Hub / Admin** | Generating root keypairs and enforcing role-based access for Space Managers. |
+| **[FND-DEP] App Deployment** | **roymctl** | Safely deploying the WASM Marketplace component into a sandboxed environment. |
+| **[P2P-DSC] Federated Discovery** | **Aggregator App** | Forwarding tag-based search queries across the mesh to find local service providers. |
+| **[P2P-REP] Peer Reputation** | **Marketplace** | Generating cryptographically tied interaction receipts and rendering trust summaries. |
+| **[ADV-DEV] Device Sync (CRDT)** | **Chat** | Reconciling message state across primary and secondary mobile devices. |
+| **[LFC-*] Lifecycle & Updates** | **Node Admin** | Safely rolling back a failed Marketplace version update. |
+| **[EDG-MOB] Mobile Operation** | **Mobile Hub** | Waking a suspended iOS client via out-of-band push to receive an incoming quote. |

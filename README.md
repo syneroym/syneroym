@@ -1,5 +1,9 @@
 # Syneroym
 
+Syneroym is a decentralized, peer-to-peer technology ecosystem that empowers individuals and small groups to run their own autonomous applications (SynApps) without relying on centralized platform monopolies. At its core, it provides a secure, identity-native substrate that handles complex networking, discovery, and trust, enabling these independent apps to seamlessly cooperate and interact directly with one another. Whether operating on a smartphone or a server, Syneroym facilitates diverse federated ecosystems—spanning private communications, community governance, and collaborative peer networks—where participants retain absolute control over their data and digital relationships, while still enjoying the powerful network effects of a unified platform.
+
+To demonstrate these capabilities in a real-world scenario, our initial reference application is the **Provider Space**—a decentralized professional services network built entirely on the Syneroym substrate.
+
 > ⚠️ **Status: Exploratory / Unstable**
 >
 > This project is **WORK IN PROGRESS** and is under active exploration and development. The features, architecture, APIs, data models, and overall direction are subject to frequent change. Nothing here should be considered stable or production-ready at this stage. The repository is public for transparency and ease of sharing, not as an invitation for general use or contribution at this time.
