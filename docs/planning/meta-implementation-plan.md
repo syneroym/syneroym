@@ -2,7 +2,7 @@
 
 This document provides a high-level strategic roadmap for implementing the Post-DD864A1 architecture. It takes the pending items described across Phase 0 to Phase 7 and reorganizes them into logical, sequentially buildable **Milestones (Epics)**. 
 
-This meta-plan avoids dependency cycles by slicing deep architectural features (like Security and Data) across multiple milestones. It emphasizes the "walking skeleton" principle by growing a reference SynApp (Professional Services Guild) through every milestone to prove out the infrastructure.
+There is no single "MVP" boundary or distinct "Pilot" launch. Instead, we build features phase by phase, treating every phase as its own incremental pilot that delivers immediate end-to-end value. This meta-plan avoids dependency cycles by slicing deep architectural features (like Security and Data) across multiple milestones. It emphasizes the "walking skeleton" principle by growing a reference SynApp (Professional Services Guild) through every milestone to prove out the infrastructure.
 
 ## Guiding Implementation Strategy
 1. **Inside-Out Development:** We build the core local primitives first (routing, security, data) before expanding to multi-node federation and high-level applications.
@@ -29,12 +29,12 @@ When we begin work on any milestone below, we will generate a dedicated `task.md
 ---
 
 ## Milestone 0: Contract and Decision Gate
-**Goal:** Formalize the traceability matrix, define the strict MVP boundary, and create a baseline API migration plan for the existing codebase before major structural changes begin.
+**Goal:** Formalize the traceability matrix and create a baseline API migration plan for the existing codebase before major structural changes begin.
 
 **Implementation Approach:**
-1. **Traceability Matrix:** Map every requirement and sub-requirement to its current implementation status, target milestone, acceptance evidence, and deferred/post-MVP status.
+1. **Traceability Matrix:** Map every requirement and sub-requirement to its current implementation status, target milestone, and acceptance evidence.
 2. **Decision Register:** Resolve only milestone-blocking ADRs (e.g., encryption implementation, DLN scope, manifest versioning boundaries). Maintain a decision register for non-blocking deferred questions (Milestones 9–10).
-3. **DLN Scope Resolution:** Explicitly decide whether the Dynamic Ledger Network (DLN) is implemented for MVP, or if signed-interaction-receipts (and therefore robust `[P2P-REP]` reputation) are deferred.
+3. **DLN Scope Resolution:** Explicitly decide the target milestone for the Dynamic Ledger Network (DLN) and whether signed-interaction-receipts (and therefore robust `[P2P-REP]` reputation) are scheduled early or assigned to later milestones.
 4. **SQLite Encryption ADR:** Build an ADR/feasibility prototype for the exact encrypted-SQLite mechanism to be used in M3.
 5. **Baseline Migration Plan:** Draft the plan to migrate current `roymctl` contracts.
 
@@ -143,7 +143,7 @@ To prevent dependency cycles and scope creep, the data layer and storage mechani
 
 ---
 
-## Milestone 6: First Product Pilot
+## Milestone 6: Initial Integrated Experience
 **Goal:** Deliver the first cohesive product experience using the completed foundations, proving the value of the reference application.
 
 **Feature Grouping:**
@@ -223,7 +223,7 @@ Due to its complexity, the AI expansion track is subdivided into foundational an
 ---
 
 ## Explicitly Deferred Work & Future Product Phases
-To strictly enforce MVP boundaries and ensure achievable milestones, the following roadmap features are excluded from Milestones 1–10 and will be scheduled in subsequent roadmap iterations:
+To strictly enforce focus and ensure achievable milestones, the following roadmap features are excluded from Milestones 1–10 and will be scheduled in subsequent roadmap iterations:
 - **`[FND-IDT]` Extensions:** Master Key export/recovery, Tier-1 Fallback processing, and Method B Zero-Knowledge (ZK) plugin verification.
 - **Phase 6 Product Expansion:** 
   - The Producer-Distributor Mesh application vertical.

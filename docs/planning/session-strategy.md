@@ -82,7 +82,7 @@ Open a fresh window for the specific slice to keep context focused and make fail
 >
 > Read the canonical project documents and inspect the current worktree before changing anything. Preserve unrelated changes. Do not commit or stage files.
 >
-> Implement the slice completely, add its tests, and update `task.md` and `status.md` with factual progress and verification evidence. Do not begin the next slice.
+> Implement the slice completely, add its tests, and update `task.md` and `status.md` with factual progress and verification evidence. Run the relevant tests for this slice and paste the passing output into `status.md`. Do not begin the next slice.
 
 ### C. Review Window (Read-Only)
 Use a fresh window after every substantial slice to act as a reviewer.
@@ -90,7 +90,7 @@ Use a fresh window after every substantial slice to act as a reviewer.
 **Prompt Template:**
 > Review the implementation of slice M1B against its requirements and acceptance criteria. Diagnose correctness, security, concurrency, WASM-boundary, migration, and test-coverage issues.
 >
-> Do not modify code. Report actionable findings with file and line links.
+> Do not modify code. Report actionable findings with file and line links, and output these findings as a checklist in a markdown artifact so the next implementation window can methodically address them.
 
 *Use a subsequent implementation window to address any accepted findings.*
 
