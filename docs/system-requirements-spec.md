@@ -1251,7 +1251,11 @@ Items deferred from the initial baseline requirements until detailed specificati
 - **Accessibility:** Base substrate capability flows (onboarding, recovery, Hub UI) must target a baseline standard (e.g., WCAG 2.1 AA) to ensure independent operation by disabled users.
 - **Localisation:** Base architecture must be internationalisation-ready (i18n) to support local community clusters, even if initial releases populate only the English locale.
 
-### Substrate Feature Coverage Matrix
+### Non-IP Mesh Transport Interconnectivity
+
+- **IoT and Edge Networking:** Support for seamlessly integrating non-IP mesh networks (e.g., Zigbee, Thread, Bluetooth Low Energy (BLE)) into the existing IP-based topology.
+
+## Appendix: Substrate Feature Coverage Matrix
 *(Ensuring core platform primitives are battle-tested across the application suite)*
 
 | Substrate Capability | Primary App | How it is exercised |
