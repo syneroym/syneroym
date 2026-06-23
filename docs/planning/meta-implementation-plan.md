@@ -23,6 +23,7 @@ When we begin work on any milestone below, we will generate a dedicated `task.md
   - `cargo +nightly fmt --all`
   - `cargo clippy --workspace --all-targets --all-features`
   - `cargo test --workspace`
+  - `mise run test:e2e`
   - Relevant `wasm32-wasip2` compilation
   - End-to-end reference-scenario and failure-recovery tests
 
