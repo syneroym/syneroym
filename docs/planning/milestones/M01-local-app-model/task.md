@@ -41,10 +41,10 @@ Establish the fundamental execution boundary (`SynSvc`), the application groupin
 1. **[x] Slice 1: Domain Models & Topology Definitions**
    - [x] Implement strong types: `AppBlueprintId`, `AppInstanceId`, `LogicalServiceName`, `ServiceId`, `LogicalServiceRef`, `InterfaceName`.
    - [x] Implement `DeploymentPlan`, `SynAppManifest` parsers (TOML/JSON).
-2. **Slice 2: Manifest Compiler (`crates/app_orchestration`)**
-   - Implement `ManifestCatalog` trait (restricted to local filesystem paths for M1).
-   - Implement topological sorting and dependency graph compilation.
-   - Implement Cycle Detection for `Spawn` vs `Bind` directives.
+2. **[x] Slice 2: Manifest Compiler (`crates/app_orchestration`)**
+   - [x] Implement `ManifestCatalog` trait (restricted to local filesystem paths for M1).
+   - [x] Implement topological sorting and dependency graph compilation.
+   - [x] Implement Cycle Detection for `Spawn` vs `Bind` directives.
 3. **Slice 3: Addressing & Resolution Overlay**
    - Implement the Logical Resolver (sitting above the physical router).
    - Implement `StaticInventory` mode for the `AppRegistry`.

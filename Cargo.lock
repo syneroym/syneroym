@@ -6843,10 +6843,15 @@ name = "syneroym-app-orchestration"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "semver",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
  "toml 1.1.2+spec-1.1.0",
+ "z32",
 ]
 
 [[package]]
