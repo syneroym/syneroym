@@ -6839,6 +6839,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "syneroym-app-orchestration"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "semver",
+ "serde",
+ "serde_json",
+ "toml 1.1.2+spec-1.1.0",
+]
+
+[[package]]
 name = "syneroym-app-sandbox"
 version = "0.1.0"
 dependencies = [

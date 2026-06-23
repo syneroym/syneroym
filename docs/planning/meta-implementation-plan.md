@@ -140,7 +140,7 @@ To prevent dependency cycles and scope creep, the data layer and storage mechani
 1. **Async Primitives:** Implement the Outbox queue, cron lease mechanisms, Dead Letter Queue (DLQ), long-running task restart rules, and compensating transactions (sagas).
 2. **Active Controller:** Deploy the controller `SynApp` that continuously reconciles desired state. *(This is strictly a single-node controller initially).*
 3. **Versioning:** Implement pre-upgrade SQLite snapshotting and automatic rollback mechanisms.
-4. **Developer Tools:** Release the mock SDK, project templates, and the zero-drift `roymctl dev` local environment.
+4. **Developer Tools:** Release the mock SDK, project templates, the zero-drift `roymctl dev` local environment, and remote package retrieval over HTTP/OCI for the `ManifestCatalog`.
 
 ---
 

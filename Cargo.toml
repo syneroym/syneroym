@@ -25,6 +25,7 @@ repository = "https://github.com/syneroym/syneroym"
 
 [workspace.dependencies]
 syneroym-identity = { path = "crates/identity", version = "0.1.0" }
+syneroym-app-orchestration = { path = "crates/app_orchestration", version = "0.1.0" }
 
 # Networking & Async
 tokio = { version = "1.50", features = ["full"] }
@@ -82,6 +83,9 @@ thiserror = "2.0"
 aes-gcm = "0.10"
 p256 = { version = "0.13", features = ["ecdh", "pkcs8", "arithmetic", "ecdsa"] }
 rand = "0.9"
+semver = "1.0"
+
+
 
 # Iroh dependencies
 # NOTE: iroh v0.97 pulls in ed25519-dalek v3.0.0-pre.1, which in turn requires
