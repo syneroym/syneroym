@@ -271,7 +271,7 @@ registry_url = "http://127.0.0.1:7661"
   console.log('Demo1 App DID:', did1, 'Alias:', alias1);
 
   execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR}/sz --api-url http://127.0.0.1:7661 registry register --identity demo1 --substrate ${szDid} --nickname demo1`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
-  execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR}/sz --api-url http://127.0.0.1:7661 --substrate ${szDid} app deploy --app-id ${did1} --interfaces http --tcp 127.0.0.1:3000`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
+  execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR}/sz --api-url http://127.0.0.1:7661 --substrate ${szDid} svc deploy --svc-id ${did1} --interfaces http --tcp 127.0.0.1:3000`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
 
   // Initialize and Register demo2 for Sx
   console.log('Creating demo2 identity (Sx)...');
@@ -285,7 +285,7 @@ registry_url = "http://127.0.0.1:7661"
   console.log('Demo2 App DID:', did2, 'Alias:', alias2);
 
   execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR}/sx --api-url http://127.0.0.1:7661 registry register --identity demo2 --substrate ${sxDid} --nickname demo2`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
-  execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR}/sx --api-url http://127.0.0.1:7661 --substrate ${sxDid} app deploy --app-id ${did2} --interfaces http --tcp 127.0.0.1:3000`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
+  execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR}/sx --api-url http://127.0.0.1:7661 --substrate ${sxDid} svc deploy --svc-id ${did2} --interfaces http --tcp 127.0.0.1:3000`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
 
   // Set env vars for Playwright specs
   process.env.SZ_DID = szDid;

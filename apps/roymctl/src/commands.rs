@@ -9,6 +9,7 @@ use clap::Subcommand;
 use identity::IdentityCommands;
 use registry::RegistryCommands;
 use substrate::SubstrateCommands;
+use svc::SvcCommands;
 use syneroym_core::util;
 use syneroym_identity::Identity;
 
@@ -16,6 +17,7 @@ pub mod app;
 pub mod identity;
 pub mod registry;
 pub mod substrate;
+pub mod svc;
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum Commands {
@@ -24,6 +26,11 @@ pub enum Commands {
     Substrate {
         #[command(subcommand)]
         command: SubstrateCommands,
+    },
+    /// Manage `SynSvcs` on the local node
+    Svc {
+        #[command(subcommand)]
+        command: SvcCommands,
     },
     /// Manage `SynApps` on the local node
     App {
@@ -70,7 +77,7 @@ pub async fn run(
         Commands::Substrate { command } => {
             substrate::handle(&command, &dir).await?;
         }
-        Commands::App { command } => {
+        Commands::Svc { command } => {
             let substrate_did = substrate_opt
                 .or_else(|| {
                     // Try to load local substrate DID from key file if it exists
@@ -88,7 +95,10 @@ pub async fn run(
                     )
                 })?;
 
-            app::handle(&command, &api_url, substrate_did, &dir).await?;
+            svc::handle(&command, &api_url, substrate_did, &dir).await?;
+        }
+        Commands::App { command } => {
+            app::handle(&command).await?;
         }
         Commands::Identity { command } => {
             identity::handle(&command, &dir).await?;

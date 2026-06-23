@@ -187,7 +187,7 @@ async fn test_podman_lifecycle() {
         .expect("SDK Deploy container failed");
 
     // Verify it is listed
-    let services = ctx.substrate_client.list_services().await.expect("SDK list_services failed");
+    let services = ctx.substrate_client.list_svcs().await.expect("SDK list_services failed");
     assert!(services.iter().any(|s| s.service_id == app_service_id));
     let svc = services.iter().find(|s| s.service_id == app_service_id).unwrap();
     assert_eq!(svc.endpoint_type, "tcp"); // Registered as TcpHostPort
@@ -209,8 +209,7 @@ async fn test_podman_lifecycle() {
         .expect("SDK Undeploy container failed");
 
     // Verify removed from list
-    let services_after =
-        ctx.substrate_client.list_services().await.expect("SDK list_services failed");
+    let services_after = ctx.substrate_client.list_svcs().await.expect("SDK list_services failed");
     assert!(!services_after.iter().any(|s| s.service_id == app_service_id));
 
     ctx.teardown().await;

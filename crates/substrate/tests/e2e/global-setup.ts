@@ -152,7 +152,7 @@ registry_url = "http://127.0.0.1:7661"
   console.log('Deploying TCP Service (Passthrough)...');
   try {
     await new Promise(r => setTimeout(r, 2000));
-    execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR} --api-url http://127.0.0.1:7661 --substrate ${substrateDid} app deploy --app-id ${appDid} --interfaces http --tcp 127.0.0.1:3000`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
+    execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR} --api-url http://127.0.0.1:7661 --substrate ${substrateDid} svc deploy --svc-id ${appDid} --interfaces http --tcp 127.0.0.1:3000`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
   } catch (err: any) {
     console.error("Deploy failed!");
     throw err;

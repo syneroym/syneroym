@@ -56,7 +56,7 @@ pub async fn run_scenario() -> Result<()> {
 
     // Deploy the TCP service on the substrate
     orchestrator_client
-        .deploy_tcp(
+        .deploy_svc_tcp(
             app_service_id.clone(),
             vec![syneroym_sdk::NetworkEndpoint {
                 interface_name: "default".to_string(),

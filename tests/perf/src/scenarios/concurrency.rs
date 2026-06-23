@@ -52,7 +52,7 @@ pub async fn run_scenario() -> Result<()> {
 
     // Deploy WASM Greeter service
     orchestrator_client
-        .deploy_wasm(
+        .deploy_svc_wasm(
             app_service_id.clone(),
             vec![GREETER_INTERFACE_NAME.to_string()],
             wasm_bytes,

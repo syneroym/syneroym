@@ -90,7 +90,7 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
     // Deploy primary WASM Greeter service
     info!("Deploying primary WASM Greeter service...");
     orchestrator_client
-        .deploy_wasm(
+        .deploy_svc_wasm(
             app_service_id.clone(),
             vec![GREETER_INTERFACE_NAME.to_string()],
             wasm_bytes.clone(),
@@ -283,7 +283,7 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
             }
 
             let deploy_result = orchestrator_client
-                .deploy_wasm(
+                .deploy_svc_wasm(
                     unique_service_id.clone(),
                     vec![GREETER_INTERFACE_NAME.to_string()],
                     wasm_bytes_clone.clone(),

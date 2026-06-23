@@ -289,7 +289,7 @@ async fn test_wasm_app_scenario(ctx: &SubstrateTestContext) {
     let app_service_id = substrate::derive_did_key(&app_identity.public_key());
 
     ctx.substrate_client
-        .deploy_wasm(
+        .deploy_svc_wasm(
             app_service_id.clone(),
             vec![GREETER_INTERFACE_NAME.to_string()],
             wasm_bytes,
@@ -301,7 +301,7 @@ async fn test_wasm_app_scenario(ctx: &SubstrateTestContext) {
     debug!(">>> Finished WASM Scenario: Deploy");
 
     // Verify listing
-    let services = ctx.substrate_client.list_services().await.expect("SDK list_services failed");
+    let services = ctx.substrate_client.list_svcs().await.expect("SDK list_services failed");
     assert!(services.iter().any(|s| s.service_id == app_service_id));
     let svc = services.iter().find(|s| s.service_id == app_service_id).unwrap();
     assert_eq!(svc.endpoint_type, "wasm");
@@ -374,7 +374,7 @@ async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
     let app_service_id = substrate::derive_did_key(&app_identity.public_key());
 
     ctx.substrate_client
-        .deploy_tcp(
+        .deploy_svc_tcp(
             app_service_id.clone(),
             vec![syneroym_sdk::NetworkEndpoint {
                 interface_name: "default".to_string(),
@@ -387,7 +387,7 @@ async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
         .expect("SDK Deploy TCP request failed");
 
     // Verify listing
-    let services = ctx.substrate_client.list_services().await.expect("SDK list_services failed");
+    let services = ctx.substrate_client.list_svcs().await.expect("SDK list_services failed");
     assert!(services.iter().any(|s| s.service_id == app_service_id));
     let svc = services.iter().find(|s| s.service_id == app_service_id).unwrap();
     assert_eq!(svc.endpoint_type, "tcp");
@@ -494,7 +494,7 @@ async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
     let https_app_service_id = substrate::derive_did_key(&https_app_identity.public_key());
 
     ctx.substrate_client
-        .deploy_tcp(
+        .deploy_svc_tcp(
             https_app_service_id.clone(),
             vec![syneroym_sdk::NetworkEndpoint {
                 interface_name: "default".to_string(),

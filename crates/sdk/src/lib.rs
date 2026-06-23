@@ -256,7 +256,7 @@ impl SyneroymClient {
         }
     }
 
-    pub async fn deploy_wasm(
+    pub async fn deploy_svc_wasm(
         &self,
         service_id: String,
         interfaces: Vec<String>,
@@ -285,7 +285,7 @@ impl SyneroymClient {
         }
     }
 
-    pub async fn deploy_tcp(
+    pub async fn deploy_svc_tcp(
         &self,
         service_id: String,
         endpoints: Vec<NetworkEndpoint>,
@@ -351,7 +351,7 @@ impl SyneroymClient {
         }
     }
 
-    pub async fn list_services(&self) -> Result<Vec<DeployedService>> {
+    pub async fn list_svcs(&self) -> Result<Vec<DeployedService>> {
         let res = self.request("orchestrator", "list", serde_json::json!({})).await?;
         let services: Vec<DeployedService> = serde_json::from_value(res.result)?;
         Ok(services)
