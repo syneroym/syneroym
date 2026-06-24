@@ -11,10 +11,11 @@ use std::{
 
 use anyhow::{Context, Result};
 use iroh::{Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl, endpoint::Connection};
-pub use syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::NetworkEndpoint;
-use syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::{
+pub mod mapper;
+pub use syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, ContainerManifest, ContainerPortMapping, ContainerVolumeMapping,
-    DeployManifest, ServiceConfig, ServiceType, TcpManifest, WasmManifest,
+    DeployManifest, DeploymentPlan, NetworkEndpoint, PlannedService, ServiceConfig, ServiceType,
+    TcpManifest, WasmManifest,
 };
 use syneroym_core::dht_registry::{EndpointMechanism, RegistryClient, SignedEndpointInfo};
 use syneroym_router::{RoutePreamble, RouteProtocol, RouteTransport, SYNEROYM_ALPN};
@@ -338,6 +339,16 @@ impl SyneroymClient {
             Ok(())
         } else {
             Err(anyhow::anyhow!("Deployment failed: {:?}", res.result))
+        }
+    }
+
+    pub async fn deploy_plan(&self, plan: DeploymentPlan) -> Result<()> {
+        let params = serde_json::to_value((plan,))?;
+        let res = self.request("orchestrator", "deploy-plan", params).await?;
+        if res.result == serde_json::json!({"status": "deployed_plan"}) {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Deployment of plan failed: {:?}", res.result))
         }
     }
 

@@ -22,7 +22,7 @@ use oneshot::Sender;
 use reqwest::Client;
 use syneroym_core::{
     config::SubstrateConfig,
-    dht_registry::{DEFAULT_REGISTRY_TTL_SECS, SignedEndpointInfo},
+    dht_registry::{DEFAULT_REGISTRY_TTL_SECS, SignedEndpointInfo, SignedMasterAnchor},
     util,
 };
 use syneroym_identity::substrate::resolve_did_key;
@@ -55,6 +55,8 @@ struct RegistryState {
     endpoints: DashMap<String, (SignedEndpointInfo, Instant)>,
     // Map of alias -> service_id
     aliases: DashMap<String, String>,
+    // Map of master_id -> (SignedMasterAnchor, std::time::Instant)
+    master_anchors: DashMap<String, (SignedMasterAnchor, Instant)>,
     // Needed when registry is not accessible from internal network and multi-hop-relays are needed
     // for data transfer
     parent_registry_url: Option<String>,
@@ -62,7 +64,12 @@ struct RegistryState {
 
 impl Default for RegistryState {
     fn default() -> Self {
-        Self { endpoints: DashMap::new(), aliases: DashMap::new(), parent_registry_url: None }
+        Self {
+            endpoints: DashMap::new(),
+            aliases: DashMap::new(),
+            master_anchors: DashMap::new(),
+            parent_registry_url: None,
+        }
     }
 }
 
@@ -88,6 +95,7 @@ impl EcosystemRegistry {
             state: Arc::new(RegistryState {
                 endpoints: DashMap::new(),
                 aliases: DashMap::new(),
+                master_anchors: DashMap::new(),
                 parent_registry_url,
             }),
             shutdown_tx: None,
@@ -125,6 +133,8 @@ impl EcosystemRegistry {
         let app = Router::new()
             .route("/register", post(register_endpoint))
             .route("/lookup/{service_id}", get(lookup_endpoint))
+            .route("/register_master", post(register_master_endpoint))
+            .route("/lookup_master/{master_id}", get(lookup_master_endpoint))
             .with_state(self.state.clone());
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -271,6 +281,26 @@ async fn lookup_endpoint(
     if let Some(entry) = entry { Ok(Json(entry)) } else { Err(StatusCode::NOT_FOUND) }
 }
 
+async fn register_master_endpoint(
+    State(state): State<Arc<RegistryState>>,
+    Json(payload): Json<SignedMasterAnchor>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    if let Err(e) = payload.verify() {
+        return Err((StatusCode::UNAUTHORIZED, format!("Signature verification failed: {}", e)));
+    }
+
+    state.master_anchors.insert(payload.master_id.clone(), (payload, Instant::now()));
+    Ok(StatusCode::OK)
+}
+
+async fn lookup_master_endpoint(
+    Path(master_id): Path<String>,
+    State(state): State<Arc<RegistryState>>,
+) -> Result<Json<SignedMasterAnchor>, StatusCode> {
+    let entry = state.master_anchors.get(&master_id).map(|e| e.0.clone());
+    if let Some(entry) = entry { Ok(Json(entry)) } else { Err(StatusCode::NOT_FOUND) }
+}
+
 #[cfg(test)]
 mod tests {
     use axum::http::StatusCode;
@@ -284,6 +314,36 @@ mod tests {
 
     fn create_signed_info(identity: &Identity, info: EndpointInfo) -> SignedEndpointInfo {
         info.sign(identity).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_master_anchor_register_and_lookup() {
+        use syneroym_core::dht_registry::MasterAnchorPayload;
+
+        let state = Arc::new(RegistryState::default());
+        let identity = Identity::generate().unwrap();
+        let master_id = derive_did_key(&identity.public_key());
+
+        let payload = MasterAnchorPayload {
+            schema: "master_anchor_v1".to_string(),
+            temporary_keys: vec!["did:key:z6Mkt...".to_string()],
+            timestamp: 1690000000,
+        };
+
+        let signed_anchor = payload.sign(&identity).unwrap();
+
+        // Register
+        let reg_res =
+            register_master_endpoint(State(state.clone()), Json(signed_anchor.clone())).await;
+        assert!(reg_res.is_ok());
+
+        // Lookup
+        let lookup_res = lookup_master_endpoint(Path(master_id.clone()), State(state)).await;
+        assert!(lookup_res.is_ok());
+        let Json(retrieved) = lookup_res.unwrap();
+        assert_eq!(retrieved.master_id, master_id);
+        assert_eq!(retrieved.payload.schema, "master_anchor_v1");
+        assert_eq!(retrieved.payload.temporary_keys.len(), 1);
     }
 
     #[tokio::test]

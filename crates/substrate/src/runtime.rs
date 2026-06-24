@@ -405,7 +405,7 @@ fn publish_to_community_registry(
             let mut attempts = 0;
             let mut success = false;
             while attempts < 30 {
-                if let Err(e) = registry_client.register(&signed_info).await {
+                if let Err(e) = registry_client.register(&signed_info, false).await {
                     warn!("Failed to register endpoint (attempt {}): {}", attempts + 1, e);
                     time::sleep(Duration::from_millis(500)).await;
                     attempts += 1;
@@ -437,7 +437,7 @@ fn publish_to_community_registry(
                         && let Ok(contents) = fs::read_to_string(entry.path()).await
                         && let Ok(cert) = serde_json::from_str::<SignedEndpointInfo>(&contents)
                     {
-                        if let Err(e) = registry_client.register(&cert).await {
+                        if let Err(e) = registry_client.register(&cert, false).await {
                             warn!("Failed to register hosted app {}: {}", cert.info.service_id, e);
                         } else {
                             info!("Successfully registered hosted app {}", cert.info.service_id);

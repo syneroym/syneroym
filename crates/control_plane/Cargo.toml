@@ -23,6 +23,7 @@ serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 syneroym-bindings = { path = "../bindings" }
+syneroym-app-orchestration = { path = "../app_orchestration" }
 
 [dev-dependencies]
 wit-parser.workspace = true

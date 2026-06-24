@@ -98,7 +98,23 @@ pub async fn run(
             svc::handle(&command, &api_url, substrate_did, &dir).await?;
         }
         Commands::App { command } => {
-            app::handle(&command).await?;
+            let substrate_did = substrate_opt
+                .or_else(|| {
+                    // Try to load local substrate DID from key file if it exists
+                    let key_path = dir.join("substrate.key");
+                    Identity::load_from_path(&key_path)
+                        .map(|identity| {
+                            syneroym_identity::substrate::derive_did_key(&identity.public_key())
+                        })
+                        .ok()
+                })
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Substrate DID not provided and substrate.key not found. Use --substrate \
+                         <did>"
+                    )
+                })?;
+            app::handle(&command, &api_url, substrate_did).await?;
         }
         Commands::Identity { command } => {
             identity::handle(&command, &dir).await?;

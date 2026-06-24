@@ -522,9 +522,22 @@ To prove National ID bindings without revealing the DID or Uniqueness Anchor, th
 #### Identity Resolution & Revocation (The Master Anchor)
 To maintain strict security without modifying standard DHT signature mechanics (BEP 44), the **Master Key acts as the persistent anchor**. Both keys utilize standard `pkarr` DHT records signed by their respective private keys.
 
+**Master Anchor Payload Schema:**
+The Master Key DHT payload is stored in the `pkarr` TXT record as a JSON-encoded string:
+```json
+{
+  "schema": "master_anchor_v1",
+  "temporary_keys": [
+    "did:key:z6Mkt...",
+    "did:key:z6Mku..."
+  ],
+  "timestamp": 1690000000
+}
+```
+
 **Secure Resolution Flow:**
 1. **Registry Lookup:** A client queries the Community/App Registry for a Logical Service Name. The registry returns the **Master Key DID** that owns the service.
-2. **Authorization Check (DHT):** The client looks up `pkarr:<Master Key DID>`. The signed payload contains an array of authorized, active **Temporary Key DIDs** (representing the user's active devices/servers).
+2. **Authorization Check (DHT):** The client looks up `pkarr:<Master Key DID>`. The client parses the JSON payload and validates the schema, extracting the array of authorized, active **Temporary Key DIDs** (representing the user's active devices/servers).
 3. **Routing Lookup (DHT):** The client finds the matching Temporary Key in the array, looks up `pkarr:<Temporary Key DID>`, and retrieves the actual IP/Relay endpoints.
 
 **Passive Revocation:**

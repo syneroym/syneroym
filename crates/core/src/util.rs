@@ -57,6 +57,20 @@ pub fn generate_alias(nickname: Option<&str>, service_id: &str) -> String {
     }
 }
 
+pub fn read_local_artifact(path: &std::path::Path) -> anyhow::Result<Vec<u8>> {
+    std::fs::read(path)
+        .or_else(|_| {
+            if let Ok(cwd) = std::env::current_dir() {
+                let target = cwd.join(path);
+                if target.exists() {
+                    return std::fs::read(&target);
+                }
+            }
+            std::fs::read(path)
+        })
+        .map_err(|e| anyhow::anyhow!("Failed to read file at {:?}: {}", path, e))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

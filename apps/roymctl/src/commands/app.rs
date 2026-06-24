@@ -1,12 +1,25 @@
-use std::path::PathBuf;
+use std::{collections::BTreeMap, path::PathBuf};
 
 use clap::Subcommand;
-use syneroym_app_orchestration::{AppInstanceId, DeploymentJournal, Reconciler};
+use syneroym_app_orchestration::{
+    AppInstanceId, DeploymentJournal, DeploymentState, LocalFilesystemCatalog, Reconciler,
+    SynAppManifest, compile,
+    models::{AppBlueprintId, LogicalServiceName, ServiceConfig, ServiceSpec, ServiceType},
+};
+use syneroym_sdk::SyneroymClient;
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum AppCommands {
     /// Deploy a `SynApp` manifest (Dual Versioning)
-    Deploy,
+    Deploy {
+        /// The AppInstanceId to deploy
+        instance_id: String,
+        /// Path to the SynApp manifest TOML file or legacy .wasm file
+        manifest_path: PathBuf,
+        /// Path to the SQLite deployment journal
+        #[arg(long, default_value = "deployments.db")]
+        journal_path: PathBuf,
+    },
     /// Reconcile a deployment to recover or compute updates
     Reconcile {
         /// The AppInstanceId to reconcile
@@ -20,10 +33,78 @@ pub enum AppCommands {
     },
 }
 
-pub async fn handle(command: &AppCommands) -> anyhow::Result<()> {
+pub async fn handle(
+    command: &AppCommands,
+    api_url: &str,
+    substrate_did: String,
+) -> anyhow::Result<()> {
     match command {
-        AppCommands::Deploy => {
-            println!("SynApp dual-versioning manifest deployment coming soon.");
+        AppCommands::Deploy { instance_id, manifest_path, journal_path } => {
+            let instance_id = AppInstanceId::try_new(instance_id.clone())?;
+
+            let manifest = if manifest_path.extension().and_then(|s| s.to_str()) == Some("wasm") {
+                let mut services = BTreeMap::new();
+                services.insert(
+                    LogicalServiceName::new("main"),
+                    ServiceSpec {
+                        config: ServiceConfig {
+                            service_type: ServiceType::Wasm,
+                            source: manifest_path.to_string_lossy().to_string(),
+                            hash: None,
+                            interfaces: vec![],
+                            env: BTreeMap::new(),
+                            args: vec![],
+                            custom_config: None,
+                        },
+                        depends_on: vec![],
+                    },
+                );
+                SynAppManifest {
+                    id: AppBlueprintId::new("legacy-wasm-app"),
+                    version: semver::Version::new(0, 1, 0),
+                    description: Some("Auto-generated legacy wrapper".to_string()),
+                    services,
+                    dependencies: BTreeMap::new(),
+                }
+            } else {
+                let toml_str = std::fs::read_to_string(manifest_path)?;
+                SynAppManifest::from_toml(&toml_str)?
+            };
+
+            let catalog = LocalFilesystemCatalog::new(
+                manifest_path.parent().unwrap_or(std::path::Path::new(".")).to_path_buf(),
+            );
+
+            let compiled = compile(instance_id.clone(), &manifest, &catalog).await?;
+
+            if let Some(target_plan) = compiled.plans.last() {
+                let parent_dir = journal_path.parent().unwrap_or(std::path::Path::new("."));
+                let db_name = journal_path
+                    .file_name()
+                    .ok_or_else(|| anyhow::anyhow!("Invalid journal path"))?
+                    .to_str()
+                    .ok_or_else(|| anyhow::anyhow!("Invalid journal path characters"))?;
+
+                let journal = DeploymentJournal::open(parent_dir, db_name)?;
+                let reconciler = Reconciler::new(&journal);
+
+                let record_id = journal.append(target_plan, DeploymentState::Planned)?;
+                let _diff = reconciler.compute_diff(target_plan)?;
+                journal.update_state(record_id, DeploymentState::Applying)?;
+
+                let wit_plan =
+                    syneroym_sdk::mapper::map_deployment_plan_to_wit(target_plan.clone())?;
+
+                let mut client = SyneroymClient::new(substrate_did.clone(), api_url.to_string());
+                client.connect().await?;
+                client.deploy_plan(wit_plan).await?;
+
+                journal.update_state(record_id, DeploymentState::Active)?;
+
+                println!("Successfully deployed application plan for {}", instance_id);
+            } else {
+                return Err(anyhow::anyhow!("Compiled deployment contains no plans"));
+            }
         }
         AppCommands::Reconcile { instance_id, manifest_path, journal_path } => {
             let instance_id = AppInstanceId::try_new(instance_id.clone())?;
@@ -44,10 +125,7 @@ pub async fn handle(command: &AppCommands) -> anyhow::Result<()> {
                     println!(" - {:?}", action);
                 }
             } else {
-                let active = journal.get_last_state(
-                    &instance_id,
-                    syneroym_app_orchestration::DeploymentState::Active,
-                )?;
+                let active = journal.get_last_state(&instance_id, DeploymentState::Active)?;
                 if active.is_some() {
                     if let Some(manifest_path) = manifest_path {
                         println!(
@@ -56,21 +134,15 @@ pub async fn handle(command: &AppCommands) -> anyhow::Result<()> {
                         );
 
                         let toml_str = std::fs::read_to_string(manifest_path)?;
-                        let manifest =
-                            syneroym_app_orchestration::SynAppManifest::from_toml(&toml_str)?;
-                        let catalog = syneroym_app_orchestration::LocalFilesystemCatalog::new(
+                        let manifest = SynAppManifest::from_toml(&toml_str)?;
+                        let catalog = LocalFilesystemCatalog::new(
                             manifest_path
                                 .parent()
                                 .unwrap_or(std::path::Path::new("."))
                                 .to_path_buf(),
                         );
 
-                        let compiled = syneroym_app_orchestration::compile(
-                            instance_id.clone(),
-                            &manifest,
-                            &catalog,
-                        )
-                        .await?;
+                        let compiled = compile(instance_id.clone(), &manifest, &catalog).await?;
 
                         if let Some(target_plan) = compiled.plans.last() {
                             let diff = reconciler.compute_diff(target_plan)?;

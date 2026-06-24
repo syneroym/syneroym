@@ -8,7 +8,7 @@ use std::{collections::HashMap, fmt, fs, path::PathBuf, sync::Arc};
 use anyhow::Result;
 use fmt::{Debug, Formatter};
 use syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::{
-    DeployManifest, DeployedService, ServiceType,
+    ArtifactSource, DeployManifest, DeployedService, DeploymentPlan, ServiceType as WitServiceType,
 };
 
 #[async_trait::async_trait]
@@ -17,6 +17,7 @@ pub trait OrchestratorInterface {
     async fn deploy(&self, service_id: String, manifest: DeployManifest) -> Result<(), String>;
     async fn undeploy(&self, service_id: String) -> Result<(), String>;
     async fn list(&self) -> Result<Vec<DeployedService>, String>;
+    async fn deploy_plan(&self, plan: DeploymentPlan) -> Result<(), String>;
 }
 use syneroym_core::local_registry::{EndpointRegistry, SubstrateEndpoint};
 use syneroym_rpc::{NativeInvocation, NativeResponse, NativeService, RpcError, RpcResult};
@@ -108,6 +109,17 @@ impl NativeService for ControlPlaneService {
                 self.deploy(service_id, manifest).await.map_err(RpcError::InternalError)?;
                 Ok(NativeResponse { payload: serde_json::json!({"status": "deployed"}) })
             }
+            "deploy-plan" => {
+                let (plan,): (DeploymentPlan,) = serde_json::from_value(invocation.params.clone())
+                    .or_else(|_| {
+                        serde_json::from_value::<DeploymentPlan>(invocation.params).map(|p| (p,))
+                    })
+                    .map_err(|e| {
+                        RpcError::InvalidParams(format!("Failed to parse deploy-plan params: {e}"))
+                    })?;
+                self.deploy_plan(plan).await.map_err(RpcError::InternalError)?;
+                Ok(NativeResponse { payload: serde_json::json!({"status": "deployed_plan"}) })
+            }
             "undeploy" => {
                 let (service_id,): (String,) = serde_json::from_value(invocation.params.clone())
                     .or_else(|_| serde_json::from_value::<String>(invocation.params).map(|s| (s,)))
@@ -184,7 +196,7 @@ impl OrchestratorInterface for ControlPlaneService {
         }
 
         match &manifest.service_type {
-            ServiceType::Wasm(wasm_manifest) => {
+            WitServiceType::Wasm(wasm_manifest) => {
                 self.app_sandbox_engine
                     .deploy_wasm(&service_id, &manifest)
                     .await
@@ -194,7 +206,7 @@ impl OrchestratorInterface for ControlPlaneService {
                     .await
                     .map_err(|e| format!("Endpoint registration failed: {e}"))?;
             }
-            ServiceType::Tcp(tcp_manifest) => {
+            WitServiceType::Tcp(tcp_manifest) => {
                 for endpoint in &tcp_manifest.endpoints {
                     info!(
                         "Deploying TCP service {} endpoint {}: {}:{}",
@@ -213,7 +225,7 @@ impl OrchestratorInterface for ControlPlaneService {
                         .map_err(|e| format!("Endpoint registration failed: {e}"))?;
                 }
             }
-            ServiceType::Container(container_manifest) => {
+            WitServiceType::Container(container_manifest) => {
                 info!(
                     "Deploying container service {}: image={}",
                     service_id, container_manifest.image
@@ -317,6 +329,57 @@ impl OrchestratorInterface for ControlPlaneService {
 
         Ok(result)
     }
+
+    async fn deploy_plan(&self, plan: DeploymentPlan) -> Result<(), String> {
+        for service in plan.services {
+            let service_id = service.service_id.clone();
+
+            // Only allow WASM sources that do not use path traversal and stay within an
+            // allowed directory Note: Since deploy-plan is handled over RPC, we
+            // restrict file source reads to the current directory
+            // or an explicit sandbox.
+            let mut deploy_manifest = service.manifest.clone();
+
+            match &mut deploy_manifest.service_type {
+                WitServiceType::Wasm(wasm_manifest) => {
+                    if let ArtifactSource::Binary(_) = &wasm_manifest.source {
+                        // Binary is fine, it was passed directly
+                    } else if let ArtifactSource::Url(url_or_path) = &wasm_manifest.source
+                        && !url_or_path.starts_with("http://")
+                        && !url_or_path.starts_with("https://")
+                    {
+                        // It's a local file path
+                        let path = std::path::PathBuf::from(url_or_path);
+
+                        // Path traversal check
+                        if path.components().any(|c| matches!(c, std::path::Component::ParentDir))
+                            || path.is_absolute()
+                        {
+                            return Err(format!(
+                                "Arbitrary file read prevented: Path traversal or absolute paths \
+                                 are not allowed in deploy-plan: {:?}",
+                                path
+                            ));
+                        }
+
+                        let bytes =
+                            syneroym_core::util::read_local_artifact(&path).map_err(|e| {
+                                format!("Failed to read WASM file at {:?}: {}", path, e)
+                            })?;
+                        wasm_manifest.source = ArtifactSource::Binary(bytes);
+                    }
+                }
+                WitServiceType::Tcp(_) | WitServiceType::Container(_) => {
+                    // TCP and Container don't read host files directly in
+                    // deploy_plan logic for sources
+                }
+            }
+
+            self.deploy(service_id, deploy_manifest).await?;
+        }
+
+        Ok(())
+    }
 }
 
 fn ready_response() -> NativeResponse {
@@ -327,6 +390,9 @@ fn ready_response() -> NativeResponse {
 mod tests {
     use std::path::Path;
 
+    use syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::{
+        ServiceConfig, WasmManifest,
+    };
     use wit_parser::Resolve;
 
     use super::*;
@@ -388,5 +454,96 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_deploy_plan_path_traversal() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = syneroym_core::config::SubstrateConfig::default();
+        let app_sandbox = Arc::new(AppSandboxEngine::init(&config, vec![]).await.unwrap());
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path()));
+        let registry =
+            EndpointRegistry::new_mock(Arc::new(syneroym_core::storage::MockStorage::new()));
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+        )
+        .await
+        .unwrap();
+
+        // Create a deployment plan with path traversal in source
+        let plan = DeploymentPlan {
+            app_instance_id: "test-instance".to_string(),
+            blueprint_id: "test-blueprint".to_string(),
+            version: "0.1.0".to_string(),
+            services: vec![syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::PlannedService {
+                service_id: "did:key:test".to_string(),
+                logical_ref: "test/main".to_string(),
+                manifest: DeployManifest {
+                    config: ServiceConfig { env: vec![], args: vec![], custom_config: None },
+                    service_type: WitServiceType::Wasm(WasmManifest {
+                        source: ArtifactSource::Url("../../../../../etc/passwd".to_string()),
+                        hash: None,
+                        interfaces: vec![],
+                    }),
+                    registry_certificate: None,
+                },
+            }],
+        };
+
+        let result = service.deploy_plan(plan).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Arbitrary file read prevented: Path traversal"));
+    }
+
+    #[tokio::test]
+    async fn test_deploy_plan_absolute_path() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = syneroym_core::config::SubstrateConfig::default();
+        let app_sandbox = Arc::new(AppSandboxEngine::init(&config, vec![]).await.unwrap());
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path()));
+        let registry =
+            EndpointRegistry::new_mock(Arc::new(syneroym_core::storage::MockStorage::new()));
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+        )
+        .await
+        .unwrap();
+
+        let plan = DeploymentPlan {
+            app_instance_id: "test-instance".to_string(),
+            blueprint_id: "test-blueprint".to_string(),
+            version: "0.1.0".to_string(),
+            services: vec![syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::PlannedService {
+                service_id: "did:key:test".to_string(),
+                logical_ref: "test/main".to_string(),
+                manifest: DeployManifest {
+                    config: ServiceConfig { env: vec![], args: vec![], custom_config: None },
+                    service_type: WitServiceType::Wasm(WasmManifest {
+                        source: ArtifactSource::Url("/etc/passwd".to_string()),
+                        hash: None,
+                        interfaces: vec![],
+                    }),
+                    registry_certificate: None,
+                },
+            }],
+        };
+
+        let result = service.deploy_plan(plan).await;
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .contains("Arbitrary file read prevented: Path traversal or absolute paths")
+        );
     }
 }

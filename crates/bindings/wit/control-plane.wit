@@ -95,6 +95,24 @@ interface orchestrator {
 
     /// Check the readiness of the orchestrator
     readyz: func(service-id: string) -> result<_, string>;
+
+    /// A planned service in a deployment plan.
+    record planned-service {
+        service-id: string,
+        logical-ref: string,
+        manifest: deploy-manifest,
+    }
+
+    /// A deployment plan containing multiple planned services.
+    record deployment-plan {
+        app-instance-id: string,
+        blueprint-id: string,
+        version: string,
+        services: list<planned-service>,
+    }
+
+    /// Deploy an entire compiled deployment plan
+    deploy-plan: func(plan: deployment-plan) -> result<_, string>;
 }
 
 interface health {

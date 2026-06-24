@@ -12,6 +12,7 @@ syneroym-rpc = { path = "../rpc" }
 syneroym-router = { path = "../router" }
 syneroym-bindings = { path = "../bindings" }
 syneroym-identity = { path = "../identity" }
+syneroym-app-orchestration = { path = "../app_orchestration" }
 
 anyhow.workspace = true
 tokio.workspace = true

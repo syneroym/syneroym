@@ -53,10 +53,10 @@ Establish the fundamental execution boundary (`SynSvc`), the application groupin
 4. **[x] Slice 4: `roymctl` Standalone Journaling**
    - [x] Implement local Deployment Journal (`PLANNED`, `APPLYING`, `ACTIVE`, `ROLLING_BACK`, `ROLLED_BACK`).
    - [x] Implement `roymctl reconcile` to diff against the journal and compute configuration/routing updates.
-5. **Slice 5: Master Anchor Contract & Baseline Migration**
-   - **Design:** Draft and document the exact byte-layout schema for the Master Key `pkarr` payload (Array of Temporary Keys).
-   - Implement Phase 0 Master Anchor resolution distinguishing Master Key from Temporary Key.
-   - Refactor existing `roymctl` and dispatcher code to consume the new `DeploymentPlan`.
+5. **[x] Slice 5: Master Anchor Contract & Baseline Migration**
+   - [x] **Design:** Draft and document the exact byte-layout schema for the Master Key `pkarr` payload (Array of Temporary Keys).
+   - [x] Implement Phase 0 Master Anchor resolution distinguishing Master Key from Temporary Key.
+   - [x] Refactor existing `roymctl` and dispatcher code to consume the new `DeploymentPlan`.
 
 ## Migration Strategy
 - Current CLI commands will be wrapped in a backwards-compatibility layer during transition, eventually deprecating direct single-WASM deployments in favor of single-service `SynApp` manifests.
