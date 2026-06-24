@@ -122,7 +122,7 @@ define_string_wrapper!(DependencyName, "Name of a dependency within an applicati
 
 /// Logical reference to a service, fully identifying it within a specific
 /// application instance.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct LogicalServiceRef {
     pub app_instance_id: AppInstanceId,

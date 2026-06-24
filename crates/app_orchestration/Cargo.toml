@@ -16,9 +16,10 @@ anyhow.workspace = true
 semver = { workspace = true, features = ["serde"] }
 sha2.workspace = true
 z32.workspace = true
-tokio.workspace = true
+blake3.workspace = true
 async-trait.workspace = true
-
+dashmap.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

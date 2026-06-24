@@ -45,11 +45,11 @@ Establish the fundamental execution boundary (`SynSvc`), the application groupin
    - [x] Implement `ManifestCatalog` trait (restricted to local filesystem paths for M1).
    - [x] Implement topological sorting and dependency graph compilation.
    - [x] Implement Cycle Detection for `Spawn` vs `Bind` directives.
-3. **Slice 3: Addressing & Resolution Overlay**
-   - Implement the Logical Resolver (sitting above the physical router).
-   - Implement `StaticInventory` mode for the `AppRegistry`.
-   - Implement topology cache keyed by `AppInstanceId + LogicalServiceName` with invalidation logic.
-   - Implement rendering of deterministic rendezvous hashing (BLAKE3) for sharded selection topology.
+3. **[x] Slice 3: Addressing & Resolution Overlay**
+   - [x] Implement the Logical Resolver (sitting above the physical router).
+   - [x] Implement `StaticInventory` mode for the `AppRegistry`.
+   - [x] Implement topology cache keyed by `AppInstanceId + LogicalServiceName` with invalidation logic.
+   - [x] Implement rendering of deterministic rendezvous hashing (BLAKE3) for sharded selection topology.
 4. **Slice 4: `roymctl` Standalone Journaling**
    - Implement local Deployment Journal (`PLANNED`, `APPLYING`, `ACTIVE`, `ROLLING_BACK`, `ROLLED_BACK`).
    - Implement `roymctl reconcile` to diff against the journal and compute configuration/routing updates.

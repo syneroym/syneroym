@@ -160,13 +160,15 @@ fn compile_recursive<'a>(
 
 /// Derives a deterministic `ServiceId` for a logical service reference.
 ///
-/// **TODO(M2/M3A):** This is a temporary M1 hack that forcefully prepends the `ed25519-pub`
-/// multicodec prefix to a SHA-256 hash to forge a `did:key`. This produces a mock key
-/// where we do not have the private key, and the 32 bytes may not be a valid Curve25519 point.
+/// **TODO(M2/M3A):** This is a temporary M1 hack that forcefully prepends the
+/// `ed25519-pub` multicodec prefix to a SHA-256 hash to forge a `did:key`. This
+/// produces a mock key where we do not have the private key, and the 32 bytes
+/// may not be a valid Curve25519 point.
 ///
-/// In M2 (Identity Handshake) and M3A (Vault/Configuration), this should be replaced
-/// by actual deterministic derivation of valid Ed25519 keypairs (e.g., via HKDF from a seed),
-/// where the public key goes into the plan and the private key is injected into the service.
+/// In M2 (Identity Handshake) and M3A (Vault/Configuration), this should be
+/// replaced by actual deterministic derivation of valid Ed25519 keypairs (e.g.,
+/// via HKDF from a seed), where the public key goes into the plan and the
+/// private key is injected into the service.
 fn derive_deterministic_service_id(logical_ref: &LogicalServiceRef) -> ServiceId {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
