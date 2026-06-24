@@ -20,6 +20,8 @@ blake3.workspace = true
 async-trait.workspace = true
 dashmap.workspace = true
 tokio.workspace = true
+rusqlite.workspace = true
+chrono.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

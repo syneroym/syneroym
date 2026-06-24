@@ -50,9 +50,9 @@ Establish the fundamental execution boundary (`SynSvc`), the application groupin
    - [x] Implement `StaticInventory` mode for the `AppRegistry`.
    - [x] Implement topology cache keyed by `AppInstanceId + LogicalServiceName` with invalidation logic.
    - [x] Implement rendering of deterministic rendezvous hashing (BLAKE3) for sharded selection topology.
-4. **Slice 4: `roymctl` Standalone Journaling**
-   - Implement local Deployment Journal (`PLANNED`, `APPLYING`, `ACTIVE`, `ROLLING_BACK`, `ROLLED_BACK`).
-   - Implement `roymctl reconcile` to diff against the journal and compute configuration/routing updates.
+4. **[x] Slice 4: `roymctl` Standalone Journaling**
+   - [x] Implement local Deployment Journal (`PLANNED`, `APPLYING`, `ACTIVE`, `ROLLING_BACK`, `ROLLED_BACK`).
+   - [x] Implement `roymctl reconcile` to diff against the journal and compute configuration/routing updates.
 5. **Slice 5: Master Anchor Contract & Baseline Migration**
    - **Design:** Draft and document the exact byte-layout schema for the Master Key `pkarr` payload (Array of Temporary Keys).
    - Implement Phase 0 Master Anchor resolution distinguishing Master Key from Temporary Key.
