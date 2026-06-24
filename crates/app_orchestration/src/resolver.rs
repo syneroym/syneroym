@@ -69,8 +69,85 @@ impl TopologyEpoch {
     }
 }
 
+/// A single contiguous range (chunk) in a range-sharded topology.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct RangeChunk {
+    /// Inclusive lower bound. `None` means -infinity (MinKey).
+    pub start_key: Option<Vec<u8>>,
+    /// Exclusive upper bound. `None` means +infinity (MaxKey).
+    pub end_key: Option<Vec<u8>>,
+    /// Target service member for keys in this range.
+    pub target: ServiceId,
+}
+
+/// A complete chunk map routing table representing contiguous non-overlapping
+/// ranges.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct RangeRoutingTable {
+    pub chunks: Vec<RangeChunk>,
+}
+
+impl RangeRoutingTable {
+    /// Validates that chunks are contiguous and cover the entire keyspace from
+    /// -infinity to +infinity.
+    pub fn validate(&self) -> Result<()> {
+        if self.chunks.is_empty() {
+            return Err(anyhow!("Range routing table must contain at least one chunk"));
+        }
+
+        // Verify first chunk starts at -infinity
+        if self.chunks[0].start_key.is_some() {
+            return Err(anyhow!("First range chunk must start at -infinity (None)"));
+        }
+
+        // Verify last chunk ends at +infinity
+        if self.chunks.last().is_some_and(|last| last.end_key.is_some()) {
+            return Err(anyhow!("Last range chunk must end at +infinity (None)"));
+        }
+
+        // Verify contiguity and sorting
+        for i in 0..self.chunks.len() {
+            let current = &self.chunks[i];
+
+            if let (Some(start), Some(end)) = (&current.start_key, &current.end_key) {
+                if start >= end {
+                    return Err(anyhow!("Range chunk {} has start_key >= end_key", i));
+                }
+            }
+
+            if i < self.chunks.len() - 1 {
+                let next = &self.chunks[i + 1];
+
+                match (&current.end_key, &next.start_key) {
+                    (Some(curr_end), Some(next_start)) => {
+                        if curr_end != next_start {
+                            return Err(anyhow!(
+                                "Range chunks are not contiguous: chunk {} ends at {:?} but chunk \
+                                 {} starts at {:?}",
+                                i,
+                                curr_end,
+                                i + 1,
+                                next_start
+                            ));
+                        }
+                    }
+                    _ => {
+                        return Err(anyhow!(
+                            "Invalid boundary logic between chunk {} and {}",
+                            i,
+                            i + 1
+                        ));
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
 /// Sub-strategy for [`TopologyMode::Sharded`] selections.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ShardingStrategy {
     /// Rendezvous hash over the entire `routing_key`.
@@ -78,6 +155,8 @@ pub enum ShardingStrategy {
     /// Rendezvous hash over the first segment of the `routing_key` (treated as
     /// `partition_key`), ensuring entity-local data locality.
     EntityTagSharding,
+    /// Range-based sharding mapping contiguous key ranges to specific members.
+    RangeSharding(RangeRoutingTable),
 }
 
 /// Full topology descriptor stored per logical service in the registry.
@@ -331,6 +410,26 @@ pub fn rendezvous_select<'a>(
         .map(|(_, m)| m)
 }
 
+/// Helper to select a ServiceId using Range Sharding.
+///
+/// Validates the routing table dynamically to ensure the boundaries are valid
+/// before routing.
+pub fn range_select(table: &RangeRoutingTable, key: &[u8]) -> Result<ServiceId> {
+    table.validate()?;
+
+    let chunk = table
+        .chunks
+        .iter()
+        .find(|c| {
+            let after_start = c.start_key.as_deref().is_none_or(|start| key >= start);
+            let before_end = c.end_key.as_deref().is_none_or(|end| key < end);
+            after_start && before_end
+        })
+        .ok_or_else(|| anyhow!("No routing chunk found for key"))?;
+
+    Ok(chunk.target.clone())
+}
+
 // ─────────────────────────────────────────────────────────────
 // LogicalResolver
 // ─────────────────────────────────────────────────────────────
@@ -475,24 +574,28 @@ fn select_member(
             let key = routing_key
                 .ok_or_else(|| anyhow!("Sharded topology requires a routing_key for selection"))?;
 
-            let effective_key = match topology.sharding_strategy {
-                // HashSharding: hash over the entire key.
-                Some(ShardingStrategy::HashSharding) | None => key,
-                // EntityTagSharding: partition key is the bytes up to the
-                // first NUL separator (or the whole key if no NUL).
-                Some(ShardingStrategy::EntityTagSharding) => {
-                    key.split(|&b| b == 0).next().unwrap_or(key)
-                }
-            };
+            match &topology.sharding_strategy {
+                Some(ShardingStrategy::RangeSharding(table)) => range_select(table, key),
+                Some(ShardingStrategy::HashSharding)
+                | None
+                | Some(ShardingStrategy::EntityTagSharding) => {
+                    let effective_key = match &topology.sharding_strategy {
+                        Some(ShardingStrategy::EntityTagSharding) => {
+                            key.split(|&b| b == 0).next().unwrap_or(key)
+                        }
+                        _ => key,
+                    };
 
-            rendezvous_select(
-                &topology.members,
-                logical_ref.app_instance_id.as_str().as_bytes(),
-                logical_ref.service_name.as_str().as_bytes(),
-                effective_key,
-            )
-            .cloned()
-            .ok_or_else(|| anyhow!("Sharded topology member selection failed"))
+                    rendezvous_select(
+                        &topology.members,
+                        logical_ref.app_instance_id.as_str().as_bytes(),
+                        logical_ref.service_name.as_str().as_bytes(),
+                        effective_key,
+                    )
+                    .cloned()
+                    .ok_or_else(|| anyhow!("Sharded topology member selection failed"))
+                }
+            }
         }
     }
 }
@@ -1100,5 +1203,142 @@ mod tests {
         assert_eq!(resolver.resolve(&ref_a, None).unwrap(), members_a[1]);
         assert_eq!(resolver.resolve(&ref_b, None).unwrap(), members_b[1]);
         assert_eq!(resolver.resolve(&ref_a, None).unwrap(), members_a[0]);
+    }
+
+    #[test]
+    fn test_range_sharding_validation() {
+        // Valid table
+        let valid_table = RangeRoutingTable {
+            chunks: vec![
+                RangeChunk {
+                    start_key: None,
+                    end_key: Some(b"bar".to_vec()),
+                    target: svc_id("shard-1"),
+                },
+                RangeChunk {
+                    start_key: Some(b"bar".to_vec()),
+                    end_key: None,
+                    target: svc_id("shard-2"),
+                },
+            ],
+        };
+        assert!(valid_table.validate().is_ok());
+
+        // Empty table is invalid
+        let empty_table = RangeRoutingTable { chunks: vec![] };
+        assert!(empty_table.validate().is_err());
+
+        // First chunk doesn't start at -infinity
+        let bad_first = RangeRoutingTable {
+            chunks: vec![RangeChunk {
+                start_key: Some(b"bar".to_vec()),
+                end_key: None,
+                target: svc_id("shard-1"),
+            }],
+        };
+        assert!(bad_first.validate().is_err());
+
+        // Last chunk doesn't end at +infinity
+        let bad_last = RangeRoutingTable {
+            chunks: vec![
+                RangeChunk {
+                    start_key: None,
+                    end_key: Some(b"bar".to_vec()),
+                    target: svc_id("shard-1"),
+                },
+                RangeChunk {
+                    start_key: Some(b"bar".to_vec()),
+                    end_key: Some(b"foo".to_vec()),
+                    target: svc_id("shard-2"),
+                },
+            ],
+        };
+        assert!(bad_last.validate().is_err());
+
+        // Gap / overlap in between chunks
+        let gap_table = RangeRoutingTable {
+            chunks: vec![
+                RangeChunk {
+                    start_key: None,
+                    end_key: Some(b"bar".to_vec()),
+                    target: svc_id("shard-1"),
+                },
+                RangeChunk {
+                    start_key: Some(b"baz".to_vec()),
+                    end_key: None,
+                    target: svc_id("shard-2"),
+                },
+            ],
+        };
+        assert!(gap_table.validate().is_err());
+
+        // Chunk with start_key >= end_key is invalid
+        let bad_order = RangeRoutingTable {
+            chunks: vec![
+                RangeChunk {
+                    start_key: None,
+                    end_key: Some(b"foo".to_vec()),
+                    target: svc_id("shard-1"),
+                },
+                RangeChunk {
+                    start_key: Some(b"foo".to_vec()),
+                    end_key: Some(b"bar".to_vec()), // "foo" > "bar"
+                    target: svc_id("shard-2"),
+                },
+                RangeChunk {
+                    start_key: Some(b"bar".to_vec()),
+                    end_key: None,
+                    target: svc_id("shard-3"),
+                },
+            ],
+        };
+        assert!(bad_order.validate().is_err());
+    }
+
+    #[test]
+    fn test_range_sharding_routing() {
+        let table = RangeRoutingTable {
+            chunks: vec![
+                RangeChunk {
+                    start_key: None,
+                    end_key: Some(b"bar".to_vec()),
+                    target: svc_id("shard-1"),
+                },
+                RangeChunk {
+                    start_key: Some(b"bar".to_vec()),
+                    end_key: Some(b"foo".to_vec()),
+                    target: svc_id("shard-2"),
+                },
+                RangeChunk {
+                    start_key: Some(b"foo".to_vec()),
+                    end_key: None,
+                    target: svc_id("shard-3"),
+                },
+            ],
+        };
+
+        let members = vec![svc_id("shard-1"), svc_id("shard-2"), svc_id("shard-3")];
+        let reg = registry_with(vec![(
+            inst("app-1"),
+            svc_name("range-service"),
+            make_entry(
+                TopologyMode::Sharded,
+                members,
+                Some(ShardingStrategy::RangeSharding(table)),
+            ),
+        )]);
+        let resolver = LogicalResolver::new(reg);
+        let lref = logical_ref("app-1", "range-service");
+
+        // "a" < "bar" -> shard-1
+        assert_eq!(resolver.resolve(&lref, Some(b"a")).unwrap(), svc_id("shard-1"));
+        // "bar" -> shard-2 (start_key inclusive)
+        assert_eq!(resolver.resolve(&lref, Some(b"bar")).unwrap(), svc_id("shard-2"));
+        // "baz" -> shard-2 ("bar" <= "baz" < "foo")
+        assert_eq!(resolver.resolve(&lref, Some(b"baz")).unwrap(), svc_id("shard-2"));
+        // "foo" -> shard-3 (start_key inclusive)
+        assert_eq!(resolver.resolve(&lref, Some(b"foo")).unwrap(), svc_id("shard-3"));
+        // "z" -> shard-3
+        assert_eq!(resolver.resolve(&lref, Some(b"z")).unwrap(), svc_id("shard-3"));
     }
 }
