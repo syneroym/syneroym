@@ -20,7 +20,11 @@ This document maps the requirements from the System Requirements Specification (
 
 | Requirement ID | Description | Target Milestone | Status | Acceptance Evidence |
 | --- | --- | --- | --- | --- |
-| `[TOP-PRM]` | Core Primitives & Overlay | M1 | Pending | TBD |
-| `[TOP-ADR]` | Service Addressing | M1 | Pending | TBD |
-| `[TOP-REG]` | Registries (App & Endpoint) | M1 | Pending | TBD |
-| `[TOP-DSC]` | Discovery Mechanisms | M1 | Pending | TBD |
+| Requirement ID | Description | Target Milestone | Status | Acceptance Evidence |
+| --- | --- | --- | --- | --- |
+| `[TOP-PRM]` | Core Primitives & Overlay | M1 | Complete | Domain models implemented in [models.rs](file:///Users/pari/gitSyneroym/syneroym/crates/app_orchestration/src/models.rs); compiled manifests deployable via [service.rs](file:///Users/pari/gitSyneroym/syneroym/crates/control_plane/src/service.rs). |
+| `[TOP-ADR]` | Service Addressing | M1 | Complete | Logical service references, resolver topologies, and rendezvous hashing implemented in [resolver.rs](file:///Users/pari/gitSyneroym/syneroym/crates/app_orchestration/src/resolver.rs) and [models.rs](file:///Users/pari/gitSyneroym/syneroym/crates/app_orchestration/src/models.rs). |
+| `[TOP-REG]` | Registries (App & Endpoint) | M1 | Complete | `AppRegistry` and `StaticInventory` implemented in [resolver.rs](file:///Users/pari/gitSyneroym/syneroym/crates/app_orchestration/src/resolver.rs); DHT registry Master Anchor endpoints implemented in [dht_registry.rs](file:///Users/pari/gitSyneroym/syneroym/crates/core/src/dht_registry.rs) and [registry.rs](file:///Users/pari/gitSyneroym/syneroym/crates/community_registry/src/registry.rs). |
+| `[TOP-DSC]` | Discovery Mechanisms | M1 | Complete | Top-level `resolve_master_anchor` implementation resolving master keys to authorized temporary keys in [dht_registry.rs](file:///Users/pari/gitSyneroym/syneroym/crates/core/src/dht_registry.rs); logical resolver endpoint caching. |
+| `[LFC-MGT]` | Standalone `roymctl` Deployment & Manifest parsing | M1 | Complete | Parse logic in [models.rs](file:///Users/pari/gitSyneroym/syneroym/crates/app_orchestration/src/models.rs), reconcile loops in [reconcile.rs](file:///Users/pari/gitSyneroym/syneroym/crates/app_orchestration/src/reconcile.rs) and sqlite journal storage in [journal.rs](file:///Users/pari/gitSyneroym/syneroym/crates/app_orchestration/src/journal.rs), CLI integration in [app.rs](file:///Users/pari/gitSyneroym/syneroym/apps/roymctl/src/commands/app.rs). |
+| `[LFC-VER]` | Manifest versioning | M1 | Complete | Semver validation on manifests implemented in [models.rs](file:///Users/pari/gitSyneroym/syneroym/crates/app_orchestration/src/models.rs). |
