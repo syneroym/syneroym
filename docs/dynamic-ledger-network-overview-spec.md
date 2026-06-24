@@ -44,3 +44,201 @@ When partial pruning occurs across a single relationship with multiple active de
 - **Urgency & Lifecycle Priority Sorting:** Prioritize legally or commercially binding tags (`#Business`, `#Net30`, `#GSTInvoice`) to preserve user credit reputations, leaving socially flexible tags (`#Family`, `#Social`) active.
 
 *(Note: JSON Schema payloads, detailed UI/UX screen flows, and Security/Exception management frameworks are currently deferred for future specification. When designing the data model for payloads, the system will draw heavy inspiration from the ValueFlo.ws REA (Resource, Event, Agent) ontology to maximize flexibility and ecosystem interoperability, though it is not a strict dependency.)*
+
+# Identity-Native Obligation Network (Draft)
+
+## Core Premise
+
+This is related to the earlier dynamic-ledger-network, but extends it to cover more than just financial transactions. The system is a continuously reconciled network of obligations between identities. Money is an accounting abstraction rather than a scarce pre-issued asset.
+
+An economic interaction is represented as:
+
+```
+Value Transfer
++ Obligation Terms
++ Resolution Policy
+```
+
+---
+
+## Fundamental Primitive
+
+```text
+Obligation Contract {
+    parties,
+    value_transfers,
+    obligation_terms,
+    resolution_policy,
+    signatures,
+    evidence,
+    metadata
+}
+```
+
+Examples:
+
+* Immediate payment
+* Invoice
+* Trade credit
+* Loan
+* Subscription
+* Revenue share
+* Equity/stake
+* Asset-backed agreement
+* Service obligations
+* Guarantees
+
+All are instances of the same primitive.
+
+---
+
+## Payments and Credit
+
+Most transactions are immediate exchanges:
+
+```
+Consumer Ledger: -X
+Provider Ledger: +X
+```
+
+Credit is simply an obligation whose reciprocal performance is deferred.
+
+---
+
+## Accounting Invariant
+
+For every obligation creation:
+
+```
+Σ balances = 0
+```
+
+This is an accounting identity, not a solvency guarantee.
+
+---
+
+## Identity and Trust
+
+The system records facts and evidence, not universal creditworthiness.
+
+Possible signals include:
+
+* Persistent identity
+* Reputation
+* Transaction history
+* Obligation history
+* Defaults and disputes
+* Attestations and certifications
+* Productive capacity indicators
+* Collateral and guarantees
+
+Trust is subjective and contextual.
+
+```
+Trust = f(
+    identity,
+    context,
+    amount,
+    duration,
+    available signals
+)
+```
+
+There is no universal credit limit or universal credit score.
+
+---
+
+## Disclosure Model
+
+Signals are permissioned.
+
+Counterparties may request:
+
+* obligations of specified types
+* attestations
+* history
+* collateral information
+* other signals
+
+The responding party chooses what to disclose.
+
+The protocol returns only disclosed information and does not reveal:
+
+* existence of undisclosed information
+* reasons for non-disclosure
+* higher-order interpretations
+
+Absence of evidence is simply uncertainty.
+
+---
+
+## Decision Support Systems
+
+Optional applications may provide:
+
+* heuristics
+* recommendations
+* probabilities
+* comparable cases
+
+The protocol itself remains neutral and records:
+
+* facts
+* permissions
+* evidence
+* outcomes
+
+Human judgment remains final.
+
+---
+
+## Resolution and Resilience
+
+Defaults and failures are expected.
+
+The objective is not elimination of failures but orderly resolution.
+
+Possible mechanisms:
+
+* renegotiation
+* restructuring
+* arbitration
+* legal proceedings
+* guarantees
+* collateral realization
+* insurance pools
+* write-offs
+
+---
+
+## Legal Standing
+
+The network records:
+
+* who agreed
+* what was agreed
+* when
+* what subsequently happened
+
+Cryptographic validity does not imply legal enforceability.
+
+Questions of:
+
+* legality
+* capacity
+* consent
+* regulation
+
+are external to the protocol and handled by jurisdictions and institutions.
+
+---
+
+## Design Principles
+
+1. Facts over judgments.
+2. Signals over universal scores.
+3. Negotiation over protocol mandates.
+4. Privacy with selective disclosure.
+5. Human discretion over algorithmic determinism.
+6. Resilience through obligation resolution rather than prevention of failure.
+7. Trust and productive capacity are primary economic primitives; balances are derivative accounting states.
