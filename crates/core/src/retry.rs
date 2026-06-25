@@ -124,19 +124,29 @@ mod tests {
         let mut samples = Vec::new();
         for _ in 0..1000 {
             let val = calculate_jittered_backoff(base_backoff);
-            assert!(val >= 900 && val <= 1100, "Jittered value {} out of range", val);
+            assert!((900..=1100).contains(&val), "Jittered value {} out of range", val);
             samples.push(val);
         }
 
-        // Check that we have a decent distribution (i.e. not all same values, which would happen with SystemTime thundering herd)
+        // Check that we have a decent distribution (i.e. not all same values, which
+        // would happen with SystemTime thundering herd)
         samples.sort();
         let min = samples[0];
         let max = samples[samples.len() - 1];
-        assert!(max - min > 150, "Insufficient spread in jitter distribution (min: {}, max: {})", min, max);
+        assert!(
+            max - min > 150,
+            "Insufficient spread in jitter distribution (min: {}, max: {})",
+            min,
+            max
+        );
 
         // Check average is close to the base_backoff
         let sum: u64 = samples.iter().sum();
         let avg = sum as f64 / samples.len() as f64;
-        assert!((avg - 1000.0).abs() < 10.0, "Average jittered backoff {} is too far from base 1000", avg);
+        assert!(
+            (avg - 1000.0).abs() < 10.0,
+            "Average jittered backoff {} is too far from base 1000",
+            avg
+        );
     }
 }

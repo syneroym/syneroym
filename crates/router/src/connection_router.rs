@@ -114,7 +114,7 @@ impl ConnectionRouter {
             IrohRouter::builder(ep.clone()).accept(SYNEROYM_ALPN, route_handler).spawn();
 
         let ep_clone = ep.clone();
-        match tokio::time::timeout(std::time::Duration::from_secs(5), ep_clone.online()).await {
+        match tokio::time::timeout(std::time::Duration::from_secs(30), ep_clone.online()).await {
             Ok(_) => {
                 debug!("Iroh endpoint is online");
             }

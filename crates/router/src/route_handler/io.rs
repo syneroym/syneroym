@@ -14,7 +14,7 @@ use tracing::debug;
 
 use super::{super::SYNEROYM_ALPN, RouteHandler, dispatch, encryption::ReaderWriter};
 use crate::{
-    net_iroh::{self, IrohStream, connect_with_retry},
+    net_iroh::{IrohStream, connect_with_retry},
     preamble::RoutePreamble,
     route_handler::encryption::{OwnedStream, apply_encryption_stage},
     routing::{RoutePipeline, ServiceStage, TransportStage},

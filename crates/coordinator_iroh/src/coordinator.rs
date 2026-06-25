@@ -284,7 +284,6 @@ impl CoordinatorIroh {
                 let node_id_str = node_id_str.clone();
                 let endpoint_addr_payload = endpoint_addr_payload.clone();
                 let relay_url_payload = relay_url_payload.clone();
-                let secret_key_bytes = secret_key_bytes.clone();
                 async move {
                     register_coordinator_in_registry(
                         &registry_url,

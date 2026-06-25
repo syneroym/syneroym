@@ -21,6 +21,9 @@ test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
   4 passed (19.5s)
 ```
 
+> [!NOTE]
+> **Deviation from Plan:** The planned integration test for QUIC idle timeout eviction (`quic_idle_eviction.rs`) was initially implemented and successfully passed, but subsequently removed from the codebase. Since connection eviction on idle timeout is a fundamental feature of the upstream `iroh` and `quinn` implementations, maintaining a dedicated integration test for it was deemed redundant and introduced unnecessary testing overhead.
+
 ---
 
 ## Slices remaining in Milestone 2

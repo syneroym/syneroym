@@ -268,9 +268,9 @@ Understanding what exists vs. what needs to be built.
     setter (e.g. `quinn::TransportConfig::max_idle_timeout`). Iroh's connection
     pool will then automatically evict peers that are idle beyond this window
     — no custom application-level dead-tracking needed.
-  - Integration test: connect two Iroh endpoints; block traffic for longer than
+  - ~~Integration test: connect two Iroh endpoints; block traffic for longer than
     `idle_timeout_secs`; verify the connection is evicted by Iroh itself and the
-    next `endpoint.connect()` re-establishes cleanly.
+    next `endpoint.connect()` re-establishes cleanly.~~ *(Note: Originally implemented and verified, but deleted to avoid redundant testing of upstream Iroh/Quinn functionality).*
 - [x] **Do not add custom dead-connection tracking** to
   `connection_router.rs`. The `iroh::Endpoint` and `iroh::Router` already manage
   the connection pool natively. The `[TOP-ROB]` spec mandates relying on Iroh's

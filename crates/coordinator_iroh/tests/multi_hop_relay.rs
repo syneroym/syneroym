@@ -147,7 +147,8 @@ async fn test_inbound_relay() -> Result<()> {
             enable_relay: true,
             http_bind_address: "127.0.0.1:0".to_string(),
             quic_bind_address: "127.0.0.1:0".to_string(),
-            community_registry_url: Some(r_url.clone()), idle_timeout_secs: None,
+            community_registry_url: Some(r_url.clone()),
+            idle_timeout_secs: None,
             share_in_registry: true,
         }),
         ..Default::default()
@@ -172,7 +173,8 @@ async fn test_inbound_relay() -> Result<()> {
             enable_relay: true,
             http_bind_address: "127.0.0.1:0".to_string(),
             quic_bind_address: "127.0.0.1:0".to_string(),
-            community_registry_url: Some(r_url.clone()), idle_timeout_secs: None,
+            community_registry_url: Some(r_url.clone()),
+            idle_timeout_secs: None,
             share_in_registry: true,
         }),
         ..Default::default()
@@ -277,7 +279,8 @@ async fn test_outbound_relay() -> Result<()> {
             enable_relay: true,
             http_bind_address: "127.0.0.1:0".to_string(),
             quic_bind_address: "127.0.0.1:0".to_string(),
-            community_registry_url: Some(r_url.clone()), idle_timeout_secs: None,
+            community_registry_url: Some(r_url.clone()),
+            idle_timeout_secs: None,
             share_in_registry: true,
         }),
         ..Default::default()
@@ -302,7 +305,8 @@ async fn test_outbound_relay() -> Result<()> {
             enable_relay: true,
             http_bind_address: "127.0.0.1:0".to_string(),
             quic_bind_address: "127.0.0.1:0".to_string(),
-            community_registry_url: Some(r_url.clone()), idle_timeout_secs: None,
+            community_registry_url: Some(r_url.clone()),
+            idle_timeout_secs: None,
             share_in_registry: true,
         }),
         ..Default::default()
