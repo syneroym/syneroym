@@ -774,7 +774,7 @@ The system accommodates the following variation axes across workflows:
 
 **Booking:** Event slots, consulting time slots, open-ended job requests.
 
-**Payment:** One-time; pre- or post-delivery; multi-part; negotiated; subscription; escrow; system coins; mutual credit systems. [See the Dynamic Ledger Network Specification](./dynamic-ledger-network-spec.md) for mutual credit mechanics.
+**Payment:** One-time; pre- or post-delivery; multi-part; negotiated; subscription; escrow; system coins; mutual credit systems. [See the Dynamic Ledger Network Specification](./commitment-network-spec.md) for mutual credit mechanics.
 
 **Product type:** Time-bound (e.g. prepared food), digital content, physical goods.
 
