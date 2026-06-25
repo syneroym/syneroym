@@ -16,7 +16,9 @@ use iroh::{
 use syneroym_app_sandbox::AppSandboxEngine;
 use syneroym_control_plane::ControlPlaneService;
 use syneroym_core::{
-    config::SubstrateConfig, dht_registry::RegistryClient, local_registry::EndpointRegistry,
+    config::{RetryPolicy, SubstrateConfig},
+    dht_registry::RegistryClient,
+    local_registry::EndpointRegistry,
     storage::MockStorage,
 };
 use syneroym_identity::Identity;
@@ -53,6 +55,7 @@ pub struct RouteHandlerInner {
     pub iroh_endpoint: Option<Endpoint>,
     pub registry_client: RegistryClient,
     pub _parent_relay_url: Option<String>,
+    pub retry_policy: RetryPolicy,
 }
 
 impl Debug for RouteHandler {
@@ -101,6 +104,7 @@ impl RouteHandler {
             iroh_endpoint: None,
             registry_client,
             _parent_relay_url: parent_coordinator_url,
+            retry_policy: config.retry.clone(),
         });
 
         let s = Self { inner };
@@ -123,6 +127,7 @@ impl RouteHandler {
         iroh_endpoint: Endpoint,
         registry_client: RegistryClient,
         parent_relay_url: Option<String>,
+        retry_policy: RetryPolicy,
     ) -> Self {
         let inner = Arc::new(RouteHandlerInner {
             registry: EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
@@ -132,6 +137,7 @@ impl RouteHandler {
             iroh_endpoint: Some(iroh_endpoint),
             registry_client,
             _parent_relay_url: parent_relay_url,
+            retry_policy,
         });
         Self { inner }
     }

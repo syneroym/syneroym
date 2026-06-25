@@ -63,7 +63,7 @@ impl CoordinatorWebRtc {
         let actual_signalling_port = signalling_listener.local_addr()?.port();
 
         let iroh_relay_url = config.parent_coordinator.iroh.as_ref().map(|c| c.url.clone());
-        let endpoint = net_iroh::build_iroh_endpoint(iroh_relay_url, None).await?;
+        let endpoint = net_iroh::build_iroh_endpoint(iroh_relay_url, None, None).await?;
 
         let data_store = storage::init_store(config).await?;
         let registry = EndpointRegistry::new(data_store).await?;

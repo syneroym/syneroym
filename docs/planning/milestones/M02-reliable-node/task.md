@@ -232,35 +232,35 @@ Understanding what exists vs. what needs to be built.
 
 ## Ordered Implementation Slices
 
-### [ ] Slice 1: Robust Transport — Retry and QUIC Idle Timeouts
+### [x] Slice 1: Robust Transport — Retry and QUIC Idle Timeouts
 
 **Requirement IDs:** `[TOP-ROB]`
 **Blocking decision:** [D-02-03](../../../decisions/0003-retry-policy-ownership.md) is resolved.
 
 #### Tasks
-- [ ] Define `RetryPolicy` struct in `crates/core/src/config.rs`:
+- [x] Define `RetryPolicy` struct in `crates/core/src/config.rs`:
   - Fields: `max_attempts: u8` (default 3), `initial_backoff_ms: u64` (default
     100), `backoff_multiplier: f64` (default 2.0), `max_backoff_ms: u64`
     (default 30_000).
   - Add `retry: RetryPolicy` to `SubstrateConfig` with `#[serde(default)]`.
-- [ ] Implement `retry_with_backoff<F, Fut, T, E>` utility in
+- [x] Implement `retry_with_backoff<F, Fut, T, E>` utility in
   `crates/core/src/retry.rs`. Requirements:
   - No dependencies beyond `tokio::time`.
   - Respects all `RetryPolicy` fields.
   - Logs each retry at `warn!` with attempt number and error.
   - Applies ±10% jitter to avoid thundering herd.
   - Returns `Err` on the final attempt without further sleeping.
-- [ ] Replace the hardcoded 30-attempt polling loop in
+- [x] Replace the hardcoded 30-attempt polling loop in
   `coordinator.rs::register_in_global_registry` with `retry_with_backoff`.
-- [ ] Apply `retry_with_backoff` to **outbound peer connection attempts** in
+- [x] Apply `retry_with_backoff` to **outbound peer connection attempts** in
   `crates/router/src/net_iroh.rs`: wrap `endpoint.connect(node_addr, alpn)`
   calls (not `endpoint.online().await`, which waits for network reachability
   and is not a peer-connection operation) with the retry utility.
-- [ ] Apply `retry_with_backoff` to `endpoint.online().await` in
+- [x] Apply `retry_with_backoff` to `endpoint.online().await` in
   `ConnectionRouter::init_iroh` (line 104 of `connection_router.rs`) with an
   explicit timeout so a slow or unreachable relay does not block startup
   indefinitely.
-- [ ] **Configure QUIC idle timeouts** on the Iroh `Endpoint` builder in
+- [x] **Configure QUIC idle timeouts** on the Iroh `Endpoint` builder in
   `build_iroh_endpoint` (`crates/router/src/net_iroh.rs`):
   - Add `idle_timeout_secs: u64` (default 30) to `CoordinatorIrohConfig` in
     `crates/core/src/config.rs`.
@@ -271,11 +271,11 @@ Understanding what exists vs. what needs to be built.
   - Integration test: connect two Iroh endpoints; block traffic for longer than
     `idle_timeout_secs`; verify the connection is evicted by Iroh itself and the
     next `endpoint.connect()` re-establishes cleanly.
-- [ ] **Do not add custom dead-connection tracking** to
+- [x] **Do not add custom dead-connection tracking** to
   `connection_router.rs`. The `iroh::Endpoint` and `iroh::Router` already manage
   the connection pool natively. The `[TOP-ROB]` spec mandates relying on Iroh's
   pooling rather than a custom application-level cache.
-- [ ] Unit tests for `retry_with_backoff`:
+- [x] Unit tests for `retry_with_backoff`:
   - Retries exactly `max_attempts` times on persistent error.
   - Backoff grows exponentially within expected jitter band.
   - Succeeds on Nth retry if the function succeeds.

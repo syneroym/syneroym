@@ -67,6 +67,7 @@ impl ConnectionRouter {
                                 iroh_config,
                                 SecretKey::from_bytes(&iroh_secret_key),
                                 route_handler.clone(),
+                                &config,
                             )
                             .await?;
                         router.iroh_router = Some(iroh_router);
@@ -94,14 +95,33 @@ impl ConnectionRouter {
         config: &IrohParentConfig,
         secret_key: SecretKey,
         route_handler: RouteHandler,
+        substrate_config: &SubstrateConfig,
     ) -> Result<IrohRouter> {
         debug!("Initializing Iroh communication...");
 
-        let ep = net_iroh::build_iroh_endpoint(Some(config.url.clone()), Some(secret_key)).await?;
+        let idle_timeout = substrate_config
+            .roles
+            .coordinator
+            .as_ref()
+            .and_then(|c| c.iroh.as_ref())
+            .and_then(|i| i.idle_timeout_secs);
+
+        let ep =
+            net_iroh::build_iroh_endpoint(Some(config.url.clone()), Some(secret_key), idle_timeout)
+                .await?;
 
         let iroh_router: IrohRouter =
-            IrohRouter::builder(ep).accept(SYNEROYM_ALPN, route_handler).spawn();
-        iroh_router.endpoint().online().await;
+            IrohRouter::builder(ep.clone()).accept(SYNEROYM_ALPN, route_handler).spawn();
+
+        let ep_clone = ep.clone();
+        match tokio::time::timeout(std::time::Duration::from_secs(5), ep_clone.online()).await {
+            Ok(_) => {
+                debug!("Iroh endpoint is online");
+            }
+            Err(_) => {
+                tracing::warn!("Timeout waiting for Iroh endpoint to come online");
+            }
+        }
 
         info!(
             "Iroh listening on ALPN: {:?}",

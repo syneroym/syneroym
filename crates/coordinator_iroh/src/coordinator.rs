@@ -8,7 +8,6 @@ use std::{
     future,
     net::SocketAddr,
     sync::Arc,
-    time::Duration,
 };
 
 use anyhow::{Context, Result};
@@ -17,12 +16,13 @@ use iroh::{Endpoint, EndpointAddr, SecretKey, protocol::Router as IrohRouter};
 use iroh_relay::server::Server;
 use reqwest::Client;
 use syneroym_core::{
-    config::{CoordinatorIrohConfig, CoordinatorRole, SubstrateConfig},
+    config::{CoordinatorIrohConfig, CoordinatorRole, RetryPolicy, SubstrateConfig},
     dht_registry::{EndpointInfo, EndpointMechanism, EndpointType, RegistryClient},
+    retry::retry_with_backoff,
 };
 use syneroym_identity::{Identity, substrate::derive_did_key};
 use syneroym_router::{RouteHandler, SYNEROYM_ALPN, net_iroh};
-use tokio::{net::TcpListener, task::JoinHandle, time};
+use tokio::{net::TcpListener, task::JoinHandle};
 use tracing::{debug, info, warn};
 
 use crate::{
@@ -34,6 +34,7 @@ pub struct CoordinatorIroh {
     relay_server: Option<Server>,
     iroh_router: Option<IrohRouter>,
     http_info_handle: Option<JoinHandle<()>>,
+    registry_registration_handle: Option<JoinHandle<()>>,
     info_addr: Option<SocketAddr>,
 }
 
@@ -43,6 +44,7 @@ impl Debug for CoordinatorIroh {
             .field("relay_server", &self.relay_server.as_ref().map(|_| "Server"))
             .field("iroh_router", &self.iroh_router.as_ref().map(|_| "Router"))
             .field("http_info_handle", &self.http_info_handle)
+            .field("registry_registration_handle", &self.registry_registration_handle)
             .field("info_addr", &self.info_addr)
             .finish()
     }
@@ -56,6 +58,7 @@ impl CoordinatorIroh {
         let mut relay_server = None;
         let mut iroh_router = None;
         let mut http_info_handle = None;
+        let mut registry_registration_handle = None;
         let mut info_addr = None;
 
         if let Some(role) = &config_roles {
@@ -119,18 +122,26 @@ impl CoordinatorIroh {
                         None
                     };
 
-                    Self::register_in_global_registry(
+                    let reg_handle = Self::register_in_global_registry(
                         registry_url.clone(),
                         node_id.to_string(),
                         EndpointAddr::new(node_id),
                         relay_url_payload,
                         secret_key,
+                        config.retry.clone(),
                     );
+                    registry_registration_handle = Some(reg_handle);
                 }
             }
         }
 
-        Ok(Self { relay_server, iroh_router, http_info_handle, info_addr })
+        Ok(Self {
+            relay_server,
+            iroh_router,
+            http_info_handle,
+            registry_registration_handle,
+            info_addr,
+        })
     }
 
     async fn spawn_relay_server(role: &CoordinatorRole) -> Result<Server> {
@@ -167,8 +178,12 @@ impl CoordinatorIroh {
             }
         }
 
-        let iroh_endpoint =
-            net_iroh::build_iroh_endpoint(chosen_relay_url_str, Some(secret_key.clone())).await?;
+        let iroh_endpoint = net_iroh::build_iroh_endpoint(
+            chosen_relay_url_str,
+            Some(secret_key.clone()),
+            iroh_cfg.idle_timeout_secs,
+        )
+        .await?;
         iroh_endpoint.online().await;
 
         let node_id = iroh_endpoint.addr().id;
@@ -187,8 +202,12 @@ impl CoordinatorIroh {
             config.substrate.enable_bep0044_dht,
             iroh_cfg.community_registry_url.clone(),
         );
-        let route_handler =
-            RouteHandler::new_coordinator(iroh_endpoint.clone(), registry_client, parent_relay_url);
+        let route_handler = RouteHandler::new_coordinator(
+            iroh_endpoint.clone(),
+            registry_client,
+            parent_relay_url,
+            config.retry.clone(),
+        );
 
         IrohRouter::builder(iroh_endpoint.clone()).accept(SYNEROYM_ALPN, route_handler).spawn()
     }
@@ -256,36 +275,41 @@ impl CoordinatorIroh {
         endpoint_addr_payload: EndpointAddr,
         relay_url_payload: Option<String>,
         secret_key: SecretKey,
-    ) {
+        retry_policy: RetryPolicy,
+    ) -> JoinHandle<()> {
         let secret_key_bytes = secret_key.to_bytes();
         tokio::spawn(async move {
-            let mut attempts = 0;
-            while attempts < 30 {
-                match register_coordinator_in_registry(
-                    &registry_url,
-                    &node_id_str,
-                    &endpoint_addr_payload,
-                    relay_url_payload.clone(),
-                    &secret_key_bytes,
-                )
-                .await
-                {
-                    Ok(()) => {
-                        info!("Coordinator successfully registered in global registry");
-                        return;
-                    }
-                    Err(e) => {
-                        warn!(
-                            "Failed to register coordinator in registry (attempt {}): {}",
-                            attempts + 1,
-                            e
-                        );
-                        time::sleep(Duration::from_millis(500)).await;
-                        attempts += 1;
-                    }
+            let res = retry_with_backoff(&retry_policy, || {
+                let registry_url = registry_url.clone();
+                let node_id_str = node_id_str.clone();
+                let endpoint_addr_payload = endpoint_addr_payload.clone();
+                let relay_url_payload = relay_url_payload.clone();
+                let secret_key_bytes = secret_key_bytes.clone();
+                async move {
+                    register_coordinator_in_registry(
+                        &registry_url,
+                        &node_id_str,
+                        &endpoint_addr_payload,
+                        relay_url_payload,
+                        &secret_key_bytes,
+                    )
+                    .await
+                }
+            })
+            .await;
+
+            match res {
+                Ok(()) => {
+                    info!("Coordinator successfully registered in global registry");
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to register coordinator in global registry after all retries: {}",
+                        e
+                    );
                 }
             }
-        });
+        })
     }
 
     #[must_use]
@@ -333,6 +357,9 @@ impl CoordinatorIroh {
 
     pub async fn shutdown(&mut self) -> Result<()> {
         info!("Shutting down Coordinator IROH");
+        if let Some(handle) = self.registry_registration_handle.take() {
+            handle.abort();
+        }
         if let Some(handle) = self.http_info_handle.take() {
             handle.abort();
         }

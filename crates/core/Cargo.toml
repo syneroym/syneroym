@@ -27,6 +27,7 @@ syneroym-identity.workspace = true
 pkarr.workspace = true
 hex.workspace = true
 bytes.workspace = true
+rand.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

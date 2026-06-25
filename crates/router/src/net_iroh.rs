@@ -11,8 +11,9 @@ use std::{
 
 use iroh::{
     Endpoint, RelayMap, RelayMode, RelayUrl, SecretKey,
-    endpoint::{RecvStream, SendStream, presets::N0},
+    endpoint::{Connection, RecvStream, SendStream, presets::N0},
 };
+use syneroym_core::{config::RetryPolicy, retry::retry_with_backoff};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 pub struct IrohStream {
@@ -78,6 +79,7 @@ impl AsyncWrite for IrohStream {
 pub async fn build_iroh_endpoint(
     relay_url: Option<String>,
     secret_key: Option<SecretKey>,
+    idle_timeout_secs: Option<u64>,
 ) -> anyhow::Result<Endpoint> {
     let mut builder = Endpoint::builder(N0);
     if let Some(url) = relay_url {
@@ -94,6 +96,31 @@ pub async fn build_iroh_endpoint(
     if let Some(sk) = secret_key {
         builder = builder.secret_key(sk);
     }
+
+    if let Some(timeout) = idle_timeout_secs {
+        let mut builder_cfg = iroh::endpoint::QuicTransportConfig::builder();
+        builder_cfg =
+            builder_cfg.max_idle_timeout(Some(std::time::Duration::from_secs(timeout).try_into()?));
+        builder = builder.transport_config(builder_cfg.build());
+    }
+
     let endpoint = builder.bind().await?;
     Ok(endpoint)
+}
+
+/// Connects to an Iroh endpoint with exponential backoff retries.
+pub async fn connect_with_retry(
+    endpoint: &Endpoint,
+    node_addr: iroh::EndpointAddr,
+    alpn: &[u8],
+    retry_policy: &RetryPolicy,
+) -> anyhow::Result<Connection> {
+    let node_addr_clone = node_addr.clone();
+    retry_with_backoff(retry_policy, || {
+        let ep = endpoint.clone();
+        let addr = node_addr_clone.clone();
+        async move { ep.connect(addr, alpn).await }
+    })
+    .await
+    .map_err(anyhow::Error::from)
 }

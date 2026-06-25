@@ -14,7 +14,7 @@ use tracing::debug;
 
 use super::{super::SYNEROYM_ALPN, RouteHandler, dispatch, encryption::ReaderWriter};
 use crate::{
-    net_iroh::IrohStream,
+    net_iroh::{self, IrohStream, connect_with_retry},
     preamble::RoutePreamble,
     route_handler::encryption::{OwnedStream, apply_encryption_stage},
     routing::{RoutePipeline, ServiceStage, TransportStage},
@@ -103,7 +103,9 @@ impl RouteHandler {
                 .as_ref()
                 .ok_or_else(|| anyhow!("No Iroh endpoint configured for relay forwarding"))?;
             debug!("[Router] Relay connecting to next hop: {:?}", next_hop_addr.id);
-            let conn = ep.connect(next_hop_addr, SYNEROYM_ALPN).await?;
+            let conn =
+                connect_with_retry(ep, next_hop_addr, SYNEROYM_ALPN, &self.inner.retry_policy)
+                    .await?;
             let (mut out_send, out_recv) = conn.open_bi().await?;
 
             // 4. Send original preamble

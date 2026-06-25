@@ -60,6 +60,7 @@ pub struct SubstrateConfig {
 
     pub roles: RolesConfig,
     pub substrate: SubstrateGlobalConfig,
+    pub retry: RetryPolicy,
 }
 
 /// Useful helper functions
@@ -121,6 +122,7 @@ impl Default for SubstrateConfig {
             profiles: Default::default(),
             roles: Default::default(),
             substrate: Default::default(),
+            retry: Default::default(),
         }
     }
 }
@@ -409,6 +411,7 @@ pub struct CoordinatorIrohConfig {
     pub quic_bind_address: String,
     pub community_registry_url: Option<String>,
     pub share_in_registry: bool,
+    pub idle_timeout_secs: Option<u64>,
 }
 
 impl Default for CoordinatorIrohConfig {
@@ -420,6 +423,7 @@ impl Default for CoordinatorIrohConfig {
             quic_bind_address: default_iroh_quic_bind_address(),
             community_registry_url: None,
             share_in_registry: false,
+            idle_timeout_secs: None,
         }
     }
 }
@@ -589,6 +593,39 @@ impl Default for SubstrateGlobalConfig {
             registry_url: None,
             coordinator_discovery_url: None,
             enable_bep0044_dht: !cfg!(test),
+        }
+    }
+}
+
+const fn default_max_attempts() -> u8 {
+    3
+}
+const fn default_initial_backoff_ms() -> u64 {
+    100
+}
+const fn default_backoff_multiplier() -> f64 {
+    2.0
+}
+const fn default_max_backoff_ms() -> u64 {
+    30_000
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RetryPolicy {
+    pub max_attempts: u8,
+    pub initial_backoff_ms: u64,
+    pub backoff_multiplier: f64,
+    pub max_backoff_ms: u64,
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        Self {
+            max_attempts: default_max_attempts(),
+            initial_backoff_ms: default_initial_backoff_ms(),
+            backoff_multiplier: default_backoff_multiplier(),
+            max_backoff_ms: default_max_backoff_ms(),
         }
     }
 }
