@@ -133,6 +133,34 @@ There is no universal credit score or universal credit limit.
 Counterparties remain responsible for their own risk evaluation and decision-making.
 
 ---
+### Trust Characteristics and Representation
+
+Trust is treated as an emergent, contextual, and non-fungible phenomenon rather than a universally transferable asset.
+
+Unlike currency balances, trust is generally non-rivalrous. Trust placed in one participant does not necessarily diminish trust available to others, and multiple participants may simultaneously be highly trusted within different contexts and communities.
+
+Trust is inherently multidimensional and context-dependent. For example:
+
+* Trust in one domain does not imply trust in another domain.
+* Trust for small commitments does not imply trust for substantially larger commitments.
+* Trustworthiness cannot be completely represented by a single scalar score.
+
+The network therefore avoids protocol-level universal reputation scores and universal trust points.
+
+Instead, it records objective evidence and signals, including:
+
+* Commitment histories
+* Fulfillment and default histories
+* Attestations and certifications
+* Guarantees and collateral histories
+* Domain-specific experiences
+* Historical outcomes
+
+Applications may derive optional heuristics and coarse categorizations from these signals (for example: New, Established, Highly Established), but such interpretations are not protocol primitives and are not globally authoritative.
+
+The protocol's responsibility is to faithfully record facts and evidence while leaving trust formation and risk assessment to participants and communities.
+
+---
 
 ## 6. Disclosure Model
 
@@ -372,6 +400,9 @@ remain external to the protocol and are handled by jurisdictions and institution
 8. Trust and productive capacity are primary economic primitives; balances are derivative accounting states.
 9. Financial systems, organizations, and large collaborative endeavors are compositions of commitments.
 10. Dynamic ledger clearing and liquidity optimization are specialized capabilities applicable to fungible, debt-like commitments.
+11. Trust is contextual, multidimensional, and non-fungible.
+12. The protocol records evidence and signals rather than maintaining universal trust scores.
+13. Trust formation and risk assessment remain distributed among participants and communities.
 
 # Appendix: Dynamic Ledger Network (DLN) Design Ideas
 

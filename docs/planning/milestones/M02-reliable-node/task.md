@@ -161,7 +161,7 @@ M2 may begin **only when**:
 1. **M1 is fully closed.** All M1 exit criteria are verified and recorded in
    `docs/planning/milestones/M01-local-app-model/status.md`. ✅ (completed 2026-06-24)
 2. **Decisions D-02-01 through D-02-05 are resolved** and written as ADRs in
-   `docs/decisions/` before their respective slices begin implementation.
+   `docs/decisions/` before their respective slices begin implementation. ✅ (completed 2026-06-25)
 3. The existing test suite (`cargo test --workspace`) passes cleanly on the branch
    that M2 slices are cut from, with zero clippy warnings.
 
@@ -235,7 +235,7 @@ Understanding what exists vs. what needs to be built.
 ### [ ] Slice 1: Robust Transport — Retry and QUIC Idle Timeouts
 
 **Requirement IDs:** `[TOP-ROB]`
-**Blocking decision:** D-02-03 must be resolved first.
+**Blocking decision:** [D-02-03](../../../decisions/0003-retry-policy-ownership.md) is resolved.
 
 #### Tasks
 - [ ] Define `RetryPolicy` struct in `crates/core/src/config.rs`:
@@ -292,7 +292,7 @@ Understanding what exists vs. what needs to be built.
 ### [ ] Slice 2: Cryptographic Identity Delegation and Handshake
 
 **Requirement IDs:** `[FND-IDT]`
-**Blocking decisions:** D-02-01 and D-02-02 must be resolved first.
+**Blocking decisions:** [D-02-01](../../../decisions/0001-delegation-certificate-format.md) and [D-02-02](../../../decisions/0002-handshake-authorization-point.md) are resolved.
 **Depends on:** Slice 1 complete.
 
 #### Tasks
@@ -365,7 +365,7 @@ Understanding what exists vs. what needs to be built.
 
 **Requirement IDs:** `[FND-SEC]` (runtime quota and connection limit
 sub-requirements)
-**Blocking decision:** D-02-05 must be resolved first.
+**Blocking decision:** [D-02-05](../../../decisions/0005-wasm-fuel-quota-schema.md) is resolved.
 **Can be developed concurrently with Slice 2.**
 
 #### Tasks
@@ -419,7 +419,7 @@ sub-requirements)
 ### [ ] Slice 4: Native TLS, Release Pipeline, and Docker
 
 **Requirement IDs:** `[FND-DEP]`
-**Blocking decision:** D-02-04 must be resolved first.
+**Blocking decision:** [D-02-04](../../../decisions/0004-docker-image-scope.md) is resolved.
 **Can be developed concurrently with Slices 2–3.**
 **Depends on:** Slice 1 complete.
 
