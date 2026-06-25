@@ -78,7 +78,7 @@ Open a new window. Ask it to inspect the codebase and produce `task.md`.
 Open a fresh window for the specific slice to keep context focused and make failures easier to unwind.
 
 **Prompt Template:**
-> Implement only slice M1B from `docs/planning/milestones/M01-local-app-model/task.md`.
+> Implement only slice M1B from `docs/planning/milestones/M01-local-app-model/task.md`. Before proceeding with implementation, pause to show me your implementation plan if any, and wait for me to give a go ahead.
 >
 > Read the canonical project documents and inspect the current worktree before changing anything. Preserve unrelated changes. Do not commit or stage files.
 >
