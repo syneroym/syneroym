@@ -5,6 +5,7 @@
 
 use std::{fs, path::Path};
 
+use anyhow::Context;
 use clap::Subcommand;
 use syneroym_identity::{Identity, substrate};
 
@@ -21,6 +22,24 @@ pub enum IdentityCommands {
     Show {
         #[arg(long)]
         name: String,
+    },
+    /// Issue a new DelegationCertificate
+    Delegate {
+        #[arg(long)]
+        master: String,
+        #[arg(long)]
+        temp_did: String,
+        #[arg(long)]
+        expires_days: u64,
+        #[arg(long)]
+        scope: String,
+    },
+    /// Publish MasterAnchorPayload to the community registry
+    PublishAnchor {
+        #[arg(long)]
+        master: String,
+        #[arg(long)]
+        registry_url: String,
     },
 }
 
@@ -86,6 +105,38 @@ pub async fn handle(command: &IdentityCommands, dir: &Path) -> anyhow::Result<()
             println!("Identity: {name}");
             println!("DID:      {did}");
             println!("Path:     {}", key_path.display());
+        }
+        IdentityCommands::Delegate { master, temp_did, expires_days, scope } => {
+            let key_path = dir.join("identities").join(format!("{master}.key"));
+            if !key_path.exists() {
+                anyhow::bail!("Master identity '{}' not found at {}", master, key_path.display());
+            }
+            let identity = Identity::load_from_path(&key_path)?;
+
+            let temp_pubkey =
+                substrate::resolve_did_key(temp_did).context("Failed to resolve temporary DID")?;
+
+            let cert = syneroym_identity::DelegationCertificate::issue(
+                &identity,
+                temp_pubkey,
+                expires_days * 24 * 3600,
+                scope.clone(),
+            )?;
+            println!("{}", cert.to_json()?);
+        }
+        IdentityCommands::PublishAnchor { master, registry_url } => {
+            let key_path = dir.join("identities").join(format!("{master}.key"));
+            if !key_path.exists() {
+                anyhow::bail!("Master identity '{}' not found at {}", master, key_path.display());
+            }
+            let identity = Identity::load_from_path(&key_path)?;
+
+            let client =
+                syneroym_core::dht_registry::RegistryClient::new(true, Some(registry_url.clone()));
+            let master_id = substrate::derive_did_key(&identity.public_key());
+
+            client.publish_master_anchor(&master_id, vec![], None, &identity, true).await?;
+            println!("Successfully published MasterAnchorPayload to {}", registry_url);
         }
     }
     Ok(())

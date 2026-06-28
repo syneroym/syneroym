@@ -83,6 +83,7 @@ pub async fn handle(
                     nickname: nickname.clone(),
                     is_private: false,
                     ttl: None,
+                    delegation: None,
                 };
                 cert = Some(info.sign(&id)?);
             }

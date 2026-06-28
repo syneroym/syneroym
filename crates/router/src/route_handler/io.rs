@@ -50,19 +50,34 @@ impl RouteHandler {
         // 1. Parse preamble
         let (read_half, write_half) = io::split(stream);
         let mut reader = BufReader::new(read_half);
-        let writer = write_half;
+        let mut writer = write_half;
 
         debug!("[Router] Reading preamble from incoming stream");
         let mut preamble = read_preamble(&mut reader).await?;
         debug!(
             "[Router] Preamble received: transport={:?} protocol={:?} interface='{}' \
-             service_id='{}' enc={:?}",
+             service_id='{}' enc={:?} master_did={:?}",
             preamble.transport,
             preamble.protocol,
             preamble.interface,
             preamble.service_id,
-            preamble.enc
+            preamble.enc,
+            preamble.delegation.as_ref().map(|d| &d.master_did)
         );
+
+        // Handshake verification
+        if preamble.delegation.is_some()
+            && let Err(e) = crate::handshake::HandshakeVerifier::verify_preamble(
+                &preamble,
+                &self.inner.registry_client,
+            )
+            .await
+        {
+            tracing::warn!("Handshake verification failed: {e}");
+            let _ = tokio::io::AsyncWriteExt::write_all(&mut writer, b"Unauthorized\n").await;
+            let _ = tokio::io::AsyncWriteExt::flush(&mut writer).await;
+            return Err(e);
+        }
 
         // 2. Registry lookup & normalization
         let lookup_result = self.inner.registry.lookup(&preamble.service_id, &preamble.interface);

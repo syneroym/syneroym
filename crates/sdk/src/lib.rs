@@ -404,6 +404,7 @@ impl SyneroymClient {
                     service_id: service_id.to_string(),
                     enc: None,
                     pubkey: None,
+                    delegation: None,
                 }
                 .to_preamble_line();
                 send.write_all(preamble.as_bytes()).await?;

@@ -395,6 +395,7 @@ async fn register_coordinator_in_registry(
         mechanisms: vec![EndpointMechanism::Iroh { endpoint_addr_bytes, relay_url }],
         is_private: false,
         ttl: None,
+        delegation: None,
     };
 
     let signed_info = info.sign(&identity)?;

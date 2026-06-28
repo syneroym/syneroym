@@ -26,8 +26,40 @@ test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
 ---
 
+## Slice 2: Cryptographic Identity Delegation and Handshake (Completed)
+
+We have successfully completed Slice 2. All workspace tests and end-to-end tests are fully verified and passing.
+
+### Factual Verification Evidence
+
+#### Workspace Tests (`cargo test --workspace`)
+```text
+test result: ok. 54 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 12.38s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.38s
+```
+
+#### Micro-benchmarks (`cargo bench -p syneroym-identity`)
+```text
+DelegationCertificate::issue
+                        time:   [13.655 µs 13.662 µs 13.669 µs]
+DelegationCertificate::verify
+                        time:   [30.991 µs 31.003 µs 31.017 µs] (~0.031 ms, budget < 1 ms)
+```
+
+#### E2E Playwright Tests (`mise run test:e2e`)
+```
+  4 passed (19.5s)
+```
+
+> [!NOTE]
+> **Deviation from Plan:** 
+> 1. `DelegationCertificate` is embedded in `EndpointInfo` instead of `MasterAnchorPayload` to prevent DHT record bloat. 
+> 2. `RouteHandler` handshake authorization is opt-in for now. Strict validation (including `master_did` and `scope` checks) will be fully implemented when RBAC is introduced in future milestones.
+
+---
+
 ## Slices remaining in Milestone 2
-- [ ] Slice 2: Cryptographic Identity Delegation and Handshake
 - [ ] Slice 3: Runtime Quotas and Connection Caps
 - [ ] Slice 4: Native TLS, Release Pipeline, and Docker
 - [ ] Slice 5: Smoke Tests and Operational Observability

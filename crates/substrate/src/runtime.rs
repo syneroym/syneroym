@@ -473,6 +473,7 @@ fn build_signed_endpoint_info(
         mechanisms: vec![EndpointMechanism::Iroh { endpoint_addr_bytes, relay_url }],
         is_private: false,
         ttl: None,
+        delegation: None,
     };
 
     let identity = Identity::from_bytes(secret_key);

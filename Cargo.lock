@@ -7116,12 +7116,17 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "criterion",
  "ed25519-dalek 2.2.0",
  "getrandom 0.4.3",
  "hex",
+ "libc",
  "serde",
  "serde_json",
+ "tempfile",
+ "tracing",
  "z32",
+ "zeroize",
 ]
 
 [[package]]
@@ -7195,6 +7200,7 @@ dependencies = [
  "bytes",
  "criterion",
  "dashmap",
+ "ed25519-dalek 2.2.0",
  "futures",
  "hex",
  "http-body-util",

@@ -132,6 +132,9 @@ pub struct RoutePreamble {
     pub enc: Option<String>,
     /// Ephemeral client public key (hex)
     pub pubkey: Option<String>,
+    /// Client delegation certificate (optional, hex encoded JSON in query
+    /// param)
+    pub delegation: Option<syneroym_identity::DelegationCertificate>,
 }
 
 impl RoutePreamble {
@@ -181,6 +184,7 @@ impl RoutePreamble {
 
         let mut enc = None;
         let mut pubkey = None;
+        let mut delegation = None;
         if let Some(q) = query {
             for part in q.split('&') {
                 if let Some((k, v)) = part.split_once('=') {
@@ -188,6 +192,13 @@ impl RoutePreamble {
                         enc = Some(v.to_string());
                     } else if k == "pubkey" {
                         pubkey = Some(v.to_string());
+                    } else if k == "delegation"
+                        && let Ok(bytes) = hex::decode(v)
+                        && let Ok(json_str) = String::from_utf8(bytes)
+                        && let Ok(cert) =
+                            syneroym_identity::DelegationCertificate::from_json(&json_str)
+                    {
+                        delegation = Some(cert);
                     }
                 }
             }
@@ -207,6 +218,7 @@ impl RoutePreamble {
             service_id: service_id.to_string(),
             enc,
             pubkey,
+            delegation,
         })
     }
 
@@ -223,6 +235,7 @@ impl RoutePreamble {
             interface: interface.into(),
             enc: None,
             pubkey: None,
+            delegation: None,
         }
     }
 
@@ -252,6 +265,7 @@ impl RoutePreamble {
             service_id: service_id.to_string(),
             enc: None,
             pubkey: None,
+            delegation: None,
         })
     }
 
@@ -284,8 +298,20 @@ impl Display for RoutePreamble {
             format!("{}://{}{}{}", scheme, self.interface, PREAMBLE_SEPARATOR, self.service_id)
         };
 
-        if let (Some(enc), Some(pubkey)) = (&self.enc, &self.pubkey) {
-            base = format!("{base}?enc={enc}&pubkey={pubkey}");
+        let mut params = Vec::new();
+        if let Some(enc) = &self.enc {
+            params.push(format!("enc={enc}"));
+        }
+        if let Some(pubkey) = &self.pubkey {
+            params.push(format!("pubkey={pubkey}"));
+        }
+        if let Some(delegation) = &self.delegation
+            && let Ok(json_str) = delegation.to_json()
+        {
+            params.push(format!("delegation={}", hex::encode(json_str)));
+        }
+        if !params.is_empty() {
+            base = format!("{base}?{}", params.join("&"));
         }
 
         write!(f, "{base}")

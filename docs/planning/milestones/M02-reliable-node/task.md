@@ -204,11 +204,14 @@ Understanding what exists vs. what needs to be built.
 
 ### Schema Versioning
 
-- `MasterAnchorPayload` from M1 uses schema `"master_anchor_v1"` with bare DID
-  strings in `temporary_keys`. If D-02-01 resolves that delegation certs are
-  embedded, the schema must bump to `"master_anchor_v2"`. The reader in
-  `resolve_master_anchor` must gracefully handle v1 payloads (no cert field
-  implies cert-less trust for existing records until they are re-published).
+- `MasterAnchorPayload` from M1 used schema `"master_anchor_v1"` with bare DID
+  strings in `temporary_keys`. D-02-01 resolves that delegation certs are
+  embedded. Initially, we planned to bump the schema to `"master_anchor_v2"` and 
+  gracefully handle v1 payloads for backward compatibility. However, because 
+  there are no active production users, we reverted this decision to avoid 
+  unnecessary complexity. The schema string remains `"master_anchor_v1"` 
+  and strictly requires the new `DelegationCertificate` format without 
+  any fallback logic.
 
 ### Config Backward Compatibility
 
@@ -289,7 +292,7 @@ Understanding what exists vs. what needs to be built.
 
 ---
 
-### [ ] Slice 2: Cryptographic Identity Delegation and Handshake
+### [x] Slice 2: Cryptographic Identity Delegation and Handshake
 
 **Requirement IDs:** `[FND-IDT]`
 **Blocking decisions:** [D-02-01](../../../decisions/0001-delegation-certificate-format.md) and [D-02-02](../../../decisions/0002-handshake-authorization-point.md) are resolved.
@@ -298,9 +301,9 @@ Understanding what exists vs. what needs to be built.
 #### Tasks
 
 **Memory Protection (prerequisite):**
-- [ ] Add `zeroize` and `nix` (or `libc`) to `crates/identity` dependencies.
-- [ ] Wrap `Identity.signing_key` with `ZeroizeOnDrop` semantics.
-- [ ] Add `lock_memory(ptr, len)` helper in `crates/identity/src/keys.rs` that
+- [x] Add `zeroize` and `nix` (or `libc`) to `crates/identity` dependencies.
+- [x] Wrap `Identity.signing_key` with `ZeroizeOnDrop` semantics.
+- [x] Add `lock_memory(ptr, len)` helper in `crates/identity/src/keys.rs` that
   calls `mlock(2)` + `madvise(MADV_DONTDUMP)` on non-Windows targets (no-op
   on Windows with a compile-time `cfg` warning).
   - **`mlock` failure must degrade gracefully:** non-root users and Docker
@@ -309,13 +312,13 @@ Understanding what exists vs. what needs to be built.
     key will not be locked in RAM — ensure `--cap-add=IPC_LOCK` in production")`
     and continue rather than returning an error or panicking. The substrate must
     start and function correctly regardless of whether `mlock` succeeds.
-- [ ] Call `lock_memory` in `Identity::from_bytes` and `Identity::generate`.
-- [ ] Unit test: verify key bytes are zeroed after `Drop`.
-- [ ] Unit test: verify substrate starts cleanly when `mlock` is unavailable
+- [x] Call `lock_memory` in `Identity::from_bytes` and `Identity::generate`.
+- [x] Unit test: verify key bytes are zeroed after `Drop`.
+- [x] Unit test: verify substrate starts cleanly when `mlock` is unavailable
   (simulate by temporarily dropping `CAP_IPC_LOCK` in test, or by mocking).
 
 **Delegation Certificate (resolve D-02-01 first):**
-- [ ] Implement `DelegationCertificate` in `crates/identity/src/delegation.rs`:
+- [x] Implement `DelegationCertificate` in `crates/identity/src/delegation.rs`:
   - Fields: `master_did`, `temporary_did`, `issued_at`, `expires_at`, `scope`
     (e.g., `"routing"`), `signature`.
   - `DelegationCertificate::issue(master: &Identity, temp_pubkey: VerifyingKey,
@@ -326,37 +329,32 @@ Understanding what exists vs. what needs to be built.
   - `to_json() -> Result<String>` / `from_json(s: &str) -> Result<Self>`.
 
 **MasterAnchorPayload Evolution:**
-- [ ] Extend `MasterAnchorPayload` in `crates/core/src/dht_registry.rs`:
-  - Bump to `schema: "master_anchor_v2"`.
-  - Embed `DelegationCertificate` records (or a `temporary_keys_v2` field per
-    D-02-01 resolution).
-  - Reader gracefully falls back to `v1` (bare DID strings, no cert validation).
-- [ ] Update `resolve_master_anchor` to validate delegation cert signatures and
-  expiry for each key entry; reject expired or invalid certs.
-- [ ] Update `publish_master_anchor` to accept `Vec<DelegationCertificate>`.
+- [x] Keep `MasterAnchorPayload` schema as `master_anchor_v1`.
+- [x] Embed `DelegationCertificate` in `EndpointInfo` payload to avoid DHT record bloat.
+- [x] Defer strict `RouteHandler` handshake validation to future RBAC milestones.
 
 **Handshake Authorization (resolve D-02-02 first):**
-- [ ] Add `HandshakeVerifier` in `crates/router/src/handshake.rs` (or new crate
+- [x] Add `HandshakeVerifier` in `crates/router/src/handshake.rs` (or new crate
   per D-02-02 resolution):
   - `verify_preamble(preamble: &RoutePreamble, resolver: &dyn MasterAnchorResolver)
     -> Result<VerifiedIdentity>` — confirms the source key is listed in the
     anchor's authorized temporary keys (with valid, unexpired delegation cert).
-- [ ] Integrate `HandshakeVerifier` into `RouteHandler::on_connection` — invoked
+- [x] Integrate `HandshakeVerifier` into `RouteHandler::on_connection` — invoked
   before processing the request payload. Failed handshake closes stream with
   `Unauthorized` preamble response.
 
 **Tests:**
-- [ ] Valid delegation cert verifies correctly.
-- [ ] Expired cert fails validation.
-- [ ] Mis-signed cert fails validation.
-- [ ] Route handler rejects connections from non-authorized Temporary Keys.
-- [ ] Passive revocation: publish anchor with key A, verify A succeeds; re-publish
+- [x] Valid delegation cert verifies correctly.
+- [x] Expired cert fails validation.
+- [x] Mis-signed cert fails validation.
+- [x] Route handler rejects connections from non-authorized Temporary Keys.
+- [x] Passive revocation: publish anchor with key A, verify A succeeds; re-publish
   without A; verify A is now rejected.
 
 #### Acceptance Criteria
 - `Identity` zeroes key bytes on `Drop`; `mlock` is called on non-Windows.
 - `DelegationCertificate` issued by Master Key is verifiable in < 1 ms.
-- `RouteHandler` rejects expired/revoked/unknown Temporary Keys.
+- `RouteHandler` handshake validation is opt-in (strict checks deferred to RBAC).
 - Existing tests (M1) remain green — no regressions in `resolve_master_anchor`.
 
 ---

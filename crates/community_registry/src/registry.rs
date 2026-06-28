@@ -324,10 +324,12 @@ mod tests {
         let identity = Identity::generate().unwrap();
         let master_id = derive_did_key(&identity.public_key());
 
+        let _temp_identity = Identity::generate().unwrap();
+
         let payload = MasterAnchorPayload {
-            schema: "master_anchor_v1".to_string(),
-            temporary_keys: vec!["did:key:z6Mkt...".to_string()],
+            revoked_keys: vec!["did:key:revoked".to_string()],
             timestamp: 1690000000,
+            ..Default::default()
         };
 
         let signed_anchor = payload.sign(&identity).unwrap();
@@ -342,8 +344,8 @@ mod tests {
         assert!(lookup_res.is_ok());
         let Json(retrieved) = lookup_res.unwrap();
         assert_eq!(retrieved.master_id, master_id);
-        assert_eq!(retrieved.payload.schema, "master_anchor_v1");
-        assert_eq!(retrieved.payload.temporary_keys.len(), 1);
+        assert_eq!(retrieved.payload.schema, syneroym_core::dht_registry::MASTER_ANCHOR_SCHEMA_V1);
+        assert_eq!(retrieved.payload.revoked_keys.len(), 1);
     }
 
     #[tokio::test]
@@ -363,6 +365,7 @@ mod tests {
             }],
             is_private: false,
             ttl: None,
+            delegation: None,
         };
 
         let signed_info = create_signed_info(&identity, info);
@@ -395,6 +398,7 @@ mod tests {
             mechanisms: vec![],
             is_private: false,
             ttl: None,
+            delegation: None,
         };
 
         // Sign with OTHER identity
@@ -418,6 +422,7 @@ mod tests {
             mechanisms: vec![],
             is_private: false,
             ttl: None,
+            delegation: None,
         };
 
         let signed_info = create_signed_info(&identity, info);
@@ -446,6 +451,7 @@ mod tests {
                 }],
                 is_private: false,
                 ttl: None,
+                delegation: None,
             },
             pkarr_packet_hex: "mock-hex".to_string(),
         };
@@ -461,6 +467,7 @@ mod tests {
                 mechanisms: vec![],
                 is_private: false,
                 ttl: None,
+                delegation: None,
             },
             pkarr_packet_hex: "mock-hex".to_string(),
         };
@@ -489,6 +496,7 @@ mod tests {
             mechanisms: vec![],
             is_private: false,
             ttl: None,
+            delegation: None,
         };
 
         let signed_info = create_signed_info(&identity, info);
@@ -518,6 +526,7 @@ mod tests {
             mechanisms: vec![],
             is_private: false,
             ttl: None,
+            delegation: None,
         };
 
         let signed_info = create_signed_info(&identity, info);

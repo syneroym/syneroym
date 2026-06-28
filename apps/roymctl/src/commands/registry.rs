@@ -65,6 +65,7 @@ pub async fn handle(command: &RegistryCommands, api_url: &str, dir: &Path) -> an
                 nickname: nickname.clone(),
                 is_private: *private,
                 ttl: None,
+                delegation: None,
             };
 
             let signed_info = info.sign(&identity)?;

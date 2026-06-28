@@ -17,3 +17,14 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 z32.workspace = true
 chrono.workspace = true
+zeroize = { workspace = true, features = ["derive"] }
+libc = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+criterion.workspace = true
+tempfile.workspace = true
+
+[[bench]]
+name = "delegation"
+harness = false

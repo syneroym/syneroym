@@ -13,7 +13,7 @@ use pkarr::{
 };
 use reqwest::Client as ReqwestClient;
 use serde::{Deserialize, Serialize};
-use syneroym_identity::{Identity, substrate};
+use syneroym_identity::{DelegationCertificate, Identity, substrate};
 
 /// Default time-to-live for registry entries, aligned with BEP 0044 DHT expiry
 /// defaults.
@@ -29,6 +29,9 @@ pub const PKARR_DNS_NAME: &str = "syneroym";
 /// Internal pkarr DHT packet TTL. Matches heartbeat interval so records expire
 /// if not refreshed.
 pub const PKARR_TTL: u32 = HEARTBEAT_INTERVAL_SECS as u32;
+
+/// The canonical schema identifier for Master Anchor payloads
+pub const MASTER_ANCHOR_SCHEMA_V1: &str = "master_anchor_v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -62,6 +65,8 @@ pub struct EndpointInfo {
     pub is_private: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ttl: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delegation: Option<DelegationCertificate>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -126,6 +131,15 @@ impl SignedEndpointInfo {
             return Err(anyhow::anyhow!(
                 "pkarr packet does not contain the corresponding EndpointInfo"
             ));
+        }
+
+        if let Some(cert) = &self.info.delegation {
+            cert.verify(&cert.master_did)?;
+            if cert.temporary_did != self.info.service_id {
+                return Err(anyhow::anyhow!(
+                    "Delegation certificate temporary_did does not match service_id"
+                ));
+            }
         }
 
         Ok(())
@@ -314,13 +328,17 @@ impl RegistryClient {
 
             if let Ok(response) = client.get(&lookup_url).send().await
                 && response.status().is_success()
-                && let Ok(signed_anchor) = response.json::<SignedMasterAnchor>().await
+                && let Ok(body_str) = response.text().await
+                && let Ok(signed_anchor) = serde_json::from_str::<SignedMasterAnchor>(&body_str)
+                && signed_anchor.payload.schema == MASTER_ANCHOR_SCHEMA_V1
             {
                 if let Err(e) = signed_anchor.verify() {
                     return Err(anyhow::anyhow!(
                         "Registry returned invalid Master Anchor for {master_id}: {e}"
                     ));
                 }
+
+                // Verification succeeded, we proceed.
 
                 if let Some(cached) = cached_timestamp
                     && signed_anchor.payload.timestamp <= cached
@@ -347,7 +365,7 @@ impl RegistryClient {
                         && let Ok(full_string) = String::try_from(txt.clone())
                         && let Ok(parsed_payload) =
                             serde_json::from_str::<MasterAnchorPayload>(&full_string)
-                        && parsed_payload.schema == "master_anchor_v1"
+                        && parsed_payload.schema == MASTER_ANCHOR_SCHEMA_V1
                     {
                         if let Some(cached) = cached_timestamp
                             && parsed_payload.timestamp <= cached
@@ -375,9 +393,14 @@ impl RegistryClient {
     pub async fn publish_master_anchor(
         &self,
         master_id: &str,
-        signed_anchor: &SignedMasterAnchor,
+        revoked_keys: Vec<String>,
+        revoke_list_registry: Option<String>,
+        identity: &Identity,
         sync_dht: bool,
     ) -> anyhow::Result<()> {
+        let payload =
+            MasterAnchorPayload { revoked_keys, revoke_list_registry, ..Default::default() };
+        let signed_anchor = payload.sign(identity)?;
         let mut http_success = self.registry_url.is_none();
 
         if let Some(url) = &self.registry_url {
@@ -385,7 +408,7 @@ impl RegistryClient {
             let register_url = format!("{url}/register_master");
             tracing::debug!("Registry register_master_anchor: {}", register_url);
 
-            match client.post(&register_url).json(signed_anchor).send().await {
+            match client.post(&register_url).json(&signed_anchor).send().await {
                 Ok(response) if response.status().is_success() => {
                     http_success = true;
                 }
@@ -420,11 +443,29 @@ impl RegistryClient {
     }
 }
 
+fn default_schema() -> String {
+    MASTER_ANCHOR_SCHEMA_V1.to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MasterAnchorPayload {
+    #[serde(default = "default_schema")]
     pub schema: String,
-    pub temporary_keys: Vec<String>,
+    pub revoked_keys: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revoke_list_registry: Option<String>,
     pub timestamp: u64,
+}
+
+impl Default for MasterAnchorPayload {
+    fn default() -> Self {
+        Self {
+            schema: default_schema(),
+            revoked_keys: vec![],
+            revoke_list_registry: None,
+            timestamp: 0,
+        }
+    }
 }
 
 impl MasterAnchorPayload {
@@ -494,7 +535,7 @@ impl SignedMasterAnchor {
                 && let Ok(full_string) = String::try_from(txt.clone())
                 && let Ok(parsed_payload) =
                     serde_json::from_str::<MasterAnchorPayload>(&full_string)
-                && parsed_payload.schema == "master_anchor_v1"
+                && parsed_payload.schema == MASTER_ANCHOR_SCHEMA_V1
             {
                 if parsed_payload.timestamp != packet_timestamp {
                     return Err(anyhow::anyhow!(
@@ -509,7 +550,7 @@ impl SignedMasterAnchor {
 
         if !found_txt {
             return Err(anyhow::anyhow!(
-                "pkarr packet does not contain the corresponding MasterAnchorPayload"
+                "pkarr packet does not contain a valid MasterAnchorPayload"
             ));
         }
 
@@ -533,11 +574,7 @@ mod tests {
     #[test]
     fn test_master_anchor_payload_timestamp_validation() {
         let identity = Identity::generate().unwrap();
-        let payload = MasterAnchorPayload {
-            schema: "master_anchor_v1".to_string(),
-            temporary_keys: vec!["did:key:test".to_string()],
-            timestamp: 0, // This will be overwritten by sign
-        };
+        let payload = MasterAnchorPayload::default();
 
         let mut signed = payload.clone().sign(&identity).unwrap();
         assert!(signed.verify().is_ok());
@@ -550,11 +587,7 @@ mod tests {
     #[test]
     fn test_master_anchor_payload_expired() {
         let identity = Identity::generate().unwrap();
-        let payload = MasterAnchorPayload {
-            schema: "master_anchor_v1".to_string(),
-            temporary_keys: vec!["did:key:test".to_string()],
-            timestamp: 0,
-        };
+        let payload = MasterAnchorPayload::default();
 
         let signed = payload.sign(&identity).unwrap();
 

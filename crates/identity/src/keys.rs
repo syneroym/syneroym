@@ -14,9 +14,76 @@ use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 
 use crate::{IdentityDoc, substrate};
 
+/// Helper function to lock memory pages to RAM and prevent them from being
+/// written to swap or core dumps. Gracefully degrades with a warning log if it
+/// fails.
+pub fn lock_memory(ptr: *const u8, len: usize) {
+    #[cfg(unix)]
+    {
+        // Safety: ptr is valid and points to initialized memory, len is the size of the
+        // key bytes.
+        #[allow(unsafe_code)]
+        unsafe {
+            if libc::mlock(ptr as *const libc::c_void, len) != 0 {
+                let err = std::io::Error::last_os_error();
+                tracing::warn!(
+                    "Failed to lock memory using mlock: {}. Key memory might be swapped to disk.",
+                    err
+                );
+            }
+            // Some Unix systems (like macOS) might not define MADV_DONTDUMP. If not
+            // available, we use a fallback or skip it. On macOS, MADV_DONTNEED
+            // is defined, but we want to prevent dumping, which might not have a direct
+            // equivalent in libc. Under Linux, MADV_DONTDUMP is 16. We can use
+            // conditional compilation or look for MADV_DONTDUMP specifically.
+            // Let's use MADV_DONTDUMP if it is defined in libc.
+            #[cfg(target_os = "linux")]
+            {
+                if libc::madvise(ptr as *mut libc::c_void, len, libc::MADV_DONTDUMP) != 0 {
+                    let err = std::io::Error::last_os_error();
+                    tracing::warn!(
+                        "Failed to set MADV_DONTDUMP via madvise: {}. Key memory might be \
+                         included in core dumps.",
+                        err
+                    );
+                }
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                // On macOS/BSD etc., mprotect or other guards could be used,
+                // but for now we skip or log warning
+                // since MADV_DONTDUMP is linux-specific.
+                tracing::debug!("MADV_DONTDUMP is not available on this platform");
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        // Graceful fallback for non-unix platforms
+        tracing::warn!("Memory locking (mlock/madvise) is not supported on this platform.");
+    }
+}
+
+///// A wrapper to ensure the cryptographic key is zeroed when dropped.
+struct ZeroizingKey {
+    key: SigningKey,
+}
+
+impl Drop for ZeroizingKey {
+    fn drop(&mut self) {
+        #[allow(unsafe_code)]
+        unsafe {
+            let ptr = &mut self.key as *mut SigningKey as *mut u8;
+            let len = std::mem::size_of::<SigningKey>();
+            let slice = std::slice::from_raw_parts_mut(ptr, len);
+            zeroize::Zeroize::zeroize(slice);
+        }
+    }
+}
+
 /// Represents the cryptographic identity of a Syneroym node.
 pub struct Identity {
-    signing_key: SigningKey,
+    signing_key: Box<ZeroizingKey>,
 }
 
 impl Debug for Identity {
@@ -35,28 +102,42 @@ impl Identity {
         let mut bytes = [0u8; 32];
         getrandom::fill(&mut bytes)
             .context("Failed to generate random bytes for Ed25519 keypair")?;
-        let signing_key = SigningKey::from_bytes(&bytes);
-        Ok(Self { signing_key })
+        let signing_key = Box::new(ZeroizingKey { key: SigningKey::from_bytes(&bytes) });
+        zeroize::Zeroize::zeroize(&mut bytes);
+        let id = Self { signing_key };
+        lock_memory(
+            &id.signing_key.key as *const SigningKey as *const u8,
+            std::mem::size_of::<SigningKey>(),
+        );
+        Ok(id)
     }
 
     /// Load an identity from a 32-byte secret key slice.
     #[must_use]
     pub fn from_bytes(bytes: &[u8; 32]) -> Self {
-        let signing_key = SigningKey::from_bytes(bytes);
-        Self { signing_key }
+        let signing_key = Box::new(ZeroizingKey { key: SigningKey::from_bytes(bytes) });
+        let id = Self { signing_key };
+        lock_memory(
+            &id.signing_key.key as *const SigningKey as *const u8,
+            std::mem::size_of::<SigningKey>(),
+        );
+        id
     }
 
     /// Load an identity from a file path.
     /// Expects a 32-byte secret key file.
     pub fn load_from_path(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         let path = path.as_ref();
-        let bytes = fs::read(path)
+        let mut bytes = fs::read(path)
             .with_context(|| format!("Failed to read identity file at {}", path.display()))?;
         let len = bytes.len();
-        let bytes_array: [u8; 32] = bytes.try_into().map_err(|_| {
+        let mut bytes_array: [u8; 32] = bytes.as_slice().try_into().map_err(|_| {
             anyhow::anyhow!("Invalid key file size ({}) at {}", len, path.display())
         })?;
-        Ok(Self::from_bytes(&bytes_array))
+        zeroize::Zeroize::zeroize(&mut bytes);
+        let id = Self::from_bytes(&bytes_array);
+        zeroize::Zeroize::zeroize(&mut bytes_array);
+        Ok(id)
     }
 
     /// Save the identity to a file path.
@@ -68,9 +149,27 @@ impl Identity {
                 format!("Failed to create parent directories for {}", path.display())
             })?;
         }
-        let bytes = self.to_bytes();
-        fs::write(path, bytes)
-            .with_context(|| format!("Failed to write identity file to {}", path.display()))?;
+        let mut bytes = self.to_bytes();
+
+        #[cfg(unix)]
+        {
+            use std::{io::Write, os::unix::fs::OpenOptionsExt};
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(path)
+                .and_then(|mut f| f.write_all(bytes.as_slice()))
+                .with_context(|| format!("Failed to write identity file to {}", path.display()))?;
+        }
+        #[cfg(not(unix))]
+        {
+            fs::write(path, bytes.as_slice())
+                .with_context(|| format!("Failed to write identity file to {}", path.display()))?;
+        }
+
+        zeroize::Zeroize::zeroize(&mut bytes);
         Ok(())
     }
 
@@ -78,19 +177,19 @@ impl Identity {
     /// WARNING: This must be kept highly secure.
     #[must_use]
     pub fn to_bytes(&self) -> [u8; 32] {
-        self.signing_key.to_bytes()
+        self.signing_key.key.to_bytes()
     }
 
     /// Get the public verifying key associated with this identity.
     #[must_use]
     pub fn public_key(&self) -> VerifyingKey {
-        self.signing_key.verifying_key()
+        self.signing_key.key.verifying_key()
     }
 
     /// Sign a message payload using this identity.
     #[must_use]
     pub fn sign(&self, message: &[u8]) -> Signature {
-        self.signing_key.sign(message)
+        self.signing_key.key.sign(message)
     }
 
     /// Sign a JSON value using RFC 8785 (JSON Canonicalization Scheme).
@@ -137,5 +236,48 @@ mod tests {
         let v1 = json!({"x": {"b": 2, "a": 1}, "y": [3, 2, 1]});
         let s1 = identity.sign_json(&v1).unwrap();
         assert!(!s1.is_empty());
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn test_zeroize_on_drop() {
+        use std::mem::ManuallyDrop;
+        let mut key_bytes = [0u8; 32];
+        key_bytes.copy_from_slice(&[42u8; 32]);
+        let mut zero_key =
+            ManuallyDrop::new(ZeroizingKey { key: SigningKey::from_bytes(&key_bytes) });
+        assert_eq!(zero_key.key.to_bytes(), [42u8; 32]);
+        let ptr = &zero_key.key as *const SigningKey as *const [u8; 32];
+        unsafe { ManuallyDrop::drop(&mut zero_key) };
+        let after_drop: [u8; 32] = unsafe { std::ptr::read_volatile(ptr) };
+        assert_eq!(after_drop, [0u8; 32], "Key bytes must be zeroed on drop");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_save_to_path_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp_dir = tempfile::tempdir().unwrap();
+        let key_path = temp_dir.path().join("test.key");
+        let id = Identity::generate().unwrap();
+        id.save_to_path(&key_path).unwrap();
+        let metadata = fs::metadata(&key_path).unwrap();
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+    }
+
+    #[test]
+    fn test_lock_memory_graceful_degradation() {
+        // Test with invalid pointer/length to force mlock failure
+        // and verify it degrades gracefully without panicking or returning error.
+        lock_memory(std::ptr::null(), 999999);
+    }
+
+    #[test]
+    fn test_substrate_start_mlock_unavailable() {
+        // Force mlock failure with invalid pointer, then check if identity generation
+        // and load still work.
+        lock_memory(std::ptr::null(), 4096);
+        let id = Identity::generate();
+        assert!(id.is_ok());
     }
 }

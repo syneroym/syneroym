@@ -107,6 +107,7 @@ pub async fn run_scenario() -> Result<()> {
         mechanisms,
         is_private: false,
         ttl: None,
+        delegation: None,
     };
     let signed_info = info.sign(&app_identity).unwrap();
 

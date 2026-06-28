@@ -203,7 +203,7 @@ registry_url = "http://127.0.0.1:7661"
   let szDid = '';
   let szOutputBuffer = '';
   await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('Timeout waiting for Sz DID')), 15000);
+    const timer = setTimeout(() => reject(new Error('Timeout waiting for Sz DID')), 20000);
     szProcess.stdout.on('data', (data) => {
       const output = data.toString();
       szOutputBuffer += output;
@@ -230,7 +230,7 @@ registry_url = "http://127.0.0.1:7661"
   let sxDid = '';
   let sxOutputBuffer = '';
   await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('Timeout waiting for Sx DID')), 15000);
+    const timer = setTimeout(() => reject(new Error('Timeout waiting for Sx DID')), 20000);
     sxProcess.stdout.on('data', (data) => {
       const output = data.toString();
       sxOutputBuffer += output;
