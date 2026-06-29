@@ -59,10 +59,11 @@ Contributions are welcome once the Phase 1 scope is locked. See `CONTRIBUTING.md
 
 ## License
 
-Syneroym is licensed under the **AGPLv3** with a **Linking Exception**.
+Syneroym is dual-licensed under **MPL 2.0** and a **Commercial License**.
 
-- **AGPLv3 (Core Substrate):** The core Syneroym substrate is licensed under the GNU Affero General Public License v3.0. If you modify the substrate itself and make it available over a network, you must share those modifications under the same license.
-- **Linking Exception (SynApps & SynSvcs):** As a special exception, you may run independent applications on top of Syneroym—including WebAssembly components, containerized applications (like Podman images), independent external services, or future application types—without those applications being subject to the AGPL. They communicate over standard interfaces and remain your own independent work. You are free to keep their source code closed or license them however you wish.
-- **Commercial Licensing:** If your use case requires an alternative license, a Commercial License is available. For commercial licensing inquiries, please fill out our [Commercial License Inquiry Form](https://forms.gle/wztMPRTXkc1QioPo8).
+- **MPL 2.0 (Mozilla Public License 2.0):** The core Syneroym substrate is open source under the MPL 2.0. This is a file-level copyleft license, which means you are free to link, embed, and use Syneroym in your proprietary and commercial products (including SynApps, SynSvcs, and WebAssembly components) without "infecting" your own code. You only need to share your source code if you modify the existing Syneroym files themselves.
+- **Commercial License (Copyleft Exemption):** If your use case requires modifying the core Syneroym source files while keeping those modifications closed-source and proprietary, you can obtain a Commercial License that grants a full exemption from the MPL's copyleft obligations. (Note: This commercial option strictly provides copyleft exemption and does not include warranties, indemnification, or SLAs). 
 
-See the [LICENSE](LICENSE) file for the full text of the AGPLv3 and the Syneroym Linking Exception.
+For commercial licensing inquiries, please fill out our [Commercial License Inquiry Form](https://forms.gle/wztMPRTXkc1QioPo8).
+
+See the [LICENSE](LICENSE) file for the full text of the MPL 2.0.
