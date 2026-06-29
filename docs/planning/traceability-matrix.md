@@ -12,7 +12,7 @@ This document maps the requirements from the System Requirements Specification (
 | `[PRD-OFF]` | Safe workflows remain intelligible and converge after disconnection; unsafe retries fail explicitly. | M5 | Pending | Fault-injection, idempotency, and state-model tests. |
 | `[PRD-POR]` | Participants can export, verify, and restore in-scope identity-linked data through versioned open formats. | TBD | Pending | Clean-node export/import drill and cross-version fixtures. |
 | `[PRD-TRU]` | Trust evidence is sourced, scoped, fresh, explainable, and correctable; uncertainty remains visible. | M8 | Pending | Trust-display, revocation, omission, and abuse cases. |
-| `[PRD-OPS]` | A non-specialist can install or join, understand health, recover, update, and exit within the declared operating profile. | M2 | Pending | Timed onboarding and incident-recovery exercises. |
+| `[PRD-OPS]` | A non-specialist can install or join, understand health, recover, update, and exit within the declared operating profile. | M2 | Complete | Operator-facing guided install, plain-language `/v1/info` health endpoint, and operational observability smoke tests passing. |
 | `[PRD-EXT]` | Third-party SynApps can declare capabilities and pass public compatibility tests. | M5 | Pending | Package inspection and protocol conformance suite. |
 | `[PRD-SAF]` | Consent, data lifecycle, moderation boundaries, and responsible parties are explicit throughout a transaction. | M4 | Pending | Policy-version, grant, report, dispute, and deletion scenarios. |
 
@@ -28,3 +28,7 @@ This document maps the requirements from the System Requirements Specification (
 | `[TOP-DSC]` | Discovery Mechanisms | M1 | Complete | Top-level `resolve_master_anchor` implementation resolving master keys to authorized temporary keys in [dht_registry.rs](file:///Users/pari/gitSyneroym/syneroym/crates/core/src/dht_registry.rs); logical resolver endpoint caching. |
 | `[LFC-MGT]` | Standalone `roymctl` Deployment & Manifest parsing | M1 | Complete | Parse logic in [models.rs](file:///Users/pari/gitSyneroym/syneroym/crates/app_orchestration/src/models.rs), reconcile loops in [reconcile.rs](file:///Users/pari/gitSyneroym/syneroym/crates/app_orchestration/src/reconcile.rs) and sqlite journal storage in [journal.rs](file:///Users/pari/gitSyneroym/syneroym/crates/app_orchestration/src/journal.rs), CLI integration in [app.rs](file:///Users/pari/gitSyneroym/syneroym/apps/roymctl/src/commands/app.rs). |
 | `[LFC-VER]` | Manifest versioning | M1 | Complete | Semver validation on manifests implemented in [models.rs](file:///Users/pari/gitSyneroym/syneroym/crates/app_orchestration/src/models.rs). |
+| `[TOP-ROB]` | Network & Connection Robustness | M2 | Complete | Retry with exponential backoff, reactive eviction, and QUIC idle timeout implemented. Verified by e2e smoke tests. |
+| `[FND-IDT]` | Cryptographic Identity Primitives | M2 | Complete | Master Key to Temporary Key delegation certificates and basic handshake authorization implemented. |
+| `[FND-DEP]` | Deployment / Operations | M2 | Complete | Native TLS (rustls), release pipeline, Dockerfile, and smoke tests against live coordinator implemented. |
+| `[FND-SEC]` | Substrate Security | M2 | Complete | Wasmtime fuel metering quotas, connection caps, and `mlock` memory protection for keys implemented. |

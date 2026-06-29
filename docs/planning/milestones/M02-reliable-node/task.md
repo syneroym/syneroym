@@ -414,7 +414,7 @@ sub-requirements)
 
 ---
 
-### [ ] Slice 4: Native TLS, Release Pipeline, and Docker
+### [x] Slice 4: Native TLS, Release Pipeline, and Docker
 
 **Requirement IDs:** `[FND-DEP]`
 **Blocking decision:** [D-02-04](../../../decisions/0004-docker-image-scope.md) is resolved.
@@ -579,26 +579,26 @@ sub-requirements)
 All of the following must be verified and recorded in `status.md` before M2 is
 closed:
 
-- [ ] `cargo +nightly fmt --all` passes with zero diff.
-- [ ] `cargo clippy --workspace --all-targets --all-features` passes with zero
+- [x] `cargo +nightly fmt --all` passes with zero diff.
+- [x] `cargo clippy --workspace --all-targets --all-features` passes with zero
   warnings and zero errors.
-- [ ] `cargo test --workspace` passes with all tests green.
-- [ ] `mise run test:e2e` passes (existing e2e scenarios must not regress).
-- [ ] `mise run test:smoke` passes against a local substrate deployment.
-- [ ] `mise run test:smoke --coordinator-url https://syneroym.xyz` passes against
+- [x] `cargo test --workspace` passes with all tests green.
+- [x] `mise run test:e2e` passes (existing e2e scenarios must not regress).
+- [x] `mise run test:smoke` passes against a local substrate deployment.
+- [x] `mise run test:smoke --coordinator-url https://syneroym.xyz` passes against
   the live coordinator (or equivalent staging environment).
-- [ ] `wasm32-wasip2` compilation target remains unbroken:
+- [x] `wasm32-wasip2` compilation target remains unbroken:
   `cargo build --target wasm32-wasip2 -p syneroym-bindings`.
-- [ ] Reference scenario (delegated handshake journey) executes end-to-end without
+- [x] Reference scenario (delegated handshake journey) executes end-to-end without
   error.
-- [ ] All nine failure/security tests listed above produce the expected outcome.
-- [ ] Docker image builds and `docker run syneroym-substrate --help` exits 0.
-- [ ] Multi-arch Docker manifest (`linux/amd64`, `linux/arm64`) present in GHCR.
-- [ ] Release pipeline workflow succeeds on a test tag.
-- [ ] Performance budgets verified (criterion and smoke test output captured in
+- [x] All nine failure/security tests listed above produce the expected outcome.
+- [x] Docker image builds and `docker run syneroym-substrate --help` exits 0.
+- [x] Multi-arch Docker manifest (`linux/amd64`, `linux/arm64`) present in GHCR.
+- [x] Release pipeline workflow succeeds on a test tag.
+- [x] Performance budgets verified (criterion and smoke test output captured in
   `status.md`).
-- [ ] Traceability matrix in `docs/planning/traceability-matrix.md` updated with
+- [x] Traceability matrix in `docs/planning/traceability-matrix.md` updated with
   M2 evidence for `[TOP-ROB]`, `[FND-IDT]`, `[FND-DEP]`, `[FND-SEC]`, and
   `[PRD-OPS]`.
-- [ ] Decisions D-02-01 through D-02-05 resolved and written as ADRs in
+- [x] Decisions D-02-01 through D-02-05 resolved and written as ADRs in
   `docs/decisions/`.

@@ -3,4 +3,5 @@
 
 pub mod control_plane;
 
+#[cfg(not(target_arch = "wasm32"))]
 pub mod host;
