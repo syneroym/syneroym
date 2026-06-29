@@ -8,11 +8,11 @@ A Decentralized System for Recording, Negotiating, Fulfilling, and Resolving Com
 
 The Identity-Native Commitment Network (ICN) is a decentralized, peer-to-peer state engine that models economic and social interactions as networks of commitments between identities and groups.
 
-Its purpose is not merely to create a cash-free financial network or replace existing monetary systems. Instead, it provides a general framework for representing, coordinating, and resolving commitments and reciprocal expectations among participants.
+Its purpose is not to create a cash-free financial network or replace existing monetary systems. Instead, it provides a general framework for representing, coordinating, and resolving commitments and reciprocal expectations among participants.
 
 Financial exchange, credit, investments, contracts, guarantees, delegations of authority, reputation systems, and collaborative endeavors emerge as specialized forms of commitments within the same underlying framework.
 
-The system is institution-agnostic. Individuals, businesses, communities, banks, governments, and central banks may all participate as identities and commitment issuers.
+The system is institution-agnostic. Individuals, businesses, communities, or any organization in general, may all participate as identities and commitment issuers.
 
 ---
 
@@ -421,7 +421,7 @@ A ledger entry is legally and mathematically valid within the network only when 
 The network does not attempt to mathematically prevent "double-spending" or track absolute systemic sum-totals via complex global consensus. Instead, it relies on conscious social trust backed by cryptographic deterrence. If a user defaults on a debt or maliciously double-promises their commitments, the aggrieved party submits the mutually-signed ledger entry as irrefutable proof to the broader Trust & Reputation network. The defaulting user faces immediate social and economic exclusion, ensuring the cost of reputation destruction far outweighs the short-term gain of defaulting.
 
 ### 100% Offline-First Transacting & Seamless Sync
-Because enforcement relies on deterrence rather than global consensus, transacting parties do not need to be connected to the internet or a broader network. A transaction only requires the two parties to be locally connected (e.g., via Bluetooth or Local Wi-Fi) to exchange cryptographic signatures. The `cr-sqlite` CRDT engine handles these offline receipts effortlessly, ensuring seamless multi-device sync (e.g., merging a user's mobile phone and desktop ledgers) and automatic replication to backup substrates once internet connectivity is restored.
+Because enforcement relies on deterrence rather than global consensus, transacting parties do not need to be connected to the internet or a broader network. A transaction only requires the two parties to be locally connected (e.g., via Bluetooth or Local Wi-Fi) to exchange cryptographic signatures. Data storage redundancy ensures seamless multi-device sync (e.g., merging a user's mobile phone and desktop ledgers) and automatic replication to backup substrates once internet connectivity is restored.
 
 ### Flat, Tag-Based Metadata Engine
 Transactions are stored in a single flat ledger database on the device. Relationships, constraints, and business rules are applied dynamically via flexible metadata tags (e.g., `#Family`, `#Business`, `#Net30`, `#Kirana`), completely replacing rigid folder or account hierarchies. Hierarchies are treated strictly as user-interface visualization filters.
