@@ -10,8 +10,7 @@ ignore = [
     "RUSTSEC-2026-0119",
     # bincode is unmaintained, but 1.3.3 is a complete version that does not need any updates
     "RUSTSEC-2025-0141",
-    # proc-macro-error2 is unmaintained. Need to migrate, but ignore for now
-    "RUSTSEC-2026-0173",
+
     # New vulnerability in quinn-proto on June 22. No fix yet
     "RUSTSEC-2026-0185",
 ]
