@@ -3,7 +3,13 @@
 //! Defines dispatch pipelines for HTTP, JSON-RPC, and raw TCP traffic (wRPC —
 //! TODO: not yet implemented).
 
-use std::{fmt, sync::Arc};
+use std::{
+    fmt,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use anyhow::Result;
 use dashmap::DashMap;
@@ -49,18 +55,18 @@ pub fn is_expected_disconnect<E: fmt::Display>(e: E) -> bool {
 
 #[derive(Debug)]
 pub struct ConnectionSlot {
-    counter: Arc<std::sync::atomic::AtomicUsize>,
+    counter: Arc<AtomicUsize>,
 }
 
 impl ConnectionSlot {
-    pub fn new_pre_incremented(counter: Arc<std::sync::atomic::AtomicUsize>) -> Self {
+    pub fn new_pre_incremented(counter: Arc<AtomicUsize>) -> Self {
         Self { counter }
     }
 }
 
 impl Drop for ConnectionSlot {
     fn drop(&mut self) {
-        self.counter.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        self.counter.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -73,7 +79,7 @@ pub struct RouteHandlerInner {
     pub registry_client: RegistryClient,
     pub _parent_relay_url: Option<String>,
     pub retry_policy: RetryPolicy,
-    pub active_connections: Arc<std::sync::atomic::AtomicUsize>,
+    pub active_connections: Arc<AtomicUsize>,
     pub max_connections: Option<usize>,
 }
 
@@ -131,7 +137,7 @@ impl RouteHandler {
             registry_client,
             _parent_relay_url: parent_coordinator_url,
             retry_policy: config.retry.clone(),
-            active_connections: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            active_connections: Arc::new(AtomicUsize::new(0)),
             max_connections,
         });
 
@@ -167,7 +173,7 @@ impl RouteHandler {
             registry_client,
             _parent_relay_url: parent_relay_url,
             retry_policy,
-            active_connections: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            active_connections: Arc::new(AtomicUsize::new(0)),
             max_connections,
         });
         Self { inner }
@@ -182,19 +188,27 @@ impl RouteHandler {
     /// reached.
     pub fn acquire_connection_slot(&self) -> Option<ConnectionSlot> {
         if let Some(max_conns) = self.inner.max_connections {
-            let active_after_add =
-                self.inner.active_connections.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-
-            if active_after_add > max_conns {
-                self.inner.active_connections.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-                None
-            } else {
-                Some(ConnectionSlot::new_pre_incremented(self.inner.active_connections.clone()))
+            let res = self.inner.active_connections.fetch_update(
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+                |curr| {
+                    if curr >= max_conns { None } else { Some(curr + 1) }
+                },
+            );
+            match res {
+                Ok(_) => {
+                    Some(ConnectionSlot::new_pre_incremented(self.inner.active_connections.clone()))
+                }
+                Err(_) => None,
             }
         } else {
-            self.inner.active_connections.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.active_connections.fetch_add(1, Ordering::SeqCst);
             Some(ConnectionSlot::new_pre_incremented(self.inner.active_connections.clone()))
         }
+    }
+
+    pub fn active_connections(&self) -> Arc<AtomicUsize> {
+        self.inner.active_connections.clone()
     }
 }
 
@@ -208,7 +222,7 @@ impl IrohProtocolHandler for RouteHandler {
         } else {
             debug!(
                 "[Router] Rejecting connection from {endpoint_id} due to connection cap ({}/{:?})",
-                self.inner.active_connections.load(std::sync::atomic::Ordering::SeqCst),
+                self.inner.active_connections.load(Ordering::SeqCst),
                 self.inner.max_connections
             );
             if let Ok((mut send, _recv)) = connection.accept_bi().await {

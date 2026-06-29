@@ -1,0 +1,28 @@
+[package]
+name = "syneroym-smoke-tests"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+syneroym-core = { path = "../core" }
+syneroym-identity = { path = "../identity" }
+syneroym-sdk = { path = "../sdk" }
+syneroym-rpc = { path = "../rpc" }
+syneroym-coordinator-iroh = { path = "../coordinator_iroh" }
+syneroym-app-orchestration = { path = "../app_orchestration" }
+syneroym-app-sandbox = { path = "../app_sandbox" }
+syneroym-community-registry = { path = "../community_registry" }
+syneroym-router = { path = "../router" }
+
+anyhow.workspace = true
+tokio.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+reqwest.workspace = true
+clap = { workspace = true, features = ["derive"] }
+iroh.workspace = true
+dashmap.workspace = true
+rand.workspace = true

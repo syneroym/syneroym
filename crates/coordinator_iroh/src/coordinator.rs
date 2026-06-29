@@ -28,7 +28,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     config::build_relay_config,
-    info_endpoint::{CoordinatorInfo, InfoState, get_info},
+    info_endpoint::{InfoState, get_info},
 };
 
 pub struct CoordinatorIroh {
@@ -98,7 +98,8 @@ impl CoordinatorIroh {
                 let node_id = iroh_endpoint.addr().id;
 
                 // 2. Spawn Iroh Router
-                let router = Self::spawn_iroh_router(&iroh_endpoint, iroh_cfg, config);
+                let (router, active_conns) =
+                    Self::spawn_iroh_router(&iroh_endpoint, iroh_cfg, config);
                 iroh_router = Some(router);
 
                 // 3. Start Axum /v1/info HTTP Server
@@ -108,6 +109,7 @@ impl CoordinatorIroh {
                     iroh_cfg,
                     &iroh_endpoint,
                     &relay_server,
+                    active_conns,
                 )
                 .await?;
                 info_addr = Some(local_addr);
@@ -206,7 +208,7 @@ impl CoordinatorIroh {
         iroh_endpoint: &Endpoint,
         iroh_cfg: &CoordinatorIrohConfig,
         config: &SubstrateConfig,
-    ) -> IrohRouter {
+    ) -> (IrohRouter, Arc<std::sync::atomic::AtomicUsize>) {
         let parent_relay_url = config.parent_coordinator.iroh.as_ref().map(|u| u.url.clone());
         let registry_client = RegistryClient::new(
             config.substrate.enable_bep0044_dht,
@@ -219,8 +221,11 @@ impl CoordinatorIroh {
             config.retry.clone(),
             iroh_cfg.max_connections,
         );
+        let active_connections = route_handler.active_connections();
 
-        IrohRouter::builder(iroh_endpoint.clone()).accept(SYNEROYM_ALPN, route_handler).spawn()
+        let router =
+            IrohRouter::builder(iroh_endpoint.clone()).accept(SYNEROYM_ALPN, route_handler).spawn();
+        (router, active_connections)
     }
 
     async fn spawn_http_info_server(
@@ -229,6 +234,7 @@ impl CoordinatorIroh {
         iroh_cfg: &CoordinatorIrohConfig,
         iroh_endpoint: &Endpoint,
         relay_server: &Option<Server>,
+        active_connections: Arc<std::sync::atomic::AtomicUsize>,
     ) -> Result<(JoinHandle<Result<()>>, SocketAddr)> {
         let mut http_info_addr: SocketAddr =
             iroh_cfg.http_bind_address.parse().context("invalid http_bind_address")?;
@@ -244,7 +250,7 @@ impl CoordinatorIroh {
 
         let endpoint_addr = iroh_endpoint.addr();
         let node_id = endpoint_addr.id;
-        let endpoint_addr_payload = EndpointAddr::new(node_id);
+        let endpoint_addr_payload = endpoint_addr;
         let endpoint_addr_bytes = serde_json::to_vec(&endpoint_addr_payload)?;
         let parent_relay_url = config.parent_coordinator.iroh.as_ref().map(|u| u.url.clone());
         let actual_http_addr = relay_server.as_ref().and_then(Server::http_addr);
@@ -260,13 +266,22 @@ impl CoordinatorIroh {
             None
         };
 
+        let tls_cert_path = config.tls.as_ref().map(|t| t.cert_path.clone());
+        let is_relay_enabled = iroh_cfg.enable_relay;
+
         let info_state = Arc::new(InfoState {
-            info: CoordinatorInfo {
-                endpoint_addr_bytes,
-                substrate_id: node_id.to_string(),
-                relay_url,
-                parent_coordinator_url: parent_relay_url.clone(),
-            },
+            endpoint_addr_bytes,
+            substrate_id: node_id.to_string(),
+            relay_url,
+            parent_coordinator_url: parent_relay_url.clone(),
+            active_connections,
+            max_connections: iroh_cfg.max_connections,
+            tls_cert_path,
+            is_relay_enabled,
+            registry_client: RegistryClient::new(
+                config.substrate.enable_bep0044_dht,
+                iroh_cfg.community_registry_url.clone(),
+            ),
         });
 
         let app = Router::new().route("/v1/info", get(get_info)).with_state(info_state);

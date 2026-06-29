@@ -476,7 +476,7 @@ sub-requirements)
 
 ---
 
-### [ ] Slice 5: Smoke Tests and Operational Observability
+### [x] Slice 5: Smoke Tests and Operational Observability
 
 **Requirement IDs:** `[FND-DEP]` (smoke tests), `[PRD-OPS]`
 **Depends on:** Slices 1–4 complete; live coordinator at `syneroym.xyz` accessible.
@@ -484,7 +484,7 @@ sub-requirements)
 #### Tasks
 
 **Automated Smoke Tests:**
-- [ ] Add `tests/smoke/` integration test binary (or `crates/smoke-tests`) that
+- [x] Add `tests/smoke/` integration test binary (or `crates/smoke-tests`) that
   accepts `--coordinator-url` and `--registry-url` flags.
   - Test 1 (connectivity): Iroh connection to coordinator; `/v1/info` responds.
   - Test 2 (registry): register a test endpoint; look it up successfully.
@@ -493,12 +493,12 @@ sub-requirements)
     verify retry logic reconnects successfully.
   - Test 5 (quota): deploy fuel-limited WASM component; verify quota trap is
     clean.
-- [ ] Add `mise run test:smoke` task.
-- [ ] Add `.github/workflows/smoke.yml` running smoke tests against `syneroym.xyz`
+- [x] Add `mise run test:smoke` task.
+- [x] Add `.github/workflows/smoke.yml` running smoke tests against `syneroym.xyz`
   on release tags.
 
 **Health Endpoint Extension:**
-- [ ] Extend `/v1/info` in `coordinator_iroh` to expose a structured health
+- [x] Extend `/v1/info` in `coordinator_iroh` to expose a structured health
   object:
   ```json
   {
@@ -511,7 +511,7 @@ sub-requirements)
   ```
 
 **Documentation:**
-- [ ] Update `docs/developer-guide.md` with M2 operational runbook:
+- [x] Update `docs/developer-guide.md` with M2 operational runbook:
   - How to generate a Master Key and issue a Delegation Certificate.
   - How to set up TLS with certbot, configure `syneroym.toml`, and hot-reload
     certs via `SIGUSR1`.

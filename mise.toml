@@ -64,3 +64,8 @@ run = "cargo run -p syneroym-perf -- soak"
 description = "Build release binaries for syneroym-substrate and roymctl with target support"
 run = "./scripts/build-release.sh \"${1:-}\""
 
+[tasks."test:smoke"]
+description = "Run automated smoke tests against local or remote coordinator/registry"
+run = "cargo run -p syneroym-smoke-tests -- ${@}"
+
+

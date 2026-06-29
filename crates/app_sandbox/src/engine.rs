@@ -123,6 +123,7 @@ pub struct AppSandboxEngine {
     components: DashMap<String, (InstancePre<HostState>, Option<WasmResourceQuota>)>,
     default_max_instructions: Option<u64>,
     default_max_memory_bytes: Option<u64>,
+    _shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 impl Debug for AppSandboxEngine {
@@ -135,6 +136,22 @@ impl Debug for AppSandboxEngine {
 }
 
 impl AppSandboxEngine {
+    /// Helper to validate service ID against path traversal and invalid
+    /// characters
+    pub fn validate_service_id(service_id: &str) -> Result<()> {
+        if service_id.is_empty()
+            || service_id.contains('/')
+            || service_id.contains('\\')
+            || service_id.contains("..")
+            || std::path::Path::new(service_id).is_absolute()
+        {
+            return Err(anyhow::anyhow!(
+                "Invalid service_id: path traversal or invalid characters"
+            ));
+        }
+        Ok(())
+    }
+
     /// Initializes the App Sandbox and warms up any existing WASM endpoints
     pub async fn init(
         config: &SubstrateConfig,
@@ -167,6 +184,8 @@ impl AppSandboxEngine {
                 (Some(10_000_000_000), Some(256 * 1024 * 1024))
             };
 
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+
         let app_engine = Self {
             blobs_dir: component_dir,
             engine,
@@ -174,6 +193,7 @@ impl AppSandboxEngine {
             components,
             default_max_instructions,
             default_max_memory_bytes,
+            _shutdown_tx: Some(shutdown_tx),
         };
 
         for (service_id, _interface_name, endpoint) in endpoints {
@@ -194,8 +214,14 @@ impl AppSandboxEngine {
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
             loop {
-                interval.tick().await;
-                engine_clone.increment_epoch();
+                tokio::select! {
+                    _ = interval.tick() => {
+                        engine_clone.increment_epoch();
+                    }
+                    _ = &mut shutdown_rx => {
+                        break;
+                    }
+                }
             }
         });
 
@@ -301,6 +327,7 @@ impl AppSandboxEngine {
 
     /// Deploy and compile a WASM component for a given service
     pub async fn deploy_wasm(&self, service_id: &str, manifest: &DeployManifest) -> Result<()> {
+        Self::validate_service_id(service_id)?;
         tracing::info!("AppSandboxEngine: Deploying Wasm component for {}", service_id);
 
         let ServiceType::Wasm(wasm_manifest) = &manifest.service_type else {
@@ -346,6 +373,7 @@ impl AppSandboxEngine {
         interface_name: &str,
         request: &JsonRpcRequest,
     ) -> Result<String> {
+        Self::validate_service_id(service_id)?;
         struct ActiveInstanceGuard;
         impl ActiveInstanceGuard {
             fn new() -> Self {
@@ -491,6 +519,7 @@ impl AppSandboxEngine {
 
     /// Stop and evict a running Wasm component from the in-memory cache.
     pub async fn stop_wasm(&self, service_id: &str) -> Result<()> {
+        Self::validate_service_id(service_id)?;
         tracing::info!(service_id = %service_id, "AppSandboxEngine: stopping Wasm component");
         self.components.remove(service_id);
         metrics::gauge!("substrate.wasm.component_cache_size").set(self.components.len() as f64);
@@ -499,6 +528,7 @@ impl AppSandboxEngine {
 
     /// Remove a stopped Wasm component's binary from disk.
     pub async fn remove_wasm(&self, service_id: &str) -> Result<()> {
+        Self::validate_service_id(service_id)?;
         tracing::info!(service_id = %service_id, "AppSandboxEngine: removing Wasm component");
         let file_path = self.blobs_dir.join(format!("{service_id}.wasm"));
         if file_path.exists() {
@@ -515,6 +545,7 @@ impl AppSandboxEngine {
 
     /// Helper to load a cached WASM component from disk and compile it
     async fn load_cached_wasm(&self, service_id: &str) -> Result<()> {
+        Self::validate_service_id(service_id)?;
         let file_path = self.blobs_dir.join(format!("{service_id}.wasm"));
         if file_path.exists() {
             let bytes = tokio_fs::read(&file_path)
@@ -538,7 +569,7 @@ impl AppSandboxEngine {
     }
 
     /// Helper to compile a WASM binary and store it in the cache
-    fn compile_and_cache_wasm(
+    pub fn compile_and_cache_wasm(
         &self,
         service_id: &str,
         bytes: &[u8],
@@ -672,6 +703,7 @@ mod tests {
             components: DashMap::new(),
             default_max_instructions: Some(10_000),
             default_max_memory_bytes: Some(1024 * 1024), // 1MB
+            _shutdown_tx: None,
         };
 
         // Cache the test component

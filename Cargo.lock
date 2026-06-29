@@ -7063,6 +7063,7 @@ dependencies = [
  "async-trait",
  "axum",
  "axum-server",
+ "chrono",
  "hex",
  "iroh",
  "iroh-base",
@@ -7087,6 +7088,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "x509-parser 0.18.1",
 ]
 
 [[package]]
@@ -7306,6 +7308,30 @@ dependencies = [
  "syneroym-rpc",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "syneroym-smoke-tests"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "dashmap",
+ "iroh",
+ "rand 0.9.4",
+ "reqwest 0.13.4",
+ "serde",
+ "serde_json",
+ "syneroym-app-orchestration",
+ "syneroym-app-sandbox",
+ "syneroym-community-registry",
+ "syneroym-coordinator-iroh",
+ "syneroym-core",
+ "syneroym-identity",
+ "syneroym-router",
+ "syneroym-rpc",
+ "syneroym-sdk",
+ "tokio",
 ]
 
 [[package]]

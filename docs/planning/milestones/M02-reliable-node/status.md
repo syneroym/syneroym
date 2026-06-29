@@ -92,6 +92,48 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
 ---
 
+## Slice 5: Smoke Tests and Operational Observability (Completed)
+
+We have successfully completed Slice 5. The new `syneroym-smoke-tests` binary executes all 5 required smoke test scenarios cleanly. The `/v1/info` endpoint has been extended to expose structured, detailed health states.
+
+### Factual Verification Evidence
+
+#### Smoke Test Output (`mise run test:smoke`)
+```text
+Starting smoke tests...
+Coordinator URL: http://127.0.0.1:7964
+Registry URL:    http://127.0.0.1:7961
+No running coordinator detected. Starting temporary in-process coordinator and registry...
+In-process coordinator listening on info: 127.0.0.1:7974
+
+[Test 1] Connectivity to coordinator...
+Coordinator info received successfully!
+  Substrate ID: 78cd9326dd5241ee3af2a5312a7b7215bdda10760df5f018789a60bcbbee7ff5
+  Status:       healthy
+  Relay Online: true
+  Connections:  active=0/cap=Some(100)
+
+[Test 2 & 3] Registry registration and master anchor publication...
+Generated test identity: did:key:h7wys1t6541wqwoxogu19knt15t3t6nrwknowrorkydfczmdwu8448ko
+Registering endpoint in registry...
+Endpoint registered successfully!
+Resolving endpoint from registry...
+Endpoint resolved and verified successfully!
+
+[Test 4] Inducing transient failure for retry logic...
+  Attempt 1: Simulating transient failure (wrong URL)
+  Attempt 2: Reconnecting successfully
+Retry mechanism verified successfully!
+
+[Test 5] WASM sandbox fuel and memory quota trapping...
+Fuel quota trapping works! (QuotaExceeded detected)
+Memory quota trapping works! (MemoryFault/failed to grow detected)
+
+All smoke tests passed successfully!
+```
+
+---
+
 ## Slices remaining in Milestone 2
 - [ ] Slice 4: Native TLS, Release Pipeline, and Docker
-- [ ] Slice 5: Smoke Tests and Operational Observability
+
