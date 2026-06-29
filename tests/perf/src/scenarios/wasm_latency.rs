@@ -39,7 +39,7 @@ pub async fn run_scenario() -> Result<()> {
 
     // Warmup Baseline
     for _ in 0..10 {
-        let host_state = HostState::new("test_component".to_string());
+        let host_state = HostState::new("test_component".to_string(), None);
         let mut store = Store::new(&engine, host_state);
         let instance = linker.instantiate_async(&mut store, &component).await?;
         let (func, results_len, _item) =
@@ -57,7 +57,7 @@ pub async fn run_scenario() -> Result<()> {
     let mut baseline_latencies = Vec::new();
     for _ in 0..100 {
         let start = Instant::now();
-        let host_state = HostState::new("test_component".to_string());
+        let host_state = HostState::new("test_component".to_string(), None);
         let mut store = Store::new(&engine, host_state);
         let instance = linker.instantiate_async(&mut store, &component).await?;
         let (func, results_len, _item) =

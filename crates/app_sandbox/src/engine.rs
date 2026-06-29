@@ -11,6 +11,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use dashmap::DashMap;
+use serde::{Deserialize, Serialize};
 use syneroym_bindings::{
     control_plane::exports::syneroym::control_plane::orchestrator::{
         ArtifactSource, DeployManifest, ServiceType,
@@ -22,7 +23,8 @@ use syneroym_rpc::JsonRpcRequest;
 use tokio::fs as tokio_fs;
 use tracing::debug;
 use wasmtime::{
-    Config, Engine, InstanceAllocationStrategy, PoolingAllocationConfig, Store,
+    Config, Engine, InstanceAllocationStrategy, PoolingAllocationConfig, Store, StoreLimits,
+    StoreLimitsBuilder,
     component::{
         Component, Func, HasSelf, Instance, InstancePre, Linker, Val, types::ComponentItem,
     },
@@ -31,6 +33,12 @@ use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxView, WasiView, p2};
 
 use crate::conversions::{json_to_wasm_params, wasm_results_to_json_string};
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WasmResourceQuota {
+    pub max_instructions: Option<u64>,
+    pub max_memory_bytes: Option<u64>,
+}
+
 /// Host state instantiated per-request for WASM components
 pub struct HostState {
     pub wasi: WasiCtx,
@@ -38,6 +46,7 @@ pub struct HostState {
     // Custom state
     pub component_id: String,
     pub request_ctx: Option<String>,
+    pub memory_limits: StoreLimits,
 }
 
 impl Debug for HostState {
@@ -45,16 +54,22 @@ impl Debug for HostState {
         f.debug_struct("HostState")
             .field("component_id", &self.component_id)
             .field("request_ctx", &self.request_ctx)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
 impl HostState {
     /// Creates a new HostState with standard WASI context.
-    pub fn new(component_id: String) -> Self {
+    pub fn new(component_id: String, max_memory_bytes: Option<usize>) -> Self {
         let wasi = WasiCtx::builder().build();
         let table = ResourceTable::new();
-        Self { wasi, table, component_id, request_ctx: None }
+        let memory_limits = StoreLimitsBuilder::new()
+            .memory_size(max_memory_bytes.unwrap_or(usize::MAX))
+            .instances(1)
+            .memories(1)
+            .tables(1)
+            .build();
+        Self { wasi, table, component_id, request_ctx: None, memory_limits }
     }
 }
 
@@ -75,6 +90,29 @@ impl Host for HostState {
     }
 }
 
+impl wasmtime::ResourceLimiter for HostState {
+    fn memory_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        maximum: Option<usize>,
+    ) -> std::result::Result<bool, wasmtime::Error> {
+        match self.memory_limits.memory_growing(current, desired, maximum) {
+            Ok(true) => Ok(true),
+            _ => Err(wasmtime::Error::msg("MemoryFault: Wasm execution exceeded memory limit")),
+        }
+    }
+
+    fn table_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        maximum: Option<usize>,
+    ) -> std::result::Result<bool, wasmtime::Error> {
+        self.memory_limits.table_growing(current, desired, maximum)
+    }
+}
+
 /// Engine: Passive code module that wraps low-level OS operations
 /// to spin up Wasmtime or Podman instances.
 pub struct AppSandboxEngine {
@@ -82,7 +120,9 @@ pub struct AppSandboxEngine {
     engine: Engine,
     linker: Linker<HostState>,
     // Cache of pre-linked instances for fast instantiation
-    components: DashMap<String, InstancePre<HostState>>,
+    components: DashMap<String, (InstancePre<HostState>, Option<WasmResourceQuota>)>,
+    default_max_instructions: Option<u64>,
+    default_max_memory_bytes: Option<u64>,
 }
 
 impl Debug for AppSandboxEngine {
@@ -120,7 +160,21 @@ impl AppSandboxEngine {
         // Component cache
         let components = DashMap::new();
 
-        let app_engine = Self { blobs_dir: component_dir, engine, linker, components };
+        let (default_max_instructions, default_max_memory_bytes) =
+            if let Some(sandbox_config) = &config.roles.app_sandbox {
+                (sandbox_config.default_max_instructions, sandbox_config.default_max_memory_bytes)
+            } else {
+                (Some(10_000_000_000), Some(256 * 1024 * 1024))
+            };
+
+        let app_engine = Self {
+            blobs_dir: component_dir,
+            engine,
+            linker,
+            components,
+            default_max_instructions,
+            default_max_memory_bytes,
+        };
 
         for (service_id, _interface_name, endpoint) in endpoints {
             if let SubstrateEndpoint::WasmChannel { service_id: channel_id } = endpoint {
@@ -136,6 +190,15 @@ impl AppSandboxEngine {
             }
         }
 
+        let engine_clone = app_engine.engine.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
+            loop {
+                interval.tick().await;
+                engine_clone.increment_epoch();
+            }
+        });
+
         Ok(app_engine)
     }
 
@@ -146,6 +209,8 @@ impl AppSandboxEngine {
     ) -> Result<Engine> {
         let mut wasmtime_config = Config::new();
         wasmtime_config.wasm_component_model(true);
+        wasmtime_config.consume_fuel(true);
+        wasmtime_config.epoch_interruption(true);
 
         if let (Some(instances), Some(memory)) = (max_instances, max_memory) {
             wasmtime_config.memory_init_cow(true);
@@ -254,9 +319,21 @@ impl AppSandboxEngine {
 
         tracing::info!("WASM binary stored at {:?}", file_path);
 
+        let quota = manifest.config.quota.as_ref().map(|q| WasmResourceQuota {
+            max_instructions: q.max_instructions,
+            max_memory_bytes: q.max_memory_bytes,
+        });
+
+        if let Some(ref q) = quota {
+            let quota_path = self.blobs_dir.join(format!("{service_id}.quota.json"));
+            if let Ok(quota_json) = serde_json::to_string(q) {
+                let _ = tokio::fs::write(&quota_path, quota_json).await;
+            }
+        }
+
         // 4. Compile and cache the component; drop the raw bytes immediately to free
         //    memory
-        self.compile_and_cache_wasm(service_id, &bytes)?;
+        self.compile_and_cache_wasm(service_id, &bytes, quota)?;
         drop(bytes);
 
         Ok(())
@@ -312,11 +389,27 @@ impl AppSandboxEngine {
         debug!("created result types");
 
         let exec_start = Instant::now();
-        func.call_async(&mut store, &wasm_params, &mut wasm_results).await?;
+        let res = func.call_async(&mut store, &wasm_params, &mut wasm_results).await;
         metrics::histogram!("substrate.wasm.execution_ms")
             .record(exec_start.elapsed().as_secs_f64() * 1000.0);
 
         debug!("called wasm function, processing results");
+
+        if let Err(e) = res {
+            if let Some(wasmtime::Trap::OutOfFuel) = e.downcast_ref::<wasmtime::Trap>() {
+                tracing::warn!("Wasm execution exceeded fuel limit for service: {}", service_id);
+                return Err(anyhow::anyhow!("QuotaExceeded: Wasm execution exceeded fuel limit"));
+            }
+            let err_str = e.root_cause().to_string();
+            if err_str.contains("all fuel consumed") || err_str.contains("out of fuel") {
+                tracing::warn!("Wasm execution exceeded fuel limit for service: {}", service_id);
+                return Err(anyhow::anyhow!("QuotaExceeded: Wasm execution exceeded fuel limit"));
+            }
+            if err_str.contains("exceeded its memory limits") || err_str.contains("MemoryFault") {
+                return Err(anyhow::anyhow!("MemoryFault: Wasm execution exceeded memory limit"));
+            }
+            return Err(e.into());
+        }
 
         wasm_results_to_json_string(&wasm_results)
     }
@@ -329,19 +422,40 @@ impl AppSandboxEngine {
         method_name: &str,
     ) -> Result<(Store<HostState>, Func, usize, ComponentItem)> {
         // Look up the pre-linked component instance
-        let instance_pre = self
-            .components
-            .get(service_id)
-            .ok_or_else(|| anyhow::anyhow!("Component not found for service {service_id}"))?;
+        let (instance_pre, quota) = {
+            let entry = self
+                .components
+                .get(service_id)
+                .ok_or_else(|| anyhow::anyhow!("Component not found for service {service_id}"))?;
+            entry.value().clone()
+        };
         debug!("looked up pre-linked component");
 
+        // Resolve quotas
+        let max_instructions =
+            quota.as_ref().and_then(|q| q.max_instructions).or(self.default_max_instructions);
+
+        let max_memory_bytes = quota
+            .as_ref()
+            .and_then(|q| q.max_memory_bytes)
+            .or(self.default_max_memory_bytes)
+            .map(|m| m as usize);
+
         // Create host state
-        let host_state = HostState::new(service_id.to_string());
+        let host_state = HostState::new(service_id.to_string(), max_memory_bytes);
 
         debug!("created wasi ctx and host state");
 
         // Create a new store
         let mut store = Store::new(&self.engine, host_state);
+
+        store.limiter(|state| state);
+        store.epoch_deadline_trap();
+        store.set_epoch_deadline(50); // 50 * 100ms = 5 seconds wall-clock timeout
+
+        if let Some(instructions) = max_instructions {
+            store.set_fuel(instructions)?;
+        }
 
         let inst_start = Instant::now();
         let instance = instance_pre.instantiate_async(&mut store).await?;
@@ -392,6 +506,10 @@ impl AppSandboxEngine {
                 .await
                 .with_context(|| format!("Failed to remove WASM file {file_path:?}"))?;
         }
+        let quota_path = self.blobs_dir.join(format!("{service_id}.quota.json"));
+        if quota_path.exists() {
+            let _ = tokio_fs::remove_file(&quota_path).await;
+        }
         Ok(())
     }
 
@@ -402,7 +520,17 @@ impl AppSandboxEngine {
             let bytes = tokio_fs::read(&file_path)
                 .await
                 .context(format!("Failed to read WASM file {file_path:?}"))?;
-            self.compile_and_cache_wasm(service_id, &bytes)?;
+            let quota_path = self.blobs_dir.join(format!("{service_id}.quota.json"));
+            let quota = if quota_path.exists() {
+                if let Ok(quota_json) = tokio_fs::read_to_string(&quota_path).await {
+                    serde_json::from_str::<WasmResourceQuota>(&quota_json).ok()
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            self.compile_and_cache_wasm(service_id, &bytes, quota)?;
         } else {
             tracing::warn!("WASM file not found on disk for service: {:?}", file_path);
         }
@@ -410,7 +538,12 @@ impl AppSandboxEngine {
     }
 
     /// Helper to compile a WASM binary and store it in the cache
-    fn compile_and_cache_wasm(&self, service_id: &str, bytes: &[u8]) -> Result<()> {
+    fn compile_and_cache_wasm(
+        &self,
+        service_id: &str,
+        bytes: &[u8],
+        quota: Option<WasmResourceQuota>,
+    ) -> Result<()> {
         let component = Component::new(&self.engine, bytes)
             .map_err(|e| anyhow::anyhow!("Failed to compile WASM component: {e}"))?;
 
@@ -419,7 +552,7 @@ impl AppSandboxEngine {
             .instantiate_pre(&component)
             .map_err(|e| anyhow::anyhow!("Failed to pre-link WASM component: {e}"))?;
 
-        self.components.insert(service_id.to_string(), instance_pre);
+        self.components.insert(service_id.to_string(), (instance_pre, quota));
         tracing::info!("WASM component compiled and cached for {}", service_id);
         metrics::gauge!("substrate.wasm.component_cache_size").set(self.components.len() as f64);
         Ok(())
@@ -446,7 +579,7 @@ mod tests {
         let engine = AppSandboxEngine::build_wasm_engine(None, None).unwrap();
         let linker = AppSandboxEngine::build_wasm_linker(&engine).unwrap();
 
-        let host_state = HostState::new("test_component".to_string());
+        let host_state = HostState::new("test_component".to_string(), None);
         let mut store = Store::new(&engine, host_state);
 
         let component_path = test_constants::greeter_wasm_path();
@@ -501,5 +634,80 @@ mod tests {
                 println!("Error instantiating component: {err}");
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_wasm_quotas() {
+        let wat = r#"
+(component
+  (core module $m
+    (func (export "loop_forever")
+      (loop $l
+        br $l
+      )
+    )
+    (func (export "allocate_too_much") (param $pages i32) (result i32)
+      (memory.grow (local.get $pages))
+    )
+    (memory (export "memory") 1)
+  )
+  (core instance $i (instantiate $m))
+  (func $loop_forever (canon lift (core func $i "loop_forever")))
+  (func $allocate_too_much (param "pages" u32) (result s32) (canon lift (core func $i "allocate_too_much")))
+  (instance $interface
+    (export "loop-forever" (func $loop_forever))
+    (export "allocate-too-much" (func $allocate_too_much))
+  )
+  (export "test-interface" (instance $interface))
+)
+"#;
+        let engine =
+            AppSandboxEngine::build_wasm_engine(Some(10), Some(128 * 1024 * 1024)).unwrap();
+        let linker = AppSandboxEngine::build_wasm_linker(&engine).unwrap();
+
+        let app_engine = AppSandboxEngine {
+            blobs_dir: std::env::temp_dir(),
+            engine,
+            linker,
+            components: DashMap::new(),
+            default_max_instructions: Some(10_000),
+            default_max_memory_bytes: Some(1024 * 1024), // 1MB
+        };
+
+        // Cache the test component
+        app_engine.compile_and_cache_wasm("test_service", wat.as_bytes(), None).unwrap();
+
+        // 1. Test infinite loop (fuel limit)
+        let request_loop = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "loop-forever".to_string(),
+            params: serde_json::Value::Array(vec![]),
+            id: None,
+        };
+        let res_loop =
+            app_engine.execute_wasm("test_service", "test-interface", &request_loop).await;
+        assert!(res_loop.is_err());
+        let err_msg = res_loop.unwrap_err().to_string();
+        assert!(err_msg.contains("QuotaExceeded"), "expected QuotaExceeded, got: {}", err_msg);
+
+        // 2. Test memory allocation limit
+        // 1 page is 64KB. We try to allocate 100 pages (6.4MB), which exceeds the 1MB
+        // limit.
+        let request_mem = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "allocate-too-much".to_string(),
+            params: serde_json::Value::Array(vec![serde_json::Value::Number(
+                serde_json::Number::from(100),
+            )]),
+            id: None,
+        };
+        let res_mem = app_engine.execute_wasm("test_service", "test-interface", &request_mem).await;
+        assert!(res_mem.is_err());
+        let err_msg = res_mem.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("MemoryFault") || err_msg.contains("failed to grow memory"),
+            "expected MemoryFault or failed to grow memory, got: {}",
+            err_msg
+        );
     }
 }

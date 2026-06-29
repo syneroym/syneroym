@@ -48,6 +48,7 @@ impl LocalFilesystemCatalog {
             env: BTreeMap::new(),
             args: vec![],
             custom_config: None,
+            quota: None,
         };
         services.insert(
             LogicalServiceName::new("legacy-main"),

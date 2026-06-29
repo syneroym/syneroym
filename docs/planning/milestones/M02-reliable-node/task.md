@@ -359,7 +359,7 @@ Understanding what exists vs. what needs to be built.
 
 ---
 
-### [ ] Slice 3: Runtime Quotas and Connection Caps
+### [x] Slice 3: Runtime Quotas and Connection Caps
 
 **Requirement IDs:** `[FND-SEC]` (runtime quota and connection limit
 sub-requirements)
@@ -369,41 +369,41 @@ sub-requirements)
 #### Tasks
 
 **Manifest Schema — Resource Quotas:**
-- [ ] Add `ResourceQuota` struct to `crates/app_orchestration/src/models.rs`:
+- [x] Add `ResourceQuota` struct to `crates/app_orchestration/src/models.rs`:
   ```rust
   pub struct ResourceQuota {
       pub max_instructions: Option<u64>, // Wasmtime fuel units
       pub max_memory_bytes: Option<u64>, // bytes
   }
   ```
-- [ ] Add `pub quota: Option<ResourceQuota>` to `ServiceManifest`.
-- [ ] Add substrate-global defaults to `SubstrateConfig` (e.g.,
+- [x] Add `pub quota: Option<ResourceQuota>` to `ServiceManifest`.
+- [x] Add substrate-global defaults to `SubstrateConfig` (e.g.,
   `default_max_instructions: u64 = 10_000_000_000`,
   `default_max_memory_bytes: u64 = 268_435_456`).
 
 **Wasmtime Fuel Metering:**
-- [ ] Enable `config.consume_fuel(true)` in `crates/app_sandbox/src/engine.rs`.
-- [ ] Set `store.set_fuel(quota.max_instructions)` before each invocation.
-- [ ] Catch `wasmtime::Trap::OutOfFuel` and return structured `QuotaExceeded`
+- [x] Enable `config.consume_fuel(true)` in `crates/app_sandbox/src/engine.rs`.
+- [x] Set `store.set_fuel(quota.max_instructions)` before each invocation.
+- [x] Catch `wasmtime::Trap::OutOfFuel` and return structured `QuotaExceeded`
   error; log at `warn!`; do not panic.
-- [ ] Unit test: WASM component that loops forever is deterministically trapped
+- [x] Unit test: WASM component that loops forever is deterministically trapped
   at fuel limit; Tokio runtime remains healthy.
 
 **WASM Linear Memory Limit:**
-- [ ] Wire `PoolingAllocationConfig::max_memory_size` from manifest quota.
-- [ ] Unit test: WASM component that allocates beyond `max_memory_bytes` fails
+- [x] Wire `PoolingAllocationConfig::max_memory_size` from manifest quota.
+- [x] Unit test: WASM component that allocates beyond `max_memory_bytes` fails
   with `MemoryFault`; no substrate crash.
 
 **Connection Cap at Iroh/QUIC Boundary:**
-- [ ] Add `max_connections: usize` (default 500) to `CoordinatorIrohConfig`.
-- [ ] Implement `AtomicUsize` connection counter in `CoordinatorIroh`.
-- [ ] In `RouteHandler::on_connection`: check counter before accepting; reject
+- [x] Add `max_connections: usize` (default no limit) to `CoordinatorIrohConfig`.
+- [x] Implement `AtomicUsize` connection counter in `CoordinatorIroh`.
+- [x] In `RouteHandler::on_connection`: check counter before accepting; reject
   with `ServiceUnavailable` if at cap. **Use a RAII drop-guard token**
   (e.g. `ConnectionSlot(Arc<AtomicUsize>)` that decrements in `Drop`) rather
   than a manual decrement call — this ensures the counter is always decremented
   even during unexpected task panics, client disconnects mid-stream, or
   early returns from error paths.
-- [ ] Load test: 600 concurrent connection attempts against a 500-cap node;
+- [x] Load test: 600 concurrent connection attempts against a 500-cap node;
   ≤ 500 accepted; 100 cleanly refused; counter returns exactly to the
   pre-test baseline after all connections close (no leaks).
 

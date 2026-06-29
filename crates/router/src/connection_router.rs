@@ -4,7 +4,10 @@
 //! WebRTC), extracts protocol preambles, and forwards traffic to local
 //! endpoints or sandbox instances.
 
-use std::{future, sync::Arc};
+use std::{
+    future,
+    sync::{Arc, Mutex},
+};
 
 use anyhow::Result;
 use futures::{SinkExt, StreamExt};
@@ -259,6 +262,19 @@ async fn connect_signaling(
                     let config = config.clone();
                     let route_handler = route_handler.clone();
 
+                    // Check connection limit
+                    let slot = match route_handler.acquire_connection_slot() {
+                        Some(s) => s,
+                        None => {
+                            tracing::warn!(
+                                "[WebRTC] Rejecting connection from {} due to connection cap",
+                                sender_id
+                            );
+                            continue;
+                        }
+                    };
+                    let slot_holder = Arc::new(Mutex::new(Some(slot)));
+
                     // Create new PeerConnection
                     let pc = Arc::new(api.new_peer_connection(config.clone()).await?);
 
@@ -272,12 +288,18 @@ async fn connect_signaling(
                     }));
 
                     let pc_clone = pc.clone();
+                    let slot_holder_clone = slot_holder.clone();
                     pc.on_peer_connection_state_change(Box::new(
                         move |s: RTCPeerConnectionState| {
                             info!("WebRTC Peer Connection State has changed: {}", s);
                             if s == RTCPeerConnectionState::Failed
                                 || s == RTCPeerConnectionState::Disconnected
+                                || s == RTCPeerConnectionState::Closed
                             {
+                                // Explicitly release the connection slot
+                                if let Ok(mut guard) = slot_holder_clone.lock() {
+                                    guard.take();
+                                }
                                 let pc = pc_clone.clone();
                                 Box::pin(async move {
                                     if let Err(e) = pc.close().await {

@@ -47,6 +47,23 @@ pub fn is_expected_disconnect<E: fmt::Display>(e: E) -> bool {
         || err_msg.contains("Connection reset by peer")
 }
 
+#[derive(Debug)]
+pub struct ConnectionSlot {
+    counter: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl ConnectionSlot {
+    pub fn new_pre_incremented(counter: Arc<std::sync::atomic::AtomicUsize>) -> Self {
+        Self { counter }
+    }
+}
+
+impl Drop for ConnectionSlot {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 pub struct RouteHandlerInner {
     pub registry: EndpointRegistry,
     pub native_dispatch: DashMap<String, Arc<dyn NativeService>>,
@@ -56,6 +73,8 @@ pub struct RouteHandlerInner {
     pub registry_client: RegistryClient,
     pub _parent_relay_url: Option<String>,
     pub retry_policy: RetryPolicy,
+    pub active_connections: Arc<std::sync::atomic::AtomicUsize>,
+    pub max_connections: Option<usize>,
 }
 
 impl Debug for RouteHandler {
@@ -96,6 +115,13 @@ impl RouteHandler {
             config.substrate.registry_url.clone(),
         );
 
+        let max_connections = config
+            .roles
+            .coordinator
+            .as_ref()
+            .and_then(|c| c.iroh.as_ref())
+            .and_then(|i| i.max_connections);
+
         let inner = Arc::new(RouteHandlerInner {
             registry: registry.clone(),
             native_dispatch: DashMap::new(),
@@ -105,6 +131,8 @@ impl RouteHandler {
             registry_client,
             _parent_relay_url: parent_coordinator_url,
             retry_policy: config.retry.clone(),
+            active_connections: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            max_connections,
         });
 
         let s = Self { inner };
@@ -128,6 +156,7 @@ impl RouteHandler {
         registry_client: RegistryClient,
         parent_relay_url: Option<String>,
         retry_policy: RetryPolicy,
+        max_connections: Option<usize>,
     ) -> Self {
         let inner = Arc::new(RouteHandlerInner {
             registry: EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
@@ -138,6 +167,8 @@ impl RouteHandler {
             registry_client,
             _parent_relay_url: parent_relay_url,
             retry_policy,
+            active_connections: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            max_connections,
         });
         Self { inner }
     }
@@ -145,12 +176,49 @@ impl RouteHandler {
     pub fn register_native_service(&self, service_id: String, service: Arc<dyn NativeService>) {
         self.inner.native_dispatch.insert(service_id, service);
     }
+
+    /// Dynamically acquire a connection slot. Returns Some(ConnectionSlot) if
+    /// the slot is available, or None if the max_connections limit is
+    /// reached.
+    pub fn acquire_connection_slot(&self) -> Option<ConnectionSlot> {
+        if let Some(max_conns) = self.inner.max_connections {
+            let active_after_add =
+                self.inner.active_connections.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+
+            if active_after_add > max_conns {
+                self.inner.active_connections.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                None
+            } else {
+                Some(ConnectionSlot::new_pre_incremented(self.inner.active_connections.clone()))
+            }
+        } else {
+            self.inner.active_connections.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Some(ConnectionSlot::new_pre_incremented(self.inner.active_connections.clone()))
+        }
+    }
 }
 
 impl IrohProtocolHandler for RouteHandler {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         let endpoint_id = connection.remote_id();
         debug!("[Router] Accepted Iroh connection from {endpoint_id}");
+
+        let _slot = if let Some(slot) = self.acquire_connection_slot() {
+            slot
+        } else {
+            debug!(
+                "[Router] Rejecting connection from {endpoint_id} due to connection cap ({}/{:?})",
+                self.inner.active_connections.load(std::sync::atomic::Ordering::SeqCst),
+                self.inner.max_connections
+            );
+            if let Ok((mut send, _recv)) = connection.accept_bi().await {
+                let _ =
+                    tokio::io::AsyncWriteExt::write_all(&mut send, b"ServiceUnavailable\n").await;
+                let _ = tokio::io::AsyncWriteExt::flush(&mut send).await;
+            }
+            connection.close(503u32.into(), b"ServiceUnavailable");
+            return Ok(());
+        };
         metrics::gauge!("substrate.connections.active").increment(1.0);
 
         loop {

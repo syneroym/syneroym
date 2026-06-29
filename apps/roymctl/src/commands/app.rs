@@ -55,6 +55,7 @@ pub async fn handle(
                             env: BTreeMap::new(),
                             args: vec![],
                             custom_config: None,
+                            quota: None,
                         },
                         depends_on: vec![],
                     },

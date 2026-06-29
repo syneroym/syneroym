@@ -269,7 +269,7 @@ impl SyneroymClient {
             .transpose()
             .map_err(|e| anyhow::anyhow!("Failed to serialize registry certificate: {e}"))?;
         let manifest = DeployManifest {
-            config: ServiceConfig { env: vec![], args: vec![], custom_config: None },
+            config: ServiceConfig { env: vec![], args: vec![], custom_config: None, quota: None },
             service_type: ServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(wasm_bytes),
                 hash: None,
@@ -297,7 +297,7 @@ impl SyneroymClient {
             .transpose()
             .map_err(|e| anyhow::anyhow!("Failed to serialize registry certificate: {e}"))?;
         let manifest = DeployManifest {
-            config: ServiceConfig { env: vec![], args: vec![], custom_config: None },
+            config: ServiceConfig { env: vec![], args: vec![], custom_config: None, quota: None },
             service_type: ServiceType::Tcp(TcpManifest { endpoints }),
             registry_certificate,
         };
@@ -323,7 +323,7 @@ impl SyneroymClient {
             .transpose()
             .map_err(|e| anyhow::anyhow!("Failed to serialize registry certificate: {e}"))?;
         let manifest = DeployManifest {
-            config: ServiceConfig { env: vec![], args: vec![], custom_config: None },
+            config: ServiceConfig { env: vec![], args: vec![], custom_config: None, quota: None },
             service_type: ServiceType::Container(ContainerManifest {
                 source: ArtifactSource::Binary(vec![]),
                 hash: None,

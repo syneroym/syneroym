@@ -9,6 +9,11 @@ interface orchestrator {
         binary(list<u8>),
     }
 
+    record resource-quota {
+        max-instructions: option<u64>,
+        max-memory-bytes: option<u64>,
+    }
+
     /// General configuration provided to the deployed service.
     record service-config {
         /// Environment variables represented as key-value pairs.
@@ -17,6 +22,7 @@ interface orchestrator {
         args: list<string>,
         /// Arbitrary nested configuration (e.g., serialized JSON).
         custom-config: option<string>,
+        quota: option<resource-quota>,
     }
 
     /// Manifest details for a Wasm component deployment.

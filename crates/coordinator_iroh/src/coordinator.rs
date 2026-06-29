@@ -207,6 +207,7 @@ impl CoordinatorIroh {
             registry_client,
             parent_relay_url,
             config.retry.clone(),
+            iroh_cfg.max_connections,
         );
 
         IrohRouter::builder(iroh_endpoint.clone()).accept(SYNEROYM_ALPN, route_handler).spawn()

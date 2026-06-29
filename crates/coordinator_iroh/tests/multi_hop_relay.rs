@@ -151,6 +151,7 @@ async fn test_inbound_relay() -> Result<()> {
             community_registry_url: Some(r_url.clone()),
             idle_timeout_secs: None,
             share_in_registry: true,
+            max_connections: None,
         }),
         ..Default::default()
     });
@@ -177,6 +178,7 @@ async fn test_inbound_relay() -> Result<()> {
             community_registry_url: Some(r_url.clone()),
             idle_timeout_secs: None,
             share_in_registry: true,
+            max_connections: None,
         }),
         ..Default::default()
     });
@@ -283,6 +285,7 @@ async fn test_outbound_relay() -> Result<()> {
             community_registry_url: Some(r_url.clone()),
             idle_timeout_secs: None,
             share_in_registry: true,
+            max_connections: None,
         }),
         ..Default::default()
     });
@@ -309,6 +312,7 @@ async fn test_outbound_relay() -> Result<()> {
             community_registry_url: Some(r_url.clone()),
             idle_timeout_secs: None,
             share_in_registry: true,
+            max_connections: None,
         }),
         ..Default::default()
     });

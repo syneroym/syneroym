@@ -321,6 +321,8 @@ pub struct AppSandboxRole {
     pub cpu_limit: u32,
     pub memory_limit: String,
     pub max_concurrent_instances: u32,
+    pub default_max_instructions: Option<u64>,
+    pub default_max_memory_bytes: Option<u64>,
 }
 
 impl AppSandboxRole {
@@ -337,6 +339,8 @@ impl Default for AppSandboxRole {
             cpu_limit: default_cpu_limit(),
             memory_limit: default_memory_limit(),
             max_concurrent_instances: default_max_concurrent_instances(),
+            default_max_instructions: Some(10_000_000_000),
+            default_max_memory_bytes: Some(256 * 1024 * 1024),
         }
     }
 }
@@ -412,6 +416,7 @@ pub struct CoordinatorIrohConfig {
     pub community_registry_url: Option<String>,
     pub share_in_registry: bool,
     pub idle_timeout_secs: Option<u64>,
+    pub max_connections: Option<usize>,
 }
 
 impl Default for CoordinatorIrohConfig {
@@ -424,6 +429,7 @@ impl Default for CoordinatorIrohConfig {
             community_registry_url: None,
             share_in_registry: false,
             idle_timeout_secs: None,
+            max_connections: None,
         }
     }
 }

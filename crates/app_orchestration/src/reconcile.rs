@@ -149,6 +149,7 @@ mod tests {
                     env: Default::default(),
                     args: vec![],
                     custom_config: None,
+                    quota: None,
                 },
                 resolved_dependencies: vec![],
                 topology_mode: TopologyMode::Singleton,

@@ -130,6 +130,7 @@ mod tests {
                 community_registry_url: None,
                 idle_timeout_secs: None,
                 share_in_registry: false,
+                max_connections: None,
             }),
             ..Default::default()
         };
@@ -153,6 +154,7 @@ mod tests {
                 community_registry_url: None,
                 idle_timeout_secs: None,
                 share_in_registry: false,
+                max_connections: None,
             }),
             ..Default::default()
         };

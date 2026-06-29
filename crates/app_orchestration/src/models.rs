@@ -186,6 +186,14 @@ pub enum TopologyMode {
     Sharded,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResourceQuota {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_instructions: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_memory_bytes: Option<u64>,
+}
+
 /// Shared execution configuration for a service.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ServiceConfig {
@@ -201,6 +209,8 @@ pub struct ServiceConfig {
     pub args: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_config: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota: Option<ResourceQuota>,
 }
 
 /// Represents the spec of a service in the application manifest.
@@ -478,6 +488,7 @@ mod tests {
                     env: env_map,
                     args: vec![],
                     custom_config: None,
+                    quota: None,
                 },
                 resolved_dependencies: vec![],
                 topology_mode: TopologyMode::Singleton,
@@ -588,6 +599,7 @@ mod tests {
                     env: env_map,
                     args: vec![],
                     custom_config: None,
+                    quota: None,
                 },
                 resolved_dependencies: vec![],
                 topology_mode: TopologyMode::Singleton,

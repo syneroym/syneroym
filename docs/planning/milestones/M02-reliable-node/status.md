@@ -59,7 +59,39 @@ DelegationCertificate::verify
 
 ---
 
+## Slice 3: Runtime Quotas and Connection Caps (Completed)
+
+We have successfully completed Slice 3. All workspace tests and end-to-end tests are fully verified and passing.
+
+> [!NOTE]
+> **Architecture Refinement:** The WASM engine memory quotas were refactored to use the idiomatic `wasmtime::StoreLimits` and `StoreLimitsBuilder` instead of a custom `wasmtime::ResourceLimiter`. Additionally, epoch interruption was introduced as a defense-in-depth measure against wall-clock hangs.
+
+### Factual Verification Evidence
+
+#### WASM Engine Quotas & Limits Test (`cargo test -p syneroym-app-sandbox`)
+```text
+running 2 tests
+test engine::tests::test_list_interfaces ... ok
+test engine::tests::test_wasm_quotas ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+```
+
+#### Connection Cap Integration Test (`cargo test -p syneroym-coordinator-iroh --test connection_limit`)
+```text
+running 1 test
+test test_connection_limit ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.66s
+```
+
+#### Playwright E2E Tests (`mise run test:e2e`)
+```text
+  4 passed (19.3s)
+```
+
+---
+
 ## Slices remaining in Milestone 2
-- [ ] Slice 3: Runtime Quotas and Connection Caps
 - [ ] Slice 4: Native TLS, Release Pipeline, and Docker
 - [ ] Slice 5: Smoke Tests and Operational Observability

@@ -484,7 +484,7 @@ mod tests {
                 service_id: "did:key:test".to_string(),
                 logical_ref: "test/main".to_string(),
                 manifest: DeployManifest {
-                    config: ServiceConfig { env: vec![], args: vec![], custom_config: None },
+                    config: ServiceConfig { env: vec![], args: vec![], custom_config: None, quota: None },
                     service_type: WitServiceType::Wasm(WasmManifest {
                         source: ArtifactSource::Url("../../../../../etc/passwd".to_string()),
                         hash: None,
@@ -527,7 +527,7 @@ mod tests {
                 service_id: "did:key:test".to_string(),
                 logical_ref: "test/main".to_string(),
                 manifest: DeployManifest {
-                    config: ServiceConfig { env: vec![], args: vec![], custom_config: None },
+                    config: ServiceConfig { env: vec![], args: vec![], custom_config: None, quota: None },
                     service_type: WitServiceType::Wasm(WasmManifest {
                         source: ArtifactSource::Url("/etc/passwd".to_string()),
                         hash: None,

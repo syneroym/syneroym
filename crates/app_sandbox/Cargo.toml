@@ -20,11 +20,13 @@ wasmtime.workspace = true
 wasmtime-wasi.workspace = true
 dashmap.workspace = true
 async-trait.workspace = true
+serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 metrics.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
+wasmtime = { workspace = true, features = ["wat"] }
 
 [[bench]]
 name = "wasm_engine"

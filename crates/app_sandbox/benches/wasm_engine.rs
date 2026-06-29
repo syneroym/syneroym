@@ -34,7 +34,7 @@ fn bench_wasm_engine(c: &mut Criterion) {
     // Benchmark 1: Wasm Store & HostState Creation
     c.bench_function("wasm_store_creation", |b| {
         b.iter(|| {
-            let host_state = HostState::new(black_box("test_component".to_string()));
+            let host_state = HostState::new(black_box("test_component".to_string()), None);
             let _store = Store::new(&engine, host_state);
         });
     });
@@ -42,14 +42,14 @@ fn bench_wasm_engine(c: &mut Criterion) {
     // Benchmark 2: Wasm Instantiation (cached component)
     c.bench_function("wasm_cached_instantiation", |b| {
         b.to_async(&runtime).iter(|| async {
-            let host_state = HostState::new("test_component".to_string());
+            let host_state = HostState::new("test_component".to_string(), None);
             let mut store: Store<HostState> = Store::new(&engine, host_state);
             let _instance = linker.instantiate_async(&mut store, &component).await.unwrap();
         });
     });
 
     // Extract type info for JSON parameter conversion benchmark
-    let host_state = HostState::new("test_component".to_string());
+    let host_state = HostState::new("test_component".to_string(), None);
     let mut store: Store<HostState> = Store::new(&engine, host_state);
     let instance = runtime.block_on(linker.instantiate_async(&mut store, &component)).unwrap();
 

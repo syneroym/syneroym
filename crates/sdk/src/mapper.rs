@@ -16,6 +16,12 @@ pub fn map_deployment_plan_to_wit(
             env: svc.config.env.into_iter().collect(),
             args: svc.config.args,
             custom_config: svc.config.custom_config.clone(),
+            quota: svc.config.quota.map(|q| {
+                syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::ResourceQuota {
+                    max_instructions: q.max_instructions,
+                    max_memory_bytes: q.max_memory_bytes,
+                }
+            }),
         };
 
         let service_type = match svc.config.service_type {
