@@ -23,6 +23,7 @@ rustls.workspace = true
 axum = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+axum-server = { workspace = true }
 reqwest = { workspace = true }
 rand = { workspace = true }
 async-trait = { workspace = true }
@@ -36,3 +37,4 @@ tracing-subscriber.workspace = true
 tempfile.workspace = true
 syneroym-community-registry = { path = "../community_registry" }
 syneroym-sdk = { path = "../sdk" }
+libc = { workspace = true }

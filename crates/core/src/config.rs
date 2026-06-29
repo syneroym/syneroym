@@ -61,6 +61,7 @@ pub struct SubstrateConfig {
     pub roles: RolesConfig,
     pub substrate: SubstrateGlobalConfig,
     pub retry: RetryPolicy,
+    pub tls: Option<SubstrateTlsConfig>,
 }
 
 /// Useful helper functions
@@ -102,6 +103,15 @@ impl SubstrateConfig {
                 tls.key_path = self.app_config_dir.join(&tls.key_path);
             }
         }
+
+        if let Some(tls) = &mut self.tls {
+            if tls.cert_path.is_relative() {
+                tls.cert_path = self.app_config_dir.join(&tls.cert_path);
+            }
+            if tls.key_path.is_relative() {
+                tls.key_path = self.app_config_dir.join(&tls.key_path);
+            }
+        }
     }
 }
 
@@ -123,8 +133,16 @@ impl Default for SubstrateConfig {
             roles: Default::default(),
             substrate: Default::default(),
             retry: Default::default(),
+            tls: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubstrateTlsConfig {
+    pub cert_path: PathBuf,
+    pub key_path: PathBuf,
+    pub reload_on_sigusr1: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

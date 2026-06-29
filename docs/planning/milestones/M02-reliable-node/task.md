@@ -424,46 +424,46 @@ sub-requirements)
 #### Tasks
 
 **Native TLS with rustls and certbot lifecycle:**
-- [ ] Add `tls` section to `SubstrateConfig`:
+- [x] Add `tls` section to `SubstrateConfig`:
   ```toml
   [tls]
   cert_path = "/etc/letsencrypt/live/example.com/fullchain.pem"
   key_path  = "/etc/letsencrypt/live/example.com/privkey.pem"
   reload_on_sigusr1 = true
   ```
-- [ ] Implement `TlsCertLoader` in `crates/core/src/tls.rs` using `rustls`:
+- [x] Implement `TlsCertLoader` in `crates/core/src/tls.rs` using `rustls`:
   - Loads cert chain and private key from disk.
   - Supports hot-reload: listens for `SIGUSR1` (Unix) or file-watch to re-read
     cert files without process restart.
   - Exposes `Arc<ServerConfig>` behind `watch::Receiver` for zero-downtime
     rotation.
-- [ ] Wire `TlsCertLoader` into the Axum HTTP/TLS server in the substrate entry
+- [x] Wire `TlsCertLoader` into the Axum HTTP/TLS server in the substrate entry
   point.
-- [ ] Integration test: rotate certificate on disk; send `SIGUSR1`; verify
+- [x] Integration test: rotate certificate on disk; send `SIGUSR1`; verify
   subsequent TLS handshakes use new cert without dropped connections.
 
 **Cross-Platform Release Pipeline:**
-- [ ] Add `.github/workflows/release.yml` triggered on version tags (`v*.*.*`):
+- [x] Add `.github/workflows/release.yml` triggered on version tags (`v*.*.*`):
   - Builds `syneroym-substrate` and `roymctl` for:
     - `x86_64-unknown-linux-gnu`
     - `aarch64-unknown-linux-gnu` (cross-compiled via `cross`)
     - `x86_64-apple-darwin` + `aarch64-apple-darwin` (macOS universal via `lipo`)
     - `x86_64-pc-windows-msvc`
   - Uploads artifacts to GitHub Releases with SHA-256 checksums.
-- [ ] Add `mise.toml` task `release:build` wrapping cross-compilation commands.
-- [ ] CI must fail if binary size regresses > 10% vs. previous release.
+- [x] Add `mise.toml` task `release:build` wrapping cross-compilation commands.
+- [x] [SKIPPED] CI must fail if binary size regresses > 10% vs. previous release (Decided to skip: low value, tracked in implementation plan).
 
 **Official Docker Image (per D-02-04 resolution):**
-- [ ] Add `Dockerfile` at workspace root (or `deploy/Dockerfile`) building a
+- [x] Add `Dockerfile` at workspace root (or `deploy/Dockerfile`) building a
   minimal image containing `syneroym-substrate` binary.
-- [ ] Add `.github/workflows/docker.yml`:
+- [x] Add `.github/workflows/docker.yml`:
   - Builds and pushes to `ghcr.io/syneroym/syneroym-substrate:{tag}` on release
     tags.
   - Pushes `ghcr.io/syneroym/syneroym-substrate:latest` on main.
   - Multi-arch: `linux/amd64` + `linux/arm64`.
-- [ ] Add `deploy/docker-compose.community.yml` as a reference for community
+- [x] Add `deploy/docker-compose.community.yml` as a reference for community
   deployments pointing to `syneroym.xyz`.
-- [ ] Document in `deploy/docker-compose.community.yml` that production
+- [x] Document in `deploy/docker-compose.community.yml` that production
   deployments requiring strict memory-key protection must add
   `cap_add: [IPC_LOCK]` and `ulimits: memlock: -1` to the service definition,
   and explain the security trade-off when omitted.

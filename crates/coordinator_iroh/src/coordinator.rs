@@ -19,6 +19,7 @@ use syneroym_core::{
     config::{CoordinatorIrohConfig, CoordinatorRole, RetryPolicy, SubstrateConfig},
     dht_registry::{EndpointInfo, EndpointMechanism, EndpointType, RegistryClient},
     retry::retry_with_backoff,
+    tls::TlsCertLoader,
 };
 use syneroym_identity::{Identity, substrate::derive_did_key};
 use syneroym_router::{RouteHandler, SYNEROYM_ALPN, net_iroh};
@@ -33,7 +34,7 @@ use crate::{
 pub struct CoordinatorIroh {
     relay_server: Option<Server>,
     iroh_router: Option<IrohRouter>,
-    http_info_handle: Option<JoinHandle<()>>,
+    http_info_handle: Option<JoinHandle<Result<()>>>,
     registry_registration_handle: Option<JoinHandle<()>>,
     info_addr: Option<SocketAddr>,
 }
@@ -53,7 +54,16 @@ impl Debug for CoordinatorIroh {
 impl CoordinatorIroh {
     pub async fn init(config: &SubstrateConfig) -> Result<Self> {
         info!("Initializing Coordinator IROH");
-        let config_roles = config.roles.coordinator.clone();
+        let mut config_roles = config.roles.coordinator.clone();
+        if let Some(role) = &mut config_roles
+            && role.tls.is_none()
+            && let Some(tls) = &config.tls
+        {
+            role.tls = Some(syneroym_core::config::TlsConfig {
+                cert_path: tls.cert_path.clone(),
+                key_path: tls.key_path.clone(),
+            });
+        }
 
         let mut relay_server = None;
         let mut iroh_router = None;
@@ -219,7 +229,7 @@ impl CoordinatorIroh {
         iroh_cfg: &CoordinatorIrohConfig,
         iroh_endpoint: &Endpoint,
         relay_server: &Option<Server>,
-    ) -> Result<(JoinHandle<()>, SocketAddr)> {
+    ) -> Result<(JoinHandle<Result<()>>, SocketAddr)> {
         let mut http_info_addr: SocketAddr =
             iroh_cfg.http_bind_address.parse().context("invalid http_bind_address")?;
         // Add 10 to the port to avoid conflict, or bind to port 0 for dynamic port in
@@ -261,10 +271,29 @@ impl CoordinatorIroh {
 
         let app = Router::new().route("/v1/info", get(get_info)).with_state(info_state);
 
+        let tls_cfg = config.tls.clone();
         let handle = tokio::spawn(async move {
-            if let Err(e) = axum::serve(listener, app).await {
-                warn!("HTTP info server error: {}", e);
+            if let Some(tls_cfg) = tls_cfg {
+                info!("Starting HTTPS server with TLS on {}", local_addr);
+                let loader =
+                    TlsCertLoader::new(tls_cfg.cert_path.clone(), tls_cfg.key_path.clone())
+                        .await
+                        .context("Failed to initialize TLS config")?;
+
+                if tls_cfg.reload_on_sigusr1 {
+                    loader.spawn_watcher(tls_cfg.cert_path.clone(), tls_cfg.key_path.clone());
+                }
+
+                let std_listener =
+                    listener.into_std().context("Failed to convert TcpListener to std")?;
+                let server = axum_server::from_tcp_rustls(std_listener, loader.config())
+                    .context("Failed to create TLS server from TcpListener")?;
+
+                server.serve(app.into_make_service()).await.context("HTTPS info server error")?;
+            } else {
+                axum::serve(listener, app).await.context("HTTP info server error")?;
             }
+            Ok(())
         });
 
         Ok((handle, local_addr))
@@ -343,11 +372,25 @@ impl CoordinatorIroh {
             }
         });
 
+        let mut http_fut = std::pin::pin!(async {
+            if let Some(handle) = self.http_info_handle.as_mut() {
+                match handle.await {
+                    Ok(res) => res.context("HTTPS/HTTP info server failed"),
+                    Err(e) => Err(anyhow::anyhow!("HTTPS/HTTP info server task panicked: {e}")),
+                }
+            } else {
+                future::pending::<Result<()>>().await
+            }
+        });
+
         tokio::select! {
             res = &mut relay_fut => {
                 res?;
             }
             res = &mut router_fut => {
+                res?;
+            }
+            res = &mut http_fut => {
                 res?;
             }
         }

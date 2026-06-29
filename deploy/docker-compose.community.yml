@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  syneroym-substrate:
+    image: ghcr.io/syneroym/syneroym-substrate:latest
+    container_name: syneroym-substrate
+    restart: unless-stopped
+    ports:
+      - "7964:7964" # Iroh HTTP info port
+      - "7965:7965" # Iroh QUIC port
+      - "7961:7961" # Community Registry http port
+      - "7960:7960" # Client Gateway http port
+    volumes:
+      - ./config:/etc/syneroym
+      - ./data:/var/lib/syneroym
+      # If using native TLS, mount certbot certificates path
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    environment:
+      - RUST_LOG=info
+    
+    # =========================================================================
+    # SECURITY & MEMORY PROTECTION NOTICE:
+    # 
+    # For production deployments requiring strict cryptographic key protection
+    # in memory (preventing key dumping or swapping to disk via mlock/madvise),
+    # the container requires the IPC_LOCK capability and unlimited memlock limits.
+    # 
+    # Uncomment the following lines to enable memory-key protection:
+    # =========================================================================
+    # cap_add:
+    #   - IPC_LOCK
+    # ulimits:
+    #   memlock:
+    #     soft: -1
+    #     hard: -1
+    # =========================================================================
+
+    command: ["run", "--config", "/etc/syneroym/config.toml"]

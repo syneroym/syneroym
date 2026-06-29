@@ -79,11 +79,14 @@ async fn test_connection_limit() -> Result<()> {
                         Ok(_) => true,
                         Err(e) => {
                             let err_msg = e.to_string();
-                            // NOTE: The router will log an ERROR here: "Endpoint not found in registry or DHT..."
-                            // This is EXPECTED. The test uses "orchestrator" which is not fully registered
-                            // in the mock registry, triggering a fallback to the DHT which fails and drops the stream.
-                            // If the stream drops with "Empty response from stream", it proves the connection was
-                            // successfully accepted and multiplexed by the server before the graceful drop.
+                            // NOTE: The router will log an ERROR here: "Endpoint not found in
+                            // registry or DHT..." This is EXPECTED. The
+                            // test uses "orchestrator" which is not fully registered
+                            // in the mock registry, triggering a fallback to the DHT which fails
+                            // and drops the stream. If the stream drops
+                            // with "Empty response from stream", it proves the connection was
+                            // successfully accepted and multiplexed by the server before the
+                            // graceful drop.
                             err_msg.contains("Empty response from stream")
                         }
                     };
