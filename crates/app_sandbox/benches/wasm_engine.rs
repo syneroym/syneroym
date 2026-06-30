@@ -44,6 +44,9 @@ fn bench_wasm_engine(c: &mut Criterion) {
         b.to_async(&runtime).iter(|| async {
             let host_state = HostState::new("test_component".to_string(), None);
             let mut store: Store<HostState> = Store::new(&engine, host_state);
+            store.set_fuel(1_000_000).unwrap();
+            store.epoch_deadline_trap();
+            store.set_epoch_deadline(1_000);
             let _instance = linker.instantiate_async(&mut store, &component).await.unwrap();
         });
     });
@@ -51,6 +54,9 @@ fn bench_wasm_engine(c: &mut Criterion) {
     // Extract type info for JSON parameter conversion benchmark
     let host_state = HostState::new("test_component".to_string(), None);
     let mut store: Store<HostState> = Store::new(&engine, host_state);
+    store.set_fuel(1_000_000).unwrap();
+    store.epoch_deadline_trap();
+    store.set_epoch_deadline(1_000);
     let instance = runtime.block_on(linker.instantiate_async(&mut store, &component)).unwrap();
 
     let interface_name = GREETER_INTERFACE_NAME;
