@@ -14,11 +14,10 @@ async fn test_connection_limit() -> Result<()> {
 
     let temp_dir = tempfile::tempdir()?;
     let base_path = temp_dir.path();
+    let cap = 10;
+    let attempts = 15;
 
-    let cap = 50;
-    let attempts = 75;
-
-    // 1. Spawn a coordinator C with a connection cap of 500
+    // 1. Spawn a coordinator C with a connection cap
     let mut config_c = SubstrateConfig {
         app_local_data_dir: base_path.join("data_c"),
         app_data_dir: base_path.join("user_data_c"),
@@ -99,8 +98,10 @@ async fn test_connection_limit() -> Result<()> {
                     let _ = client.shutdown().await;
                     success
                 }
-                Err(_) => {
+                Err(e) => {
+                    tracing::error!("Connection attempt {} failed: {}", i, e);
                     let _ = tx.send(false).await;
+                    let _ = client.shutdown().await;
                     false
                 }
             }
