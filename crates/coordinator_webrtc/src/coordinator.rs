@@ -12,8 +12,8 @@ use anyhow::Result;
 use iroh::Endpoint;
 use syneroym_core::{
     config::SubstrateConfig, dht_registry::RegistryClient, local_registry::EndpointRegistry,
-    storage,
 };
+use syneroym_data_layer::registry_store;
 use syneroym_router::net_iroh;
 use tokio::net::TcpListener;
 use tracing::info;
@@ -65,7 +65,7 @@ impl CoordinatorWebRtc {
         let iroh_relay_url = config.parent_coordinator.iroh.as_ref().map(|c| c.url.clone());
         let endpoint = net_iroh::build_iroh_endpoint(iroh_relay_url, None, None).await?;
 
-        let data_store = storage::init_store(config).await?;
+        let data_store = registry_store::init_store(config).await?;
         let registry = EndpointRegistry::new(data_store).await?;
 
         let registry_client = RegistryClient::new(true, config.substrate.registry_url.clone());

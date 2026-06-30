@@ -26,6 +26,8 @@ repository = "https://github.com/syneroym/syneroym"
 [workspace.dependencies]
 syneroym-identity = { path = "crates/identity", version = "0.1.0" }
 syneroym-app-orchestration = { path = "crates/app_orchestration", version = "0.1.0" }
+syneroym-data-layer = { path = "crates/data-layer", version = "0.1.0" }
+
 
 # Networking & Async
 tokio = { version = "1.50", features = ["full"] }

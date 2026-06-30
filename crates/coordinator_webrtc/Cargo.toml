@@ -8,6 +8,7 @@ workspace = true
 
 [dependencies]
 syneroym-core = { path = "../core" }
+syneroym-data-layer.workspace = true
 syneroym-router = { path = "../router" }
 syneroym-identity = { path = "../identity" }
 anyhow.workspace = true

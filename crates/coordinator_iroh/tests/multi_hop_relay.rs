@@ -21,8 +21,8 @@ use syneroym_core::{
         EndpointInfo, EndpointMechanism, EndpointType, RegistryClient, SignedEndpointInfo,
     },
     local_registry::{EndpointRegistry, SubstrateEndpoint},
-    storage,
 };
+use syneroym_data_layer::registry_store;
 use syneroym_identity::{Identity, substrate::derive_did_key};
 use syneroym_router::{RouteHandler, SYNEROYM_ALPN};
 use syneroym_sdk::SyneroymClient;
@@ -200,7 +200,7 @@ async fn test_inbound_relay() -> Result<()> {
         ..Default::default()
     };
     config_z.resolve_paths();
-    let data_store_z = storage::init_store(&config_z).await?;
+    let data_store_z = registry_store::init_store(&config_z).await?;
     let endpoint_registry_z = EndpointRegistry::new(data_store_z).await?;
 
     let endpoint_z = SubstrateEndpoint::NativeHostChannel { service_id: did_z.clone() };
@@ -334,7 +334,7 @@ async fn test_outbound_relay() -> Result<()> {
         ..Default::default()
     };
     config_x.resolve_paths();
-    let data_store_x = storage::init_store(&config_x).await?;
+    let data_store_x = registry_store::init_store(&config_x).await?;
     let endpoint_registry_x = EndpointRegistry::new(data_store_x).await?;
 
     let endpoint_x = SubstrateEndpoint::NativeHostChannel { service_id: did_x.clone() };

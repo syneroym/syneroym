@@ -19,6 +19,7 @@ serde_json.workspace = true
 dirs.workspace = true
 toml.workspace = true
 syneroym-core = { path = "../core" }
+syneroym-data-layer = { workspace = true }
 syneroym-router = { path = "../router" }
 syneroym-observability = { path = "../observability" }
 syneroym-community-registry = { path = "../community_registry", optional = true }

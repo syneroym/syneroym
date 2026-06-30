@@ -1,0 +1,21 @@
+[package]
+name = "syneroym-data-layer"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+syneroym-core = { path = "../core", version = "0.1.0" }
+anyhow.workspace = true
+async-trait.workspace = true
+rusqlite.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

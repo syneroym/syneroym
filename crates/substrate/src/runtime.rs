@@ -23,8 +23,8 @@ use syneroym_core::{
         SignedEndpointInfo,
     },
     local_registry::{EndpointRegistry, SubstrateEndpoint},
-    storage,
 };
+use syneroym_data_layer::registry_store;
 use syneroym_identity::Identity;
 use syneroym_observability::{MemoryRecorder, MetricsSnapshot, ObservabilityEngine};
 use syneroym_router::ConnectionRouter;
@@ -349,7 +349,6 @@ async fn setup_identity_and_storage(
     let substrate_identity_state =
         identity::setup_substrate_identity(&config.identity, &config.app_data_dir)?;
     let substrate_secret_key = identity::get_secret(&config.identity, &config.app_data_dir)?;
-    let _data_store = storage::init_store(config).await?;
     Ok((substrate_identity_state.did, substrate_secret_key))
 }
 
@@ -358,7 +357,7 @@ async fn setup_router(
     service_id: &str,
     secret_key: [u8; 32],
 ) -> anyhow::Result<ConnectionRouter> {
-    let data_store = storage::init_store(config).await?;
+    let data_store = registry_store::init_store(config).await?;
     let endpoint_registry = EndpointRegistry::new(data_store).await?;
 
     debug!("Registering native SubstrateService at {}", service_id);

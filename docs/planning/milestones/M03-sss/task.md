@@ -269,16 +269,16 @@ every slice.
 
 ## Ordered Implementation Slices
 
-### [ ] Slice 0: Extract SQLite from `crates/core`
+### [x] Slice 0: Extract SQLite from `crates/core`
 
 **Context:** `crates/core/src/storage.rs` currently contains `SqliteEndpointStorage` and a direct `rusqlite` dependency. This violates the goal of keeping storage implementations pluggable and pollutes the core crate with a specific database driver.
 
 **Tasks:**
 
-- [ ] Move `SqliteEndpointStorage` out of `crates/core/src/storage.rs`. Keep the `EndpointStorage` trait and `MockStorage` in `crates/core`.
-- [ ] Relocate `SqliteEndpointStorage` to `crates/data-layer/src/registry_store.rs` (or a similar dedicated storage crate).
-- [ ] Remove the `rusqlite` dependency from `crates/core/Cargo.toml`.
-- [ ] Update the substrate entrypoint to instantiate the relocated `SqliteEndpointStorage` and inject it as `Arc<dyn EndpointStorage>` into the `SubstrateConfig` or registry initialization.
+- [x] Move `SqliteEndpointStorage` out of `crates/core/src/storage.rs`. Keep the `EndpointStorage` trait and `MockStorage` in `crates/core`.
+- [x] Relocate `SqliteEndpointStorage` to `crates/data-layer/src/registry_store.rs` (or a similar dedicated storage crate).
+- [x] Remove the `rusqlite` dependency from `crates/core/Cargo.toml`.
+- [x] Update the substrate entrypoint to instantiate the relocated `SqliteEndpointStorage` and inject it as `Arc<dyn EndpointStorage>` into the `SubstrateConfig` or registry initialization.
 
 **Acceptance Criteria:**
 - `crates/core` has no `rusqlite` dependency.

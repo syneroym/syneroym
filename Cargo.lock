@@ -6931,6 +6931,7 @@ dependencies = [
  "serde_json",
  "syneroym-community-registry",
  "syneroym-core",
+ "syneroym-data-layer",
  "syneroym-identity",
  "syneroym-router",
  "syneroym-rpc",
@@ -6967,6 +6968,7 @@ dependencies = [
  "serde_json",
  "swc_core",
  "syneroym-core",
+ "syneroym-data-layer",
  "syneroym-identity",
  "syneroym-router",
  "tempfile",
@@ -6997,7 +6999,6 @@ dependencies = [
  "pkarr 6.0.1",
  "rand 0.9.4",
  "reqwest 0.13.4",
- "rusqlite",
  "rustls",
  "serde",
  "serde_json",
@@ -7009,6 +7010,19 @@ dependencies = [
  "tracing",
  "url",
  "z32",
+]
+
+[[package]]
+name = "syneroym-data-layer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "rusqlite",
+ "syneroym-core",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -7215,6 +7229,7 @@ dependencies = [
  "syneroym-coordinator",
  "syneroym-coordinator-webrtc",
  "syneroym-core",
+ "syneroym-data-layer",
  "syneroym-identity",
  "syneroym-observability",
  "syneroym-router",
