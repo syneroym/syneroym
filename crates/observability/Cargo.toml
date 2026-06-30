@@ -7,7 +7,7 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
-syneroym-core = { path = "../core" }
+syneroym-core.workspace = true
 anyhow.workspace = true
 tokio.workspace = true
 tracing.workspace = true

@@ -9,12 +9,12 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-syneroym-core = { path = "../core" }
-syneroym-app-sandbox = { path = "../app_sandbox" }
-syneroym-podman-sandbox = { path = "../podman_sandbox" }
-syneroym-rpc = { path = "../rpc" }
-syneroym-control-plane = { path = "../control_plane" }
-syneroym-identity = { path = "../identity" }
+syneroym-core.workspace = true
+syneroym-app-sandbox.workspace = true
+syneroym-podman-sandbox.workspace = true
+syneroym-rpc.workspace = true
+syneroym-control-plane.workspace = true
+syneroym-identity.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
@@ -41,9 +41,8 @@ ed25519-dalek.workspace = true
 quinn = "0.11.11"
 
 
-
 [dev-dependencies]
-syneroym-core = { path = "../core", features = ["test-utils"] }
+syneroym-core = { workspace = true, features = ["test-utils"] }
 criterion.workspace = true
 
 [[bench]]

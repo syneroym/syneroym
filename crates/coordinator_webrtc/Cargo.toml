@@ -7,10 +7,10 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
-syneroym-core = { path = "../core" }
+syneroym-core.workspace = true
 syneroym-data-layer.workspace = true
-syneroym-router = { path = "../router" }
-syneroym-identity = { path = "../identity" }
+syneroym-router.workspace = true
+syneroym-identity.workspace = true
 anyhow.workspace = true
 tokio.workspace = true
 tracing.workspace = true

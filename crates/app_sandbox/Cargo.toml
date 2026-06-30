@@ -7,15 +7,15 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
-syneroym-core = { path = "../core" }
+syneroym-core.workspace = true
 anyhow.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 reqwest.workspace = true
 sha2.workspace = true
 hex.workspace = true
-syneroym-bindings = { path = "../bindings" }
-syneroym-rpc = { path = "../rpc" }
+syneroym-bindings.workspace = true
+syneroym-rpc.workspace = true
 wasmtime.workspace = true
 wasmtime-wasi.workspace = true
 dashmap.workspace = true

@@ -18,20 +18,20 @@ syneroym-identity.workspace = true
 serde_json.workspace = true
 dirs.workspace = true
 toml.workspace = true
-syneroym-core = { path = "../core" }
-syneroym-data-layer = { workspace = true }
-syneroym-router = { path = "../router" }
-syneroym-observability = { path = "../observability" }
-syneroym-community-registry = { path = "../community_registry", optional = true }
-syneroym-coordinator = { path = "../coordinator", optional = true, default-features = false }
-syneroym-client-gateway = { path = "../client_gateway", optional = true }
-syneroym-app-sandbox = { path = "../app_sandbox", optional = true }
+syneroym-core.workspace = true
+syneroym-data-layer.workspace = true
+syneroym-router.workspace = true
+syneroym-observability.workspace = true
+syneroym-community-registry = { workspace = true, optional = true }
+syneroym-coordinator = { workspace = true, optional = true, default-features = false }
+syneroym-client-gateway = { workspace = true, optional = true }
+syneroym-app-sandbox = { workspace = true, optional = true }
 tracing.workspace = true
 reqwest.workspace = true
 z32.workspace = true
 rustls.workspace = true
 iroh.workspace = true
-axum = { workspace = true }
+axum.workspace = true
 
 
 [features]
@@ -61,15 +61,14 @@ predicates.workspace = true
 tempfile.workspace = true
 iroh.workspace = true
 tracing-subscriber.workspace = true
-syneroym-rpc = { path = "../rpc" }
-syneroym-bindings = { path = "../bindings" }
-syneroym-sdk = { path = "../sdk" }
-miniapp-demo1-web = { path = "../../test-components/miniapp-demo1-web" }
+syneroym-rpc.workspace = true
+syneroym-bindings.workspace = true
+syneroym-sdk.workspace = true
+miniapp-demo1-web.workspace = true
 tokio-tungstenite.workspace = true
 futures-util.workspace = true
 futures.workspace = true
 webrtc.workspace = true
-syneroym-coordinator-webrtc = { path = "../coordinator_webrtc" }
+syneroym-coordinator-webrtc.workspace = true
 chromiumoxide.workspace = true
 tokio-stream.workspace = true
-

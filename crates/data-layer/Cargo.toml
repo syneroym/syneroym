@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-syneroym-core = { path = "../core", version = "0.1.0" }
+syneroym-core.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 rusqlite.workspace = true

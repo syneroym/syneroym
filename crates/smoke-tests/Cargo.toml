@@ -7,15 +7,15 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
-syneroym-core = { path = "../core" }
-syneroym-identity = { path = "../identity" }
-syneroym-sdk = { path = "../sdk" }
-syneroym-rpc = { path = "../rpc" }
-syneroym-coordinator-iroh = { path = "../coordinator_iroh" }
-syneroym-app-orchestration = { path = "../app_orchestration" }
-syneroym-app-sandbox = { path = "../app_sandbox" }
-syneroym-community-registry = { path = "../community_registry" }
-syneroym-router = { path = "../router" }
+syneroym-core.workspace = true
+syneroym-identity.workspace = true
+syneroym-sdk.workspace = true
+syneroym-rpc.workspace = true
+syneroym-coordinator-iroh.workspace = true
+syneroym-app-orchestration.workspace = true
+syneroym-app-sandbox.workspace = true
+syneroym-community-registry.workspace = true
+syneroym-router.workspace = true
 
 anyhow.workspace = true
 tokio.workspace = true

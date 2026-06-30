@@ -11,8 +11,8 @@ clap.workspace = true
 anyhow.workspace = true
 tokio.workspace = true
 syneroym-identity.workspace = true
-syneroym-sdk = { path = "../../crates/sdk" }
-syneroym-core = { path = "../../crates/core" }
+syneroym-sdk.workspace = true
+syneroym-core.workspace = true
 syneroym-app-orchestration.workspace = true
 serde_json.workspace = true
 reqwest = { workspace = true, features = ["json"] }

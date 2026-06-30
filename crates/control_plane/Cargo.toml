@@ -14,16 +14,16 @@ podman_sandbox = ["dep:syneroym-podman-sandbox"]
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
-syneroym-core = { path = "../core" }
-syneroym-rpc = { path = "../rpc" }
-syneroym-app-sandbox = { path = "../app_sandbox", optional = true }
-syneroym-podman-sandbox = { path = "../podman_sandbox", optional = true }
+syneroym-core.workspace = true
+syneroym-rpc.workspace = true
+syneroym-app-sandbox = { workspace = true, optional = true }
+syneroym-podman-sandbox = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-syneroym-bindings = { path = "../bindings" }
-syneroym-app-orchestration = { path = "../app_orchestration" }
+syneroym-bindings.workspace = true
+syneroym-app-orchestration.workspace = true
 
 [dev-dependencies]
 wit-parser.workspace = true

@@ -7,9 +7,9 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
-syneroym-core = { path = "../core" }
-syneroym-sdk = { path = "../sdk" }
-syneroym-rpc = { path = "../rpc" }
+syneroym-core.workspace = true
+syneroym-sdk.workspace = true
+syneroym-rpc.workspace = true
 anyhow.workspace = true
 tokio.workspace = true
 tracing.workspace = true

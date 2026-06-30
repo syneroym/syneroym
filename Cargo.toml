@@ -24,10 +24,28 @@ license = "MPL-2.0 OR LicenseRef-Commercial"
 repository = "https://github.com/syneroym/syneroym"
 
 [workspace.dependencies]
-syneroym-identity = { path = "crates/identity", version = "0.1.0" }
-syneroym-app-orchestration = { path = "crates/app_orchestration", version = "0.1.0" }
-syneroym-data-layer = { path = "crates/data-layer", version = "0.1.0" }
-
+# Internal Workspace Crates
+syneroym-core = { path = "crates/core" }
+syneroym-bindings = { path = "crates/bindings" }
+syneroym-rpc = { path = "crates/rpc" }
+syneroym-identity = { path = "crates/identity" }
+syneroym-app-orchestration = { path = "crates/app_orchestration" }
+syneroym-app-sandbox = { path = "crates/app_sandbox" }
+syneroym-data-layer = { path = "crates/data-layer" }
+syneroym-router = { path = "crates/router" }
+syneroym-observability = { path = "crates/observability" }
+syneroym-community-registry = { path = "crates/community_registry" }
+# Disable default-features here so that individual workspace crates (like syneroym-substrate) can opt out of default features via workspace inheritance.
+syneroym-coordinator = { path = "crates/coordinator", default-features = false }
+syneroym-client-gateway = { path = "crates/client_gateway" }
+syneroym-coordinator-iroh = { path = "crates/coordinator_iroh" }
+syneroym-coordinator-webrtc = { path = "crates/coordinator_webrtc" }
+syneroym-control-plane = { path = "crates/control_plane" }
+syneroym-podman-sandbox = { path = "crates/podman_sandbox" }
+syneroym-sdk = { path = "crates/sdk" }
+syneroym-smoke-tests = { path = "crates/smoke-tests" }
+syneroym-substrate = { path = "crates/substrate" }
+miniapp-demo1-web = { path = "test-components/miniapp-demo1-web" }
 
 # Networking & Async
 tokio = { version = "1.50", features = ["full"] }

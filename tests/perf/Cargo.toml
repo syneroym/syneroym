@@ -25,11 +25,11 @@ chrono.workspace = true
 reqwest.workspace = true
 
 # Substrate path
-syneroym-sdk = { path = "../../crates/sdk" }
-syneroym-app-sandbox = { path = "../../crates/app_sandbox" }
-syneroym-core = { path = "../../crates/core" }
-syneroym-bindings = { path = "../../crates/bindings" }
-syneroym-identity = { path = "../../crates/identity" }
+syneroym-sdk.workspace = true
+syneroym-app-sandbox.workspace = true
+syneroym-core.workspace = true
+syneroym-bindings.workspace = true
+syneroym-identity.workspace = true
 wasmtime.workspace = true
 z32.workspace = true
 

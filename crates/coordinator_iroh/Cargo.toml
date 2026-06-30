@@ -7,10 +7,10 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
-syneroym-core = { path = "../core" }
-syneroym-router = { path = "../router" }
-syneroym-identity = { path = "../identity" }
-syneroym-rpc = { path = "../rpc" }
+syneroym-core.workspace = true
+syneroym-router.workspace = true
+syneroym-identity.workspace = true
+syneroym-rpc.workspace = true
 anyhow.workspace = true
 tokio.workspace = true
 iroh-relay.workspace = true
@@ -38,7 +38,7 @@ iroh.workspace = true
 n0-error.workspace = true
 tracing-subscriber.workspace = true
 tempfile.workspace = true
-syneroym-community-registry = { path = "../community_registry" }
-syneroym-sdk = { path = "../sdk" }
+syneroym-community-registry.workspace = true
+syneroym-sdk.workspace = true
 syneroym-data-layer.workspace = true
-libc = { workspace = true }
+libc.workspace = true

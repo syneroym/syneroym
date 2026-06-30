@@ -7,11 +7,11 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
-syneroym-core = { path = "../core" }
+syneroym-core.workspace = true
 anyhow.workspace = true
 tokio.workspace = true
-syneroym-coordinator-iroh = { path = "../coordinator_iroh", optional = true }
-syneroym-coordinator-webrtc = { path = "../coordinator_webrtc", optional = true }
+syneroym-coordinator-iroh = { workspace = true, optional = true }
+syneroym-coordinator-webrtc = { workspace = true, optional = true }
 tracing.workspace = true
 
 [features]
