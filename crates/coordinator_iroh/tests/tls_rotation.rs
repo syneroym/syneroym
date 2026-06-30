@@ -25,6 +25,8 @@ fn generate_self_signed_cert(cert_path: &Path, key_path: &Path, common_name: &st
             "-subj",
             &format!("/CN=127.0.0.1/OU={common_name}"),
             "-addext",
+            "basicConstraints = critical,CA:FALSE",
+            "-addext",
             "extendedKeyUsage = serverAuth",
             "-addext",
             "subjectAltName = IP:127.0.0.1",
