@@ -92,7 +92,9 @@ Use a fresh window after every substantial slice to act as a reviewer.
 >
 > Do not modify code. Report actionable findings with file and line links, and output these findings as a checklist in a markdown artifact so the next implementation window can methodically address them.
 
-*Use a subsequent implementation window to address any accepted findings.*
+*Use a subsequent implementation window to address any accepted findings.* You could use the following prompt template.
+> Review the following review comments on implementation of slice xx of Mnn-xxx. Implement what you agree, and pushback or /grill-me
+ for others. Show me the implementation plan and start implementation only after my go-ahead. (and then copy review comments below ...)
 
 ### D. Milestone Closeout Window (Read-Only)
 When all slices are complete, open a final window to verify the milestone.
