@@ -8,7 +8,7 @@
 
 # 1. Introduction
 
-The Immutable Event Journal (IEJ) is a universal architecture for recording immutable, globally ordered events.
+The Immutable Event Journal (IEJ) is a universal architecture for recording immutable, globally ordered events. In Syneroym context, it has relevance in building a verifiable and auditable transaction log across diverse applications and systems.
 
 Unlike traditional systems where operational databases are considered the primary source of truth, IEJ treats **history as canonical**. Current state is simply a projection derived from immutable historical events.
 
