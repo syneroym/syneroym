@@ -18,10 +18,10 @@ configuration through a typed host function; and — in 3B — store blobs via t
 
 This milestone is split into two sequential sub-milestones:
 
-- **M3A — Structured State and Security:** Encrypted SQLite isolation, full
+- **M3A — Structured State and Security:** Encrypted SQLite isolation (`oltp`/`olap` profiles), full
   data-layer WIT surface, vault integration, and configuration delivery.
-- **M3B — Objects and Events:** Blob object service and embedded MQTT pub/sub
-  broker.
+- **M3B — Objects and Events:** Blob object service and Decentralized Pub/Sub
+  (MQTT API overlay).
 
 M3B may begin only after M3A exit criteria are fully met.
 
@@ -31,7 +31,9 @@ M3B may begin only after M3A exit criteria are fully met.
 
 | Requirement ID | Description | Sub-requirements targeted in M3 |
 |---|---|---|
-| `[PLT-DAT]` | Data Layer | Structured SQLite DBs per service (CRUD, batch, filters, aggregation, pagination, nested WIT serialisation, schema init DDL); blob S3-compatible backend and signed HTTP access (M3B); MQTT pub/sub broker with wildcard topics, retained messages, change notifications (M3B) |
+| `[PLT-DAT]` | Data Layer | Structured SQLite DBs per service (CRUD, batch, filters, aggregation, pagination, nested WIT serialisation, schema init DDL, `oltp`/`olap` build profiles); blob S3-compatible backend and signed HTTP access (M3B) |
+| `[PLT-DAP]` | Distributed Data Topology | Logical Data Service interface definitions only (M3A) |
+| `[TOP-ROB]` | Decentralized Pub/Sub | MQTT API overlay over QUIC with wildcard topics, retained messages, change notifications (M3B) |
 | `[FND-SEC]` | Substrate Security (storage slice) | Envelope Encryption (DEK/KEK); secret vault inside encrypted SQLite; `mlock`-protected KEK RAM; DEK re-encryption on key rotation; production profiles default to encryption; opt-out produces persistent insecure-state warning |
 | `[FND-CFG]` | Service Configuration Delivery | `syneroym:config/get` WASM host function; schema validation and defaults at deploy-time; Podman env-var and file-mount fallback; versioned immutable configuration generation; out-of-band secret rotation policy |
 
@@ -95,9 +97,9 @@ and consequences. A summary is provided here for planning reference.
 - Path traversal guard: `service_id` regex + `hash` 64-char hex; `Path::join` +
   `starts_with` (not `canonicalize`).
 
-### D-03-05 — MQTT Broker ✅ → [ADR-0010](../../../decisions/0010-mqtt-broker-rumqttd.md)
+### D-03-05 — Decentralized Pub/Sub (MQTT API) ✅ → [ADR-0010](../../../decisions/0010-mqtt-broker-rumqttd.md)
 
-- **`rumqttd` in-process Tokio task.**
+- **MQTT protocol abstraction over P2P log replication.** (Implemented initially using `rumqttd` in-process Tokio task for local state, pending full QUIC P2P overlay in M5).
 - **Push-model delivery**: host invokes guest-exported `on-message(topic, payload)`.
 - Wildcard topics (`+`, `#`) and retained messages **in scope**.
 - Cross-service pub/sub **in scope** with topic namespace isolation
@@ -390,6 +392,7 @@ function implementation yet.
 - [ ] Define generic storage traits in `crates/data-layer/src/traits.rs` to ensure the storage backend is pluggable:
   - `trait StorageProvider`: provides `open_service_db(service_id, key_store) -> Result<Box<dyn ServiceStore>>`.
   - `trait ServiceStore`: defines the CRUD, batch, and DDL operations.
+- [ ] Implement build profiles: `syneroym-oltp` and `syneroym-olap` (both currently backed by standard SQLite). Ensure Cargo feature gate structure is in place. (DuckDB integration is explicitly deferred to future backlog).
 - [ ] Implement `SqliteStorageProvider` in `crates/data-layer/src/sqlite.rs`:
   - Implements `StorageProvider`. Manages per-service SQLite files at `<data_dir>/<service_id>/state.db`.
   - Path traversal guard: `service_id` must match `^[a-zA-Z0-9_\-]{1,128}$`;

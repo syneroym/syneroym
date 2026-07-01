@@ -1901,6 +1901,8 @@ The Data Layer provides a complete foundation for distributed application state 
 #### 1. Structured Data Service (Document API)
 A platform-managed persistent store that `SynSvcs` use via typed host functions or RPC APIs.
 
+*   **Logical Data Services ([PLT-DAP-01]):** The data service acts as a logical router. Rather than tightly coupling a dataset to a single physical SQLite database, the `SynApp` defines a dataset that can be physically sharded across multiple Substrate nodes transparently. *(Design TBD: How the Orchestrator discovers which node holds which shard, and how data routing tables are maintained).*
+*   **Unified Storage, Tailored Query ([PLT-DAT]):** To avoid data consistency or stale-data issues, the underlying physical data layer is *always* SQLite. We provide build profiles (`syneroym-oltp` vs `syneroym-olap`), but currently both rely entirely on standard SQLite for their queries. (Note: Using **DuckDB** in the `olap` profile via its SQLite-scanner extension is explicitly deferred to Future Product Phases).
 *   **Database Isolation (One DB per Service):** Instead of a monolithic combined database, every service gets its own independent SQLite `.db` file (and WAL). The substrate also maintains its own separate database.
     *   *Benefits:* Maximizes write parallelism across the system (since each service has its own independent WAL lock), enables selective Iroh WAL replication per service, and isolates failure blast radiuses.
 *   **Concurrency Architecture (Actor/Pool Model):** To handle high concurrency within a single service's database without hitting `SQLITE_BUSY` contention in Tokio, the platform utilizes **`rusqlite`** combined with **`deadpool-sqlite`**:
@@ -1926,19 +1928,19 @@ A platform-managed persistent store that `SynSvcs` use via typed host functions 
     *   **Design:** Blob content is addressed by SHA-256 hash. Each `SynApp Instance` receives a blob namespace and quota, while individual services store blob hashes as ordinary fields in structured records.
     *   **Durability:** The durable backend is configurable S3-compatible object storage or a peer backup substrate exposing the same semantics. Local replicas may keep opportunistic caches or pull missing blobs lazily, but blob durability is not guaranteed by SQLite WAL replication.
 
-#### 2. MQTT Event Service (Asynchronous Coordination)
-To provide real-time Pub/Sub without relying on heavy external infrastructure, the Substrate acts as the broker.
+#### 2. Decentralized Pub/Sub (MQTT API) ([TOP-ROB-03])
+To provide decoupled event routing without relying on heavy external infrastructure, the Substrate exposes an MQTT-like API.
 
-*   **Embedded Broker Design:** The Syneroym Rust host embeds an MQTT broker natively using the `rumqttd` crate. It runs as a background Tokio task alongside the Wasmtime engine.
-*   **The WASM Boundary (WIT):** WASM applications interact with the broker via a lightweight host boundary:
+*   **P2P Overlay over QUIC:** Note that this is *not* a classical centralized TCP broker. Under the hood, publishers append to a local state log, and subscribers pull/sync these updates over Iroh QUIC. It provides the semantic decoupling of MQTT (topic wildcards, QoS, retained messages) over a decentralized peer-to-peer transport, optimized for UI updates and IoT telemetry.
+*   **Protocol Bridge Design:** The Syneroym Rust host embeds a Pub/Sub bridging capability natively as part of the core data service. It runs as a background Tokio task. Any authenticated caller of the data service (e.g., external clients via JSON-RPC, internal host tasks, or WASM components) can trigger publish and subscribe operations.
+*   **The WASM Boundary (WIT):** For WASM applications, interaction with the Pub/Sub system occurs via a lightweight host boundary:
     ```wit
     interface pubsub {
         publish: func(topic: string, payload: list<u8>);
         subscribe: func(topic: string);
     }
     ```
-*   **Execution Flow:** When a WASM component calls `pubsub::publish`, the host traps the call and routes it directly into the embedded `rumqttd` broker. Subscriptions are persisted by the host. Delivery invokes a declared component handler through the normal Wasmtime invocation path (or a currently live store when explicitly supported), rather than mutating arbitrary guest memory.
-
+*   **Execution Flow:** When a caller (such as a WASM component calling `pubsub::publish`) triggers a publish event, the host routes it to the P2P log (or during M3B, the local `rumqttd` bridge adapted to communicate over Iroh streams rather than raw TCP). Subscriptions are persisted by the host. When delivering to a WASM component, it invokes a declared component handler through the normal Wasmtime invocation path.
 #### 3. Universal Proxy (Inter-Component RPC)
 The Substrate provides strictly typed networking between services. Static composition can be zero-overhead; dynamic proxying adds host and transport overhead by design.
 
@@ -1949,6 +1951,18 @@ The Substrate provides strictly typed networking between services. Static compos
     *   **Native Host Service Proxying:** If the target is a native host service (e.g., the `syneroym:data-layer/store` WIT import) mapped to a remote instance, the Substrate behaves identically. It proxies the call via wRPC to the remote Substrate, which receives the call and executes its *own* native host service implementation (e.g., executing against its local `cr-sqlite` file).
     *   **JSON-RPC Adapter:** If the target is a legacy Podman container or an external web/mobile client, the proxy dynamically translates the strict WIT calls into universal JSON-RPC 2.0 over HTTP/WebSockets.
     *   **Static Composition Bypass:** If the component and its dependency are statically composed into a single `.wasm` binary prior to deployment (e.g., via `wasm-tools compose`), the import is satisfied internally. The Substrate never sees the import, no proxy is injected, and the call executes entirely within the WebAssembly sandbox with zero-overhead.
+
+#### 4. Data Pipeline Streams (`syneroym:data/stream`) ([PLT-DAP-05])
+*   **Design:** Distinct from the decoupled MQTT API, this transport is purely the I/O channel for structured, direct, point-to-point data shuffling between network nodes (e.g., during map-reduce or federated query execution). It passes structured record batches (like Apache Arrow). Note that relational operators (like `filter`, `project`, `sort`) are not part of this stream interface; they are executed by the embedded DataFusion engine processing the Substrait plan (via `syneroym:data/transform`), which then pushes its final outputs into this transport stream.
+    *   *WIT Sketch:* `interface stream { pull-batch: func(handle: stream-handle) -> result<record-batch, error>; push-batch: func(handle: stream-handle, batch: record-batch) -> result<_, error>; }`
+*   **Flow Control:** It utilizes structured, multiplexed Iroh QUIC streams with strict credit-based flow control (backpressure). If a downstream node is overwhelmed, it natively pauses the upstream sender. This allows processing massive datasets (e.g., Parquet partitions) safely.
+
+#### 5. Federated Query Execution & Active Storage Pushdown ([PLT-DAP-02])
+*   **Operator Graph (ELT vs ETL):** The system supports both ELT (pushing logic near data) and ETL (pulling streams centrally).
+*   **The Planner:** The Orchestrator `SynApp` leverages the Apache DataFusion logical planner, using custom `TableProvider`s to map logical SQL tables to Syneroym Data Services.
+*   **The Optimizer & Distributor:** The optimizer decides which operations (e.g., `WHERE` clauses, aggregations) can be pushed to the edge. It serializes these plan fragments using the **Substrait** specification and distributes them over the network.
+*   **Active Storage Pushdown:** Edge nodes receive the Substrait plan and execute their slice of the graph using WASM drop-in functions via the `syneroym:data/transform` WIT interfaces. Filtered results are streamed back using `syneroym:data/stream` to the Orchestrator for final merge/sort.
+    *   *WIT Sketch:* `interface transform { execute: func(plan: list<u8>) -> result<stream-handle, error>; }`
 
 ### [PLT-ASY] Asynchronous Operations & Scheduling
 
@@ -1971,7 +1985,8 @@ The Substrate handles offline behavior, long-running execution, and periodic sch
 
 ### [PLT-RED] Service Redundancy
 
-*   **Database Replication Mechanism (Iroh WAL Shipping):** The data layer utilizes a configurable N-replica topology (typically one primary, and zero or more read-only secondaries, as defined by the app manifest) for SQLite state. Instead of relying on Litestream or FUSE-dependent LiteFS for the live node-to-node path, Syneroym leverages its native Iroh transport for low-latency replication while keeping SQLite file invariants intact.
+*   **Declarative Replication Topology ([PLT-DAP-03]):** The `DeploymentPlan` declaratively controls replication topologies (e.g., Primary, Read-Replica, Cold Backup). The orchestrator enforces this topology dynamically.
+*   **Database Replication Mechanism (Iroh WAL Shipping):** The data layer utilizes this configurable topology for SQLite state. Instead of relying on Litestream or FUSE-dependent LiteFS for the live node-to-node path, Syneroym leverages its native Iroh transport for low-latency replication while keeping SQLite file invariants intact.
     *   **The Shipper (Primary):** A background Rust task receives committed WAL/frame notifications from SQLite, derives the frame size from the database page size, validates ordering/checksums, and streams ordered frame batches over a persistent **Iroh multiplexed stream**. The stream format carries a database identity, epoch, frame sequence, page size, salts, checksums, and checkpoint markers so the secondary can reject torn or stale data.
     *   **The Applier (Secondary):** The Secondary receives ordered frame batches and applies them through a SQLite-safe applier path. It must not directly mutate a live SQLite connection's `-wal` or `-shm` files. Acceptable approaches include applying frames while the database is closed to readers, publishing read-only snapshots after a verified checkpoint, or using a well-tested SQLite extension/API path that preserves WAL-index invariants. Readers observe a new state only after the applier publishes a consistent snapshot.
 *   **Disaster Recovery:** While live, low-latency replication uses Iroh, periodic full backups and WAL segments are still asynchronously pushed to an external S3-compatible object store using a library like `wal-backup` for cold starts and disaster recovery.

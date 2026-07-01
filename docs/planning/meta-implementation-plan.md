@@ -89,13 +89,14 @@ To prevent dependency cycles and scope creep, the data layer and storage mechani
 **Goal:** Introduce the baseline SQLite data layer intimately paired with storage encryption and the secret vault.
 
 **Feature Grouping:**
-- `[PLT-DAT]` Data Layer (Structured SQLite DBs per service)
+- `[PLT-DAT]` Data Layer (Structured SQLite DBs per service, `syneroym-oltp`/`syneroym-olap` profiles)
+- `[PLT-DAP]` Distributed Data Topology (Logical Data Service foundations)
 - `[FND-SEC]` Substrate Security (Storage encryption, Vault)
 - `[FND-CFG]` Service Configuration Delivery
 
 **Implementation Approach:**
 1. **Encrypted Isolation:** Provision isolated, encrypted SQLite databases for each deployed `SynSvc` (based on the M0 prototype).
-2. **Data Interface:** Implement schema initialization, CRUD/batch operations, structured filters and aggregations, pagination, concurrency architecture, and nested WIT serialization.
+2. **Data Interface:** Implement schema initialization, CRUD/batch operations, structured filters and aggregations, pagination, concurrency architecture, and nested WIT serialization. Include Cargo feature gates for `syneroym-olap` and `syneroym-oltp` profiles (both currently backed by standard SQLite).
 3. **Vault Integration:** Build the secret vault into the encrypted DB and implement `syneroym:vault/reveal`.
 4. **Configuration Delivery:** Finalize the delivery mechanics (WASM host functions vs. Podman environment mapping).
 
@@ -103,11 +104,12 @@ To prevent dependency cycles and scope creep, the data layer and storage mechani
 **Goal:** Provide the remaining fundamental asynchronous data primitives.
 
 **Feature Grouping:**
-- `[PLT-DAT]` Blob S3 Integration & MQTT Broker
+- `[PLT-DAT]` Blob S3 Integration
+- `[PLT-DAP-04]` Decentralized Pub/Sub (MQTT API)
 
 **Implementation Approach:**
 1. **Blob Storage:** Implement the S3-compatible backend interface and signed HTTP object access.
-2. **Event Broker:** Embed the MQTT pub/sub broker, implementing wildcard topics, retained messages, and real-time change notifications.
+2. **Event Broker:** Embed the MQTT API abstraction, implemented as a decentralized P2P log replication overlay on Iroh QUIC (avoiding classical TCP brokers).
 
 ---
 
@@ -116,13 +118,14 @@ To prevent dependency cycles and scope creep, the data layer and storage mechani
 
 **Feature Grouping:**
 - Universal Proxy / wRPC
+- `[PLT-DAP-05]` Data Pipeline Streams (`syneroym:data/stream`)
 - `[LFC-VER]` Protocol Negotiation
-- `[FND-IAM]` Access Control (FDAE, UCAN context)
+- `[FND-IAM]` Access Control (FDAE, UCAN context, RLS/CLS)
 
 **Implementation Approach:**
-1. **Universal Proxy:** Implement wRPC over Iroh QUIC to allow strongly typed cross-component calls, utilizing dynamic protocol negotiation.
+1. **Universal Proxy & Streams:** Implement wRPC over Iroh QUIC for typed calls, and the `syneroym:data/stream` WIT interface for backpressured data pipelines.
 2. **UCAN Context:** Extract and normalize UCAN scopes/claims upon request ingress.
-3. **Local FDAE:** Implement the SQL Pushdown Sieve, compiling declarative policies into the SQLite engine.
+3. **Local FDAE:** Implement the SQL Pushdown Sieve, compiling declarative policies into the SQLite engine (handling data-centric RLS/CLS).
 4. **Federated FDAE:** Expand the pipeline to support cross-service parameter fetching via the Universal Proxy.
 
 ---
@@ -133,12 +136,18 @@ To prevent dependency cycles and scope creep, the data layer and storage mechani
 **Feature Grouping:**
 - `[PLT-ASY]` Asynchronous Operations
 - `[LFC-MGT]` Active Control-Plane Mode
+- `[PLT-DAP]` Federated Query Orchestrator
 - `[LFC-VER]` Versioning Support (State snapshot/rollback)
 - `[ADV-DEV]` SynApp Developer Tooling
 
 **Implementation Approach:**
 1. **Async Primitives:** Implement the Outbox queue, cron lease mechanisms, Dead Letter Queue (DLQ), long-running task restart rules, and compensating transactions (sagas).
-2. **Active Controller:** Deploy the controller `SynApp` that continuously reconciles desired state. *(This is strictly a single-node controller initially).*
+2. **Active Controller & Query Orchestrator:** Deploy the controller `SynApp` that continuously reconciles desired state. Introduce foundational DataFusion logical planning and Substrait serialization for federated queries. This includes:
+   - Defining the DataFusion `TableProvider` interface for Syneroym Data Services.
+   - Defining the plan-fragment serialization contract (Substrait schema version pinning).
+   - Defining the network protocol for distributing plan fragments to edge nodes.
+   - Defining what "done" looks like (e.g., a working end-to-end query across 2 nodes in a test).
+   - *(Design TBD to resolve before M5: How the Orchestrator discovers which node holds which shard, and how data routing tables are maintained for `[PLT-DAP-01]`)*
 3. **Versioning:** Implement pre-upgrade SQLite snapshotting and automatic rollback mechanisms.
 4. **Developer Tools:** Release the mock SDK, project templates, the zero-drift `roymctl dev` local environment, and remote package retrieval over HTTP/OCI for the `ManifestCatalog`.
 
@@ -162,13 +171,14 @@ To prevent dependency cycles and scope creep, the data layer and storage mechani
 **Goal:** Harden the system for production by adding high-availability database replication and deep observability.
 
 **Feature Grouping:**
-- `[PLT-RED]` Service Redundancy
+- `[PLT-RED]` Service Redundancy (Declarative Replication Topology)
 - `[FND-SEC]` Encrypted Backups, Attestation & Supply-chain signing
 - `[ADV-OBS]` Advanced Observability
 
 **Implementation Approach:**
 1. **SQLite Replication Feasibility:** Validate the SQLite-safe replication mechanism through a bounded prototype with correctness, crash-recovery, and performance exit criteria.
-2. **Production Replication:** Implement live, reliable SQLite WAL replication across Substrate nodes based on the validated prototype.
+2. **Declarative Replication:** Implement live, reliable SQLite WAL replication across Substrate nodes based on the validated prototype, controlled by the `DeploymentPlan` (Primary, Read-Replica, Cold Backup).
+   - *(Design TBD to resolve before M7: Define the distributed replication consistency model and failover behavior).*
 3. **HA Upgrade:** Upgrade the M5 active controller's database to rely on replicated HA storage.
 4. **Topology Control:** Implement Registry topology epochs, manual promotion workflows, and strict bidirectional quarantine fencing.
 5. **Security Hardening:** Add Attestation API and verification flows, binary signature verification, and support for scheduled, encrypted remote backups (with tested restore paths).

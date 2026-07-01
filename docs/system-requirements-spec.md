@@ -904,6 +904,8 @@ This defines the baseline resilience required for underlying node-to-node and cl
 - **Reactive Connection Management:**
   - Standard transport-level timeouts (e.g., QUIC idle timeouts, WebRTC SCTP timeouts) are used to detect dropped peers. We do not implement custom application-level ping/pong heartbeats to save bandwidth and complexity.
   - Stale connections are handled reactively: "evict when found out." If a read or write operation fails due to a disconnected peer, the connection is instantly marked as dead and retried or surfaced as an error.
+- **Transport Modalities (Events vs Data):**
+  - *(See `[PLT-DAP-04]` and `[PLT-DAP-05]` for decoupled event routing and data pipeline streams.)*
 
 ---
 
@@ -989,6 +991,7 @@ Given that Syneroym supports both native WASM components and legacy Podman conta
 
 ### [FND-IAM] Access Control
 - **FDAE (Federated Data-Aware Authorization Engine):** Adopts the FDAE architecture, which decouples the authorization specification (the "What") from the environment-specific execution (the "How"). It avoids the traditional PBAC vs. ReBAC dilemma by acting as an intelligent, distributed routing engine. It utilizes a declarative, Zanzibar-style structured configuration (e.g., YAML/JSON) to map relationship chains across fragmented data sources. The Substrate directly deserializes this configuration into a typed policy model, avoiding custom string parsers while still giving the query planner a structured representation to execute.
+- **Data-Centric Authorization (RLS/CLS):** As data becomes distributed across shards and replicas, security policies dictate access. Row-Level Security (RLS) and Column-Level Security are enforced at query execution time via the FDAE pushdown, preventing unauthorized rows from ever reaching the guest application. *(Note: Database replication itself relies on node-level authorization rather than row-level UCANs inside the WAL stream).*
 - **Solving the Data Fetching Problem (Pushdown Sieve):** For local contiguous relationships, FDAE collapses the graph into a single, deeply nested query. By compiling ReBAC policies directly into SQL `WHERE EXISTS` clauses, the SQLite engine performs massive-scale relationship filtering at the C-level, handing only authorized rows back to the WASM guest.
 - **Dual-Mode Execution:** FDAE natively handles both **Point-In-Time Evaluation** (returning a swift Allowed/Denied flag for a specific resource check) and **Relational Data Filtering** (applying the security policies as a global subquery to prune index-level datasets before they ever reach the Wasm guest).
 - **UCAN Integration (Normalized Claims, Capabilities, Scopes):** Access control is a robust synthesis of cryptographic capabilities and relational data state.
@@ -1004,10 +1007,20 @@ Given that Syneroym supports both native WASM components and legacy Podman conta
 
 ## Phase 2: Core Platform Capabilities
 
+### [PLT-DAP] Distributed Data Topology
+The substrate models data as a distributed, programmable topology rather than isolated object state.
+- **[PLT-DAP-01] Logical Data Services:** The system MUST support logical data wrappers that abstract physical sharding across multiple substrates, allowing a single dataset definition to span nodes transparently.
+- **[PLT-DAP-02] Active Storage Pushdown:** The system SHOULD provide WIT interfaces (e.g., `syneroym:data/transform`) for deploying WASM modules directly to the data layer. This enables controlled ETL/ELT logic execution directly where the data lives. *(Note: This is an ambitious goal for M5 and may be moved to a Future Backlog or dedicated spike milestone based on scoping constraints).*
+- **[PLT-DAP-03] Declarative Replication:** The `DeploymentPlan` MUST support a declarative topology mechanism to define replication states (e.g., Primary, Read-Replica, Cold Backup).
+- **[PLT-DAP-04] Decentralized Pub/Sub:** The system MUST support an MQTT-like API for decoupled event routing, implemented as a decentralized pull-based log replication over QUIC.
+- **[PLT-DAP-05] Data Pipeline Streams:** The system MUST provide a distinct `syneroym:data/stream` interface for direct, high-throughput, point-to-point QUIC streams with native credit-based flow control (backpressure) for heavy data shuffling.
+
 ### [PLT-DAT] Data Layer
 The Data Layer provides a complete foundation for distributed application state and communication, securely accessed via typed host functions or APIs without exposing raw database engines to the applications.
 
 - **Structured Data Service (Document Database):**
+  - **Single Source of Truth (SQLite):** To prevent stale-data consistency issues, the underlying physical data layer is *always* SQLite. We do not maintain separate duplicate copies of databases (e.g., one for OLTP and one for OLAP).
+  - **Build-Time Profiles (OLTP vs OLAP):** The system provides Cargo feature gates to compile nodes with tailored weight. Currently, both `syneroym-oltp` and `syneroym-olap` profiles utilize standard SQLite for operations and querying. (Note: Embedding heavier analytical engines like DuckDB via SQLite-scanner for the OLAP profile is explicitly deferred to the Future Backlog).
   - **Database Isolation (One DB per Service):** The canonical primitive for structured state (backed by SQLite). Instead of a monolithic combined database, every stateful `SynSvc` gets a fully isolated, separate SQLite database file (and WAL). The substrate also maintains its own separate database. This guarantees true concurrent write scaling across services, allows selective WAL replication, and isolates failure domains.
   - **Concurrency Model:** Designed for high throughput using a Single-Writer Thread / Multiple-Reader Pool architecture per database. This perfectly aligns with SQLite's WAL mode, eliminating `SQLITE_BUSY` lock contention and maximizing performance in asynchronous Rust.
   - **Resource Model:** Collections with lightweight schemas (loose enforcement of types, explicit indexed fields) containing JSON records. The data layer automatically injects a spoof-proof `creator_id` into every record.
@@ -1021,8 +1034,8 @@ The Data Layer provides a complete foundation for distributed application state 
   - **HTTP File Serving:** Built-in HTTP serving of public/private objects (with signed URLs), supporting static website hosting and CDN-friendly delivery directly from the blob store.
 
 - **MQTT Event Service (Asynchronous Coordination):**
-  - **Pub/Sub Broker:** Handles asynchronous communication, state propagation, and device workflows.
-  - **Features:** Supports wildcard topics, retained messages, and real-time change notifications to trigger workflows or invalidate caches.
+  - **Decentralized P2P Log:** Handles asynchronous communication, state propagation, and device workflows without a central broker.
+  - **Features:** Supports MQTT semantics (wildcard topics, retained messages) and real-time change notifications mapped over decentralized log replication to trigger workflows or invalidate caches.
 
 - **Universal Proxy (Inter-Component RPC):**
   - **Typed Interactions:** Developers use strongly typed WIT imports (`import acme:booking/service;`) rather than generic untyped APIs.
