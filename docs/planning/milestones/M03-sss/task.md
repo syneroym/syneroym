@@ -288,7 +288,7 @@ every slice.
 
 ---
 
-### [ ] Slice 1: Data-Layer and Vault WIT Interface Design
+### [x] Slice 1: Data-Layer and Vault WIT Interface Design
 
 **Requirement IDs:** `[PLT-DAT]`, `[FND-SEC]` (vault WIT boundary)
 **ADR references:** [ADR-0007](../../../decisions/0007-data-layer-wit-interface.md)
@@ -299,28 +299,23 @@ function implementation yet.
 
 #### Tasks
 
-- [ ] Create `crates/bindings/wit/data-layer.wit`:
+- [x] Create `crates/bindings/wit/data-layer.wit`:
   - Package: `package syneroym:data-layer@0.1.0;`
   - `interface store` with:
-    - `record collection-schema` — name, indexed field names.
-    - `record record-value` — `id: string`, `payload: list<u8>` (JSON bytes),
-      `creator-id: string`, `created-at: u64` (Unix ms), `updated-at: u64`.
-    - `record query-options` — `filter: option<string>` (MongoDB-style JSON
-      query document), `limit: option<u32>`, `cursor: option<string>`.
-    - `record query-result` — `records: list<record-value>`,
-      `next-cursor: option<string>`.
-    - `variant mutation` — `put(record-value)`, `patch(string, list<u8>)`,
-      `delete(string)`.
-    - `variant data-layer-error` — `permission-denied`,
-      `schema-violation(string)`, `quota-exceeded`, `internal(string)`.
-      Note: **no `not-found` variant** — missing records are represented as
-      `option<record-value>` returns, not errors.
+    - `record collection-schema` — name, list of `index-definition` records (for field name and index type: string, numeric, boolean).
+    - `record record-write-value` — `id: string`, `payload: list<u8>` (JSON bytes).
+    - `record record-read-value` — `id: string`, `payload: list<u8>` (JSON bytes), `creator-id: string`, `created-at: u64` (Unix ms), `updated-at: u64`.
+    - `record query-options` — `filter: option<string>` (MongoDB-style JSON query document), `limit: option<u32>`, `cursor: option<string>`.
+    - `record query-result` — `records: list<record-read-value>`, `next-cursor: option<string>`.
+    - `variant mutation` — `put(record-write-value)`, `patch(tuple<string, list<u8>>)` (id, patch-json), `delete(string)`.
+    - `variant data-layer-error` — `permission-denied`, `collection-not-found`, `schema-violation(string)`, `quota-exceeded`, `internal(string)`.
+      Note: **no `not-found` variant** — missing records are represented as `option<record-read-value>` returns, not errors.
     - Functions:
       - `create-collection(schema: collection-schema) -> result<_, data-layer-error>`
       - `drop-collection(name: string) -> result<_, data-layer-error>`
-      - `put(collection: string, record: record-value) -> result<_, data-layer-error>`
+      - `put(collection: string, value: record-write-value) -> result<_, data-layer-error>`
       - `patch(collection: string, id: string, patch-json: list<u8>) -> result<_, data-layer-error>`
-      - `get(collection: string, id: string) -> result<option<record-value>, data-layer-error>`
+      - `get(collection: string, id: string) -> result<option<record-read-value>, data-layer-error>`
       - `query(collection: string, opts: query-options) -> result<query-result, data-layer-error>`
       - `delete(collection: string, id: string) -> result<_, data-layer-error>`
       - `delete-many(collection: string, filter: string) -> result<u64, data-layer-error>`
@@ -331,18 +326,16 @@ function implementation yet.
     - `init: func() -> result<_, string>` (called on first deploy — fresh DB)
     - `migrate: func() -> result<_, string>` (called on re-deploy — existing DB)
 
-- [ ] Create `crates/bindings/wit/vault.wit`:
+- [x] Create `crates/bindings/wit/vault.wit`:
   - `interface vault` — `reveal(key: string) -> result<list<u8>, vault-error>`.
   - `variant vault-error { not-found, permission-denied, internal(string) }`.
   - World: `world vault-guest { import vault; }`.
 
-- [ ] Update `crates/bindings/build.rs` to include the new WIT files.
+- [x] Update `crates/bindings/build.rs` to include the new WIT files. (Note: Shifted to `wit-bindgen::generate!` workspace macro standard instead of a custom `build.rs`).
 
-- [ ] Regenerate bindings; verify `cargo build --target wasm32-wasip2 -p
-  syneroym-bindings` exits 0.
+- [x] Regenerate bindings; verify `cargo build --target wasm32-wasip2 -p syneroym-bindings` exits 0.
 
-- [ ] Add `crates/data-layer/` crate with placeholder `DataLayerService`
-  struct (no DB logic yet) and re-export the generated WIT types.
+- [x] Add `crates/data-layer/` crate with placeholder `DataLayerService` struct (no DB logic yet) and re-export the generated WIT types.
 
 #### Acceptance Criteria
 

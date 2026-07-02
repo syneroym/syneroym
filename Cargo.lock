@@ -7019,6 +7019,8 @@ dependencies = [
  "anyhow",
  "async-trait",
  "rusqlite",
+ "serde",
+ "syneroym-bindings",
  "syneroym-core",
  "tempfile",
  "tokio",

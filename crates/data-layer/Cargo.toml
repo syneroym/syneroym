@@ -8,9 +8,11 @@ repository.workspace = true
 
 [dependencies]
 syneroym-core.workspace = true
+syneroym-bindings.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 rusqlite.workspace = true
+serde.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 

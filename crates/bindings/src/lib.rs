@@ -2,6 +2,8 @@
 //! This module generates Rust types from the `control-plane.wit` interface.
 
 pub mod control_plane;
+pub mod data_layer;
+pub mod vault;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod host;

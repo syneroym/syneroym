@@ -1,0 +1,15 @@
+package syneroym:vault@0.1.0;
+
+interface vault {
+    variant vault-error {
+        not-found,
+        permission-denied,
+        internal(string),
+    }
+
+    reveal: func(key: string) -> result<list<u8>, vault-error>;
+}
+
+world vault-guest {
+    import vault;
+}
