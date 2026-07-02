@@ -13,4 +13,8 @@ ignore = [
 
     # New vulnerability in quinn-proto on June 22. No fix yet
     "RUSTSEC-2026-0185",
+
+    # quick-xml (used by plist). Used by iroh 0.97.0. No fixed version of plist is available on crates yet.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
 ]
