@@ -494,7 +494,7 @@ Matched Publications
 
 ---
 
-### Summary
+## Summary
 
 > **The fundamental problem is not distributed search, but distributed query planning.**
 
