@@ -1717,6 +1717,46 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
 
 [[package]]
+name = "deadpool"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "883466cb8db62725aee5f4a6011e8a5d42912b42632df32aad57fc91127c6e04"
+dependencies = [
+ "deadpool-runtime",
+ "num_cpus",
+ "tokio",
+]
+
+[[package]]
+name = "deadpool-runtime"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2657f61fb1dd8bf37a8d51093cc7cee4e77125b22f7753f49b289f831bec2bae"
+dependencies = [
+ "tokio",
+]
+
+[[package]]
+name = "deadpool-sqlite"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9cea80311362fbc476e1f9568f50d5ec576a8bbb9375b7cdc1856e3216870440"
+dependencies = [
+ "deadpool",
+ "deadpool-sync",
+ "rusqlite",
+]
+
+[[package]]
+name = "deadpool-sync"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e385cc95d3d582c328b36d1ff90feac061102b001894b555e6b465a2e0eaabbf"
+dependencies = [
+ "deadpool-runtime",
+]
+
+[[package]]
 name = "debugid"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2678,11 +2718,11 @@ dependencies = [
 
 [[package]]
 name = "hashlink"
-version = "0.12.0"
+version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5081f264ed7adee96ea4b4778b6bb9da0a7228b084587aa3bd3ff05da7c5a3b"
+checksum = "824e001ac4f3012dd16a264bec811403a67ca9deb6c102fc5049b32c4574b35f"
 dependencies = [
- "hashbrown 0.17.1",
+ "hashbrown 0.16.1",
 ]
 
 [[package]]
@@ -3563,9 +3603,9 @@ dependencies = [
 
 [[package]]
 name = "libsqlite3-sys"
-version = "0.38.1"
+version = "0.36.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f6c19a05435c21ac299d71b6a9c13db3e3f47c520517d58990a462a1397a61db"
+checksum = "95b4103cffefa72eb8428cb6b47d6627161e51c2739fc5e3b734584157bc642a"
 dependencies = [
  "cc",
  "pkg-config",
@@ -5576,9 +5616,9 @@ dependencies = [
 
 [[package]]
 name = "rusqlite"
-version = "0.40.1"
+version = "0.38.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11438310b19e3109b6446c33d1ed5e889428cf2e278407bc7896bc4aaea43323"
+checksum = "f1c93dd1c9683b438c392c492109cb702b8090b2bfc8fed6f6e4eb4523f17af3"
 dependencies = [
  "bitflags 2.13.0",
  "fallible-iterator",
@@ -6824,7 +6864,10 @@ dependencies = [
  "sha2 0.10.9",
  "syneroym-bindings",
  "syneroym-core",
+ "syneroym-data-layer",
+ "syneroym-key-store",
  "syneroym-rpc",
+ "tempfile",
  "tokio",
  "tracing",
  "wasmtime",
@@ -6881,12 +6924,15 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "hex",
  "serde",
  "serde_json",
  "syneroym-app-orchestration",
  "syneroym-app-sandbox",
  "syneroym-bindings",
  "syneroym-core",
+ "syneroym-data-layer",
+ "syneroym-key-store",
  "syneroym-podman-sandbox",
  "syneroym-rpc",
  "tempfile",
@@ -7016,15 +7062,26 @@ dependencies = [
 name = "syneroym-data-layer"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
  "anyhow",
  "async-trait",
+ "chrono",
+ "deadpool",
+ "deadpool-sqlite",
+ "hex",
+ "rand 0.9.4",
+ "regex",
  "rusqlite",
  "serde",
+ "serde_json",
  "syneroym-bindings",
  "syneroym-core",
+ "syneroym-key-store",
  "tempfile",
  "tokio",
  "tracing",
+ "tracing-subscriber",
+ "zeroize",
 ]
 
 [[package]]
@@ -7043,6 +7100,22 @@ dependencies = [
  "tempfile",
  "tracing",
  "z32",
+ "zeroize",
+]
+
+[[package]]
+name = "syneroym-key-store"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "anyhow",
+ "chrono",
+ "rand 0.9.4",
+ "rusqlite",
+ "syneroym-identity",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
  "zeroize",
 ]
 
@@ -7079,7 +7152,9 @@ dependencies = [
  "syneroym-app-sandbox",
  "syneroym-bindings",
  "syneroym-core",
+ "syneroym-data-layer",
  "syneroym-identity",
+ "syneroym-key-store",
  "syneroym-sdk",
  "sysinfo",
  "tempfile",
@@ -7134,7 +7209,9 @@ dependencies = [
  "syneroym-app-sandbox",
  "syneroym-control-plane",
  "syneroym-core",
+ "syneroym-data-layer",
  "syneroym-identity",
+ "syneroym-key-store",
  "syneroym-podman-sandbox",
  "syneroym-rpc",
  "tokio",
@@ -7194,7 +7271,9 @@ dependencies = [
  "syneroym-community-registry",
  "syneroym-coordinator-iroh",
  "syneroym-core",
+ "syneroym-data-layer",
  "syneroym-identity",
+ "syneroym-key-store",
  "syneroym-router",
  "syneroym-rpc",
  "syneroym-sdk",

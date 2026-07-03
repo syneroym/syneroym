@@ -13,5 +13,7 @@ interface app {
 
 world host-environment {
     import context;
+    import syneroym:vault/vault@0.1.0;
+    import syneroym:data-layer/store@0.1.0;
     export app;
 }

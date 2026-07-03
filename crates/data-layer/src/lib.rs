@@ -1,8 +1,12 @@
 pub mod registry_store;
+pub mod sqlite;
+pub mod traits;
 
+pub use sqlite::SqliteStorageProvider;
 /// Re-export generated WIT types for guest compatibility and ease of use.
 pub use syneroym_bindings::data_layer::syneroym::data_layer::store as wit_store;
 pub use syneroym_bindings::vault::syneroym::vault::vault as wit_vault;
+pub use traits::{ServiceStore, StorageProvider};
 
 /// Placeholder service for the data layer, to be implemented in subsequent
 /// slices.
@@ -24,6 +28,7 @@ impl Default for DataLayerService {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -36,17 +41,59 @@ mod tests {
 
     #[test]
     fn test_serde_derives_on_wit_types() {
-        fn assert_serde<T: serde::Serialize + for<'de> serde::Deserialize<'de>>() {}
+        // Test RecordWriteValue
+        let val = wit_store::RecordWriteValue { id: "test-id".to_string(), payload: vec![1, 2, 3] };
+        let serialized = serde_json::to_string(&val).unwrap();
+        let deserialized: wit_store::RecordWriteValue = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(val.id, deserialized.id);
+        assert_eq!(val.payload, deserialized.payload);
 
-        assert_serde::<wit_store::RecordWriteValue>();
-        assert_serde::<wit_store::RecordReadValue>();
-        assert_serde::<wit_store::CollectionSchema>();
-        assert_serde::<wit_store::IndexDefinition>();
-        assert_serde::<wit_store::IndexType>();
-        assert_serde::<wit_store::QueryOptions>();
-        assert_serde::<wit_store::QueryResult>();
-        assert_serde::<wit_store::PatchMutation>();
-        assert_serde::<wit_store::Mutation>();
-        assert_serde::<wit_store::DataLayerError>();
+        // Test RecordReadValue
+        let val = wit_store::RecordReadValue {
+            id: "test-id".to_string(),
+            payload: vec![1, 2, 3],
+            creator_id: "creator".to_string(),
+            created_at: 100,
+            updated_at: 200,
+        };
+        let serialized = serde_json::to_string(&val).unwrap();
+        let deserialized: wit_store::RecordReadValue = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(val.id, deserialized.id);
+        assert_eq!(val.payload, deserialized.payload);
+        assert_eq!(val.creator_id, deserialized.creator_id);
+        assert_eq!(val.created_at, deserialized.created_at);
+        assert_eq!(val.updated_at, deserialized.updated_at);
+
+        // Test DataLayerError (Internal)
+        let val = wit_store::DataLayerError::Internal("test error".to_string());
+        let serialized = serde_json::to_string(&val).unwrap();
+        let deserialized: wit_store::DataLayerError = serde_json::from_str(&serialized).unwrap();
+        match (val, deserialized) {
+            (wit_store::DataLayerError::Internal(e1), wit_store::DataLayerError::Internal(e2)) => {
+                assert_eq!(e1, e2);
+            }
+            _ => panic!("Expected DataLayerError::Internal"),
+        }
+
+        // Test DataLayerError (PermissionDenied)
+        let val = wit_store::DataLayerError::PermissionDenied;
+        let serialized = serde_json::to_string(&val).unwrap();
+        let deserialized: wit_store::DataLayerError = serde_json::from_str(&serialized).unwrap();
+        assert!(matches!(deserialized, wit_store::DataLayerError::PermissionDenied));
+
+        // Test Mutation (Put)
+        let val = wit_store::Mutation::Put(wit_store::RecordWriteValue {
+            id: "test-id".to_string(),
+            payload: vec![1, 2, 3],
+        });
+        let serialized = serde_json::to_string(&val).unwrap();
+        let deserialized: wit_store::Mutation = serde_json::from_str(&serialized).unwrap();
+        match (val, deserialized) {
+            (wit_store::Mutation::Put(w1), wit_store::Mutation::Put(w2)) => {
+                assert_eq!(w1.id, w2.id);
+                assert_eq!(w1.payload, w2.payload);
+            }
+            _ => panic!("Expected Mutation::Put"),
+        }
     }
 }

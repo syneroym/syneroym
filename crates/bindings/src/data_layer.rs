@@ -5,6 +5,6 @@
 
 wit_bindgen::generate!({
     world: "data-layer-guest",
-    path: "wit/data-layer.wit",
+    path: "wit/data-layer/data-layer.wit",
     additional_derives: [serde::Serialize, serde::Deserialize]
 });

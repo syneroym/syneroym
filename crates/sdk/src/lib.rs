@@ -425,4 +425,34 @@ impl SyneroymClient {
         let registry_client = RegistryClient::new(true, Some(self.registry_url.clone()));
         registry_client.lookup(&self.service_id, true).await
     }
+
+    pub async fn inject_kek(&self, kek_hex: String) -> Result<()> {
+        let params = serde_json::to_value((kek_hex,))?;
+        let res = self.request("security", "inject-kek", params).await?;
+        if res.result == serde_json::json!({"status": "injected"}) {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("KEK injection failed: {:?}", res.result))
+        }
+    }
+
+    pub async fn rotate_kek(&self, new_kek_hex: String) -> Result<()> {
+        let params = serde_json::to_value((new_kek_hex,))?;
+        let res = self.request("security", "rotate-kek", params).await?;
+        if res.result == serde_json::json!({"status": "rotated"}) {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("KEK rotation failed: {:?}", res.result))
+        }
+    }
+
+    pub async fn set_secret(&self, service_id: String, key: String, value: Vec<u8>) -> Result<()> {
+        let params = serde_json::to_value((service_id, key, value))?;
+        let res = self.request("security", "set-secret", params).await?;
+        if res.result == serde_json::json!({"status": "secret_set"}) {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Secret setting failed: {:?}", res.result))
+        }
+    }
 }

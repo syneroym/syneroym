@@ -1,5 +1,6 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
-//! This module generates Rust types from the `control-plane.wit` interface.
+//! This module generates Rust types from the WIT interfaces including
+//! control-plane, data-layer, and vault.
 
 pub mod control_plane;
 pub mod data_layer;

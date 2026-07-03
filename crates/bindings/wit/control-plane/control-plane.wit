@@ -126,7 +126,14 @@ interface health {
     ping: func() -> result<string, string>;
 }
 
+interface security {
+    inject-kek: func(kek-hex: string) -> result<_, string>;
+    rotate-kek: func(new-kek-hex: string) -> result<_, string>;
+    set-secret: func(service-id: string, key: string, value: list<u8>) -> result<_, string>;
+}
+
 world control-plane-service {
     export orchestrator;
     export health;
+    export security;
 }

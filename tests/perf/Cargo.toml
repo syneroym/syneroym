@@ -30,8 +30,11 @@ syneroym-app-sandbox.workspace = true
 syneroym-core.workspace = true
 syneroym-bindings.workspace = true
 syneroym-identity.workspace = true
+syneroym-key-store.workspace = true
+syneroym-data-layer.workspace = true
 wasmtime.workspace = true
 z32.workspace = true
+
 
 # Testing & Execution
 assert_cmd.workspace = true

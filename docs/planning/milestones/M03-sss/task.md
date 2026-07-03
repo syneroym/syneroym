@@ -262,10 +262,17 @@ rotation_policy = "restart-on-rotation"  # or "none"
 New WIT packages (`syneroym:data-layer@0.1.0`, `syneroym:vault@0.1.0`,
 `syneroym:config@0.1.0`, `syneroym:pubsub@0.1.0` in M3B) are added in M3.
 
-The existing `syneroym:host` and `syneroym:control-plane` packages are
-**unchanged** in M3. No WASM component targeting those interfaces needs to be
-recompiled. The `wasm32-wasip2` compilation target must remain unbroken after
-every slice.
+Slice 2A intentionally extends the host/control-plane boundary only where
+needed for storage encryption and vault bootstrap:
+
+- `syneroym:host` imports `syneroym:vault/vault@0.1.0` and
+  `syneroym:data-layer/store@0.1.0`.
+- `syneroym:control-plane` exposes a native `security` management interface
+  for KEK injection, KEK rotation, and vault secret registration.
+- CRUD data-layer calls remain a Slice 3A surface. If linked before Slice 3A,
+  they must fail explicitly instead of returning successful no-ops.
+
+The `wasm32-wasip2` compilation target must remain unbroken after every slice.
 
 ---
 
@@ -345,7 +352,7 @@ function implementation yet.
 
 ---
 
-### [ ] Slice 2A: Encrypted SQLite Isolation and Secret Vault
+### [x] Slice 2A: Encrypted SQLite Isolation and Secret Vault
 
 **Requirement IDs:** `[FND-SEC]` (storage encryption), `[PLT-DAT]` (DB isolation)
 **ADR references:** [ADR-0006](../../../decisions/0006-sqlite-encryption-sqlcipher.md)
@@ -355,11 +362,12 @@ function implementation yet.
 
 **Envelope Encryption Infrastructure:**
 
-- [ ] Add `crates/key-store/` crate with `KeyStore`:
+- [x] Add `crates/key-store/` crate with `KeyStore`:
   - Holds an AES-256 KEK in `mlock`'d + `MADV_DONTDUMP` memory (reuse
     `lock_memory` helper from M2 `crates/identity/src/keys.rs`).
-  - `inject_kek(kek: [u8; 32]) -> Result<()>` — authenticated management
-    channel only; refused after first injection without re-auth.
+  - `inject_kek(kek: [u8; 32]) -> Result<()>` — substrate management
+    interface only; refused after first injection without re-auth. Full remote
+    UCAN/FDAE authorization for this management channel is deferred to M4.
   - `generate_dek(service_id: &str) -> Result<[u8; 32]>` — random DEK,
     AES-256-GCM encrypted with KEK, stored in `substrate.db`.
   - `load_dek(service_id: &str) -> Result<[u8; 32]>` — decrypts from DB.
@@ -371,7 +379,7 @@ function implementation yet.
     parameter) so that M4 per-SynApp-Instance KEK can be introduced without
     breaking the `KeyStore` interface.
 
-- [ ] Add `dek_store` and `schema_version` tables to `substrate.db`:
+- [x] Add `dek_store` and `schema_version` tables to `substrate.db`:
   ```sql
   CREATE TABLE IF NOT EXISTS schema_version (version TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS dek_store (
@@ -382,11 +390,11 @@ function implementation yet.
   );
   ```
 
-- [ ] Define generic storage traits in `crates/data-layer/src/traits.rs` to ensure the storage backend is pluggable:
+- [x] Define generic storage traits in `crates/data-layer/src/traits.rs` to ensure the storage backend is pluggable:
   - `trait StorageProvider`: provides `open_service_db(service_id, key_store) -> Result<Box<dyn ServiceStore>>`.
   - `trait ServiceStore`: defines the CRUD, batch, and DDL operations.
-- [ ] Implement build profiles: `syneroym-oltp` and `syneroym-olap` (both currently backed by standard SQLite). Ensure Cargo feature gate structure is in place. (DuckDB integration is explicitly deferred to future backlog).
-- [ ] Implement `SqliteStorageProvider` in `crates/data-layer/src/sqlite.rs`:
+- [x] Implement build profiles: `syneroym-oltp` and `syneroym-olap` (both currently backed by standard SQLite). Ensure Cargo feature gate structure is in place. (DuckDB integration is explicitly deferred to future backlog).
+- [x] Implement `SqliteStorageProvider` in `crates/data-layer/src/sqlite.rs`:
   - Implements `StorageProvider`. Manages per-service SQLite files at `<data_dir>/<service_id>/state.db`.
   - Path traversal guard: `service_id` must match `^[a-zA-Z0-9_\-]{1,128}$`;
     use `Path::join` + `starts_with` to confirm the resolved path is strictly a
@@ -394,11 +402,11 @@ function implementation yet.
     the path to exist and behaves differently across OSes.
   - `open_service_db` resolves DEK, opens/creates the service DB, and passes the
     raw hex DEK to SQLCipher via `PRAGMA key = "x'<hex>'";`.
-- [ ] Implement `SqliteServiceStore` in `crates/data-layer/src/sqlite.rs`:
+- [x] Implement `SqliteServiceStore` in `crates/data-layer/src/sqlite.rs`:
   - Implements `ServiceStore`. Wraps a `deadpool-sqlite` reader pool + single-writer `mpsc`
     channel (Actor/Pool concurrency model per architecture).
 
-- [ ] Production enforcement:
+- [x] Production enforcement:
   - `encryption = true` (default) + no KEK at `open_service_db` → `error!` +
     `Err(StorageError::EncryptionKeyRequired)`.
   - `encryption = false` in non-dev profile → `warn!` on every startup:
@@ -406,7 +414,7 @@ function implementation yet.
 
 **Secret Vault:**
 
-- [ ] `_vault` table in each `state.db`:
+- [x] `_vault` table in each `state.db`:
   ```sql
   CREATE TABLE IF NOT EXISTS _vault (
     key        TEXT PRIMARY KEY,
@@ -417,23 +425,23 @@ function implementation yet.
   ```
   Vault values encrypted with the service's own DEK (DEK itself encrypted by KEK).
 
-- [ ] Wire `syneroym:vault/reveal` host function in `engine.rs`:
+- [x] Wire `syneroym:vault/reveal` host function in `engine.rs`:
   - `HostState.service_id` → `KeyStore::load_dek` → AES-256-GCM decrypt
     vault row (using the `ServiceStore`) → return `list<u8>` to guest.
   - Secret bytes must not appear in any log output at any level.
 
-- [ ] Add `roymctl secret set <service-id> <key>` command reading value from
+- [x] Add `roymctl secret set <service-id> <key>` command reading value from
   stdin (never from CLI args) and writing to vault via substrate management API.
 
 **Tests:**
 
-- [ ] Unit: `KeyStore` generate/encrypt/decrypt DEK round-trip.
-- [ ] Unit: `rotate_kek` re-encrypts all DEKs; old KEK bytes zeroed on drop.
-- [ ] Unit: path traversal guard rejects `"../../etc/passwd"` and `"../x"`.
-- [ ] Unit: `vault/reveal` returns correct secret; `not-found` for unknown key.
-- [ ] Integration: production profile, no KEK → `EncryptionKeyRequired`.
-- [ ] Integration: dev profile, encryption disabled → insecure warning in logs.
-- [ ] Integration: inject KEK → DB opens; data survives substrate restart.
+- [x] Unit: `KeyStore` generate/encrypt/decrypt DEK round-trip.
+- [x] Unit: `rotate_kek` re-encrypts all DEKs; old KEK bytes zeroed on drop.
+- [x] Unit: path traversal guard rejects `"../../etc/passwd"` and `"../x"`.
+- [x] Unit: `vault/reveal` returns correct secret; `not-found` for unknown key.
+- [x] Integration: production profile, no KEK → `EncryptionKeyRequired`.
+- [x] Integration: dev profile, encryption disabled → insecure warning in logs.
+- [x] Integration: inject KEK → DB opens; data survives substrate restart.
 
 #### Acceptance Criteria
 

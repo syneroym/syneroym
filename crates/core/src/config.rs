@@ -162,12 +162,18 @@ fn default_blobs_dir() -> PathBuf {
     PathBuf::from("blobs")
 }
 
+fn default_services_dir() -> PathBuf {
+    PathBuf::from("services")
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct StorageConfig {
     pub engine: StorageEngine,
     pub db_dir: PathBuf,
     pub blobs_dir: PathBuf,
+    pub encryption: bool,
+    pub services_dir: PathBuf,
 }
 
 impl Default for StorageConfig {
@@ -176,6 +182,8 @@ impl Default for StorageConfig {
             engine: Default::default(),
             db_dir: default_db_dir(),
             blobs_dir: default_blobs_dir(),
+            encryption: true,
+            services_dir: default_services_dir(),
         }
     }
 }

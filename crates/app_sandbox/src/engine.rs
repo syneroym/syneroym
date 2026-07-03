@@ -6,6 +6,7 @@
 use std::{
     fmt::{Debug, Formatter},
     path::PathBuf,
+    sync::Arc,
     time::Instant,
 };
 
@@ -16,9 +17,17 @@ use syneroym_bindings::{
     control_plane::exports::syneroym::control_plane::orchestrator::{
         ArtifactSource, DeployManifest, ServiceType,
     },
-    host::syneroym::host::{context, context::Host},
+    host::syneroym::{
+        data_layer::store::{
+            CollectionSchema, DataLayerError, Mutation, QueryOptions, QueryResult, RecordReadValue,
+            RecordWriteValue,
+        },
+        host::{context, context::Host},
+    },
 };
 use syneroym_core::{config::SubstrateConfig, local_registry::SubstrateEndpoint};
+use syneroym_data_layer::traits::StorageProvider;
+use syneroym_key_store::KeyStore;
 use syneroym_rpc::JsonRpcRequest;
 use tokio::fs as tokio_fs;
 use tracing::debug;
@@ -47,6 +56,9 @@ pub struct HostState {
     pub component_id: String,
     pub request_ctx: Option<String>,
     pub memory_limits: StoreLimits,
+    pub key_store: Arc<KeyStore>,
+    pub storage_provider: Arc<dyn StorageProvider>,
+    pub is_init_context: bool,
 }
 
 impl Debug for HostState {
@@ -59,8 +71,15 @@ impl Debug for HostState {
 }
 
 impl HostState {
-    /// Creates a new HostState with standard WASI context.
-    pub fn new(component_id: String, max_memory_bytes: Option<usize>) -> Self {
+    /// Creates a new HostState with standard WASI context and storage provider
+    /// references.
+    pub fn new(
+        component_id: String,
+        max_memory_bytes: Option<usize>,
+        key_store: Arc<KeyStore>,
+        storage_provider: Arc<dyn StorageProvider>,
+        is_init_context: bool,
+    ) -> Self {
         let wasi = WasiCtx::builder().build();
         let table = ResourceTable::new();
         let memory_limits = StoreLimitsBuilder::new()
@@ -69,7 +88,16 @@ impl HostState {
             .memories(1)
             .tables(1)
             .build();
-        Self { wasi, table, component_id, request_ctx: None, memory_limits }
+        Self {
+            wasi,
+            table,
+            component_id,
+            request_ctx: None,
+            memory_limits,
+            key_store,
+            storage_provider,
+            is_init_context,
+        }
     }
 }
 
@@ -88,6 +116,129 @@ impl Host for HostState {
             format!("{component_ctx} | {request_ctx}")
         }
     }
+}
+
+impl syneroym_bindings::host::syneroym::vault::vault::Host for HostState {
+    async fn reveal(
+        &mut self,
+        key: String,
+    ) -> std::result::Result<Vec<u8>, syneroym_bindings::host::syneroym::vault::vault::VaultError>
+    {
+        use syneroym_bindings::host::syneroym::vault::vault::VaultError;
+
+        let provider = self.storage_provider.clone();
+        let key_store = self.key_store.clone();
+        let service_id = self.component_id.clone();
+
+        let store = match provider.open_service_db(&service_id, &key_store).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!(
+                    "Vault reveal failed to open service DB for service_id {}: {}",
+                    service_id,
+                    e
+                );
+                return Err(VaultError::Internal(e.to_string()));
+            }
+        };
+
+        match store.reveal_secret(&key).await {
+            Ok(Some(bytes)) => Ok(bytes),
+            Ok(None) => Err(VaultError::NotFound),
+            Err(e) => {
+                tracing::error!(
+                    "Vault reveal failed to read secret for service_id {}: {}",
+                    service_id,
+                    e
+                );
+                Err(VaultError::Internal(e.to_string()))
+            }
+        }
+    }
+}
+
+impl syneroym_bindings::host::syneroym::data_layer::store::Host for HostState {
+    async fn create_collection(
+        &mut self,
+        _schema: CollectionSchema,
+    ) -> std::result::Result<(), DataLayerError> {
+        Err(data_layer_slice_3a_pending())
+    }
+
+    async fn drop_collection(&mut self, _name: String) -> std::result::Result<(), DataLayerError> {
+        Err(data_layer_slice_3a_pending())
+    }
+
+    async fn put(
+        &mut self,
+        _collection: String,
+        _value: RecordWriteValue,
+    ) -> std::result::Result<(), DataLayerError> {
+        Err(data_layer_slice_3a_pending())
+    }
+
+    async fn patch(
+        &mut self,
+        _collection: String,
+        _id: String,
+        _patch_json: Vec<u8>,
+    ) -> std::result::Result<(), DataLayerError> {
+        Err(data_layer_slice_3a_pending())
+    }
+
+    async fn get(
+        &mut self,
+        _collection: String,
+        _id: String,
+    ) -> std::result::Result<Option<RecordReadValue>, DataLayerError> {
+        Err(data_layer_slice_3a_pending())
+    }
+
+    async fn query(
+        &mut self,
+        _collection: String,
+        _opts: QueryOptions,
+    ) -> std::result::Result<QueryResult, DataLayerError> {
+        Err(data_layer_slice_3a_pending())
+    }
+
+    async fn delete(
+        &mut self,
+        _collection: String,
+        _id: String,
+    ) -> std::result::Result<(), DataLayerError> {
+        Err(data_layer_slice_3a_pending())
+    }
+
+    async fn delete_many(
+        &mut self,
+        _collection: String,
+        _filter: String,
+    ) -> std::result::Result<u64, DataLayerError> {
+        Err(data_layer_slice_3a_pending())
+    }
+
+    async fn batch_mutate(
+        &mut self,
+        _collection: String,
+        _mutations: Vec<Mutation>,
+    ) -> std::result::Result<(), DataLayerError> {
+        Err(data_layer_slice_3a_pending())
+    }
+
+    async fn execute_ddl(&mut self, _sql: String) -> std::result::Result<(), DataLayerError> {
+        // TODO(M4): replace is_init_context with Admin UCAN check
+        if !self.is_init_context {
+            return Err(DataLayerError::PermissionDenied);
+        }
+        Err(data_layer_slice_3a_pending())
+    }
+}
+
+fn data_layer_slice_3a_pending() -> DataLayerError {
+    DataLayerError::Internal(
+        "data-layer host functions are not implemented until Slice 3A".to_string(),
+    )
 }
 
 impl wasmtime::ResourceLimiter for HostState {
@@ -124,6 +275,8 @@ pub struct AppSandboxEngine {
     default_max_instructions: Option<u64>,
     default_max_memory_bytes: Option<u64>,
     _shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    pub key_store: Arc<KeyStore>,
+    pub storage_provider: Arc<dyn StorageProvider>,
 }
 
 impl Debug for AppSandboxEngine {
@@ -156,6 +309,8 @@ impl AppSandboxEngine {
     pub async fn init(
         config: &SubstrateConfig,
         endpoints: Vec<(String, String, SubstrateEndpoint)>,
+        key_store: Arc<KeyStore>,
+        storage_provider: Arc<dyn StorageProvider>,
     ) -> anyhow::Result<Self> {
         let component_dir = config.storage.blobs_dir.join("app_sandbox");
 
@@ -194,6 +349,8 @@ impl AppSandboxEngine {
             default_max_instructions,
             default_max_memory_bytes,
             _shutdown_tx: Some(shutdown_tx),
+            key_store,
+            storage_provider,
         };
 
         for (service_id, _interface_name, endpoint) in endpoints {
@@ -255,6 +412,14 @@ impl AppSandboxEngine {
         let mut linker = Linker::new(engine);
         p2::add_to_linker_async(&mut linker)?;
         context::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
+        syneroym_bindings::host::syneroym::vault::vault::add_to_linker::<_, HasSelf<HostState>>(
+            &mut linker,
+            |state| state,
+        )?;
+        syneroym_bindings::host::syneroym::data_layer::store::add_to_linker::<_, HasSelf<HostState>>(
+            &mut linker,
+            |state| state,
+        )?;
         Ok(linker)
     }
 
@@ -470,7 +635,14 @@ impl AppSandboxEngine {
             .map(|m| m as usize);
 
         // Create host state
-        let host_state = HostState::new(service_id.to_string(), max_memory_bytes);
+        let is_init_context = method_name == "init" || method_name == "migrate";
+        let host_state = HostState::new(
+            service_id.to_string(),
+            max_memory_bytes,
+            self.key_store.clone(),
+            self.storage_provider.clone(),
+            is_init_context,
+        );
 
         debug!("created wasi ctx and host state");
 
@@ -610,7 +782,17 @@ mod tests {
         let engine = AppSandboxEngine::build_wasm_engine(None, None).unwrap();
         let linker = AppSandboxEngine::build_wasm_linker(&engine).unwrap();
 
-        let host_state = HostState::new("test_component".to_string(), None);
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider = Arc::new(
+            syneroym_data_layer::SqliteStorageProvider::new(
+                tempfile::tempdir().unwrap().path(),
+                false,
+            )
+            .unwrap(),
+        );
+        let host_state =
+            HostState::new("test_component".to_string(), None, key_store, storage_provider, false);
+
         let mut store = Store::new(&engine, host_state);
 
         let component_path = test_constants::greeter_wasm_path();
@@ -704,6 +886,11 @@ mod tests {
             default_max_instructions: Some(10_000),
             default_max_memory_bytes: Some(1024 * 1024), // 1MB
             _shutdown_tx: None,
+            key_store: Arc::new(KeyStore::new()),
+            storage_provider: Arc::new(
+                syneroym_data_layer::SqliteStorageProvider::new(std::env::temp_dir(), false)
+                    .unwrap(),
+            ),
         };
 
         // Cache the test component

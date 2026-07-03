@@ -20,12 +20,15 @@ pub trait OrchestratorInterface {
     async fn deploy_plan(&self, plan: DeploymentPlan) -> Result<(), String>;
 }
 use syneroym_core::local_registry::{EndpointRegistry, SubstrateEndpoint};
+use syneroym_data_layer::traits::StorageProvider;
+use syneroym_key_store::KeyStore;
 use syneroym_rpc::{NativeInvocation, NativeResponse, NativeService, RpcError, RpcResult};
 use tracing::info;
 
 use crate::dummy_sandbox::{AppSandboxEngine, ContainerEngine};
 
 const ORCHESTRATOR_INTERFACE: &str = "orchestrator";
+const SECURITY_INTERFACE: &str = "security";
 
 /// The Substrate Service (The Control Plane Orchestrator)
 /// This service handles the deployment and lifecycle of applications
@@ -37,6 +40,8 @@ pub struct ControlPlaneService {
     app_sandbox_engine: Arc<AppSandboxEngine>,
     podman_sandbox_engine: Arc<ContainerEngine>,
     hosted_apps_dir: PathBuf,
+    key_store: Arc<KeyStore>,
+    storage_provider: Arc<dyn StorageProvider>,
 }
 
 impl Debug for ControlPlaneService {
@@ -54,6 +59,8 @@ impl ControlPlaneService {
         podman_sandbox_engine: Arc<ContainerEngine>,
         registry: EndpointRegistry,
         hosted_apps_dir: PathBuf,
+        key_store: Arc<KeyStore>,
+        storage_provider: Arc<dyn StorageProvider>,
     ) -> Result<Self> {
         info!("Initializing ControlPlaneService (Orchestrator)...");
 
@@ -67,6 +74,8 @@ impl ControlPlaneService {
             app_sandbox_engine,
             podman_sandbox_engine,
             hosted_apps_dir,
+            key_store,
+            storage_provider,
         })
     }
 }
@@ -75,6 +84,84 @@ impl ControlPlaneService {
 impl NativeService for ControlPlaneService {
     async fn dispatch(&self, invocation: NativeInvocation) -> RpcResult<NativeResponse> {
         info!("Orchestrator received dispatch: {}.{}", invocation.interface, invocation.method);
+
+        if invocation.interface.as_str() == SECURITY_INTERFACE {
+            // Slice 2A keeps KEK and secret mutations on the substrate native
+            // management interface. Full remote authorization with UCAN/FDAE is
+            // deferred to M4.
+            match invocation.method.as_str() {
+                "inject-kek" => {
+                    let (kek_hex,): (String,) =
+                        serde_json::from_value(invocation.params).map_err(|e| {
+                            RpcError::InvalidParams(format!(
+                                "Failed to parse inject-kek params: {e}"
+                            ))
+                        })?;
+                    let kek_bytes = hex::decode(kek_hex)
+                        .map_err(|e| RpcError::InvalidParams(format!("Invalid hex KEK: {e}")))?;
+                    if kek_bytes.len() != 32 {
+                        return Err(RpcError::InvalidParams(
+                            "KEK must be exactly 32 bytes".to_string(),
+                        ));
+                    }
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&kek_bytes);
+                    self.key_store
+                        .inject_kek(arr, None)
+                        .map_err(|e| RpcError::InternalError(e.to_string()))?;
+                    return Ok(NativeResponse {
+                        payload: serde_json::json!({"status": "injected"}),
+                    });
+                }
+                "rotate-kek" => {
+                    let (new_kek_hex,): (String,) = serde_json::from_value(invocation.params)
+                        .map_err(|e| {
+                            RpcError::InvalidParams(format!(
+                                "Failed to parse rotate-kek params: {e}"
+                            ))
+                        })?;
+                    let new_kek_bytes = hex::decode(new_kek_hex)
+                        .map_err(|e| RpcError::InvalidParams(format!("Invalid hex KEK: {e}")))?;
+                    if new_kek_bytes.len() != 32 {
+                        return Err(RpcError::InvalidParams(
+                            "New KEK must be exactly 32 bytes".to_string(),
+                        ));
+                    }
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&new_kek_bytes);
+                    self.storage_provider
+                        .rotate_kek(&self.key_store, arr)
+                        .await
+                        .map_err(|e| RpcError::InternalError(e.to_string()))?;
+                    return Ok(NativeResponse {
+                        payload: serde_json::json!({"status": "rotated"}),
+                    });
+                }
+                "set-secret" => {
+                    let (service_id, key, value): (String, String, Vec<u8>) =
+                        serde_json::from_value(invocation.params).map_err(|e| {
+                            RpcError::InvalidParams(format!(
+                                "Failed to parse set-secret params: {e}"
+                            ))
+                        })?;
+                    let store = self
+                        .storage_provider
+                        .open_service_db(&service_id, &self.key_store)
+                        .await
+                        .map_err(|e| RpcError::InternalError(e.to_string()))?;
+                    store
+                        .write_secret(&key, &value)
+                        .await
+                        .map_err(|e| RpcError::InternalError(e.to_string()))?;
+                    return Ok(NativeResponse {
+                        payload: serde_json::json!({"status": "secret_set"}),
+                    });
+                }
+                _ => {
+                    return Err(RpcError::MethodNotFound(invocation.method));
+                }
+            }
+        }
 
         if invocation.interface.as_str() != ORCHESTRATOR_INTERFACE {
             return Err(RpcError::InternalError(format!(
@@ -399,8 +486,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_wit_adherence() {
-        let wit_path =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../bindings/wit/control-plane.wit");
+        let wit_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../bindings/wit/control-plane/control-plane.wit");
 
         let mut resolve = Resolve::default();
         let content = std::fs::read_to_string(&wit_path).expect("Failed to read WIT file");
@@ -420,17 +507,28 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().unwrap();
         let config = syneroym_core::config::SubstrateConfig::default();
-        let app_sandbox = Arc::new(AppSandboxEngine::init(&config, vec![]).await.unwrap());
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider = Arc::new(
+            syneroym_data_layer::SqliteStorageProvider::new(temp_dir.path(), false).unwrap(),
+        );
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(&config, vec![], key_store.clone(), storage_provider.clone())
+                .await
+                .unwrap(),
+        );
         let container_engine =
             Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path()));
         let registry =
             EndpointRegistry::new_mock(Arc::new(syneroym_core::storage::MockStorage::new()));
+
         let service = ControlPlaneService::init(
             "orchestrator".to_string(),
             app_sandbox,
             container_engine,
             registry,
             temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider,
         )
         .await
         .unwrap();
@@ -460,17 +558,28 @@ mod tests {
     async fn test_deploy_plan_path_traversal() {
         let temp_dir = tempfile::tempdir().unwrap();
         let config = syneroym_core::config::SubstrateConfig::default();
-        let app_sandbox = Arc::new(AppSandboxEngine::init(&config, vec![]).await.unwrap());
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider = Arc::new(
+            syneroym_data_layer::SqliteStorageProvider::new(temp_dir.path(), false).unwrap(),
+        );
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(&config, vec![], key_store.clone(), storage_provider.clone())
+                .await
+                .unwrap(),
+        );
         let container_engine =
             Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path()));
         let registry =
             EndpointRegistry::new_mock(Arc::new(syneroym_core::storage::MockStorage::new()));
+
         let service = ControlPlaneService::init(
             "orchestrator".to_string(),
             app_sandbox,
             container_engine,
             registry,
             temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider,
         )
         .await
         .unwrap();
@@ -504,17 +613,28 @@ mod tests {
     async fn test_deploy_plan_absolute_path() {
         let temp_dir = tempfile::tempdir().unwrap();
         let config = syneroym_core::config::SubstrateConfig::default();
-        let app_sandbox = Arc::new(AppSandboxEngine::init(&config, vec![]).await.unwrap());
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider = Arc::new(
+            syneroym_data_layer::SqliteStorageProvider::new(temp_dir.path(), false).unwrap(),
+        );
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(&config, vec![], key_store.clone(), storage_provider.clone())
+                .await
+                .unwrap(),
+        );
         let container_engine =
             Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path()));
         let registry =
             EndpointRegistry::new_mock(Arc::new(syneroym_core::storage::MockStorage::new()));
+
         let service = ControlPlaneService::init(
             "orchestrator".to_string(),
             app_sandbox,
             container_engine,
             registry,
             temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider,
         )
         .await
         .unwrap();
@@ -545,5 +665,73 @@ mod tests {
                 .unwrap_err()
                 .contains("Arbitrary file read prevented: Path traversal or absolute paths")
         );
+    }
+
+    #[tokio::test]
+    async fn test_security_dispatch_returns_sdk_statuses() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = syneroym_core::config::SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider = Arc::new(
+            syneroym_data_layer::SqliteStorageProvider::new(temp_dir.path(), false).unwrap(),
+        );
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(&config, vec![], key_store.clone(), storage_provider.clone())
+                .await
+                .unwrap(),
+        );
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path()));
+        let registry =
+            EndpointRegistry::new_mock(Arc::new(syneroym_core::storage::MockStorage::new()));
+
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider,
+        )
+        .await
+        .unwrap();
+
+        let kek = hex::encode([1u8; 32]);
+        let inject_res = service
+            .dispatch(NativeInvocation {
+                interface: "security".to_string(),
+                method: "inject-kek".to_string(),
+                params: serde_json::to_value((kek,)).unwrap(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(inject_res.payload, serde_json::json!({"status": "injected"}));
+
+        let new_kek = hex::encode([2u8; 32]);
+        let rotate_res = service
+            .dispatch(NativeInvocation {
+                interface: "security".to_string(),
+                method: "rotate-kek".to_string(),
+                params: serde_json::to_value((new_kek,)).unwrap(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(rotate_res.payload, serde_json::json!({"status": "rotated"}));
+
+        let secret_res = service
+            .dispatch(NativeInvocation {
+                interface: "security".to_string(),
+                method: "set-secret".to_string(),
+                params: serde_json::to_value((
+                    "profile-store".to_string(),
+                    "api_key".to_string(),
+                    b"secret-from-stdin".to_vec(),
+                ))
+                .unwrap(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(secret_res.payload, serde_json::json!({"status": "secret_set"}));
     }
 }

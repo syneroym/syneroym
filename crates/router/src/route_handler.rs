@@ -27,7 +27,9 @@ use syneroym_core::{
     local_registry::EndpointRegistry,
     storage::MockStorage,
 };
+use syneroym_data_layer::{SqliteStorageProvider, traits::StorageProvider};
 use syneroym_identity::Identity;
+use syneroym_key_store::KeyStore;
 use syneroym_podman_sandbox::ContainerEngine;
 use syneroym_rpc::NativeService;
 use tracing::{debug, error};
@@ -99,8 +101,21 @@ impl RouteHandler {
         registry: EndpointRegistry,
         secret_key: [u8; 32],
     ) -> Result<Self> {
-        let app_sandbox_engine =
-            Arc::new(AppSandboxEngine::init(config, registry.get_all_endpoints()).await?);
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider: Arc<dyn StorageProvider> = Arc::new(SqliteStorageProvider::new(
+            &config.storage.db_dir,
+            config.storage.encryption,
+        )?);
+
+        let app_sandbox_engine = Arc::new(
+            AppSandboxEngine::init(
+                config,
+                registry.get_all_endpoints(),
+                key_store.clone(),
+                storage_provider.clone(),
+            )
+            .await?,
+        );
 
         let podman_path = config
             .roles
@@ -149,6 +164,8 @@ impl RouteHandler {
             podman_sandbox_engine,
             registry,
             config.hosted_apps_dir(),
+            key_store,
+            storage_provider,
         )
         .await?;
         s.register_native_service(service_id, Arc::new(substrate_service));

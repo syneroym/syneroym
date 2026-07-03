@@ -124,8 +124,8 @@ where
     S: Subscriber + for<'span> LookupSpan<'span>,
 {
     match config.logging.format {
-        LogFormat::Json => Box::new(fmt::layer().json()),
-        LogFormat::Pretty => Box::new(fmt::layer().pretty()),
+        LogFormat::Json => Box::new(fmt::layer().json().with_writer(std::io::stdout)),
+        LogFormat::Pretty => Box::new(fmt::layer().pretty().with_writer(std::io::stdout)),
     }
 }
 

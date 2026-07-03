@@ -4,7 +4,7 @@
 //! with guest WASM modules.
 
 wasmtime::component::bindgen!({
-    path: "wit/host.wit",
+    path: "wit/host",
     world: "host-environment",
     imports: {
         default: async,

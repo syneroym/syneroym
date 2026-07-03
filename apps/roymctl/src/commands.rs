@@ -16,8 +16,11 @@ use syneroym_identity::Identity;
 pub mod app;
 pub mod identity;
 pub mod registry;
+pub mod security;
 pub mod substrate;
 pub mod svc;
+
+use security::{KekCommands, SecretCommands};
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum Commands {
@@ -64,6 +67,37 @@ pub enum Commands {
         #[command(subcommand)]
         command: RegistryCommands,
     },
+    /// Manage the Key Encryption Key (KEK)
+    Kek {
+        #[command(subcommand)]
+        command: KekCommands,
+    },
+    /// Manage vault secrets
+    Secret {
+        #[command(subcommand)]
+        command: SecretCommands,
+    },
+}
+
+fn get_substrate_did(
+    substrate_opt: Option<String>,
+    dir: &std::path::Path,
+) -> anyhow::Result<String> {
+    substrate_opt
+        .or_else(|| {
+            // Try to load local substrate DID from key file if it exists
+            let key_path = dir.join("substrate.key");
+            Identity::load_from_path(&key_path)
+                .map(|identity| {
+                    syneroym_identity::substrate::derive_did_key(&identity.public_key())
+                })
+                .ok()
+        })
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Substrate DID not provided and substrate.key not found. Use --substrate <did>"
+            )
+        })
 }
 
 /// Execute the subcommands
@@ -78,42 +112,11 @@ pub async fn run(
             substrate::handle(&command, &dir).await?;
         }
         Commands::Svc { command } => {
-            let substrate_did = substrate_opt
-                .or_else(|| {
-                    // Try to load local substrate DID from key file if it exists
-                    let key_path = dir.join("substrate.key");
-                    Identity::load_from_path(&key_path)
-                        .map(|identity| {
-                            syneroym_identity::substrate::derive_did_key(&identity.public_key())
-                        })
-                        .ok()
-                })
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "Substrate DID not provided and substrate.key not found. Use --substrate \
-                         <did>"
-                    )
-                })?;
-
+            let substrate_did = get_substrate_did(substrate_opt, &dir)?;
             svc::handle(&command, &api_url, substrate_did, &dir).await?;
         }
         Commands::App { command } => {
-            let substrate_did = substrate_opt
-                .or_else(|| {
-                    // Try to load local substrate DID from key file if it exists
-                    let key_path = dir.join("substrate.key");
-                    Identity::load_from_path(&key_path)
-                        .map(|identity| {
-                            syneroym_identity::substrate::derive_did_key(&identity.public_key())
-                        })
-                        .ok()
-                })
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "Substrate DID not provided and substrate.key not found. Use --substrate \
-                         <did>"
-                    )
-                })?;
+            let substrate_did = get_substrate_did(substrate_opt, &dir)?;
             app::handle(&command, &api_url, substrate_did).await?;
         }
         Commands::Identity { command } => {
@@ -134,6 +137,14 @@ pub async fn run(
         }
         Commands::Registry { command } => {
             registry::handle(&command, &api_url, &dir).await?;
+        }
+        Commands::Kek { command } => {
+            let substrate_did = get_substrate_did(substrate_opt, &dir)?;
+            security::handle_kek(&command, &api_url, substrate_did).await?;
+        }
+        Commands::Secret { command } => {
+            let substrate_did = get_substrate_did(substrate_opt, &dir)?;
+            security::handle_secret(&command, &api_url, substrate_did).await?;
         }
     }
     Ok(())

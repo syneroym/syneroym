@@ -9,4 +9,4 @@ mod keys;
 
 pub use delegation::DelegationCertificate;
 pub use document::IdentityDoc;
-pub use keys::Identity;
+pub use keys::{Identity, lock_memory};

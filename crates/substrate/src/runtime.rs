@@ -365,6 +365,11 @@ async fn setup_router(
     endpoint_registry
         .register(service_id.to_string(), "orchestrator".to_string(), endpoint)
         .await?;
+    let security_endpoint =
+        SubstrateEndpoint::NativeHostChannel { service_id: service_id.to_string() };
+    endpoint_registry
+        .register(service_id.to_string(), "security".to_string(), security_endpoint)
+        .await?;
 
     ConnectionRouter::init(endpoint_registry, config.clone(), secret_key, service_id.to_string())
         .await

@@ -1,9 +1,11 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
-use std::fs;
+use std::{fs, sync::Arc};
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use syneroym_app_sandbox::{AppSandboxEngine, HostState, conversions::json_to_wasm_params};
 use syneroym_core::test_constants;
+use syneroym_data_layer::SqliteStorageProvider;
+use syneroym_key_store::KeyStore;
 use test_constants::GREETER_INTERFACE_NAME;
 use tokio::runtime::Builder;
 use wasmtime::{
@@ -27,6 +29,11 @@ fn bench_wasm_engine(c: &mut Criterion) {
         }
     };
 
+    let key_store = Arc::new(KeyStore::new());
+    let temp_dir = tempfile::tempdir().unwrap();
+    let storage_provider: Arc<dyn syneroym_data_layer::StorageProvider> =
+        Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+
     let engine = AppSandboxEngine::build_wasm_engine(None, None).unwrap();
     let linker: Linker<HostState> = AppSandboxEngine::build_wasm_linker(&engine).unwrap();
     let component = Component::new(&engine, &wasm_bytes).unwrap();
@@ -34,7 +41,13 @@ fn bench_wasm_engine(c: &mut Criterion) {
     // Benchmark 1: Wasm Store & HostState Creation
     c.bench_function("wasm_store_creation", |b| {
         b.iter(|| {
-            let host_state = HostState::new(black_box("test_component".to_string()), None);
+            let host_state = HostState::new(
+                black_box("test_component".to_string()),
+                None,
+                key_store.clone(),
+                storage_provider.clone(),
+                false,
+            );
             let _store = Store::new(&engine, host_state);
         });
     });
@@ -42,7 +55,13 @@ fn bench_wasm_engine(c: &mut Criterion) {
     // Benchmark 2: Wasm Instantiation (cached component)
     c.bench_function("wasm_cached_instantiation", |b| {
         b.to_async(&runtime).iter(|| async {
-            let host_state = HostState::new("test_component".to_string(), None);
+            let host_state = HostState::new(
+                "test_component".to_string(),
+                None,
+                key_store.clone(),
+                storage_provider.clone(),
+                false,
+            );
             let mut store: Store<HostState> = Store::new(&engine, host_state);
             store.set_fuel(1_000_000).unwrap();
             store.epoch_deadline_trap();
@@ -52,8 +71,15 @@ fn bench_wasm_engine(c: &mut Criterion) {
     });
 
     // Extract type info for JSON parameter conversion benchmark
-    let host_state = HostState::new("test_component".to_string(), None);
+    let host_state = HostState::new(
+        "test_component".to_string(),
+        None,
+        key_store.clone(),
+        storage_provider.clone(),
+        false,
+    );
     let mut store: Store<HostState> = Store::new(&engine, host_state);
+
     store.set_fuel(1_000_000).unwrap();
     store.epoch_deadline_trap();
     store.set_epoch_deadline(1_000);

@@ -37,9 +37,21 @@ pub async fn run_scenario() -> Result<()> {
     let interface_name = GREETER_INTERFACE_NAME;
     let method_name = "greet";
 
+    let key_store = std::sync::Arc::new(syneroym_key_store::KeyStore::new());
+    let storage_provider = std::sync::Arc::new(syneroym_data_layer::SqliteStorageProvider::new(
+        std::env::temp_dir(),
+        false,
+    )?);
+
     // Warmup Baseline
     for _ in 0..10 {
-        let host_state = HostState::new("test_component".to_string(), None);
+        let host_state = HostState::new(
+            "test_component".to_string(),
+            None,
+            key_store.clone(),
+            storage_provider.clone(),
+            false,
+        );
         let mut store = Store::new(&engine, host_state);
         let instance = linker.instantiate_async(&mut store, &component).await?;
         let (func, results_len, _item) =
@@ -57,9 +69,16 @@ pub async fn run_scenario() -> Result<()> {
     let mut baseline_latencies = Vec::new();
     for _ in 0..100 {
         let start = Instant::now();
-        let host_state = HostState::new("test_component".to_string(), None);
+        let host_state = HostState::new(
+            "test_component".to_string(),
+            None,
+            key_store.clone(),
+            storage_provider.clone(),
+            false,
+        );
         let mut store = Store::new(&engine, host_state);
         let instance = linker.instantiate_async(&mut store, &component).await?;
+
         let (func, results_len, _item) =
             AppSandboxEngine::get_wasm_func(&mut store, &instance, interface_name, method_name)?;
         let mut wasm_results = vec![Val::Bool(false); results_len];

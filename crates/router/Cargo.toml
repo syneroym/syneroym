@@ -15,7 +15,10 @@ syneroym-podman-sandbox.workspace = true
 syneroym-rpc.workspace = true
 syneroym-control-plane.workspace = true
 syneroym-identity.workspace = true
+syneroym-key-store.workspace = true
+syneroym-data-layer.workspace = true
 anyhow.workspace = true
+
 async-trait.workspace = true
 bytes.workspace = true
 dashmap.workspace = true

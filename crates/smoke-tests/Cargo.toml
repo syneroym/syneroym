@@ -16,6 +16,9 @@ syneroym-app-orchestration.workspace = true
 syneroym-app-sandbox.workspace = true
 syneroym-community-registry.workspace = true
 syneroym-router.workspace = true
+syneroym-key-store.workspace = true
+syneroym-data-layer.workspace = true
+
 
 anyhow.workspace = true
 tokio.workspace = true
