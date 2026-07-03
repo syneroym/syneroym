@@ -10,7 +10,12 @@ use syneroym_sdk::SyneroymClient;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_connection_limit() -> Result<()> {
-    let _ = tracing_subscriber::fmt().with_env_filter("debug,iroh=info").try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("debug,iroh=info")),
+        )
+        .try_init();
 
     let temp_dir = tempfile::tempdir()?;
     let base_path = temp_dir.path();
