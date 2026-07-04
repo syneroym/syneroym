@@ -774,7 +774,7 @@ The system accommodates the following variation axes across workflows:
 
 **Booking:** Event slots, consulting time slots, open-ended job requests.
 
-**Payment:** One-time; pre- or post-delivery; multi-part; negotiated; subscription; escrow; system coins; mutual credit systems. [See the Dynamic Ledger Network Specification](./commitment-network-spec.md) for mutual credit mechanics.
+**Payment:** One-time; pre- or post-delivery; multi-part; negotiated; subscription; escrow; system coins; mutual credit systems. [See the Dynamic Ledger Network Specification](https://github.com/syneroym/foundation/blob/main/ideas/commitment-network.md) for mutual credit mechanics.
 
 **Product type:** Time-bound (e.g. prepared food), digital content, physical goods.
 
@@ -1190,7 +1190,7 @@ Because Syneroym can be utilized as a general open cloud, this dedicated phase s
 
 
 ### The Syneroym Hub (Core Client Application)
-*The universal, multi-surface shell that connects the user to their local substrate and orchestrates all ecosystem activities.*
+*The universal, multi-surface shell that connects the user to their local substrate and orchestrates all ecosystem activities.* Details in [Multi-Surface Matching Fabric UX](https://github.com/syneroym/foundation/blob/main/ideas/multi-surface-matching-fabric-ux.md)
 - **The Personal Data Homebase:** A secure vault interface managing the user's digital identity, portable service history, and active FDAE access grants.
 - **The Trusted Room Inbox:** A unified messaging view combining human-to-human social chats, professional guild groups, and interactive business-to-consumer service threads.
 - **The Agentic Concierge (optional):** A text/voice interface powered by a local
