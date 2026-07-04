@@ -61,6 +61,7 @@ async fn test_registry_propagation() -> Result<()> {
         app_data_dir: base_path.join("user_data_r"),
         ..Default::default()
     };
+    config_r.substrate.enable_bep0044_dht = false;
     config_r.roles.community_registry = Some(ServiceRegistryRole {
         access: AccessControl::String("everyone".to_string()),
         http_bind_address: "127.0.0.1:0".to_string(),
@@ -76,6 +77,7 @@ async fn test_registry_propagation() -> Result<()> {
         app_data_dir: base_path.join("user_data_rp"),
         ..Default::default()
     };
+    config_rp.substrate.enable_bep0044_dht = false;
     config_rp.roles.community_registry = Some(ServiceRegistryRole {
         access: AccessControl::String("everyone".to_string()),
         http_bind_address: "127.0.0.1:0".to_string(),
@@ -127,6 +129,7 @@ async fn test_inbound_relay() -> Result<()> {
         app_data_dir: base_path.join("user_data_r"),
         ..Default::default()
     };
+    config_r.substrate.enable_bep0044_dht = false;
     config_r.roles.community_registry = Some(ServiceRegistryRole {
         access: AccessControl::String("everyone".to_string()),
         http_bind_address: "127.0.0.1:0".to_string(),
@@ -142,6 +145,7 @@ async fn test_inbound_relay() -> Result<()> {
         app_data_dir: base_path.join("user_data_c"),
         ..Default::default()
     };
+    config_c.substrate.enable_bep0044_dht = false;
     config_c.roles.coordinator = Some(CoordinatorRole {
         iroh: Some(CoordinatorIrohConfig {
             enable_signalling: true,
@@ -169,6 +173,7 @@ async fn test_inbound_relay() -> Result<()> {
         app_data_dir: base_path.join("user_data_cp"),
         ..Default::default()
     };
+    config_cp.substrate.enable_bep0044_dht = false;
     config_cp.roles.coordinator = Some(CoordinatorRole {
         iroh: Some(CoordinatorIrohConfig {
             enable_signalling: true,
@@ -199,6 +204,7 @@ async fn test_inbound_relay() -> Result<()> {
         app_data_dir: base_path.join("user_data_z"),
         ..Default::default()
     };
+    config_z.substrate.enable_bep0044_dht = false;
     config_z.resolve_paths();
     let data_store_z = registry_store::init_store(&config_z).await?;
     let endpoint_registry_z = EndpointRegistry::new(data_store_z).await?;
@@ -261,6 +267,7 @@ async fn test_outbound_relay() -> Result<()> {
         app_data_dir: base_path.join("user_data_r"),
         ..Default::default()
     };
+    config_r.substrate.enable_bep0044_dht = false;
     config_r.roles.community_registry = Some(ServiceRegistryRole {
         access: AccessControl::String("everyone".to_string()),
         http_bind_address: "127.0.0.1:0".to_string(),
@@ -276,6 +283,7 @@ async fn test_outbound_relay() -> Result<()> {
         app_data_dir: base_path.join("user_data_c"),
         ..Default::default()
     };
+    config_c.substrate.enable_bep0044_dht = false;
     config_c.roles.coordinator = Some(CoordinatorRole {
         iroh: Some(CoordinatorIrohConfig {
             enable_signalling: true,
@@ -303,6 +311,7 @@ async fn test_outbound_relay() -> Result<()> {
         app_data_dir: base_path.join("user_data_cp"),
         ..Default::default()
     };
+    config_cp.substrate.enable_bep0044_dht = false;
     config_cp.roles.coordinator = Some(CoordinatorRole {
         iroh: Some(CoordinatorIrohConfig {
             enable_signalling: true,
@@ -333,6 +342,7 @@ async fn test_outbound_relay() -> Result<()> {
         app_data_dir: base_path.join("user_data_x"),
         ..Default::default()
     };
+    config_x.substrate.enable_bep0044_dht = false;
     config_x.resolve_paths();
     let data_store_x = registry_store::init_store(&config_x).await?;
     let endpoint_registry_x = EndpointRegistry::new(data_store_x).await?;

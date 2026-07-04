@@ -56,6 +56,7 @@ async fn test_echo() -> anyhow::Result<()> {
         profile: "full".to_string(),
         ..SubstrateConfig::default()
     };
+    config.substrate.enable_bep0044_dht = false;
     config.resolve_paths();
 
     // Since this test runs the substrate in-process, we can't rely on `cargo test`
