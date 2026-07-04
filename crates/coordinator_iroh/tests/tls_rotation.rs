@@ -65,6 +65,7 @@ async fn test_tls_rotation_sigusr1() -> Result<()> {
         }),
         ..SubstrateConfig::default()
     };
+    config.substrate.enable_bep0044_dht = false;
     config.resolve_paths();
     config.logging.target = LogTarget::File;
 

@@ -28,6 +28,7 @@ async fn test_connection_limit() -> Result<()> {
         app_data_dir: base_path.join("user_data_c"),
         ..Default::default()
     };
+    config_c.substrate.enable_bep0044_dht = false;
     config_c.roles.coordinator = Some(CoordinatorRole {
         iroh: Some(CoordinatorIrohConfig {
             enable_signalling: false,
