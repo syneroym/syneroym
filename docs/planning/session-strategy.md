@@ -75,14 +75,14 @@ Open a new window. Ask it to inspect the codebase and produce `task.md`.
 *Review and approve that plan before proceeding to implementation.*
 
 ### B. Implementation Window (One per slice)
-Open a fresh window for the specific slice to keep context focused and make failures easier to unwind.
+Open a fresh window for the specific slice to keep context focused and make failures easier to unwind. Leverage the `/goal` command to allow the agent to autonomously compile code, run tests, and fix errors until the slice is fully complete.
 
 **Prompt Template:**
-> Implement only slice M1B from `docs/planning/milestones/M01-local-app-model/task.md`. Before proceeding with implementation, pause to show me your implementation plan if any, and wait for me to give a go ahead.
+> /goal Implement only slice M1B from `docs/planning/milestones/M01-local-app-model/task.md`. Before writing any code, create an implementation plan and wait for my approval to proceed.
 >
 > Read the canonical project documents and inspect the current worktree before changing anything. Preserve unrelated changes. Do not commit or stage files.
 >
-> Implement the slice completely, add its tests, and update `task.md` and `status.md` with factual progress and verification evidence. Run the relevant tests for this slice and paste the passing output into `status.md`. Do not begin the next slice.
+> Implement the slice completely, add its tests, and update `task.md` and `status.md` with factual progress and verification evidence. Run the relevant tests for this slice and paste the passing output into `status.md`. Do not stop until all tests and clippy checks pass for this slice. Do not begin the next slice.
 
 ### C. Review Window (Read-Only)
 Use a fresh window after every substantial slice to act as a reviewer.
@@ -93,8 +93,9 @@ Use a fresh window after every substantial slice to act as a reviewer.
 > Do not modify code. Report actionable findings with file and line links, and output these findings as a checklist in a markdown artifact so the next implementation window can methodically address them.
 
 *Use a subsequent implementation window to address any accepted findings.* You could use the following prompt template.
-> Review the following review comments on implementation of slice xx of Mnn-xxx. Implement what you agree, and pushback or /grill-me
- for others. Show me the implementation plan and start implementation only after my go-ahead. (and then copy review comments below ...)
+> /goal Review the following review comments on implementation of slice xx of Mnn-xxx. Implement what you agree, and pushback or /grill-me for others. Before writing code, show me your implementation plan and wait for my approval. Once approved, do not stop until the fixes are implemented and all tests pass.
+>
+> [Copy review comments below...]
 
 ### D. Milestone Closeout Window (Read-Only)
 When all slices are complete, open a final window to verify the milestone.
