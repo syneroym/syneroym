@@ -90,6 +90,8 @@ For complex slices — a genuine design decision, tricky invariants, a cross-bou
 **Prompt Template:**
 > Implement only slice M1B from `docs/planning/milestones/M01-local-app-model/task.md`. Before writing any code, create an implementation plan and wait for my approval to proceed.
 >
+> Write the plan so a different tool could execute it without your reasoning: step-by-step per file, exact function/type signatures, pseudo-code for non-trivial logic, explicit constraints — not shorthand only you would follow.
+>
 > [If applicable:] Here is an independent implementation plan for this slice from the other tool: [paste plan]. Fold in anything that improves correctness, robustness, or simplicity, and note what you rejected and why.
 >
 > Read the canonical project documents and inspect the current worktree before changing anything. Preserve unrelated changes. Do not commit or stage files.
@@ -106,7 +108,7 @@ Use a fresh session, in the tool that did **not** implement this slice, after ev
 >
 > Independently re-run the tests, clippy, and any acceptance commands yourself — do not rely on the pasted output in `status.md`.
 >
-> Do not modify code. Report actionable findings with file and line links, and output these findings as a checklist in a markdown artifact so the next implementation session can methodically address them.
+> Do not modify code. Report actionable findings with file and line links, precise enough that a different tool can act on them directly without asking you to clarify, and output these findings as a checklist in a markdown artifact so the next implementation session can methodically address them.
 
 *Use a subsequent implementation session (same tool as the original implementer, or a new assignment per §1) to address any accepted findings.* You could use the following prompt template.
 > Review the following review comments on implementation of slice xx of Mnn-xxx. Implement what you agree, and push back on or ask for justification of the others. Before writing code, show me your implementation plan and wait for my approval. Once approved, do not stop until the fixes are implemented and all tests pass.
@@ -145,6 +147,7 @@ Because it stays open across the whole program, periodically ask it to re-derive
 - **Read first:** Every session must begin by reading files from the repository.
 - **No history reliance:** Never rely on another session's conversation history. Context lives in the files.
 - **Cross-tool review:** The reviewer for a slice must be a different tool than its implementer (§1). Record both in `status.md`.
+- **Write for the other tool:** Plans and review findings must be explicit enough for a different tool to execute or act on without the author's reasoning — step-by-step, exact signatures/schemas, pseudo-code for non-trivial logic — not shorthand only the author would follow.
 - **Task vs Status:** `task.md` defines intended work; `status.md` records factual state.
 - **Evidence-based:** Update the traceability matrix only when verifiable acceptance evidence exists.
 - **No concurrent dependencies:** Do not run dependent slices concurrently. Parallelize only clearly independent research or non-overlapping crates.
