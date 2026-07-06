@@ -111,3 +111,109 @@ test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 ```text
 Formatting and clippy checks pass cleanly across the workspace.
 ```
+
+## Slice 3A: Data-Layer Host Functions (Completed)
+
+We have successfully implemented Slice 3A:
+
+1. **MongoDB-style filter compiler** (`crates/data-layer/src/filter.rs`): a pure,
+   DB-free recursive-descent compiler from JSON filter documents to
+   parameterized SQL `WHERE` clauses. Supports field equality, `$gt`/`$gte`/
+   `$lt`/`$lte`/`$ne`, `$in`/`$nin`, `$regex` (compiled to `LIKE '%pattern%'`),
+   `$and`/`$or`/`$not`, and dot-notation nested-field access. Both the JSON
+   field *path* and the comparison *value* are bound as `?` parameters passed
+   to `json_extract(payload, ?)` — no guest-supplied string is ever
+   interpolated into SQL text. A depth-10 nesting guard and an unsupported-
+   operator guard both return `data-layer-error::schema-violation`.
+2. **Real CRUD/DDL host functions** (`crates/data-layer/src/sqlite.rs`,
+   `crates/app_sandbox/src/engine.rs`): `create-collection`/`drop-collection`/
+   `execute-ddl` (EXPLAIN-checked before execution)/`put` (upsert,
+   `created_at` immutable after first write)/`patch` (RFC 7396 JSON
+   merge-patch, implemented in Rust rather than depending on SQLite's
+   `json_patch()` SQL function, since JSON1 availability isn't guaranteed with
+   the `bundled-sqlcipher` rusqlite feature)/`get` (via the previously-unused
+   deadpool reader pool)/`delete` (idempotent)/`delete-many` (returns affected
+   row count)/`query` (cursor-paginated, hard-capped at
+   `MAX_QUERY_PAGE_SIZE = 1000`)/`batch-mutate` (single transaction,
+   `MAX_BATCH_SIZE = 200`, rolls back entirely on first failure). Mutating
+   operations run through the existing single-writer actor; reads run through
+   the reader pool for concurrency.
+3. **Schema lifecycle hooks**: `AppSandboxEngine::deploy_wasm` now calls the
+   new `StorageProvider::service_exists` check to decide whether a deploy is
+   fresh (invokes the guest's `init()` export) or a re-deploy (invokes
+   `migrate()`, with a `// TODO(M5)` noting the snapshot/rollback safety net
+   is deferred). `get_wasm_func` was generalized to resolve root-level world
+   exports (`interface_name: Option<&str>`), since `init`/`migrate` live
+   directly on the `data-layer-guest` world, not inside a named interface.
+   Lifecycle hook invocation skips gracefully (no error) for components that
+   don't export `init`/`migrate` at all.
+4. **Type-boundary conversion** (`crates/app_sandbox/src/data_layer_convert.rs`):
+   `crates/bindings` generates two separate, structurally identical but
+   distinct Rust type sets for `syneroym:data-layer/store` — one via
+   `wasmtime::component::bindgen!` (used by `engine.rs`'s `Host` trait impl)
+   and one via `wit_bindgen::generate!` (already used throughout
+   `crates/data-layer` as `wit_store`, with zero `wasmtime` dependency). This
+   module provides the mechanical field-by-field conversions between them.
+5. **New test component** (`test-components/data-layer-test/`): imports
+   `syneroym:data-layer/store@0.1.0`, exports `init`/`migrate` (root-level)
+   and a `test-driver` interface (`run-crud-scenario`, `get-creator-id`) used
+   by the new integration tests.
+6. **Bug fix surfaced by this slice**: `SqliteStorageProvider`'s
+   `SERVICE_ID_REGEX` (`^[a-zA-Z0-9_\-]{1,128}$`, inherited unchanged from
+   Slice 2A) rejected colons, but real service ids are DIDs
+   (`did:key:...`). Nothing called into the storage layer at deploy time
+   before this slice, so the bug was latent; the new `service_exists` check
+   made it immediately fatal for every WASM deploy. Fixed by extending the
+   regex to `^[a-zA-Z0-9_:\-]{1,128}$` — colons are not a path separator on
+   any Rust-supported OS, so this does not weaken the path-traversal guard.
+
+### Factual Verification Evidence
+
+#### Workspace Tests (`cargo test --workspace`)
+```text
+0 failures across the entire workspace, including:
+- syneroym-data-layer: 50 passed (filter compiler, CRUD, batch, DDL-gating,
+  SQL-injection, host-injected-field tests)
+- syneroym-app-sandbox: 3 unit + 1 lifecycle-hooks integration (2 tests) +
+  1 data-layer integration (1 test) = 6 passed
+- syneroym-substrate tests/basic_lifecycle.rs: 3 passed (including the
+  full WASM + TCP end-to-end scenario, confirming no regression from the
+  SERVICE_ID_REGEX fix)
+```
+
+#### App-Sandbox Integration Tests
+```text
+running 1 test
+test test_deploy_init_crud_creator_id_and_migrate ... ok
+
+running 2 tests
+test test_execute_ddl_denied_outside_lifecycle_context ... ok
+test test_deploy_skips_lifecycle_hook_gracefully_for_component_without_it ... ok
+```
+
+#### Performance Budgets (`cargo bench -p syneroym-app-sandbox --bench data_layer_bench`)
+```text
+data_layer_put                  time: [24.7 µs 25.6 µs 26.3 µs]   (budget < 5 ms)
+data_layer_get                  time: [17.7 µs 17.8 µs 17.8 µs]   (budget < 2 ms)
+data_layer_query_100_eq_filter  time: [52.9 µs 53.0 µs 53.1 µs]   (budget < 20 ms)
+data_layer_batch_mutate_50      time: [469  µs 485  µs 504  µs]   (budget < 30 ms)
+data_layer_wasm_init_hook       time: [18.0 ms 18.2 ms 18.3 ms]   (budget < 200 ms)
+data_layer_wasm_migrate_hook    time: [16.1 ms 16.9 ms 18.3 ms]   (budget < 200 ms)
+```
+All six measured operations are well within their M3A performance budgets.
+
+#### WASM Target Build (`cargo build --target wasm32-wasip2 -p syneroym-bindings`)
+```text
+Finished `dev` profile [unoptimized + debuginfo] target(s)
+```
+
+#### E2E Playwright Tests (`mise run test:e2e`)
+```text
+  4 passed (18.7s)
+```
+
+#### Clippy and Formatting Verification
+```text
+cargo +nightly fmt --all -- --check: clean, zero diff
+cargo clippy --workspace --all-targets --all-features: zero warnings
+```

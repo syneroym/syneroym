@@ -454,7 +454,7 @@ function implementation yet.
 
 ---
 
-### [ ] Slice 3A: Data-Layer Host Functions
+### [x] Slice 3A: Data-Layer Host Functions
 
 **Requirement IDs:** `[PLT-DAT]` (CRUD, batch, schema init)
 **ADR references:** [ADR-0007](../../../decisions/0007-data-layer-wit-interface.md)
@@ -464,13 +464,13 @@ function implementation yet.
 
 **Schema Lifecycle Hooks:**
 
-- [ ] Add `init()` lifecycle call in the WASM deployment path in `engine.rs`:
+- [x] Add `init()` lifecycle call in the WASM deployment path in `engine.rs`:
   - Invoked on **first deploy only** (fresh database).
   - Sets `HostState.is_init_context = true`.
   - Guest uses `execute-ddl` for `CREATE TABLE`, `CREATE INDEX`, seed inserts.
   - DDL validated with `EXPLAIN <sql>` before execution (syntax check, no mutation).
 
-- [ ] Add `migrate()` lifecycle call in the WASM re-deployment path in `engine.rs`:
+- [x] Add `migrate()` lifecycle call in the WASM re-deployment path in `engine.rs`:
   - Invoked on **re-deploy** (existing database; `init()` is skipped).
   - Also sets `HostState.is_init_context = true`.
   - Guest uses `execute-ddl` for `ALTER TABLE ADD COLUMN`, new `CREATE INDEX`,
@@ -482,19 +482,20 @@ function implementation yet.
 
 **Collection Lifecycle:**
 
-- [ ] `create-collection(schema)` — generates `CREATE TABLE IF NOT EXISTS <name>
+- [x] `create-collection(schema)` — generates `CREATE TABLE IF NOT EXISTS <name>
   (id TEXT PRIMARY KEY, payload JSON NOT NULL, creator_id TEXT NOT NULL,
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)` plus
   `CREATE INDEX IF NOT EXISTS` for each indexed field via `json_extract`.
 
-- [ ] `drop-collection(name)` — `DROP TABLE IF EXISTS <name>` via single writer.
+- [x] `drop-collection(name)` — `DROP TABLE IF EXISTS <name>` via single writer.
 
 **CRUD Operations:**
 
-- [ ] `put` (upsert), `patch` (JSON merge-patch via SQLite `json_patch`), `get`,
+- [x] `put` (upsert), `patch` (JSON merge-patch, implemented in Rust per RFC
+  7396 rather than SQLite's `json_patch()` — see status.md), `get`,
   `delete`, `delete-many`.
 
-- [ ] `query` with:
+- [x] `query` with:
   - MongoDB-style JSON filter document parsed from the `filter: option<string>`
     field in `query-options`.
   - Operators supported: equality, `$gt`/`$gte`/`$lt`/`$lte`/`$ne`,
@@ -507,37 +508,39 @@ function implementation yet.
     operator: <op>")`.
   - Cursor pagination using `id > ?` ordering.
 
-- [ ] `batch-mutate` — all mutations in a single `BEGIN`/`COMMIT` transaction
+- [x] `batch-mutate` — all mutations in a single `BEGIN`/`COMMIT` transaction
   through the single writer; rollback entire transaction on any failure.
 
 **Host-Injected Fields:**
 
-- [ ] `creator_id` is set from `HostState.component_id`; cannot be overridden
+- [x] `creator_id` is set from `HostState.component_id`; cannot be overridden
   by the WASM guest (the host always overwrites the field before write).
-- [ ] `created_at` is set by the host clock (Unix ms) on first `put`; immutable thereafter.
-- [ ] `updated_at` is set by the host clock (Unix ms) on every `put` or `patch`;
+- [x] `created_at` is set by the host clock (Unix ms) on first `put`; immutable thereafter.
+- [x] `updated_at` is set by the host clock (Unix ms) on every `put` or `patch`;
   guest-supplied value is silently discarded.
 
 **Tests:**
 
-- [ ] Unit: `put`/`get`/`patch` correctness.
-- [ ] Unit: `get` returns `Ok(None)` for missing record (not `Err`).
-- [ ] Unit: `query` with various MongoDB operators (`$gt`, `$in`, `$regex`,
+- [x] Unit: `put`/`get`/`patch` correctness.
+- [x] Unit: `get` returns `Ok(None)` for missing record (not `Err`).
+- [x] Unit: `query` with various MongoDB operators (`$gt`, `$in`, `$regex`,
   `$and`, dot-notation).
-- [ ] Unit: `query` returns empty list when no records match (not `Err`).
-- [ ] Unit: cursor pagination returns correct disjoint pages.
-- [ ] Unit: `batch-mutate` rolls back all mutations on one failure.
-- [ ] Unit: `execute-ddl` succeeds in `init()` and `migrate()` contexts;
+- [x] Unit: `query` returns empty list when no records match (not `Err`).
+- [x] Unit: cursor pagination returns correct disjoint pages.
+- [x] Unit: `batch-mutate` rolls back all mutations on one failure.
+- [x] Unit: `execute-ddl` succeeds in `init()` and `migrate()` contexts;
   returns `permission-denied` from normal invocation context.
-- [ ] Unit: `delete-many` returns correct affected row count.
-- [ ] Unit: unsupported MongoDB operator returns structured `schema-violation` error.
-- [ ] Unit: SQL injection attempt via filter JSON value is safely bound; no injection.
-- [ ] Unit: filter document nested > 10 levels returns `schema-violation`.
-- [ ] Unit: `updated_at` is host-injected; guest-supplied value is discarded.
-- [ ] Integration: test WASM component calls `create-collection`, puts 100
+- [x] Unit: `delete-many` returns correct affected row count.
+- [x] Unit: unsupported MongoDB operator returns structured `schema-violation` error.
+- [x] Unit: SQL injection attempt via filter JSON value is safely bound; no injection.
+- [x] Unit: filter document nested > 10 levels returns `schema-violation`.
+- [x] Unit: `updated_at` is host-injected; guest-supplied value is discarded.
+- [x] Integration: test WASM component calls `create-collection`, puts 100
   records, queries all, verifies count.
-- [ ] Integration: `creator_id` from guest is overridden by host value.
-- [ ] Integration: `migrate()` called on re-deploy adds a new column; existing
+- [x] Integration: `creator_id` from guest is overridden by host value (verified
+  as host-supplied, since `record-write-value` has no `creator_id` field for a
+  guest to set in the first place — see status.md).
+- [x] Integration: `migrate()` called on re-deploy adds a new column; existing
   records accessible after migration.
 
 #### Acceptance Criteria

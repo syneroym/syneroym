@@ -54,8 +54,12 @@ pub async fn run_scenario() -> Result<()> {
         );
         let mut store = Store::new(&engine, host_state);
         let instance = linker.instantiate_async(&mut store, &component).await?;
-        let (func, results_len, _item) =
-            AppSandboxEngine::get_wasm_func(&mut store, &instance, interface_name, method_name)?;
+        let (func, results_len, _item) = AppSandboxEngine::get_wasm_func(
+            &mut store,
+            &instance,
+            Some(interface_name),
+            method_name,
+        )?;
         let mut wasm_results = vec![Val::Bool(false); results_len];
         func.call_async(
             &mut store,
@@ -79,8 +83,12 @@ pub async fn run_scenario() -> Result<()> {
         let mut store = Store::new(&engine, host_state);
         let instance = linker.instantiate_async(&mut store, &component).await?;
 
-        let (func, results_len, _item) =
-            AppSandboxEngine::get_wasm_func(&mut store, &instance, interface_name, method_name)?;
+        let (func, results_len, _item) = AppSandboxEngine::get_wasm_func(
+            &mut store,
+            &instance,
+            Some(interface_name),
+            method_name,
+        )?;
         let mut wasm_results = vec![Val::Bool(false); results_len];
         func.call_async(
             &mut store,

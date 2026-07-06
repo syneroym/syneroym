@@ -88,7 +88,7 @@ fn bench_wasm_engine(c: &mut Criterion) {
     let interface_name = GREETER_INTERFACE_NAME;
     let method_name = "greet";
     let (_func, _results_len, item) =
-        AppSandboxEngine::get_wasm_func(&mut store, &instance, interface_name, method_name)
+        AppSandboxEngine::get_wasm_func(&mut store, &instance, Some(interface_name), method_name)
             .unwrap();
 
     // Benchmark 3: json_to_wasm_params conversion

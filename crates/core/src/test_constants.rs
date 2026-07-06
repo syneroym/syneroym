@@ -13,3 +13,13 @@ pub fn greeter_wasm_path() -> PathBuf {
         "../../test-components/greeter/target/wasm32-wasip2/release/syneroym_test_greeter.wasm",
     )
 }
+
+/// Returns the workspace-relative path to the data-layer-test component WASM
+/// module (imports `syneroym:data-layer/store`, exports `init`/`migrate` and
+/// CRUD test-driver functions -- see `test-components/data-layer-test`).
+pub fn data_layer_test_wasm_path() -> PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+        "../../test-components/data-layer-test/target/wasm32-wasip2/release/\
+         syneroym_test_data_layer.wasm",
+    )
+}
