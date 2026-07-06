@@ -890,7 +890,15 @@ All of the following must be verified and recorded in `status.md`:
 
 1. **`AggregationPipeline` scope:** Requirements specify `$group`, `$having`,
    projections. Explicitly deferred to M4. Must appear as a gate item in the
-   M4 milestone plan.
+   M4 milestone plan. Design should translate MongoDB aggregation-pipeline
+   stages onto SQLite constructs (`GROUP BY`, `HAVING`, views), not invent
+   parallel syntax — see [ADR-0007](../../../decisions/0007-data-layer-wit-interface.md).
+
+1a. **Privileged raw-SQL escape hatch:** [ADR-0011](../../../decisions/0011-privileged-raw-sql-query.md)
+   (Proposed) specifies a `query-raw` host function for trusted contexts that
+   need SQL expressivity beyond the JSON filter DSL, gated the same way as
+   `execute-ddl`. Not in M3A scope; must appear as a gate item alongside
+   `AggregationPipeline` in the M4 (or M3B) milestone plan.
 
 2. **FDAE `execute-ddl` elevation model:** `is_init_context` flag in `HostState`
    is a temporary M3 scaffold. In M4 this becomes a proper Admin UCAN capability.

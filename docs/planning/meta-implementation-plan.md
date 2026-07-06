@@ -127,6 +127,8 @@ To prevent dependency cycles and scope creep, the data layer and storage mechani
 2. **UCAN Context:** Extract and normalize UCAN scopes/claims upon request ingress.
 3. **Local FDAE:** Implement the SQL Pushdown Sieve, compiling declarative policies into the SQLite engine (handling data-centric RLS/CLS).
 4. **Federated FDAE:** Expand the pipeline to support cross-service parameter fetching via the Universal Proxy.
+5. **`AggregationPipeline`** (gate item deferred from M3A, [ADR-0007](../decisions/0007-data-layer-wit-interface.md)): add `$group`/`$having`/projections to the data-layer `query` WIT surface, translating MongoDB aggregation-pipeline stages onto SQLite constructs (`GROUP BY`, `HAVING`, views) rather than inventing parallel syntax.
+6. **Privileged raw-SQL escape hatch** (gate item deferred from M3A, [ADR-0011](../decisions/0011-privileged-raw-sql-query.md)): add the `query-raw` host function for trusted contexts needing SQL expressivity beyond the JSON filter DSL, gated by the Admin UCAN capability introduced in this milestone (replacing the M3 `is_init_context` scaffold).
 
 ---
 
