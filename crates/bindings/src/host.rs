@@ -6,6 +6,7 @@
 wasmtime::component::bindgen!({
     path: "wit/host",
     world: "host-environment",
+    additional_derives: [serde::Serialize, serde::Deserialize],
     imports: {
         default: async,
     },

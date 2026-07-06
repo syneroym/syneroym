@@ -40,10 +40,7 @@ use wasmtime::{
 };
 use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxView, WasiView, p2};
 
-use crate::{
-    conversions::{json_to_wasm_params, wasm_results_to_json_string},
-    data_layer_convert,
-};
+use crate::conversions::{json_to_wasm_params, wasm_results_to_json_string};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WasmResourceQuota {
@@ -191,11 +188,7 @@ impl syneroym_bindings::host::syneroym::data_layer::store::Host for HostState {
             self.storage_provider.clone(),
         )
         .await?;
-        let wit_schema = data_layer_convert::collection_schema_to_wit(&schema);
-        store
-            .create_collection(&wit_schema)
-            .await
-            .map_err(data_layer_convert::data_layer_error_from_wit)
+        store.create_collection(&schema).await
     }
 
     async fn drop_collection(&mut self, name: String) -> std::result::Result<(), DataLayerError> {
@@ -205,7 +198,7 @@ impl syneroym_bindings::host::syneroym::data_layer::store::Host for HostState {
             self.storage_provider.clone(),
         )
         .await?;
-        store.drop_collection(&name).await.map_err(data_layer_convert::data_layer_error_from_wit)
+        store.drop_collection(&name).await
     }
 
     async fn put(
@@ -220,11 +213,7 @@ impl syneroym_bindings::host::syneroym::data_layer::store::Host for HostState {
             self.storage_provider.clone(),
         )
         .await?;
-        let wit_value = data_layer_convert::record_write_value_to_wit(&value);
-        store
-            .put(&collection, &wit_value, &creator_id)
-            .await
-            .map_err(data_layer_convert::data_layer_error_from_wit)
+        store.put(&collection, &value, &creator_id).await
     }
 
     async fn patch(
@@ -239,10 +228,7 @@ impl syneroym_bindings::host::syneroym::data_layer::store::Host for HostState {
             self.storage_provider.clone(),
         )
         .await?;
-        store
-            .patch(&collection, &id, &patch_json)
-            .await
-            .map_err(data_layer_convert::data_layer_error_from_wit)
+        store.patch(&collection, &id, &patch_json).await
     }
 
     async fn get(
@@ -256,11 +242,7 @@ impl syneroym_bindings::host::syneroym::data_layer::store::Host for HostState {
             self.storage_provider.clone(),
         )
         .await?;
-        store
-            .get(&collection, &id)
-            .await
-            .map(|opt| opt.map(data_layer_convert::record_read_value_from_wit))
-            .map_err(data_layer_convert::data_layer_error_from_wit)
+        store.get(&collection, &id).await
     }
 
     async fn query(
@@ -274,12 +256,7 @@ impl syneroym_bindings::host::syneroym::data_layer::store::Host for HostState {
             self.storage_provider.clone(),
         )
         .await?;
-        let wit_opts = data_layer_convert::query_options_to_wit(&opts);
-        store
-            .query(&collection, &wit_opts)
-            .await
-            .map(data_layer_convert::query_result_from_wit)
-            .map_err(data_layer_convert::data_layer_error_from_wit)
+        store.query(&collection, &opts).await
     }
 
     async fn delete(
@@ -293,7 +270,7 @@ impl syneroym_bindings::host::syneroym::data_layer::store::Host for HostState {
             self.storage_provider.clone(),
         )
         .await?;
-        store.delete(&collection, &id).await.map_err(data_layer_convert::data_layer_error_from_wit)
+        store.delete(&collection, &id).await
     }
 
     async fn delete_many(
@@ -307,10 +284,7 @@ impl syneroym_bindings::host::syneroym::data_layer::store::Host for HostState {
             self.storage_provider.clone(),
         )
         .await?;
-        store
-            .delete_many(&collection, Some(filter.as_str()))
-            .await
-            .map_err(data_layer_convert::data_layer_error_from_wit)
+        store.delete_many(&collection, Some(filter.as_str())).await
     }
 
     async fn batch_mutate(
@@ -325,12 +299,7 @@ impl syneroym_bindings::host::syneroym::data_layer::store::Host for HostState {
             self.storage_provider.clone(),
         )
         .await?;
-        let wit_mutations: Vec<_> =
-            mutations.iter().map(data_layer_convert::mutation_to_wit).collect();
-        store
-            .batch_mutate(&collection, &wit_mutations, &creator_id)
-            .await
-            .map_err(data_layer_convert::data_layer_error_from_wit)
+        store.batch_mutate(&collection, &mutations, &creator_id).await
     }
 
     async fn execute_ddl(&mut self, sql: String) -> std::result::Result<(), DataLayerError> {
@@ -344,7 +313,7 @@ impl syneroym_bindings::host::syneroym::data_layer::store::Host for HostState {
             self.storage_provider.clone(),
         )
         .await?;
-        store.execute_ddl(&sql).await.map_err(data_layer_convert::data_layer_error_from_wit)
+        store.execute_ddl(&sql).await
     }
 }
 

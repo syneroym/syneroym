@@ -3,7 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use syneroym_key_store::KeyStore;
 
-use crate::wit_store;
+use crate::host_store;
 
 #[async_trait]
 pub trait StorageProvider: Send + Sync {
@@ -36,16 +36,16 @@ pub trait ServiceStore: Send + Sync {
     /// Creates a collection (table) plus any requested field indexes.
     async fn create_collection(
         &self,
-        schema: &wit_store::CollectionSchema,
-    ) -> Result<(), wit_store::DataLayerError>;
+        schema: &host_store::CollectionSchema,
+    ) -> Result<(), host_store::DataLayerError>;
 
     /// Drops a collection (table) if it exists.
-    async fn drop_collection(&self, name: &str) -> Result<(), wit_store::DataLayerError>;
+    async fn drop_collection(&self, name: &str) -> Result<(), host_store::DataLayerError>;
 
     /// Executes raw DDL. Callers must have already verified the invocation is
     /// happening in a lifecycle (`init`/`migrate`) context -- this method
     /// trusts its caller and always attempts execution after a syntax check.
-    async fn execute_ddl(&self, sql: &str) -> Result<(), wit_store::DataLayerError>;
+    async fn execute_ddl(&self, sql: &str) -> Result<(), host_store::DataLayerError>;
 
     /// Upserts a record. `creator_id` is supplied by the host and is always
     /// authoritative -- the WIT `record-write-value` has no `creator_id`
@@ -53,9 +53,9 @@ pub trait ServiceStore: Send + Sync {
     async fn put(
         &self,
         collection: &str,
-        value: &wit_store::RecordWriteValue,
+        value: &host_store::RecordWriteValue,
         creator_id: &str,
-    ) -> Result<(), wit_store::DataLayerError>;
+    ) -> Result<(), host_store::DataLayerError>;
 
     /// Applies an RFC 7396 JSON merge-patch to an existing record's payload.
     async fn patch(
@@ -63,7 +63,7 @@ pub trait ServiceStore: Send + Sync {
         collection: &str,
         id: &str,
         patch_json: &[u8],
-    ) -> Result<(), wit_store::DataLayerError>;
+    ) -> Result<(), host_store::DataLayerError>;
 
     /// Fetches a record by id. Returns `Ok(None)` if the record does not
     /// exist -- a missing record is a valid state, not an error.
@@ -71,7 +71,7 @@ pub trait ServiceStore: Send + Sync {
         &self,
         collection: &str,
         id: &str,
-    ) -> Result<Option<wit_store::RecordReadValue>, wit_store::DataLayerError>;
+    ) -> Result<Option<host_store::RecordReadValue>, host_store::DataLayerError>;
 
     /// Queries records matching an optional MongoDB-style JSON filter, with
     /// cursor pagination. Returns an empty list (not an error) when nothing
@@ -79,12 +79,12 @@ pub trait ServiceStore: Send + Sync {
     async fn query(
         &self,
         collection: &str,
-        opts: &wit_store::QueryOptions,
-    ) -> Result<wit_store::QueryResult, wit_store::DataLayerError>;
+        opts: &host_store::QueryOptions,
+    ) -> Result<host_store::QueryResult, host_store::DataLayerError>;
 
     /// Deletes a record by id. Idempotent: deleting a non-existent id is not
     /// an error.
-    async fn delete(&self, collection: &str, id: &str) -> Result<(), wit_store::DataLayerError>;
+    async fn delete(&self, collection: &str, id: &str) -> Result<(), host_store::DataLayerError>;
 
     /// Deletes all records matching an optional filter, returning the number
     /// of affected rows.
@@ -92,14 +92,14 @@ pub trait ServiceStore: Send + Sync {
         &self,
         collection: &str,
         filter: Option<&str>,
-    ) -> Result<u64, wit_store::DataLayerError>;
+    ) -> Result<u64, host_store::DataLayerError>;
 
     /// Applies all mutations in a single transaction, rolling back entirely
     /// on the first failure.
     async fn batch_mutate(
         &self,
         collection: &str,
-        mutations: &[wit_store::Mutation],
+        mutations: &[host_store::Mutation],
         creator_id: &str,
-    ) -> Result<(), wit_store::DataLayerError>;
+    ) -> Result<(), host_store::DataLayerError>;
 }

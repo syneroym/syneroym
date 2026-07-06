@@ -5,8 +5,11 @@ pub mod sqlite;
 pub mod traits;
 
 pub use sqlite::SqliteStorageProvider;
-/// Re-export generated WIT types for guest compatibility and ease of use.
-pub use syneroym_bindings::data_layer::syneroym::data_layer::store as wit_store;
+/// Re-export the wasmtime-host-generated WIT types: this crate runs only on
+/// the host (never compiled to a WASM guest), so it speaks the same types
+/// `HostState`'s `Host` trait impl uses, with no conversion layer between
+/// them.
+pub use syneroym_bindings::host::syneroym::data_layer::store as host_store;
 pub use syneroym_bindings::vault::syneroym::vault::vault as wit_vault;
 pub use traits::{ServiceStore, StorageProvider};
 
@@ -45,16 +48,17 @@ mod tests {
     }
 
     #[test]
-    fn test_serde_derives_on_wit_types() {
+    fn test_serde_derives_on_host_store_types() {
         // Test RecordWriteValue
-        let val = wit_store::RecordWriteValue { id: "test-id".to_string(), payload: vec![1, 2, 3] };
+        let val =
+            host_store::RecordWriteValue { id: "test-id".to_string(), payload: vec![1, 2, 3] };
         let serialized = serde_json::to_string(&val).unwrap();
-        let deserialized: wit_store::RecordWriteValue = serde_json::from_str(&serialized).unwrap();
+        let deserialized: host_store::RecordWriteValue = serde_json::from_str(&serialized).unwrap();
         assert_eq!(val.id, deserialized.id);
         assert_eq!(val.payload, deserialized.payload);
 
         // Test RecordReadValue
-        let val = wit_store::RecordReadValue {
+        let val = host_store::RecordReadValue {
             id: "test-id".to_string(),
             payload: vec![1, 2, 3],
             creator_id: "creator".to_string(),
@@ -62,7 +66,7 @@ mod tests {
             updated_at: 200,
         };
         let serialized = serde_json::to_string(&val).unwrap();
-        let deserialized: wit_store::RecordReadValue = serde_json::from_str(&serialized).unwrap();
+        let deserialized: host_store::RecordReadValue = serde_json::from_str(&serialized).unwrap();
         assert_eq!(val.id, deserialized.id);
         assert_eq!(val.payload, deserialized.payload);
         assert_eq!(val.creator_id, deserialized.creator_id);
@@ -70,31 +74,34 @@ mod tests {
         assert_eq!(val.updated_at, deserialized.updated_at);
 
         // Test DataLayerError (Internal)
-        let val = wit_store::DataLayerError::Internal("test error".to_string());
+        let val = host_store::DataLayerError::Internal("test error".to_string());
         let serialized = serde_json::to_string(&val).unwrap();
-        let deserialized: wit_store::DataLayerError = serde_json::from_str(&serialized).unwrap();
+        let deserialized: host_store::DataLayerError = serde_json::from_str(&serialized).unwrap();
         match (val, deserialized) {
-            (wit_store::DataLayerError::Internal(e1), wit_store::DataLayerError::Internal(e2)) => {
+            (
+                host_store::DataLayerError::Internal(e1),
+                host_store::DataLayerError::Internal(e2),
+            ) => {
                 assert_eq!(e1, e2);
             }
             _ => panic!("Expected DataLayerError::Internal"),
         }
 
         // Test DataLayerError (PermissionDenied)
-        let val = wit_store::DataLayerError::PermissionDenied;
+        let val = host_store::DataLayerError::PermissionDenied;
         let serialized = serde_json::to_string(&val).unwrap();
-        let deserialized: wit_store::DataLayerError = serde_json::from_str(&serialized).unwrap();
-        assert!(matches!(deserialized, wit_store::DataLayerError::PermissionDenied));
+        let deserialized: host_store::DataLayerError = serde_json::from_str(&serialized).unwrap();
+        assert!(matches!(deserialized, host_store::DataLayerError::PermissionDenied));
 
         // Test Mutation (Put)
-        let val = wit_store::Mutation::Put(wit_store::RecordWriteValue {
+        let val = host_store::Mutation::Put(host_store::RecordWriteValue {
             id: "test-id".to_string(),
             payload: vec![1, 2, 3],
         });
         let serialized = serde_json::to_string(&val).unwrap();
-        let deserialized: wit_store::Mutation = serde_json::from_str(&serialized).unwrap();
+        let deserialized: host_store::Mutation = serde_json::from_str(&serialized).unwrap();
         match (val, deserialized) {
-            (wit_store::Mutation::Put(w1), wit_store::Mutation::Put(w2)) => {
+            (host_store::Mutation::Put(w1), host_store::Mutation::Put(w2)) => {
                 assert_eq!(w1.id, w2.id);
                 assert_eq!(w1.payload, w2.payload);
             }

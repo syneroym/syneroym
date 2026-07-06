@@ -9,7 +9,7 @@ use tempfile::tempdir;
 
 use crate::{
     ServiceStore, SqliteStorageProvider, StorageProvider,
-    wit_store::{
+    host_store::{
         CollectionSchema, DataLayerError, IndexDefinition, IndexType, Mutation, QueryOptions,
         RecordWriteValue,
     },
@@ -182,7 +182,7 @@ async fn test_batch_mutate_rolls_back_all_on_one_failure() {
     // Put in the same batch must not persist either.
     let mutations = vec![
         Mutation::Put(write_value("new-1", "{}")),
-        Mutation::Patch(crate::wit_store::PatchMutation {
+        Mutation::Patch(crate::host_store::PatchMutation {
             id: "does-not-exist".to_string(),
             patch_json: b"{}".to_vec(),
         }),

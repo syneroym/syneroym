@@ -13,7 +13,7 @@ use syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestr
 use syneroym_core::{config::SubstrateConfig, test_constants};
 use syneroym_data_layer::{
     SqliteStorageProvider, StorageProvider,
-    wit_store::{CollectionSchema, Mutation, QueryOptions, RecordWriteValue},
+    host_store::{CollectionSchema, Mutation, QueryOptions, RecordWriteValue},
 };
 use syneroym_key_store::KeyStore;
 use tokio::runtime::Builder;

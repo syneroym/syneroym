@@ -1,7 +1,7 @@
 //! Conversions from internal storage errors into the WIT-facing
 //! `data-layer-error` shape used by `ServiceStore`.
 
-use crate::wit_store::DataLayerError;
+use crate::host_store::DataLayerError;
 
 /// Maps a `rusqlite` error into the WIT `data-layer-error` variant a guest
 /// should see. Missing-table errors surface as `CollectionNotFound` (the

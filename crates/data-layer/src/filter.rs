@@ -10,7 +10,7 @@
 use rusqlite::types::Value;
 use serde_json::Value as Json;
 
-use crate::wit_store::DataLayerError;
+use crate::host_store::DataLayerError;
 
 const MAX_FILTER_DEPTH: u32 = 10;
 
