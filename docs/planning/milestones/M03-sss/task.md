@@ -141,7 +141,6 @@ The following must **not** creep into M3:
 - Hardware attestation (M7) and supply-chain signing (M7).
 - Saga compensations and DLQ (M5).
 - AI concierge features (M9) or mobile lifecycle (M10).
-- `cr-sqlite` CRDT extensions (M7+).
 - Litestream integration (M7).
 - Distributed cron lease scheduling (M5).
 - Public (unsigned) blob HTTP serving.
@@ -889,27 +888,21 @@ All of the following must be verified and recorded in `status.md`:
 
 ## Open Questions (Non-Blocking; Track for M4 Planning)
 
-1. **`cr-sqlite` CRDT extensions:** Architecture diagram names `cr-sqlite` as
-   the storage backend. For M3, plain `rusqlite` (via `rusqlite-cipher`) is
-   correct — CRDT support is only needed for M7+ multi-node. Confirm at M3
-   closeout that `StorageManager`'s `ServiceDb` interface does not prevent a
-   future swap to `cr-sqlite`.
-
-2. **`AggregationPipeline` scope:** Requirements specify `$group`, `$having`,
+1. **`AggregationPipeline` scope:** Requirements specify `$group`, `$having`,
    projections. Explicitly deferred to M4. Must appear as a gate item in the
    M4 milestone plan.
 
-3. **FDAE `execute-ddl` elevation model:** `is_init_context` flag in `HostState`
+2. **FDAE `execute-ddl` elevation model:** `is_init_context` flag in `HostState`
    is a temporary M3 scaffold. In M4 this becomes a proper Admin UCAN capability.
    Add a `// TODO(M4): replace is_init_context with Admin UCAN check` comment
    at every usage site.
 
-4. **Podman sandbox integration:** `crates/podman_sandbox` exists but its
+3. **Podman sandbox integration:** `crates/podman_sandbox` exists but its
    integration with data-layer configuration delivery in M3 is unclear. Verify
    at Slice 4 whether the Podman path calls `StorageManager` directly or only
    receives resolved config values from the orchestrator.
 
-5. **Per-SynApp-Instance KEK:** Deferred to M4. The `KeyStore` API must have
+4. **Per-SynApp-Instance KEK:** Deferred to M4. The `KeyStore` API must have
    an extensibility point (e.g., optional `app_instance_id` scope parameter)
    from Day 1 so M4 can narrow the scope without a breaking change. Validate
    this at M3A closeout.

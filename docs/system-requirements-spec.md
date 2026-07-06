@@ -24,10 +24,9 @@ technology substrate* into testable product and ecosystem requirements.
 - Product releases are vertical, end-to-end increments. Capability backlog
   phases are engineering sequencing bands and do not independently constitute a
   usable product release.
-- Unresolved choices are recorded in [Decision Register](#decision-register),
-  with a decision gate. Vague `[Architecture TBD]` markers do not waive the
-  product requirement.
-
+- Open questions are tracked as milestone decision gates in the
+  implementation plan and resolved before the milestone that needs them
+  starts.
 This requirements spec is structured as follows:
 
 - Philosophy & Design Constraints
@@ -48,32 +47,7 @@ This requirements spec is structured as follows:
 
 ## Philosophy & Design Constraints
 
-A key difference in the newly envisioned provider ecosystem compared to large-scale consumer platforms is the (often geographical) clustering of service providers and consumers. Global reach and scale from a single embedding source is not a fundamental requirement. Reach and scale are improved instead by pre-established collaboration and coordination patterns across clusters of autonomous participants. Given this differentiator, we need to preserve benefits and reduce the drawbacks of large-scale consumer platforms like those listed in the [vision document](./VISION.md#background).
-
-### Preserving Benefits
-
-- Technology enablement without requiring every provider to operate infrastructure
-- Useful local discovery and distribution, with federation as reach grows
-- Streamlining, standardization of interaction patterns
-- Legible, independently verifiable trust signals
-- Security at scale
-- Fault tolerance
-- Clear accountability and support for appropriate local legal structures
-- Reputation aggregation
-- Economies of scale
-- Network effects
-
-### Reducing Drawbacks
-
-- Non-availability in constrained geographies, power/network/technology scenarios
-- Vendor lock-in
-- Governance asymmetry — less freedom (but less decision-making hassle) for participants
-- Inflexibility to customise for localised scenarios
-- Data ownership loss
-- Sudden policy risk leading to unhappy participants
-- No transparency of how internal systems/algorithms work
-- Strategic dependency
-- Not friendly to building deep provider-client relationships; mostly transactional
+Providers and consumers cluster locally; global reach from one source is not required. Reach grows through federation across autonomous clusters instead. The system keeps the benefits and sheds the drawbacks of large platforms listed in [VISION.md](./VISION.md#background).
 
 ### Design Principles
 
@@ -106,6 +80,10 @@ possible.
 **End-to-end slices before platform breadth.** New substrate capabilities are
 validated through a real provider-consumer workflow before adjacent generality
 is added.
+
+**Additive evolution.** Nothing is shelved. Payments/ledger primitives, AI
+assistance, attestation, and stronger identity tiers are sequenced, not
+deferred — each lands in its turn and composes with shipped contracts without redesigning them.
 
 ---
 
@@ -324,7 +302,9 @@ These requirements apply across all business domains and SynApps.
   expiry, idempotency, and conflict behaviour. Reconnection either reaches the
   same valid final state for all parties or exposes a conflict requiring a named
   party's decision; silent last-write-wins is not acceptable for agreements,
-  payments, fulfilment, or access grants.
+  payments, fulfilment, or access grants. A single writer per service resolves
+  this by replaying queued requests through per-entity arbitration rules — no
+  multi-master merge is needed for these entities.
 - Users can cancel a still-pending operation when doing so is safe, and can see
   when cancellation is no longer guaranteed because delivery may have occurred.
 
@@ -794,9 +774,8 @@ The system accommodates the following variation axes across workflows:
 <a id="post-dd864a1-target-specifications-addendum"></a>
 
 ## Post-DD864A1 Specifications
-This section describes  pending features post git commit hash `dd864a18902bb8e71da0ff56bba4523688ad8ba1`.
 
-The earlier part of this doc describes broader product context and several implemented walking-skeleton choices. Where this captures features not yet implemented till the above commit id. 
+Features after commit `dd864a1`. The rest of this document covers the shipped walking-skeleton baseline; this section sequences what comes next.
 
 ### Tag Legend
 To ensure stable cross-referencing across commits and PRs, features are prefixed with category tags:
@@ -931,7 +910,7 @@ This defines the baseline resilience required for underlying node-to-node and cl
     encryption. Opt-out is limited to explicitly marked non-sensitive
     development profiles and produces a persistent insecure-state warning.
   - Remote backups (e.g., WAL frames or object snapshots) are streamed to S3-compatible stores or peer backup substrates and are encrypted locally before transit when configured.
-- **Hardware Attestation (Optional, later unless required by a vertical):**
+- **Hardware Attestation (optional; layers on without changing the security model):**
   - The substrate exposes a `substrate.attest(nonce)` API to the network.
   - The App Deployer/Owner externally challenges the node (at deployment or periodically) and mathematically verifies the hardware quote (TPM, KeyAttestation, AppAttest).
   - The deployer alone decides whether to deploy the service in a degraded trust environment or halt execution if attestation fails. 
@@ -1010,7 +989,7 @@ Given that Syneroym supports both native WASM components and legacy Podman conta
 ### [PLT-DAP] Distributed Data Topology
 The substrate models data as a distributed, programmable topology rather than isolated object state.
 - **[PLT-DAP-01] Logical Data Services:** The system MUST support logical data wrappers that abstract physical sharding across multiple substrates, allowing a single dataset definition to span nodes transparently.
-- **[PLT-DAP-02] Active Storage Pushdown:** The system SHOULD provide WIT interfaces (e.g., `syneroym:data/transform`) for deploying WASM modules directly to the data layer. This enables controlled ETL/ELT logic execution directly where the data lives. *(Note: This is an ambitious goal for M5 and may be moved to a Future Backlog or dedicated spike milestone based on scoping constraints).*
+- **[PLT-DAP-02] Active Storage Pushdown:** The system SHOULD provide WIT interfaces (e.g., `syneroym:data/transform`) for deploying WASM modules directly to the data layer. This enables controlled ETL/ELT logic execution directly where the data lives. *(Sequenced as a bounded spike after M5's core data layer ships, so it adds on rather than reworking the data layer.)*
 - **[PLT-DAP-03] Declarative Replication:** The `DeploymentPlan` MUST support a declarative topology mechanism to define replication states (e.g., Primary, Read-Replica, Cold Backup).
 - **[PLT-DAP-04] Decentralized Pub/Sub:** The system MUST support an MQTT-like API for decoupled event routing, implemented as a decentralized pull-based log replication over QUIC.
 - **[PLT-DAP-05] Data Pipeline Streams:** The system MUST provide a distinct `syneroym:data/stream` interface for direct, high-throughput, point-to-point QUIC streams with native credit-based flow control (backpressure) for heavy data shuffling.
@@ -1166,10 +1145,11 @@ the primary.
 
 Because Syneroym can be utilized as a general open cloud, this dedicated phase separates purely foundational low-level network connectivity (`[TOP]`) from higher-level community-driven peer networking primitives.
 
-### [P2P-DSC] Federated Tag-Routed Discovery
-- **Native P2P Message-Passing Graph:** High-level discovery is built directly into a federated routing graph. Nodes send discovery intents to their direct peers. If a peer cannot fulfill the request locally, it forwards the intent.
-- **Hierarchical Tags:** Intents are routed using hierarchical tags representing composed logical groups (e.g., `#close-friends`, `#office-network`). Queries are pushed only to relevant active connections matching the tag, which uniformly encompass both individual peers and service substrates.
-- **Aggregators as Super-Peers:** Directory applications ("Aggregators") are supported, but from the substrate's perspective, they simply present the identical standard interface as any other peer. The Syneroym community registry can point to default aggregators, which individual substrates can optionally configure as default "super-peers" to enhance discovery performance.
+### [P2P-DSC] Distributed Matching Fabric
+- **Publications, not a global index:** Providers, consumers, and services publish signed Publications (listings, intents, capabilities). Indexes are distributed caches, never authoritative; every result is client-verified (signature, timestamp, expiry) before use.
+- **Deterministic placement:** A protocol-defined Routing Schema (spatial cell, category, ...) plus rendezvous hashing maps each Publication onto leaf index shards. Providers compute their own placement; no coordinator required.
+- **Aggregators as index nodes:** Directory applications ("Aggregators") can opt in as leaf index shards, but from the substrate's perspective they present the identical standard interface as any other peer. No aggregator is a required or privileged intermediary.
+- **Additive, sequenced later:** a hierarchical synopsis tree and query planner (once leaf-shard count makes flat lookup expensive), composite routing descriptors, and cross-shard ranking layer on top without reworking the Publication or placement contract.
 
 ### [P2P-REP] Peer Reputation & Trust
 - **Coarse-Grained Satisfaction Signal:** Reputation is implemented as a low-resolution scale (e.g., 0=Poor, 1=Decent, 2=Great) to minimize cognitive load and mathematical complexity.
@@ -1255,9 +1235,9 @@ Because Syneroym can be utilized as a general open cloud, this dedicated phase s
 
 ---
 
-## Appendix: Future Backlog
+## Appendix: Later-Phase Additions
 
-Items deferred from the initial baseline requirements until detailed specifications are created.
+Sequenced after the baseline, pending detailed specs. Each must add on without reworking shipped contracts.
 
 ### Accessibility and Localisation
 
@@ -1288,8 +1268,7 @@ Items deferred from the initial baseline requirements until detailed specificati
 | **[TOP-*] Routing & Relays** | **Substrate Core** | Establishing secure p2p connections across NATs and resolving cryptographic node IDs. |
 | **[FND-IDT/IAM] Identity & Access** | **Hub / Admin** | Generating root keypairs and enforcing role-based access for Space Managers. |
 | **[FND-DEP] App Deployment** | **roymctl** | Safely deploying the WASM Marketplace component into a sandboxed environment. |
-| **[P2P-DSC] Federated Discovery** | **Aggregator App** | Forwarding tag-based search queries across the mesh to find local service providers. |
+| **[P2P-DSC] Matching Fabric** | **Aggregator App** | Placing and resolving signed Publications across the mesh to find local service providers. |
 | **[P2P-REP] Peer Reputation** | **Marketplace** | Generating cryptographically tied interaction receipts and rendering trust summaries. |
-| **[ADV-DEV] Device Sync (CRDT)** | **Chat** | Reconciling message state across primary and secondary mobile devices. |
 | **[LFC-*] Lifecycle & Updates** | **Node Admin** | Safely rolling back a failed Marketplace version update. |
 | **[EDG-MOB] Mobile Operation** | **Mobile Hub** | Waking a suspended iOS client via out-of-band push to receive an incoming quote. |

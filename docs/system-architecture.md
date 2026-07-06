@@ -3,7 +3,7 @@
 > **Migration Note:** The architectural designs and roadmap have been significantly updated post-dd864a1. See the **Post-DD864A1 Target Designs (Addendum)** at the bottom of this document for the canonical Layer 1-4 definitions.
 
 > [!WARNING]
-> **Implementation Note:** Several core elements defined in this architecture, including the **wRPC protocol layers/surface** and **multi-hop relay routing**, are currently **NOT YET IMPLEMENTED** in the codebase. The current implementation is centered around JSON-RPC 2.0 and direct TCP/IP or single-hop Iroh/WebRTC streams. See open items and progress trackers for ongoing development.
+> **Implementation Note:** The **wRPC protocol layers/surface** is not yet implemented — the current inter-component and external API surface is JSON-RPC 2.0. Multi-hop relay routing (the Federated Coordinator model) is implemented in the coordinator crates; see [Multi-Hop Relay (Federated Coordinator)](#multi-hop-relay-federated-coordinator).
 
 ---
 
@@ -85,8 +85,8 @@ block-beta
     I["WASM Runtime (Wasmtime)"]
     J["OCI Runtime (Podman)"]
     K["Key Management"]
-    L["Access Control (ABAC)"]
-    M["Storage (cr-sqlite + Litestream)"]
+    L["Access Control"]
+    M["Storage (SQLite + Litestream)"]
   end
   block:L1["Layer 1 — Infrastructure"]
     N["P2P / Relay (Iroh / QUIC)"]
@@ -188,100 +188,13 @@ flowchart LR
 
 **Local DNS:** Each substrate caches relay hostname resolutions. This avoids hammering Bootstrap server for the large number of dynamically rotating relay nodes.
 
-### Multi-Hop Relay Scenario: End-to-End Flow
+### Multi-Hop Relay (Federated Coordinator)
 
-This section describes the sequence of operations for establishing a multi-hop relayed connection between two Synapp services across network boundaries.
+Implemented in the coordinator crates (`crates/coordinator_iroh`), not the substrate. Substrates are endpoints only; they never bridge network segments themselves. The `hop-relay` subsystem lives in the Coordinator and unifies Layer 7 preamble forwarding for Iroh with the existing WebRTC fallback relay.
 
-> [!NOTE]
-> **Architectural Alignment:** This scenario employs the "Federated Coordinator" model. The `hop-relay` subsystem operates within the **Coordinator**, unifying Layer 7 preamble forwarding for Iroh with the existing WebRTC fallback relay mechanism. Substrates do not act as network bridges; they act purely as endpoints connecting to their local Coordinator.
+A private, internet-unreachable substrate registers with a local Coordinator, which itself talks to the public Coordinator/Registry only on demand (outbound-only, no permanent tunnel). A caller resolves the target through the registry, opens a stream to the entry-point Coordinator carrying a preamble naming the real target, and the Coordinator forwards the stream to that target's local Coordinator over its own outbound connection — which is what lets a fully inbound-blocked substrate stay reachable. Endpoints then run their own end-to-end handshake inside the forwarded stream; the Coordinator relays encrypted bytes and cannot read them.
 
-#### Scenario Entities
-
-*   **Public Infrastructure (Internet)**
-    *   **C**: Global Coordinator (acting as public DERP/TURN relay, and public `hop-relay`).
-    *   **R**: Global Registry (community registry, future DHT).
-*   **Public/External Edge**
-    *   **Sx**: Substrate with outbound internet access.
-    *   **Ax**: Synapp deployed on **Sx**.
-*   **Private Subnetwork Infrastructure**
-    *   **Cp**: Private Coordinator (local relay). Acts as the `hop-relay` for the private network.
-    *   **Rp**: Private Registry (community registry). Connects outbound to **R** to gossip records.
-    *   **Sz**: Hidden Substrate. Resides purely in the private network with no external internet access.
-    *   **Az**: Synapp deployed on **Sz**.
-
-#### 1. Startup and Configuration
-
-1.  **Public Infrastructure Starts**: Coordinator **C** and Registry **R** are brought online on the public internet.
-2.  **Private Infrastructure Starts**: 
-    *   Coordinator **Cp** and Registry **Rp** are brought online within the private subnetwork.
-    *   **Cp** exposes a lightweight HTTP discovery endpoint (e.g., `/v1/info`) that serves its Iroh Node ID and relay configuration.
-    *   **Cp** also registers itself in the global Registry **R** as an available coordinator (controlled by a configuration switch to share its record).
-    *   **Cp** does *not* maintain a permanent connection to **C**. It connects outbound to the public Coordinator **C** on-demand only when data transfer is needed.
-    *   **Rp** is configured with **R** as its parent registry so it can query and publish records upward.
-3.  **External Substrate (Sx) Starts**: 
-    *   **Sx** connects outbound to Coordinator **C** and Registry **R**. 
-4.  **Hidden Substrate (Sz) Starts**: 
-    *   **Sz** starts in the private network and connects to its local Registry (**Rp**).
-    *   To find a local coordinator, **Sz** first checks its config for a direct `discovery_url` (fetching the Iroh connection details via HTTP). If not provided, it queries its local Registry **Rp** (which forwards the lookup to **R**) to discover available coordinators. It dynamically selects one (e.g., **Cp**) and caches its Iroh details.
-
-#### 2. Registry Entries at Deployment
-
-1.  **Ax Deployment**: 
-    *   Synapp **Ax** is deployed on **Sx**. 
-    *   The deployer of **Ax** (using `SyneroymClient::deploy_wasm`) generates a signed service record and publishes it directly to the global Registry **R**.
-2.  **Az and Sz Deployment**: 
-    *   Synapp **Az** is deployed on the hidden substrate **Sz**.
-    *   The substrate **Sz** registers itself and its services (**Az**) with the local Registry **Rp**.
-3.  **Cp Registration**: 
-    *   The private Coordinator **Cp** registers its Iroh key and connection details (like relay endpoints) into the global Registry (**R**), assuming its configuration switch is set to share its record. This makes its Iroh endpoint dynamically discoverable for substrates relying on registry lookups.
-4.  **Upward Gossip**: 
-    *   **Rp** gossips the registration of both **Az** and **Sz** upward to the global Registry **R**.
-5.  **Global Record State**: 
-    *   The global Registry **R** now holds public records for **Az** and **Sz**. 
-    *   Because **Az** is deployed on **Sz**, the record primarily obscures **Sz** (and indirectly **Az** via **Sz**). It states that to reach **Sz**, a caller must route to the entry point **Cp**.
-    *   The record also copies over the private topology, allowing **Cp** to use a registry lookup to find the specific connection details for **Sz** when transferring data.
-
-#### 3. Communication Flow: Ax connecting to Az (Inbound to Private)
-
-1.  **Packet Transmission**: Synapp **Ax** uses the `SyneroymClient` to send a packet to **Az**. The client initiates a connection to the next hop.
-2.  **Global Resolution**: The client queries the global Registry **R** for **Az**.
-3.  **Discovery**: Registry **R** responds with the routing information: target entry point is **Cp** (whose public connection details are also provided).
-4.  **Connection to Cp**: 
-    *   The client establishes a connection to the private Coordinator **Cp** (transparently using the Iroh SDK, which leverages public relay **C** internally).
-    *   The client opens a stream and directly sends a connection preamble to **Cp**, containing the target service DID (**Sz** / **Az**) and the calling substrate's public identity (**Sx**'s public key or an ephemeral key).
-5.  **Routing (Cp to Sz)**: 
-    *   **Cp** receives the stream and reads the preamble.
-    *   **Cp** performs a registry lookup to find the connection details for **Sz** (no in-memory routing table caches are used).
-    *   It determines the final hop is the hidden substrate **Sz**. **Cp** establishes an Iroh connection and forwards the stream to **Sz**.
-6.  **Target Dispatch and Handshake (Sz)**: 
-    *   **Sz** receives the stream and reads the preamble to recognize the target is its local Synapp **Az**.
-    *   **Sz** and **Sx** complete an explicit End-to-End Diffie-Hellman handshake inside the stream.
-    *   Once the secure channel is established, **Sz** dispatches the application payload to **Az**.
-
-#### 4. Communication Flow: Az connecting to Ax (Outbound to Public)
-
-1.  **Packet Transmission**: Synapp **Az** asks its host substrate **Sz** to send a packet to **Ax**.
-2.  **Resolution**: The client on **Sz** queries the local Registry **Rp**.
-    *   **Rp** does not have a local record for **Ax**, so it queries its parent, the global Registry **R**.
-    *   **R** returns **Ax**'s location (reachable directly via **Sx** on the public internet).
-3.  **Outbound Routing**: Because **Sz** has no outbound internet access, it cannot connect to **Sx** directly. It utilizes the **Cp** Iroh connection details it retrieved at startup (either via HTTP discovery or via the **Rp** -> **R** registry lookup), and prepares to route the connection request through **Cp**.
-4.  **Stream Setup**: 
-    *   **Sz** connects to **Cp** and sends the preamble for **Ax** (including **Sz**'s public key or an ephemeral public key).
-    *   **Cp** reads the preamble, realizes the target is on the public network, and connects outbound to deliver the stream to **Sx** (potentially via relay **C**).
-5.  **Data Transfer**: The bidirectional stream is established. Because **Cp** initiated an *outbound* connection on-demand, it natively bypasses the inbound reachability limitations (NATs/Firewalls) that constrain the Ax -> Az flow.
-
-#### 5. Data Transfer Characteristics
-
-1.  **End-to-End (E2E) Encryption Handshake**:
-    *   While intermediate transport legs are protected by Iroh, the Coordinators must route via preambles.
-    *   To ensure true privacy, once the multi-hop stream is connected, the endpoints (**Sx** and **Sz**) perform an explicit E2E encryption handshake inside the established stream.
-    *   This handshake utilizes the exact mechanism currently implemented in the frontend (`peer-proxy.html` / `verifyAndDeriveSharedSecret`): an explicit ECDH key exchange where the ephemeral keys are signed by the permanent Ed25519 identity keys. This provides mutual authentication and establishes an AES-GCM symmetric cipher state.
-2.  **Opaque Forwarding**: 
-    *   Following the E2E handshake, the application payload (e.g., wRPC frames) is encrypted at **Sx** and decrypted only at **Sz** (or vice versa).
-    *   The Coordinator **Cp** acts purely as a blind Level 7 pipe. It copies the E2E-encrypted bytes back and forth between streams and cannot read the application payload.
-3.  **Teardown**: 
-    *   Once the communication finishes, either endpoint closes the stream. 
-    *   Each hop independently closes its respective stream segment.
+Full entities and step-by-step message flow: [Appendix: Multi-Hop Relay Walkthrough](#appendix-multi-hop-relay-walkthrough).
 
 ### Bootstrap Server & DHT Fallback
 
@@ -335,7 +248,7 @@ flowchart TD
 
         subgraph CORE["Core Services"]
             KM[Key Manager Ed25519 + Delegation]
-            AC[Access Control ABAC Engine]
+            AC[Access Control Engine]
             MSG[Message Router]
             ORCH[Service Orchestrator Deploy / Lifecycle]
         end
@@ -346,14 +259,14 @@ flowchart TD
         end
 
         subgraph STORAGE["Storage Layer"]
-            CRSQL[cr-sqlite CRDT Local Store]
+            CRSQL[SQLite (encrypted) Store]
             QUEUE[Offline Outbox Queue SQLite + Tokio channel]
             BLOB[Content-addressed Blob Store]
             LS[Litestream WAL Replication]
         end
 
         subgraph UTIL["Shared Utilities"]
-            DISC[Discovery Client for Federated Index with Gossip]
+            DISC[Matching Fabric Client]
             REP[Reputation Engine]
             PAY[Payment Adapter]
         end
@@ -401,43 +314,28 @@ flowchart LR
 ```
 
 **Migration Protocol and Backup Substrate Mechanism**
-- `syneroym export --app <app-id>` produces a signed archive: cr-sqlite snapshot + blob store + identity keypair (optional) + App Spec
+- `syneroym export --app <app-id>` produces a signed archive: SQLite snapshot + blob store + identity keypair (optional) + App Spec
 - Archive is portable to any substrate running a compatible substrate version
-- Import validates the archive signature and replays into a fresh cr-sqlite instance
+- Import validates the archive signature and replays into a fresh SQLite instance
 - **Torrent-Style Backup Pool:** Litestream continuous replication can keep a live replica on a secondary node. This is formalised into a "Backup Substrate" mutual pool model. Nodes allocate storage to host symmetrically encrypted backups of others in exchange for participating in the network's backup pool.
 - **Active Failover:** In advanced configurations, a Backup Substrate can act as a hot standby, temporarily responding on a downed peer's behalf with cached state to ensure continuous discoverability.
 
-### Storage & CRDT Merge Semantics
+### Storage & Write Arbitration
 
-**CRDT merge semantics and conflict resolution**
+Structured data lives in one encrypted SQLite database per service (`rusqlite` + `sqlcipher`), single-writer / multi-reader. There is exactly one writer per service at a time — a replica stays read-only until an operator promotes it (`[PLT-RED]`). Two writers never touch the same database concurrently, so there is nothing to merge at the storage layer.
 
-All structured data is stored in **cr-sqlite** — SQLite extended with CRDT primitives. Each table row carries a Hybrid Logical Clock (HLC) timestamp and a site ID.
+What looks like a "conflict" is really two requests racing to reach the single writer. The writer serializes them and applies a business-level arbitration rule per entity:
 
-```mermaid
-flowchart TD
-    subgraph ONLINE["Both parties online"]
-        A1[Provider writes order state: CONFIRMED] -->|"HLC: T1, site: P"| MERGE
-        B1[Consumer writes order state: PAID] -->|"HLC: T2, site: C"| MERGE
-        MERGE[cr-sqlite merge LWW per field] --> FINAL1[Final: PAID both fields converge]
-    end
-
-    subgraph OFFLINE["Offline conflict scenario"]
-        A2[Provider writes CANCELLED HLC: T3, site: P] --> RECON
-        B2[Consumer writes CANCELLED HLC: T3, site: C] --> RECON
-        RECON[Deterministic merge: Provider cancel takes precedence] --> FINAL2[Final: CANCELLED by provider refund triggered]
-    end
-```
-
-**Merge rules by entity type:**
-
-| Entity | Merge Strategy | Rationale |
+| Entity | Arbitration Rule | Rationale |
 |---|---|---|
-| Order state | Provider action beats consumer action within same HLC epoch; later HLC wins otherwise | Provider has operational authority over their service |
-| Catalog item | Last-write-wins per field (standard LWW) | Catalog is provider-owned; no concurrent consumer writes |
-| Message | Append-only log; no merge conflicts | Messages are immutable once sent |
-| Booking slot | Availability is a set-CRDT (OR-Set); reservation is LWW with provider authority | Prevents double-booking |
-| Reputation record | Append-only; signed by issuer; no merge | Records are immutable attestations |
-| Access control policy | Provider LWW; infrastructure provider cannot override | Data sovereignty |
+| Order state | Provider action beats a same-instant consumer action; otherwise first request wins | Provider has operational authority over their service |
+| Catalog item | Last write wins per field | Catalog is provider-owned; no concurrent consumer writes |
+| Message | Append-only log; no arbitration needed | Messages are immutable once sent |
+| Booking slot | First confirmed reservation wins; later requests for the same slot are rejected | Prevents double-booking |
+| Reputation record | Append-only; signed by issuer | Records are immutable attestations |
+| Access control policy | Provider's write wins; infrastructure provider cannot override | Data sovereignty |
+
+A disconnected client (secondary device, mobile app, offline peer) is not a second writer — it is a client whose requests queue locally and replay against the single writer on reconnect, via the standard offline outbox (`[PLT-ASY]`), guarded by idempotency keys. See [Multi-Device Sync](#multi-device-sync-and-sharded-deployment).
 
 ### Multi-Device Sync and Sharded Deployment
 
@@ -445,11 +343,10 @@ This section addresses two requirements: app sync across secondary provider devi
 
 **A) Multi-device sync (primary + secondary provider devices)**
 
-- Each provider device runs a local substrate instance with its own site ID.
-- App state changes are committed locally first in cr-sqlite, then replicated asynchronously.
-- If a secondary device is offline, it continues operating on local state and queues outbound updates.
-- On reconnection, peers exchange oplogs and converge using entity-specific merge rules from [Storage & CRDT Merge Semantics](#storage--crdt-merge-semantics).
-- Operational ownership fields (for example, order lifecycle authority) remain deterministic across devices via signed identity roles.
+- A secondary provider device is a client of the primary service, not a second writer to its database.
+- Requests made offline queue in the device's local outbox (`[PLT-ASY]`), each tagged with an idempotency key.
+- On reconnection, queued requests replay against the single writer, which applies the arbitration rules from [Storage & Write Arbitration](#storage--write-arbitration).
+- Operational ownership (for example, order lifecycle authority) stays deterministic because there is one writer, not because of a merge step.
 
 **B) Sharded SynApp deployment (single app across multiple hosts)**
 
@@ -582,65 +479,40 @@ flowchart TD
 
 ## Layer 3 — Shared Substrate Utilities
 
-### Discovery & DHT
+### Discovery & Matching
 
-**Relay Discovery:** BEP 0044 Mainline DHT (via `pkarr`) is used for relay information storage.
+**Relay Discovery:** BEP 0044 Mainline DHT (via `pkarr`) resolves node/relay endpoints only — identity-to-route lookups, not catalog search.
 
-**Searchable Catalog:** Federated local indexes with gossip propagation.
-- Substrates maintain a local SQLite FTS5 (full-text search) index of known Spaces.
-- Substrates gossip new entries to peers within their cluster.
-- Consumer queries hit the local index first, fanning out to known peers if results are insufficient.
-- No global DHT is used for search; epidemic propagation within clusters aligns with the locality-first principle.
-
-**Partitioning, consistency model, and ranking algorithm**
+**Catalog Matching:** Adapted from the [Distributed Matching Fabric](https://github.com/syneroym/foundation/blob/main/ideas/multi-surface-matching-fabric-ux.md#syneroym-distributed-matching-fabric). Providers publish signed Publications (listings, intents, capabilities). Indexes are distributed caches, never authoritative. Clients verify every result — signature, timestamp, expiry — before trusting it.
 
 ```mermaid
 flowchart TD
-    subgraph DHT["Distributed Search Index (Kademlia DHT)"]
-        direction LR
-        N1[Node A keyspace 0x00-0x3F]
-        N2[Node B keyspace 0x40-0x7F]
-        N3[Node C keyspace 0x80-0xBF]
-        N4[Node D keyspace 0xC0-0xFF]
+    subgraph PUB["Publish"]
+        P[Provider signs a Publication] --> PLACE[Rendezvous-hash onto routing descriptor]
     end
 
-    subgraph INDEX_ENTRY["Index Entry (per SynApp Space)"]
-        E["IndexEntry {
-          space_id: &lt;pubkey&gt;
-          keywords: [str]
-          attributes: {key: value}
-          geo: {lat, lng, radius_km}
-          ad_boost: float [0.0-1.0]
-          signed_by: provider_key
-        }"]
+    subgraph LEAF["Leaf Index Shards"]
+        L1[Shard: spatial cell + category]
     end
 
-    subgraph QUERY["Query Flow"]
-        Q[Consumer query: keyword + geo + attrs]
-        Q -->|"1. check local cache"| LC[Local Index Cache 1hr TTL]
-        LC -->|"2. cache miss → DHT lookup"| DHT
-        DHT -->|"3. ranked results"| RANK[Ranking Engine]
-        RANK -->|"4. return to consumer"| RESP[Response]
+    subgraph MATCH["Query"]
+        Q[Consumer match expression] --> RESOLVE[Resolve routing descriptor]
+        RESOLVE --> L1
+        L1 --> RANK[Rank: keyword + geo + reputation + ad-boost + recency]
+        RANK --> VERIFY[Client verifies signature/expiry]
+        VERIFY --> RESP[Response]
     end
 
-    subgraph RANKING["Ranking Formula (transparent)"]
-        R["score = 
-          w1 × keyword_relevance
-          + w2 × geo_proximity_score  
-          + w3 × reputation_score
-          + w4 × ad_boost
-          + w5 × recency
-
-        Weights (w1-w5) are published open-source.
-        Space Manager can tune w4 (ad boost)
-        within published max (0.3).
-        All other weights are fixed."]
-    end
+    PLACE --> L1
 ```
 
-**Partitioning:** Standard Kademlia XOR-distance routing. Each substrate node stores index entries whose key (SHA-256 of space_id) falls within its keyspace shard. Replication factor: 3 (entries stored on 3 closest nodes).
+**Placement:** a protocol-defined Routing Schema (spatial cell, category, ...) plus rendezvous hashing maps each Publication deterministically onto leaf index shards. Providers compute their own placement; no coordinator needed.
 
-**Consistency:** Eventual consistency; index entries carry an HLC timestamp. Stale entries expire after 72 hours unless refreshed by the provider substrate.
+**Ranking:** transparent weighted formula (keyword relevance, geo proximity, reputation, ad-boost, recency). Weights are published open-source; ad-boost is capped at 0.3.
+
+**M8 ships:** Publications, one or two routing dimensions (spatial + category), flat leaf-shard lookup, client-side verification — enough for real cross-cluster federation.
+
+**Additive, later:** a hierarchical synopsis tree and query planner (worth it only once leaf-shard count makes fan-out expensive), composite routing descriptors, cross-shard ranking, adaptive fan-out. None of these require reworking the Publication format or placement contract once M8 ships it.
 
 ### Messaging
 
@@ -651,7 +523,7 @@ flowchart TD
         M1[1-to-1 Chat X3DH + Double Ratchet]
         M2[Group Chat / Threads MLS RFC 9420]
         M3[Structured Service Msgs e.g. booking request]
-        M4[Collaborative Editing CRDT OT document]
+        M4[Collaborative Editing (optional, later)]
     end
 
     subgraph E2E["1-to-1 E2E Encryption"]
@@ -665,7 +537,7 @@ flowchart TD
     end
 
     subgraph STORAGE_MSG["Message Storage"]
-        CR[cr-sqlite append-only message log]
+        CR[SQLite append-only message log]
         CR -->|"offline: outbox queue locally"| Q2[Offline Outbox Queue]
         Q2 -->|"on reconnect: replay & retry"| PEER[Peer substrate]
     end
@@ -743,9 +615,9 @@ Default `decay_factor = 0.5`. Max effective depth: 3 hops (weight < 0.125 beyond
 
 ### Payments
 
-**Payment Strategy (MVP):** MVP focuses on redirection to external payment flows (e.g., UPI deep links) or out-of-band settlement. Verification is offline-delayed. Fully integrated payment gateways are evaluated for post-MVP phases to minimize centralized dependencies initially.
+**Payment Strategy (MVP):** MVP focuses on redirection to external payment flows (e.g., UPI deep links) or out-of-band settlement. Verification is offline-delayed. Fully integrated payment gateways are sequenced in later, to minimize centralized dependencies initially.
 
-**Payment rails, escrow, and post-MVP credit/coin direction**
+**Payment rails, escrow, and credit/coin direction**
 
 ```mermaid
 flowchart TD
@@ -760,9 +632,9 @@ flowchart TD
     subgraph ADAPTERS["Payment Adapters (pluggable)"]
         STRIPE[Stripe Connect Adapter]
         UPI[UPI Deep Link Adapter]
-        ESCROW[Centralised Escrow — Post-MVP]
-        CREDIT[Mutual Credit Post-MVP]
-        COIN[Syneroym Coin Post-MVP]
+        ESCROW[Centralised Escrow]
+        CREDIT[Mutual Credit]
+        COIN[Syneroym Coin]
     end
 
     subgraph ESCROW_FLOW["Escrow Flow (MVP)"]
@@ -777,9 +649,9 @@ flowchart TD
     ADAPTERS --> ESCROW_FLOW
 ```
 
-**Mutual credit (post-MVP):** A bilateral IOU system where providers and consumers issue credits to each other denominated in a local unit. No external currency is required. Each credit line is a signed ledger between two parties; the substrate mediates settlement. Regulatory classification varies by jurisdiction and requires legal review before rollout.
+**Mutual credit (layers onto the Payment Abstraction Layer above; legal review required before rollout):** A bilateral IOU system where providers and consumers issue credits to each other denominated in a local unit. No external currency is required. Each credit line is a signed ledger between two parties; the substrate mediates settlement. Regulatory classification varies by jurisdiction.
 
-**Syneroym Coin (post-MVP):** Internal ledger token (not a cryptocurrency or blockchain-based token) managed by a community governance multi-sig. Used for ecosystem incentives and cross-aggregator settlement. Regulatory review required before launch.
+**Syneroym Coin (layers onto the same abstraction; legal review required before launch):** Internal ledger token (not a cryptocurrency or blockchain-based token) managed by a community governance multi-sig. Used for ecosystem incentives and cross-aggregator settlement.
 
 ---
 
@@ -817,7 +689,7 @@ flowchart TD
             DISC2[Discovery]
             MSG2[Messaging]
             AC2[Access Control]
-            STORE[cr-sqlite Store]
+            STORE[SQLite Store]
         end
     end
 
@@ -880,10 +752,10 @@ stateDiagram-v2
     CANCELLED_WITH_REFUND --> [*]
 ```
 
-**Offline conflict rules for order state:**
-- Provider CANCELLED + Consumer CANCELLED in same HLC epoch → **Provider takes precedence** (provider has operational authority); refund triggered
-- Provider CONFIRMED + Consumer CANCELLED in same HLC epoch → **Consumer wins** (consumer initiated the cancellation workflow first); no charge
-- Both parties IN_PROGRESS state with diverged sub-state → **merge by union** of completed steps; disputed steps require manual resolution
+**Order state conflict rules (single writer arbitrates):**
+- Provider cancel and consumer cancel both pending for the same order → **Provider takes precedence** (provider has operational authority), regardless of arrival order; refund triggered
+- Provider confirm and consumer cancel both pending → **Consumer wins** (consumer initiated the cancellation workflow first); no charge
+- Both parties record progress on the same in-progress order → the writer applies each update as it arrives; independent sub-steps naturally accumulate. Steps that genuinely conflict require manual resolution
 
 #### Consumer Transaction Flow
 
@@ -977,20 +849,20 @@ flowchart TD
         SB1[Substrate B1 Home Services]
     end
 
-    subgraph DHT2["Global DHT (Kademlia)"]
-        SHARD1[Shard 0x00-0x3F]
-        SHARD2[Shard 0x40-0x7F]
-        SHARD3[Shard 0x80-0xFF]
+    subgraph LEAVES["Leaf Index Shards (rendezvous-hashed by routing descriptor)"]
+        SHARD1[Shard: Mumbai + Home Services]
+        SHARD2[Shard: Mumbai + Retail]
+        SHARD3[Shard: Pune + Home Services]
     end
 
     CONSUMER3[Consumer-anywhere] --> LOCAL_CACHE[Local Index Cache]
-    LOCAL_CACHE -->|"miss"| DHT2
-    DHT2 -->|"results: signed by provider keys"| LOCAL_CACHE
+    LOCAL_CACHE -->|"miss: resolve routing descriptor"| LEAVES
+    LEAVES -->|"verified Publications"| LOCAL_CACHE
     LOCAL_CACHE --> CONSUMER3
 
-    SA1 -->|"publish index entries"| SHARD1
-    SA2 -->|"publish index entries"| SHARD2
-    SB1 -->|"publish index entries"| SHARD3
+    SA1 -->|"publish signed Publication"| SHARD1
+    SA2 -->|"publish signed Publication"| SHARD2
+    SB1 -->|"publish signed Publication"| SHARD3
 ```
 
 ### Minimum Federation Contract
@@ -998,7 +870,7 @@ flowchart TD
 A third-party SynApp is federation-compatible if it implements:
 
 1. **Identity:** Ed25519 keypair; identity doc in DHT
-2. **Discovery:** Publishes index entries conforming to the `IndexEntry` WIT type to the DHT
+2. **Discovery:** Publishes signed Publications conforming to the shared Publication schema, placed per the protocol Routing Schema
 3. **Messaging:** Accepts structured substrate messages typed with shared WIT interfaces
 4. **Reputation:** Generates `ReputationRecord` conforming to the shared schema on transaction completion
 5. **Portability:** Exports data in the documented `SynExport` archive format
@@ -1059,7 +931,7 @@ All instrumentation is in-process, zero-cost when unused, and based on open faca
 The translation layer between raw instrumentation and provider-facing experience. A lightweight WASM component deployed as part of the substrate core that:
 
 - Subscribes to the substrate event stream
-- Maintains a rolling 7-day **plain-language event timeline** in cr-sqlite — human-readable records generated from structured log events via templates (e.g. *"Order #47 confirmed"*, *"Connection to relay lost"*)
+- Maintains a rolling 7-day **plain-language event timeline** in SQLite — human-readable records generated from structured log events via templates (e.g. *"Order #47 confirmed"*, *"Connection to relay lost"*)
 - Evaluates a small set of health rules producing a simple `HealthState`: Connection / Payments / Sync — each Good, Degraded, or Offline with a plain-language explanation
 - Sends proactive alerts via the notification dispatcher when health degrades
 - Generates **diagnostic bundles** on demand: a signed, sanitized snapshot of recent timeline events, metric snapshots, substrate version and configuration — formatted for handoff to support staff
@@ -1127,18 +999,18 @@ flowchart TD
 
 **Bundled OCI stack (Tier 2+, disabled by default):** Grafana OSS + VictoriaMetrics + Loki + Promtail. All single binaries, self-hosted, low-resource. Enabled via `syneroym observability enable`. Pre-built Syneroym dashboard JSON for core substrate and SynApp metrics provisioned automatically on enable.
 
-**Aggregator as support console:** The aggregator's Grafana instance is the primary diagnostic tool for support staff. Diagnostic bundles from managed providers arrive via substrate messaging as structured reports. Deeper diagnostics can be pulled from any managed node with provider consent, enforced by ABAC policy.
+**Aggregator as support console:** The aggregator's Grafana instance is the primary diagnostic tool for support staff. Diagnostic bundles from managed providers arrive via substrate messaging as structured reports. Deeper diagnostics can be pulled from any managed node with provider consent, enforced by access-control policy.
 
 **Tier 1 under aggregator:** A mobile or RPi node operating under an aggregator forwards its metrics scrape endpoint and log stream to the aggregator's bundled stack. The provider gets full dashboard visibility via the aggregator without running any stack locally.
 
-### Simulation Testing and CRDT Validation
+### Simulation Testing and Replay Validation
 
 The substrate ships a **multi-node simulation harness** used during development and CI:
 
 - Runs N substrate instances in a single test binary with a controllable fake network
 - Induces partitions, delays, and node restarts deterministically
-- Every CRDT merge rule has a corresponding simulation scenario verifying the deterministic outcome
-- Property-based tests (`proptest`) verify CRDT correctness for arbitrary sequences of concurrent writes
+- Every arbitration rule in [Storage & Write Arbitration](#storage--write-arbitration) has a corresponding simulation scenario verifying the deterministic outcome
+- Property-based tests (`proptest`) verify outbox replay is idempotent for arbitrary request orderings and retries
 - Simulation output carries the same `trace_id` correlation used in production — failures are immediately diagnosable from the trace
 
 The harness is built during the walking skeleton stage and extended with each new component. It is the primary validation tool for offline and reconnect behavior before it reaches a real provider's device.
@@ -1191,21 +1063,21 @@ flowchart TD
     subgraph NODE2["NODE (physical machine)"]
         subgraph APP1["SynApp 1 (WASM sandbox)"]
             W1[WASM Component WASI capability-limited]
-            DB1[(cr-sqlite App 1 only)]
+            DB1[(SQLite App 1 only)]
         end
 
         subgraph APP2["SynApp 2 (Podman container)"]
             P1[OCI Container rootless, non-root user]
-            DB2[(cr-sqlite App 2 only)]
+            DB2[(SQLite App 2 only)]
         end
 
         subgraph APP3["SynApp 2 (WASM sandbox)"]
             W2[WASM Component WASI capability-limited]
-            DB2[(cr-sqlite App 2 only)]
+            DB2[(SQLite App 2 only)]
         end
 
         subgraph SUBSTRATE_CORE["Substrate Core"]
-            AC3[ABAC Engine enforces all cross-app access]
+            AC3[Access Control Engine enforces all cross-app access]
             MSG4[Message Router no cross-app ambient access]
         end
     end
@@ -1230,23 +1102,117 @@ This section is an index of every `[TBD]` marker in the requirements spec, that 
 
 | # | TBD Item (from requirements spec) | Resolution | Section |
 |---|---|---|---|
-| 1 | Migration protocol | Signed `SynExport` archive; cr-sqlite snapshot + blob store + App Spec; `syneroym export/import` CLI | [SynApp Packaging & API Pipeline](#synapp-packaging--api-pipeline) |
+| 1 | Migration protocol | Signed `SynExport` archive; SQLite snapshot + blob store + App Spec; `syneroym export/import` CLI | [SynApp Packaging & API Pipeline](#synapp-packaging--api-pipeline) |
 | 2 | Backup mechanism | Litestream WAL streaming to S3-compatible or peer node; continuous or on-demand | [SynApp Packaging & API Pipeline](#synapp-packaging--api-pipeline) |
-| 3 | CRDT merge semantics | cr-sqlite with HLC timestamps; LWW per field; entity-specific override rules defined | [Storage & CRDT Merge Semantics](#storage--crdt-merge-semantics) |
-| 4 | Conflict resolution rules per entity type | Full merge rule table per entity type; order conflicts favour provider authority | [Storage & CRDT Merge Semantics](#storage--crdt-merge-semantics) |
+| 3 | Storage conflict model | Single writer per service (SQLite); arbitration rules per entity type, not CRDT merge | [Storage & Write Arbitration](#storage--write-arbitration) |
+| 4 | Conflict resolution rules per entity type | Arbitration table per entity type; order conflicts favour provider authority | [Storage & Write Arbitration](#storage--write-arbitration) |
 | 5 | Vouching mechanics and weighting | Signed VouchRecord; weight = `base × 0.5^hops`; max depth 3; stake requirement for high-weight vouches | [Trust & Reputation](#trust--reputation) |
 | 6 | Credential format and verification | W3C VC Data Model 2.0; `didkit` for issuance/verification; consumer configures trusted issuers | [Trust & Reputation](#trust--reputation) |
 | 7 | Reputation portability mechanism | Both-party signed `ReputationRecord` anchored in DHT; portable by republishing under same identity key | [Trust & Reputation](#trust--reputation) |
 | 8 | Propagation protocol (community moderation) | Signed block/trust lists; propagated via DHT with decay weight; aggregators are authoritative for their cluster | [Trust & Reputation](#trust--reputation) |
 | 9 | Anti-gaming mechanisms | Bayesian reputation average; ad boost cap; TF-IDF keyword scoring; review bomb detection | [Trust & Reputation](#trust--reputation) |
 | 10 | Sybil resistance | Stake requirement for vouching; rate limiting; both-party signature on reputation records | [Trust & Reputation](#trust--reputation) |
-| 11 | Payment rails and escrow | Out-of-band settlement / UPI redirection (MVP); pluggable adapter pattern evaluated post-MVP | [Payments](#payments) |
-| 12 | Coin and mutual credit mechanics | Bilateral signed IOU ledger (post-MVP); Syneroym internal ledger token (post-MVP); no blockchain | [Payments](#payments) |
+| 11 | Payment rails and escrow | Out-of-band settlement / UPI redirection ships first; pluggable adapter pattern extends it without rework | [Payments](#payments) |
+| 12 | Coin and mutual credit mechanics | Bilateral signed IOU ledger and Syneroym internal ledger token, sequenced after core payments; no blockchain; both need legal review before launch | [Payments](#payments) |
 | 13 | Recommendation algorithm | Client-side scoring formula; no consumer data transmitted; collaborative signals from anonymised aggregates | [Recommendation Algorithm](#recommendation-algorithm) |
-| 14 | Discovery partitioning and consistency model | Kademlia DHT; XOR-distance sharding; replication factor 3; eventual consistency; 72h TTL | [Discovery & DHT](#discovery--dht) |
-| 15 | Discovery ranking algorithm | Transparent weighted formula (5 signals); ad boost capped at 0.3; formula published open-source | [Discovery & DHT](#discovery--dht) |
+| 14 | Discovery partitioning and consistency model | Publications placed via protocol routing schema + rendezvous hashing onto leaf index shards; client-verified, cache-only indexes | [Discovery & Matching](#discovery--matching) |
+| 15 | Discovery ranking algorithm | Transparent weighted formula (5 signals); ad boost capped at 0.3; formula published open-source | [Discovery & Matching](#discovery--matching) |
 | 16 | Decentralised bootstrap fallback | pkarr signed packets mirrored to BitTorrent DHT; 24h local cache; community governance key | [Bootstrap Server & DHT Fallback](#bootstrap-server--dht-fallback) |
-| 17 | Ad auction mechanics and placement limits | Ad boost is a `[0.0–0.3]` float in the index entry; no auction in MVP; elevated placement within local cluster only | [Discovery & DHT](#discovery--dht) |
+| 17 | Ad auction mechanics and placement limits | Ad boost is a `[0.0–0.3]` float on the Publication; no auction in MVP; elevated placement within local cluster only | [Discovery & Matching](#discovery--matching) |
+
+---
+
+## Appendix: Multi-Hop Relay Walkthrough
+
+Full detail behind [Multi-Hop Relay (Federated Coordinator)](#multi-hop-relay-federated-coordinator), kept here for implementers working on the coordinator; the summary there is enough for everyone else.
+
+#### Scenario Entities
+
+*   **Public Infrastructure (Internet)**
+    *   **C**: Global Coordinator (acting as public DERP/TURN relay, and public `hop-relay`).
+    *   **R**: Global Registry (community registry, future DHT).
+*   **Public/External Edge**
+    *   **Sx**: Substrate with outbound internet access.
+    *   **Ax**: Synapp deployed on **Sx**.
+*   **Private Subnetwork Infrastructure**
+    *   **Cp**: Private Coordinator (local relay). Acts as the `hop-relay` for the private network.
+    *   **Rp**: Private Registry (community registry). Connects outbound to **R** to gossip records.
+    *   **Sz**: Hidden Substrate. Resides purely in the private network with no external internet access.
+    *   **Az**: Synapp deployed on **Sz**.
+
+#### 1. Startup and Configuration
+
+1.  **Public Infrastructure Starts**: Coordinator **C** and Registry **R** are brought online on the public internet.
+2.  **Private Infrastructure Starts**: 
+    *   Coordinator **Cp** and Registry **Rp** are brought online within the private subnetwork.
+    *   **Cp** exposes a lightweight HTTP discovery endpoint (e.g., `/v1/info`) that serves its Iroh Node ID and relay configuration.
+    *   **Cp** also registers itself in the global Registry **R** as an available coordinator (controlled by a configuration switch to share its record).
+    *   **Cp** does *not* maintain a permanent connection to **C**. It connects outbound to the public Coordinator **C** on-demand only when data transfer is needed.
+    *   **Rp** is configured with **R** as its parent registry so it can query and publish records upward.
+3.  **External Substrate (Sx) Starts**: 
+    *   **Sx** connects outbound to Coordinator **C** and Registry **R**. 
+4.  **Hidden Substrate (Sz) Starts**: 
+    *   **Sz** starts in the private network and connects to its local Registry (**Rp**).
+    *   To find a local coordinator, **Sz** first checks its config for a direct `discovery_url` (fetching the Iroh connection details via HTTP). If not provided, it queries its local Registry **Rp** (which forwards the lookup to **R**) to discover available coordinators. It dynamically selects one (e.g., **Cp**) and caches its Iroh details.
+
+#### 2. Registry Entries at Deployment
+
+1.  **Ax Deployment**: 
+    *   Synapp **Ax** is deployed on **Sx**. 
+    *   The deployer of **Ax** (using `SyneroymClient::deploy_wasm`) generates a signed service record and publishes it directly to the global Registry **R**.
+2.  **Az and Sz Deployment**: 
+    *   Synapp **Az** is deployed on the hidden substrate **Sz**.
+    *   The substrate **Sz** registers itself and its services (**Az**) with the local Registry **Rp**.
+3.  **Cp Registration**: 
+    *   The private Coordinator **Cp** registers its Iroh key and connection details (like relay endpoints) into the global Registry (**R**), assuming its configuration switch is set to share its record. This makes its Iroh endpoint dynamically discoverable for substrates relying on registry lookups.
+4.  **Upward Gossip**: 
+    *   **Rp** gossips the registration of both **Az** and **Sz** upward to the global Registry **R**.
+5.  **Global Record State**: 
+    *   The global Registry **R** now holds public records for **Az** and **Sz**. 
+    *   Because **Az** is deployed on **Sz**, the record primarily obscures **Sz** (and indirectly **Az** via **Sz**). It states that to reach **Sz**, a caller must route to the entry point **Cp**.
+    *   The record also copies over the private topology, allowing **Cp** to use a registry lookup to find the specific connection details for **Sz** when transferring data.
+
+#### 3. Communication Flow: Ax connecting to Az (Inbound to Private)
+
+1.  **Packet Transmission**: Synapp **Ax** uses the `SyneroymClient` to send a packet to **Az**. The client initiates a connection to the next hop.
+2.  **Global Resolution**: The client queries the global Registry **R** for **Az**.
+3.  **Discovery**: Registry **R** responds with the routing information: target entry point is **Cp** (whose public connection details are also provided).
+4.  **Connection to Cp**: 
+    *   The client establishes a connection to the private Coordinator **Cp** (transparently using the Iroh SDK, which leverages public relay **C** internally).
+    *   The client opens a stream and directly sends a connection preamble to **Cp**, containing the target service DID (**Sz** / **Az**) and the calling substrate's public identity (**Sx**'s public key or an ephemeral key).
+5.  **Routing (Cp to Sz)**: 
+    *   **Cp** receives the stream and reads the preamble.
+    *   **Cp** performs a registry lookup to find the connection details for **Sz** (no in-memory routing table caches are used).
+    *   It determines the final hop is the hidden substrate **Sz**. **Cp** establishes an Iroh connection and forwards the stream to **Sz**.
+6.  **Target Dispatch and Handshake (Sz)**: 
+    *   **Sz** receives the stream and reads the preamble to recognize the target is its local Synapp **Az**.
+    *   **Sz** and **Sx** complete an explicit End-to-End Diffie-Hellman handshake inside the stream.
+    *   Once the secure channel is established, **Sz** dispatches the application payload to **Az**.
+
+#### 4. Communication Flow: Az connecting to Ax (Outbound to Public)
+
+1.  **Packet Transmission**: Synapp **Az** asks its host substrate **Sz** to send a packet to **Ax**.
+2.  **Resolution**: The client on **Sz** queries the local Registry **Rp**.
+    *   **Rp** does not have a local record for **Ax**, so it queries its parent, the global Registry **R**.
+    *   **R** returns **Ax**'s location (reachable directly via **Sx** on the public internet).
+3.  **Outbound Routing**: Because **Sz** has no outbound internet access, it cannot connect to **Sx** directly. It utilizes the **Cp** Iroh connection details it retrieved at startup (either via HTTP discovery or via the **Rp** -> **R** registry lookup), and prepares to route the connection request through **Cp**.
+4.  **Stream Setup**: 
+    *   **Sz** connects to **Cp** and sends the preamble for **Ax** (including **Sz**'s public key or an ephemeral public key).
+    *   **Cp** reads the preamble, realizes the target is on the public network, and connects outbound to deliver the stream to **Sx** (potentially via relay **C**).
+5.  **Data Transfer**: The bidirectional stream is established. Because **Cp** initiated an *outbound* connection on-demand, it natively bypasses the inbound reachability limitations (NATs/Firewalls) that constrain the Ax -> Az flow.
+
+#### 5. Data Transfer Characteristics
+
+1.  **End-to-End (E2E) Encryption Handshake**:
+    *   While intermediate transport legs are protected by Iroh, the Coordinators must route via preambles.
+    *   To ensure true privacy, once the multi-hop stream is connected, the endpoints (**Sx** and **Sz**) perform an explicit E2E encryption handshake inside the established stream.
+    *   This handshake utilizes the exact mechanism currently implemented in the frontend (`peer-proxy.html` / `verifyAndDeriveSharedSecret`): an explicit ECDH key exchange where the ephemeral keys are signed by the permanent Ed25519 identity keys. This provides mutual authentication and establishes an AES-GCM symmetric cipher state.
+2.  **Opaque Forwarding**: 
+    *   Following the E2E handshake, the application payload (e.g., wRPC frames) is encrypted at **Sx** and decrypted only at **Sz** (or vice versa).
+    *   The Coordinator **Cp** acts purely as a blind Level 7 pipe. It copies the E2E-encrypted bytes back and forth between streams and cannot read the application payload.
+3.  **Teardown**: 
+    *   Once the communication finishes, either endpoint closes the stream. 
+    *   Each hop independently closes its respective stream segment.
 
 ---
 
@@ -1265,7 +1231,7 @@ This section is an index of every `[TBD]` marker in the requirements spec, that 
 | API IDL | **WIT** (Component Model 1.0) | Single source of truth for all interfaces |
 | External API | **JSON-RPC 2.0** over WebSocket | Derived automatically from WIT |
 | Inter-component calls | **wRPC** | High-performance streaming between components |
-| Local storage | **cr-sqlite** | CRDT-extended SQLite; HLC timestamps |
+| Local storage | **SQLite** (`rusqlite` + `sqlcipher`) | Single writer per service; see Storage & Write Arbitration |
 | Backup / replication | **Litestream** | WAL streaming; S3-compatible or peer |
 | DHT / registry | **pkarr** + BEP 0044 DHT | SynApp registry + bootstrap fallback |
 | Local DNS | **Hickory DNS** (Rust) | Dynamic relay hostname resolution. Else, could use plain lookup cache |
@@ -1847,7 +1813,7 @@ This document details the "How"—the concrete engineering designs and implement
 The Substrate relies on multiple cryptographic and hardware-level techniques to guarantee a zero-trust environment.
 
 *   **Data at Rest & Envelope Encryption:** 
-    *   **Design:** Per-service SQLite/`cr-sqlite` database files and blob objects are encrypted using Data Encryption Keys (DEKs). A Master Key (KEK) is injected into RAM at startup to unlock the DEKs, ensuring instant key rotation without massive re-encryption.
+    *   **Design:** Per-service SQLite database files and blob objects are encrypted using Data Encryption Keys (DEKs). A Master Key (KEK) is injected into RAM at startup to unlock the DEKs, ensuring instant key rotation without massive re-encryption.
     *   **The "Unlock" Model:** Encryption keys are scoped to individual services, not the entire substrate. Keys are *never* stored on the substrate's disk in plaintext. If encryption is required, the service remains locked upon node restart until the Service Owner provisions the KEK into RAM through an authenticated management channel, optionally after attestation.
     *   **Secret Vault:** Service secrets are stored as encrypted vault rows inside the service or app-instance metadata database. Host functions reveal secrets only into the target invocation's protected memory; the vault never materializes secret values as flat files unless a legacy Podman compatibility mode explicitly requests a degraded injection path.
 *   **Memory Protection & RAM Dumping Mitigations:** 
@@ -1906,7 +1872,7 @@ A platform-managed persistent store that `SynSvcs` use via typed host functions 
 *   **Database Isolation (One DB per Service):** Instead of a monolithic combined database, every service gets its own independent SQLite `.db` file (and WAL). The substrate also maintains its own separate database.
     *   *Benefits:* Maximizes write parallelism across the system (since each service has its own independent WAL lock), enables selective Iroh WAL replication per service, and isolates failure blast radiuses.
 *   **Concurrency Architecture (Actor/Pool Model):** To handle high concurrency within a single service's database without hitting `SQLITE_BUSY` contention in Tokio, the platform utilizes **`rusqlite`** combined with **`deadpool-sqlite`**:
-    *   *Why `rusqlite`:* The data layer requires raw access to the SQLite C API for dynamic query generation, progress handlers, extension loading (including `cr-sqlite` where CRDT semantics are enabled), WAL inspection hooks, and explicit checkpoint control. These use cases reduce the value of `sqlx`'s compile-time query macros.
+    *   *Why `rusqlite`:* The data layer requires raw access to the SQLite C API for dynamic query generation, progress handlers, extension loading (e.g. `sqlite-vec`), WAL inspection hooks, and explicit checkpoint control. These use cases reduce the value of `sqlx`'s compile-time query macros.
     *   *Reader Pool:* Read queries (e.g., `GET`, `LIST`) are dispatched across a `deadpool-sqlite` connection pool. This enables parallel, non-blocking reads and seamlessly bridges synchronous `rusqlite` calls into the Tokio runtime via `spawn_blocking`.
     *   *Single Writer Thread:* All mutations (`PUT`, `DELETE`) are routed via an `mpsc` channel to a single, dedicated background task holding an exclusive `rusqlite` write connection. This strictly aligns with SQLite's single-writer WAL design, eliminating lock contention entirely and allowing for optimized transaction batching.
 *   **Resource Model:**  
@@ -1948,7 +1914,7 @@ The Substrate provides strictly typed networking between services. Static compos
     *   **WIT Interception and Late Binding:** Dependencies are declared as generic WIT imports (e.g., `import acme:booking/service;`). At instantiation, the Substrate satisfies these imports by injecting dynamically generated proxy host functions. When the WASM component invokes the import, execution traps to the host proxy. 
     *   **Instance Routing:** The proxy relies on the application manifest and the Orchestrator's App Registry to resolve the generic WIT import to a specific deployed instance's `service_id`. It bakes this route into the proxy, meaning the developer codes against generic contracts, but the Substrate handles disambiguated instance routing automatically.
     *   **Design:** Once trapped, if the target is another native WASM component, the target design serializes the call into **wRPC** (a highly efficient binary streaming protocol) and transmits it over encrypted **Iroh QUIC** streams to the correct instance. Until the wRPC surface is implemented, this path remains an explicit future target and JSON-RPC remains the available bridge.
-    *   **Native Host Service Proxying:** If the target is a native host service (e.g., the `syneroym:data-layer/store` WIT import) mapped to a remote instance, the Substrate behaves identically. It proxies the call via wRPC to the remote Substrate, which receives the call and executes its *own* native host service implementation (e.g., executing against its local `cr-sqlite` file).
+    *   **Native Host Service Proxying:** If the target is a native host service (e.g., the `syneroym:data-layer/store` WIT import) mapped to a remote instance, the Substrate behaves identically. It proxies the call via wRPC to the remote Substrate, which receives the call and executes its *own* native host service implementation (e.g., executing against its local SQLite file).
     *   **JSON-RPC Adapter:** If the target is a legacy Podman container or an external web/mobile client, the proxy dynamically translates the strict WIT calls into universal JSON-RPC 2.0 over HTTP/WebSockets.
     *   **Static Composition Bypass:** If the component and its dependency are statically composed into a single `.wasm` binary prior to deployment (e.g., via `wasm-tools compose`), the import is satisfied internally. The Substrate never sees the import, no proxy is injected, and the call executes entirely within the WebAssembly sandbox with zero-overhead.
 
@@ -2094,7 +2060,7 @@ Accessing the `metrics.db` is securely gatekept by the unified `authorization-en
 *   **Agent-to-Agent Delegation Protocol:**
     *   **Design:** Agents utilize the Universal Proxy and Community Identity/Endpoint Registry to establish encrypted Iroh streams and exchange structured negotiation intents.
 *   **Vector Database & Long-Term Memory (sqlite-vec):**
-    *   **Design:** The Ecosystem Vector Directory and Long-Term Memory are backed by **`sqlite-vec`**, integrating seamlessly with the existing `cr-sqlite` infrastructure.
+    *   **Design:** The Ecosystem Vector Directory and Long-Term Memory are backed by **`sqlite-vec`**, integrating seamlessly with the existing SQLite infrastructure.
 
 ### [ADV-DEV] SynApp Developer Tooling & SDKs
 
@@ -2119,7 +2085,8 @@ Accessing the `metrics.db` is securely gatekept by the unified `authorization-en
     *   `note`: An optional, short text description.
 *   **Time-Decay Algorithm:** The substrate maintains a rolling Exponential Moving Average (EMA). The formula anchors to `1.0`. As signals age past defined thresholds (e.g., 30 days, 90 days), their weight in the EMA computation approaches 0, pulling the provider's overall score back to `1.0`.
 *   **Incremental Rolling Summaries:** Instead of recalculating summaries from scratch, the substrate triggers a background task upon receiving a new signal. It updates simple counters (e.g., `total_ratings`, `moving_average`) and maintains 3 small text fields (e.g., `summary_last_30_days`, `summary_all_time`). This bounded approach guarantees O(1) performance for reputation queries.
-*   **Provider-Hosted Presentation:** When Consumer A evaluates Provider B, B's substrate serves its local CRDT reputation log directly to A. Consumer A's substrate mathematically verifies the `interaction_receipt` signatures against the network. If valid, Consumer A's local AI (`[ADV-AI]`) reads the pre-computed rolling summaries and presents them to the user.
+*   **Independent, Owned Attestation:** Each party signs and stores its own copy of the `interaction_receipt` in its own single-writer ledger — never a jointly-written shared record. A signature reads as "I confirm this occurred, provided the other party's matching signature also exists." Validity is a read-time check that both independently-created, matching signatures exist — not a live signing ceremony or a merge.
+*   **Provider-Hosted Presentation:** When Consumer A evaluates Provider B, B's substrate serves its own single-writer reputation log — an append-only log of received signals, same as any other append-only entity — directly to A. Consumer A's substrate mathematically verifies the `interaction_receipt` signatures against the network. If valid, Consumer A's local AI (`[ADV-AI]`) reads the pre-computed rolling summaries and presents them to the user.
 
 ## Phase 6: High-Level Applications (SynApps)
 
@@ -2128,7 +2095,7 @@ Accessing the `metrics.db` is securely gatekept by the unified `authorization-en
 **Design Approach:**
 To achieve the "Hybrid Headless Substrate" vision, the Syneroym Hub is designed as a "dumb" cross-platform frontend utilizing standard web technologies (HTML/CSS/JS). Because the UI acts purely as a renderer for JSON Action Cards, this stack ensures rapid, unified development across all multi-surface views.
 - **Desktop (Tauri):** We use Tauri because its native Rust backend can embed the substrate runtime library or supervise a local substrate daemon, while using the OS's native webview for an incredibly lightweight footprint. `roymctl` remains the CLI/control surface rather than the long-running daemon itself.
-- **Mobile (Native WebView Wrapper):** We use a thin native shell (Swift/Kotlin or Capacitor) wrapping a WebView. This allows HTML/CSS/JS to handle the dynamic UI, while the native layer handles heavy background tasks like P2P networking, cryptography, and `cr-sqlite` sync.
+- **Mobile (Native WebView Wrapper):** We use a thin native shell (Swift/Kotlin or Capacitor) wrapping a WebView. This allows HTML/CSS/JS to handle the dynamic UI, while the native layer handles heavy background tasks like P2P networking, cryptography, and SQLite replication.
 - **Data Isolation:** The UI shell does not execute complex business rules and does not own authoritative database state. It may cache presentation data and outbox state for responsiveness. It maintains a persistent, authenticated WebSocket/gRPC connection to the local substrate API to serve views dynamically.
 - **Surface Rendering & Intent Translation:** When a user interacts with a Trusted Room or the Agentic Concierge, the UI simply renders the Action Cards or relays raw text/audio to the Substrate's local Rig-core agent, which handles translation into API calls.
 
@@ -2164,14 +2131,14 @@ Without a public blockchain, staking relies on the mutual-credit DLN. A provider
 ### 6. Decentralized Escrow & Dispute Resolution
 *Addresses the Facilitator activity of holding funds or arbitrating.*
 **Design Approach:**
-Escrow on a local CRDT ledger uses a 2-of-3 Multi-Signature scheme. An Invoice Intent is created requiring signatures from any two of the three parties: Consumer, Provider, and a designated Facilitator (Arbitrator). The funds/credits sit in a pending state on the DLN.
-- **Happy Path:** Consumer and Provider both sign the completion state.
-- **Dispute Path:** If they disagree, the Arbitrator reviews the case off-chain or via chat logs, and signs a final settling transaction alongside the winning party, forcing the CRDT merge.
+The designated Facilitator's own single-writer ledger service is the custodian holding the pending funds/credits — not a jointly-written shared ledger. A 2-of-3 Multi-Signature scheme gates release: an Invoice Intent requires signatures from any two of the three parties (Consumer, Provider, Facilitator) before the custodian's single writer executes the release.
+- **Happy Path:** Consumer and Provider both sign the completion state; the custodian releases funds on receiving both.
+- **Dispute Path:** If they disagree, the Arbitrator reviews the case off-chain or via chat logs, and signs a final settling transaction alongside the winning party; the custodian applies it as an ordinary single-writer state transition — no merge involved.
 
 ### 7. Aggregator Fuel Quotas
 *Addresses how Aggregators prevent spam when indexing catalogs.*
 **Design Approach:**
-Aggregators are fundamentally just Providers offering a horizontal service. They use the same internal SQLite/`cr-sqlite` ledger to track API consumption. A provider establishes a DID-based session with the Aggregator. The Aggregator maintains an internal table mapping the DID to an integer "fuel quota". Every incoming `publish_listing` or `search` API request is processed by middleware that atomically decrements the fuel quota in the local SQLite DB, rejecting requests when the balance hits zero. Providers top up fuel via standard Flexible Payment integrations.
+Aggregators are fundamentally just Providers offering a horizontal service. They use the same internal SQLite ledger to track API consumption. A provider establishes a DID-based session with the Aggregator. The Aggregator maintains an internal table mapping the DID to an integer "fuel quota". Every incoming `publish_listing` or `search` API request is processed by middleware that atomically decrements the fuel quota in the local SQLite DB, rejecting requests when the balance hits zero. Providers top up fuel via standard Flexible Payment integrations.
 
 ## Phase 7: Edge Expansion
 
@@ -2199,9 +2166,9 @@ Aggregators are fundamentally just Providers offering a horizontal service. They
 | OQ-5 | **Aggregator accountability:** legal and operational obligations. | Medium | **Layer 3/4 Trust Mechanisms.** Aggregators issue Verifiable Credentials (VCs). If malicious, providers migrate via `SynExport`, drop bad VC, and acquire a new one from a trusted aggregator. |
 | OQ-6 | **Infrastructure Provider SLA:** formal guarantees. | Medium | **Substrate Uptime Proofs.** Substrates broadcast encrypted heartbeats to Provider Apps. If SLA drops (e.g., < 99%), UI prompts provider to migrate Space using `SynExport`. |
 | OQ-7 | **Consumer UX ownership:** Consumer App governance. | Medium | **Reference Open-Source Apps.** Syneroym builds and open-sources reference apps (Native mobile, Tauri desktop). Aggregators fork and brand it, hardcoding their bootstrap nodes and tuning local discovery weights. |
-| OQ-8 | **Payment rail expansion:** cross-border, smart-contract escrow. | Low | Defer to Post-MVP. Evaluate based on initial adoption metrics. |
-| OQ-9 | **Regulatory review:** mutual credit and Syneroym coin in target markets. | Low | Defer to Post-MVP. Requires legal counsel engagement before implementation. |
-| OQ-10 | **AI-assisted workflow synthesis:** scope, integration, privacy. | Low | Defer to Post-MVP. Keep workflows manual for Phase 1. |
+| OQ-8 | **Payment rail expansion:** cross-border, smart-contract escrow. | Low | Sequenced after core payments; evaluate based on initial adoption metrics. |
+| OQ-9 | **Regulatory review:** mutual credit and Syneroym coin in target markets. | Low | Required before either ships; needs legal counsel engagement. |
+| OQ-10 | **AI-assisted workflow synthesis:** scope, integration, privacy. | Low | Sequenced after Phase 1; workflows stay manual until then. |
 
 ---
 
@@ -2218,13 +2185,12 @@ Aggregators are fundamentally just Providers offering a horizontal service. They
 | **Space** | A named, provider-configured business context within a SynApp (e.g. a plumber's booking page) |
 | **WIT** | WebAssembly Interface Types — the IDL used for all component interfaces |
 | **CRDT** | Conflict-free Replicated Data Type — data structure that merges deterministically without coordination |
-| **HLC** | Hybrid Logical Clock — combines physical and logical time; used for CRDT ordering in cr-sqlite |
 | **DERP** | Designated Encrypted Relay Protocol — Iroh's relay transport when QUIC direct connection fails |
-| **ABAC** | Attribute-Based Access Control — policy model used by the substrate access control engine |
+| **ABAC** | Attribute-Based Access Control — one stage of the substrate's access-control pipeline (see `[FND-IAM]`) |
 | **pkarr** | Public-Key Addressable Resource Records — DHT records signed by an Ed25519 key |
 | **UCAN** | User Controlled Authorization Networks — capability token standard used for delegation |
 | **wRPC** | WIT-native RPC — high-performance inter-component streaming calls within a node |
-| **LWW** | Last-Write-Wins — CRDT merge strategy where the most recent write (by HLC) takes precedence |
+| **LWW** | Last-Write-Wins — the most recent write to a field persists; trivial with one writer per service, no merge algorithm needed |
 | **MLS** | Messaging Layer Security (RFC 9420) — end-to-end encrypted group messaging protocol |
 | **Beckn** | Beckn Protocols — open protocol for value exchange between people and businesses using digital infrastructure. |
 

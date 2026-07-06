@@ -34,7 +34,7 @@ When we begin work on any milestone below, we will generate a dedicated `task.md
 
 **Implementation Approach:**
 1. **Traceability Matrix:** Map every requirement and sub-requirement to its current implementation status, target milestone, and acceptance evidence.
-2. **Decision Register:** Resolve only milestone-blocking ADRs (e.g., encryption implementation, DLN scope, manifest versioning boundaries). Maintain a decision register for non-blocking deferred questions (Milestones 9–10).
+2. **Decision Register:** Resolve only milestone-blocking ADRs (e.g., encryption implementation, DLN scope, manifest versioning boundaries). Maintain a decision register for non-blocking open questions relevant to Milestones 9–10.
 3. **DLN Scope Resolution:** Explicitly decide the target milestone for the Dynamic Ledger Network (DLN) and whether signed-interaction-receipts (and therefore robust `[P2P-REP]` reputation) are scheduled early or assigned to later milestones.
 4. **SQLite Encryption ADR:** Build an ADR/feasibility prototype for the exact encrypted-SQLite mechanism to be used in M3.
 5. **Baseline Migration Plan:** Draft the plan to migrate current `roymctl` contracts.
@@ -190,12 +190,12 @@ To prevent dependency cycles and scope creep, the data layer and storage mechani
 **Goal:** Expand the single-node capability into a robust, community-driven mesh network.
 
 **Feature Grouping:**
-- `[P2P-DSC]` Federated Tag-Routed Discovery
+- `[P2P-DSC]` Distributed Matching Fabric (discovery)
 - `[P2P-REP]` Peer Reputation & Trust
 
 **Implementation Approach:**
-1. **Tag Routing:** Implement hierarchical tag routing to push discovery intents. Include discovery TTL, request deduplication, fan-out limits, authentication, and tag privacy/abuse protections.
-2. **Reputation CRDT:** Implement `[P2P-REP]` only if M0 selects and schedules a mutually signed interaction-receipt mechanism (DLN); otherwise move `[P2P-REP]` to the deferred roadmap without weakening its cryptographic prerequisite.
+1. **Matching Fabric, flat slice:** Implement the signed Publication data model, one or two protocol routing dimensions (spatial + category), and deterministic placement via rendezvous hashing onto a small set of leaf index shards (the existing aggregator/super-peer nodes). Client-side verification — signature, timestamp, expiry — ships from day one. The hierarchical synopsis tree, composite routing descriptors, and cross-shard ranking are additive follow-on work once leaf-shard count makes flat fan-out expensive; none of them require reworking the Publication or placement contract shipped here.
+2. **Reputation CRDT:** Implement `[P2P-REP]` only if M0 selects and schedules a mutually signed interaction-receipt mechanism (DLN); otherwise sequence `[P2P-REP]` for a later milestone without weakening its cryptographic prerequisite.
 
 ---
 
@@ -233,14 +233,14 @@ Due to its complexity, the AI expansion track is subdivided into foundational an
 
 ---
 
-## Explicitly Deferred Work & Future Product Phases
-To strictly enforce focus and ensure achievable milestones, the following roadmap features are excluded from Milestones 1–10 and will be scheduled in subsequent roadmap iterations:
+## Later-Phase Additions
+To keep Milestones 1–10 achievable, the following features are sequenced after them, not shelved. Each is designed to compose with what ships in Milestones 1–10 without reworking it:
 - **`[FND-IDT]` Extensions:** Master Key export/recovery, Tier-1 Fallback processing, and Method B Zero-Knowledge (ZK) plugin verification.
 - **Phase 6 Product Expansion:** 
   - The Producer-Distributor Mesh application vertical.
   - Complete, rich Syneroym Hub UI surfaces.
   - Dedicated marketplace, aggregator, and facilitator `SynSvcs`.
-- **Financial & Escrow Services:** Any native settlement, mutual credit ledger operations, and integrated transaction escrow dependent on the full Dynamic Ledger Network.
+- **Financial & Escrow Services:** Native settlement, mutual credit ledger operations, and integrated transaction escrow, layered onto the pluggable Payment Abstraction Layer once the Dynamic Ledger Network is scoped.
 
 ---
 
