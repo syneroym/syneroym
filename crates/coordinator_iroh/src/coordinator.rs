@@ -8,6 +8,7 @@ use std::{
     future,
     net::SocketAddr,
     sync::Arc,
+    time::Duration,
 };
 
 use anyhow::{Context, Result};
@@ -23,7 +24,7 @@ use syneroym_core::{
 };
 use syneroym_identity::{Identity, substrate::derive_did_key};
 use syneroym_router::{RouteHandler, SYNEROYM_ALPN, net_iroh};
-use tokio::{net::TcpListener, task::JoinHandle};
+use tokio::{net::TcpListener, task::JoinHandle, time::timeout};
 use tracing::{debug, info, warn};
 
 use crate::{
@@ -51,19 +52,40 @@ impl Debug for CoordinatorIroh {
     }
 }
 
+/// Resolves the relay URL to advertise/dial for this coordinator: the parent
+/// coordinator's relay if configured, otherwise the locally spawned relay
+/// server's address (preferring its HTTPS listener when relay TLS is
+/// configured, since that is the address that actually speaks the relay
+/// protocol -- the plain HTTP listener only serves the captive-portal probe
+/// in that case), otherwise `None` if no relay is enabled.
+fn resolve_relay_url(
+    parent_relay_url: Option<&str>,
+    relay_server: &Option<Server>,
+    iroh_cfg: &CoordinatorIrohConfig,
+) -> Option<String> {
+    if let Some(parent_url) = parent_relay_url {
+        return Some(parent_url.to_string());
+    }
+    if !iroh_cfg.enable_relay {
+        return None;
+    }
+    let addr = relay_server.as_ref().and_then(|server| {
+        server
+            .https_addr()
+            .map(|addr| format!("https://{addr}"))
+            .or_else(|| server.http_addr().map(|addr| format!("http://{addr}")))
+    });
+    Some(addr.unwrap_or_else(|| format!("http://{}", iroh_cfg.http_bind_address)))
+}
+
 impl CoordinatorIroh {
     pub async fn init(config: &SubstrateConfig) -> Result<Self> {
         info!("Initializing Coordinator IROH");
-        let mut config_roles = config.roles.coordinator.clone();
-        if let Some(role) = &mut config_roles
-            && role.tls.is_none()
-            && let Some(tls) = &config.tls
-        {
-            role.tls = Some(syneroym_core::config::TlsConfig {
-                cert_path: tls.cert_path.clone(),
-                key_path: tls.key_path.clone(),
-            });
-        }
+        // Note: `role.tls` (relay TLS) is intentionally independent of `config.tls`
+        // (the public /v1/info HTTPS endpoint's cert). They secure different
+        // surfaces and must be configured separately; a relay operator must opt in
+        // explicitly by setting `role.tls`.
+        let config_roles = config.roles.coordinator.clone();
 
         let mut relay_server = None;
         let mut iroh_router = None;
@@ -119,20 +141,11 @@ impl CoordinatorIroh {
                 if iroh_cfg.share_in_registry
                     && let Some(registry_url) = &iroh_cfg.community_registry_url
                 {
-                    let actual_http_addr = relay_server.as_ref().and_then(Server::http_addr);
-                    let relay_url_payload = if let Some(parent_url) =
-                        config.parent_coordinator.iroh.as_ref().map(|u| &u.url)
-                    {
-                        Some(parent_url.clone())
-                    } else if iroh_cfg.enable_relay {
-                        if let Some(addr) = actual_http_addr {
-                            Some(format!("http://{addr}"))
-                        } else {
-                            Some(format!("http://{}", iroh_cfg.http_bind_address))
-                        }
-                    } else {
-                        None
-                    };
+                    let relay_url_payload = resolve_relay_url(
+                        config.parent_coordinator.iroh.as_ref().map(|u| u.url.as_str()),
+                        &relay_server,
+                        iroh_cfg,
+                    );
 
                     let reg_handle = Self::register_in_global_registry(
                         registry_url.clone(),
@@ -177,18 +190,12 @@ impl CoordinatorIroh {
     ) -> Result<(Endpoint, SecretKey)> {
         let secret_key = SecretKey::generate(&mut rand::rng());
 
-        let mut chosen_relay_url_str = None;
-        if let Some(parent_url) = config.parent_coordinator.iroh.as_ref().map(|u| u.url.clone()) {
+        let parent_relay_url = config.parent_coordinator.iroh.as_ref().map(|u| u.url.clone());
+        if let Some(parent_url) = &parent_relay_url {
             info!("Registering with parent coordinator at {}", parent_url);
-            chosen_relay_url_str = Some(parent_url);
-        } else if iroh_cfg.enable_relay {
-            let actual_http_addr = relay_server.as_ref().and_then(Server::http_addr);
-            if let Some(addr) = actual_http_addr {
-                chosen_relay_url_str = Some(format!("http://{addr}"));
-            } else {
-                chosen_relay_url_str = Some(format!("http://{}", iroh_cfg.http_bind_address));
-            }
         }
+        let chosen_relay_url_str =
+            resolve_relay_url(parent_relay_url.as_deref(), relay_server, iroh_cfg);
 
         let iroh_endpoint = net_iroh::build_iroh_endpoint(
             chosen_relay_url_str,
@@ -196,7 +203,10 @@ impl CoordinatorIroh {
             iroh_cfg.idle_timeout_secs,
         )
         .await?;
-        iroh_endpoint.online().await;
+        match timeout(Duration::from_secs(30), iroh_endpoint.online()).await {
+            Ok(()) => debug!("Iroh endpoint is online"),
+            Err(_) => warn!("Timeout waiting for Iroh endpoint to come online"),
+        }
 
         let node_id = iroh_endpoint.addr().id;
         debug!("Coordinator Iroh endpoint bound: {}", node_id);
@@ -253,18 +263,7 @@ impl CoordinatorIroh {
         let endpoint_addr_payload = endpoint_addr;
         let endpoint_addr_bytes = serde_json::to_vec(&endpoint_addr_payload)?;
         let parent_relay_url = config.parent_coordinator.iroh.as_ref().map(|u| u.url.clone());
-        let actual_http_addr = relay_server.as_ref().and_then(Server::http_addr);
-        let relay_url = if let Some(parent_url) = parent_relay_url.as_ref() {
-            Some(parent_url.clone())
-        } else if iroh_cfg.enable_relay {
-            if let Some(addr) = actual_http_addr {
-                Some(format!("http://{addr}"))
-            } else {
-                Some(format!("http://{}", iroh_cfg.http_bind_address))
-            }
-        } else {
-            None
-        };
+        let relay_url = resolve_relay_url(parent_relay_url.as_deref(), relay_server, iroh_cfg);
 
         let tls_cert_path = config.tls.as_ref().map(|t| t.cert_path.clone());
         let is_relay_enabled = iroh_cfg.enable_relay;
