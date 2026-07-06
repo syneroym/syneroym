@@ -71,8 +71,15 @@ async fn test_tls_rotation_sigusr1() -> Result<()> {
 
     config.roles.coordinator = Some(CoordinatorRole {
         iroh: Some(CoordinatorIrohConfig {
-            enable_relay: false,
+            // Use a purely local relay instead of falling back to iroh's public N0
+            // relay/discovery infrastructure, so this test doesn't depend on real
+            // internet connectivity to bring the endpoint online. Relay TLS is
+            // intentionally left unconfigured (see `role.tls` in
+            // `CoordinatorRole`): it's independent of the `SubstrateTlsConfig`
+            // above, which only covers the /v1/info HTTPS endpoint under test.
+            enable_relay: true,
             http_bind_address: "127.0.0.1:0".to_string(), // Dynamic port
+            quic_bind_address: "127.0.0.1:0".to_string(), // Dynamic port
             ..Default::default()
         }),
         ..Default::default()
