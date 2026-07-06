@@ -7,7 +7,7 @@
 - Have extensive integration and end to end tests for end user facing interfaces.
 - Have solid unit tests for internal code if it is complex and delicate, even if it is not user facing.
 - If new tools are needed in the build pipeline, add them to `mise.toml` too, so other dev environments easily get it.
-- Do not commit code changes, and also do not add code changes to git index.
+- Do not commit code changes, and also do not add code changes to git index, when the current branch is `main`. On any other (feature) branch, staging and committing is allowed.
 - Files with `scratch-notes` in the name, as well as the `docs/archive` folder, contain temporary or archived ideas and should be ignored by the agent. They might not contain reliable information.
 
 ## Project & Rust Specifics
@@ -27,6 +27,7 @@
 - **Output Quality**: Ensure responses are accurate, idiomatic Rust code. Link to relevant files using workspace-relative paths (e.g., [src/main.rs](src/main.rs#L10)). Provide runnable code snippets with minimal setup instructions.
 - **Security and Dependencies**: Do not exfiltrate secrets. Use minimal, pinned, widely-used libraries. Update manifests appropriately.
 - **Git Commit Messages (50/72 Rule)**: When auto-generating or suggesting git commit messages, strictly enforce the 50/72 rule. The subject line (first line) must be capitalized, in the imperative mood, and no more than 50 characters, with no trailing period. The second line must be empty. The body (lines 3+) must be wrapped at 72 characters and explain the what and why, not the how.
+- **Pull Request CLA Checkbox**: `.github/workflows/cla-enforcer.yml` fails any PR whose description doesn't contain this exact line, checked and unmodified, on its own line: `- [x] I have read and agree to the [Syneroym CLA](https://github.com/syneroym/syneroym/blob/main/CLA.md).` `gh pr create --body` overrides `.github/PULL_REQUEST_TEMPLATE.md` entirely, so always include this line verbatim in any PR body you author.
 
 ## Repository Structure and Key Components
 - **Workspace Layout**: This is a Rust workspace with multiple crates in `crates/`, apps in `apps/`, documentation in `docs/`, and test components in `test-components/`. Key files include `Cargo.toml` (workspace config) and `mise.toml` (tool versions).
