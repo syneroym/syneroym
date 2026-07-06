@@ -7,16 +7,361 @@ use std::{
 use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce, aead::Aead};
 use async_trait::async_trait;
 use rand::RngCore;
+use rusqlite::params;
 use syneroym_key_store::KeyStore;
+use tokio::{sync::oneshot, task};
 use zeroize::Zeroizing;
 
-use crate::traits::{ServiceStore, StorageProvider};
+use crate::{
+    errors::map_rusqlite_error,
+    filter,
+    traits::{ServiceStore, StorageProvider},
+    wit_store,
+};
 
+// Real service ids are DIDs (e.g. `did:key:h7wy...`), which contain colons;
+// `:` is not a path separator on any Rust-supported OS, so allowing it here
+// does not weaken the path-traversal guard below (which still relies on
+// rejecting `.`/`/`/`\` and on the `starts_with` descendant check).
 #[allow(clippy::unwrap_used)]
 static SERVICE_ID_REGEX: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r"^[a-zA-Z0-9_\-]{1,128}$").unwrap());
+    LazyLock::new(|| regex::Regex::new(r"^[a-zA-Z0-9_:\-]{1,128}$").unwrap());
+
+#[allow(clippy::unwrap_used)]
+static IDENTIFIER_REGEX: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$").unwrap());
 
 const SUBSTRATE_SCHEMA_VERSION: &str = "m3a";
+
+/// Hard upper bound on records returned per `query` page, enforced
+/// regardless of what the guest requests via `query-options.limit`.
+pub const MAX_QUERY_PAGE_SIZE: u32 = 1000;
+
+/// Hard upper bound on the number of mutations accepted by a single
+/// `batch-mutate` call, to bound how long the single-writer actor is
+/// occupied by one request.
+pub const MAX_BATCH_SIZE: usize = 200;
+
+/// Validates a guest-supplied identifier (collection/table name, index
+/// field name) before it is formatted into SQL text. Table and column names
+/// cannot be bound as SQL parameters, so this allow-list is what stands in
+/// for parameterization at the DDL boundary.
+fn validate_identifier(name: &str) -> Result<(), wit_store::DataLayerError> {
+    if IDENTIFIER_REGEX.is_match(name) {
+        Ok(())
+    } else {
+        Err(wit_store::DataLayerError::SchemaViolation(format!("invalid identifier: {name}")))
+    }
+}
+
+/// Applies an RFC 7396 JSON merge-patch: `patch` values overwrite `target`,
+/// `null` values remove the key, and nested objects merge recursively.
+fn apply_merge_patch(target: &mut serde_json::Value, patch: &serde_json::Value) {
+    let serde_json::Value::Object(patch_obj) = patch else {
+        *target = patch.clone();
+        return;
+    };
+    if !target.is_object() {
+        *target = serde_json::Value::Object(serde_json::Map::new());
+    }
+    #[allow(clippy::expect_used)]
+    let target_obj = target.as_object_mut().expect("target was just coerced into an object");
+    for (key, value) in patch_obj {
+        if value.is_null() {
+            target_obj.remove(key);
+        } else {
+            let entry = target_obj.entry(key.clone()).or_insert(serde_json::Value::Null);
+            apply_merge_patch(entry, value);
+        }
+    }
+}
+
+fn payload_to_text(payload: &[u8]) -> Result<String, wit_store::DataLayerError> {
+    let text = std::str::from_utf8(payload).map_err(|_| {
+        wit_store::DataLayerError::SchemaViolation("payload must be valid UTF-8".into())
+    })?;
+    serde_json::from_str::<serde_json::Value>(text).map_err(|e| {
+        wit_store::DataLayerError::SchemaViolation(format!("payload is not valid JSON: {e}"))
+    })?;
+    Ok(text.to_string())
+}
+
+fn do_create_collection(
+    conn: &rusqlite::Connection,
+    schema: &wit_store::CollectionSchema,
+) -> Result<(), wit_store::DataLayerError> {
+    validate_identifier(&schema.name)?;
+    for idx in &schema.indexes {
+        validate_identifier(&idx.field_name)?;
+    }
+    conn.execute(
+        &format!(
+            "CREATE TABLE IF NOT EXISTS {} (id TEXT PRIMARY KEY, payload JSON NOT NULL, \
+             creator_id TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
+            schema.name
+        ),
+        [],
+    )
+    .map_err(map_rusqlite_error)?;
+    for idx in &schema.indexes {
+        let index_name = format!("idx_{}_{}", schema.name, idx.field_name);
+        conn.execute(
+            &format!(
+                "CREATE INDEX IF NOT EXISTS {index_name} ON {}(json_extract(payload, '$.{}'))",
+                schema.name, idx.field_name
+            ),
+            [],
+        )
+        .map_err(map_rusqlite_error)?;
+    }
+    Ok(())
+}
+
+fn do_drop_collection(
+    conn: &rusqlite::Connection,
+    name: &str,
+) -> Result<(), wit_store::DataLayerError> {
+    validate_identifier(name)?;
+    conn.execute(&format!("DROP TABLE IF EXISTS {name}"), []).map_err(map_rusqlite_error)?;
+    Ok(())
+}
+
+fn do_execute_ddl(conn: &rusqlite::Connection, sql: &str) -> Result<(), wit_store::DataLayerError> {
+    // Syntax-check first via a plain `prepare` (compiles without stepping the
+    // statement, so nothing is mutated), then run the real statement(s).
+    // NOTE: only the leading statement of a multi-statement `sql` is checked
+    // this way; `execute_batch` below still validates the full batch.
+    conn.prepare(&format!("EXPLAIN {sql}")).map_err(|e| {
+        wit_store::DataLayerError::Internal(format!("DDL syntax check failed: {e}"))
+    })?;
+    conn.execute_batch(sql)
+        .map_err(|e| wit_store::DataLayerError::Internal(format!("DDL execution failed: {e}")))?;
+    Ok(())
+}
+
+fn do_put(
+    conn: &rusqlite::Connection,
+    collection: &str,
+    value: &wit_store::RecordWriteValue,
+    creator_id: &str,
+) -> Result<(), wit_store::DataLayerError> {
+    validate_identifier(collection)?;
+    let payload_text = payload_to_text(&value.payload)?;
+    let now = chrono::Utc::now().timestamp_millis();
+
+    let existing_created_at: Option<i64> = conn
+        .query_row(
+            &format!("SELECT created_at FROM {collection} WHERE id = ?1"),
+            params![value.id],
+            |row| row.get(0),
+        )
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(other),
+        })
+        .map_err(map_rusqlite_error)?;
+    let created_at = existing_created_at.unwrap_or(now);
+
+    conn.execute(
+        &format!(
+            "INSERT INTO {collection} (id, payload, creator_id, created_at, updated_at) VALUES \
+             (?1, ?2, ?3, ?4, ?5) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, \
+             creator_id = excluded.creator_id, updated_at = excluded.updated_at"
+        ),
+        params![value.id, payload_text, creator_id, created_at, now],
+    )
+    .map_err(map_rusqlite_error)?;
+    Ok(())
+}
+
+fn do_patch(
+    conn: &rusqlite::Connection,
+    collection: &str,
+    id: &str,
+    patch_json: &[u8],
+) -> Result<(), wit_store::DataLayerError> {
+    validate_identifier(collection)?;
+    let existing_payload: String = conn
+        .query_row(&format!("SELECT payload FROM {collection} WHERE id = ?1"), params![id], |row| {
+            row.get(0)
+        })
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => wit_store::DataLayerError::SchemaViolation(
+                format!("record not found for patch: {id}"),
+            ),
+            other => map_rusqlite_error(other),
+        })?;
+
+    let mut target: serde_json::Value = serde_json::from_str(&existing_payload).map_err(|e| {
+        wit_store::DataLayerError::Internal(format!("stored payload is not valid JSON: {e}"))
+    })?;
+    let patch_text = std::str::from_utf8(patch_json).map_err(|_| {
+        wit_store::DataLayerError::SchemaViolation("patch-json must be valid UTF-8".into())
+    })?;
+    let patch_doc: serde_json::Value = serde_json::from_str(patch_text).map_err(|e| {
+        wit_store::DataLayerError::SchemaViolation(format!("patch-json is not valid JSON: {e}"))
+    })?;
+    apply_merge_patch(&mut target, &patch_doc);
+    let merged_text = serde_json::to_string(&target)
+        .map_err(|e| wit_store::DataLayerError::Internal(e.to_string()))?;
+
+    let now = chrono::Utc::now().timestamp_millis();
+    conn.execute(
+        &format!("UPDATE {collection} SET payload = ?1, updated_at = ?2 WHERE id = ?3"),
+        params![merged_text, now, id],
+    )
+    .map_err(map_rusqlite_error)?;
+    Ok(())
+}
+
+fn do_delete(
+    conn: &rusqlite::Connection,
+    collection: &str,
+    id: &str,
+) -> Result<(), wit_store::DataLayerError> {
+    validate_identifier(collection)?;
+    // Idempotent: deleting a non-existent id is not an error, only a
+    // non-existent collection is (surfaced via map_rusqlite_error below).
+    conn.execute(&format!("DELETE FROM {collection} WHERE id = ?1"), params![id])
+        .map_err(map_rusqlite_error)?;
+    Ok(())
+}
+
+fn do_delete_many(
+    conn: &rusqlite::Connection,
+    collection: &str,
+    filter_json: Option<&str>,
+) -> Result<u64, wit_store::DataLayerError> {
+    validate_identifier(collection)?;
+    let compiled = filter::compile_filter(filter_json)?;
+    let (where_sql, bound_params) = match &compiled {
+        Some(cf) => (format!("WHERE {}", cf.where_clause), cf.params.clone()),
+        None => (String::new(), Vec::new()),
+    };
+    let affected = conn
+        .execute(
+            &format!("DELETE FROM {collection} {where_sql}"),
+            rusqlite::params_from_iter(bound_params.iter()),
+        )
+        .map_err(map_rusqlite_error)?;
+    Ok(affected as u64)
+}
+
+fn do_batch_mutate(
+    conn: &mut rusqlite::Connection,
+    collection: &str,
+    mutations: &[wit_store::Mutation],
+    creator_id: &str,
+) -> Result<(), wit_store::DataLayerError> {
+    validate_identifier(collection)?;
+    if mutations.len() > MAX_BATCH_SIZE {
+        return Err(wit_store::DataLayerError::SchemaViolation(format!(
+            "batch exceeds MAX_BATCH_SIZE ({MAX_BATCH_SIZE})"
+        )));
+    }
+    let tx = conn.transaction().map_err(map_rusqlite_error)?;
+    for mutation in mutations {
+        match mutation {
+            wit_store::Mutation::Put(value) => do_put(&tx, collection, value, creator_id)?,
+            wit_store::Mutation::Patch(patch_mutation) => {
+                do_patch(&tx, collection, &patch_mutation.id, &patch_mutation.patch_json)?
+            }
+            wit_store::Mutation::Delete(id) => do_delete(&tx, collection, id)?,
+        }
+    }
+    tx.commit().map_err(map_rusqlite_error)?;
+    Ok(())
+}
+
+fn do_get(
+    conn: &rusqlite::Connection,
+    collection: &str,
+    id: &str,
+) -> Result<Option<wit_store::RecordReadValue>, wit_store::DataLayerError> {
+    validate_identifier(collection)?;
+    let result = conn.query_row(
+        &format!(
+            "SELECT payload, creator_id, created_at, updated_at FROM {collection} WHERE id = ?1"
+        ),
+        params![id],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        },
+    );
+    match result {
+        Ok((payload, creator_id, created_at, updated_at)) => Ok(Some(wit_store::RecordReadValue {
+            id: id.to_string(),
+            payload: payload.into_bytes(),
+            creator_id,
+            created_at: created_at as u64,
+            updated_at: updated_at as u64,
+        })),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(map_rusqlite_error(e)),
+    }
+}
+
+fn do_query(
+    conn: &rusqlite::Connection,
+    collection: &str,
+    opts: &wit_store::QueryOptions,
+) -> Result<wit_store::QueryResult, wit_store::DataLayerError> {
+    validate_identifier(collection)?;
+    let compiled = filter::compile_filter(opts.filter.as_deref())?;
+    let limit = opts.limit.unwrap_or(MAX_QUERY_PAGE_SIZE).min(MAX_QUERY_PAGE_SIZE);
+
+    let mut where_clauses = Vec::new();
+    let mut bound_params: Vec<rusqlite::types::Value> = Vec::new();
+    if let Some(cf) = &compiled {
+        where_clauses.push(cf.where_clause.clone());
+        bound_params.extend(cf.params.iter().cloned());
+    }
+    if let Some(cursor) = &opts.cursor {
+        where_clauses.push("id > ?".to_string());
+        bound_params.push(rusqlite::types::Value::Text(cursor.clone()));
+    }
+    let where_sql = if where_clauses.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", where_clauses.join(" AND "))
+    };
+    // Fetch one extra row past the page limit to determine whether a
+    // next-cursor should be returned.
+    bound_params.push(rusqlite::types::Value::Integer(i64::from(limit) + 1));
+
+    let sql = format!(
+        "SELECT id, payload, creator_id, created_at, updated_at FROM {collection} {where_sql} \
+         ORDER BY id ASC LIMIT ?"
+    );
+    let mut stmt = conn.prepare(&sql).map_err(map_rusqlite_error)?;
+    let mut records = stmt
+        .query_map(rusqlite::params_from_iter(bound_params.iter()), |row| {
+            Ok(wit_store::RecordReadValue {
+                id: row.get::<_, String>(0)?,
+                payload: row.get::<_, String>(1)?.into_bytes(),
+                creator_id: row.get(2)?,
+                created_at: row.get::<_, i64>(3)? as u64,
+                updated_at: row.get::<_, i64>(4)? as u64,
+            })
+        })
+        .map_err(map_rusqlite_error)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(map_rusqlite_error)?;
+
+    let next_cursor = if records.len() as u32 > limit {
+        records.truncate(limit as usize);
+        records.last().map(|r| r.id.clone())
+    } else {
+        None
+    };
+    Ok(wit_store::QueryResult { records, next_cursor })
+}
 
 /// SqliteStorageProvider manages the substrate.db (metadata) and per-service
 /// encrypted databases.
@@ -127,36 +472,80 @@ impl SqliteStorageProvider {
         }
         Ok(())
     }
+
+    /// Validates `service_id` and resolves its expected per-service database
+    /// directory, guarding against path traversal. Does not touch the
+    /// filesystem.
+    fn resolve_service_db_dir(&self, service_id: &str) -> anyhow::Result<PathBuf> {
+        if !SERVICE_ID_REGEX.is_match(service_id) {
+            return Err(anyhow::anyhow!("Invalid service ID format: {}", service_id));
+        }
+        let services_dir = self.db_dir.join("services");
+        let service_db_dir = services_dir.join(service_id);
+        if !service_db_dir.starts_with(&services_dir) {
+            return Err(anyhow::anyhow!(
+                "Path traversal attempt rejected for service ID: {}",
+                service_id
+            ));
+        }
+        Ok(service_db_dir)
+    }
 }
 
-#[allow(dead_code)]
 enum DbCommand {
     WriteSecret {
         key: String,
         secret_bytes: Vec<u8>,
-        resp: tokio::sync::oneshot::Sender<anyhow::Result<()>>,
+        resp: oneshot::Sender<anyhow::Result<()>>,
     },
     RevealSecret {
         key: String,
-        resp: tokio::sync::oneshot::Sender<anyhow::Result<Option<Vec<u8>>>>,
+        resp: oneshot::Sender<anyhow::Result<Option<Vec<u8>>>>,
     },
     CreateCollection {
-        resp: tokio::sync::oneshot::Sender<anyhow::Result<()>>,
+        schema: wit_store::CollectionSchema,
+        resp: oneshot::Sender<Result<(), wit_store::DataLayerError>>,
     },
     DropCollection {
-        resp: tokio::sync::oneshot::Sender<anyhow::Result<()>>,
+        name: String,
+        resp: oneshot::Sender<Result<(), wit_store::DataLayerError>>,
     },
     ExecuteDdl {
-        resp: tokio::sync::oneshot::Sender<anyhow::Result<()>>,
+        sql: String,
+        resp: oneshot::Sender<Result<(), wit_store::DataLayerError>>,
     },
-}
-
-fn data_layer_not_implemented() -> anyhow::Error {
-    anyhow::anyhow!("data-layer CRUD host functions are not implemented until Slice 3A")
+    Put {
+        collection: String,
+        value: wit_store::RecordWriteValue,
+        creator_id: String,
+        resp: oneshot::Sender<Result<(), wit_store::DataLayerError>>,
+    },
+    Patch {
+        collection: String,
+        id: String,
+        patch_json: Vec<u8>,
+        resp: oneshot::Sender<Result<(), wit_store::DataLayerError>>,
+    },
+    Delete {
+        collection: String,
+        id: String,
+        resp: oneshot::Sender<Result<(), wit_store::DataLayerError>>,
+    },
+    DeleteMany {
+        collection: String,
+        filter: Option<String>,
+        resp: oneshot::Sender<Result<u64, wit_store::DataLayerError>>,
+    },
+    BatchMutate {
+        collection: String,
+        mutations: Vec<wit_store::Mutation>,
+        creator_id: String,
+        resp: oneshot::Sender<Result<(), wit_store::DataLayerError>>,
+    },
 }
 
 fn run_writer_loop(
-    conn: rusqlite::Connection,
+    mut conn: rusqlite::Connection,
     mut rx: tokio::sync::mpsc::Receiver<DbCommand>,
     dek: Zeroizing<[u8; 32]>,
 ) {
@@ -220,14 +609,29 @@ fn run_writer_loop(
                 })();
                 let _ = resp.send(res);
             }
-            DbCommand::CreateCollection { resp } => {
-                let _ = resp.send(Err(data_layer_not_implemented()));
+            DbCommand::CreateCollection { schema, resp } => {
+                let _ = resp.send(do_create_collection(&conn, &schema));
             }
-            DbCommand::DropCollection { resp } => {
-                let _ = resp.send(Err(data_layer_not_implemented()));
+            DbCommand::DropCollection { name, resp } => {
+                let _ = resp.send(do_drop_collection(&conn, &name));
             }
-            DbCommand::ExecuteDdl { resp } => {
-                let _ = resp.send(Err(data_layer_not_implemented()));
+            DbCommand::ExecuteDdl { sql, resp } => {
+                let _ = resp.send(do_execute_ddl(&conn, &sql));
+            }
+            DbCommand::Put { collection, value, creator_id, resp } => {
+                let _ = resp.send(do_put(&conn, &collection, &value, &creator_id));
+            }
+            DbCommand::Patch { collection, id, patch_json, resp } => {
+                let _ = resp.send(do_patch(&conn, &collection, &id, &patch_json));
+            }
+            DbCommand::Delete { collection, id, resp } => {
+                let _ = resp.send(do_delete(&conn, &collection, &id));
+            }
+            DbCommand::DeleteMany { collection, filter, resp } => {
+                let _ = resp.send(do_delete_many(&conn, &collection, filter.as_deref()));
+            }
+            DbCommand::BatchMutate { collection, mutations, creator_id, resp } => {
+                let _ = resp.send(do_batch_mutate(&mut conn, &collection, &mutations, &creator_id));
             }
         }
     }
@@ -240,22 +644,7 @@ impl StorageProvider for SqliteStorageProvider {
         service_id: &str,
         key_store: &Arc<KeyStore>,
     ) -> anyhow::Result<Box<dyn ServiceStore>> {
-        // Validate service_id
-        if !SERVICE_ID_REGEX.is_match(service_id) {
-            return Err(anyhow::anyhow!("Invalid service ID format: {}", service_id));
-        }
-
-        // Validate path traversal
-        let services_dir = self.db_dir.join("services");
-        let service_db_dir = services_dir.join(service_id);
-
-        // Ensure path does not escape services_dir
-        if !service_db_dir.starts_with(&services_dir) {
-            return Err(anyhow::anyhow!(
-                "Path traversal attempt rejected for service ID: {}",
-                service_id
-            ));
-        }
+        let service_db_dir = self.resolve_service_db_dir(service_id)?;
 
         // Verify encryption requirements
         self.verify_encryption_mode(key_store)?;
@@ -326,12 +715,13 @@ impl StorageProvider for SqliteStorageProvider {
         // Start single-writer background loop
         let (writer_tx, writer_rx) = tokio::sync::mpsc::channel(100);
         let dek_writer = dek.clone();
-        tokio::task::spawn_blocking(move || {
+        task::spawn_blocking(move || {
             run_writer_loop(writer_conn, writer_rx, dek_writer);
         });
 
-        // Initialize reader pool. Vault reads stay on the already-keyed writer;
-        // this pool is reserved for future non-sensitive reads.
+        // Initialize reader pool, used for all read-only operations (vault
+        // reveal reads stay on the writer above for simplicity; CRUD reads
+        // use this pool for concurrency).
         let cfg = deadpool_sqlite::Config::new(&db_file_path);
         let mut reader_pool_builder = cfg.builder(deadpool_sqlite::Runtime::Tokio1)?;
         if self.encryption_enabled {
@@ -357,7 +747,7 @@ impl StorageProvider for SqliteStorageProvider {
         }
         let reader_pool = reader_pool_builder.build()?;
 
-        let new_store = Arc::new(SqliteServiceStore { _reader_pool: reader_pool, writer_tx });
+        let new_store = Arc::new(SqliteServiceStore { reader_pool, writer_tx });
         let store = {
             let mut stores =
                 self.service_stores.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {}", e))?;
@@ -370,17 +760,22 @@ impl StorageProvider for SqliteStorageProvider {
     async fn rotate_kek(&self, key_store: &Arc<KeyStore>, new_kek: [u8; 32]) -> anyhow::Result<()> {
         let conn_arc = self.substrate_conn.clone();
         let ks = key_store.clone();
-        tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        task::spawn_blocking(move || -> anyhow::Result<()> {
             let mut conn = conn_arc.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {}", e))?;
             ks.rotate_kek(new_kek, &mut conn)?;
             Ok(())
         })
         .await?
     }
+
+    async fn service_exists(&self, service_id: &str) -> anyhow::Result<bool> {
+        let service_db_dir = self.resolve_service_db_dir(service_id)?;
+        Ok(service_db_dir.join("state.db").exists())
+    }
 }
 
 pub struct SqliteServiceStore {
-    _reader_pool: deadpool_sqlite::Pool,
+    reader_pool: deadpool_sqlite::Pool,
     writer_tx: tokio::sync::mpsc::Sender<DbCommand>,
 }
 
@@ -390,10 +785,26 @@ impl std::fmt::Debug for SqliteServiceStore {
     }
 }
 
+/// Sends a write command over the single-writer channel and awaits its
+/// response, flattening channel-disconnect failures into a `DataLayerError`.
+async fn send_write_command<T>(
+    writer_tx: &tokio::sync::mpsc::Sender<DbCommand>,
+    build: impl FnOnce(oneshot::Sender<Result<T, wit_store::DataLayerError>>) -> DbCommand,
+) -> Result<T, wit_store::DataLayerError> {
+    let (resp_tx, resp_rx) = oneshot::channel();
+    writer_tx
+        .send(build(resp_tx))
+        .await
+        .map_err(|_| wit_store::DataLayerError::Internal("writer task disconnected".to_string()))?;
+    resp_rx
+        .await
+        .map_err(|_| wit_store::DataLayerError::Internal("writer task disconnected".to_string()))?
+}
+
 #[async_trait]
 impl ServiceStore for SqliteServiceStore {
     async fn write_secret(&self, key: &str, secret_bytes: &[u8]) -> anyhow::Result<()> {
-        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+        let (resp_tx, resp_rx) = oneshot::channel();
         self.writer_tx
             .send(DbCommand::WriteSecret {
                 key: key.to_string(),
@@ -406,7 +817,7 @@ impl ServiceStore for SqliteServiceStore {
     }
 
     async fn reveal_secret(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
-        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+        let (resp_tx, resp_rx) = oneshot::channel();
         self.writer_tx
             .send(DbCommand::RevealSecret { key: key.to_string(), resp: resp_tx })
             .await
@@ -414,31 +825,132 @@ impl ServiceStore for SqliteServiceStore {
         resp_rx.await?
     }
 
-    async fn create_collection(&self, _name: &str) -> anyhow::Result<()> {
-        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-        self.writer_tx
-            .send(DbCommand::CreateCollection { resp: resp_tx })
+    async fn create_collection(
+        &self,
+        schema: &wit_store::CollectionSchema,
+    ) -> Result<(), wit_store::DataLayerError> {
+        let schema = schema.clone();
+        send_write_command(&self.writer_tx, |resp| DbCommand::CreateCollection { schema, resp })
             .await
-            .map_err(|_| anyhow::anyhow!("Writer task disconnected"))?;
-        resp_rx.await?
     }
 
-    async fn drop_collection(&self, _name: &str) -> anyhow::Result<()> {
-        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-        self.writer_tx
-            .send(DbCommand::DropCollection { resp: resp_tx })
-            .await
-            .map_err(|_| anyhow::anyhow!("Writer task disconnected"))?;
-        resp_rx.await?
+    async fn drop_collection(&self, name: &str) -> Result<(), wit_store::DataLayerError> {
+        let name = name.to_string();
+        send_write_command(&self.writer_tx, |resp| DbCommand::DropCollection { name, resp }).await
     }
 
-    async fn execute_ddl(&self, _sql: &str) -> anyhow::Result<()> {
-        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-        self.writer_tx
-            .send(DbCommand::ExecuteDdl { resp: resp_tx })
+    async fn execute_ddl(&self, sql: &str) -> Result<(), wit_store::DataLayerError> {
+        let sql = sql.to_string();
+        send_write_command(&self.writer_tx, |resp| DbCommand::ExecuteDdl { sql, resp }).await
+    }
+
+    async fn put(
+        &self,
+        collection: &str,
+        value: &wit_store::RecordWriteValue,
+        creator_id: &str,
+    ) -> Result<(), wit_store::DataLayerError> {
+        let collection = collection.to_string();
+        let value = value.clone();
+        let creator_id = creator_id.to_string();
+        send_write_command(&self.writer_tx, |resp| DbCommand::Put {
+            collection,
+            value,
+            creator_id,
+            resp,
+        })
+        .await
+    }
+
+    async fn patch(
+        &self,
+        collection: &str,
+        id: &str,
+        patch_json: &[u8],
+    ) -> Result<(), wit_store::DataLayerError> {
+        let collection = collection.to_string();
+        let id = id.to_string();
+        let patch_json = patch_json.to_vec();
+        send_write_command(&self.writer_tx, |resp| DbCommand::Patch {
+            collection,
+            id,
+            patch_json,
+            resp,
+        })
+        .await
+    }
+
+    async fn get(
+        &self,
+        collection: &str,
+        id: &str,
+    ) -> Result<Option<wit_store::RecordReadValue>, wit_store::DataLayerError> {
+        let collection = collection.to_string();
+        let id = id.to_string();
+        let conn = self
+            .reader_pool
+            .get()
             .await
-            .map_err(|_| anyhow::anyhow!("Writer task disconnected"))?;
-        resp_rx.await?
+            .map_err(|e| wit_store::DataLayerError::Internal(format!("reader pool: {e}")))?;
+        conn.interact(move |conn| do_get(conn, &collection, &id)).await.map_err(|e| {
+            wit_store::DataLayerError::Internal(format!("reader pool interact: {e}"))
+        })?
+    }
+
+    async fn query(
+        &self,
+        collection: &str,
+        opts: &wit_store::QueryOptions,
+    ) -> Result<wit_store::QueryResult, wit_store::DataLayerError> {
+        let collection = collection.to_string();
+        let opts = opts.clone();
+        let conn = self
+            .reader_pool
+            .get()
+            .await
+            .map_err(|e| wit_store::DataLayerError::Internal(format!("reader pool: {e}")))?;
+        conn.interact(move |conn| do_query(conn, &collection, &opts)).await.map_err(|e| {
+            wit_store::DataLayerError::Internal(format!("reader pool interact: {e}"))
+        })?
+    }
+
+    async fn delete(&self, collection: &str, id: &str) -> Result<(), wit_store::DataLayerError> {
+        let collection = collection.to_string();
+        let id = id.to_string();
+        send_write_command(&self.writer_tx, |resp| DbCommand::Delete { collection, id, resp }).await
+    }
+
+    async fn delete_many(
+        &self,
+        collection: &str,
+        filter: Option<&str>,
+    ) -> Result<u64, wit_store::DataLayerError> {
+        let collection = collection.to_string();
+        let filter = filter.map(str::to_string);
+        send_write_command(&self.writer_tx, |resp| DbCommand::DeleteMany {
+            collection,
+            filter,
+            resp,
+        })
+        .await
+    }
+
+    async fn batch_mutate(
+        &self,
+        collection: &str,
+        mutations: &[wit_store::Mutation],
+        creator_id: &str,
+    ) -> Result<(), wit_store::DataLayerError> {
+        let collection = collection.to_string();
+        let mutations = mutations.to_vec();
+        let creator_id = creator_id.to_string();
+        send_write_command(&self.writer_tx, |resp| DbCommand::BatchMutate {
+            collection,
+            mutations,
+            creator_id,
+            resp,
+        })
+        .await
     }
 }
 
@@ -452,16 +964,74 @@ impl ServiceStore for Arc<SqliteServiceStore> {
         self.as_ref().reveal_secret(key).await
     }
 
-    async fn create_collection(&self, name: &str) -> anyhow::Result<()> {
-        self.as_ref().create_collection(name).await
+    async fn create_collection(
+        &self,
+        schema: &wit_store::CollectionSchema,
+    ) -> Result<(), wit_store::DataLayerError> {
+        self.as_ref().create_collection(schema).await
     }
 
-    async fn drop_collection(&self, name: &str) -> anyhow::Result<()> {
+    async fn drop_collection(&self, name: &str) -> Result<(), wit_store::DataLayerError> {
         self.as_ref().drop_collection(name).await
     }
 
-    async fn execute_ddl(&self, sql: &str) -> anyhow::Result<()> {
+    async fn execute_ddl(&self, sql: &str) -> Result<(), wit_store::DataLayerError> {
         self.as_ref().execute_ddl(sql).await
+    }
+
+    async fn put(
+        &self,
+        collection: &str,
+        value: &wit_store::RecordWriteValue,
+        creator_id: &str,
+    ) -> Result<(), wit_store::DataLayerError> {
+        self.as_ref().put(collection, value, creator_id).await
+    }
+
+    async fn patch(
+        &self,
+        collection: &str,
+        id: &str,
+        patch_json: &[u8],
+    ) -> Result<(), wit_store::DataLayerError> {
+        self.as_ref().patch(collection, id, patch_json).await
+    }
+
+    async fn get(
+        &self,
+        collection: &str,
+        id: &str,
+    ) -> Result<Option<wit_store::RecordReadValue>, wit_store::DataLayerError> {
+        self.as_ref().get(collection, id).await
+    }
+
+    async fn query(
+        &self,
+        collection: &str,
+        opts: &wit_store::QueryOptions,
+    ) -> Result<wit_store::QueryResult, wit_store::DataLayerError> {
+        self.as_ref().query(collection, opts).await
+    }
+
+    async fn delete(&self, collection: &str, id: &str) -> Result<(), wit_store::DataLayerError> {
+        self.as_ref().delete(collection, id).await
+    }
+
+    async fn delete_many(
+        &self,
+        collection: &str,
+        filter: Option<&str>,
+    ) -> Result<u64, wit_store::DataLayerError> {
+        self.as_ref().delete_many(collection, filter).await
+    }
+
+    async fn batch_mutate(
+        &self,
+        collection: &str,
+        mutations: &[wit_store::Mutation],
+        creator_id: &str,
+    ) -> Result<(), wit_store::DataLayerError> {
+        self.as_ref().batch_mutate(collection, mutations, creator_id).await
     }
 }
 
@@ -535,9 +1105,20 @@ mod tests {
         // Valid ID
         assert!(provider.open_service_db("svc-1", &key_store).await.is_ok());
         assert!(provider.open_service_db("my_service-2", &key_store).await.is_ok());
+        // Real service ids are DIDs and contain colons.
+        assert!(
+            provider
+                .open_service_db(
+                    "did:key:h7wy4ppo5gystkfs71hf19qhmbaqc3yx7gpcbtg4s9h6ojozbgx61nco",
+                    &key_store
+                )
+                .await
+                .is_ok()
+        );
 
         // Invalid IDs
         assert!(provider.open_service_db("svc/../../traversal", &key_store).await.is_err());
+        assert!(provider.open_service_db("did:key:../../traversal", &key_store).await.is_err());
         assert!(provider.open_service_db("svc_with_spaces ", &key_store).await.is_err());
         assert!(provider.open_service_db("svc!", &key_store).await.is_err());
         assert!(provider.open_service_db("", &key_store).await.is_err());
@@ -598,21 +1179,6 @@ mod tests {
 
         assert_eq!(revealed, Some(b"cached-store-secret".to_vec()));
         assert_eq!(provider.service_stores.lock().unwrap().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_slice_3a_data_layer_methods_are_not_successful_noops() {
-        let dir = tempdir().unwrap();
-        let provider = SqliteStorageProvider::new(dir.path(), false).unwrap();
-        let key_store = Arc::new(KeyStore::new());
-        let store = provider.open_service_db("slice-3a-pending", &key_store).await.unwrap();
-
-        let err = store.create_collection("profiles").await.unwrap_err();
-        assert!(err.to_string().contains("Slice 3A"));
-        let err = store.drop_collection("profiles").await.unwrap_err();
-        assert!(err.to_string().contains("Slice 3A"));
-        let err = store.execute_ddl("CREATE TABLE profiles(id TEXT)").await.unwrap_err();
-        assert!(err.to_string().contains("Slice 3A"));
     }
 
     #[tokio::test]
@@ -681,5 +1247,16 @@ mod tests {
 
         let logs_content = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
         assert!(logs_content.contains("INSECURE: storage encryption is disabled"));
+    }
+
+    #[tokio::test]
+    async fn test_service_exists_reflects_persistent_db_state() {
+        let dir = tempdir().unwrap();
+        let provider = SqliteStorageProvider::new(dir.path(), false).unwrap();
+        let key_store = Arc::new(KeyStore::new());
+
+        assert!(!provider.service_exists("svc-a").await.unwrap());
+        let _ = provider.open_service_db("svc-a", &key_store).await.unwrap();
+        assert!(provider.service_exists("svc-a").await.unwrap());
     }
 }

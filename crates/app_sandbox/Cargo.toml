@@ -36,3 +36,7 @@ tempfile.workspace = true
 [[bench]]
 name = "wasm_engine"
 harness = false
+
+[[bench]]
+name = "data_layer_bench"
+harness = false

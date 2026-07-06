@@ -2,6 +2,7 @@
 //! Application sandbox engine for isolating user applications.
 
 pub mod conversions;
+mod data_layer_convert;
 mod engine;
 
 pub use engine::{AppSandboxEngine, HostState, WasmResourceQuota};

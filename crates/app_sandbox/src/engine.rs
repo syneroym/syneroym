@@ -26,7 +26,7 @@ use syneroym_bindings::{
     },
 };
 use syneroym_core::{config::SubstrateConfig, local_registry::SubstrateEndpoint};
-use syneroym_data_layer::traits::StorageProvider;
+use syneroym_data_layer::traits::{ServiceStore, StorageProvider};
 use syneroym_key_store::KeyStore;
 use syneroym_rpc::JsonRpcRequest;
 use tokio::fs as tokio_fs;
@@ -40,7 +40,10 @@ use wasmtime::{
 };
 use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxView, WasiView, p2};
 
-use crate::conversions::{json_to_wasm_params, wasm_results_to_json_string};
+use crate::{
+    conversions::{json_to_wasm_params, wasm_results_to_json_string},
+    data_layer_convert,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WasmResourceQuota {
@@ -157,88 +160,192 @@ impl syneroym_bindings::host::syneroym::vault::vault::Host for HostState {
     }
 }
 
+/// Opens the calling component's isolated `ServiceStore`, mapping any
+/// storage-level failure into an `Internal` data-layer error.
+///
+/// Takes owned/cloned pieces rather than `&HostState`: `HostState` embeds a
+/// `WasiCtx`, which is not `Sync`, so holding a `&HostState` across an
+/// `.await` would make the enclosing future non-`Send` (required by the
+/// generated `Host` trait). Callers must clone what they need out of `self`
+/// before awaiting, exactly as the pre-existing `vault::reveal` impl below
+/// already does.
+async fn open_store(
+    component_id: String,
+    key_store: Arc<KeyStore>,
+    storage_provider: Arc<dyn StorageProvider>,
+) -> std::result::Result<Box<dyn ServiceStore>, DataLayerError> {
+    storage_provider
+        .open_service_db(&component_id, &key_store)
+        .await
+        .map_err(|e| DataLayerError::Internal(e.to_string()))
+}
+
 impl syneroym_bindings::host::syneroym::data_layer::store::Host for HostState {
     async fn create_collection(
         &mut self,
-        _schema: CollectionSchema,
+        schema: CollectionSchema,
     ) -> std::result::Result<(), DataLayerError> {
-        Err(data_layer_slice_3a_pending())
+        let store = open_store(
+            self.component_id.clone(),
+            self.key_store.clone(),
+            self.storage_provider.clone(),
+        )
+        .await?;
+        let wit_schema = data_layer_convert::collection_schema_to_wit(&schema);
+        store
+            .create_collection(&wit_schema)
+            .await
+            .map_err(data_layer_convert::data_layer_error_from_wit)
     }
 
-    async fn drop_collection(&mut self, _name: String) -> std::result::Result<(), DataLayerError> {
-        Err(data_layer_slice_3a_pending())
+    async fn drop_collection(&mut self, name: String) -> std::result::Result<(), DataLayerError> {
+        let store = open_store(
+            self.component_id.clone(),
+            self.key_store.clone(),
+            self.storage_provider.clone(),
+        )
+        .await?;
+        store.drop_collection(&name).await.map_err(data_layer_convert::data_layer_error_from_wit)
     }
 
     async fn put(
         &mut self,
-        _collection: String,
-        _value: RecordWriteValue,
+        collection: String,
+        value: RecordWriteValue,
     ) -> std::result::Result<(), DataLayerError> {
-        Err(data_layer_slice_3a_pending())
+        let creator_id = self.component_id.clone();
+        let store = open_store(
+            self.component_id.clone(),
+            self.key_store.clone(),
+            self.storage_provider.clone(),
+        )
+        .await?;
+        let wit_value = data_layer_convert::record_write_value_to_wit(&value);
+        store
+            .put(&collection, &wit_value, &creator_id)
+            .await
+            .map_err(data_layer_convert::data_layer_error_from_wit)
     }
 
     async fn patch(
         &mut self,
-        _collection: String,
-        _id: String,
-        _patch_json: Vec<u8>,
+        collection: String,
+        id: String,
+        patch_json: Vec<u8>,
     ) -> std::result::Result<(), DataLayerError> {
-        Err(data_layer_slice_3a_pending())
+        let store = open_store(
+            self.component_id.clone(),
+            self.key_store.clone(),
+            self.storage_provider.clone(),
+        )
+        .await?;
+        store
+            .patch(&collection, &id, &patch_json)
+            .await
+            .map_err(data_layer_convert::data_layer_error_from_wit)
     }
 
     async fn get(
         &mut self,
-        _collection: String,
-        _id: String,
+        collection: String,
+        id: String,
     ) -> std::result::Result<Option<RecordReadValue>, DataLayerError> {
-        Err(data_layer_slice_3a_pending())
+        let store = open_store(
+            self.component_id.clone(),
+            self.key_store.clone(),
+            self.storage_provider.clone(),
+        )
+        .await?;
+        store
+            .get(&collection, &id)
+            .await
+            .map(|opt| opt.map(data_layer_convert::record_read_value_from_wit))
+            .map_err(data_layer_convert::data_layer_error_from_wit)
     }
 
     async fn query(
         &mut self,
-        _collection: String,
-        _opts: QueryOptions,
+        collection: String,
+        opts: QueryOptions,
     ) -> std::result::Result<QueryResult, DataLayerError> {
-        Err(data_layer_slice_3a_pending())
+        let store = open_store(
+            self.component_id.clone(),
+            self.key_store.clone(),
+            self.storage_provider.clone(),
+        )
+        .await?;
+        let wit_opts = data_layer_convert::query_options_to_wit(&opts);
+        store
+            .query(&collection, &wit_opts)
+            .await
+            .map(data_layer_convert::query_result_from_wit)
+            .map_err(data_layer_convert::data_layer_error_from_wit)
     }
 
     async fn delete(
         &mut self,
-        _collection: String,
-        _id: String,
+        collection: String,
+        id: String,
     ) -> std::result::Result<(), DataLayerError> {
-        Err(data_layer_slice_3a_pending())
+        let store = open_store(
+            self.component_id.clone(),
+            self.key_store.clone(),
+            self.storage_provider.clone(),
+        )
+        .await?;
+        store.delete(&collection, &id).await.map_err(data_layer_convert::data_layer_error_from_wit)
     }
 
     async fn delete_many(
         &mut self,
-        _collection: String,
-        _filter: String,
+        collection: String,
+        filter: String,
     ) -> std::result::Result<u64, DataLayerError> {
-        Err(data_layer_slice_3a_pending())
+        let store = open_store(
+            self.component_id.clone(),
+            self.key_store.clone(),
+            self.storage_provider.clone(),
+        )
+        .await?;
+        store
+            .delete_many(&collection, Some(filter.as_str()))
+            .await
+            .map_err(data_layer_convert::data_layer_error_from_wit)
     }
 
     async fn batch_mutate(
         &mut self,
-        _collection: String,
-        _mutations: Vec<Mutation>,
+        collection: String,
+        mutations: Vec<Mutation>,
     ) -> std::result::Result<(), DataLayerError> {
-        Err(data_layer_slice_3a_pending())
+        let creator_id = self.component_id.clone();
+        let store = open_store(
+            self.component_id.clone(),
+            self.key_store.clone(),
+            self.storage_provider.clone(),
+        )
+        .await?;
+        let wit_mutations: Vec<_> =
+            mutations.iter().map(data_layer_convert::mutation_to_wit).collect();
+        store
+            .batch_mutate(&collection, &wit_mutations, &creator_id)
+            .await
+            .map_err(data_layer_convert::data_layer_error_from_wit)
     }
 
-    async fn execute_ddl(&mut self, _sql: String) -> std::result::Result<(), DataLayerError> {
+    async fn execute_ddl(&mut self, sql: String) -> std::result::Result<(), DataLayerError> {
         // TODO(M4): replace is_init_context with Admin UCAN check
         if !self.is_init_context {
             return Err(DataLayerError::PermissionDenied);
         }
-        Err(data_layer_slice_3a_pending())
+        let store = open_store(
+            self.component_id.clone(),
+            self.key_store.clone(),
+            self.storage_provider.clone(),
+        )
+        .await?;
+        store.execute_ddl(&sql).await.map_err(data_layer_convert::data_layer_error_from_wit)
     }
-}
-
-fn data_layer_slice_3a_pending() -> DataLayerError {
-    DataLayerError::Internal(
-        "data-layer host functions are not implemented until Slice 3A".to_string(),
-    )
 }
 
 impl wasmtime::ResourceLimiter for HostState {
@@ -461,22 +568,35 @@ impl AppSandboxEngine {
         Ok(())
     }
 
-    /// Helper to extract WASM function and its result length
+    /// Helper to extract a WASM function and its result length. When
+    /// `interface_name` is `Some`, looks up `method_name` nested inside that
+    /// named interface's exported instance (the shape of ordinary `interface`
+    /// exports). When `None`, looks up `method_name` directly as a root-level
+    /// component export -- the shape of a WIT world's own `export foo: func`
+    /// declarations, such as the `data-layer-guest` world's `init`/`migrate`.
     pub fn get_wasm_func(
         store: &mut Store<HostState>,
         instance: &Instance,
-        interface_name: &str,
+        interface_name: Option<&str>,
         method_name: &str,
     ) -> Result<(Func, usize, ComponentItem)> {
-        let (_, instance_idx) = instance
-            .get_export(&mut *store, None, interface_name)
-            .ok_or_else(|| anyhow::anyhow!("Interface '{interface_name}' not found"))?;
-
-        let (item, func_idx) = instance
-            .get_export(&mut *store, Some(&instance_idx), method_name)
-            .ok_or_else(|| {
-            anyhow::anyhow!("Method '{method_name}' not found in interface '{interface_name}'")
-        })?;
+        let (item, func_idx) = match interface_name {
+            Some(interface_name) => {
+                let (_, instance_idx) = instance
+                    .get_export(&mut *store, None, interface_name)
+                    .ok_or_else(|| anyhow::anyhow!("Interface '{interface_name}' not found"))?;
+                instance.get_export(&mut *store, Some(&instance_idx), method_name).ok_or_else(
+                    || {
+                        anyhow::anyhow!(
+                            "Method '{method_name}' not found in interface '{interface_name}'"
+                        )
+                    },
+                )?
+            }
+            None => instance
+                .get_export(&mut *store, None, method_name)
+                .ok_or_else(|| anyhow::anyhow!("Root export '{method_name}' not found"))?,
+        };
 
         let func = instance
             .get_func(&mut *store, func_idx)
@@ -527,6 +647,27 @@ impl AppSandboxEngine {
         //    memory
         self.compile_and_cache_wasm(service_id, &bytes, quota)?;
         drop(bytes);
+
+        // 5. Invoke the guest's schema lifecycle hook: `init()` on a fresh service (no
+        //    existing database), `migrate()` on a re-deploy of a service with existing
+        //    state. Checked here, before anything else can lazily open the service DB
+        //    and thereby create it.
+        let is_first_deploy = !self
+            .storage_provider
+            .service_exists(service_id)
+            .await
+            .context("failed to check for pre-existing service state")?;
+        let hook = if is_first_deploy {
+            "init"
+        } else {
+            // TODO(M5): full snapshot/rollback safety net for migrate() is
+            // deferred to M5 [LFC-VER]. migrate() may execute destructive
+            // DDL; there is no automatic rollback on partial failure in M3A.
+            "migrate"
+        };
+        self.invoke_lifecycle_hook(service_id, hook)
+            .await
+            .with_context(|| format!("{hook}() lifecycle hook failed for service {service_id}"))?;
 
         Ok(())
     }
@@ -607,13 +748,14 @@ impl AppSandboxEngine {
         wasm_results_to_json_string(&wasm_results)
     }
 
-    /// Helper to prepare WASM execution context and extract function
-    async fn prepare_wasm_execution(
+    /// Helper shared by `prepare_wasm_execution` and `invoke_lifecycle_hook`:
+    /// looks up the pre-linked component, resolves its resource quotas,
+    /// builds a fresh `HostState`/`Store`, and instantiates it.
+    async fn build_store_and_instantiate(
         &self,
         service_id: &str,
-        interface_name: &str,
-        method_name: &str,
-    ) -> Result<(Store<HostState>, Func, usize, ComponentItem)> {
+        is_init_context: bool,
+    ) -> Result<(Store<HostState>, Instance)> {
         // Look up the pre-linked component instance
         let (instance_pre, quota) = {
             let entry = self
@@ -635,7 +777,6 @@ impl AppSandboxEngine {
             .map(|m| m as usize);
 
         // Create host state
-        let is_init_context = method_name == "init" || method_name == "migrate";
         let host_state = HostState::new(
             service_id.to_string(),
             max_memory_bytes,
@@ -664,13 +805,53 @@ impl AppSandboxEngine {
 
         debug!("instantiated store and instance");
 
+        Ok((store, instance))
+    }
+
+    /// Helper to prepare WASM execution context and extract function
+    async fn prepare_wasm_execution(
+        &self,
+        service_id: &str,
+        interface_name: &str,
+        method_name: &str,
+    ) -> Result<(Store<HostState>, Func, usize, ComponentItem)> {
+        let is_init_context = method_name == "init" || method_name == "migrate";
+        let (mut store, instance) =
+            self.build_store_and_instantiate(service_id, is_init_context).await?;
+
         // Use the helper to extract the function
         let (func, results_len, item) =
-            Self::get_wasm_func(&mut store, &instance, interface_name, method_name)?;
+            Self::get_wasm_func(&mut store, &instance, Some(interface_name), method_name)?;
 
         debug!("extracted the interface and method export indices");
 
         Ok((store, func, results_len, item))
+    }
+
+    /// Invokes a guest lifecycle export (`init` or `migrate`) declared
+    /// directly on the `data-layer-guest` world, if the deployed component
+    /// exports it. Components that don't declare the export (e.g. a plain
+    /// component with no data-layer usage, like the `greeter` test
+    /// component) are left untouched -- this makes it safe to call
+    /// unconditionally on every deploy.
+    async fn invoke_lifecycle_hook(&self, service_id: &str, hook: &str) -> Result<()> {
+        let (mut store, instance) = self.build_store_and_instantiate(service_id, true).await?;
+
+        if instance.get_export(&mut store, None, hook).is_none() {
+            tracing::debug!(service_id, hook, "component does not export lifecycle hook, skipping");
+            return Ok(());
+        }
+
+        let (func, results_len, _item) = Self::get_wasm_func(&mut store, &instance, None, hook)?;
+        let mut results = vec![Val::Bool(false); results_len];
+        func.call_async(&mut store, &[], &mut results).await?;
+
+        if let Some(Val::Result(Err(Some(boxed)))) = results.first()
+            && let Val::String(msg) = boxed.as_ref()
+        {
+            return Err(anyhow::anyhow!("{hook}() failed: {msg}"));
+        }
+        Ok(())
     }
 
     /// Simple test function to invoke test context
@@ -821,7 +1002,7 @@ mod tests {
                 match AppSandboxEngine::get_wasm_func(
                     &mut store,
                     &instance,
-                    interface_name,
+                    Some(interface_name),
                     method_name,
                 ) {
                     Ok((func, results_len, _item)) => {

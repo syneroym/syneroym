@@ -1,3 +1,5 @@
+pub mod errors;
+pub mod filter;
 pub mod registry_store;
 pub mod sqlite;
 pub mod traits;
@@ -26,6 +28,9 @@ impl Default for DataLayerService {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests_crud;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]
