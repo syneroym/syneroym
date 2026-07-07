@@ -49,6 +49,8 @@ impl LocalFilesystemCatalog {
             args: vec![],
             custom_config: None,
             quota: None,
+            schema_path: None,
+            rotation_policy: Default::default(),
         };
         services.insert(
             LogicalServiceName::new("legacy-main"),

@@ -143,7 +143,14 @@ fn bench_lifecycle_hooks(c: &mut Criterion) {
 
     let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
     let manifest = Arc::new(DeployManifest {
-        config: ServiceConfig { env: vec![], args: vec![], custom_config: None, quota: None },
+        config: ServiceConfig {
+            env: vec![],
+            args: vec![],
+            custom_config: None,
+            quota: None,
+            schema_path: None,
+            rotation_policy: None,
+        },
         service_type: ServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(wasm_bytes),
             hash: None,

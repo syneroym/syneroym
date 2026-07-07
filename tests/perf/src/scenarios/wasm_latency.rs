@@ -51,6 +51,7 @@ pub async fn run_scenario() -> Result<()> {
             key_store.clone(),
             storage_provider.clone(),
             false,
+            0,
         );
         let mut store = Store::new(&engine, host_state);
         let instance = linker.instantiate_async(&mut store, &component).await?;
@@ -79,6 +80,7 @@ pub async fn run_scenario() -> Result<()> {
             key_store.clone(),
             storage_provider.clone(),
             false,
+            0,
         );
         let mut store = Store::new(&engine, host_state);
         let instance = linker.instantiate_async(&mut store, &component).await?;

@@ -18,3 +18,4 @@ syneroym-bindings.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true
 metrics.workspace = true
+syneroym-data-layer.workspace = true

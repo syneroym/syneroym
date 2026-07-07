@@ -39,7 +39,14 @@ async fn make_engine(dir: &std::path::Path) -> AppSandboxEngine {
 
 fn wasm_deploy_manifest(bytes: Vec<u8>) -> DeployManifest {
     DeployManifest {
-        config: ServiceConfig { env: vec![], args: vec![], custom_config: None, quota: None },
+        config: ServiceConfig {
+            env: vec![],
+            args: vec![],
+            custom_config: None,
+            quota: None,
+            schema_path: None,
+            rotation_policy: None,
+        },
         service_type: ServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(bytes),
             hash: None,

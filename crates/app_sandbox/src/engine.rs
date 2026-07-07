@@ -59,6 +59,7 @@ pub struct HostState {
     pub key_store: Arc<KeyStore>,
     pub storage_provider: Arc<dyn StorageProvider>,
     pub is_init_context: bool,
+    pub config_generation: u64,
 }
 
 impl Debug for HostState {
@@ -79,6 +80,7 @@ impl HostState {
         key_store: Arc<KeyStore>,
         storage_provider: Arc<dyn StorageProvider>,
         is_init_context: bool,
+        config_generation: u64,
     ) -> Self {
         let wasi = WasiCtx::builder().build();
         let table = ResourceTable::new();
@@ -97,6 +99,7 @@ impl HostState {
             key_store,
             storage_provider,
             is_init_context,
+            config_generation,
         }
     }
 }
@@ -175,6 +178,107 @@ async fn open_store(
         .open_service_db(&component_id, &key_store)
         .await
         .map_err(|e| DataLayerError::Internal(e.to_string()))
+}
+
+impl syneroym_bindings::host::syneroym::app_config::app_config::Host for HostState {
+    async fn get(
+        &mut self,
+        key: String,
+    ) -> std::result::Result<
+        Option<String>,
+        syneroym_bindings::host::syneroym::app_config::app_config::ConfigError,
+    > {
+        if self.config_generation == 0 {
+            return Ok(None);
+        }
+
+        let config_str = match self
+            .storage_provider
+            .get_config_generation(&self.component_id, self.config_generation)
+            .await
+        {
+            Ok(Some(s)) => s,
+            Ok(None) => return Ok(None),
+            Err(e) => {
+                tracing::error!("Failed to read config for {}: {}", self.component_id, e);
+                return Err(
+                    syneroym_bindings::host::syneroym::app_config::app_config::ConfigError::Internal(
+                        e.to_string(),
+                    ),
+                );
+            }
+        };
+
+        let config_json: serde_json::Value = match serde_json::from_str(&config_str) {
+            Ok(j) => j,
+            Err(e) => {
+                tracing::error!("Invalid config JSON for {}: {}", self.component_id, e);
+                return Err(
+                    syneroym_bindings::host::syneroym::app_config::app_config::ConfigError::Internal(
+                        e.to_string(),
+                    ),
+                );
+            }
+        };
+
+        let val = config_json.get(&key).and_then(|v| v.as_str()).map(|s| s.to_string());
+        Ok(val)
+    }
+
+    async fn get_section(
+        &mut self,
+        prefix: String,
+    ) -> std::result::Result<
+        Vec<(String, String)>,
+        syneroym_bindings::host::syneroym::app_config::app_config::ConfigError,
+    > {
+        if self.config_generation == 0 {
+            return Ok(vec![]);
+        }
+
+        let config_str = match self
+            .storage_provider
+            .get_config_generation(&self.component_id, self.config_generation)
+            .await
+        {
+            Ok(Some(s)) => s,
+            Ok(None) => return Ok(vec![]),
+            Err(e) => {
+                tracing::error!("Failed to read config for {}: {}", self.component_id, e);
+                return Err(
+                    syneroym_bindings::host::syneroym::app_config::app_config::ConfigError::Internal(
+                        e.to_string(),
+                    ),
+                );
+            }
+        };
+
+        let config_json: serde_json::Value = match serde_json::from_str(&config_str) {
+            Ok(j) => j,
+            Err(e) => {
+                tracing::error!("Invalid config JSON for {}: {}", self.component_id, e);
+                return Err(
+                    syneroym_bindings::host::syneroym::app_config::app_config::ConfigError::Internal(
+                        e.to_string(),
+                    ),
+                );
+            }
+        };
+
+        let mut results = vec![];
+        if let serde_json::Value::Object(map) = config_json {
+            for (k, v) in map {
+                #[allow(clippy::collapsible_if)]
+                if k == prefix || k.starts_with(&format!("{prefix}.")) {
+                    if let Some(s) = v.as_str() {
+                        results.push((k, s.to_string()));
+                    }
+                }
+            }
+        }
+
+        Ok(results)
+    }
 }
 
 impl syneroym_bindings::host::syneroym::data_layer::store::Host for HostState {
@@ -496,6 +600,10 @@ impl AppSandboxEngine {
             &mut linker,
             |state| state,
         )?;
+        syneroym_bindings::host::syneroym::app_config::app_config::add_to_linker::<
+            _,
+            HasSelf<HostState>,
+        >(&mut linker, |state| state)?;
         Ok(linker)
     }
 
@@ -745,6 +853,16 @@ impl AppSandboxEngine {
             .or(self.default_max_memory_bytes)
             .map(|m| m as usize);
 
+        let config_generation =
+            match self.storage_provider.get_latest_config_generation(service_id).await {
+                Ok(Some((g, _))) => g,
+                Ok(None) => 0,
+                Err(e) => {
+                    tracing::error!("Failed to fetch config generation for {}: {}", service_id, e);
+                    0
+                }
+            };
+
         // Create host state
         let host_state = HostState::new(
             service_id.to_string(),
@@ -752,6 +870,7 @@ impl AppSandboxEngine {
             self.key_store.clone(),
             self.storage_provider.clone(),
             is_init_context,
+            config_generation,
         );
 
         debug!("created wasi ctx and host state");
@@ -940,8 +1059,14 @@ mod tests {
             )
             .unwrap(),
         );
-        let host_state =
-            HostState::new("test_component".to_string(), None, key_store, storage_provider, false);
+        let host_state = HostState::new(
+            "test_component".to_string(),
+            None,
+            key_store,
+            storage_provider,
+            false,
+            0,
+        );
 
         let mut store = Store::new(&engine, host_state);
 
@@ -1078,5 +1203,98 @@ mod tests {
             "expected MemoryFault or failed to grow memory, got: {}",
             err_msg
         );
+    }
+
+    #[tokio::test]
+    async fn test_config_get_and_get_section() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(
+            syneroym_data_layer::SqliteStorageProvider::new(temp_dir.path(), false).unwrap(),
+        );
+
+        let config_json =
+            r#"{"db_host": "localhost", "db_port": "5432", "db.password": "secret", "db": "mydb"}"#;
+        let generation = storage.save_config_generation("test_svc", config_json).await.unwrap();
+
+        let mut host = HostState::new(
+            "test_svc".to_string(),
+            None,
+            Arc::new(KeyStore::new()),
+            storage,
+            false,
+            generation,
+        );
+
+        use syneroym_bindings::host::syneroym::app_config::app_config::Host as ConfigHost;
+
+        // 1. Existing key returns Ok(Some(value))
+        let val = ConfigHost::get(&mut host, "db_host".to_string()).await.unwrap().unwrap();
+        assert_eq!(val, "localhost");
+
+        // 2. Missing key returns Ok(None)
+        let missing = ConfigHost::get(&mut host, "db_user".to_string()).await.unwrap();
+        assert!(missing.is_none());
+
+        // get_section returns prefixed values with exact matching boundaries
+        let section = ConfigHost::get_section(&mut host, "db".to_string()).await.unwrap();
+        let mut section_keys: Vec<String> = section.into_iter().map(|(k, _)| k).collect();
+        section_keys.sort();
+        // "db" and "db.password" match. "db_host" and "db_port" DO NOT.
+        assert_eq!(section_keys, vec!["db", "db.password"]);
+    }
+
+    #[tokio::test]
+    async fn test_config_isolation_and_generation_pinning() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(
+            syneroym_data_layer::SqliteStorageProvider::new(temp_dir.path(), false).unwrap(),
+        );
+
+        // Service A Gen 1
+        let gen1_a = storage.save_config_generation("svc_a", r#"{"mode": "v1"}"#).await.unwrap();
+        // Service A Gen 2
+        let gen2_a = storage.save_config_generation("svc_a", r#"{"mode": "v2"}"#).await.unwrap();
+
+        // Service B Gen 1
+        let gen1_b =
+            storage.save_config_generation("svc_b", r#"{"mode": "b_mode"}"#).await.unwrap();
+
+        use syneroym_bindings::host::syneroym::app_config::app_config::Host as ConfigHost;
+
+        // Two WASM components with different configs get isolated values
+        let mut host_a_gen2 = HostState::new(
+            "svc_a".to_string(),
+            None,
+            Arc::new(KeyStore::new()),
+            storage.clone(),
+            false,
+            gen2_a,
+        );
+        let mut host_b = HostState::new(
+            "svc_b".to_string(),
+            None,
+            Arc::new(KeyStore::new()),
+            storage.clone(),
+            false,
+            gen1_b,
+        );
+
+        let val_a = ConfigHost::get(&mut host_a_gen2, "mode".to_string()).await.unwrap().unwrap();
+        let val_b = ConfigHost::get(&mut host_b, "mode".to_string()).await.unwrap().unwrap();
+        assert_eq!(val_a, "v2");
+        assert_eq!(val_b, "b_mode");
+
+        // Re-deploy bumps generation; in-flight invocations retain prior generation
+        let mut host_a_gen1 = HostState::new(
+            "svc_a".to_string(),
+            None,
+            Arc::new(KeyStore::new()),
+            storage.clone(),
+            false,
+            gen1_a,
+        );
+        let val_a_old =
+            ConfigHost::get(&mut host_a_gen1, "mode".to_string()).await.unwrap().unwrap();
+        assert_eq!(val_a_old, "v1");
     }
 }

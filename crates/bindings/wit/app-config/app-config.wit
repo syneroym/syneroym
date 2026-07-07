@@ -1,0 +1,19 @@
+package syneroym:app-config@0.1.0;
+
+interface app-config {
+    variant config-error {
+        internal(string),
+    }
+
+    /// Returns the value for `key` in the active configuration generation.
+    /// Returns Ok(none) if the key does not exist (not an error condition).
+    get: func(key: string) -> result<option<string>, config-error>;
+
+    /// Returns all key-value pairs whose key starts with `prefix`.
+    /// Returns an empty list if no keys match.
+    get-section: func(prefix: string) -> result<list<tuple<string, string>>, config-error>;
+}
+
+world app-config-guest {
+    import app-config;
+}

@@ -7,18 +7,30 @@ use std::{
     fs,
     path::{Component, Path, PathBuf},
     process::Command,
+    sync::Arc,
 };
 
 use anyhow::{Context, Result, anyhow};
 use syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::{
     DeployManifest, ServiceType,
 };
+use syneroym_data_layer::traits::StorageProvider;
 use tracing::{info, warn};
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ContainerEngine {
     podman_path: String,
     containers_dir: PathBuf,
+    storage_provider: Option<Arc<dyn StorageProvider>>,
+}
+
+impl std::fmt::Debug for ContainerEngine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ContainerEngine")
+            .field("podman_path", &self.podman_path)
+            .field("containers_dir", &self.containers_dir)
+            .finish_non_exhaustive()
+    }
 }
 
 fn sanitize_id(id: &str) -> String {
@@ -26,9 +38,13 @@ fn sanitize_id(id: &str) -> String {
 }
 
 impl ContainerEngine {
-    pub fn new(podman_path: String, app_local_data_dir: &Path) -> Self {
+    pub fn new(
+        podman_path: String,
+        app_local_data_dir: &Path,
+        storage_provider: Option<Arc<dyn StorageProvider>>,
+    ) -> Self {
         let containers_dir = app_local_data_dir.join("containers");
-        Self { podman_path, containers_dir }
+        Self { podman_path, containers_dir, storage_provider }
     }
 
     /// Safely resolve host path relative to the container's isolated local
@@ -90,7 +106,35 @@ impl ContainerEngine {
 
         // 3. Environment variables
         let mut env_args = Vec::new();
-        for (key, val) in &manifest.config.env {
+
+        let mut config_map = std::collections::BTreeMap::new();
+        #[allow(clippy::collapsible_if)]
+        if let Some(sp) = &self.storage_provider {
+            match sp.get_latest_config_generation(service_id).await {
+                Ok(Some((_, blob))) => {
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&blob) {
+                        if let Some(map) = json.as_object() {
+                            for (k, v) in map {
+                                if let Some(s) = v.as_str() {
+                                    config_map.insert(k.clone(), s.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::error!("Failed to fetch config generation for {}: {}", service_id, e);
+                }
+            }
+        }
+
+        // Merge manifest env with config map
+        for (k, v) in &manifest.config.env {
+            config_map.insert(k.clone(), v.clone());
+        }
+
+        for (key, val) in &config_map {
             env_args.push("-e".to_string());
             env_args.push(format!("{}={}", key, val));
         }

@@ -1815,7 +1815,7 @@ The Substrate relies on multiple cryptographic and hardware-level techniques to 
 
 *   **Versioned Configuration Store:** The orchestrator writes a fully resolved, schema-validated configuration generation for each `SynSvc`. Running invocations keep the generation they started with; new WASM invocations read the newest active generation.
 *   **Dual-Target Configuration Delivery:** Configuration defined in the SynApp/Endpoint manifest is delivered differently for each execution environment:
-    *   **WASM:** The preferred path is a typed host function such as `syneroym:config/get`, which returns hierarchical non-secret configuration on demand. WASI `environment` variables or pre-opened read-only files are compatibility shims only for non-secret values.
+    *   **WASM:** The preferred path is a typed host function such as `syneroym:app-config/get`, which returns hierarchical non-secret configuration on demand. WASI `environment` variables or pre-opened read-only files are compatibility shims only for non-secret values.
     *   **Podman:** The orchestrator may flatten non-secret configuration into environment variables or mount generated config files read-only, because legacy containers usually expect those interfaces.
 *   **Secret Delivery:** Secrets are resolved from the Vault at invocation or deployment time.
     *   **WASM:** Services call `syneroym:vault/reveal` and receive the value only inside the current invocation's host-managed memory. The secret is never written to the filesystem or environment.

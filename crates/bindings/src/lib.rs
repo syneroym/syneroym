@@ -2,6 +2,7 @@
 //! This module generates Rust types from the WIT interfaces including
 //! control-plane, data-layer, and vault.
 
+pub mod app_config;
 pub mod control_plane;
 pub mod data_layer;
 pub mod vault;

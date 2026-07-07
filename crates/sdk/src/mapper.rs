@@ -4,7 +4,8 @@ use syneroym_app_orchestration::models::ServiceType;
 use syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, ContainerPortMapping, ContainerVolumeMapping,
     DeploymentPlan as WitDeploymentPlan, NetworkEndpoint, PlannedService,
-    ServiceConfig as WitServiceConfig, ServiceType as WitServiceType, TcpManifest, WasmManifest,
+    RotationPolicy as WitRotationPolicy, ServiceConfig as WitServiceConfig,
+    ServiceType as WitServiceType, TcpManifest, WasmManifest,
 };
 
 pub fn map_deployment_plan_to_wit(
@@ -20,6 +21,15 @@ pub fn map_deployment_plan_to_wit(
                 syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::ResourceQuota {
                     max_instructions: q.max_instructions,
                     max_memory_bytes: q.max_memory_bytes,
+                }
+            }),
+            schema_path: svc.config.schema_path.clone(),
+            rotation_policy: Some(match svc.config.rotation_policy {
+                syneroym_app_orchestration::models::RotationPolicy::RestartOnRotation => {
+                    WitRotationPolicy::RestartOnRotation
+                }
+                syneroym_app_orchestration::models::RotationPolicy::None => {
+                    WitRotationPolicy::None
                 }
             }),
         };

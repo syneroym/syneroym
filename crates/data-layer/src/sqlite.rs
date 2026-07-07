@@ -458,6 +458,16 @@ impl SqliteStorageProvider {
             )",
             [],
         )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS config_generations (
+                service_id TEXT NOT NULL,
+                generation INTEGER NOT NULL,
+                config_blob TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY (service_id, generation)
+            )",
+            [],
+        )?;
         Ok(())
     }
 
@@ -775,6 +785,107 @@ impl StorageProvider for SqliteStorageProvider {
     async fn service_exists(&self, service_id: &str) -> anyhow::Result<bool> {
         let service_db_dir = self.resolve_service_db_dir(service_id)?;
         Ok(service_db_dir.join("state.db").exists())
+    }
+
+    async fn save_config_generation(
+        &self,
+        service_id: &str,
+        config_blob: &str,
+    ) -> anyhow::Result<u64> {
+        let conn_arc = self.substrate_conn.clone();
+        let s_id = service_id.to_string();
+        let blob = config_blob.to_string();
+        task::spawn_blocking(move || -> anyhow::Result<u64> {
+            let mut conn = conn_arc.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {}", e))?;
+            let tx = conn.transaction()?;
+
+            let current_gen: Option<i64> = tx
+                .query_row(
+                    "SELECT MAX(generation) FROM config_generations WHERE service_id = ?1",
+                    params![s_id],
+                    |row| row.get(0),
+                )
+                .map(Some)
+                .or_else(|e| match e {
+                    rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                    other => Err(other),
+                })?
+                .flatten();
+
+            let next_gen = current_gen.unwrap_or(0) + 1;
+            let now = chrono::Utc::now().timestamp_millis();
+
+            tx.execute(
+                "INSERT INTO config_generations (service_id, generation, config_blob, created_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![s_id, next_gen, blob, now],
+            )?;
+
+            tx.commit()?;
+            Ok(next_gen as u64)
+        })
+        .await?
+    }
+
+    async fn delete_config_generation(
+        &self,
+        service_id: &str,
+        generation: u64,
+    ) -> anyhow::Result<()> {
+        let conn_arc = self.substrate_conn.clone();
+        let s_id = service_id.to_string();
+        task::spawn_blocking(move || -> anyhow::Result<()> {
+            let conn = conn_arc.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {}", e))?;
+            conn.execute(
+                "DELETE FROM config_generations WHERE service_id = ?1 AND generation = ?2",
+                params![s_id, generation as i64],
+            )?;
+            Ok(())
+        })
+        .await?
+    }
+
+    async fn get_config_generation(
+        &self,
+        service_id: &str,
+        generation: u64,
+    ) -> anyhow::Result<Option<String>> {
+        let conn_arc = self.substrate_conn.clone();
+        let s_id = service_id.to_string();
+        task::spawn_blocking(move || -> anyhow::Result<Option<String>> {
+            let conn = conn_arc.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {}", e))?;
+            let mut stmt = conn.prepare(
+                "SELECT config_blob FROM config_generations WHERE service_id = ?1 AND generation \
+                 = ?2",
+            )?;
+            let mut rows = stmt.query(params![s_id, generation as i64])?;
+
+            if let Some(row) = rows.next()? { Ok(Some(row.get(0)?)) } else { Ok(None) }
+        })
+        .await?
+    }
+
+    async fn get_latest_config_generation(
+        &self,
+        service_id: &str,
+    ) -> anyhow::Result<Option<(u64, String)>> {
+        let conn_arc = self.substrate_conn.clone();
+        let s_id = service_id.to_string();
+        task::spawn_blocking(move || -> anyhow::Result<Option<(u64, String)>> {
+            let conn = conn_arc.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {}", e))?;
+            let mut stmt = conn.prepare(
+                "SELECT generation, config_blob FROM config_generations WHERE service_id = ?1 \
+                 ORDER BY generation DESC LIMIT 1",
+            )?;
+            let mut rows = stmt.query(params![s_id])?;
+
+            if let Some(row) = rows.next()? {
+                Ok(Some((row.get::<_, i64>(0)? as u64, row.get(1)?)))
+            } else {
+                Ok(None)
+            }
+        })
+        .await?
     }
 }
 

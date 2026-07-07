@@ -36,7 +36,14 @@ async fn make_engine(dir: &std::path::Path) -> AppSandboxEngine {
 
 fn wasm_deploy_manifest(bytes: Vec<u8>, interfaces: Vec<String>) -> DeployManifest {
     DeployManifest {
-        config: ServiceConfig { env: vec![], args: vec![], custom_config: None, quota: None },
+        config: ServiceConfig {
+            env: vec![],
+            args: vec![],
+            custom_config: None,
+            quota: None,
+            schema_path: None,
+            rotation_policy: None,
+        },
         service_type: ServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(bytes),
             hash: None,
@@ -55,7 +62,7 @@ async fn test_execute_ddl_denied_outside_lifecycle_context() {
 
     // is_init_context = false: a normal (non-lifecycle) invocation context.
     let mut host_state =
-        HostState::new("ddl-test-svc".to_string(), None, key_store, storage_provider, false);
+        HostState::new("ddl-test-svc".to_string(), None, key_store, storage_provider, false, 0);
 
     let err = DataLayerHost::execute_ddl(&mut host_state, "CREATE TABLE x (id TEXT)".to_string())
         .await

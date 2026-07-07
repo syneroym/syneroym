@@ -282,12 +282,79 @@ impl OrchestratorInterface for ControlPlaneService {
             }
         }
 
+        // Configuration Generation & Validation
+        let mut flat_config = std::collections::BTreeMap::new();
+        if let Some(custom_config_str) = &manifest.config.custom_config {
+            let custom_json: serde_json::Value = serde_json::from_str(custom_config_str)
+                .map_err(|e| format!("custom_config is not valid JSON: {}", e))?;
+
+            if let Some(schema_path_str) = &manifest.config.schema_path {
+                let schema_path = std::path::PathBuf::from(schema_path_str);
+
+                // Path traversal check
+                if schema_path.components().any(|c| matches!(c, std::path::Component::ParentDir))
+                    || schema_path.is_absolute()
+                {
+                    return Err(format!(
+                        "Arbitrary file read prevented: Path traversal or absolute paths are not \
+                         allowed in schema_path: {:?}",
+                        schema_path
+                    ));
+                }
+
+                let custom_json_clone = custom_json.clone();
+                tokio::task::spawn_blocking(move || -> Result<(), String> {
+                    let schema_str = std::fs::read_to_string(&schema_path).map_err(|e| {
+                        format!("Failed to read JSON schema at {}: {}", schema_path.display(), e)
+                    })?;
+                    let schema_json: serde_json::Value = serde_json::from_str(&schema_str)
+                        .map_err(|e| format!("JSON schema is not valid JSON: {}", e))?;
+
+                    let compiled_schema = jsonschema::validator_for(&schema_json)
+                        .map_err(|e| format!("Invalid JSON schema: {}", e))?;
+
+                    if let Err(error) = compiled_schema.validate(&custom_json_clone) {
+                        return Err(format!(
+                            "Configuration validation failed: {} at {}",
+                            error,
+                            error.instance_path()
+                        ));
+                    }
+                    Ok(())
+                })
+                .await
+                .map_err(|e| format!("Failed to spawn blocking task: {}", e))??;
+            }
+
+            crate::config_utils::flatten_json_config(&custom_json, "", &mut flat_config);
+        }
+
+        let config_blob = serde_json::to_string(&flat_config)
+            .map_err(|e| format!("Failed to serialize flattened config: {}", e))?;
+
+        let new_gen = self
+            .storage_provider
+            .save_config_generation(&service_id, &config_blob)
+            .await
+            .map_err(|e| format!("Failed to save config generation: {}", e))?;
+        tracing::info!("Saved configuration generation {} for service {}", new_gen, service_id);
+
         match &manifest.service_type {
             WitServiceType::Wasm(wasm_manifest) => {
-                self.app_sandbox_engine
-                    .deploy_wasm(&service_id, &manifest)
-                    .await
-                    .map_err(|e| format!("WASM deployment failed: {e}"))?;
+                if let Err(e) = self.app_sandbox_engine.deploy_wasm(&service_id, &manifest).await {
+                    if let Err(rollback_err) =
+                        self.storage_provider.delete_config_generation(&service_id, new_gen).await
+                    {
+                        tracing::error!(
+                            "Failed to rollback config generation {} for service {} after deploy \
+                             error: {}",
+                            new_gen,
+                            service_id,
+                            rollback_err
+                        );
+                    }
+                    return Err(format!("WASM deployment failed: {e}"));
+                }
 
                 self.register_wasm_endpoints(&service_id, wasm_manifest.interfaces.clone())
                     .await
@@ -317,11 +384,26 @@ impl OrchestratorInterface for ControlPlaneService {
                     "Deploying container service {}: image={}",
                     service_id, container_manifest.image
                 );
-                let actual_mappings = self
-                    .podman_sandbox_engine
-                    .deploy(&service_id, &manifest)
-                    .await
-                    .map_err(|e| format!("Container deployment failed: {e}"))?;
+                let actual_mappings =
+                    match self.podman_sandbox_engine.deploy(&service_id, &manifest).await {
+                        Ok(mappings) => mappings,
+                        Err(e) => {
+                            if let Err(rollback_err) = self
+                                .storage_provider
+                                .delete_config_generation(&service_id, new_gen)
+                                .await
+                            {
+                                tracing::error!(
+                                    "Failed to rollback config generation {} for service {} after \
+                                     deploy error: {}",
+                                    new_gen,
+                                    service_id,
+                                    rollback_err
+                                );
+                            }
+                            return Err(format!("Container deployment failed: {e}"));
+                        }
+                    };
 
                 for (interface_name, host_port) in actual_mappings {
                     self.registry
@@ -517,7 +599,7 @@ mod tests {
                 .unwrap(),
         );
         let container_engine =
-            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path()));
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
         let registry =
             EndpointRegistry::new_mock(Arc::new(syneroym_core::storage::MockStorage::new()));
 
@@ -568,7 +650,7 @@ mod tests {
                 .unwrap(),
         );
         let container_engine =
-            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path()));
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
         let registry =
             EndpointRegistry::new_mock(Arc::new(syneroym_core::storage::MockStorage::new()));
 
@@ -593,7 +675,7 @@ mod tests {
                 service_id: "did:key:test".to_string(),
                 logical_ref: "test/main".to_string(),
                 manifest: DeployManifest {
-                    config: ServiceConfig { env: vec![], args: vec![], custom_config: None, quota: None },
+                    config: ServiceConfig { env: vec![], args: vec![], custom_config: None, quota: None, schema_path: None, rotation_policy: None },
                     service_type: WitServiceType::Wasm(WasmManifest {
                         source: ArtifactSource::Url("../../../../../etc/passwd".to_string()),
                         hash: None,
@@ -623,7 +705,7 @@ mod tests {
                 .unwrap(),
         );
         let container_engine =
-            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path()));
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
         let registry =
             EndpointRegistry::new_mock(Arc::new(syneroym_core::storage::MockStorage::new()));
 
@@ -647,7 +729,7 @@ mod tests {
                 service_id: "did:key:test".to_string(),
                 logical_ref: "test/main".to_string(),
                 manifest: DeployManifest {
-                    config: ServiceConfig { env: vec![], args: vec![], custom_config: None, quota: None },
+                    config: ServiceConfig { env: vec![], args: vec![], custom_config: None, quota: None, schema_path: None, rotation_policy: None },
                     service_type: WitServiceType::Wasm(WasmManifest {
                         source: ArtifactSource::Url("/etc/passwd".to_string()),
                         hash: None,
@@ -681,7 +763,7 @@ mod tests {
                 .unwrap(),
         );
         let container_engine =
-            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path()));
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
         let registry =
             EndpointRegistry::new_mock(Arc::new(syneroym_core::storage::MockStorage::new()));
 
@@ -733,5 +815,121 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(secret_res.payload, serde_json::json!({"status": "secret_set"}));
+    }
+    #[tokio::test]
+    async fn test_deploy_config_schema_rejection() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = syneroym_core::config::SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider = Arc::new(
+            syneroym_data_layer::SqliteStorageProvider::new(temp_dir.path(), false).unwrap(),
+        );
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(&config, vec![], key_store.clone(), storage_provider.clone())
+                .await
+                .unwrap(),
+        );
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+        let registry =
+            EndpointRegistry::new_mock(Arc::new(syneroym_core::storage::MockStorage::new()));
+
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider,
+        )
+        .await
+        .unwrap();
+
+        // Write a schema file with a relative path
+        let schema_filename = format!("test_schema_{}.json", std::process::id());
+        std::fs::write(
+            &schema_filename,
+            r#"{"type": "object", "properties": {"port": {"type": "integer"}}}"#,
+        )
+        .unwrap();
+
+        let manifest = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: Some(r#"{"port": "8080"}"#.to_string()), // string instead of int
+                quota: None,
+                schema_path: Some(schema_filename.clone()),
+                rotation_policy: None,
+            },
+            service_type: WitServiceType::Tcp(syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::TcpManifest { endpoints: vec![] }),
+            registry_certificate: None,
+        };
+
+        let result = service.deploy("test_service".to_string(), manifest).await;
+
+        let _ = std::fs::remove_file(&schema_filename);
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err();
+        assert!(err_msg.contains("Configuration validation failed"), "{}", err_msg);
+    }
+
+    #[tokio::test]
+    async fn test_deploy_config_generation_rollback() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = syneroym_core::config::SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider = Arc::new(
+            syneroym_data_layer::SqliteStorageProvider::new(temp_dir.path(), false).unwrap(),
+        );
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(&config, vec![], key_store.clone(), storage_provider.clone())
+                .await
+                .unwrap(),
+        );
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+        let registry =
+            EndpointRegistry::new_mock(Arc::new(syneroym_core::storage::MockStorage::new()));
+
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider.clone(),
+        )
+        .await
+        .unwrap();
+
+        // Deliberately malformed WasmManifest source to cause a deployment failure
+        let manifest = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: Some(r#"{"key": "value"}"#.to_string()),
+                quota: None,
+                schema_path: None,
+                rotation_policy: None,
+            },
+            service_type: WitServiceType::Wasm(syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::WasmManifest {
+                source: syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::ArtifactSource::Url("/does_not_exist.wasm".to_string()),
+                hash: None,
+                interfaces: vec![],
+            }),
+            registry_certificate: None,
+        };
+
+        let result = service.deploy("rollback_service".to_string(), manifest).await;
+        assert!(result.is_err()); // deployment must fail
+
+        // Config generation should not exist
+        let latest =
+            storage_provider.get_latest_config_generation("rollback_service").await.unwrap();
+        assert!(latest.is_none());
     }
 }

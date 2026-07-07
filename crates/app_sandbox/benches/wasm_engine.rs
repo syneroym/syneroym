@@ -47,6 +47,7 @@ fn bench_wasm_engine(c: &mut Criterion) {
                 key_store.clone(),
                 storage_provider.clone(),
                 false,
+                0,
             );
             let _store = Store::new(&engine, host_state);
         });
@@ -61,6 +62,7 @@ fn bench_wasm_engine(c: &mut Criterion) {
                 key_store.clone(),
                 storage_provider.clone(),
                 false,
+                0,
             );
             let mut store: Store<HostState> = Store::new(&engine, host_state);
             store.set_fuel(1_000_000).unwrap();
@@ -77,6 +79,7 @@ fn bench_wasm_engine(c: &mut Criterion) {
         key_store.clone(),
         storage_provider.clone(),
         false,
+        0,
     );
     let mut store: Store<HostState> = Store::new(&engine, host_state);
 

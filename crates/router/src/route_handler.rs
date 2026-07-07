@@ -123,8 +123,11 @@ impl RouteHandler {
             .as_ref()
             .map(|cfg| cfg.podman_path.clone())
             .unwrap_or_else(|| "podman".to_string());
-        let podman_sandbox_engine =
-            Arc::new(ContainerEngine::new(podman_path, &config.app_local_data_dir));
+        let podman_sandbox_engine = Arc::new(ContainerEngine::new(
+            podman_path,
+            &config.app_local_data_dir,
+            Some(storage_provider.clone()),
+        ));
 
         let identity = Identity::from_bytes(&secret_key);
 

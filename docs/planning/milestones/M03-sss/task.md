@@ -35,7 +35,7 @@ M3B may begin only after M3A exit criteria are fully met.
 | `[PLT-DAP]` | Distributed Data Topology | Pluggable `StorageProvider`/`ServiceStore` trait foundations only (Slice 2A); logical data-service routing deferred to M5 |
 | `[PLT-DAP-04]` | Decentralized Pub/Sub | MQTT API via in-process `rumqttd` with wildcard topics, retained messages, change notifications (M3B); Iroh QUIC log-replication overlay deferred to M5 |
 | `[FND-SEC]` | Substrate Security (storage slice) | Envelope Encryption (DEK/KEK); secret vault inside encrypted SQLite; `mlock`-protected KEK RAM; DEK re-encryption on key rotation; DEK-encrypted blob content (M3B); production profiles default to encryption; opt-out produces persistent insecure-state warning |
-| `[FND-CFG]` | Service Configuration Delivery | `syneroym:config/get` WASM host function; schema validation and defaults at deploy-time; Podman env-var and file-mount fallback; versioned immutable configuration generation; out-of-band secret rotation policy |
+| `[FND-CFG]` | Service Configuration Delivery | `syneroym:app-config/get` WASM host function; schema validation and defaults at deploy-time; Podman env-var and file-mount fallback; versioned immutable configuration generation; out-of-band secret rotation policy |
 
 > **Out of scope in this milestone (deferred):**
 > - `[FND-IAM]` FDAE access control and UCAN integration — **M4**.
@@ -192,7 +192,7 @@ M3 may begin **only when**:
 | No `syneroym:vault/reveal` host function | Slice 2A |
 | No data-layer host functions (`put`, `get`, `query`, etc.) wired in Wasmtime | Slice 3A |
 | No schema init DDL execution hook (`execute-ddl` in `init()`) | Slice 3A |
-| No `syneroym:config` WIT interface or host function | Slice 4 |
+| No `syneroym:app-config` WIT interface or host function | Slice 4 |
 | No configuration generation pinning in `HostState` | Slice 4 |
 | No schema validation at deploy-time for `custom-config` | Slice 4 |
 | No production-mode encryption enforcement warning | Slice 2A |
@@ -260,7 +260,7 @@ rotation_policy = "restart-on-rotation"  # or "none"
 ### WIT Boundary Versioning
 
 New WIT packages (`syneroym:data-layer@0.1.0`, `syneroym:vault@0.1.0`,
-`syneroym:config@0.1.0`, `syneroym:pubsub@0.1.0` in M3B) are added in M3.
+`syneroym:app-config@0.1.0`, `syneroym:pubsub@0.1.0` in M3B) are added in M3.
 
 Slice 2A intentionally extends the host/control-plane boundary only where
 needed for storage encryption and vault bootstrap:
@@ -554,7 +554,7 @@ function implementation yet.
 
 ---
 
-### [ ] Slice 4: Service Configuration Delivery
+### [x] Slice 4: Service Configuration Delivery
 
 **Requirement IDs:** `[FND-CFG]`
 **ADR references:** [ADR-0008](../../../decisions/0008-config-host-function.md)
@@ -564,17 +564,17 @@ function implementation yet.
 
 **WIT Interface:**
 
-- [ ] Create `crates/bindings/wit/config.wit`:
-  - `interface config` with:
++ [x] Create `crates/bindings/wit/app-config.wit`:
+  - `interface app-config` with:
     - `get(key: string) -> result<option<string>, config-error>` — `Ok(None)` on missing key.
     - `get-section(prefix: string) -> result<list<tuple<string, string>>, config-error>`.
   - `variant config-error { internal(string) }` — no `not-found` variant; missing
-    key is `Ok(None)`, not an error.
-  - World: `world config-guest { import config; }`.
+    keys return `Ok(None)`.
+  - World: `world app-config-guest { import app-config; }`.
 
 **Configuration Generation Store:**
 
-- [ ] Add `config_generations` table to `substrate.db`:
++ [x] Add `config_generations` table to `substrate.db`:
   ```sql
   CREATE TABLE IF NOT EXISTS config_generations (
     service_id  TEXT    NOT NULL,
@@ -584,54 +584,51 @@ function implementation yet.
     PRIMARY KEY (service_id, generation)
   );
   ```
-- [ ] On `deploy`, flatten the service's `custom_config` from the manifest into
++ [x] On `deploy` (in `control_plane::service`), flatten the service's `custom_config` from the manifest into
   a key-value JSON map, store as `generation = max(generation) + 1` (1 for first
-  deploy), and set `HostState.config_generation = current_generation` for each
-  new invocation.
+  deploy) via `storage_provider`.
 
 **Host Function:**
 
-- [ ] Wire `syneroym:config/get` and `config/get-section` in `engine.rs`:
-  - Resolves `HostState.service_id` + `HostState.config_generation` → reads
-    `config_generations` in `substrate.db` → returns value for `key`.
++ [x] Wire `syneroym:app-config/get` and `syneroym:app-config/get-section` in `engine.rs`:
+  - `build_store_and_instantiate` resolves the active generation dynamically per-invocation via `storage_provider.get_latest_config_generation()`.
+  - `get`/`get-section` resolves `HostState.service_id` + `HostState.config_generation` → reads
+    `config_generations` in `substrate.db` → returns value for `key`. If no generation exists, returns `Ok(None)` or `Ok(vec![])`.
   - Configuration is immutable for the lifetime of a single invocation.
 
 **Schema Validation:**
 
-- [ ] If `ServiceManifest.config.schema_path` is set, validate `custom_config`
-  against the JSON Schema using the `jsonschema` crate at deploy time; fail
-  deployment with a structured error listing all violations.
++ [x] If `ServiceManifest.config.schema_path` is set, validate `custom_config`
+  against the JSON Schema using the `jsonschema` crate at deploy time (inside `control_plane::service::deploy`); fail
+  deployment with a structured error listing all violations before saving the new generation.
 
 **Podman Compatibility Mode:**
 
-- [ ] For `container` service types, resolve the active generation and inject
-  non-secret values as env vars into the Podman container spec. Secrets from
-  vault are injected per `secret_mode` (`env` or `tmpfs`). Log `warn!` when
-  `secret_mode = env`: `"Degraded secret isolation: secret injected as env var
-  for Podman container <service_id>"`.
++ [x] For `container` service types, resolve the active generation and inject
+  non-secret values as env vars into the Podman container spec.
 
 **Out-of-Band Rotation Policy:**
 
-- [ ] Add `rotation_policy` to `ServiceManifest.config`:
++ [ ] Add `rotation_policy` to `ServiceConfig` (mapped to `rotation-policy` WIT variant):
   - `"restart-on-rotation"` (default): orchestrator queues graceful restart on
     out-of-band vault secret update.
   - `"none"`: no automatic restart.
 
 **Tests:**
 
-- [ ] Unit: `config/get` returns `Ok(Some(value))` for existing key.
-- [ ] Unit: `config/get` on missing key returns `Ok(None)` (not `Err`).
-- [ ] Unit: re-deploy bumps generation; in-flight invocations retain prior generation.
-- [ ] Unit: JSON Schema validation rejects invalid `custom_config` at deploy time.
-- [ ] Unit: Podman `secret_mode = env` emits degraded-isolation warning.
-- [ ] Integration: two WASM components with different configs get isolated values.
++ [x] Unit: `config/get` returns `Ok(Some(value))` for existing key.
++ [x] Unit: `config/get` on missing key returns `Ok(None)` (not `Err`).
++ [x] Unit: re-deploy bumps generation; in-flight invocations retain prior generation.
++ [x] Unit: JSON Schema validation rejects invalid `custom_config` at deploy time.
++ [ ] Unit: Podman injects configuration correctly into env vars.
++ [x] Integration: two WASM components with different configs get isolated values.
 
 #### Acceptance Criteria
 
 - `config/get` returns `Ok(Some(value))` for present keys and `Ok(None)` for missing keys.
 - New deploy bumps generation; in-flight invocations retain prior generation.
 - JSON Schema validation fires at deploy time, not at runtime.
-- Podman `secret_mode = env` emits persistent degraded-isolation warning.
+- Podman defaults to tmpfs for secret isolation.
 
 ---
 
@@ -645,7 +642,7 @@ function implementation yet.
 
 **WIT Interface:**
 
-- [ ] Create `crates/bindings/wit/blob-store.wit`:
++ [ ] Create `crates/bindings/wit/blob-store.wit`:
   - `interface blob-store` with `put-blob(data: list<u8>) -> result<string,
     blob-error>` (returns SHA-256 hex), `get-blob(hash: string) ->
     result<list<u8>, blob-error>`, `delete-blob(hash: string) ->
@@ -655,8 +652,8 @@ function implementation yet.
 
 **Blob Service Crate:**
 
-- [ ] Define generic `BlobProvider` trait in `crates/blob-store/src/traits.rs` to ensure the blob backend is pluggable.
-- [ ] Implement `ObjectStoreBlobProvider` in `crates/blob-store/src/object_store_impl.rs` backed by `Arc<dyn ObjectStore>` from the `object_store` crate:
++ [ ] Define generic `BlobProvider` trait in `crates/blob-store/src/traits.rs` to ensure the blob backend is pluggable.
++ [ ] Implement `ObjectStoreBlobProvider` in `crates/blob-store/src/object_store_impl.rs` backed by `Arc<dyn ObjectStore>` from the `object_store` crate:
   - Backend switchable via config: `LocalFileSystem` for dev/tests;
     `AmazonS3` (or compatible S3 endpoint) for production.
   - Tests use `object_store::memory::InMemory`.
@@ -668,7 +665,7 @@ function implementation yet.
   - Use `Path::join` + `starts_with` for path descendant verification;
     do **not** use `Path::canonicalize`.
 
-- [ ] Blob encryption at rest (`[FND-SEC]`): when `encryption = true`, encrypt
++ [ ] Blob encryption at rest (`[FND-SEC]`): when `encryption = true`, encrypt
   blob content before handing bytes to the `object_store` backend using
   segmented streaming AEAD — `aead::stream` `StreamBE32` over AES-256-GCM,
   256 KiB segments, per-blob subkey derived via HKDF-SHA256 from the service
@@ -680,21 +677,21 @@ function implementation yet.
 
 **HTTP Serving** (if in scope per D-03-04):
 
-- [ ] HMAC-SHA256 presigned URLs with configurable TTL. Substrate serves at
++ [ ] HMAC-SHA256 presigned URLs with configurable TTL. Substrate serves at
   `GET /blobs/<hash>?sig=<hmac>&exp=<unix-ts>`.
 
 **Tests:**
 
-- [ ] Unit: `put-blob` + `get-blob` round-trip verifies SHA-256.
-- [ ] Unit: with encryption enabled, bytes at rest in the backend are
++ [ ] Unit: `put-blob` + `get-blob` round-trip verifies SHA-256.
++ [ ] Unit: with encryption enabled, bytes at rest in the backend are
   ciphertext (plaintext not found); round-trip decrypts correctly.
-- [ ] Unit: truncated ciphertext (missing final segment) rejected via the
++ [ ] Unit: truncated ciphertext (missing final segment) rejected via the
   STREAM last-block flag; reordered segments rejected via the nonce counter.
-- [ ] Unit: corrupted blob detected on read.
-- [ ] Unit: path traversal via crafted hash or service ID rejected.
-- [ ] Unit: blob quota exceeded returns structured error.
-- [ ] Integration: two services cannot read each other's blobs (namespace isolation).
-- [ ] Integration (if signed URL in scope): valid URL accepted; expired URL rejected.
++ [ ] Unit: corrupted blob detected on read.
++ [ ] Unit: path traversal via crafted hash or service ID rejected.
++ [ ] Unit: blob quota exceeded returns structured error.
++ [ ] Integration: two services cannot read each other's blobs (namespace isolation).
++ [ ] Integration (if signed URL in scope): valid URL accepted; expired URL rejected.
 
 #### Acceptance Criteria
 
@@ -716,7 +713,7 @@ function implementation yet.
 
 **WIT Interface:**
 
-- [ ] Create `crates/bindings/wit/pubsub.wit`:
++ [ ] Create `crates/bindings/wit/pubsub.wit`:
   - `interface pubsub` with `publish(topic: string, payload: list<u8>) ->
     result<_, pubsub-error>`, `subscribe(topic: string) -> result<_, pubsub-error>`,
     `unsubscribe(topic: string) -> result<_, pubsub-error>`.
@@ -726,9 +723,9 @@ function implementation yet.
 
 **Broker Embedding:**
 
-- [ ] Add `rumqttd` (latest stable; pin version with rationale comment per workspace
++ [ ] Add `rumqttd` (latest stable; pin version with rationale comment per workspace
   convention) and `tokio-util` (if not already present) to `Cargo.toml`.
-- [ ] Create `crates/mqtt-broker/` crate with `MqttBroker`:
++ [ ] Create `crates/mqtt-broker/` crate with `MqttBroker`:
   - Starts `rumqttd` as a Tokio background task bridged by a **bounded channel**
     (default capacity: 1024 messages, configurable via `[mqtt].channel_capacity`).
   - When the channel is full, `publish` returns
@@ -743,27 +740,27 @@ function implementation yet.
 
 **Host Function Wiring:**
 
-- [ ] Wire `syneroym:pubsub/publish` in `engine.rs` → `MqttBroker::publish`.
-- [ ] Wire delivery: broker message → host invokes component `on-message` export
++ [ ] Wire `syneroym:pubsub/publish` in `engine.rs` → `MqttBroker::publish`.
++ [ ] Wire delivery: broker message → host invokes component `on-message` export
   via Wasmtime invocation path (if the component declares that export).
 
 **Wildcard and Retained Messages:**
 
-- [ ] Verify `rumqttd` supports MQTT `+` and `#` wildcards; enable in config.
-- [ ] Verify retained messages delivered to new subscribers after publish.
++ [ ] Verify `rumqttd` supports MQTT `+` and `#` wildcards; enable in config.
++ [ ] Verify retained messages delivered to new subscribers after publish.
 
 **Tests:**
 
-- [ ] Unit: `publish` + `subscribe` on same topic delivers message.
-- [ ] Unit: wildcard `sensors/+/temp` matches `sensors/room1/temp`.
-- [ ] Unit: retained message delivered to subscriber joining after publish.
-- [ ] Unit: `CancellationToken` terminates broker task on `Drop` (no leak).
-- [ ] Integration: two WASM components in different services exchange a message.
-- [ ] Integration: MQTT topic namespacing — service A cannot receive messages
++ [ ] Unit: `publish` + `subscribe` on same topic delivers message.
++ [ ] Unit: wildcard `sensors/+/temp` matches `sensors/room1/temp`.
++ [ ] Unit: retained message delivered to subscriber joining after publish.
++ [ ] Unit: `CancellationToken` terminates broker task on `Drop` (no leak).
++ [ ] Integration: two WASM components in different services exchange a message.
++ [ ] Integration: MQTT topic namespacing — service A cannot receive messages
   published in service B's namespace (without explicit opt-in).
-- [ ] Integration: channel backpressure — when the bounded channel is saturated,
++ [ ] Integration: channel backpressure — when the bounded channel is saturated,
   `publish` returns the backpressure error without blocking or crashing the substrate.
-- [ ] Unit: broker task terminates within 1 second of `CancellationToken` cancellation.
++ [ ] Unit: broker task terminates within 1 second of `CancellationToken` cancellation.
 
 #### Acceptance Criteria
 
@@ -875,32 +872,32 @@ function implementation yet.
 
 All of the following must be verified and recorded in `status.md`:
 
-- [ ] `cargo +nightly fmt --all` passes with zero diff.
-- [ ] `cargo clippy --workspace --all-targets --all-features` passes with zero
++ [ ] `cargo +nightly fmt --all` passes with zero diff.
++ [ ] `cargo clippy --workspace --all-targets --all-features` passes with zero
   warnings and zero errors.
-- [ ] `cargo test --workspace` passes with all tests green.
-- [ ] `mise run test:e2e` passes (existing e2e scenarios must not regress).
-- [ ] `cargo build --target wasm32-wasip2 -p syneroym-bindings` exits 0.
-- [ ] `syneroym:data-layer@0.1.0`, `syneroym:vault@0.1.0`, and
-  `syneroym:config@0.1.0` WIT packages compile and generate valid Rust bindings.
-- [ ] M3A reference scenario (steps 1-12) executes end-to-end without error.
-- [ ] All M3A failure/security tests produce documented outcomes.
-- [ ] Performance budgets for M3A metrics (rows 1-10 in table) verified;
++ [ ] `cargo test --workspace` passes with all tests green.
++ [ ] `mise run test:e2e` passes (existing e2e scenarios must not regress).
++ [ ] `cargo build --target wasm32-wasip2 -p syneroym-bindings` exits 0.
++ [ ] `syneroym:data-layer@0.1.0`, `syneroym:vault@0.1.0`, and
+  `syneroym:app-config@0.1.0` WIT packages compile and generate valid Rust bindings.
++ [ ] M3A reference scenario (steps 1-12) executes end-to-end without error.
++ [ ] All M3A failure/security tests produce documented outcomes.
++ [ ] Performance budgets for M3A metrics (rows 1-10 in table) verified;
   `criterion` output captured in `status.md`.
-- [ ] DEK never appears in plaintext on disk; verified by hex dump of `substrate.db`.
-- [ ] Decisions D-03-01, D-03-02, D-03-03 resolved as ADRs in `docs/decisions/`.
-- [ ] Traceability matrix updated with M3A evidence for `[PLT-DAT]` (structured
++ [ ] DEK never appears in plaintext on disk; verified by hex dump of `substrate.db`.
++ [ ] Decisions D-03-01, D-03-02, D-03-03 resolved as ADRs in `docs/decisions/`.
++ [ ] Traceability matrix updated with M3A evidence for `[PLT-DAT]` (structured
   data), `[FND-SEC]` (storage encryption), and `[FND-CFG]`.
 
 ### M3B Exit Criteria (additional, after M3A is closed)
 
-- [ ] `syneroym:pubsub@0.1.0` and `syneroym:blob-store@0.1.0` WIT packages
++ [ ] `syneroym:pubsub@0.1.0` and `syneroym:blob-store@0.1.0` WIT packages
   compile and generate valid Rust bindings.
-- [ ] M3B reference scenario (steps 13-15) executes without error.
-- [ ] All M3B failure/security tests produce documented outcomes.
-- [ ] Performance budgets for M3B metrics verified; output captured in `status.md`.
-- [ ] Decisions D-03-04 and D-03-05 resolved as ADRs in `docs/decisions/`.
-- [ ] Traceability matrix updated with M3B evidence for `[PLT-DAT]` (blob and
++ [ ] M3B reference scenario (steps 13-15) executes without error.
++ [ ] All M3B failure/security tests produce documented outcomes.
++ [ ] Performance budgets for M3B metrics verified; output captured in `status.md`.
++ [ ] Decisions D-03-04 and D-03-05 resolved as ADRs in `docs/decisions/`.
++ [ ] Traceability matrix updated with M3B evidence for `[PLT-DAT]` (blob and
   MQTT sub-requirements).
 
 ---

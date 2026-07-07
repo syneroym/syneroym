@@ -25,7 +25,7 @@ Two design questions required resolution:
 ### Function Signature
 
 ```wit
-interface config {
+interface app-config {
     variant config-error {
         internal(string),
     }

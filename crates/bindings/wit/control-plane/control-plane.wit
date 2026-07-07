@@ -14,6 +14,11 @@ interface orchestrator {
         max-memory-bytes: option<u64>,
     }
 
+    variant rotation-policy {
+        restart-on-rotation,
+        none,
+    }
+
     /// General configuration provided to the deployed service.
     record service-config {
         /// Environment variables represented as key-value pairs.
@@ -23,6 +28,8 @@ interface orchestrator {
         /// Arbitrary nested configuration (e.g., serialized JSON).
         custom-config: option<string>,
         quota: option<resource-quota>,
+        schema-path: option<string>,
+        rotation-policy: option<rotation-policy>,
     }
 
     /// Manifest details for a Wasm component deployment.

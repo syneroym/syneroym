@@ -186,6 +186,16 @@ pub enum TopologyMode {
     Sharded,
 }
 
+#[derive(
+    Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum RotationPolicy {
+    #[default]
+    RestartOnRotation,
+    None,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ResourceQuota {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -211,6 +221,10 @@ pub struct ServiceConfig {
     pub custom_config: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quota: Option<ResourceQuota>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_path: Option<String>,
+    #[serde(default)]
+    pub rotation_policy: RotationPolicy,
 }
 
 /// Represents the spec of a service in the application manifest.
@@ -489,6 +503,8 @@ mod tests {
                     args: vec![],
                     custom_config: None,
                     quota: None,
+                    schema_path: None,
+                    rotation_policy: RotationPolicy::RestartOnRotation,
                 },
                 resolved_dependencies: vec![],
                 topology_mode: TopologyMode::Singleton,
@@ -600,6 +616,8 @@ mod tests {
                     args: vec![],
                     custom_config: None,
                     quota: None,
+                    schema_path: None,
+                    rotation_policy: RotationPolicy::RestartOnRotation,
                 },
                 resolved_dependencies: vec![],
                 topology_mode: TopologyMode::Singleton,

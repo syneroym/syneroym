@@ -27,7 +27,7 @@ syneroym-app-orchestration.workspace = true
 syneroym-key-store.workspace = true
 syneroym-data-layer.workspace = true
 hex.workspace = true
-
+jsonschema.workspace = true
 
 [dev-dependencies]
 wit-parser.workspace = true

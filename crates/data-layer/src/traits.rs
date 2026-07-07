@@ -23,6 +23,33 @@ pub trait StorageProvider: Send + Sync {
     /// existing state) or a re-deploy (existing state), which in turn decides
     /// whether the guest's `init()` or `migrate()` lifecycle hook is invoked.
     async fn service_exists(&self, service_id: &str) -> anyhow::Result<bool>;
+
+    /// Saves a new configuration generation for a service.
+    async fn save_config_generation(
+        &self,
+        service_id: &str,
+        config_blob: &str,
+    ) -> anyhow::Result<u64>;
+
+    /// Deletes a specific configuration generation for a service.
+    async fn delete_config_generation(
+        &self,
+        service_id: &str,
+        generation: u64,
+    ) -> anyhow::Result<()>;
+
+    /// Gets a specific configuration generation for a service.
+    async fn get_config_generation(
+        &self,
+        service_id: &str,
+        generation: u64,
+    ) -> anyhow::Result<Option<String>>;
+
+    /// Gets the latest configuration generation and its blob for a service.
+    async fn get_latest_config_generation(
+        &self,
+        service_id: &str,
+    ) -> anyhow::Result<Option<(u64, String)>>;
 }
 
 #[async_trait]
