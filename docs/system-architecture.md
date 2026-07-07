@@ -31,12 +31,12 @@
 
 ## Executive Summary
 
-Syneroym is a federated, locality-first ecosystem for autonomous mini-applications (**SynApps**) that run on provider-controlled commodity hardware. It replicates the benefits of large consumer platforms — discovery, reputation, standardised transaction flows, institutional trust — while eliminating their drawbacks: vendor lock-in, data ownership loss, governance asymmetry, and opaque algorithms.
+Syneroym is a truly peer-to-peer, locality-first ecosystem for autonomous mini-applications (**SynApps**) that run on provider-controlled commodity hardware. Clusters interoperate through federation — cooperation between independently owned peer clusters over shared protocols, not server federation; no server sits between participants. The [thesis](../THESIS.md) states the core bet. The system replicates the benefits of large consumer platforms — discovery, reputation, standardised transaction flows, institutional trust — while eliminating their drawbacks: vendor lock-in, data ownership loss, governance asymmetry, and opaque algorithms.
 
 This document defines the architecture, technology stack, component design for:
 
 - **The Syneroym Substrate** — the common technology layer all SynApps run on
-- **SynApp 1: Business, Professional & Retail Spaces** — Home Services Guild + Food & Small Retailer Mesh
+- **SynApp 1: Business, Professional & Retail Spaces** — Home Services Guild + Food & Small Retailer Mesh, the first verticals of **Roym**, our flagship combined experience
 
 ---
 

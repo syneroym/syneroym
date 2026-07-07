@@ -1,14 +1,14 @@
 # Syneroym Ecosystem Requirements Specification
 
-Syneroym is a decentralized, peer-to-peer technology ecosystem that empowers individuals and small groups to run their own autonomous applications (SynApps) without relying on centralized platform monopolies. At its core, it provides a secure, identity-native substrate that handles complex networking, discovery, and trust, enabling these independent apps to seamlessly cooperate and interact directly with one another. Whether operating on a smartphone or a server, Syneroym facilitates diverse federated ecosystems—spanning private communications, community governance, and collaborative peer networks—where participants retain absolute control over their data and digital relationships, while still enjoying the powerful network effects of a unified platform.
+The [thesis](../THESIS.md) states the core bet: a truly peer-to-peer foundation for group communication and trust, on which independent mini-apps (SynApps) — chat, marketplace, social, AI — plug in and work together as one experience, with no central server in the middle. No blockchains or cryptocurrency.
 
-To demonstrate these capabilities in a real-world scenario, our initial reference application is the **Provider Space**—a decentralized professional services network built entirely on the Syneroym substrate.
+Our flagship experience and reference application is **Roym** — mini-apps sharing one identity, one contact list, one set of groups, one trust model. Its first vertical is the Professional Services Guild, built entirely on the Syneroym substrate.
 
 **Status:** Draft product baseline
 
 **Last product review:** 2026-06-22
 
-**Companion documents:** [Vision](./VISION.md) · [Architecture](./system-architecture.md)
+**Companion documents:** [Thesis](../THESIS.md) · [Vision](./VISION.md) · [Architecture](./system-architecture.md)
 
 This document is the canonical statement of **who Syneroym serves, what outcomes
 it must enable, and which constraints a conforming implementation must honour**.
@@ -47,7 +47,7 @@ This requirements spec is structured as follows:
 
 ## Philosophy & Design Constraints
 
-Providers and consumers cluster locally; global reach from one source is not required. Reach grows through federation across autonomous clusters instead. The system keeps the benefits and sheds the drawbacks of large platforms listed in [VISION.md](./VISION.md#background).
+Providers and consumers cluster locally; global reach from one source is not required. Reach grows instead through federation across autonomous clusters — cooperation between independently owned peer clusters over shared protocols, not server federation; no server sits between participants. The system keeps the benefits and sheds the drawbacks of large platforms listed in [VISION.md](./VISION.md#background), and goes after the open problem stated in the [thesis](../THESIS.md): rich group activity at real scale, with no central server, where no participant's device needs to fully trust any other.
 
 ### Design Principles
 
@@ -434,7 +434,7 @@ Architecture and test plans.
 
 ## Trust Model
 
-Centralized platforms derive consumer trust from brand, legal accountability, and aggregated reviews. A federated system needs explicit mechanisms to establish equivalent trust without central authority.
+Centralized platforms derive consumer trust from brand, legal accountability, and aggregated reviews. A truly peer-to-peer system — where no participant's device needs to fully trust any other — needs explicit mechanisms to establish equivalent trust without central authority.
 
 ### The Trust Problem
 
@@ -1251,7 +1251,7 @@ Sequenced after the baseline, pending detailed specs. Each must add on without r
 ### Escrow, System Coins, and Mutual Credit
 
 - **Escrow:** Third-party or multi-signature custody of funds pending service completion or dispute resolution. Not part of the MVP payment surface; external or out-of-band settlement is the default until this is separately specced and legally reviewed.
-- **System coins and mutual credit:** A native ledger token and bilateral IOU system layered onto the Payment Abstraction Layer. Requires legal review before launch. See the [Dynamic Ledger Network Specification](https://github.com/syneroym/foundation/blob/main/ideas/commitment-network.md).
+- **System coins and mutual credit:** A native ledger token (not a cryptocurrency or blockchain-based token) and bilateral IOU system layered onto the Payment Abstraction Layer. Requires legal review before launch. See the [Dynamic Ledger Network Specification](https://github.com/syneroym/foundation/blob/main/ideas/commitment-network.md).
 
 ## Appendix: Substrate Feature Coverage Matrix
 *(Ensuring core platform primitives are battle-tested across the application suite)*

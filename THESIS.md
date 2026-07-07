@@ -16,7 +16,7 @@ Syneroym explores this third model, and without relying on blockchains or crypto
 
 Direct device-to-device connection by itself is well understood. The genuinely open problem is:
 
-> **Rich group activity — messaging, buying and selling, sharing, coordinating — among many people, groups and apps, at real scale, where no participant's device needs to fully trust any other.**
+> **Rich group activity — messaging, buying and selling, sharing, coordinating — among many people, groups and apps, at real scale, with no central server in the middle, where no participant's device needs to fully trust any other.**
 
 This is the gap Syneroym goes after. Everything else in the project exists to prove it.
 
