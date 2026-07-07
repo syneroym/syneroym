@@ -617,7 +617,7 @@ Default `decay_factor = 0.5`. Max effective depth: 3 hops (weight < 0.125 beyond
 
 **Payment Strategy (MVP):** MVP focuses on redirection to external payment flows (e.g., UPI deep links) or out-of-band settlement. Verification is offline-delayed. Fully integrated payment gateways are sequenced in later, to minimize centralized dependencies initially.
 
-**Payment rails, escrow, and credit/coin direction**
+**Payment rails and credit/coin direction**
 
 ```mermaid
 flowchart TD
@@ -625,29 +625,20 @@ flowchart TD
         API["PaymentIntent API
         createIntent(amount, currency, method)
         confirmIntent(intent_id)
-        refund(intent_id, amount)
-        escrowRelease(intent_id)"]
+        refund(intent_id, amount)"]
     end
 
     subgraph ADAPTERS["Payment Adapters (pluggable)"]
         STRIPE[Stripe Connect Adapter]
         UPI[UPI Deep Link Adapter]
-        ESCROW[Centralised Escrow]
         CREDIT[Mutual Credit]
         COIN[Syneroym Coin]
     end
 
-    subgraph ESCROW_FLOW["Escrow Flow (MVP)"]
-        direction LR
-        C[Consumer pays] -->|"funds held"| E[Centralised Escrow]
-        E -->|"service confirmed complete"| P[Provider receives minus platform fee]
-        E -->|"dispute raised"| D[Dispute resolution manual or automated]
-        D -->|"resolved"| BOTH[Appropriate party receives funds]
-    end
-
     PAY_ABSTRACT --> ADAPTERS
-    ADAPTERS --> ESCROW_FLOW
 ```
+
+Escrow and dispute-mediated fund custody are deferred; see [Decentralized Escrow & Dispute Resolution](#6-decentralized-escrow--dispute-resolution) in Phase 6.
 
 **Mutual credit (layers onto the Payment Abstraction Layer above; legal review required before rollout):** A bilateral IOU system where providers and consumers issue credits to each other denominated in a local unit. No external currency is required. Each credit line is a signed ledger between two parties; the substrate mediates settlement. Regulatory classification varies by jurisdiction.
 

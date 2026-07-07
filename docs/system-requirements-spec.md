@@ -754,7 +754,7 @@ The system accommodates the following variation axes across workflows:
 
 **Booking:** Event slots, consulting time slots, open-ended job requests.
 
-**Payment:** One-time; pre- or post-delivery; multi-part; negotiated; subscription; escrow; system coins; mutual credit systems. [See the Dynamic Ledger Network Specification](https://github.com/syneroym/foundation/blob/main/ideas/commitment-network.md) for mutual credit mechanics.
+**Payment:** One-time; pre- or post-delivery; multi-part; negotiated; subscription. Escrow, system coins, and mutual credit systems are deferred variation axes — see [Appendix: Later-Phase Additions](#appendix-later-phase-additions) and the [Dynamic Ledger Network Specification](https://github.com/syneroym/foundation/blob/main/ideas/commitment-network.md) for mutual credit mechanics.
 
 **Product type:** Time-bound (e.g. prepared food), digital content, physical goods.
 
@@ -1247,6 +1247,11 @@ Sequenced after the baseline, pending detailed specs. Each must add on without r
 ### Non-IP Mesh Transport Interconnectivity
 
 - **IoT and Edge Networking:** Support for seamlessly integrating non-IP mesh networks (e.g., Zigbee, Thread, Bluetooth Low Energy (BLE)) into the existing IP-based topology.
+
+### Escrow, System Coins, and Mutual Credit
+
+- **Escrow:** Third-party or multi-signature custody of funds pending service completion or dispute resolution. Not part of the MVP payment surface; external or out-of-band settlement is the default until this is separately specced and legally reviewed.
+- **System coins and mutual credit:** A native ledger token and bilateral IOU system layered onto the Payment Abstraction Layer. Requires legal review before launch. See the [Dynamic Ledger Network Specification](https://github.com/syneroym/foundation/blob/main/ideas/commitment-network.md).
 
 ## Appendix: Substrate Feature Coverage Matrix
 *(Ensuring core platform primitives are battle-tested across the application suite)*
