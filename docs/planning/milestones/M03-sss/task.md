@@ -669,12 +669,14 @@ function implementation yet.
     do **not** use `Path::canonicalize`.
 
 - [ ] Blob encryption at rest (`[FND-SEC]`): when `encryption = true`, encrypt
-  blob content with the service's DEK (AES-256-GCM) before handing bytes to the
-  `object_store` backend, and decrypt on read. SHA-256 content addressing and
-  integrity verification apply to the plaintext. Amend
-  [ADR-0009](../../../decisions/0009-blob-storage-object-store.md) with the
-  chosen construction (whole-blob vs. chunked/streaming AEAD) before this
-  slice begins.
+  blob content before handing bytes to the `object_store` backend using
+  segmented streaming AEAD — `aead::stream` `StreamBE32` over AES-256-GCM,
+  256 KiB segments, per-blob subkey derived via HKDF-SHA256 from the service
+  DEK (random 32-byte salt in the ciphertext header) — and decrypt on read.
+  SHA-256 content addressing and integrity verification apply to the
+  plaintext. Encryption mode is a per-service deployment property; no magic
+  sniffing on read. See
+  [ADR-0009 Amendment 1](../../../decisions/0009-blob-storage-object-store.md).
 
 **HTTP Serving** (if in scope per D-03-04):
 
@@ -686,6 +688,8 @@ function implementation yet.
 - [ ] Unit: `put-blob` + `get-blob` round-trip verifies SHA-256.
 - [ ] Unit: with encryption enabled, bytes at rest in the backend are
   ciphertext (plaintext not found); round-trip decrypts correctly.
+- [ ] Unit: truncated ciphertext (missing final segment) rejected via the
+  STREAM last-block flag; reordered segments rejected via the nonce counter.
 - [ ] Unit: corrupted blob detected on read.
 - [ ] Unit: path traversal via crafted hash or service ID rejected.
 - [ ] Unit: blob quota exceeded returns structured error.
@@ -812,7 +816,7 @@ function implementation yet.
 | SQL injection via filter: `{"name": "'; DROP TABLE profiles; --"}` | Bound as parameterised value; no injection; query returns 0 results |
 | WASM guest sets `creator_id` in payload | Host overwrites field; guest value ignored |
 | Blob exceeds service quota | `blob-error::quota-exceeded`; no substrate crash |
-| Read blob with bit-flipped bytes (SHA-256 mismatch) | `blob-error::internal("integrity check failed")` |
+| Read blob with bit-flipped bytes | `blob-error::internal("integrity check failed")` (AEAD tag failure when encrypted; plaintext SHA-256 mismatch otherwise) |
 | Service A publishes to service B's MQTT namespace | Delivery blocked by namespace isolation |
 | KEK rotation while service is handling a request | Re-encryption completes; in-flight request uses cached DEK |
 

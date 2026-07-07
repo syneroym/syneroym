@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted (Amendment 1, 2026-07-07: blob encryption at rest via streaming AEAD)
 
 ## Context
 
@@ -129,3 +129,102 @@ region   = "us-east-1"
   tests use `object_store::local::LocalFileSystem` with a `tempdir`.
 - S3-compatible production backends (MinIO, Tigris, Cloudflare R2) are supported
   by setting `endpoint` to the compatible endpoint URL.
+
+---
+
+## Amendment 1 (2026-07-07): Blob Encryption at Rest — Streaming AEAD
+
+### Context
+
+`[FND-SEC]` requires blob content, like per-service SQLite databases, to be
+encrypted at rest under the envelope-encryption scheme (DEK per service, KEK
+in RAM — [ADR-0006](0006-sqlite-encryption-sqlcipher.md)). The original text
+of this ADR covered integrity and path safety but not encryption; this
+amendment closes that gap before Slice 5 begins.
+
+Two constructions were evaluated:
+
+- **Whole-blob AES-256-GCM:** one nonce + one tag per blob. Simple, but the
+  entire plaintext and ciphertext must be buffered in memory for every
+  encrypt/decrypt, and corruption or truncation is only detectable after
+  processing the full blob.
+- **Segmented streaming AEAD (STREAM construction):** the blob is encrypted as
+  a sequence of fixed-size AEAD segments with a counter-bound nonce and a
+  last-segment flag (Rogaway/HRRV STREAM, as implemented by the RustCrypto
+  `aead::stream` module).
+
+### Decision
+
+**Use segmented streaming AEAD**: `aead::stream` `StreamBE32` over AES-256-GCM
+with **256 KiB plaintext segments**.
+
+Rationale:
+
+- **The ciphertext format is a long-lived on-disk contract.** The Marketplace
+  vertical stores high-res images and videos; whole-blob encryption would force
+  a format migration (or a dual-format reader) as soon as large media arrives.
+- **Tier 1 hardware is a Raspberry Pi 4.** Streaming keeps encrypt/decrypt at
+  constant memory regardless of blob size.
+- **The signed-URL HTTP endpoint streams blobs.** Segmented AEAD lets the
+  substrate decrypt-and-stream; whole-blob would require full-buffer
+  decryption before the first response byte.
+- **Truncation and segment reordering are detected structurally** by the STREAM
+  counter and last-segment flag, before the plaintext digest check.
+- Overhead is negligible: one 16-byte GCM tag per 256 KiB segment (~0.006%).
+
+The M3B WIT surface still passes whole blobs (`list<u8>`), so guests do not
+observe streaming yet; the benefit is host-side (HTTP serving) and format
+future-proofing. A streaming WIT surface can layer on later without a format
+change.
+
+### Key Derivation (Per-Blob Subkeys)
+
+The service DEK is never used directly as an AEAD key for blob content.
+Each blob gets a unique subkey:
+
+```
+salt        = 32 random bytes (per blob, stored in the header)
+okm         = HKDF-SHA256(ikm = DEK, salt = salt,
+                          info = "syneroym:blob:v1:" || service_id)   // 39 bytes
+segment_key = okm[0..32]     // AES-256 key
+nonce_prefix = okm[32..39]   // 7-byte STREAM nonce prefix
+```
+
+A fresh random salt per blob yields a unique key per blob, eliminating
+GCM nonce-collision concerns across blobs and segments (`StreamBE32` supplies
+the 4-byte counter + 1-byte last-block flag completing the 12-byte nonce).
+All derived key material is `ZeroizeOnDrop`.
+
+### Ciphertext Layout
+
+```
+magic "SYB1" (4 bytes) | version u8 = 1 | segment_size u32 BE | salt [32 bytes]
+followed by N STREAM segments, each = AES-GCM ciphertext (segment_size) + 16-byte tag
+(final segment may be shorter and is sealed with the STREAM last-block flag)
+```
+
+### Interaction with Content Addressing and Modes
+
+- **SHA-256 is computed over the plaintext** and remains the storage key and
+  the `get-blob` integrity contract. On read, the host decrypts (AEAD tags
+  catch per-segment corruption early), then verifies the plaintext digest.
+- **Encryption mode is a per-service deployment property** (`encrypted = true`
+  in the `ServiceManifest`, default true). The read path selects the mode from
+  configuration — it does **not** sniff the magic bytes, since arbitrary
+  plaintext could collide with them. Toggling the flag for a service that
+  already has stored blobs is rejected at deploy time; changing modes requires
+  an explicit migration.
+- **Quota accounting is measured on plaintext length**, not ciphertext.
+
+### Consequences
+
+- `hkdf = "0.12"` is added to workspace dependencies; the `aead` crate's
+  `stream` feature is enabled (already in-tree via `aes-gcm 0.10`; `sha2 0.10`
+  already present).
+- The `put-blob` path hashes and encrypts in a single pass over the plaintext.
+- The plaintext SHA-256 remains the object key, so the storage backend can
+  fingerprint known content. This is inherent to content addressing and
+  unchanged by this amendment; it is an accepted trade-off, documented here.
+- Client-side encryption means no reliance on S3 server-side encryption for
+  the `[FND-SEC]` guarantee; enabling SSE on the bucket is harmless but
+  redundant.
