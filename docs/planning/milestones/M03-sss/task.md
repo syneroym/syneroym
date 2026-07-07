@@ -31,10 +31,10 @@ M3B may begin only after M3A exit criteria are fully met.
 
 | Requirement ID | Description | Sub-requirements targeted in M3 |
 |---|---|---|
-| `[PLT-DAT]` | Data Layer | Structured SQLite DBs per service (CRUD, batch, filters, aggregation, pagination, nested WIT serialisation, schema init DDL, `oltp`/`olap` build profiles); blob S3-compatible backend and signed HTTP access (M3B) |
-| `[PLT-DAP]` | Distributed Data Topology | Logical Data Service interface definitions only (M3A) |
-| `[TOP-ROB]` | Decentralized Pub/Sub | MQTT API overlay over QUIC with wildcard topics, retained messages, change notifications (M3B) |
-| `[FND-SEC]` | Substrate Security (storage slice) | Envelope Encryption (DEK/KEK); secret vault inside encrypted SQLite; `mlock`-protected KEK RAM; DEK re-encryption on key rotation; production profiles default to encryption; opt-out produces persistent insecure-state warning |
+| `[PLT-DAT]` | Data Layer | Structured SQLite DBs per service (CRUD, batch, filters, pagination, nested WIT serialisation via JSON payloads, schema init DDL, `oltp`/`olap` build profiles; `AggregationPipeline` deferred to M4); blob S3-compatible backend and signed HTTP access (M3B) |
+| `[PLT-DAP]` | Distributed Data Topology | Pluggable `StorageProvider`/`ServiceStore` trait foundations only (Slice 2A); logical data-service routing deferred to M5 |
+| `[PLT-DAP-04]` | Decentralized Pub/Sub | MQTT API via in-process `rumqttd` with wildcard topics, retained messages, change notifications (M3B); Iroh QUIC log-replication overlay deferred to M5 |
+| `[FND-SEC]` | Substrate Security (storage slice) | Envelope Encryption (DEK/KEK); secret vault inside encrypted SQLite; `mlock`-protected KEK RAM; DEK re-encryption on key rotation; DEK-encrypted blob content (M3B); production profiles default to encryption; opt-out produces persistent insecure-state warning |
 | `[FND-CFG]` | Service Configuration Delivery | `syneroym:config/get` WASM host function; schema validation and defaults at deploy-time; Podman env-var and file-mount fallback; versioned immutable configuration generation; out-of-band secret rotation policy |
 
 > **Out of scope in this milestone (deferred):**
@@ -65,6 +65,7 @@ and consequences. A summary is provided here for planning reference.
 - **M3: Substrate-global KEK.** One `roymctl kek inject` call unlocks all service DEKs.
 - **M4 gate: Per-SynApp-Instance KEK.** Must be added to the M4 milestone plan as an
   explicit gate item (requires M4 IAM/UCAN for authorised per-app injection).
+  Per-service KEK scoping is the eventual target in a later milestone.
 - DB open time budget **removed from M3**; to be established in the M4 ADR alongside
   per-app KEK, measured on Tier 1 hardware (Raspberry Pi 4).
 - Auto-unseal (AWS KMS) is out of scope for the substrate; deployer scripts handle this externally.
@@ -667,6 +668,14 @@ function implementation yet.
   - Use `Path::join` + `starts_with` for path descendant verification;
     do **not** use `Path::canonicalize`.
 
+- [ ] Blob encryption at rest (`[FND-SEC]`): when `encryption = true`, encrypt
+  blob content with the service's DEK (AES-256-GCM) before handing bytes to the
+  `object_store` backend, and decrypt on read. SHA-256 content addressing and
+  integrity verification apply to the plaintext. Amend
+  [ADR-0009](../../../decisions/0009-blob-storage-object-store.md) with the
+  chosen construction (whole-blob vs. chunked/streaming AEAD) before this
+  slice begins.
+
 **HTTP Serving** (if in scope per D-03-04):
 
 - [ ] HMAC-SHA256 presigned URLs with configurable TTL. Substrate serves at
@@ -675,6 +684,8 @@ function implementation yet.
 **Tests:**
 
 - [ ] Unit: `put-blob` + `get-blob` round-trip verifies SHA-256.
+- [ ] Unit: with encryption enabled, bytes at rest in the backend are
+  ciphertext (plaintext not found); round-trip decrypts correctly.
 - [ ] Unit: corrupted blob detected on read.
 - [ ] Unit: path traversal via crafted hash or service ID rejected.
 - [ ] Unit: blob quota exceeded returns structured error.
@@ -684,6 +695,8 @@ function implementation yet.
 #### Acceptance Criteria
 
 - `put-blob`/`get-blob` round-trip verifies content integrity by SHA-256.
+- With `encryption = true`, blob content at rest is DEK-encrypted; plaintext
+  never reaches the storage backend.
 - Service blob namespaces are isolated.
 - No path traversal possible via crafted input.
 
@@ -691,7 +704,7 @@ function implementation yet.
 
 ### [ ] Slice 6 (M3B): Embedded MQTT Broker
 
-**Requirement IDs:** `[PLT-DAT]` (MQTT event service sub-requirement)
+**Requirement IDs:** `[PLT-DAP-04]`, `[PLT-DAT]` (MQTT event service sub-requirement)
 **ADR references:** [ADR-0010](../../../decisions/0010-mqtt-broker-rumqttd.md)
 **Depends on:** Slice 5 complete.
 
@@ -764,10 +777,12 @@ function implementation yet.
    `custom_config = { db_name = "profiles" }`.
 3. Deployment succeeds; configuration generation 1 stored.
 4. Operator invokes `profile-store` — receives `StorageError::EncryptionKeyRequired`.
-5. Operator injects KEK via `roymctl kek inject <service_id>` (reads from stdin).
+5. Operator injects the substrate-global KEK via `roymctl kek inject` (reads
+   from stdin; one injection unlocks all service DEKs per ADR-0006).
 6. Operator re-invokes `profile-store`. WASM `init()` runs: `create-collection`
    creates `profiles` table; `execute-ddl` adds an index.
-7. Service puts 3 profile records; queries with `Eq` filter; receives correct results.
+7. Service puts 3 profile records; queries with an equality filter
+   (`{"name": "..."}`); receives correct results.
 8. Service calls `config/get("db_name")` → returns `"profiles"`.
 9. Operator sets secret: `roymctl secret set profile-store api_key` (stdin).
 10. Service calls `vault/reveal("api_key")` → receives secret bytes; not logged.
@@ -794,7 +809,7 @@ function implementation yet.
 | Blob `hash = "../secret.txt"` | Rejected; must be 64-char lowercase hex |
 | `execute-ddl("DROP TABLE _vault")` from normal invocation | `data-layer-error::permission-denied` |
 | `vault/reveal` on non-existent key | `vault-error::not-found` |
-| SQL injection via filter: `Eq("name", "'; DROP TABLE profiles; --")` | Bound as parameterised value; no injection; query returns 0 results |
+| SQL injection via filter: `{"name": "'; DROP TABLE profiles; --"}` | Bound as parameterised value; no injection; query returns 0 results |
 | WASM guest sets `creator_id` in payload | Host overwrites field; guest value ignored |
 | Blob exceeds service quota | `blob-error::quota-exceeded`; no substrate crash |
 | Read blob with bit-flipped bytes (SHA-256 mismatch) | `blob-error::internal("integrity check failed")` |

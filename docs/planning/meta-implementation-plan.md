@@ -8,7 +8,7 @@ There is no single "MVP" boundary or distinct "Pilot" launch. Instead, we build 
 1. **Inside-Out Development:** We build the core local primitives first (routing, security, data) before expanding to multi-node federation and high-level applications.
 2. **Continuous Walking Skeleton:** Do not defer product validation. Every milestone must expand a reference SynApp (focusing on the **Professional Services Guild**) to ensure we don't build isolated testing facades.
 3. **Strict Boundaries:** No communication crossing a `SynSvc` trust boundary may bypass identity and authorization enforcement. Statically composed components are treated as one `SynSvc` boundary.
-4. **Shared Orchestration:** Planning logic is not built independently inside `roymctl` and the Substrate. Instead, `crates/orchestration` acts as a pure manifest compiler producing an immutable `DeploymentPlan`. `roymctl` and the active controller act merely as effectful adapters around this shared planner.
+4. **Shared Orchestration:** Planning logic is not built independently inside `roymctl` and the Substrate. Instead, `crates/app_orchestration` acts as a pure manifest compiler producing an immutable `DeploymentPlan`. `roymctl` and the active controller act merely as effectful adapters around this shared planner.
 5. **Continuous Observability & Tooling:** Observability instrumentation and developer tooling begin early and mature throughout the milestones.
 
 ## Standard Milestone Documentation Format
@@ -54,7 +54,7 @@ When we begin work on any milestone below, we will generate a dedicated `task.md
 
 **Implementation Approach:**
 1. **Baseline Migration:** Migrate the current CLI and dispatcher contracts to align with the new `SynApp` vs `SynSvc` terminology.
-2. **Shared Orchestration:** Build the pure `DeploymentPlan` compiler in `crates/orchestration`.
+2. **Shared Orchestration:** Build the pure `DeploymentPlan` compiler in `crates/app_orchestration`.
 3. **Topology Work:** 
    - Implement strongly typed IDs and logical references.
    - Build dependency graph compilation with cycle detection, explicitly differentiating `Spawn` vs `Bind`.
@@ -96,7 +96,7 @@ To prevent dependency cycles and scope creep, the data layer and storage mechani
 
 **Implementation Approach:**
 1. **Encrypted Isolation:** Provision isolated, encrypted SQLite databases for each deployed `SynSvc` (based on the M0 prototype).
-2. **Data Interface:** Implement schema initialization, CRUD/batch operations, structured filters and aggregations, pagination, concurrency architecture, and nested WIT serialization. Include Cargo feature gates for `syneroym-olap` and `syneroym-oltp` profiles (both currently backed by standard SQLite).
+2. **Data Interface:** Implement schema initialization, CRUD/batch operations, structured MongoDB-style JSON filters, pagination, concurrency architecture, and nested WIT serialization (JSON payloads at the WIT boundary per [ADR-0007](../decisions/0007-data-layer-wit-interface.md)). The `AggregationPipeline` is deferred to Milestone 4 (gate item below). Include Cargo feature gates for `syneroym-olap` and `syneroym-oltp` profiles (both currently backed by standard SQLite).
 3. **Vault Integration:** Build the secret vault into the encrypted DB and implement `syneroym:vault/reveal`.
 4. **Configuration Delivery:** Finalize the delivery mechanics (WASM host functions vs. Podman environment mapping).
 
@@ -108,8 +108,8 @@ To prevent dependency cycles and scope creep, the data layer and storage mechani
 - `[PLT-DAP-04]` Decentralized Pub/Sub (MQTT API)
 
 **Implementation Approach:**
-1. **Blob Storage:** Implement the S3-compatible backend interface and signed HTTP object access.
-2. **Event Broker:** Embed the MQTT API abstraction, implemented as a decentralized P2P log replication overlay on Iroh QUIC (avoiding classical TCP brokers).
+1. **Blob Storage:** Implement the `object_store`-backed S3-compatible backend interface with signed (HMAC presigned) HTTP object access ([ADR-0009](../decisions/0009-blob-storage-object-store.md)); public unsigned serving is deferred. Blob content is DEK-encrypted at rest per `[FND-SEC]`.
+2. **Event Broker:** Embed the MQTT API abstraction as an in-process `rumqttd` Tokio task with host-enforced topic namespacing ([ADR-0010](../decisions/0010-mqtt-broker-rumqttd.md)). Adapting the broker to decentralized P2P log replication over Iroh QUIC (avoiding classical TCP brokers, per `[PLT-DAP-04]`) is deferred to Milestone 5.
 
 ---
 
@@ -139,6 +139,7 @@ To prevent dependency cycles and scope creep, the data layer and storage mechani
 - `[PLT-ASY]` Asynchronous Operations
 - `[LFC-MGT]` Active Control-Plane Mode
 - `[PLT-DAP]` Federated Query Orchestrator
+- `[PLT-DAP-04]` Decentralized Pub/Sub over Iroh QUIC (completes the M3B broker)
 - `[LFC-VER]` Versioning Support (State snapshot/rollback)
 - `[ADV-DEV]` SynApp Developer Tooling
 
@@ -150,8 +151,9 @@ To prevent dependency cycles and scope creep, the data layer and storage mechani
    - Defining the network protocol for distributing plan fragments to edge nodes.
    - Defining what "done" looks like (e.g., a working end-to-end query across 2 nodes in a test).
    - *(Design TBD to resolve before M5: How the Orchestrator discovers which node holds which shard, and how data routing tables are maintained for `[PLT-DAP-01]`)*
-3. **Versioning:** Implement pre-upgrade SQLite snapshotting and automatic rollback mechanisms.
-4. **Developer Tools:** Release the mock SDK, project templates, the zero-drift `roymctl dev` local environment, and remote package retrieval over HTTP/OCI for the `ManifestCatalog`.
+3. **Decentralized Pub/Sub Completion** (deferred from M3B, [ADR-0010](../decisions/0010-mqtt-broker-rumqttd.md)): Adapt the in-process `rumqttd` broker to synchronise its topic log with peer nodes via decentralized log replication over Iroh QUIC streams (rather than raw TCP), fulfilling the `[PLT-DAP-04]` overlay requirement without changing the `syneroym:pubsub` WIT surface shipped in M3B.
+4. **Versioning:** Implement pre-upgrade SQLite snapshotting and automatic rollback mechanisms.
+5. **Developer Tools:** Release the mock SDK, project templates, the zero-drift `roymctl dev` local environment, and remote package retrieval over HTTP/OCI for the `ManifestCatalog`.
 
 ---
 
