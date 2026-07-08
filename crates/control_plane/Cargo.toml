@@ -26,8 +26,11 @@ syneroym-bindings.workspace = true
 syneroym-app-orchestration.workspace = true
 syneroym-key-store.workspace = true
 syneroym-data-layer.workspace = true
+syneroym-blob-store.workspace = true
 hex.workspace = true
 jsonschema.workspace = true
+uuid.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 wit-parser.workspace = true

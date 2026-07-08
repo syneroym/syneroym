@@ -81,6 +81,11 @@ impl SubstrateConfig {
             self.storage.blobs_dir = self.app_local_data_dir.join(&self.storage.blobs_dir);
         }
 
+        if self.storage.blob_store.local_root.is_relative() {
+            self.storage.blob_store.local_root =
+                self.app_local_data_dir.join(&self.storage.blob_store.local_root);
+        }
+
         if let Some(key) = &self.identity.key
             && key.is_relative()
         {
@@ -171,9 +176,15 @@ fn default_services_dir() -> PathBuf {
 pub struct StorageConfig {
     pub engine: StorageEngine,
     pub db_dir: PathBuf,
+    /// Compiled WASM component binary cache -- unrelated to `blob_store`
+    /// below. Kept as-is; the name collision with the M3B object/blob
+    /// service is unfortunate but pre-existing, so the new config lives
+    /// under a distinctly-named `blob_store` field instead.
     pub blobs_dir: PathBuf,
     pub encryption: bool,
     pub services_dir: PathBuf,
+    /// M3B blob object service configuration (Slice 5).
+    pub blob_store: BlobStoreConfig,
 }
 
 impl Default for StorageConfig {
@@ -184,8 +195,60 @@ impl Default for StorageConfig {
             blobs_dir: default_blobs_dir(),
             encryption: true,
             services_dir: default_services_dir(),
+            blob_store: Default::default(),
         }
     }
+}
+
+fn default_blob_store_local_root() -> PathBuf {
+    PathBuf::from("blob_objects")
+}
+
+fn default_max_blob_bytes() -> u64 {
+    100 * 1024 * 1024 // 100 MiB
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BlobStoreConfig {
+    pub backend: BlobBackend,
+    /// Resolved relative to `app_local_data_dir` by `resolve_paths`, same
+    /// as `db_dir`/`blobs_dir`. Only meaningful for `backend = "local"`.
+    pub local_root: PathBuf,
+    /// Only meaningful (and required) for `backend = "s3"`.
+    pub s3: Option<S3BlobConfig>,
+    /// Single-blob size cap, checked incrementally as an upload streams in.
+    pub max_blob_bytes: u64,
+    /// Optional aggregate per-service cap across all of a service's blobs.
+    /// `None` means unlimited.
+    pub max_service_total_bytes: Option<u64>,
+}
+
+impl Default for BlobStoreConfig {
+    fn default() -> Self {
+        Self {
+            backend: Default::default(),
+            local_root: default_blob_store_local_root(),
+            s3: None,
+            max_blob_bytes: default_max_blob_bytes(),
+            max_service_total_bytes: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BlobBackend {
+    #[default]
+    Local,
+    S3,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct S3BlobConfig {
+    pub endpoint: String,
+    pub bucket: String,
+    pub region: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -694,10 +757,21 @@ mod tests {
         assert_eq!(config.identity.key.unwrap(), Path::new("/tmp/app_data/substrate.key"));
         assert_eq!(config.identity.agreement.unwrap(), Path::new("/tmp/app_data/agreement.json"));
         assert_eq!(config.storage.db_dir, Path::new("/tmp/local_data/db"));
+        assert_eq!(config.storage.blob_store.local_root, Path::new("/tmp/local_data/blob_objects"));
 
         let tls = config.roles.coordinator.unwrap().tls.unwrap();
         assert_eq!(tls.cert_path, Path::new("/tmp/config/cert.pem"));
         assert_eq!(tls.key_path, Path::new("/tmp/config/key.pem"));
+    }
+
+    #[test]
+    fn test_blob_store_config_defaults() {
+        let config = BlobStoreConfig::default();
+        assert_eq!(config.backend, BlobBackend::Local);
+        assert_eq!(config.local_root, Path::new("blob_objects"));
+        assert_eq!(config.max_blob_bytes, 100 * 1024 * 1024);
+        assert_eq!(config.max_service_total_bytes, None);
+        assert!(config.s3.is_none());
     }
 
     #[test]

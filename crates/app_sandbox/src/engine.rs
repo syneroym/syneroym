@@ -18,12 +18,20 @@ use syneroym_bindings::{
         ArtifactSource, DeployManifest, ServiceType,
     },
     host::syneroym::{
+        app_config::app_config::{self, ConfigError},
+        blob_store::blob_store::{
+            self, BlobError, BlobReader, BlobWriter, HostBlobReader, HostBlobWriter,
+        },
         data_layer::store::{
-            CollectionSchema, DataLayerError, Mutation, QueryOptions, QueryResult, RecordReadValue,
-            RecordWriteValue,
+            self, CollectionSchema, DataLayerError, Mutation, QueryOptions, QueryResult,
+            RecordReadValue, RecordWriteValue,
         },
         host::{context, context::Host},
+        vault::vault::{self, VaultError},
     },
+};
+use syneroym_blob_store::{
+    BlobError as BlobStoreError, HostDownloadSession, HostUploadSession, traits::BlobProvider,
 };
 use syneroym_core::{config::SubstrateConfig, local_registry::SubstrateEndpoint};
 use syneroym_data_layer::traits::{ServiceStore, StorageProvider};
@@ -35,10 +43,12 @@ use wasmtime::{
     Config, Engine, InstanceAllocationStrategy, PoolingAllocationConfig, Store, StoreLimits,
     StoreLimitsBuilder,
     component::{
-        Component, Func, HasSelf, Instance, InstancePre, Linker, Val, types::ComponentItem,
+        Component, Func, HasSelf, Instance, InstancePre, Linker, Resource, Val,
+        types::ComponentItem,
     },
 };
 use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxView, WasiView, p2};
+use zeroize::Zeroizing;
 
 use crate::conversions::{json_to_wasm_params, wasm_results_to_json_string};
 
@@ -58,6 +68,7 @@ pub struct HostState {
     pub memory_limits: StoreLimits,
     pub key_store: Arc<KeyStore>,
     pub storage_provider: Arc<dyn StorageProvider>,
+    pub blob_provider: Arc<dyn BlobProvider>,
     pub is_init_context: bool,
     pub config_generation: u64,
 }
@@ -74,11 +85,13 @@ impl Debug for HostState {
 impl HostState {
     /// Creates a new HostState with standard WASI context and storage provider
     /// references.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         component_id: String,
         max_memory_bytes: Option<usize>,
         key_store: Arc<KeyStore>,
         storage_provider: Arc<dyn StorageProvider>,
+        blob_provider: Arc<dyn BlobProvider>,
         is_init_context: bool,
         config_generation: u64,
     ) -> Self {
@@ -98,6 +111,7 @@ impl HostState {
             memory_limits,
             key_store,
             storage_provider,
+            blob_provider,
             is_init_context,
             config_generation,
         }
@@ -121,14 +135,8 @@ impl Host for HostState {
     }
 }
 
-impl syneroym_bindings::host::syneroym::vault::vault::Host for HostState {
-    async fn reveal(
-        &mut self,
-        key: String,
-    ) -> std::result::Result<Vec<u8>, syneroym_bindings::host::syneroym::vault::vault::VaultError>
-    {
-        use syneroym_bindings::host::syneroym::vault::vault::VaultError;
-
+impl vault::Host for HostState {
+    async fn reveal(&mut self, key: String) -> Result<Vec<u8>, VaultError> {
         let provider = self.storage_provider.clone();
         let key_store = self.key_store.clone();
         let service_id = self.component_id.clone();
@@ -173,21 +181,15 @@ async fn open_store(
     component_id: String,
     key_store: Arc<KeyStore>,
     storage_provider: Arc<dyn StorageProvider>,
-) -> std::result::Result<Box<dyn ServiceStore>, DataLayerError> {
+) -> Result<Box<dyn ServiceStore>, DataLayerError> {
     storage_provider
         .open_service_db(&component_id, &key_store)
         .await
         .map_err(|e| DataLayerError::Internal(e.to_string()))
 }
 
-impl syneroym_bindings::host::syneroym::app_config::app_config::Host for HostState {
-    async fn get(
-        &mut self,
-        key: String,
-    ) -> std::result::Result<
-        Option<String>,
-        syneroym_bindings::host::syneroym::app_config::app_config::ConfigError,
-    > {
+impl app_config::Host for HostState {
+    async fn get(&mut self, key: String) -> Result<Option<String>, ConfigError> {
         if self.config_generation == 0 {
             return Ok(None);
         }
@@ -201,11 +203,7 @@ impl syneroym_bindings::host::syneroym::app_config::app_config::Host for HostSta
             Ok(None) => return Ok(None),
             Err(e) => {
                 tracing::error!("Failed to read config for {}: {}", self.component_id, e);
-                return Err(
-                    syneroym_bindings::host::syneroym::app_config::app_config::ConfigError::Internal(
-                        e.to_string(),
-                    ),
-                );
+                return Err(ConfigError::Internal(e.to_string()));
             }
         };
 
@@ -213,11 +211,7 @@ impl syneroym_bindings::host::syneroym::app_config::app_config::Host for HostSta
             Ok(j) => j,
             Err(e) => {
                 tracing::error!("Invalid config JSON for {}: {}", self.component_id, e);
-                return Err(
-                    syneroym_bindings::host::syneroym::app_config::app_config::ConfigError::Internal(
-                        e.to_string(),
-                    ),
-                );
+                return Err(ConfigError::Internal(e.to_string()));
             }
         };
 
@@ -225,13 +219,7 @@ impl syneroym_bindings::host::syneroym::app_config::app_config::Host for HostSta
         Ok(val)
     }
 
-    async fn get_section(
-        &mut self,
-        prefix: String,
-    ) -> std::result::Result<
-        Vec<(String, String)>,
-        syneroym_bindings::host::syneroym::app_config::app_config::ConfigError,
-    > {
+    async fn get_section(&mut self, prefix: String) -> Result<Vec<(String, String)>, ConfigError> {
         if self.config_generation == 0 {
             return Ok(vec![]);
         }
@@ -245,11 +233,7 @@ impl syneroym_bindings::host::syneroym::app_config::app_config::Host for HostSta
             Ok(None) => return Ok(vec![]),
             Err(e) => {
                 tracing::error!("Failed to read config for {}: {}", self.component_id, e);
-                return Err(
-                    syneroym_bindings::host::syneroym::app_config::app_config::ConfigError::Internal(
-                        e.to_string(),
-                    ),
-                );
+                return Err(ConfigError::Internal(e.to_string()));
             }
         };
 
@@ -257,11 +241,7 @@ impl syneroym_bindings::host::syneroym::app_config::app_config::Host for HostSta
             Ok(j) => j,
             Err(e) => {
                 tracing::error!("Invalid config JSON for {}: {}", self.component_id, e);
-                return Err(
-                    syneroym_bindings::host::syneroym::app_config::app_config::ConfigError::Internal(
-                        e.to_string(),
-                    ),
-                );
+                return Err(ConfigError::Internal(e.to_string()));
             }
         };
 
@@ -281,11 +261,8 @@ impl syneroym_bindings::host::syneroym::app_config::app_config::Host for HostSta
     }
 }
 
-impl syneroym_bindings::host::syneroym::data_layer::store::Host for HostState {
-    async fn create_collection(
-        &mut self,
-        schema: CollectionSchema,
-    ) -> std::result::Result<(), DataLayerError> {
+impl store::Host for HostState {
+    async fn create_collection(&mut self, schema: CollectionSchema) -> Result<(), DataLayerError> {
         let store = open_store(
             self.component_id.clone(),
             self.key_store.clone(),
@@ -295,7 +272,7 @@ impl syneroym_bindings::host::syneroym::data_layer::store::Host for HostState {
         store.create_collection(&schema).await
     }
 
-    async fn drop_collection(&mut self, name: String) -> std::result::Result<(), DataLayerError> {
+    async fn drop_collection(&mut self, name: String) -> Result<(), DataLayerError> {
         let store = open_store(
             self.component_id.clone(),
             self.key_store.clone(),
@@ -309,7 +286,7 @@ impl syneroym_bindings::host::syneroym::data_layer::store::Host for HostState {
         &mut self,
         collection: String,
         value: RecordWriteValue,
-    ) -> std::result::Result<(), DataLayerError> {
+    ) -> Result<(), DataLayerError> {
         let creator_id = self.component_id.clone();
         let store = open_store(
             self.component_id.clone(),
@@ -325,7 +302,7 @@ impl syneroym_bindings::host::syneroym::data_layer::store::Host for HostState {
         collection: String,
         id: String,
         patch_json: Vec<u8>,
-    ) -> std::result::Result<(), DataLayerError> {
+    ) -> Result<(), DataLayerError> {
         let store = open_store(
             self.component_id.clone(),
             self.key_store.clone(),
@@ -339,7 +316,7 @@ impl syneroym_bindings::host::syneroym::data_layer::store::Host for HostState {
         &mut self,
         collection: String,
         id: String,
-    ) -> std::result::Result<Option<RecordReadValue>, DataLayerError> {
+    ) -> Result<Option<RecordReadValue>, DataLayerError> {
         let store = open_store(
             self.component_id.clone(),
             self.key_store.clone(),
@@ -353,7 +330,7 @@ impl syneroym_bindings::host::syneroym::data_layer::store::Host for HostState {
         &mut self,
         collection: String,
         opts: QueryOptions,
-    ) -> std::result::Result<QueryResult, DataLayerError> {
+    ) -> Result<QueryResult, DataLayerError> {
         let store = open_store(
             self.component_id.clone(),
             self.key_store.clone(),
@@ -363,11 +340,7 @@ impl syneroym_bindings::host::syneroym::data_layer::store::Host for HostState {
         store.query(&collection, &opts).await
     }
 
-    async fn delete(
-        &mut self,
-        collection: String,
-        id: String,
-    ) -> std::result::Result<(), DataLayerError> {
+    async fn delete(&mut self, collection: String, id: String) -> Result<(), DataLayerError> {
         let store = open_store(
             self.component_id.clone(),
             self.key_store.clone(),
@@ -381,7 +354,7 @@ impl syneroym_bindings::host::syneroym::data_layer::store::Host for HostState {
         &mut self,
         collection: String,
         filter: String,
-    ) -> std::result::Result<u64, DataLayerError> {
+    ) -> Result<u64, DataLayerError> {
         let store = open_store(
             self.component_id.clone(),
             self.key_store.clone(),
@@ -395,7 +368,7 @@ impl syneroym_bindings::host::syneroym::data_layer::store::Host for HostState {
         &mut self,
         collection: String,
         mutations: Vec<Mutation>,
-    ) -> std::result::Result<(), DataLayerError> {
+    ) -> Result<(), DataLayerError> {
         let creator_id = self.component_id.clone();
         let store = open_store(
             self.component_id.clone(),
@@ -406,7 +379,7 @@ impl syneroym_bindings::host::syneroym::data_layer::store::Host for HostState {
         store.batch_mutate(&collection, &mutations, &creator_id).await
     }
 
-    async fn execute_ddl(&mut self, sql: String) -> std::result::Result<(), DataLayerError> {
+    async fn execute_ddl(&mut self, sql: String) -> Result<(), DataLayerError> {
         // TODO(M4): replace is_init_context with Admin UCAN check
         if !self.is_init_context {
             return Err(DataLayerError::PermissionDenied);
@@ -421,13 +394,137 @@ impl syneroym_bindings::host::syneroym::data_layer::store::Host for HostState {
     }
 }
 
+fn map_blob_error(e: BlobStoreError) -> BlobError {
+    match e {
+        BlobStoreError::NotFound => BlobError::NotFound,
+        BlobStoreError::QuotaExceeded => BlobError::QuotaExceeded,
+        BlobStoreError::Internal(msg) => BlobError::Internal(msg),
+    }
+}
+
+/// Resolves the calling component's DEK for blob encryption. `Ok(None)`
+/// means `storage.encryption = false`; blobs are then stored in plaintext.
+async fn resolve_blob_dek(
+    component_id: &str,
+    key_store: &Arc<KeyStore>,
+    storage_provider: &Arc<dyn StorageProvider>,
+) -> Result<Option<Zeroizing<[u8; 32]>>, BlobError> {
+    storage_provider
+        .load_service_dek(component_id, key_store)
+        .await
+        .map_err(|e| BlobError::Internal(e.to_string()))
+}
+
+impl blob_store::Host for HostState {
+    async fn put_blob(&mut self, data: Vec<u8>) -> Result<String, BlobError> {
+        let dek =
+            resolve_blob_dek(&self.component_id, &self.key_store, &self.storage_provider).await?;
+        self.blob_provider.put_blob(&self.component_id, data, dek).await.map_err(map_blob_error)
+    }
+
+    async fn get_blob(&mut self, hash: String) -> Result<Vec<u8>, BlobError> {
+        let dek =
+            resolve_blob_dek(&self.component_id, &self.key_store, &self.storage_provider).await?;
+        self.blob_provider.get_blob(&self.component_id, &hash, dek).await.map_err(map_blob_error)
+    }
+
+    async fn open_upload(&mut self) -> Result<Resource<BlobWriter>, BlobError> {
+        let dek =
+            resolve_blob_dek(&self.component_id, &self.key_store, &self.storage_provider).await?;
+        let session = self
+            .blob_provider
+            .open_upload(&self.component_id, dek)
+            .await
+            .map_err(map_blob_error)?;
+        self.table.push(HostUploadSession(session)).map_err(|e| BlobError::Internal(e.to_string()))
+    }
+
+    async fn open_download(
+        &mut self,
+        hash: String,
+        offset: u64,
+    ) -> Result<Resource<BlobReader>, BlobError> {
+        let dek =
+            resolve_blob_dek(&self.component_id, &self.key_store, &self.storage_provider).await?;
+        let session = self
+            .blob_provider
+            .open_download(&self.component_id, &hash, offset, dek)
+            .await
+            .map_err(map_blob_error)?;
+        self.table
+            .push(HostDownloadSession(session))
+            .map_err(|e| BlobError::Internal(e.to_string()))
+    }
+
+    async fn delete_blob(&mut self, hash: String) -> Result<(), BlobError> {
+        self.blob_provider.delete_blob(&self.component_id, &hash).await.map_err(map_blob_error)
+    }
+
+    async fn signed_url(&mut self, hash: String, ttl_secs: u32) -> Result<String, BlobError> {
+        let dek =
+            resolve_blob_dek(&self.component_id, &self.key_store, &self.storage_provider).await?;
+        self.blob_provider
+            .signed_url(&self.component_id, &hash, ttl_secs, dek)
+            .await
+            .map_err(map_blob_error)
+    }
+}
+
+impl HostBlobWriter for HostState {
+    async fn write(
+        &mut self,
+        self_: Resource<BlobWriter>,
+        chunk: Vec<u8>,
+    ) -> Result<(), BlobError> {
+        let session = self.table.get_mut(&self_).map_err(|e| BlobError::Internal(e.to_string()))?;
+        session.0.write(chunk).await.map_err(map_blob_error)
+    }
+
+    async fn finish(&mut self, self_: Resource<BlobWriter>) -> Result<String, BlobError> {
+        let session = self.table.delete(self_).map_err(|e| BlobError::Internal(e.to_string()))?;
+        session.0.finish().await.map_err(map_blob_error)
+    }
+
+    async fn abort(&mut self, self_: Resource<BlobWriter>) {
+        if let Ok(session) = self.table.delete(self_) {
+            session.0.abort().await;
+        }
+    }
+
+    async fn drop(&mut self, rep: Resource<BlobWriter>) -> wasmtime::Result<()> {
+        // If the guest dropped the resource without calling finish/abort,
+        // discard whatever partial session state remains (implicit abort,
+        // alongside the explicit `abort` method above).
+        if let Ok(session) = self.table.delete(rep) {
+            session.0.abort().await;
+        }
+        Ok(())
+    }
+}
+
+impl HostBlobReader for HostState {
+    async fn read(
+        &mut self,
+        self_: Resource<BlobReader>,
+        max_bytes: u32,
+    ) -> Result<Vec<u8>, BlobError> {
+        let session = self.table.get_mut(&self_).map_err(|e| BlobError::Internal(e.to_string()))?;
+        session.0.read(max_bytes).await.map_err(map_blob_error)
+    }
+
+    async fn drop(&mut self, rep: Resource<BlobReader>) -> wasmtime::Result<()> {
+        let _ = self.table.delete(rep);
+        Ok(())
+    }
+}
+
 impl wasmtime::ResourceLimiter for HostState {
     fn memory_growing(
         &mut self,
         current: usize,
         desired: usize,
         maximum: Option<usize>,
-    ) -> std::result::Result<bool, wasmtime::Error> {
+    ) -> Result<bool, wasmtime::Error> {
         match self.memory_limits.memory_growing(current, desired, maximum) {
             Ok(true) => Ok(true),
             _ => Err(wasmtime::Error::msg("MemoryFault: Wasm execution exceeded memory limit")),
@@ -439,7 +536,7 @@ impl wasmtime::ResourceLimiter for HostState {
         current: usize,
         desired: usize,
         maximum: Option<usize>,
-    ) -> std::result::Result<bool, wasmtime::Error> {
+    ) -> Result<bool, wasmtime::Error> {
         self.memory_limits.table_growing(current, desired, maximum)
     }
 }
@@ -457,6 +554,7 @@ pub struct AppSandboxEngine {
     _shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
     pub key_store: Arc<KeyStore>,
     pub storage_provider: Arc<dyn StorageProvider>,
+    pub blob_provider: Arc<dyn BlobProvider>,
 }
 
 impl Debug for AppSandboxEngine {
@@ -491,6 +589,7 @@ impl AppSandboxEngine {
         endpoints: Vec<(String, String, SubstrateEndpoint)>,
         key_store: Arc<KeyStore>,
         storage_provider: Arc<dyn StorageProvider>,
+        blob_provider: Arc<dyn BlobProvider>,
     ) -> anyhow::Result<Self> {
         let component_dir = config.storage.blobs_dir.join("app_sandbox");
 
@@ -531,6 +630,7 @@ impl AppSandboxEngine {
             _shutdown_tx: Some(shutdown_tx),
             key_store,
             storage_provider,
+            blob_provider,
         };
 
         for (service_id, _interface_name, endpoint) in endpoints {
@@ -592,18 +692,10 @@ impl AppSandboxEngine {
         let mut linker = Linker::new(engine);
         p2::add_to_linker_async(&mut linker)?;
         context::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
-        syneroym_bindings::host::syneroym::vault::vault::add_to_linker::<_, HasSelf<HostState>>(
-            &mut linker,
-            |state| state,
-        )?;
-        syneroym_bindings::host::syneroym::data_layer::store::add_to_linker::<_, HasSelf<HostState>>(
-            &mut linker,
-            |state| state,
-        )?;
-        syneroym_bindings::host::syneroym::app_config::app_config::add_to_linker::<
-            _,
-            HasSelf<HostState>,
-        >(&mut linker, |state| state)?;
+        vault::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
+        store::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
+        app_config::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
+        blob_store::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
         Ok(linker)
     }
 
@@ -869,6 +961,7 @@ impl AppSandboxEngine {
             max_memory_bytes,
             self.key_store.clone(),
             self.storage_provider.clone(),
+            self.blob_provider.clone(),
             is_init_context,
             config_generation,
         );
@@ -1046,6 +1139,12 @@ mod tests {
 
     use super::*;
 
+    /// Test-only blob provider: in-memory backend, effectively unlimited
+    /// quota.
+    fn test_blob_provider() -> Arc<dyn BlobProvider> {
+        Arc::new(syneroym_blob_store::ObjectStoreBlobProvider::in_memory(u64::MAX, None))
+    }
+
     #[tokio::test]
     async fn test_list_interfaces() {
         let engine = AppSandboxEngine::build_wasm_engine(None, None).unwrap();
@@ -1064,6 +1163,7 @@ mod tests {
             None,
             key_store,
             storage_provider,
+            test_blob_provider(),
             false,
             0,
         );
@@ -1166,6 +1266,7 @@ mod tests {
                 syneroym_data_layer::SqliteStorageProvider::new(std::env::temp_dir(), false)
                     .unwrap(),
             ),
+            blob_provider: test_blob_provider(),
         };
 
         // Cache the test component
@@ -1221,11 +1322,12 @@ mod tests {
             None,
             Arc::new(KeyStore::new()),
             storage,
+            test_blob_provider(),
             false,
             generation,
         );
 
-        use syneroym_bindings::host::syneroym::app_config::app_config::Host as ConfigHost;
+        use app_config::Host as ConfigHost;
 
         // 1. Existing key returns Ok(Some(value))
         let val = ConfigHost::get(&mut host, "db_host".to_string()).await.unwrap().unwrap();
@@ -1259,7 +1361,7 @@ mod tests {
         let gen1_b =
             storage.save_config_generation("svc_b", r#"{"mode": "b_mode"}"#).await.unwrap();
 
-        use syneroym_bindings::host::syneroym::app_config::app_config::Host as ConfigHost;
+        use app_config::Host as ConfigHost;
 
         // Two WASM components with different configs get isolated values
         let mut host_a_gen2 = HostState::new(
@@ -1267,6 +1369,7 @@ mod tests {
             None,
             Arc::new(KeyStore::new()),
             storage.clone(),
+            test_blob_provider(),
             false,
             gen2_a,
         );
@@ -1275,6 +1378,7 @@ mod tests {
             None,
             Arc::new(KeyStore::new()),
             storage.clone(),
+            test_blob_provider(),
             false,
             gen1_b,
         );
@@ -1290,6 +1394,7 @@ mod tests {
             None,
             Arc::new(KeyStore::new()),
             storage.clone(),
+            test_blob_provider(),
             false,
             gen1_a,
         );

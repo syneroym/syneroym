@@ -33,6 +33,7 @@ syneroym-key-store = { path = "crates/key-store" }
 syneroym-app-orchestration = { path = "crates/app_orchestration" }
 syneroym-app-sandbox = { path = "crates/app_sandbox" }
 syneroym-data-layer = { path = "crates/data-layer" }
+syneroym-blob-store = { path = "crates/blob-store" }
 syneroym-router = { path = "crates/router" }
 syneroym-observability = { path = "crates/observability" }
 syneroym-community-registry = { path = "crates/community_registry" }
@@ -112,6 +113,17 @@ deadpool-sqlite = "0.13"
 deadpool = "0.13"
 regex = "1.10"
 jsonschema = { version = "0.46", default-features = false }
+hkdf = "0.12"
+hmac = "0.12"
+aead = "0.5"
+# object_store 0.14 bumps its md-5 dependency to require digest ^0.11.0
+# (stable), which conflicts with the digest 0.11.0-rc.10 pin below required
+# by iroh-base's pre-release ed25519-dalek/pkcs8 chain. 0.13.x is the newest
+# line that still resolves; a plain "0.13.1" (not "=0.13.1") stays capped
+# below 0.14.0 under Cargo's 0.x caret semantics without needing an exact
+# pin. Revisit alongside the iroh pins below once iroh ships a stable
+# ed25519-dalek v3 release.
+object_store = "0.13.1"
 
 # Iroh dependencies
 # NOTE: iroh v0.97 pulls in ed25519-dalek v3.0.0-pre.1, which in turn requires

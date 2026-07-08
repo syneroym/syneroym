@@ -33,6 +33,8 @@ fn bench_wasm_engine(c: &mut Criterion) {
     let temp_dir = tempfile::tempdir().unwrap();
     let storage_provider: Arc<dyn syneroym_data_layer::StorageProvider> =
         Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+    let blob_provider: Arc<dyn syneroym_blob_store::BlobProvider> =
+        Arc::new(syneroym_blob_store::ObjectStoreBlobProvider::in_memory(u64::MAX, None));
 
     let engine = AppSandboxEngine::build_wasm_engine(None, None).unwrap();
     let linker: Linker<HostState> = AppSandboxEngine::build_wasm_linker(&engine).unwrap();
@@ -46,6 +48,7 @@ fn bench_wasm_engine(c: &mut Criterion) {
                 None,
                 key_store.clone(),
                 storage_provider.clone(),
+                blob_provider.clone(),
                 false,
                 0,
             );
@@ -61,6 +64,7 @@ fn bench_wasm_engine(c: &mut Criterion) {
                 None,
                 key_store.clone(),
                 storage_provider.clone(),
+                blob_provider.clone(),
                 false,
                 0,
             );
@@ -78,6 +82,7 @@ fn bench_wasm_engine(c: &mut Criterion) {
         None,
         key_store.clone(),
         storage_provider.clone(),
+        blob_provider.clone(),
         false,
         0,
     );

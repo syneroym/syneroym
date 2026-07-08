@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use syneroym_key_store::KeyStore;
+use zeroize::Zeroizing;
 
 use crate::host_store;
 
@@ -17,6 +18,17 @@ pub trait StorageProvider: Send + Sync {
 
     /// Rotates the KEK, re-encrypting all DEKs in substrate.db.
     async fn rotate_kek(&self, key_store: &Arc<KeyStore>, new_kek: [u8; 32]) -> anyhow::Result<()>;
+
+    /// Resolves (generating on first use) the DEK for `service_id`, without
+    /// opening its `ServiceStore`. `Ok(None)` means encryption is disabled
+    /// -- a deliberate per-deployment mode, not an error. Lets callers that
+    /// need a raw DEK for something other than SQL storage (e.g. blob
+    /// content encryption) resolve one without depending on `rusqlite`.
+    async fn load_service_dek(
+        &self,
+        service_id: &str,
+        key_store: &Arc<KeyStore>,
+    ) -> anyhow::Result<Option<Zeroizing<[u8; 32]>>>;
 
     /// Returns whether a service's database already exists on disk, without
     /// creating it. Used to decide whether a deploy is a first deploy (no

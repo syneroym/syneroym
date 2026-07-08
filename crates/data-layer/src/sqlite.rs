@@ -487,6 +487,32 @@ impl SqliteStorageProvider {
         Ok(())
     }
 
+    /// Resolves (generating on first use) the DEK for `service_id`.
+    /// `Ok(None)` means encryption is disabled -- callers must not treat
+    /// this as an error, it's a deliberate per-deployment mode. Does not
+    /// call `verify_encryption_mode`; callers that need the
+    /// `EncryptionKeyRequired` / insecure-mode-warning checks (e.g.
+    /// `open_service_db`) must call it themselves first.
+    fn resolve_dek(
+        &self,
+        service_id: &str,
+        key_store: &Arc<KeyStore>,
+    ) -> anyhow::Result<Option<[u8; 32]>> {
+        if !self.encryption_enabled {
+            return Ok(None);
+        }
+        let conn =
+            self.substrate_conn.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {}", e))?;
+        let dek = match key_store.load_dek(service_id, &conn) {
+            Ok(bytes) => bytes,
+            Err(syneroym_key_store::KeyStoreError::Database(
+                rusqlite::Error::QueryReturnedNoRows,
+            )) => key_store.generate_dek(service_id, &conn)?,
+            Err(e) => return Err(e.into()),
+        };
+        Ok(Some(dek))
+    }
+
     /// Validates `service_id` and resolves its expected per-service database
     /// directory, guarding against path traversal. Does not touch the
     /// filesystem.
@@ -690,23 +716,13 @@ impl StorageProvider for SqliteStorageProvider {
 
         let db_file_path = service_db_dir.join("state.db");
 
-        // Resolve or generate DEK
-        let dek = if self.encryption_enabled {
-            let conn =
-                self.substrate_conn.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {}", e))?;
-            match key_store.load_dek(service_id, &conn) {
-                Ok(bytes) => Zeroizing::new(bytes),
-                Err(syneroym_key_store::KeyStoreError::Database(
-                    rusqlite::Error::QueryReturnedNoRows,
-                )) => {
-                    // Generate new DEK
-                    Zeroizing::new(key_store.generate_dek(service_id, &conn)?)
-                }
-                Err(e) => return Err(e.into()),
-            }
-        } else {
-            Zeroizing::new([0u8; 32]) // encryption disabled, use dummy KEK/DEK
-        };
+        // Resolve or generate DEK. `resolve_dek` returns `None` when
+        // encryption is disabled; SQLCipher still needs *a* key to pragma,
+        // so a dummy all-zero key is substituted here specifically (this
+        // dummy-key behavior is local to the SQLite/SQLCipher path -- the
+        // public `load_service_dek` trait method returns `None` as-is to
+        // its callers instead of this substitution).
+        let dek = Zeroizing::new(self.resolve_dek(service_id, key_store)?.unwrap_or([0u8; 32]));
 
         // Open service DB connection for the single writer actor
         let writer_conn = rusqlite::Connection::open(&db_file_path)?;
@@ -785,6 +801,15 @@ impl StorageProvider for SqliteStorageProvider {
     async fn service_exists(&self, service_id: &str) -> anyhow::Result<bool> {
         let service_db_dir = self.resolve_service_db_dir(service_id)?;
         Ok(service_db_dir.join("state.db").exists())
+    }
+
+    async fn load_service_dek(
+        &self,
+        service_id: &str,
+        key_store: &Arc<KeyStore>,
+    ) -> anyhow::Result<Option<Zeroizing<[u8; 32]>>> {
+        self.verify_encryption_mode(key_store)?;
+        Ok(self.resolve_dek(service_id, key_store)?.map(Zeroizing::new))
     }
 
     async fn save_config_generation(
@@ -1255,6 +1280,60 @@ mod tests {
 
         // Now succeeds
         assert!(provider.open_service_db("my-service", &key_store).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_load_service_dek_none_when_encryption_disabled() {
+        let dir = tempdir().unwrap();
+        let provider = SqliteStorageProvider::new(dir.path(), false).unwrap();
+        let key_store = Arc::new(KeyStore::new());
+        let dek = provider.load_service_dek("svc-a", &key_store).await.unwrap();
+        assert_eq!(dek, None);
+    }
+
+    #[tokio::test]
+    async fn test_load_service_dek_requires_kek_when_encryption_enabled() {
+        let dir = tempdir().unwrap();
+        let provider = SqliteStorageProvider::new(dir.path(), true).unwrap();
+        let key_store = Arc::new(KeyStore::new());
+        let res = provider.load_service_dek("svc-a", &key_store).await;
+        assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_load_service_dek_generates_then_reuses_same_dek() {
+        let dir = tempdir().unwrap();
+        let provider = SqliteStorageProvider::new(dir.path(), true).unwrap();
+        let key_store = Arc::new(KeyStore::new());
+        key_store.inject_kek([21u8; 32], None).unwrap();
+
+        let dek_a = provider.load_service_dek("svc-a", &key_store).await.unwrap();
+        let dek_b = provider.load_service_dek("svc-a", &key_store).await.unwrap();
+        assert!(dek_a.is_some());
+        assert_eq!(dek_a, dek_b);
+    }
+
+    #[tokio::test]
+    async fn test_load_service_dek_matches_open_service_db_dek() {
+        // Regression guard for the open_service_db refactor: both paths
+        // must resolve to the identical DEK for the same service_id, since
+        // open_service_db's SQLCipher pragma and load_service_dek's callers
+        // (e.g. blob-store) must agree on the same key material.
+        let dir = tempdir().unwrap();
+        let provider = SqliteStorageProvider::new(dir.path(), true).unwrap();
+        let key_store = Arc::new(KeyStore::new());
+        key_store.inject_kek([33u8; 32], None).unwrap();
+
+        // Opening the service DB first generates the DEK as a side effect.
+        let _ = provider.open_service_db("svc-shared", &key_store).await.unwrap();
+        let via_load = provider.load_service_dek("svc-shared", &key_store).await.unwrap();
+        assert!(via_load.is_some());
+
+        // A second provider instance sharing the same substrate.db must
+        // resolve the identical DEK (survives "restart").
+        let provider2 = SqliteStorageProvider::new(dir.path(), true).unwrap();
+        let via_load2 = provider2.load_service_dek("svc-shared", &key_store).await.unwrap();
+        assert_eq!(via_load, via_load2);
     }
 
     #[tokio::test]

@@ -8,6 +8,11 @@ license.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Forwards to syneroym-blob-store's own `aws` feature (off by default --
+# see the object_store/digest version-pin comment in the root Cargo.toml).
+aws = ["syneroym-blob-store/aws"]
+
 [dependencies]
 syneroym-core.workspace = true
 syneroym-app-sandbox.workspace = true
@@ -17,6 +22,7 @@ syneroym-control-plane.workspace = true
 syneroym-identity.workspace = true
 syneroym-key-store.workspace = true
 syneroym-data-layer.workspace = true
+syneroym-blob-store.workspace = true
 anyhow.workspace = true
 
 async-trait.workspace = true

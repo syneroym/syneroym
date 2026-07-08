@@ -42,6 +42,9 @@ pub async fn run_scenario() -> Result<()> {
         std::env::temp_dir(),
         false,
     )?);
+    let blob_provider: std::sync::Arc<dyn syneroym_blob_store::BlobProvider> = std::sync::Arc::new(
+        syneroym_blob_store::ObjectStoreBlobProvider::in_memory(u64::MAX, None),
+    );
 
     // Warmup Baseline
     for _ in 0..10 {
@@ -50,6 +53,7 @@ pub async fn run_scenario() -> Result<()> {
             None,
             key_store.clone(),
             storage_provider.clone(),
+            blob_provider.clone(),
             false,
             0,
         );
@@ -79,6 +83,7 @@ pub async fn run_scenario() -> Result<()> {
             None,
             key_store.clone(),
             storage_provider.clone(),
+            blob_provider.clone(),
             false,
             0,
         );

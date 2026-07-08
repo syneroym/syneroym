@@ -30,8 +30,12 @@ async fn make_engine(dir: &std::path::Path) -> AppSandboxEngine {
     let key_store = Arc::new(KeyStore::new());
     let storage_provider: Arc<dyn StorageProvider> =
         Arc::new(SqliteStorageProvider::new(&config.storage.db_dir, false).unwrap());
+    let blob_provider: Arc<dyn syneroym_blob_store::BlobProvider> =
+        Arc::new(syneroym_blob_store::ObjectStoreBlobProvider::in_memory(u64::MAX, None));
 
-    AppSandboxEngine::init(&config, vec![], key_store, storage_provider).await.unwrap()
+    AppSandboxEngine::init(&config, vec![], key_store, storage_provider, blob_provider)
+        .await
+        .unwrap()
 }
 
 fn wasm_deploy_manifest(bytes: Vec<u8>, interfaces: Vec<String>) -> DeployManifest {
@@ -60,9 +64,19 @@ async fn test_execute_ddl_denied_outside_lifecycle_context() {
     let storage_provider: Arc<dyn StorageProvider> =
         Arc::new(SqliteStorageProvider::new(dir.path(), false).unwrap());
 
+    let blob_provider: Arc<dyn syneroym_blob_store::BlobProvider> =
+        Arc::new(syneroym_blob_store::ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+
     // is_init_context = false: a normal (non-lifecycle) invocation context.
-    let mut host_state =
-        HostState::new("ddl-test-svc".to_string(), None, key_store, storage_provider, false, 0);
+    let mut host_state = HostState::new(
+        "ddl-test-svc".to_string(),
+        None,
+        key_store,
+        storage_provider,
+        blob_provider,
+        false,
+        0,
+    );
 
     let err = DataLayerHost::execute_ddl(&mut host_state, "CREATE TABLE x (id TEXT)".to_string())
         .await

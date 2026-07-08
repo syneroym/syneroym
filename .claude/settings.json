@@ -1,0 +1,17 @@
+{
+    "sandbox": {
+        "enabled": true,
+        "autoAllowBashIfSandboxed": true,
+        "excludedCommands": [
+            "git"
+        ]
+    },
+    "permissions": {
+        "deny": [
+            "Read(.env*)",
+            "Bash(rm -rf*)",
+            "Bash(sudo:*)",
+            "Bash(curl:*)"
+        ]
+    }
+}

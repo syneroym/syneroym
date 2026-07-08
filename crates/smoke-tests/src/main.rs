@@ -278,11 +278,19 @@ async fn main() -> Result<()> {
         std::env::temp_dir(),
         false,
     )?);
+    let blob_provider: std::sync::Arc<dyn syneroym_blob_store::BlobProvider> = std::sync::Arc::new(
+        syneroym_blob_store::ObjectStoreBlobProvider::in_memory(u64::MAX, None),
+    );
 
-    let app_engine =
-        syneroym_app_sandbox::AppSandboxEngine::init(&config, vec![], key_store, storage_provider)
-            .await
-            .context("Failed to init app engine")?;
+    let app_engine = syneroym_app_sandbox::AppSandboxEngine::init(
+        &config,
+        vec![],
+        key_store,
+        storage_provider,
+        blob_provider,
+    )
+    .await
+    .context("Failed to init app engine")?;
 
     let quota = Some(syneroym_app_sandbox::WasmResourceQuota {
         max_instructions: Some(5_000),

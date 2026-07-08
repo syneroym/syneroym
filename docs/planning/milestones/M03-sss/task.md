@@ -632,66 +632,135 @@ function implementation yet.
 
 ---
 
-### [ ] Slice 5 (M3B): Blob Object Service
+### [x] Slice 5 (M3B): Blob Object Service
 
 **Requirement IDs:** `[PLT-DAT]` (object service sub-requirement)
 **ADR references:** [ADR-0009](../../../decisions/0009-blob-storage-object-store.md)
 **Depends on:** M3A exit criteria fully met.
 
+> **Scope note (user-directed, recorded here and in `status.md`):** this
+> slice's actual scope grew beyond the checklist below during implementation
+> planning: (1) the WIT interface is streaming-first (a hand-rolled
+> `blob-writer`/`blob-reader` resource pair), with one-shot `put-blob`/
+> `get-blob` kept as thin convenience wrappers over the same streaming
+> primitives, not the sole interface; (2) **native (non-WASM) JSON-RPC
+> dispatch** was added for data-layer, vault, app-config, *and* blob-store —
+> this retroactively closes a Slice 3A gap (data-layer had no native-callable
+> path at all) and is new infrastructure spanning `crates/rpc`,
+> `crates/router`, and `crates/control_plane`, not just `crates/blob-store`.
+> Slice 3A's own checklist/acceptance criteria above are intentionally left
+> unmodified — this is additive infrastructure, not a redo. See "Additional
+> Slice 5 Tasks (Native Dispatch)" below.
+> HTTP serving (the "HTTP Serving" section below) was explicitly deferred —
+> see that section for why.
+
 #### Tasks
 
 **WIT Interface:**
 
-+ [ ] Create `crates/bindings/wit/blob-store.wit`:
-  - `interface blob-store` with `put-blob(data: list<u8>) -> result<string,
-    blob-error>` (returns SHA-256 hex), `get-blob(hash: string) ->
-    result<list<u8>, blob-error>`, `delete-blob(hash: string) ->
-    result<_, blob-error>`, `signed-url(hash: string, ttl-secs: u32) ->
-    result<string, blob-error>` (if in M3B scope per D-03-04).
++ [x] Create `crates/bindings/wit/blob-store/blob-store.wit`:
+  - `interface blob-store` with a streaming-first shape: `resource
+    blob-writer { write, finish, abort }`, `resource blob-reader { read }`,
+    `open-upload() -> result<blob-writer, blob-error>`, `open-download(hash,
+    offset: u64) -> result<blob-reader, blob-error>` (the `offset` param is
+    an addition beyond the original spec, for ranged/resumed reads) — plus
+    one-shot `put-blob(data: list<u8>) -> result<string, blob-error>` and
+    `get-blob(hash: string) -> result<list<u8>, blob-error>` as thin
+    wrappers over the same streaming primitives, `delete-blob(hash: string)
+    -> result<_, blob-error>`, `signed-url(hash: string, ttl-secs: u32) ->
+    result<string, blob-error>`.
   - `variant blob-error { not-found, quota-exceeded, internal(string) }`.
+  - Host-side resources are mapped via `with:` in
+    `crates/bindings/src/host.rs`'s `bindgen!` call to concrete
+    `syneroym_blob_store::{HostUploadSession, HostDownloadSession}` newtypes
+    — the first custom (non-WASI) resource type in this codebase's own WIT
+    interfaces; see `status.md` for how this was verified.
 
 **Blob Service Crate:**
 
-+ [ ] Define generic `BlobProvider` trait in `crates/blob-store/src/traits.rs` to ensure the blob backend is pluggable.
-+ [ ] Implement `ObjectStoreBlobProvider` in `crates/blob-store/src/object_store_impl.rs` backed by `Arc<dyn ObjectStore>` from the `object_store` crate:
++ [x] Define generic `BlobProvider` trait in `crates/blob-store/src/traits.rs`
+  (session-oriented: `open_upload`/`open_download` return
+  `UploadSession`/`DownloadSession` trait objects, with `put_blob`/`get_blob`
+  as default-provided one-shot wrappers) to ensure the blob backend is pluggable.
++ [x] Implement `ObjectStoreBlobProvider` in `crates/blob-store/src/object_store_impl.rs` backed by `Arc<dyn ObjectStore>` from the `object_store` crate:
   - Backend switchable via config: `LocalFileSystem` for dev/tests;
-    `AmazonS3` (or compatible S3 endpoint) for production.
-  - Tests use `object_store::memory::InMemory`.
+    `AmazonS3` for production, gated behind a non-default `aws` cargo
+    feature (see the `object_store`/`digest` version-pin comment in the
+    root `Cargo.toml` — `object_store` 0.14's `md-5` dependency requires
+    stable `digest ^0.11.0`, conflicting with the `digest 0.11.0-rc.10` pin
+    already required by `iroh-base`'s pre-release `ed25519-dalek`/`pkcs8`
+    chain; pinned to `object_store 0.13.x`, the newest line that still
+    resolves, with `aws` off by default until that pin is lifted).
+  - Tests use `object_store::memory::InMemory` (via the crate's own
+    `ObjectStoreBlobProvider::in_memory` helper).
   - Blobs stored at path `<service_id>/<aa>/<remaining-62-hex-chars>`
     (two-level directory prefix for filesystem balance).
   - SHA-256 verified on write and on read (detect silent corruption).
-  - Path traversal guards: `service_id` matches `^[a-zA-Z0-9_\-]{1,128}$`;
-    `hash` must be exactly 64 lowercase hex chars (`^[0-9a-f]{64}$`).
-  - Use `Path::join` + `starts_with` for path descendant verification;
-    do **not** use `Path::canonicalize`.
+  - Path traversal guards: `service_id` matches `^[a-zA-Z0-9_:\-]{1,128}$`
+    (colon added — real `service_id`s are DIDs, matching the Slice 3A
+    `SqliteStorageProvider` fix); `hash` must be exactly 64 lowercase hex
+    chars (`^[0-9a-f]{64}$`).
+  - Use `Path::join` + `starts_with` for path descendant verification
+    (`LocalFileSystem` backend only, defense in depth on top of the regex
+    guards above, which make traversal structurally impossible from
+    validated input); do **not** use `Path::canonicalize`.
+  - Upload sessions buffer in memory (bounded by `max_blob_bytes`); download
+    sessions stream via `object_store`'s `GetResult::into_stream()`
+    (never `.bytes()`), so an `offset` deep into a large blob doesn't force
+    full-object buffering.
+  - Per-service aggregate quota (`max_service_total_bytes`, optional) is
+    lazily loaded via one `list()` per service on first touch, then
+    maintained incrementally in memory.
 
-+ [ ] Blob encryption at rest (`[FND-SEC]`): when `encryption = true`, encrypt
++ [x] Blob encryption at rest (`[FND-SEC]`): when `encryption = true`, encrypt
   blob content before handing bytes to the `object_store` backend using
   segmented streaming AEAD — `aead::stream` `StreamBE32` over AES-256-GCM,
   256 KiB segments, per-blob subkey derived via HKDF-SHA256 from the service
   DEK (random 32-byte salt in the ciphertext header) — and decrypt on read.
   SHA-256 content addressing and integrity verification apply to the
-  plaintext. Encryption mode is a per-service deployment property; no magic
-  sniffing on read. See
+  plaintext. Encryption mode is a per-service deployment property (reuses
+  the existing `storage.encryption` flag via the new
+  `StorageProvider::load_service_dek` trait method — no new config toggle);
+  no magic sniffing on read. See
   [ADR-0009 Amendment 1](../../../decisions/0009-blob-storage-object-store.md).
 
 **HTTP Serving** (if in scope per D-03-04):
 
 + [ ] HMAC-SHA256 presigned URLs with configurable TTL. Substrate serves at
   `GET /blobs/<hash>?sig=<hmac>&exp=<unix-ts>`.
+  **Deferred, user-confirmed.** `signed-url()` itself *is* implemented
+  (HMAC-SHA256, HKDF-derived from the service DEK) and unit-tested
+  end-to-end (`crates/blob-store/src/crypto.rs`'s `sign_url`/
+  `verify_signed_url`), but no live HTTP endpoint resolves the URL — the
+  user's direction was that blob access should work like the data layer,
+  through the WIT/native JSON-RPC surface, not a raw HTTP interface. A
+  generic HTTP-verb/path-routing bridge in `crates/router` is tracked as a
+  follow-up (see "Deferred: HTTP Passthrough" below), not built this slice.
 
 **Tests:**
 
-+ [ ] Unit: `put-blob` + `get-blob` round-trip verifies SHA-256.
-+ [ ] Unit: with encryption enabled, bytes at rest in the backend are
++ [x] Unit: `put-blob` + `get-blob` round-trip verifies SHA-256.
++ [x] Unit: with encryption enabled, bytes at rest in the backend are
   ciphertext (plaintext not found); round-trip decrypts correctly.
-+ [ ] Unit: truncated ciphertext (missing final segment) rejected via the
++ [x] Unit: truncated ciphertext (missing final segment) rejected via the
   STREAM last-block flag; reordered segments rejected via the nonce counter.
-+ [ ] Unit: corrupted blob detected on read.
-+ [ ] Unit: path traversal via crafted hash or service ID rejected.
-+ [ ] Unit: blob quota exceeded returns structured error.
-+ [ ] Integration: two services cannot read each other's blobs (namespace isolation).
-+ [ ] Integration (if signed URL in scope): valid URL accepted; expired URL rejected.
++ [x] Unit: corrupted blob detected on read.
++ [x] Unit: path traversal via crafted hash or service ID rejected.
++ [x] Unit: blob quota exceeded returns structured error (both single-blob
+  fail-fast-mid-upload and aggregate per-service cases).
++ [x] Integration: two services cannot read each other's blobs (namespace isolation).
++ [x] Integration (WIT-resource level, not live HTTP): `signed_url`/
+  `verify_signed_url` valid URL accepted; expired URL and tampered
+  signature rejected (see HTTP Serving deferral note above for why there's
+  no live-endpoint variant of this test).
++ [x] Integration: WASM-path put/get/delete/streaming round trip through the
+  real `Host`/`HostBlobWriter`/`HostBlobReader` resource wiring
+  (`crates/app_sandbox/tests/blob_store_integration.rs`).
++ [x] Integration: native (non-WASM) JSON-RPC round trip — deploy, dispatch
+  data-layer and blob-store (one-shot and full streaming session) calls
+  with no WASM component involved, undeploy removes the registration
+  (`crates/control_plane/src/service.rs`'s
+  `test_native_dispatch_data_layer_and_blob_store_round_trip`).
 
 #### Acceptance Criteria
 
@@ -702,6 +771,45 @@ function implementation yet.
 - No path traversal possible via crafted input.
 
 ---
+
+### [x] Additional Slice 5 Tasks (Native Dispatch — user-directed scope expansion)
+
+Not in the original checklist; added during Slice 5 planning at the user's
+explicit direction (see `status.md` for the full rationale). Tracked here so
+the traceability record reflects what was actually built.
+
++ [x] `crates/rpc`: `NativeDispatchRegistry` type alias
+  (`Arc<DashMap<String, Arc<dyn NativeService>>>`) shared between
+  `RouteHandler` and `ControlPlaneService`.
++ [x] `crates/control_plane/src/synsvc_native.rs`: `SynSvcNativeService`,
+  one instance per deployed `service_id`, dispatching `data-layer`/`vault`/
+  `app-config`/`blob-store` JSON-RPC calls onto the same
+  `StorageProvider`/`ServiceStore`/`BlobProvider` traits the WASM `Host`
+  impls in `engine.rs` use — a second adapter, not a reimplementation.
++ [x] `ControlPlaneService::deploy`/`undeploy`: register/deregister the 4
+  native-capability `EndpointRegistry` interfaces plus the `native_dispatch`
+  entry for every deployed service, regardless of `service-type`
+  (wasm/container/tcp).
++ [x] Bug found and fixed during this work: `ControlPlaneService::list()`
+  picked `endpoint_type` from whichever registered interface was iterated
+  first, which broke (`"native"` instead of `"wasm"`) once every deployed
+  service also had 4 native-capability interfaces registered. Fixed by
+  excluding those 4 interfaces from `list()`'s enumeration entirely — see
+  `crates/substrate/tests/basic_lifecycle.rs`'s
+  `test_substrate_lifecycle_scenarios`, which caught this.
+
+### Deferred: HTTP Passthrough (tracked, not built this slice)
+
++ [ ] Raw HTTP GET passthrough in `crates/router/src/route_handler/http.rs`
+  (currently JSON-RPC-over-POST only) — convert an HTTP GET's path/query
+  into a native or WASM `blob-store`/other-interface call and stream the
+  raw binary response back, enabling both signed-URL blob serving and
+  static web-page serving through the same substrate HTTP surface. The
+  user's direction: build this "soon" as its own follow-up once the
+  native-dispatch plumbing above (which it would bridge onto) existed —
+  deferred from this slice because it's a genuinely separate router
+  feature (HTTP verb/path routing, content negotiation) that deserves its
+  own design pass rather than being appended to an already-large slice.
 
 ### [ ] Slice 6 (M3B): Embedded MQTT Broker
 

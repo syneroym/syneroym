@@ -12,5 +12,9 @@ wasmtime::component::bindgen!({
     },
     exports: {
         default: async,
+    },
+    with: {
+        "syneroym:blob-store/blob-store.blob-writer": syneroym_blob_store::HostUploadSession,
+        "syneroym:blob-store/blob-store.blob-reader": syneroym_blob_store::HostDownloadSession,
     }
 });

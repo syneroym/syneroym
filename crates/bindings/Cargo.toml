@@ -13,3 +13,4 @@ serde = { workspace = true, features = ["derive"] }
 wit-bindgen.workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 wasmtime.workspace = true
+syneroym-blob-store.workspace = true

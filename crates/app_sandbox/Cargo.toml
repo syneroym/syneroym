@@ -16,8 +16,9 @@ sha2.workspace = true
 hex.workspace = true
 syneroym-bindings.workspace = true
 syneroym-rpc.workspace = true
-syneroym-key-store = { path = "../key-store" }
-syneroym-data-layer = { path = "../data-layer" }
+syneroym-key-store.workspace = true
+syneroym-data-layer.workspace = true
+syneroym-blob-store.workspace = true
 
 wasmtime.workspace = true
 wasmtime-wasi.workspace = true
@@ -26,6 +27,7 @@ async-trait.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 metrics.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true

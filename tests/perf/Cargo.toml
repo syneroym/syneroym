@@ -32,6 +32,7 @@ syneroym-bindings.workspace = true
 syneroym-identity.workspace = true
 syneroym-key-store.workspace = true
 syneroym-data-layer.workspace = true
+syneroym-blob-store.workspace = true
 wasmtime.workspace = true
 z32.workspace = true
 

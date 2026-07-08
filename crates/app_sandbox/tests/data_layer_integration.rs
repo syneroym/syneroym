@@ -33,8 +33,12 @@ async fn make_engine(dir: &std::path::Path) -> AppSandboxEngine {
     let key_store = Arc::new(KeyStore::new());
     let storage_provider: Arc<dyn StorageProvider> =
         Arc::new(SqliteStorageProvider::new(&config.storage.db_dir, false).unwrap());
+    let blob_provider: Arc<dyn syneroym_blob_store::BlobProvider> =
+        Arc::new(syneroym_blob_store::ObjectStoreBlobProvider::in_memory(u64::MAX, None));
 
-    AppSandboxEngine::init(&config, vec![], key_store, storage_provider).await.unwrap()
+    AppSandboxEngine::init(&config, vec![], key_store, storage_provider, blob_provider)
+        .await
+        .unwrap()
 }
 
 fn wasm_deploy_manifest(bytes: Vec<u8>) -> DeployManifest {
