@@ -991,8 +991,9 @@ The substrate models data as a distributed, programmable topology rather than is
 - **[PLT-DAP-01] Logical Data Services:** The system MUST support logical data wrappers that abstract physical sharding across multiple substrates, allowing a single dataset definition to span nodes transparently.
 - **[PLT-DAP-02] Active Storage Pushdown:** The system SHOULD provide WIT interfaces (e.g., `syneroym:data/transform`) for deploying WASM modules directly to the data layer. This enables controlled ETL/ELT logic execution directly where the data lives. *(Sequenced as a bounded spike after M5's core data layer ships, so it adds on rather than reworking the data layer.)*
 - **[PLT-DAP-03] Declarative Replication:** The `DeploymentPlan` MUST support a declarative topology mechanism to define replication states (e.g., Primary, Read-Replica, Cold Backup).
-- **[PLT-DAP-04] Decentralized Pub/Sub:** The system MUST support an MQTT-like API for decoupled event routing, implemented as a decentralized pull-based log replication over QUIC.
+- **[PLT-DAP-04] Decentralized Pub/Sub:** The system MUST support an MQTT-like API for decoupled event routing. Cross-node access to `publish`/`subscribe` works the same way any cross-node host-function call does — routed to whichever node hosts the target service via the standard RPC/native-dispatch path (JSON-RPC bridge today; wRPC once `[PLT-DAT]` Universal Proxy ships in M4) — no different from a cross-node `data-layer` call. Separately, the broker's own topic-log state is made redundant via peer nodes synchronising it through pull-based log replication over QUIC, purely for durability/failover if the hosting node is lost; this ships in M7 alongside database and blob replication, as they share the same replication primitive (see `[PLT-RED]`).
 - **[PLT-DAP-05] Data Pipeline Streams:** The system MUST provide a distinct `syneroym:data/stream` interface for direct, high-throughput, point-to-point QUIC streams with native credit-based flow control (backpressure) for heavy data shuffling.
+- **[PLT-DAP-06] Generic Bidirectional Streaming:** The system MUST provide a `syneroym:messaging` host boundary allowing a WASM guest to register interest in a stream protocol namespace and handle both directions of a peer-initiated stream: as source, hand the host a stateful iterator (`stream-cursor`) resource that the host pulls from asynchronously (e.g., file download); as sink, hand the host a stateful sink (`stream-sink`) resource that the host pushes chunks into asynchronously (e.g., file upload). Distinct from `[PLT-DAP-05]`, which is Arrow/Substrait-specific and reserved for the DataFusion pushdown pipeline.
 
 ### [PLT-DAT] Data Layer
 The Data Layer provides a complete foundation for distributed application state and communication, securely accessed via typed host functions or APIs without exposing raw database engines to the applications.
@@ -1071,8 +1072,32 @@ the primary.
 - **SQLite-Safe Application:** The replication layer must respect SQLite WAL and shared-memory invariants. It must not depend on ad hoc mutation of another live SQLite process's `-wal` or `-shm` files.
 - **Disaster Recovery:** In addition to live node-to-node replication, the system must support periodic asynchronous backups to external object storage (S3-compatible) to enable cold starts and disaster recovery.
 
+**Pub/Sub Log Redundancy**
+- The `syneroym:messaging` pub/sub broker's topic log is replicated to peer
+  nodes using the same pull-based log-replication primitive as Database
+  Redundancy above (ordered, checksummed frame streaming over an Iroh
+  multiplexed stream; payload is MQTT topic-log entries rather than SQLite
+  WAL frames). This is purely a durability/failover feature — if the node
+  hosting the broker for a topic namespace is lost, a replica has an
+  up-to-date copy of the topic log and retained messages. It is not what
+  makes cross-node pub/sub *access* possible in the first place; that
+  already works via the standard RPC/native-dispatch routing to whichever
+  node hosts the target service, exactly like cross-node `data-layer`
+  access — see `[PLT-DAP-04]`. M3B ships a single-node in-process broker;
+  this redundancy requirement is met in M7.
+
 **Blob Storage Redundancy**
-- Large files and blobs are not replicated via SQLite. Instead, the platform relies on external, configurable S3-compatible storage backends. The underlying S3 provider is responsible for ensuring the redundancy of these blobs.
+- When a deployment configures an external, configurable S3-compatible
+  storage backend, that backend is responsible for the redundancy of its
+  blobs — Syneroym does not re-replicate blob content it already delegated
+  to S3-compatible storage.
+- When no S3-compatible backend is configured (a pure peer-to-peer
+  deployment), the platform performs its own peer-to-peer blob replication
+  across Substrate nodes, controlled by the same declarative `DeploymentPlan`
+  topology as Database Redundancy. Content-addressing (SHA-256) simplifies
+  this relative to WAL/log replication: there is no ordering or sequence
+  invariant to preserve, only ensuring a verified copy of each blob hash
+  exists on the configured number of peer nodes.
 
 **Registry & Topology Management**
 - **Single Source of Truth:** The Registry Service is the authoritative control plane for all cluster membership and routing topology.

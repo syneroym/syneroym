@@ -109,7 +109,21 @@ To prevent dependency cycles and scope creep, the data layer and storage mechani
 
 **Implementation Approach:**
 1. **Blob Storage:** Implement the `object_store`-backed S3-compatible backend interface with signed (HMAC presigned) HTTP object access ([ADR-0009](../decisions/0009-blob-storage-object-store.md)); public unsigned serving is deferred. Blob content is DEK-encrypted at rest per `[FND-SEC]`.
-2. **Event Broker:** Embed the MQTT API abstraction as an in-process `rumqttd` Tokio task with host-enforced topic namespacing ([ADR-0010](../decisions/0010-mqtt-broker-rumqttd.md)). Adapting the broker to decentralized P2P log replication over Iroh QUIC (avoiding classical TCP brokers, per `[PLT-DAP-04]`) is deferred to Milestone 5.
+2. **Event Broker:** Embed the pub/sub half of `syneroym:messaging` as an in-process `rumqttd` Tokio task with host-enforced topic namespacing ([ADR-0010](../decisions/0010-mqtt-broker-rumqttd.md)). The package was formerly named `syneroym:pubsub`; renamed to `syneroym:messaging` to share a boundary with the bidirectional-streaming half added in Milestone 3C. Adapting the broker to decentralized P2P log replication over Iroh QUIC (avoiding classical TCP brokers, per `[PLT-DAP-04]`) is deferred to Milestone 5. The `stream-types`/`handle-stream-request` portion of the WIT package is declared in M3B for interface stability but not implemented until 3C.
+
+### Milestone 3C: Unified Messaging Streams and HTTP Bridge
+**Goal:** Extend `syneroym:messaging` with generic bidirectional streaming, then bridge HTTP conventions onto the native-dispatch surface established across M3A/M3B/3C (data-layer, vault, app-config, blob-store, messaging).
+
+**Feature Grouping:**
+- `[PLT-DAP-06]` Generic Bidirectional Streaming
+- HTTP Passthrough (GET/POST/streaming-upload/SSE-style translation onto native dispatch)
+
+**Implementation Approach:**
+1. **Streaming Out (guest as source):** Wire `host-api::register-stream-protocol`, `guest-api::handle-stream-request`, and the `stream-cursor` resource end to end, including host-side QUIC stream acceptance/routing (new infrastructure, not present in M3B — expected to need its own short design note/ADR before implementation, the way D-03-01 through D-03-05 preceded M3 slice work).
+2. **Streaming In (guest as sink):** Wire `guest-api::accept-stream-upload` and the `stream-sink` resource (`push-chunk`/`finalize`) end to end — the host runs the async QUIC-read loop and pushes chunks into the guest, the reverse of the pull loop above. Covered by the same QUIC routing infrastructure and design note as item 1.
+3. **HTTP Passthrough:** Convert an HTTP GET/POST/streaming request's path, method, and body into a native or WASM call against data-layer, blob-store, or messaging, and stream the response back — enabling signed-URL blob serving, static content, JSON-RPC-style DB access, SSE/long-poll pub/sub subscription, and chunked upload (via `accept-stream-upload`/`stream-sink`) over the same substrate HTTP surface.
+
+This was **Milestone 3B Slice 6 / "Deferred: HTTP Passthrough"** in earlier planning; split out because both items are new, undecided infrastructure (no prior ADR covers QUIC stream routing or HTTP-to-WIT translation) rather than execution of an already-resolved M3 decision, and neither should block M3B's close.
 
 ---
 
@@ -139,7 +153,6 @@ To prevent dependency cycles and scope creep, the data layer and storage mechani
 - `[PLT-ASY]` Asynchronous Operations
 - `[LFC-MGT]` Active Control-Plane Mode
 - `[PLT-DAP]` Federated Query Orchestrator
-- `[PLT-DAP-04]` Decentralized Pub/Sub over Iroh QUIC (completes the M3B broker)
 - `[LFC-VER]` Versioning Support (State snapshot/rollback)
 - `[ADV-DEV]` SynApp Developer Tooling
 
@@ -151,9 +164,22 @@ To prevent dependency cycles and scope creep, the data layer and storage mechani
    - Defining the network protocol for distributing plan fragments to edge nodes.
    - Defining what "done" looks like (e.g., a working end-to-end query across 2 nodes in a test).
    - *(Design TBD to resolve before M5: How the Orchestrator discovers which node holds which shard, and how data routing tables are maintained for `[PLT-DAP-01]`)*
-3. **Decentralized Pub/Sub Completion** (deferred from M3B, [ADR-0010](../decisions/0010-mqtt-broker-rumqttd.md)): Adapt the in-process `rumqttd` broker to synchronise its topic log with peer nodes via decentralized log replication over Iroh QUIC streams (rather than raw TCP), fulfilling the `[PLT-DAP-04]` overlay requirement without changing the `syneroym:pubsub` WIT surface shipped in M3B.
-4. **Versioning:** Implement pre-upgrade SQLite snapshotting and automatic rollback mechanisms.
-5. **Developer Tools:** Release the mock SDK, project templates, the zero-drift `roymctl dev` local environment, and remote package retrieval over HTTP/OCI for the `ManifestCatalog`.
+3. **Versioning:** Implement pre-upgrade SQLite snapshotting and automatic rollback mechanisms.
+4. **Developer Tools:** Release the mock SDK, project templates, the zero-drift `roymctl dev` local environment, and remote package retrieval over HTTP/OCI for the `ManifestCatalog`.
+
+> **Note:** Decentralized Pub/Sub completion (`[PLT-DAP-04]`, adapting the
+> M3B in-process `rumqttd` broker to synchronise its topic log with peer
+> nodes over Iroh QUIC) was previously planned here. It moved to **Milestone
+> 7**, alongside SQLite WAL replication and blob replication, because all
+> three are the same underlying problem — pull-based log/state
+> synchronisation to peer nodes over QUIC, purely for redundancy/failover of
+> the broker's own state if its hosting node is lost. This is exactly
+> parallel to WAL replication and is **not** a prerequisite for cross-node
+> pub/sub to function: a `publish`/`subscribe` call from a different
+> physical node is routed to whichever node hosts the target service via
+> the same RPC/native-dispatch path used for any cross-node host-function
+> call (e.g. `data-layer`), available well before M7. See
+> [ADR-0010 Amendment 2](../decisions/0010-mqtt-broker-rumqttd.md).
 
 ---
 
@@ -172,10 +198,11 @@ To prevent dependency cycles and scope creep, the data layer and storage mechani
 ---
 
 ## Milestone 7: Resilience and Operability
-**Goal:** Harden the system for production by adding high-availability database replication and deep observability.
+**Goal:** Harden the system for production by adding high-availability replication (database, pub/sub, and blob), redundancy, and deep observability.
 
 **Feature Grouping:**
-- `[PLT-RED]` Service Redundancy (Declarative Replication Topology)
+- `[PLT-RED]` Service Redundancy (Declarative Replication Topology) — database, pub/sub log, and blob replication
+- `[PLT-DAP-04]` Decentralized Pub/Sub over Iroh QUIC (completes the M3B in-process broker)
 - `[FND-SEC]` Encrypted Backups, Attestation & Supply-chain signing
 - `[ADV-OBS]` Advanced Observability
 
@@ -183,10 +210,12 @@ To prevent dependency cycles and scope creep, the data layer and storage mechani
 1. **SQLite Replication Feasibility:** Validate the SQLite-safe replication mechanism through a bounded prototype with correctness, crash-recovery, and performance exit criteria.
 2. **Declarative Replication:** Implement live, reliable SQLite WAL replication across Substrate nodes based on the validated prototype, controlled by the `DeploymentPlan` (Primary, Read-Replica, Cold Backup).
    - *(Design TBD to resolve before M7: Define the distributed replication consistency model and failover behavior).*
-3. **HA Upgrade:** Upgrade the M5 active controller's database to rely on replicated HA storage.
-4. **Topology Control:** Implement Registry topology epochs, manual promotion workflows, and strict bidirectional quarantine fencing.
-5. **Security Hardening:** Add Attestation API and verification flows, binary signature verification, and support for scheduled, encrypted remote backups (with tested restore paths).
-6. **Metrics Pipeline:** Finalize data rollups and expose metrics via secured RPCs.
+3. **Decentralized Pub/Sub Completion** (deferred from M3B, [ADR-0010](../decisions/0010-mqtt-broker-rumqttd.md)): Adapt the in-process `rumqttd` broker to synchronise its topic log with peer nodes via pull-based log replication over Iroh QUIC streams (rather than raw TCP), fulfilling the `[PLT-DAP-04]` overlay requirement without changing the `syneroym:messaging` WIT surface shipped in M3B. Shares its replication primitive (ordered, checksummed frame streaming over an Iroh multiplexed stream) with item 2 above — the payload differs (SQLite WAL frames vs. MQTT topic-log entries) but the transport and pull/ack model do not.
+4. **Blob Replication:** For deployments without an S3-compatible backend, implement peer-to-peer blob replication across Substrate nodes (the "peer backup substrate" case), reusing the same declarative `DeploymentPlan` topology and Iroh QUIC transport as items 2 and 3. Content-addressing (SHA-256) makes this simpler than WAL/log replication — no ordering or frame-sequence invariants to preserve, just "does a valid copy of hash `H` exist on N nodes." Deployments that do configure an S3-compatible backend continue to rely on the provider's own redundancy (unchanged from the original `[PLT-RED]` decision).
+5. **HA Upgrade:** Upgrade the M5 active controller's database to rely on replicated HA storage.
+6. **Topology Control:** Implement Registry topology epochs, manual promotion workflows, and strict bidirectional quarantine fencing.
+7. **Security Hardening:** Add Attestation API and verification flows, binary signature verification, and support for scheduled, encrypted remote backups (with tested restore paths).
+8. **Metrics Pipeline:** Finalize data rollups and expose metrics via secured RPCs.
 
 ---
 
