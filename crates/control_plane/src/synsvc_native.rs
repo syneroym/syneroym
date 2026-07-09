@@ -4,26 +4,19 @@
 //! One instance is registered per deployed `service_id` in
 //! `ControlPlaneService::deploy` (`crates/control_plane/src/service.rs`),
 //! mirroring the same host-provided capabilities the WASM `Host` trait
-//! impls in `crates/app_sandbox/src/engine.rs` expose to guests -- this is
+//! impls in `crates/sandbox_wasm/src/engine.rs` expose to guests -- this is
 //! the second, independent adapter over the same underlying
 //! `StorageProvider`/`ServiceStore`/`BlobProvider` traits, not a
 //! reimplementation of their logic. Does **not** depend on
-//! `syneroym-app-sandbox`: that crate is an optional, feature-gated
+//! `syneroym-sandbox-wasm`: that crate is an optional, feature-gated
 //! dependency of `control_plane` (see `crate::dummy_sandbox`), and native
 //! data-layer/blob-store access must work even in builds without the WASM
 //! sandbox feature enabled.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, fmt, sync::Arc};
 
-use syneroym_bindings::host::syneroym::{
-    app_config::app_config::ConfigError,
-    data_layer::store::{
-        CollectionSchema, DataLayerError, IndexDefinition, IndexType, Mutation, PatchMutation,
-        QueryOptions, RecordWriteValue,
-    },
-    vault::vault::VaultError,
-};
-use syneroym_blob_store::{
+use serde_json::Value;
+use syneroym_data_blob::{
     BlobError, BlobProvider,
     native_types::{
         FinishUploadResponse, OpenDownloadRequest, OpenDownloadResponse, OpenUploadResponse,
@@ -31,9 +24,17 @@ use syneroym_blob_store::{
     },
     traits::{DownloadSession, UploadSession},
 };
-use syneroym_data_layer::traits::{ServiceStore, StorageProvider};
-use syneroym_key_store::KeyStore;
+use syneroym_data_db::traits::{ServiceStore, StorageProvider};
+use syneroym_data_keystore::KeyStore;
 use syneroym_rpc::{NativeInvocation, NativeResponse, NativeService, RpcError, RpcResult};
+use syneroym_wit_interfaces::host::syneroym::{
+    app_config::app_config::ConfigError,
+    data_layer::store::{
+        CollectionSchema, DataLayerError, IndexDefinition, IndexType, Mutation, PatchMutation,
+        QueryOptions, RecordWriteValue,
+    },
+    vault::vault::VaultError,
+};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 use zeroize::Zeroizing;
@@ -47,19 +48,19 @@ pub struct SynSvcNativeService {
     download_sessions: Mutex<HashMap<String, Box<dyn DownloadSession>>>,
 }
 
-impl std::fmt::Debug for SynSvcNativeService {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for SynSvcNativeService {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SynSvcNativeService")
             .field("service_id", &self.service_id)
             .finish_non_exhaustive()
     }
 }
 
-fn internal(msg: impl std::fmt::Display) -> RpcError {
+fn internal(msg: impl fmt::Display) -> RpcError {
     RpcError::InternalError(msg.to_string())
 }
 
-fn invalid_params(msg: impl std::fmt::Display) -> RpcError {
+fn invalid_params(msg: impl fmt::Display) -> RpcError {
     RpcError::InvalidParams(msg.to_string())
 }
 
@@ -336,7 +337,7 @@ impl SynSvcNativeService {
                 let Some((_, blob)) = generation else {
                     return to_payload(&Option::<String>::None);
                 };
-                let json: serde_json::Value = serde_json::from_str(&blob)
+                let json: Value = serde_json::from_str(&blob)
                     .map_err(|e| internal(ConfigError::Internal(e.to_string()).to_string()))?;
                 let val = json.get(&req.key).and_then(|v| v.as_str()).map(str::to_string);
                 to_payload(&val)
@@ -350,10 +351,10 @@ impl SynSvcNativeService {
                 let Some((_, blob)) = generation else {
                     return to_payload(&Vec::<(String, String)>::new());
                 };
-                let json: serde_json::Value = serde_json::from_str(&blob)
+                let json: Value = serde_json::from_str(&blob)
                     .map_err(|e| internal(ConfigError::Internal(e.to_string()).to_string()))?;
                 let mut results = Vec::new();
-                if let serde_json::Value::Object(map) = json {
+                if let Value::Object(map) = json {
                     for (k, v) in map {
                         if (k == req.prefix || k.starts_with(&format!("{}.", req.prefix)))
                             && let Some(s) = v.as_str()

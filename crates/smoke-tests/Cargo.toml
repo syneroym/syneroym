@@ -13,12 +13,12 @@ syneroym-sdk.workspace = true
 syneroym-rpc.workspace = true
 syneroym-coordinator-iroh.workspace = true
 syneroym-app-orchestration.workspace = true
-syneroym-app-sandbox.workspace = true
+syneroym-sandbox-wasm.workspace = true
 syneroym-community-registry.workspace = true
 syneroym-router.workspace = true
-syneroym-key-store.workspace = true
-syneroym-data-layer.workspace = true
-syneroym-blob-store.workspace = true
+syneroym-data-keystore.workspace = true
+syneroym-data-db.workspace = true
+syneroym-data-blob.workspace = true
 
 
 anyhow.workspace = true

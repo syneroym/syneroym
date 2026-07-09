@@ -5,14 +5,16 @@
 
 use std::{
     collections::HashMap,
-    fmt::{Debug, Formatter},
+    fmt::{self, Debug, Formatter},
     future,
     future::Future,
     path::PathBuf,
+    pin,
     time::Duration,
 };
 
 use axum::{Json, Router, routing};
+use iroh::EndpointAddr;
 use syneroym_client_gateway::ClientGateway;
 use syneroym_community_registry::EcosystemRegistry;
 use syneroym_coordinator::EcosystemCoordinator;
@@ -24,7 +26,7 @@ use syneroym_core::{
     },
     local_registry::{EndpointRegistry, SubstrateEndpoint},
 };
-use syneroym_data_layer::registry_store;
+use syneroym_data_db::registry_store;
 use syneroym_identity::Identity;
 use syneroym_observability::{MemoryRecorder, MetricsSnapshot, ObservabilityEngine};
 use syneroym_router::ConnectionRouter;
@@ -49,7 +51,7 @@ pub struct InitializedRuntime {
 }
 
 impl Debug for InitializedRuntime {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("InitializedRuntime")
             .field("observability", &"ObservabilityEngine")
             .field("services", &self.services)
@@ -120,7 +122,7 @@ pub struct RuntimeServices {
 }
 
 impl Debug for RuntimeServices {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let mut debug_struct = f.debug_struct("RuntimeServices");
 
         #[cfg(feature = "community_registry")]
@@ -172,42 +174,41 @@ impl RuntimeServices {
         F: Future<Output = ()>,
     {
         #[cfg(feature = "community_registry")]
-        let mut registry_fut = std::pin::pin!(async {
+        let mut registry_fut = pin::pin!(async {
             match self.community_registry.as_mut() {
                 Some(service) => service.run().await,
                 None => pending_component().await,
             }
         });
         #[cfg(not(feature = "community_registry"))]
-        let mut registry_fut = std::pin::pin!(pending_component());
+        let mut registry_fut = pin::pin!(pending_component());
 
         #[cfg(feature = "coordinator")]
-        let mut coordinator_fut = std::pin::pin!(async {
+        let mut coordinator_fut = pin::pin!(async {
             match self.coordinator.as_mut() {
                 Some(service) => service.run().await,
                 None => pending_component().await,
             }
         });
         #[cfg(not(feature = "coordinator"))]
-        let mut coordinator_fut = std::pin::pin!(pending_component());
+        let mut coordinator_fut = pin::pin!(pending_component());
 
         #[cfg(feature = "client_gateway")]
-        let mut client_gateway_fut = std::pin::pin!(async {
+        let mut client_gateway_fut = pin::pin!(async {
             match self.client_gateway.as_mut() {
                 Some(service) => service.run().await,
                 None => pending_component().await,
             }
         });
         #[cfg(not(feature = "client_gateway"))]
-        let mut client_gateway_fut = std::pin::pin!(pending_component());
+        let mut client_gateway_fut = pin::pin!(pending_component());
 
-        let mut health_fut = std::pin::pin!(async {
+        let mut health_fut = pin::pin!(async {
             if let Some(obs) = &config.roles.observability
                 && let Some(health) = &obs.health
                 && health.enabled
             {
-                let app =
-                    Router::new().route(&health.endpoint, axum::routing::get(|| async { "OK" }));
+                let app = Router::new().route(&health.endpoint, routing::get(|| async { "OK" }));
                 match TcpListener::bind(&health.bind_address).await {
                     Ok(listener) => {
                         if let Ok(addr) = listener.local_addr() {
@@ -226,7 +227,7 @@ impl RuntimeServices {
             pending_component().await
         });
 
-        let mut metrics_fut = std::pin::pin!(async {
+        let mut metrics_fut = pin::pin!(async {
             if let Some(obs) = &config.roles.observability
                 && let Some(metrics_cfg) = &obs.metrics
                 && metrics_cfg.enabled
@@ -264,8 +265,8 @@ impl RuntimeServices {
             pending_component().await
         });
 
-        let mut connection_router_fut = std::pin::pin!(connection_router.run());
-        let mut shutdown_signal = std::pin::pin!(shutdown_signal);
+        let mut connection_router_fut = pin::pin!(connection_router.run());
+        let mut shutdown_signal = pin::pin!(shutdown_signal);
 
         info!(profile = %config.profile, "starting substrate components");
         tokio::select! {
@@ -380,7 +381,7 @@ fn publish_to_community_registry(
     registry_url: Option<String>,
     enable_bep0044_dht: bool,
     service_id: String,
-    endpoint_addr: iroh::EndpointAddr,
+    endpoint_addr: EndpointAddr,
     relay_url: Option<String>,
     secret_key: [u8; 32],
     nickname: Option<String>,
@@ -458,14 +459,14 @@ fn publish_to_community_registry(
 
 fn build_signed_endpoint_info(
     service_id: &str,
-    endpoint_addr: &iroh::EndpointAddr,
+    endpoint_addr: &EndpointAddr,
     relay_url: Option<String>,
     secret_key: &[u8; 32],
     nickname: Option<String>,
 ) -> anyhow::Result<SignedEndpointInfo> {
     // Prune direct addresses to keep the serialized PKARR record under the
     // 1000-byte DNS limit
-    let pruned_addr = iroh::EndpointAddr::new(endpoint_addr.id);
+    let pruned_addr = EndpointAddr::new(endpoint_addr.id);
     let endpoint_addr_bytes = serde_json::to_vec(&pruned_addr)
         .map_err(|e| anyhow::anyhow!("Failed to serialize endpoint addr: {e}"))?;
 

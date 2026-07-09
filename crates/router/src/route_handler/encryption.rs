@@ -5,7 +5,7 @@
 
 use std::{
     cmp,
-    io::ErrorKind,
+    io::{self, ErrorKind},
     pin::Pin,
     task::{Context as TaskContext, Poll},
 };
@@ -40,7 +40,7 @@ impl<R: AsyncRead + Unpin, W: Unpin> AsyncRead for ReaderWriter<R, W> {
         mut self: Pin<&mut Self>,
         cx: &mut TaskContext<'_>,
         buf: &mut ReadBuf<'_>,
-    ) -> Poll<std::io::Result<()>> {
+    ) -> Poll<io::Result<()>> {
         Pin::new(&mut self.reader).poll_read(cx, buf)
     }
 }
@@ -50,18 +50,15 @@ impl<R: Unpin, W: AsyncWrite + Unpin> AsyncWrite for ReaderWriter<R, W> {
         mut self: Pin<&mut Self>,
         cx: &mut TaskContext<'_>,
         buf: &[u8],
-    ) -> Poll<std::io::Result<usize>> {
+    ) -> Poll<io::Result<usize>> {
         Pin::new(&mut self.writer).poll_write(cx, buf)
     }
 
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<std::io::Result<()>> {
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
         Pin::new(&mut self.writer).poll_flush(cx)
     }
 
-    fn poll_shutdown(
-        mut self: Pin<&mut Self>,
-        cx: &mut TaskContext<'_>,
-    ) -> Poll<std::io::Result<()>> {
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
         Pin::new(&mut self.writer).poll_shutdown(cx)
     }
 }
@@ -90,7 +87,7 @@ impl<R: AsyncRead + Unpin> AsyncRead for EncryptedReader<R> {
         mut self: Pin<&mut Self>,
         cx: &mut TaskContext<'_>,
         buf: &mut ReadBuf<'_>,
-    ) -> Poll<std::io::Result<()>> {
+    ) -> Poll<io::Result<()>> {
         let this = &mut *self;
         loop {
             match &mut this.state {
@@ -113,7 +110,7 @@ impl<R: AsyncRead + Unpin> AsyncRead for EncryptedReader<R> {
                                 this.state = ReadState::Eof;
                                 return Poll::Ready(Ok(()));
                             }
-                            return Poll::Ready(Err(std::io::Error::new(
+                            return Poll::Ready(Err(io::Error::new(
                                 ErrorKind::UnexpectedEof,
                                 "unexpected EOF reading chunk length",
                             )));
@@ -122,7 +119,7 @@ impl<R: AsyncRead + Unpin> AsyncRead for EncryptedReader<R> {
                     }
                     let payload_len = u16::from_be_bytes(*len_buf);
                     if payload_len < 12 {
-                        return Poll::Ready(Err(std::io::Error::new(
+                        return Poll::Ready(Err(io::Error::new(
                             ErrorKind::InvalidData,
                             "invalid chunk length",
                         )));
@@ -140,7 +137,7 @@ impl<R: AsyncRead + Unpin> AsyncRead for EncryptedReader<R> {
                         ready!(Pin::new(&mut this.reader).poll_read(cx, &mut temp_buf))?;
                         let n = temp_buf.filled().len();
                         if n == 0 {
-                            return Poll::Ready(Err(std::io::Error::new(
+                            return Poll::Ready(Err(io::Error::new(
                                 ErrorKind::UnexpectedEof,
                                 "unexpected EOF reading chunk payload",
                             )));
@@ -152,10 +149,7 @@ impl<R: AsyncRead + Unpin> AsyncRead for EncryptedReader<R> {
                     let ciphertext = &payload_buf[12..];
                     use aes_gcm::aead::Aead;
                     let plaintext = this.cipher.decrypt(nonce, ciphertext).map_err(|e| {
-                        std::io::Error::new(
-                            ErrorKind::InvalidData,
-                            format!("Decryption failed: {e}"),
-                        )
+                        io::Error::new(ErrorKind::InvalidData, format!("Decryption failed: {e}"))
                     })?;
                     this.state = ReadState::Decrypted { buf: plaintext, pos: 0 };
                 }
@@ -180,7 +174,7 @@ struct EncryptedWriter<W> {
 }
 
 impl<W: AsyncWrite + Unpin> EncryptedWriter<W> {
-    fn encrypt_and_start_write(&mut self) -> std::io::Result<()> {
+    fn encrypt_and_start_write(&mut self) -> io::Result<()> {
         if self.write_buf.is_empty() {
             return Ok(());
         }
@@ -193,7 +187,7 @@ impl<W: AsyncWrite + Unpin> EncryptedWriter<W> {
         let ciphertext = self
             .cipher
             .encrypt(nonce, self.write_buf.as_slice())
-            .map_err(|e| std::io::Error::other(format!("Encryption failed: {e}")))?;
+            .map_err(|e| io::Error::other(format!("Encryption failed: {e}")))?;
 
         let payload_len = (12 + ciphertext.len()) as u16;
         let mut pending_buf = Vec::with_capacity(2 + 12 + ciphertext.len());
@@ -206,13 +200,13 @@ impl<W: AsyncWrite + Unpin> EncryptedWriter<W> {
         Ok(())
     }
 
-    fn poll_flush_pending(&mut self, cx: &mut TaskContext<'_>) -> Poll<std::io::Result<()>> {
+    fn poll_flush_pending(&mut self, cx: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
         if let Some(pending) = &mut self.pending_write {
             while pending.pos < pending.buf.len() {
                 let n =
                     ready!(Pin::new(&mut self.writer).poll_write(cx, &pending.buf[pending.pos..]))?;
                 if n == 0 {
-                    return Poll::Ready(Err(std::io::Error::new(
+                    return Poll::Ready(Err(io::Error::new(
                         ErrorKind::WriteZero,
                         "failed to write encrypted chunk to underlying stream",
                     )));
@@ -230,7 +224,7 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for EncryptedWriter<W> {
         mut self: Pin<&mut Self>,
         cx: &mut TaskContext<'_>,
         buf: &[u8],
-    ) -> Poll<std::io::Result<usize>> {
+    ) -> Poll<io::Result<usize>> {
         let this = &mut *self;
         // First, flush any pending encrypted write
         ready!(this.poll_flush_pending(cx))?;
@@ -248,7 +242,7 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for EncryptedWriter<W> {
         Poll::Ready(Ok(to_write))
     }
 
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<std::io::Result<()>> {
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
         let this = &mut *self;
         // If we have buffered plaintext, encrypt and start writing it
         if !this.write_buf.is_empty() {
@@ -260,10 +254,7 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for EncryptedWriter<W> {
         Pin::new(&mut this.writer).poll_flush(cx)
     }
 
-    fn poll_shutdown(
-        mut self: Pin<&mut Self>,
-        cx: &mut TaskContext<'_>,
-    ) -> Poll<std::io::Result<()>> {
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
         // First, flush all buffered plaintext and pending writes
         ready!(self.as_mut().poll_flush(cx))?;
         // Then shutdown the underlying writer

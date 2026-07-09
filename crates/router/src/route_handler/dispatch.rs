@@ -6,6 +6,7 @@
 use std::{sync::Arc, time::Instant};
 
 use anyhow::{Result, anyhow};
+use serde_json::Value;
 use syneroym_core::local_registry::SubstrateEndpoint;
 use syneroym_rpc::{JsonRpcConverter, JsonRpcRequest, JsonRpcResponse, NativeService, framing};
 use tokio::io::{AsyncRead, AsyncWrite, BufReader};
@@ -69,7 +70,7 @@ impl RouteHandler {
                         Ok(wasm_result) => {
                             let json_response = JsonRpcResponse {
                                 jsonrpc: "2.0".to_string(),
-                                result: serde_json::Value::String(wasm_result),
+                                result: Value::String(wasm_result),
                                 id: request.id.clone(),
                             };
                             serde_json::to_vec(&json_response).map_err(Into::into)

@@ -3,7 +3,7 @@
 //! Handles incoming HTTP traffic, performing URL host rewrite parsing and proxy
 //! forwarding.
 
-use std::{convert::Infallible, sync::Arc};
+use std::{convert::Infallible, result, sync::Arc};
 
 use anyhow::{Result, anyhow};
 use bytes::Bytes;
@@ -65,7 +65,7 @@ impl HttpHandler {
     pub async fn handle_http_request(
         &self,
         req: Request<Incoming>,
-    ) -> std::result::Result<Response<Full<Bytes>>, Infallible> {
+    ) -> result::Result<Response<Full<Bytes>>, Infallible> {
         let response = self.try_handle_http_request(req).await.unwrap_or_else(|e| {
             error!("HTTP JSON-RPC handler error: {e}");
             http_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
@@ -106,7 +106,7 @@ impl HttpHandler {
             Ok(payload) => {
                 let res = Response::builder()
                     .status(StatusCode::OK)
-                    .header(hyper::header::CONTENT_TYPE, "application/json")
+                    .header(CONTENT_TYPE, "application/json")
                     .body(Full::new(Bytes::from(payload)));
                 Ok(res.unwrap_or_else(|_| Response::default()))
             }
@@ -125,7 +125,7 @@ pub fn http_error(status: StatusCode, message: String) -> Response<Full<Bytes>> 
     let body_bytes = serde_json::to_vec(&body).unwrap_or_else(|_| b"{}".to_vec());
     Response::builder()
         .status(status)
-        .header(hyper::header::CONTENT_TYPE, "application/json")
+        .header(CONTENT_TYPE, "application/json")
         .body(Full::new(Bytes::from(body_bytes)))
         .unwrap_or_else(|_| Response::default())
 }

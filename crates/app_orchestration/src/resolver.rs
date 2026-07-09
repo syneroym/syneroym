@@ -39,7 +39,11 @@
 
 use std::{
     collections::BTreeMap,
-    sync::{Arc, RwLock},
+    fmt,
+    sync::{
+        Arc, RwLock,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -187,7 +191,7 @@ pub struct ResolvedTopology {
     pub members: Vec<ServiceId>,
     pub sharding_strategy: Option<ShardingStrategy>,
     pub epoch: TopologyEpoch,
-    pub rr_counter: Arc<std::sync::atomic::AtomicU64>,
+    pub rr_counter: Arc<AtomicU64>,
 }
 
 /// The result of a `resolve_all` call: an epoch-consistent snapshot of all
@@ -206,7 +210,7 @@ pub struct AllMembers {
 ///
 /// Lives outside the router; the router only ever sees [`ServiceId`]s.  The
 /// registry is responsible for persisting and invalidating topology entries.
-pub trait AppRegistry: Send + Sync + std::fmt::Debug {
+pub trait AppRegistry: Send + Sync + fmt::Debug {
     /// Register or update the topology for `(instance_id, service_name)`.
     fn register(
         &self,
@@ -520,7 +524,7 @@ impl LogicalResolver {
             members: entry.members.clone(),
             sharding_strategy: entry.sharding_strategy,
             epoch: entry.epoch,
-            rr_counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            rr_counter: Arc::new(AtomicU64::new(0)),
         });
 
         // 4. Store in cache.
@@ -563,8 +567,7 @@ fn select_member(
                 .ok_or_else(|| anyhow!("Redundant topology member selection failed"))
             } else {
                 // Unkeyed call: round-robin.
-                let idx = topology.rr_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                    as usize
+                let idx = topology.rr_counter.fetch_add(1, Ordering::Relaxed) as usize
                     % topology.members.len();
                 Ok(topology.members[idx].clone())
             }
@@ -625,7 +628,7 @@ mod duration_millis {
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Arc, time::Duration};
+    use std::{collections::HashSet, sync::Arc, time::Duration};
 
     use super::*;
     use crate::models::{AppInstanceId, LogicalServiceName, LogicalServiceRef, TopologyMode};
@@ -770,7 +773,7 @@ mod tests {
             .map(|i| rendezvous_select(&members, app_domain, svc_domain, &i.to_be_bytes()))
             .collect();
 
-        let distinct: std::collections::HashSet<_> =
+        let distinct: HashSet<_> =
             results.into_iter().flatten().map(|s| s.as_str().to_string()).collect();
         // With 20 keys and 3 members, expect at least 2 distinct selections.
         assert!(distinct.len() >= 2, "rendezvous should distribute across members");
@@ -807,7 +810,7 @@ mod tests {
         .map(|(app, svc)| rendezvous_select(&members, app, svc, key))
         .collect();
 
-        let distinct: std::collections::HashSet<_> =
+        let distinct: HashSet<_> =
             results_by_domain.into_iter().flatten().map(|s| s.as_str().to_string()).collect();
         // With 4 different domain separators and the same routing key, we
         // expect at least 2 distinct selected members.
@@ -1152,7 +1155,7 @@ mod tests {
         resolver.resolve(&lref, Some(key)).unwrap();
 
         // Measure 1000 cache-hit resolutions.
-        let start = std::time::Instant::now();
+        let start = Instant::now();
         for _ in 0..1000 {
             resolver.resolve(&lref, Some(key)).unwrap();
         }

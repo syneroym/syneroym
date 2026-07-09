@@ -1,19 +1,27 @@
 //! Integration tests for the connection limit cap
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use anyhow::Result;
 use reqwest::Client;
 use syneroym_coordinator_iroh::{CoordinatorInfo, CoordinatorIroh};
-use syneroym_core::config::{CoordinatorIrohConfig, CoordinatorRole, SubstrateConfig};
+use syneroym_core::{
+    config::{CoordinatorIrohConfig, CoordinatorRole, SubstrateConfig},
+    dht_registry::EndpointMechanism,
+};
 use syneroym_sdk::SyneroymClient;
+use tokio::{
+    sync::{Notify, mpsc},
+    task::JoinSet,
+    time,
+};
+use tracing_subscriber::EnvFilter;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_connection_limit() -> Result<()> {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("debug,iroh=info")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("debug,iroh=info")),
         )
         .try_init();
 
@@ -51,10 +59,10 @@ async fn test_connection_limit() -> Result<()> {
         info_client.get(format!("http://{c_info_addr}/v1/info")).send().await?.json().await?;
     let c_relay_url = c_info.relay_url.clone().unwrap();
 
-    let mut join_set = tokio::task::JoinSet::new();
+    let mut join_set = JoinSet::new();
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel(attempts);
-    let notify = std::sync::Arc::new(tokio::sync::Notify::new());
+    let (tx, mut rx) = mpsc::channel(attempts);
+    let notify = Arc::new(Notify::new());
 
     for i in 0..attempts {
         let endpoint_addr_bytes = c_info.endpoint_addr_bytes.clone();
@@ -65,14 +73,11 @@ async fn test_connection_limit() -> Result<()> {
         let substrate_id = c_info.substrate_id.clone();
         join_set.spawn(async move {
             // Stagger attempts slightly to prevent local socket/port exhaustion
-            tokio::time::sleep(Duration::from_millis(i as u64 * 10)).await;
+            time::sleep(Duration::from_millis(i as u64 * 10)).await;
 
             let mut client = SyneroymClient::new_with_mechanisms(
                 substrate_id,
-                vec![syneroym_core::dht_registry::EndpointMechanism::Iroh {
-                    endpoint_addr_bytes,
-                    relay_url: Some(relay_url),
-                }],
+                vec![EndpointMechanism::Iroh { endpoint_addr_bytes, relay_url: Some(relay_url) }],
             );
 
             let res = client.connect().await;

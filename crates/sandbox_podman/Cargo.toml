@@ -1,0 +1,21 @@
+[package]
+name = "syneroym-sandbox-podman"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+syneroym-core.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+reqwest.workspace = true
+sha2.workspace = true
+hex.workspace = true
+syneroym-wit-interfaces.workspace = true
+async-trait.workspace = true
+serde_json.workspace = true
+metrics.workspace = true
+syneroym-data-db.workspace = true

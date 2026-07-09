@@ -3,11 +3,17 @@
 //! Handles requests for registering, deploying, listing, and destroying
 //! sandbox instances or services running on the node.
 
-use std::{collections::HashMap, fmt, fs, path::PathBuf, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    fmt, fs,
+    path::{Component, PathBuf},
+    sync::Arc,
+};
 
 use anyhow::Result;
 use fmt::{Debug, Formatter};
-use syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::{
+use serde_json::Value;
+use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, ContainerManifest, DeployManifest, DeployedService, DeploymentPlan,
     ServiceType as WitServiceType, TcpManifest, WasmManifest,
 };
@@ -20,16 +26,21 @@ pub trait OrchestratorInterface {
     async fn list(&self) -> Result<Vec<DeployedService>, String>;
     async fn deploy_plan(&self, plan: DeploymentPlan) -> Result<(), String>;
 }
-use syneroym_blob_store::BlobProvider;
-use syneroym_core::local_registry::{EndpointRegistry, SubstrateEndpoint};
-use syneroym_data_layer::traits::StorageProvider;
-use syneroym_key_store::KeyStore;
+use syneroym_core::{
+    local_registry::{EndpointRegistry, SubstrateEndpoint},
+    util,
+};
+use syneroym_data_blob::BlobProvider;
+use syneroym_data_db::traits::StorageProvider;
+use syneroym_data_keystore::KeyStore;
 use syneroym_rpc::{
     NativeDispatchRegistry, NativeInvocation, NativeResponse, NativeService, RpcError, RpcResult,
 };
+use tokio::task;
 use tracing::info;
 
 use crate::{
+    config_utils,
     dummy_sandbox::{AppSandboxEngine, ContainerEngine},
     synsvc_native::SynSvcNativeService,
 };
@@ -234,7 +245,7 @@ impl NativeService for ControlPlaneService {
             "list" => {
                 let services = self.list().await.map_err(RpcError::InternalError)?;
                 Ok(NativeResponse {
-                    payload: serde_json::to_value(services).unwrap_or(serde_json::Value::Null),
+                    payload: serde_json::to_value(services).unwrap_or(Value::Null),
                 })
             }
             method => Err(RpcError::MethodNotFound(method.to_string())),
@@ -388,16 +399,16 @@ impl OrchestratorInterface for ControlPlaneService {
         }
 
         // Configuration Generation & Validation
-        let mut flat_config = std::collections::BTreeMap::new();
+        let mut flat_config = BTreeMap::new();
         if let Some(custom_config_str) = &manifest.config.custom_config {
-            let custom_json: serde_json::Value = serde_json::from_str(custom_config_str)
+            let custom_json: Value = serde_json::from_str(custom_config_str)
                 .map_err(|e| format!("custom_config is not valid JSON: {}", e))?;
 
             if let Some(schema_path_str) = &manifest.config.schema_path {
-                let schema_path = std::path::PathBuf::from(schema_path_str);
+                let schema_path = PathBuf::from(schema_path_str);
 
                 // Path traversal check
-                if schema_path.components().any(|c| matches!(c, std::path::Component::ParentDir))
+                if schema_path.components().any(|c| matches!(c, Component::ParentDir))
                     || schema_path.is_absolute()
                 {
                     return Err(format!(
@@ -408,11 +419,11 @@ impl OrchestratorInterface for ControlPlaneService {
                 }
 
                 let custom_json_clone = custom_json.clone();
-                tokio::task::spawn_blocking(move || -> Result<(), String> {
-                    let schema_str = std::fs::read_to_string(&schema_path).map_err(|e| {
+                task::spawn_blocking(move || -> Result<(), String> {
+                    let schema_str = fs::read_to_string(&schema_path).map_err(|e| {
                         format!("Failed to read JSON schema at {}: {}", schema_path.display(), e)
                     })?;
-                    let schema_json: serde_json::Value = serde_json::from_str(&schema_str)
+                    let schema_json: Value = serde_json::from_str(&schema_str)
                         .map_err(|e| format!("JSON schema is not valid JSON: {}", e))?;
 
                     let compiled_schema = jsonschema::validator_for(&schema_json)
@@ -431,7 +442,7 @@ impl OrchestratorInterface for ControlPlaneService {
                 .map_err(|e| format!("Failed to spawn blocking task: {}", e))??;
             }
 
-            crate::config_utils::flatten_json_config(&custom_json, "", &mut flat_config);
+            config_utils::flatten_json_config(&custom_json, "", &mut flat_config);
         }
 
         let config_blob = serde_json::to_string(&flat_config)
@@ -605,10 +616,10 @@ impl OrchestratorInterface for ControlPlaneService {
                         && !url_or_path.starts_with("https://")
                     {
                         // It's a local file path
-                        let path = std::path::PathBuf::from(url_or_path);
+                        let path = PathBuf::from(url_or_path);
 
                         // Path traversal check
-                        if path.components().any(|c| matches!(c, std::path::Component::ParentDir))
+                        if path.components().any(|c| matches!(c, Component::ParentDir))
                             || path.is_absolute()
                         {
                             return Err(format!(
@@ -618,10 +629,9 @@ impl OrchestratorInterface for ControlPlaneService {
                             ));
                         }
 
-                        let bytes =
-                            syneroym_core::util::read_local_artifact(&path).map_err(|e| {
-                                format!("Failed to read WASM file at {:?}: {}", path, e)
-                            })?;
+                        let bytes = util::read_local_artifact(&path).map_err(|e| {
+                            format!("Failed to read WASM file at {:?}: {}", path, e)
+                        })?;
                         wasm_manifest.source = ArtifactSource::Binary(bytes);
                     }
                 }
@@ -646,11 +656,12 @@ fn ready_response() -> NativeResponse {
 mod tests {
     use std::path::Path;
 
-    use syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::{
+    use syneroym_core::{config::SubstrateConfig, storage::MockStorage};
+    use syneroym_data_blob::ObjectStoreBlobProvider;
+    use syneroym_data_db::SqliteStorageProvider;
+    use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
         ArtifactSource, PlannedService, ServiceConfig, TcpManifest, WasmManifest,
     };
-    use syneroym_blob_store::ObjectStoreBlobProvider;
-    use syneroym_data_layer::SqliteStorageProvider;
     use wit_parser::Resolve;
 
     use super::*;
@@ -658,10 +669,10 @@ mod tests {
     #[tokio::test]
     async fn test_wit_adherence() {
         let wit_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../bindings/wit/control-plane/control-plane.wit");
+            .join("../wit_interfaces/wit/control-plane/control-plane.wit");
 
         let mut resolve = Resolve::default();
-        let content = std::fs::read_to_string(&wit_path).expect("Failed to read WIT file");
+        let content = fs::read_to_string(&wit_path).expect("Failed to read WIT file");
         let group = wit_parser::UnresolvedPackageGroup::parse(&wit_path, &content)
             .expect("Failed to parse WIT file");
         let pkg = group.main;
@@ -677,7 +688,7 @@ mod tests {
         let interface = &resolve.interfaces[interface_id];
 
         let temp_dir = tempfile::tempdir().unwrap();
-        let config = syneroym_core::config::SubstrateConfig::default();
+        let config = SubstrateConfig::default();
         let key_store = Arc::new(KeyStore::new());
         let storage_provider =
             Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
@@ -696,8 +707,7 @@ mod tests {
         );
         let container_engine =
             Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
-        let registry =
-            EndpointRegistry::new_mock(Arc::new(syneroym_core::storage::MockStorage::new()));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
 
         let service = ControlPlaneService::init(
             "orchestrator".to_string(),
@@ -721,7 +731,7 @@ mod tests {
             let invocation = NativeInvocation {
                 interface: "orchestrator".to_string(),
                 method: method_name.to_string(),
-                params: serde_json::Value::Null,
+                params: Value::Null,
             };
 
             let res = service.dispatch(invocation).await;
@@ -737,7 +747,7 @@ mod tests {
     #[tokio::test]
     async fn test_deploy_plan_path_traversal() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let config = syneroym_core::config::SubstrateConfig::default();
+        let config = SubstrateConfig::default();
         let key_store = Arc::new(KeyStore::new());
         let storage_provider =
             Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
@@ -756,8 +766,7 @@ mod tests {
         );
         let container_engine =
             Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
-        let registry =
-            EndpointRegistry::new_mock(Arc::new(syneroym_core::storage::MockStorage::new()));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
 
         let service = ControlPlaneService::init(
             "orchestrator".to_string(),
@@ -808,7 +817,7 @@ mod tests {
     #[tokio::test]
     async fn test_deploy_plan_absolute_path() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let config = syneroym_core::config::SubstrateConfig::default();
+        let config = SubstrateConfig::default();
         let key_store = Arc::new(KeyStore::new());
         let storage_provider =
             Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
@@ -827,8 +836,7 @@ mod tests {
         );
         let container_engine =
             Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
-        let registry =
-            EndpointRegistry::new_mock(Arc::new(syneroym_core::storage::MockStorage::new()));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
 
         let service = ControlPlaneService::init(
             "orchestrator".to_string(),
@@ -882,7 +890,7 @@ mod tests {
     #[tokio::test]
     async fn test_security_dispatch_returns_sdk_statuses() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let config = syneroym_core::config::SubstrateConfig::default();
+        let config = SubstrateConfig::default();
         let key_store = Arc::new(KeyStore::new());
         let storage_provider =
             Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
@@ -901,8 +909,7 @@ mod tests {
         );
         let container_engine =
             Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
-        let registry =
-            EndpointRegistry::new_mock(Arc::new(syneroym_core::storage::MockStorage::new()));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
 
         let service = ControlPlaneService::init(
             "orchestrator".to_string(),
@@ -958,7 +965,7 @@ mod tests {
     #[tokio::test]
     async fn test_deploy_config_schema_rejection() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let config = syneroym_core::config::SubstrateConfig::default();
+        let config = SubstrateConfig::default();
         let key_store = Arc::new(KeyStore::new());
         let storage_provider =
             Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
@@ -977,8 +984,7 @@ mod tests {
         );
         let container_engine =
             Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
-        let registry =
-            EndpointRegistry::new_mock(Arc::new(syneroym_core::storage::MockStorage::new()));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
 
         let service = ControlPlaneService::init(
             "orchestrator".to_string(),
@@ -996,7 +1002,7 @@ mod tests {
 
         // Write a schema file with a relative path
         let schema_filename = format!("test_schema_{}.json", std::process::id());
-        std::fs::write(
+        fs::write(
             &schema_filename,
             r#"{"type": "object", "properties": {"port": {"type": "integer"}}}"#,
         )
@@ -1017,7 +1023,7 @@ mod tests {
 
         let result = service.deploy("test_service".to_string(), manifest).await;
 
-        let _ = std::fs::remove_file(&schema_filename);
+        let _ = fs::remove_file(&schema_filename);
 
         assert!(result.is_err());
         let err_msg = result.unwrap_err();
@@ -1027,7 +1033,7 @@ mod tests {
     #[tokio::test]
     async fn test_deploy_config_generation_rollback() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let config = syneroym_core::config::SubstrateConfig::default();
+        let config = SubstrateConfig::default();
         let key_store = Arc::new(KeyStore::new());
         let storage_provider =
             Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
@@ -1046,8 +1052,7 @@ mod tests {
         );
         let container_engine =
             Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
-        let registry =
-            EndpointRegistry::new_mock(Arc::new(syneroym_core::storage::MockStorage::new()));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
 
         let service = ControlPlaneService::init(
             "orchestrator".to_string(),
@@ -1097,7 +1102,7 @@ mod tests {
     #[tokio::test]
     async fn test_native_dispatch_data_layer_and_blob_store_round_trip() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let config = syneroym_core::config::SubstrateConfig::default();
+        let config = SubstrateConfig::default();
         let key_store = Arc::new(KeyStore::new());
         let storage_provider =
             Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
@@ -1116,8 +1121,7 @@ mod tests {
         );
         let container_engine =
             Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
-        let registry =
-            EndpointRegistry::new_mock(Arc::new(syneroym_core::storage::MockStorage::new()));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
 
         let service = ControlPlaneService::init(
             "orchestrator".to_string(),
@@ -1271,7 +1275,7 @@ mod tests {
     #[tokio::test]
     async fn test_native_dispatch_create_collection_with_indexes_and_batch_mutate() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let config = syneroym_core::config::SubstrateConfig::default();
+        let config = SubstrateConfig::default();
         let key_store = Arc::new(KeyStore::new());
         let storage_provider =
             Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
@@ -1290,8 +1294,7 @@ mod tests {
         );
         let container_engine =
             Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
-        let registry =
-            EndpointRegistry::new_mock(Arc::new(syneroym_core::storage::MockStorage::new()));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
 
         let service = ControlPlaneService::init(
             "orchestrator".to_string(),
@@ -1389,7 +1392,7 @@ mod tests {
     #[tokio::test]
     async fn test_native_dispatch_blob_store_errors_preserve_fidelity() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let config = syneroym_core::config::SubstrateConfig::default();
+        let config = SubstrateConfig::default();
         let key_store = Arc::new(KeyStore::new());
         let storage_provider =
             Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
@@ -1410,8 +1413,7 @@ mod tests {
         );
         let container_engine =
             Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
-        let registry =
-            EndpointRegistry::new_mock(Arc::new(syneroym_core::storage::MockStorage::new()));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
 
         let service = ControlPlaneService::init(
             "orchestrator".to_string(),

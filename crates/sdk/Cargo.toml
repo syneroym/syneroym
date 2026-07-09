@@ -10,7 +10,7 @@ workspace = true
 syneroym-core.workspace = true
 syneroym-rpc.workspace = true
 syneroym-router.workspace = true
-syneroym-bindings.workspace = true
+syneroym-wit-interfaces.workspace = true
 syneroym-identity.workspace = true
 syneroym-app-orchestration.workspace = true
 

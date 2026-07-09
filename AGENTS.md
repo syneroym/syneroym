@@ -53,8 +53,11 @@ cargo run --bin syneroym-substrate -- run --config <path>
 
 # After `cargo update`, iroh's pre-release crypto chain needs re-pinning:
 mise run deps:update
+
+# Prune stale target/ artifacts (untouched 14+ days) instead of `cargo clean`
+mise run clean:sweep
 ```
-Crate names are `syneroym-<dir>` (e.g. `crates/data-layer` → `syneroym-data-layer`, `crates/coordinator_iroh` → `syneroym-coordinator-iroh`) — use these with `cargo test -p` / `cargo build -p`.
+Crate names are `syneroym-<dir>` (e.g. `crates/data_db` → `syneroym-data-db`, `crates/coordinator_iroh` → `syneroym-coordinator-iroh`) — use these with `cargo test -p` / `cargo build -p`.
 
 ## Project & Rust Specifics
 - Given the presence of WASM component configurations (`wasm32-wasip2`), maintain clean `wit` file boundaries and consider cross-compilation constraints.
@@ -73,7 +76,7 @@ Crate names are `syneroym-<dir>` (e.g. `crates/data-layer` → `syneroym-data-la
 - **Interaction Style**: Respond concisely and directly. Use structured markdown for outputs, including code blocks, lists, and links to files/lines. Avoid verbose explanations unless requested.
 - **Output Quality**: Ensure responses are accurate, idiomatic Rust code. Link to relevant files using workspace-relative paths (e.g., [src/main.rs](src/main.rs#L10)). Provide runnable code snippets with minimal setup instructions.
 - **Security and Dependencies**: Do not exfiltrate secrets. Use minimal, pinned, widely-used libraries. Update manifests appropriately.
-- **Git Commit Messages (Conventional Commits + 50/72 Rule)**: Prefix the subject line with a [Conventional Commits](https://www.conventionalcommits.org/) type (`feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `perf`, `build`, `ci`, `style`, `revert`), plus an optional scope, e.g. `fix(data-layer): ...`. The description after the colon is lowercase, in the imperative mood, with no trailing period, and the whole subject line stays at or under 50 characters where practical. The second line must be empty. The body (lines 3+) must be wrapped at 72 characters and explain the what and why, not the how.
+- **Git Commit Messages (Conventional Commits + 50/72 Rule)**: Prefix the subject line with a [Conventional Commits](https://www.conventionalcommits.org/) type (`feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `perf`, `build`, `ci`, `style`, `revert`), plus an optional scope, e.g. `fix(data-db): ...`. The description after the colon is lowercase, in the imperative mood, with no trailing period, and the whole subject line stays at or under 50 characters where practical. The second line must be empty. The body (lines 3+) must be wrapped at 72 characters and explain the what and why, not the how.
 - **Pull Request CLA Checkbox**: `.github/workflows/cla-enforcer.yml` fails any PR whose description doesn't contain this exact line, checked and unmodified, on its own line: `- [x] I have read and agree to the [Syneroym CLA](https://github.com/syneroym/syneroym/blob/main/CLA.md).` `gh pr create --body` overrides `.github/PULL_REQUEST_TEMPLATE.md` entirely, so always include this line verbatim in any PR body you author.
 
 ## Repository Structure and Key Components
@@ -88,11 +91,11 @@ Core components wired together at startup:
 - **`syneroym-coordinator`** (+ `coordinator_iroh`, `coordinator_webrtc`) — helps peers discover each other and relays data/signaling when direct connection isn't possible (federated, multi-hop capable).
 - **`syneroym-community-registry`** — service discovery: signed `EndpointInfo` records published to a registry (and optionally a BEP0044 DHT) so peers can look up how to reach a DID.
 - **`syneroym-client-gateway`** — local HTTP proxy (port 7960) that maps `Host:` headers (`<nickname>-p<did-hash>-i<interface-hash>.localhost`) to the right local endpoint/service, used by external HTTP clients and `roymctl`.
-- **`syneroym-app-orchestration`** + **`syneroym-app-sandbox`** — the "orchestrator" native service: manages the deployed-app catalog/lifecycle (`catalog.rs`, `compiler.rs`, `reconcile.rs`, `resolver.rs`) and runs user WASM components (via Wasmtime) or delegates to `syneroym-podman-sandbox` for OCI container services.
+- **`syneroym-app-orchestration`** + **`syneroym-sandbox-wasm`** — the "orchestrator" native service: manages the deployed-app catalog/lifecycle (`catalog.rs`, `compiler.rs`, `reconcile.rs`, `resolver.rs`) and runs user WASM components (via Wasmtime) or delegates to `syneroym-sandbox-podman` for OCI container services.
 - **`syneroym-control-plane`** — service definitions/types for deploying apps and controlling running services, exposed as JSON-RPC over the client gateway / native RPC dispatch.
-- **`syneroym-bindings`** — generates Rust host/guest types from the WIT interfaces under `crates/bindings/wit/` (`host`, `data-layer`, `blob-store`, `app-config`, `control-plane`, `vault`) via `wit-bindgen`/`bindgen!`; this is the WASM component boundary — host-side crates (e.g. `data-layer`, `blob-store`) speak these generated types directly with no separate conversion layer.
-- **`syneroym-data-layer`**, **`syneroym-blob-store`** — host-implemented storage capabilities (SQLite-backed structured data, content-addressed encrypted blob storage) exposed to WASM guests through the WIT interfaces above.
-- **`syneroym-identity`**, **`syneroym-key-store`** — DID-based cryptographic identity (ed25519), delegation certificates, and KEK/DEK key management.
+- **`syneroym-wit-interfaces`** — generates Rust host/guest types from the WIT interfaces under `crates/wit_interfaces/wit/` (`host`, `data-layer`, `blob-store`, `app-config`, `control-plane`, `vault`) via `wit-bindgen`/`bindgen!`; this is the WASM component boundary — host-side crates (e.g. `syneroym-data-db`, `syneroym-data-blob`) speak these generated types directly with no separate conversion layer.
+- **`syneroym-data-db`**, **`syneroym-data-blob`** — host-implemented storage capabilities (SQLite-backed structured data, content-addressed encrypted blob storage) exposed to WASM guests through the WIT interfaces above.
+- **`syneroym-identity`**, **`syneroym-data-keystore`** — DID-based cryptographic identity (ed25519), delegation certificates, and KEK/DEK key management.
 - **`syneroym-observability`** — metrics (Prometheus `/metrics`), health (`/health`), logging/tracing, wired in as plain Axum routes inside `runtime.rs` rather than a separate service.
 - **`syneroym-rpc`** — shared RPC framing/serialization/transport-adapter layer used across JSON-RPC 2.0 traffic today; the `wrpc://` scheme/native wRPC component protocol is reserved but **not yet implemented** (JSON-RPC 2.0 is the actual current wire protocol everywhere the docs mention wRPC).
 

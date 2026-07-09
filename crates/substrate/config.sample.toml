@@ -51,7 +51,7 @@ blobs_dir = "blobs"
 
 [storage.blob_store]
 # "local" or "s3". S3 support requires building with the `aws` cargo
-# feature on syneroym-blob-store (off by default -- see the object_store
+# feature on syneroym-data-blob (off by default -- see the object_store
 # pin comment in the root Cargo.toml).
 backend = "local"
 # Content-addressed blob storage root. If relative path is given, it will

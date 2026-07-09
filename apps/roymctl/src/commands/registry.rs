@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use clap::Subcommand;
+use clap::{ArgAction, Subcommand};
 use reqwest::Client;
 use syneroym_core::{
     dht_registry::{EndpointInfo, EndpointType, RegistryClient},
@@ -37,7 +37,7 @@ pub enum RegistryCommands {
         /// The service ID or alias to look up
         service_id: String,
         /// Resolve mechanisms from the substrate (default: true)
-        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        #[arg(long, default_value_t = true, action = ArgAction::Set)]
         resolve: bool,
         /// Also query the global P2P DHT (BEP 0044)
         #[arg(long)]

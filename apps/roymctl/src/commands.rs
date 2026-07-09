@@ -2,7 +2,7 @@
 //!
 //! Registers CLI parsing hooks and routes input options to command modules.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use app::AppCommands;
 use clap::Subcommand;
@@ -11,7 +11,7 @@ use registry::RegistryCommands;
 use substrate::SubstrateCommands;
 use svc::SvcCommands;
 use syneroym_core::util;
-use syneroym_identity::Identity;
+use syneroym_identity::{Identity, substrate as identity_substrate};
 
 pub mod app;
 pub mod identity;
@@ -79,18 +79,13 @@ pub enum Commands {
     },
 }
 
-fn get_substrate_did(
-    substrate_opt: Option<String>,
-    dir: &std::path::Path,
-) -> anyhow::Result<String> {
+fn get_substrate_did(substrate_opt: Option<String>, dir: &Path) -> anyhow::Result<String> {
     substrate_opt
         .or_else(|| {
             // Try to load local substrate DID from key file if it exists
             let key_path = dir.join("substrate.key");
             Identity::load_from_path(&key_path)
-                .map(|identity| {
-                    syneroym_identity::substrate::derive_did_key(&identity.public_key())
-                })
+                .map(|identity| identity_substrate::derive_did_key(&identity.public_key()))
                 .ok()
         })
         .ok_or_else(|| {

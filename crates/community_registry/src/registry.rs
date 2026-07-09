@@ -4,7 +4,7 @@
 //! addresses and nicknames, enabling global peer lookup.
 
 use std::{
-    fmt::{Debug, Formatter},
+    fmt::{self, Debug, Formatter},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -25,9 +25,9 @@ use syneroym_core::{
     dht_registry::{DEFAULT_REGISTRY_TTL_SECS, SignedEndpointInfo, SignedMasterAnchor},
     util,
 };
-use syneroym_identity::substrate::resolve_did_key;
+use syneroym_identity::substrate;
 use tokio::{net::TcpListener, sync::oneshot, task::JoinHandle, time};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 pub struct EcosystemRegistry {
     bind_address: String,
@@ -38,7 +38,7 @@ pub struct EcosystemRegistry {
 }
 
 impl Debug for EcosystemRegistry {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("EcosystemRegistry")
             .field("bind_address", &self.bind_address)
             .field("state", &self.state)
@@ -156,7 +156,7 @@ impl EcosystemRegistry {
                 for key in expired_keys {
                     state_clone.endpoints.remove(&key);
                     state_clone.aliases.retain(|_, v| *v != key);
-                    tracing::debug!("Expired registry entry for {}", key);
+                    debug!("Expired registry entry for {}", key);
                 }
             }
         });
@@ -241,7 +241,7 @@ fn verify_endpoint_signature(
     }
 
     // Resolve public key
-    let pubkey = resolve_did_key(service_id)
+    let pubkey = substrate::resolve_did_key(service_id)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid service_id (did:key): {e}")))?;
     debug!("Registering public key: {:?} to registry", pubkey);
 
@@ -258,14 +258,10 @@ fn propagate_registration(payload: SignedEndpointInfo, parent_url: String) {
                 debug!("Successfully propagated registration to {}", url);
             }
             Ok(resp) => {
-                tracing::warn!(
-                    "Failed to propagate registration to {} (status: {})",
-                    url,
-                    resp.status()
-                );
+                warn!("Failed to propagate registration to {} (status: {})", url, resp.status());
             }
             Err(e) => {
-                tracing::warn!("Error propagating registration to {}: {}", url, e);
+                warn!("Error propagating registration to {}: {}", url, e);
             }
         }
     });
@@ -305,10 +301,13 @@ async fn lookup_master_endpoint(
 mod tests {
     use axum::http::StatusCode;
     use syneroym_core::{
-        dht_registry::{EndpointInfo, EndpointMechanism, EndpointType},
+        dht_registry::{
+            EndpointInfo, EndpointMechanism, EndpointType, MASTER_ANCHOR_SCHEMA_V1,
+            MasterAnchorPayload,
+        },
         util,
     };
-    use syneroym_identity::{Identity, substrate::derive_did_key};
+    use syneroym_identity::Identity;
 
     use super::*;
 
@@ -318,11 +317,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_master_anchor_register_and_lookup() {
-        use syneroym_core::dht_registry::MasterAnchorPayload;
-
         let state = Arc::new(RegistryState::default());
         let identity = Identity::generate().unwrap();
-        let master_id = derive_did_key(&identity.public_key());
+        let master_id = substrate::derive_did_key(&identity.public_key());
 
         let _temp_identity = Identity::generate().unwrap();
 
@@ -344,7 +341,7 @@ mod tests {
         assert!(lookup_res.is_ok());
         let Json(retrieved) = lookup_res.unwrap();
         assert_eq!(retrieved.master_id, master_id);
-        assert_eq!(retrieved.payload.schema, syneroym_core::dht_registry::MASTER_ANCHOR_SCHEMA_V1);
+        assert_eq!(retrieved.payload.schema, MASTER_ANCHOR_SCHEMA_V1);
         assert_eq!(retrieved.payload.revoked_keys.len(), 1);
     }
 
@@ -352,7 +349,7 @@ mod tests {
     async fn test_register_and_lookup_success() {
         let state = Arc::new(RegistryState::default());
         let identity = Identity::generate().unwrap();
-        let did = derive_did_key(&identity.public_key());
+        let did = substrate::derive_did_key(&identity.public_key());
 
         let info = EndpointInfo {
             service_id: did.clone(),
@@ -388,7 +385,7 @@ mod tests {
         let state = Arc::new(RegistryState::default());
         let identity = Identity::generate().unwrap();
         let other_identity = Identity::generate().unwrap();
-        let did = derive_did_key(&identity.public_key());
+        let did = substrate::derive_did_key(&identity.public_key());
 
         let info = EndpointInfo {
             service_id: did.clone(),
@@ -486,7 +483,7 @@ mod tests {
     async fn test_lookup_by_shorthash_no_nickname() {
         let state = Arc::new(RegistryState::default());
         let identity = Identity::generate().unwrap();
-        let did = derive_did_key(&identity.public_key());
+        let did = substrate::derive_did_key(&identity.public_key());
 
         let info = EndpointInfo {
             service_id: did.clone(),
@@ -516,7 +513,7 @@ mod tests {
     async fn test_lookup_by_shorthash_fails_if_nickname_present() {
         let state = Arc::new(RegistryState::default());
         let identity = Identity::generate().unwrap();
-        let did = derive_did_key(&identity.public_key());
+        let did = substrate::derive_did_key(&identity.public_key());
 
         let info = EndpointInfo {
             service_id: did.clone(),

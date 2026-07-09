@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, future::Future, pin::Pin};
 
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
@@ -50,7 +50,7 @@ fn compile_recursive<'a>(
     blueprint_stack: &'a mut Vec<AppBlueprintId>,
     compilation_stack: &'a mut Vec<AppInstanceId>,
     plans: &'a mut Vec<DeploymentPlan>,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + 'a + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<()>> + 'a + Send>> {
     Box::pin(async move {
         // Check blueprint cycle (recursive Spawn cycle)
         if blueprint_stack.contains(&manifest.id) {
@@ -221,6 +221,11 @@ fn sort_services(
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        path::PathBuf,
+        time::{Duration, Instant},
+    };
+
     use super::*;
     use crate::catalog::LocalFilesystemCatalog;
 
@@ -241,7 +246,7 @@ mod tests {
             depends_on = ["identity"]
         "#;
         let manifest = SynAppManifest::from_toml(manifest_toml).unwrap();
-        let catalog = LocalFilesystemCatalog::new(std::path::PathBuf::from("."));
+        let catalog = LocalFilesystemCatalog::new(PathBuf::from("."));
         let root_inst = AppInstanceId::new("root-inst");
 
         let compiled = compile(root_inst.clone(), &manifest, &catalog).await.unwrap();
@@ -290,7 +295,7 @@ mod tests {
         let root_manifest = SynAppManifest::from_toml(root_toml).unwrap();
         let db_manifest = SynAppManifest::from_toml(db_toml).unwrap();
 
-        let mut catalog = LocalFilesystemCatalog::new(std::path::PathBuf::from("."));
+        let mut catalog = LocalFilesystemCatalog::new(PathBuf::from("."));
         catalog.register(AppBlueprintId::new("syneroym:db-app"), db_manifest);
 
         let root_inst = AppInstanceId::new("root-inst");
@@ -333,7 +338,7 @@ mod tests {
         let manifest_a = SynAppManifest::from_toml(app_a_toml).unwrap();
         let manifest_b = SynAppManifest::from_toml(app_b_toml).unwrap();
 
-        let mut catalog = LocalFilesystemCatalog::new(std::path::PathBuf::from("."));
+        let mut catalog = LocalFilesystemCatalog::new(PathBuf::from("."));
         catalog.register(AppBlueprintId::new("syneroym:app-a"), manifest_a.clone());
         catalog.register(AppBlueprintId::new("syneroym:app-b"), manifest_b);
 
@@ -353,7 +358,7 @@ mod tests {
             blueprint = "syneroym:app-self"
         "#;
         let manifest = SynAppManifest::from_toml(app_toml).unwrap();
-        let mut catalog = LocalFilesystemCatalog::new(std::path::PathBuf::from("."));
+        let mut catalog = LocalFilesystemCatalog::new(PathBuf::from("."));
         catalog.register(AppBlueprintId::new("syneroym:app-self"), manifest.clone());
 
         let res = compile(AppInstanceId::new("inst-self"), &manifest, &catalog).await;
@@ -374,7 +379,7 @@ mod tests {
             instance = "db-instance-123"
         "#;
         let manifest = SynAppManifest::from_toml(root_toml).unwrap();
-        let catalog = LocalFilesystemCatalog::new(std::path::PathBuf::from("."));
+        let catalog = LocalFilesystemCatalog::new(PathBuf::from("."));
 
         let compiled = compile(AppInstanceId::new("root-inst"), &manifest, &catalog).await.unwrap();
         assert_eq!(compiled.plans.len(), 1);
@@ -402,7 +407,7 @@ mod tests {
         let manifest_a = SynAppManifest::from_toml(app_a_toml).unwrap();
         let manifest_b = SynAppManifest::from_toml(app_b_toml).unwrap();
 
-        let mut catalog = LocalFilesystemCatalog::new(std::path::PathBuf::from("."));
+        let mut catalog = LocalFilesystemCatalog::new(PathBuf::from("."));
         catalog.register(AppBlueprintId::new("syneroym:app-a"), manifest_a.clone());
         catalog.register(AppBlueprintId::new("syneroym:app-b"), manifest_b);
 
@@ -423,7 +428,7 @@ mod tests {
             source = "svc.wasm"
         "#;
         let manifest = SynAppManifest::from_toml(manifest_toml).unwrap();
-        let catalog = LocalFilesystemCatalog::new(std::path::PathBuf::from("."));
+        let catalog = LocalFilesystemCatalog::new(PathBuf::from("."));
 
         let compiled1 = compile(AppInstanceId::new("inst"), &manifest, &catalog).await.unwrap();
         let compiled2 = compile(AppInstanceId::new("inst"), &manifest, &catalog).await.unwrap();
@@ -464,13 +469,13 @@ mod tests {
         );
 
         let manifest = SynAppManifest::from_toml(&manifest_toml).unwrap();
-        let catalog = LocalFilesystemCatalog::new(std::path::PathBuf::from("."));
+        let catalog = LocalFilesystemCatalog::new(PathBuf::from("."));
 
-        let start = std::time::Instant::now();
+        let start = Instant::now();
         let compiled = compile(AppInstanceId::new("perf-inst"), &manifest, &catalog).await.unwrap();
         let duration = start.elapsed();
 
         assert_eq!(compiled.plans[0].services.len(), 50);
-        assert!(duration < std::time::Duration::from_millis(50), "Compilation took {:?}", duration);
+        assert!(duration < Duration::from_millis(50), "Compilation took {:?}", duration);
     }
 }

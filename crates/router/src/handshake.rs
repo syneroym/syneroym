@@ -3,8 +3,12 @@
 //! Confirms the client's temporary identity key is authorized by their master
 //! DID.
 
+use std::time::Duration;
+
 use anyhow::{Result, anyhow};
-use syneroym_core::dht_registry::MasterAnchorPayload;
+use syneroym_core::dht_registry::{MasterAnchorPayload, RegistryClient};
+use syneroym_identity::substrate;
+use tokio::time;
 
 use crate::RoutePreamble;
 
@@ -17,7 +21,7 @@ pub trait MasterAnchorResolver: Send + Sync {
 }
 
 #[async_trait::async_trait]
-impl MasterAnchorResolver for syneroym_core::dht_registry::RegistryClient {
+impl MasterAnchorResolver for RegistryClient {
     async fn resolve_master_anchor(
         &self,
         master_id: &str,
@@ -53,7 +57,7 @@ impl HandshakeVerifier {
         )
         .map_err(|e| anyhow!("Invalid client pubkey: {e}"))?;
 
-        let temporary_did = syneroym_identity::substrate::derive_did_key(&source_pubkey);
+        let temporary_did = substrate::derive_did_key(&source_pubkey);
 
         if let Some(cert) = &preamble.delegation {
             let master_did = &cert.master_did;
@@ -68,12 +72,10 @@ impl HandshakeVerifier {
             }
 
             // Resolve master anchor from DHT / HTTP Registry to check for revocation
-            let anchor = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                resolver.resolve_master_anchor(master_did),
-            )
-            .await
-            .map_err(|_| anyhow!("Timeout resolving master anchor"))??;
+            let anchor =
+                time::timeout(Duration::from_secs(5), resolver.resolve_master_anchor(master_did))
+                    .await
+                    .map_err(|_| anyhow!("Timeout resolving master anchor"))??;
 
             if anchor.revoked_keys.contains(&temporary_did) {
                 return Err(anyhow!(
@@ -126,7 +128,7 @@ mod tests {
         let res = HandshakeVerifier::verify_preamble(&preamble, &resolver).await;
         assert!(res.is_ok());
         let ident = res.unwrap();
-        let expected_did = syneroym_identity::substrate::derive_did_key(&client.public_key());
+        let expected_did = substrate::derive_did_key(&client.public_key());
         assert_eq!(ident.master_did, expected_did);
         assert_eq!(ident.temporary_did, expected_did);
     }
@@ -136,7 +138,7 @@ mod tests {
         let master = Identity::generate().unwrap();
         let temp = Identity::generate().unwrap();
 
-        let master_did = syneroym_identity::substrate::derive_did_key(&master.public_key());
+        let master_did = substrate::derive_did_key(&master.public_key());
         let temp_pubkey = temp.public_key();
         let temp_pubkey_hex = hex::encode(temp_pubkey.to_bytes());
 
@@ -155,7 +157,7 @@ mod tests {
         assert!(res.is_ok());
         let ident = res.unwrap();
         assert_eq!(ident.master_did, master_did);
-        assert_eq!(ident.temporary_did, syneroym_identity::substrate::derive_did_key(&temp_pubkey));
+        assert_eq!(ident.temporary_did, substrate::derive_did_key(&temp_pubkey));
     }
 
     #[tokio::test]
@@ -231,7 +233,7 @@ mod tests {
 
         // 2. Revocation: update anchor to revoke cert, verification must now fail
         {
-            let temp_did = syneroym_identity::substrate::derive_did_key(&temp_pubkey);
+            let temp_did = substrate::derive_did_key(&temp_pubkey);
             let mut anchor_guard = resolver.anchor.write().unwrap();
             anchor_guard.revoked_keys.push(temp_did);
         }

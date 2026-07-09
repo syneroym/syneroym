@@ -1,6 +1,7 @@
-use std::path::Path;
+use std::{fmt, path::Path, str::FromStr};
 
 use anyhow::{Result, anyhow};
+use chrono::Utc;
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
@@ -16,8 +17,8 @@ pub enum DeploymentState {
     RolledBack,
 }
 
-impl std::fmt::Display for DeploymentState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for DeploymentState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
             Self::Planned => "PLANNED",
             Self::Applying => "APPLYING",
@@ -29,7 +30,7 @@ impl std::fmt::Display for DeploymentState {
     }
 }
 
-impl std::str::FromStr for DeploymentState {
+impl FromStr for DeploymentState {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -63,8 +64,8 @@ pub enum ActionState {
     Failed,
 }
 
-impl std::fmt::Display for ActionState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for ActionState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
             Self::Pending => "PENDING",
             Self::InProgress => "IN_PROGRESS",
@@ -75,7 +76,7 @@ impl std::fmt::Display for ActionState {
     }
 }
 
-impl std::str::FromStr for ActionState {
+impl FromStr for ActionState {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -157,7 +158,7 @@ impl DeploymentJournal {
     }
 
     pub fn append(&self, plan: &DeploymentPlan, state: DeploymentState) -> Result<i64> {
-        let now = chrono::Utc::now().timestamp();
+        let now = Utc::now().timestamp();
         let plan_json = plan.to_json()?;
         self.conn.execute(
             "INSERT INTO deployments (instance_id, plan_json, state, created_at, updated_at)
@@ -168,7 +169,7 @@ impl DeploymentJournal {
     }
 
     pub fn update_state(&self, id: i64, state: DeploymentState) -> Result<()> {
-        let now = chrono::Utc::now().timestamp();
+        let now = Utc::now().timestamp();
         self.conn.execute(
             "UPDATE deployments SET state = ?1, updated_at = ?2 WHERE id = ?3",
             params![state.to_string(), now, id],
@@ -183,7 +184,7 @@ impl DeploymentJournal {
         logical_ref: &str,
         state: ActionState,
     ) -> Result<i64> {
-        let now = chrono::Utc::now().timestamp();
+        let now = Utc::now().timestamp();
         self.conn.execute(
             "INSERT INTO deployment_actions (deployment_id, action_type, logical_ref, state, \
              created_at, updated_at)
@@ -194,7 +195,7 @@ impl DeploymentJournal {
     }
 
     pub fn update_action_state(&self, action_id: i64, state: ActionState) -> Result<()> {
-        let now = chrono::Utc::now().timestamp();
+        let now = Utc::now().timestamp();
         self.conn.execute(
             "UPDATE deployment_actions SET state = ?1, updated_at = ?2 WHERE id = ?3",
             params![state.to_string(), now, action_id],
@@ -294,6 +295,8 @@ impl DeploymentJournal {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use semver::Version;
 
     use super::*;
@@ -318,7 +321,7 @@ mod tests {
                     source: "test.wasm".to_string(),
                     hash: None,
                     interfaces: vec![],
-                    env: std::collections::BTreeMap::new(),
+                    env: BTreeMap::new(),
                     args: vec![],
                     custom_config: None,
                     quota: None,

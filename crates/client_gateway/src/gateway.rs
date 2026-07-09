@@ -4,7 +4,8 @@
 //! managing routing, protocol translation, and error boundaries.
 
 use std::{
-    fmt::{Debug, Formatter},
+    fmt::{self, Debug, Formatter},
+    str,
     sync::Arc,
 };
 
@@ -38,7 +39,7 @@ pub struct ClientGateway {
 }
 
 impl Debug for ClientGateway {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("ClientGateway")
             .field("port", &self.port)
             .field("state", &self.state)
@@ -201,7 +202,7 @@ fn parse_target_service_and_interface(req: &Request) -> Option<(String, String)>
         .headers
         .iter()
         .find(|h| h.name.eq_ignore_ascii_case("host"))
-        .map_or("", |h| std::str::from_utf8(h.value).unwrap_or(""));
+        .map_or("", |h| str::from_utf8(h.value).unwrap_or(""));
 
     if host_header.is_empty() {
         return None;

@@ -1,12 +1,17 @@
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+};
 
 use clap::Subcommand;
+use semver::Version;
 use syneroym_app_orchestration::{
     AppInstanceId, DeploymentJournal, DeploymentState, LocalFilesystemCatalog, Reconciler,
     SynAppManifest, compile,
     models::{AppBlueprintId, LogicalServiceName, ServiceConfig, ServiceSpec, ServiceType},
 };
-use syneroym_sdk::SyneroymClient;
+use syneroym_sdk::{SyneroymClient, mapper};
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum AppCommands {
@@ -64,24 +69,24 @@ pub async fn handle(
                 );
                 SynAppManifest {
                     id: AppBlueprintId::new("legacy-wasm-app"),
-                    version: semver::Version::new(0, 1, 0),
+                    version: Version::new(0, 1, 0),
                     description: Some("Auto-generated legacy wrapper".to_string()),
                     services,
                     dependencies: BTreeMap::new(),
                 }
             } else {
-                let toml_str = std::fs::read_to_string(manifest_path)?;
+                let toml_str = fs::read_to_string(manifest_path)?;
                 SynAppManifest::from_toml(&toml_str)?
             };
 
             let catalog = LocalFilesystemCatalog::new(
-                manifest_path.parent().unwrap_or(std::path::Path::new(".")).to_path_buf(),
+                manifest_path.parent().unwrap_or(Path::new(".")).to_path_buf(),
             );
 
             let compiled = compile(instance_id.clone(), &manifest, &catalog).await?;
 
             if let Some(target_plan) = compiled.plans.last() {
-                let parent_dir = journal_path.parent().unwrap_or(std::path::Path::new("."));
+                let parent_dir = journal_path.parent().unwrap_or(Path::new("."));
                 let db_name = journal_path
                     .file_name()
                     .ok_or_else(|| anyhow::anyhow!("Invalid journal path"))?
@@ -95,8 +100,7 @@ pub async fn handle(
                 let _diff = reconciler.compute_diff(target_plan)?;
                 journal.update_state(record_id, DeploymentState::Applying)?;
 
-                let wit_plan =
-                    syneroym_sdk::mapper::map_deployment_plan_to_wit(target_plan.clone())?;
+                let wit_plan = mapper::map_deployment_plan_to_wit(target_plan.clone())?;
 
                 let mut client = SyneroymClient::new(substrate_did.clone(), api_url.to_string());
                 client.connect().await?;
@@ -112,7 +116,7 @@ pub async fn handle(
         AppCommands::Reconcile { instance_id, manifest_path, journal_path } => {
             let instance_id = AppInstanceId::try_new(instance_id.clone())?;
 
-            let parent_dir = journal_path.parent().unwrap_or(std::path::Path::new("."));
+            let parent_dir = journal_path.parent().unwrap_or(Path::new("."));
             let db_name = journal_path
                 .file_name()
                 .ok_or_else(|| anyhow::anyhow!("Invalid journal path"))?
@@ -136,13 +140,10 @@ pub async fn handle(
                             instance_id, manifest_path
                         );
 
-                        let toml_str = std::fs::read_to_string(manifest_path)?;
+                        let toml_str = fs::read_to_string(manifest_path)?;
                         let manifest = SynAppManifest::from_toml(&toml_str)?;
                         let catalog = LocalFilesystemCatalog::new(
-                            manifest_path
-                                .parent()
-                                .unwrap_or(std::path::Path::new("."))
-                                .to_path_buf(),
+                            manifest_path.parent().unwrap_or(Path::new(".")).to_path_buf(),
                         );
 
                         let compiled = compile(instance_id.clone(), &manifest, &catalog).await?;

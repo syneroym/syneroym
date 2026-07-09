@@ -5,12 +5,12 @@ use std::{
 
 use anyhow::Result;
 use reqwest::Client;
-use syneroym_app_sandbox::{AppSandboxEngine, HostState};
 use syneroym_core::{
     dht_registry::{EndpointInfo, EndpointType},
     test_constants,
 };
 use syneroym_identity::{Identity, substrate};
+use syneroym_sandbox_wasm::{AppSandboxEngine, HostState};
 use syneroym_sdk::SyneroymClient;
 use test_constants::GREETER_INTERFACE_NAME;
 use wasmtime::{
@@ -37,14 +37,13 @@ pub async fn run_scenario() -> Result<()> {
     let interface_name = GREETER_INTERFACE_NAME;
     let method_name = "greet";
 
-    let key_store = std::sync::Arc::new(syneroym_key_store::KeyStore::new());
-    let storage_provider = std::sync::Arc::new(syneroym_data_layer::SqliteStorageProvider::new(
+    let key_store = std::sync::Arc::new(syneroym_data_keystore::KeyStore::new());
+    let storage_provider = std::sync::Arc::new(syneroym_data_db::SqliteStorageProvider::new(
         std::env::temp_dir(),
         false,
     )?);
-    let blob_provider: std::sync::Arc<dyn syneroym_blob_store::BlobProvider> = std::sync::Arc::new(
-        syneroym_blob_store::ObjectStoreBlobProvider::in_memory(u64::MAX, None),
-    );
+    let blob_provider: std::sync::Arc<dyn syneroym_data_blob::BlobProvider> =
+        std::sync::Arc::new(syneroym_data_blob::ObjectStoreBlobProvider::in_memory(u64::MAX, None));
 
     // Warmup Baseline
     for _ in 0..10 {

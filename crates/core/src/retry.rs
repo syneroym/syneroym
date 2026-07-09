@@ -2,7 +2,7 @@
 
 use std::{fmt::Display, time::Duration};
 
-use tokio::time::sleep;
+use tokio::time;
 use tracing::warn;
 
 use crate::config::RetryPolicy;
@@ -42,7 +42,7 @@ where
                 warn!("Operation failed (attempt {}/{}): {}", attempts, policy.max_attempts, e);
 
                 let sleep_ms = calculate_jittered_backoff(current_backoff);
-                sleep(Duration::from_millis(sleep_ms)).await;
+                time::sleep(Duration::from_millis(sleep_ms)).await;
 
                 let next_backoff = (current_backoff as f64 * policy.backoff_multiplier) as u64;
                 current_backoff = next_backoff.min(policy.max_backoff_ms);

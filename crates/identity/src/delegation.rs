@@ -6,10 +6,7 @@ use anyhow::{Context, Result, anyhow};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    Identity,
-    substrate::{derive_did_key, resolve_did_key},
-};
+use crate::{Identity, substrate};
 
 /// A cryptographic certificate that binds a temporary identity key to a master
 /// DID for a specific duration.
@@ -38,7 +35,7 @@ impl DelegationCertificate {
             "expires_at_secs": expires_at_secs,
             "scope": scope,
         });
-        let canonical_payload = crate::substrate::canonicalize_json_value(&payload);
+        let canonical_payload = substrate::canonicalize_json_value(&payload);
         serde_json::to_vec(&canonical_payload).context("Failed to serialize canonical payload")
     }
 
@@ -52,8 +49,8 @@ impl DelegationCertificate {
         scope: String,
     ) -> Result<Self> {
         let master_pubkey = master.public_key();
-        let master_did = derive_did_key(&master_pubkey);
-        let temporary_did = derive_did_key(&temp_pubkey);
+        let master_did = substrate::derive_did_key(&master_pubkey);
+        let temporary_did = substrate::derive_did_key(&temp_pubkey);
 
         let issued_at_secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -119,7 +116,7 @@ impl DelegationCertificate {
         }
 
         // 1. Resolve master public key
-        let master_pubkey = resolve_did_key(&self.master_did)
+        let master_pubkey = substrate::resolve_did_key(&self.master_did)
             .context("Failed to resolve master DID in delegation certificate")?;
 
         // 2. Re-create canonical payload of the 5 fields

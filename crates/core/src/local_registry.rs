@@ -5,7 +5,7 @@
 //! Micro-Discovery).
 
 use std::{
-    fmt::{Debug, Formatter},
+    fmt::{self, Debug, Formatter},
     sync::Arc,
 };
 
@@ -45,7 +45,7 @@ pub struct EndpointRegistry {
 }
 
 impl Debug for EndpointRegistry {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("EndpointRegistry")
             .field("active_endpoints", &self.active_endpoints)
             .field("interface_hashes", &self.interface_hashes)
