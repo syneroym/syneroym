@@ -7,7 +7,7 @@ use std::{collections::HashMap, fmt, fs, path::PathBuf, sync::Arc};
 
 use anyhow::Result;
 use fmt::{Debug, Formatter};
-use syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::{
+use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, ContainerManifest, DeployManifest, DeployedService, DeploymentPlan,
     ServiceType as WitServiceType, TcpManifest, WasmManifest,
 };
@@ -20,10 +20,10 @@ pub trait OrchestratorInterface {
     async fn list(&self) -> Result<Vec<DeployedService>, String>;
     async fn deploy_plan(&self, plan: DeploymentPlan) -> Result<(), String>;
 }
-use syneroym_blob_store::BlobProvider;
 use syneroym_core::local_registry::{EndpointRegistry, SubstrateEndpoint};
-use syneroym_data_layer::traits::StorageProvider;
-use syneroym_key_store::KeyStore;
+use syneroym_data_blob::BlobProvider;
+use syneroym_data_db::traits::StorageProvider;
+use syneroym_data_keystore::KeyStore;
 use syneroym_rpc::{
     NativeDispatchRegistry, NativeInvocation, NativeResponse, NativeService, RpcError, RpcResult,
 };
@@ -646,11 +646,11 @@ fn ready_response() -> NativeResponse {
 mod tests {
     use std::path::Path;
 
-    use syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::{
+    use syneroym_data_blob::ObjectStoreBlobProvider;
+    use syneroym_data_db::SqliteStorageProvider;
+    use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
         ArtifactSource, PlannedService, ServiceConfig, TcpManifest, WasmManifest,
     };
-    use syneroym_blob_store::ObjectStoreBlobProvider;
-    use syneroym_data_layer::SqliteStorageProvider;
     use wit_parser::Resolve;
 
     use super::*;
@@ -658,7 +658,7 @@ mod tests {
     #[tokio::test]
     async fn test_wit_adherence() {
         let wit_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../bindings/wit/control-plane/control-plane.wit");
+            .join("../wit_interfaces/wit/control-plane/control-plane.wit");
 
         let mut resolve = Resolve::default();
         let content = std::fs::read_to_string(&wit_path).expect("Failed to read WIT file");

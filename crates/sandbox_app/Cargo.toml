@@ -1,0 +1,44 @@
+[package]
+name = "syneroym-sandbox-app"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+syneroym-core.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+reqwest.workspace = true
+sha2.workspace = true
+hex.workspace = true
+syneroym-wit-interfaces.workspace = true
+syneroym-rpc.workspace = true
+syneroym-data-keystore.workspace = true
+syneroym-data-db.workspace = true
+syneroym-data-blob.workspace = true
+
+wasmtime.workspace = true
+wasmtime-wasi.workspace = true
+dashmap.workspace = true
+async-trait.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+metrics.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+wasmtime = { workspace = true, features = ["wat"] }
+tempfile.workspace = true
+
+
+[[bench]]
+name = "wasm_engine"
+harness = false
+
+[[bench]]
+name = "data_layer_bench"
+harness = false

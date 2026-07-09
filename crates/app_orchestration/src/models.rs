@@ -398,13 +398,13 @@ mod tests {
 
             [services.identity]
             service_type = "wasm"
-            source = "crates/app_sandbox/benches/identity.wasm"
+            source = "crates/sandbox_app/benches/identity.wasm"
             interfaces = ["syneroym:identity/identity"]
             depends_on = []
 
             [services.echo]
             service_type = "wasm"
-            source = "crates/app_sandbox/benches/echo.wasm"
+            source = "crates/sandbox_app/benches/echo.wasm"
             interfaces = ["syneroym:echo/echo"]
             depends_on = ["identity"]
 
@@ -421,7 +421,7 @@ mod tests {
 
         let identity = manifest.services.get(&LogicalServiceName::new("identity")).unwrap();
         assert_eq!(identity.config.service_type, ServiceType::Wasm);
-        assert_eq!(identity.config.source, "crates/app_sandbox/benches/identity.wasm");
+        assert_eq!(identity.config.source, "crates/sandbox_app/benches/identity.wasm");
 
         let db_dep = manifest.dependencies.get(&DependencyName::new("db")).unwrap();
         match db_dep {
@@ -447,7 +447,7 @@ mod tests {
             "services": {
                 "identity": {
                     "service_type": "wasm",
-                    "source": "crates/app_sandbox/benches/identity.wasm",
+                    "source": "crates/sandbox_app/benches/identity.wasm",
                     "interfaces": ["syneroym:identity/identity"],
                     "depends_on": []
                 }
@@ -496,7 +496,7 @@ mod tests {
                 },
                 config: ServiceConfig {
                     service_type: ServiceType::Wasm,
-                    source: "crates/app_sandbox/benches/identity.wasm".to_string(),
+                    source: "crates/sandbox_app/benches/identity.wasm".to_string(),
                     hash: None,
                     interfaces: vec![InterfaceName::new("syneroym:identity/identity")],
                     env: env_map,
@@ -609,7 +609,7 @@ mod tests {
                 },
                 config: ServiceConfig {
                     service_type: ServiceType::Wasm,
-                    source: "crates/app_sandbox/benches/identity.wasm".to_string(),
+                    source: "crates/sandbox_app/benches/identity.wasm".to_string(),
                     hash: None,
                     interfaces: vec![],
                     env: env_map,

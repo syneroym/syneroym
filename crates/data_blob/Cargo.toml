@@ -1,0 +1,50 @@
+[package]
+name = "syneroym-data-blob"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+# Off by default: object_store's `aws` feature pulls in md-5 -> digest ^0.11.0
+# (stable), which conflicts with the digest 0.11.0-rc.10 pin required by
+# iroh-base's pre-release ed25519-dalek/pkcs8 chain (see the `deps:update`
+# task in mise.toml and the iroh-base comment in the root Cargo.toml). The
+# `BlobBackend::S3` config variant exists unconditionally; selecting it
+# without this feature enabled returns a clear runtime error instead of
+# failing the whole workspace build. Enable once the iroh pin is lifted.
+aws = ["object_store/aws"]
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+rand.workspace = true
+regex.workspace = true
+sha2.workspace = true
+hex.workspace = true
+hkdf.workspace = true
+hmac.workspace = true
+aes-gcm.workspace = true
+aead = { workspace = true, features = ["stream"] }
+futures.workspace = true
+zeroize.workspace = true
+uuid.workspace = true
+object_store.workspace = true
+bytes.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "blob_bench"
+harness = false
+
+[lints]
+workspace = true

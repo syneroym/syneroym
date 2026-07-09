@@ -3,12 +3,12 @@
 //! Provides an isolated, mock execution environment for validating WASM
 //! component orchestration and workflows without invoking a full WASM runtime.
 
-#[cfg(feature = "app_sandbox")]
-pub use syneroym_app_sandbox::AppSandboxEngine;
 #[cfg(not(feature = "app_sandbox"))]
 use syneroym_core::config::SubstrateConfig;
 #[cfg(not(feature = "app_sandbox"))]
 use syneroym_core::local_registry::SubstrateEndpoint;
+#[cfg(feature = "app_sandbox")]
+pub use syneroym_sandbox_app::AppSandboxEngine;
 
 /// A dummy implementation of the sandbox engine used when the feature is
 /// disabled. This allows the rest of the codebase to use the engine
@@ -28,7 +28,7 @@ impl AppSandboxEngine {
 }
 
 #[cfg(feature = "podman_sandbox")]
-pub use syneroym_podman_sandbox::ContainerEngine;
+pub use syneroym_sandbox_podman::ContainerEngine;
 
 #[cfg(not(feature = "podman_sandbox"))]
 #[derive(Debug, Clone)]

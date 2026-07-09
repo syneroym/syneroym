@@ -4,26 +4,18 @@
 //! One instance is registered per deployed `service_id` in
 //! `ControlPlaneService::deploy` (`crates/control_plane/src/service.rs`),
 //! mirroring the same host-provided capabilities the WASM `Host` trait
-//! impls in `crates/app_sandbox/src/engine.rs` expose to guests -- this is
+//! impls in `crates/sandbox_app/src/engine.rs` expose to guests -- this is
 //! the second, independent adapter over the same underlying
 //! `StorageProvider`/`ServiceStore`/`BlobProvider` traits, not a
 //! reimplementation of their logic. Does **not** depend on
-//! `syneroym-app-sandbox`: that crate is an optional, feature-gated
+//! `syneroym-sandbox-app`: that crate is an optional, feature-gated
 //! dependency of `control_plane` (see `crate::dummy_sandbox`), and native
 //! data-layer/blob-store access must work even in builds without the WASM
 //! sandbox feature enabled.
 
 use std::{collections::HashMap, sync::Arc};
 
-use syneroym_bindings::host::syneroym::{
-    app_config::app_config::ConfigError,
-    data_layer::store::{
-        CollectionSchema, DataLayerError, IndexDefinition, IndexType, Mutation, PatchMutation,
-        QueryOptions, RecordWriteValue,
-    },
-    vault::vault::VaultError,
-};
-use syneroym_blob_store::{
+use syneroym_data_blob::{
     BlobError, BlobProvider,
     native_types::{
         FinishUploadResponse, OpenDownloadRequest, OpenDownloadResponse, OpenUploadResponse,
@@ -31,9 +23,17 @@ use syneroym_blob_store::{
     },
     traits::{DownloadSession, UploadSession},
 };
-use syneroym_data_layer::traits::{ServiceStore, StorageProvider};
-use syneroym_key_store::KeyStore;
+use syneroym_data_db::traits::{ServiceStore, StorageProvider};
+use syneroym_data_keystore::KeyStore;
 use syneroym_rpc::{NativeInvocation, NativeResponse, NativeService, RpcError, RpcResult};
+use syneroym_wit_interfaces::host::syneroym::{
+    app_config::app_config::ConfigError,
+    data_layer::store::{
+        CollectionSchema, DataLayerError, IndexDefinition, IndexType, Mutation, PatchMutation,
+        QueryOptions, RecordWriteValue,
+    },
+    vault::vault::VaultError,
+};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 use zeroize::Zeroizing;

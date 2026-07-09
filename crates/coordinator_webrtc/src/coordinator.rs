@@ -13,7 +13,7 @@ use iroh::Endpoint;
 use syneroym_core::{
     config::SubstrateConfig, dht_registry::RegistryClient, local_registry::EndpointRegistry,
 };
-use syneroym_data_layer::registry_store;
+use syneroym_data_db::registry_store;
 use syneroym_router::net_iroh;
 use tokio::net::TcpListener;
 use tracing::info;

@@ -273,16 +273,15 @@ async fn main() -> Result<()> {
     });
     config.storage.blobs_dir = std::env::temp_dir();
 
-    let key_store = std::sync::Arc::new(syneroym_key_store::KeyStore::new());
-    let storage_provider = std::sync::Arc::new(syneroym_data_layer::SqliteStorageProvider::new(
+    let key_store = std::sync::Arc::new(syneroym_data_keystore::KeyStore::new());
+    let storage_provider = std::sync::Arc::new(syneroym_data_db::SqliteStorageProvider::new(
         std::env::temp_dir(),
         false,
     )?);
-    let blob_provider: std::sync::Arc<dyn syneroym_blob_store::BlobProvider> = std::sync::Arc::new(
-        syneroym_blob_store::ObjectStoreBlobProvider::in_memory(u64::MAX, None),
-    );
+    let blob_provider: std::sync::Arc<dyn syneroym_data_blob::BlobProvider> =
+        std::sync::Arc::new(syneroym_data_blob::ObjectStoreBlobProvider::in_memory(u64::MAX, None));
 
-    let app_engine = syneroym_app_sandbox::AppSandboxEngine::init(
+    let app_engine = syneroym_sandbox_app::AppSandboxEngine::init(
         &config,
         vec![],
         key_store,
@@ -292,7 +291,7 @@ async fn main() -> Result<()> {
     .await
     .context("Failed to init app engine")?;
 
-    let quota = Some(syneroym_app_sandbox::WasmResourceQuota {
+    let quota = Some(syneroym_sandbox_app::WasmResourceQuota {
         max_instructions: Some(5_000),
         max_memory_bytes: Some(1024 * 1024),
     });

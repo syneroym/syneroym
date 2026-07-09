@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use syneroym_app_orchestration::models::ServiceType;
-use syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::{
+use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, ContainerPortMapping, ContainerVolumeMapping,
     DeploymentPlan as WitDeploymentPlan, NetworkEndpoint, PlannedService,
     RotationPolicy as WitRotationPolicy, ServiceConfig as WitServiceConfig,
@@ -18,7 +18,7 @@ pub fn map_deployment_plan_to_wit(
             args: svc.config.args,
             custom_config: svc.config.custom_config.clone(),
             quota: svc.config.quota.map(|q| {
-                syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::ResourceQuota {
+                syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::ResourceQuota {
                     max_instructions: q.max_instructions,
                     max_memory_bytes: q.max_memory_bytes,
                 }
@@ -102,7 +102,7 @@ pub fn map_deployment_plan_to_wit(
                     }
                 }
 
-                WitServiceType::Container(syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::ContainerManifest {
+                WitServiceType::Container(syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::ContainerManifest {
                     source: ArtifactSource::Binary(vec![]),
                     hash: svc.config.hash.clone(),
                     image,
@@ -119,7 +119,7 @@ pub fn map_deployment_plan_to_wit(
         services.push(PlannedService {
             service_id: svc.service_id.to_string(),
             logical_ref: svc.logical_ref.to_string(),
-            manifest: syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::DeployManifest {
+            manifest: syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::DeployManifest {
                 config: wit_config,
                 service_type,
                 registry_certificate: None,

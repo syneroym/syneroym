@@ -24,7 +24,7 @@ use syneroym_core::{
     },
     local_registry::{EndpointRegistry, SubstrateEndpoint},
 };
-use syneroym_data_layer::registry_store;
+use syneroym_data_db::registry_store;
 use syneroym_identity::Identity;
 use syneroym_observability::{MemoryRecorder, MetricsSnapshot, ObservabilityEngine};
 use syneroym_router::ConnectionRouter;

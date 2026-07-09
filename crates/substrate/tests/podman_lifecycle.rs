@@ -158,7 +158,7 @@ async fn test_podman_lifecycle() {
     // We deploy a simple alpine container that starts an HTTP echo or simple server
     // or just nginx to test port mapping.
     // Nginx is small and runs an HTTP server on port 80.
-    use syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::{
+    use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
         ContainerPortMapping, ContainerVolumeMapping,
     };
 

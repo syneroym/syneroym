@@ -22,7 +22,7 @@ use syneroym_core::{
     },
     local_registry::{EndpointRegistry, SubstrateEndpoint},
 };
-use syneroym_data_layer::registry_store;
+use syneroym_data_db::registry_store;
 use syneroym_identity::{Identity, substrate::derive_did_key};
 use syneroym_router::{RouteHandler, SYNEROYM_ALPN};
 use syneroym_sdk::SyneroymClient;

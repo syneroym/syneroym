@@ -12,14 +12,14 @@ use std::{
 use anyhow::{Context, Result};
 use iroh::{Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl, endpoint::Connection};
 pub mod mapper;
-pub use syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::{
+use syneroym_core::dht_registry::{EndpointMechanism, RegistryClient, SignedEndpointInfo};
+use syneroym_router::{RoutePreamble, RouteProtocol, RouteTransport, SYNEROYM_ALPN};
+use syneroym_rpc::{JsonRpcRequest, JsonRpcResponse, framing};
+pub use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, ContainerManifest, ContainerPortMapping, ContainerVolumeMapping,
     DeployManifest, DeploymentPlan, NetworkEndpoint, PlannedService, ServiceConfig, ServiceType,
     TcpManifest, WasmManifest,
 };
-use syneroym_core::dht_registry::{EndpointMechanism, RegistryClient, SignedEndpointInfo};
-use syneroym_router::{RoutePreamble, RouteProtocol, RouteTransport, SYNEROYM_ALPN};
-use syneroym_rpc::{JsonRpcRequest, JsonRpcResponse, framing};
 use tokio::{io, net::TcpStream, time};
 use tracing::debug;
 

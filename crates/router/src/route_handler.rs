@@ -19,8 +19,6 @@ use iroh::{
     endpoint::Connection,
     protocol::{AcceptError, ProtocolHandler as IrohProtocolHandler},
 };
-use syneroym_app_sandbox::AppSandboxEngine;
-use syneroym_blob_store::{BlobProvider, ObjectStoreBlobProvider};
 use syneroym_control_plane::ControlPlaneService;
 use syneroym_core::{
     config::{BlobBackend, RetryPolicy, SubstrateConfig},
@@ -28,11 +26,13 @@ use syneroym_core::{
     local_registry::EndpointRegistry,
     storage::MockStorage,
 };
-use syneroym_data_layer::{SqliteStorageProvider, traits::StorageProvider};
+use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
+use syneroym_data_db::{SqliteStorageProvider, traits::StorageProvider};
+use syneroym_data_keystore::KeyStore;
 use syneroym_identity::Identity;
-use syneroym_key_store::KeyStore;
-use syneroym_podman_sandbox::ContainerEngine;
 use syneroym_rpc::{NativeDispatchRegistry, NativeService};
+use syneroym_sandbox_app::AppSandboxEngine;
+use syneroym_sandbox_podman::ContainerEngine;
 use tracing::{debug, error};
 
 use crate::net_iroh::IrohStream;

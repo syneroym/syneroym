@@ -7128,72 +7128,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "syneroym-app-sandbox"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "criterion",
- "dashmap",
- "hex",
- "metrics 0.23.1",
- "reqwest 0.13.4",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "syneroym-bindings",
- "syneroym-blob-store",
- "syneroym-core",
- "syneroym-data-layer",
- "syneroym-key-store",
- "syneroym-rpc",
- "tempfile",
- "tokio",
- "tracing",
- "wasmtime",
- "wasmtime-wasi",
- "zeroize",
-]
-
-[[package]]
-name = "syneroym-bindings"
-version = "0.1.0"
-dependencies = [
- "serde",
- "syneroym-blob-store",
- "wasmtime",
- "wit-bindgen",
-]
-
-[[package]]
-name = "syneroym-blob-store"
-version = "0.1.0"
-dependencies = [
- "aead",
- "aes-gcm",
- "anyhow",
- "async-trait",
- "bytes",
- "criterion",
- "futures",
- "hex",
- "hkdf",
- "hmac",
- "object_store",
- "rand 0.9.4",
- "regex",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "uuid",
- "zeroize",
-]
-
-[[package]]
 name = "syneroym-client-gateway"
 version = "0.1.0"
 dependencies = [
@@ -7239,14 +7173,14 @@ dependencies = [
  "serde",
  "serde_json",
  "syneroym-app-orchestration",
- "syneroym-app-sandbox",
- "syneroym-bindings",
- "syneroym-blob-store",
  "syneroym-core",
- "syneroym-data-layer",
- "syneroym-key-store",
- "syneroym-podman-sandbox",
+ "syneroym-data-blob",
+ "syneroym-data-db",
+ "syneroym-data-keystore",
  "syneroym-rpc",
+ "syneroym-sandbox-app",
+ "syneroym-sandbox-podman",
+ "syneroym-wit-interfaces",
  "tempfile",
  "tokio",
  "tracing",
@@ -7291,7 +7225,7 @@ dependencies = [
  "serde_json",
  "syneroym-community-registry",
  "syneroym-core",
- "syneroym-data-layer",
+ "syneroym-data-db",
  "syneroym-identity",
  "syneroym-router",
  "syneroym-rpc",
@@ -7328,7 +7262,7 @@ dependencies = [
  "serde_json",
  "swc_core",
  "syneroym-core",
- "syneroym-data-layer",
+ "syneroym-data-db",
  "syneroym-identity",
  "syneroym-router",
  "tempfile",
@@ -7373,7 +7307,35 @@ dependencies = [
 ]
 
 [[package]]
-name = "syneroym-data-layer"
+name = "syneroym-data-blob"
+version = "0.1.0"
+dependencies = [
+ "aead",
+ "aes-gcm",
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "criterion",
+ "futures",
+ "hex",
+ "hkdf",
+ "hmac",
+ "object_store",
+ "rand 0.9.4",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
+name = "syneroym-data-db"
 version = "0.1.0"
 dependencies = [
  "aes-gcm",
@@ -7389,13 +7351,29 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
- "syneroym-bindings",
  "syneroym-core",
- "syneroym-key-store",
+ "syneroym-data-keystore",
+ "syneroym-wit-interfaces",
  "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "zeroize",
+]
+
+[[package]]
+name = "syneroym-data-keystore"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "anyhow",
+ "chrono",
+ "rand 0.9.4",
+ "rusqlite",
+ "syneroym-identity",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
  "zeroize",
 ]
 
@@ -7415,22 +7393,6 @@ dependencies = [
  "tempfile",
  "tracing",
  "z32",
- "zeroize",
-]
-
-[[package]]
-name = "syneroym-key-store"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "anyhow",
- "chrono",
- "rand 0.9.4",
- "rusqlite",
- "syneroym-identity",
- "tempfile",
- "thiserror 2.0.18",
- "tracing",
  "zeroize",
 ]
 
@@ -7464,14 +7426,14 @@ dependencies = [
  "reqwest 0.13.4",
  "serde",
  "serde_json",
- "syneroym-app-sandbox",
- "syneroym-bindings",
- "syneroym-blob-store",
  "syneroym-core",
- "syneroym-data-layer",
+ "syneroym-data-blob",
+ "syneroym-data-db",
+ "syneroym-data-keystore",
  "syneroym-identity",
- "syneroym-key-store",
+ "syneroym-sandbox-app",
  "syneroym-sdk",
+ "syneroym-wit-interfaces",
  "sysinfo",
  "tempfile",
  "tokio",
@@ -7479,24 +7441,6 @@ dependencies = [
  "tracing-subscriber",
  "wasmtime",
  "z32",
-]
-
-[[package]]
-name = "syneroym-podman-sandbox"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "hex",
- "metrics 0.23.1",
- "reqwest 0.13.4",
- "serde_json",
- "sha2 0.10.9",
- "syneroym-bindings",
- "syneroym-core",
- "syneroym-data-layer",
- "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -7523,15 +7467,15 @@ dependencies = [
  "rand 0.9.4",
  "serde",
  "serde_json",
- "syneroym-app-sandbox",
- "syneroym-blob-store",
  "syneroym-control-plane",
  "syneroym-core",
- "syneroym-data-layer",
+ "syneroym-data-blob",
+ "syneroym-data-db",
+ "syneroym-data-keystore",
  "syneroym-identity",
- "syneroym-key-store",
- "syneroym-podman-sandbox",
  "syneroym-rpc",
+ "syneroym-sandbox-app",
+ "syneroym-sandbox-podman",
  "tokio",
  "tokio-tungstenite",
  "tracing",
@@ -7554,6 +7498,52 @@ dependencies = [
 ]
 
 [[package]]
+name = "syneroym-sandbox-app"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "criterion",
+ "dashmap",
+ "hex",
+ "metrics 0.23.1",
+ "reqwest 0.13.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "syneroym-core",
+ "syneroym-data-blob",
+ "syneroym-data-db",
+ "syneroym-data-keystore",
+ "syneroym-rpc",
+ "syneroym-wit-interfaces",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "wasmtime",
+ "wasmtime-wasi",
+ "zeroize",
+]
+
+[[package]]
+name = "syneroym-sandbox-podman"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "hex",
+ "metrics 0.23.1",
+ "reqwest 0.13.4",
+ "serde_json",
+ "sha2 0.10.9",
+ "syneroym-core",
+ "syneroym-data-db",
+ "syneroym-wit-interfaces",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "syneroym-sdk"
 version = "0.1.0"
 dependencies = [
@@ -7564,11 +7554,11 @@ dependencies = [
  "serde",
  "serde_json",
  "syneroym-app-orchestration",
- "syneroym-bindings",
  "syneroym-core",
  "syneroym-identity",
  "syneroym-router",
  "syneroym-rpc",
+ "syneroym-wit-interfaces",
  "tokio",
  "tracing",
 ]
@@ -7586,16 +7576,16 @@ dependencies = [
  "serde",
  "serde_json",
  "syneroym-app-orchestration",
- "syneroym-app-sandbox",
- "syneroym-blob-store",
  "syneroym-community-registry",
  "syneroym-coordinator-iroh",
  "syneroym-core",
- "syneroym-data-layer",
+ "syneroym-data-blob",
+ "syneroym-data-db",
+ "syneroym-data-keystore",
  "syneroym-identity",
- "syneroym-key-store",
  "syneroym-router",
  "syneroym-rpc",
+ "syneroym-sandbox-app",
  "syneroym-sdk",
  "tokio",
 ]
@@ -7623,19 +7613,19 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
- "syneroym-app-sandbox",
- "syneroym-bindings",
  "syneroym-client-gateway",
  "syneroym-community-registry",
  "syneroym-coordinator",
  "syneroym-coordinator-webrtc",
  "syneroym-core",
- "syneroym-data-layer",
+ "syneroym-data-db",
  "syneroym-identity",
  "syneroym-observability",
  "syneroym-router",
  "syneroym-rpc",
+ "syneroym-sandbox-app",
  "syneroym-sdk",
+ "syneroym-wit-interfaces",
  "tempfile",
  "tokio",
  "tokio-stream",
@@ -7645,6 +7635,16 @@ dependencies = [
  "tracing-subscriber",
  "webrtc",
  "z32",
+]
+
+[[package]]
+name = "syneroym-wit-interfaces"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "syneroym-data-blob",
+ "wasmtime",
+ "wit-bindgen",
 ]
 
 [[package]]
