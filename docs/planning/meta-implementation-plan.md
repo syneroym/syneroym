@@ -145,6 +145,17 @@ This was **Milestone 3B Slice 6 / "Deferred: HTTP Passthrough"** in earlier plan
 
 ---
 
+> **Interstitial maintenance (2026-07-09):** between M03B's close and M4
+> start, the workspace crate layout was normalized (`data-layer` →
+> `data_db`, `blob-store` → `data_blob`, `key-store` → `data_keystore`,
+> `bindings` → `wit_interfaces`, `app_sandbox` → `sandbox_app`,
+> `podman_sandbox` → `sandbox_podman`) and workspace-wide import cleanup was
+> applied per `AGENTS.md`. No behavior change. See
+> [ADR-0012](../decisions/0012-crate-rename-refactor.md) and
+> [crate-rename-refactor.md](crate-rename-refactor.md) for the decision and
+> execution plan. File paths referencing the old crate names in *closed*
+> milestone docs (M0–M3B) below and above are left as-is by design.
+
 ## Milestone 4: Typed Communication and Authorization
 **Goal:** Bridge isolated services securely by introducing the Universal Proxy and layering the FDAE (Access Control) on top of the established Data Layer.
 
