@@ -1,15 +1,25 @@
 use std::{
     collections::HashMap,
+    fmt,
+    fs::DirBuilder,
     path::{Path, PathBuf},
+    str,
     sync::{Arc, LazyLock, Mutex},
 };
 
 use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce, aead::Aead};
 use async_trait::async_trait;
+use chrono::Utc;
+use deadpool_sqlite::{Config as PoolConfig, Hook, HookError, Pool, Runtime};
 use rand::RngCore;
-use rusqlite::params;
-use syneroym_data_keystore::KeyStore;
-use tokio::{sync::oneshot, task};
+use regex::Regex;
+use rusqlite::{Connection, Error as SqliteError, params, types::Value as SqlValue};
+use serde_json::{Map, Value};
+use syneroym_data_keystore::{KeyStore, KeyStoreError};
+use tokio::{
+    sync::{mpsc, oneshot},
+    task,
+};
 use zeroize::Zeroizing;
 
 use crate::{
@@ -23,12 +33,12 @@ use crate::{
 // does not weaken the path-traversal guard below (which still relies on
 // rejecting `.`/`/`/`\` and on the `starts_with` descendant check).
 #[allow(clippy::unwrap_used)]
-static SERVICE_ID_REGEX: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r"^[a-zA-Z0-9_:\-]{1,128}$").unwrap());
+static SERVICE_ID_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[a-zA-Z0-9_:\-]{1,128}$").unwrap());
 
 #[allow(clippy::unwrap_used)]
-static IDENTIFIER_REGEX: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$").unwrap());
+static IDENTIFIER_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$").unwrap());
 
 const SUBSTRATE_SCHEMA_VERSION: &str = "m3a";
 
@@ -55,13 +65,13 @@ fn validate_identifier(name: &str) -> Result<(), host_store::DataLayerError> {
 
 /// Applies an RFC 7396 JSON merge-patch: `patch` values overwrite `target`,
 /// `null` values remove the key, and nested objects merge recursively.
-fn apply_merge_patch(target: &mut serde_json::Value, patch: &serde_json::Value) {
-    let serde_json::Value::Object(patch_obj) = patch else {
+fn apply_merge_patch(target: &mut Value, patch: &Value) {
+    let Value::Object(patch_obj) = patch else {
         *target = patch.clone();
         return;
     };
     if !target.is_object() {
-        *target = serde_json::Value::Object(serde_json::Map::new());
+        *target = Value::Object(Map::new());
     }
     #[allow(clippy::expect_used)]
     let target_obj = target.as_object_mut().expect("target was just coerced into an object");
@@ -69,24 +79,24 @@ fn apply_merge_patch(target: &mut serde_json::Value, patch: &serde_json::Value) 
         if value.is_null() {
             target_obj.remove(key);
         } else {
-            let entry = target_obj.entry(key.clone()).or_insert(serde_json::Value::Null);
+            let entry = target_obj.entry(key.clone()).or_insert(Value::Null);
             apply_merge_patch(entry, value);
         }
     }
 }
 
 fn payload_to_text(payload: &[u8]) -> Result<String, host_store::DataLayerError> {
-    let text = std::str::from_utf8(payload).map_err(|_| {
+    let text = str::from_utf8(payload).map_err(|_| {
         host_store::DataLayerError::SchemaViolation("payload must be valid UTF-8".into())
     })?;
-    serde_json::from_str::<serde_json::Value>(text).map_err(|e| {
+    serde_json::from_str::<Value>(text).map_err(|e| {
         host_store::DataLayerError::SchemaViolation(format!("payload is not valid JSON: {e}"))
     })?;
     Ok(text.to_string())
 }
 
 fn do_create_collection(
-    conn: &rusqlite::Connection,
+    conn: &Connection,
     schema: &host_store::CollectionSchema,
 ) -> Result<(), host_store::DataLayerError> {
     validate_identifier(&schema.name)?;
@@ -116,19 +126,13 @@ fn do_create_collection(
     Ok(())
 }
 
-fn do_drop_collection(
-    conn: &rusqlite::Connection,
-    name: &str,
-) -> Result<(), host_store::DataLayerError> {
+fn do_drop_collection(conn: &Connection, name: &str) -> Result<(), host_store::DataLayerError> {
     validate_identifier(name)?;
     conn.execute(&format!("DROP TABLE IF EXISTS {name}"), []).map_err(map_rusqlite_error)?;
     Ok(())
 }
 
-fn do_execute_ddl(
-    conn: &rusqlite::Connection,
-    sql: &str,
-) -> Result<(), host_store::DataLayerError> {
+fn do_execute_ddl(conn: &Connection, sql: &str) -> Result<(), host_store::DataLayerError> {
     // Syntax-check first via a plain `prepare` (compiles without stepping the
     // statement, so nothing is mutated), then run the real statement(s).
     // NOTE: only the leading statement of a multi-statement `sql` is checked
@@ -142,14 +146,14 @@ fn do_execute_ddl(
 }
 
 fn do_put(
-    conn: &rusqlite::Connection,
+    conn: &Connection,
     collection: &str,
     value: &host_store::RecordWriteValue,
     creator_id: &str,
 ) -> Result<(), host_store::DataLayerError> {
     validate_identifier(collection)?;
     let payload_text = payload_to_text(&value.payload)?;
-    let now = chrono::Utc::now().timestamp_millis();
+    let now = Utc::now().timestamp_millis();
 
     let existing_created_at: Option<i64> = conn
         .query_row(
@@ -159,7 +163,7 @@ fn do_put(
         )
         .map(Some)
         .or_else(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            SqliteError::QueryReturnedNoRows => Ok(None),
             other => Err(other),
         })
         .map_err(map_rusqlite_error)?;
@@ -178,7 +182,7 @@ fn do_put(
 }
 
 fn do_patch(
-    conn: &rusqlite::Connection,
+    conn: &Connection,
     collection: &str,
     id: &str,
     patch_json: &[u8],
@@ -189,26 +193,26 @@ fn do_patch(
             row.get(0)
         })
         .map_err(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => host_store::DataLayerError::SchemaViolation(
+            SqliteError::QueryReturnedNoRows => host_store::DataLayerError::SchemaViolation(
                 format!("record not found for patch: {id}"),
             ),
             other => map_rusqlite_error(other),
         })?;
 
-    let mut target: serde_json::Value = serde_json::from_str(&existing_payload).map_err(|e| {
+    let mut target: Value = serde_json::from_str(&existing_payload).map_err(|e| {
         host_store::DataLayerError::Internal(format!("stored payload is not valid JSON: {e}"))
     })?;
-    let patch_text = std::str::from_utf8(patch_json).map_err(|_| {
+    let patch_text = str::from_utf8(patch_json).map_err(|_| {
         host_store::DataLayerError::SchemaViolation("patch-json must be valid UTF-8".into())
     })?;
-    let patch_doc: serde_json::Value = serde_json::from_str(patch_text).map_err(|e| {
+    let patch_doc: Value = serde_json::from_str(patch_text).map_err(|e| {
         host_store::DataLayerError::SchemaViolation(format!("patch-json is not valid JSON: {e}"))
     })?;
     apply_merge_patch(&mut target, &patch_doc);
     let merged_text = serde_json::to_string(&target)
         .map_err(|e| host_store::DataLayerError::Internal(e.to_string()))?;
 
-    let now = chrono::Utc::now().timestamp_millis();
+    let now = Utc::now().timestamp_millis();
     conn.execute(
         &format!("UPDATE {collection} SET payload = ?1, updated_at = ?2 WHERE id = ?3"),
         params![merged_text, now, id],
@@ -218,7 +222,7 @@ fn do_patch(
 }
 
 fn do_delete(
-    conn: &rusqlite::Connection,
+    conn: &Connection,
     collection: &str,
     id: &str,
 ) -> Result<(), host_store::DataLayerError> {
@@ -231,7 +235,7 @@ fn do_delete(
 }
 
 fn do_delete_many(
-    conn: &rusqlite::Connection,
+    conn: &Connection,
     collection: &str,
     filter_json: Option<&str>,
 ) -> Result<u64, host_store::DataLayerError> {
@@ -251,7 +255,7 @@ fn do_delete_many(
 }
 
 fn do_batch_mutate(
-    conn: &mut rusqlite::Connection,
+    conn: &mut Connection,
     collection: &str,
     mutations: &[host_store::Mutation],
     creator_id: &str,
@@ -277,7 +281,7 @@ fn do_batch_mutate(
 }
 
 fn do_get(
-    conn: &rusqlite::Connection,
+    conn: &Connection,
     collection: &str,
     id: &str,
 ) -> Result<Option<host_store::RecordReadValue>, host_store::DataLayerError> {
@@ -306,13 +310,13 @@ fn do_get(
                 updated_at: updated_at as u64,
             }))
         }
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(SqliteError::QueryReturnedNoRows) => Ok(None),
         Err(e) => Err(map_rusqlite_error(e)),
     }
 }
 
 fn do_query(
-    conn: &rusqlite::Connection,
+    conn: &Connection,
     collection: &str,
     opts: &host_store::QueryOptions,
 ) -> Result<host_store::QueryResult, host_store::DataLayerError> {
@@ -321,14 +325,14 @@ fn do_query(
     let limit = opts.limit.unwrap_or(MAX_QUERY_PAGE_SIZE).min(MAX_QUERY_PAGE_SIZE);
 
     let mut where_clauses = Vec::new();
-    let mut bound_params: Vec<rusqlite::types::Value> = Vec::new();
+    let mut bound_params: Vec<SqlValue> = Vec::new();
     if let Some(cf) = &compiled {
         where_clauses.push(cf.where_clause.clone());
         bound_params.extend(cf.params.iter().cloned());
     }
     if let Some(cursor) = &opts.cursor {
         where_clauses.push("id > ?".to_string());
-        bound_params.push(rusqlite::types::Value::Text(cursor.clone()));
+        bound_params.push(SqlValue::Text(cursor.clone()));
     }
     let where_sql = if where_clauses.is_empty() {
         String::new()
@@ -337,7 +341,7 @@ fn do_query(
     };
     // Fetch one extra row past the page limit to determine whether a
     // next-cursor should be returned.
-    bound_params.push(rusqlite::types::Value::Integer(i64::from(limit) + 1));
+    bound_params.push(SqlValue::Integer(i64::from(limit) + 1));
 
     let sql = format!(
         "SELECT id, payload, creator_id, created_at, updated_at FROM {collection} {where_sql} \
@@ -371,13 +375,13 @@ fn do_query(
 /// encrypted databases.
 pub struct SqliteStorageProvider {
     db_dir: PathBuf,
-    substrate_conn: Arc<Mutex<rusqlite::Connection>>,
+    substrate_conn: Arc<Mutex<Connection>>,
     service_stores: Arc<Mutex<HashMap<String, Arc<SqliteServiceStore>>>>,
     encryption_enabled: bool,
 }
 
-impl std::fmt::Debug for SqliteStorageProvider {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for SqliteStorageProvider {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SqliteStorageProvider")
             .field("db_dir", &self.db_dir)
             .field("encryption_enabled", &self.encryption_enabled)
@@ -396,7 +400,7 @@ impl SqliteStorageProvider {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::DirBuilderExt;
-                let mut builder = std::fs::DirBuilder::new();
+                let mut builder = DirBuilder::new();
                 builder.recursive(true).mode(0o700);
                 builder.create(&db_dir)?;
             }
@@ -407,7 +411,7 @@ impl SqliteStorageProvider {
         }
 
         let substrate_path = db_dir.join("substrate.db");
-        let mut conn = rusqlite::Connection::open(&substrate_path)?;
+        let mut conn = Connection::open(&substrate_path)?;
 
         conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version TEXT NOT NULL)", [])?;
 
@@ -415,7 +419,7 @@ impl SqliteStorageProvider {
             .query_row("SELECT version FROM schema_version LIMIT 1", [], |row| row.get(0))
             .map(Some)
             .or_else(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                SqliteError::QueryReturnedNoRows => Ok(None),
                 other => Err(other),
             })?;
 
@@ -448,7 +452,7 @@ impl SqliteStorageProvider {
         })
     }
 
-    fn run_m3a_migration(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    fn run_m3a_migration(conn: &Connection) -> rusqlite::Result<()> {
         conn.execute(
             "CREATE TABLE IF NOT EXISTS dek_store (
                 service_id    TEXT PRIMARY KEY,
@@ -505,9 +509,9 @@ impl SqliteStorageProvider {
             self.substrate_conn.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {}", e))?;
         let dek = match key_store.load_dek(service_id, &conn) {
             Ok(bytes) => bytes,
-            Err(syneroym_data_keystore::KeyStoreError::Database(
-                rusqlite::Error::QueryReturnedNoRows,
-            )) => key_store.generate_dek(service_id, &conn)?,
+            Err(KeyStoreError::Database(SqliteError::QueryReturnedNoRows)) => {
+                key_store.generate_dek(service_id, &conn)?
+            }
             Err(e) => return Err(e.into()),
         };
         Ok(Some(dek))
@@ -585,8 +589,8 @@ enum DbCommand {
 }
 
 fn run_writer_loop(
-    mut conn: rusqlite::Connection,
-    mut rx: tokio::sync::mpsc::Receiver<DbCommand>,
+    mut conn: Connection,
+    mut rx: mpsc::Receiver<DbCommand>,
     dek: Zeroizing<[u8; 32]>,
 ) {
     while let Some(cmd) = rx.blocking_recv() {
@@ -606,7 +610,7 @@ fn run_writer_loop(
 
                 let res = match ciphertext_res {
                     Ok(ciphertext) => {
-                        let now = chrono::Utc::now().timestamp_millis();
+                        let now = Utc::now().timestamp_millis();
                         conn.execute(
                             "INSERT OR REPLACE INTO _vault (key, ciphertext, nonce, updated_at)
                              VALUES (?1, ?2, ?3, ?4)",
@@ -704,7 +708,7 @@ impl StorageProvider for SqliteStorageProvider {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::DirBuilderExt;
-                let mut builder = std::fs::DirBuilder::new();
+                let mut builder = DirBuilder::new();
                 builder.recursive(true).mode(0o700);
                 builder.create(&service_db_dir)?;
             }
@@ -725,7 +729,7 @@ impl StorageProvider for SqliteStorageProvider {
         let dek = Zeroizing::new(self.resolve_dek(service_id, key_store)?.unwrap_or([0u8; 32]));
 
         // Open service DB connection for the single writer actor
-        let writer_conn = rusqlite::Connection::open(&db_file_path)?;
+        let writer_conn = Connection::open(&db_file_path)?;
         if self.encryption_enabled {
             let pragma_val = Zeroizing::new(format!("x'{}'", hex::encode(*dek)));
             writer_conn.pragma_update(None, "key", &*pragma_val)?;
@@ -743,7 +747,7 @@ impl StorageProvider for SqliteStorageProvider {
         )?;
 
         // Start single-writer background loop
-        let (writer_tx, writer_rx) = tokio::sync::mpsc::channel(100);
+        let (writer_tx, writer_rx) = mpsc::channel(100);
         let dek_writer = dek.clone();
         task::spawn_blocking(move || {
             run_writer_loop(writer_conn, writer_rx, dek_writer);
@@ -752,28 +756,22 @@ impl StorageProvider for SqliteStorageProvider {
         // Initialize reader pool, used for all read-only operations (vault
         // reveal reads stay on the writer above for simplicity; CRUD reads
         // use this pool for concurrency).
-        let cfg = deadpool_sqlite::Config::new(&db_file_path);
-        let mut reader_pool_builder = cfg.builder(deadpool_sqlite::Runtime::Tokio1)?;
+        let cfg = PoolConfig::new(&db_file_path);
+        let mut reader_pool_builder = cfg.builder(Runtime::Tokio1)?;
         if self.encryption_enabled {
             let reader_dek = dek.clone();
-            reader_pool_builder = reader_pool_builder.post_create(deadpool_sqlite::Hook::async_fn(
-                move |conn, _metrics| {
+            reader_pool_builder =
+                reader_pool_builder.post_create(Hook::async_fn(move |conn, _metrics| {
                     let reader_dek = reader_dek.clone();
                     Box::pin(async move {
                         let pragma_val = Zeroizing::new(format!("x'{}'", hex::encode(*reader_dek)));
                         conn.interact(move |conn| conn.pragma_update(None, "key", &*pragma_val))
                             .await
-                            .map_err(|e| {
-                                deadpool_sqlite::HookError::message(format!(
-                                    "Interact error: {}",
-                                    e
-                                ))
-                            })?
-                            .map_err(deadpool_sqlite::HookError::Backend)?;
+                            .map_err(|e| HookError::message(format!("Interact error: {}", e)))?
+                            .map_err(HookError::Backend)?;
                         Ok(())
                     })
-                },
-            ));
+                }));
         }
         let reader_pool = reader_pool_builder.build()?;
 
@@ -832,13 +830,13 @@ impl StorageProvider for SqliteStorageProvider {
                 )
                 .map(Some)
                 .or_else(|e| match e {
-                    rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                    SqliteError::QueryReturnedNoRows => Ok(None),
                     other => Err(other),
                 })?
                 .flatten();
 
             let next_gen = current_gen.unwrap_or(0) + 1;
-            let now = chrono::Utc::now().timestamp_millis();
+            let now = Utc::now().timestamp_millis();
 
             tx.execute(
                 "INSERT INTO config_generations (service_id, generation, config_blob, created_at)
@@ -915,12 +913,12 @@ impl StorageProvider for SqliteStorageProvider {
 }
 
 pub struct SqliteServiceStore {
-    reader_pool: deadpool_sqlite::Pool,
-    writer_tx: tokio::sync::mpsc::Sender<DbCommand>,
+    reader_pool: Pool,
+    writer_tx: mpsc::Sender<DbCommand>,
 }
 
-impl std::fmt::Debug for SqliteServiceStore {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for SqliteServiceStore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SqliteServiceStore").field("dek", &"<redacted>").finish()
     }
 }
@@ -928,7 +926,7 @@ impl std::fmt::Debug for SqliteServiceStore {
 /// Sends a write command over the single-writer channel and awaits its
 /// response, flattening channel-disconnect failures into a `DataLayerError`.
 async fn send_write_command<T>(
-    writer_tx: &tokio::sync::mpsc::Sender<DbCommand>,
+    writer_tx: &mpsc::Sender<DbCommand>,
     build: impl FnOnce(oneshot::Sender<Result<T, host_store::DataLayerError>>) -> DbCommand,
 ) -> Result<T, host_store::DataLayerError> {
     let (resp_tx, resp_rx) = oneshot::channel();
@@ -1186,7 +1184,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let substrate_path = dir.path().join("substrate.db");
         {
-            let conn = rusqlite::Connection::open(&substrate_path).unwrap();
+            let conn = Connection::open(&substrate_path).unwrap();
             conn.execute(
                 "CREATE TABLE schema_version (
                     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -1200,7 +1198,7 @@ mod tests {
 
         let _provider = SqliteStorageProvider::new(dir.path(), false).unwrap();
 
-        let conn = rusqlite::Connection::open(&substrate_path).unwrap();
+        let conn = Connection::open(&substrate_path).unwrap();
         let version: String = conn
             .query_row("SELECT version FROM schema_version LIMIT 1", [], |row| row.get(0))
             .unwrap();
@@ -1223,7 +1221,7 @@ mod tests {
 
         let _provider = SqliteStorageProvider::new(dir.path(), false).unwrap();
 
-        let conn = rusqlite::Connection::open(&substrate_path).unwrap();
+        let conn = Connection::open(&substrate_path).unwrap();
         let columns: Vec<String> = {
             let mut stmt = conn.prepare("PRAGMA table_info(schema_version)").unwrap();
             stmt.query_map([], |row| row.get::<_, String>(1))
@@ -1408,6 +1406,8 @@ mod tests {
 
     #[test]
     fn test_insecure_mode_warning() {
+        use std::io;
+
         use tracing_subscriber::prelude::*;
 
         let logs = Arc::new(Mutex::new(Vec::new()));
@@ -1416,12 +1416,12 @@ mod tests {
         struct MockWriter {
             logs: Arc<Mutex<Vec<u8>>>,
         }
-        impl std::io::Write for MockWriter {
-            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        impl io::Write for MockWriter {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
                 self.logs.lock().unwrap().extend_from_slice(buf);
                 Ok(buf.len())
             }
-            fn flush(&mut self) -> std::io::Result<()> {
+            fn flush(&mut self) -> io::Result<()> {
                 Ok(())
             }
         }

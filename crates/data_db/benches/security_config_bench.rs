@@ -4,7 +4,10 @@
 //! `config/get`, KEK rotation (100 DEKs), and the SQLCipher-vs-plaintext A/B
 //! overhead comparison for `put`/`get`.
 
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use syneroym_data_db::{
@@ -77,7 +80,7 @@ fn bench_kek_rotation(c: &mut Criterion) {
 
     c.bench_function("kek_rotation_100_deks", |b| {
         b.to_async(&runtime).iter_custom(|iters| async move {
-            let mut total = std::time::Duration::ZERO;
+            let mut total = Duration::ZERO;
             for _ in 0..iters {
                 let temp_dir = tempfile::tempdir().unwrap();
                 let provider = SqliteStorageProvider::new(temp_dir.path(), true).unwrap();
@@ -94,7 +97,7 @@ fn bench_kek_rotation(c: &mut Criterion) {
                     drop(store);
                 }
 
-                let start = std::time::Instant::now();
+                let start = Instant::now();
                 provider.rotate_kek(&key_store, black_box([2u8; 32])).await.unwrap();
                 total += start.elapsed();
 

@@ -5,14 +5,17 @@
 
 use std::sync::Arc;
 
+use serde_json::Value;
+use syneroym_data_keystore::KeyStore;
 use tempfile::tempdir;
 
 use crate::{
     ServiceStore, SqliteStorageProvider, StorageProvider,
     host_store::{
-        CollectionSchema, DataLayerError, IndexDefinition, IndexType, Mutation, QueryOptions,
-        RecordWriteValue,
+        CollectionSchema, DataLayerError, IndexDefinition, IndexType, Mutation, PatchMutation,
+        QueryOptions, RecordWriteValue,
     },
+    sqlite::MAX_BATCH_SIZE,
 };
 
 async fn setup_store() -> Box<dyn ServiceStore> {
@@ -21,7 +24,7 @@ async fn setup_store() -> Box<dyn ServiceStore> {
     // process; test isolation is still per-test via the unique tempdir path.
     let dir = Box::leak(Box::new(dir));
     let provider = SqliteStorageProvider::new(dir.path(), false).unwrap();
-    let key_store = Arc::new(syneroym_data_keystore::KeyStore::new());
+    let key_store = Arc::new(KeyStore::new());
     provider.open_service_db("crud-test-svc", &key_store).await.unwrap()
 }
 
@@ -48,13 +51,13 @@ async fn test_put_get_patch_correctness() {
     let got = store.get("people", "p1").await.unwrap().unwrap();
     assert_eq!(got.id, "p1");
     assert_eq!(got.creator_id, "creator-1");
-    let payload: serde_json::Value = serde_json::from_slice(&got.payload).unwrap();
+    let payload: Value = serde_json::from_slice(&got.payload).unwrap();
     assert_eq!(payload["name"], "alice");
     assert_eq!(payload["age"], 30);
 
     store.patch("people", "p1", br#"{"age": 31, "nickname": "al"}"#).await.unwrap();
     let patched = store.get("people", "p1").await.unwrap().unwrap();
-    let payload: serde_json::Value = serde_json::from_slice(&patched.payload).unwrap();
+    let payload: Value = serde_json::from_slice(&patched.payload).unwrap();
     assert_eq!(payload["name"], "alice");
     assert_eq!(payload["age"], 31);
     assert_eq!(payload["nickname"], "al");
@@ -182,7 +185,7 @@ async fn test_batch_mutate_rolls_back_all_on_one_failure() {
     // Put in the same batch must not persist either.
     let mutations = vec![
         Mutation::Put(write_value("new-1", "{}")),
-        Mutation::Patch(crate::host_store::PatchMutation {
+        Mutation::Patch(PatchMutation {
             id: "does-not-exist".to_string(),
             patch_json: b"{}".to_vec(),
         }),
@@ -199,7 +202,7 @@ async fn test_batch_mutate_rolls_back_all_on_one_failure() {
 async fn test_batch_mutate_exceeding_max_size_rejected() {
     let store = setup_store().await;
     store.create_collection(&schema("people")).await.unwrap();
-    let mutations: Vec<_> = (0..(crate::sqlite::MAX_BATCH_SIZE + 1))
+    let mutations: Vec<_> = (0..(MAX_BATCH_SIZE + 1))
         .map(|i| Mutation::Put(write_value(&format!("p{i}"), "{}")))
         .collect();
     let err = store.batch_mutate("people", &mutations, "c").await.unwrap_err();

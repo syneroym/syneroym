@@ -1,3 +1,5 @@
+use std::fmt;
+
 use async_trait::async_trait;
 use zeroize::Zeroizing;
 
@@ -13,7 +15,7 @@ use crate::errors::BlobError;
 /// DEK once (via `StorageProvider::load_service_dek`) and pass it in --
 /// this crate has no dependency on `data-layer`/`key-store`.
 #[async_trait]
-pub trait BlobProvider: Send + Sync + std::fmt::Debug {
+pub trait BlobProvider: Send + Sync + fmt::Debug {
     /// Opens a streaming upload session. The returned hash is only valid
     /// after `UploadSession::finish` succeeds.
     async fn open_upload(

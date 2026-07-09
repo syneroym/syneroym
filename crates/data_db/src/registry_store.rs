@@ -1,5 +1,6 @@
 use std::{
-    fmt::{Debug, Formatter},
+    fmt::{self, Debug, Formatter},
+    fs::DirBuilder,
     path::Path,
     sync::{Arc, Mutex, MutexGuard},
 };
@@ -18,7 +19,7 @@ pub async fn init_store(config: &SubstrateConfig) -> Result<Arc<dyn EndpointStor
         #[cfg(unix)]
         {
             use std::os::unix::fs::DirBuilderExt;
-            let mut builder = std::fs::DirBuilder::new();
+            let mut builder = DirBuilder::new();
             builder.recursive(true).mode(0o700);
             builder.create(db_path)?;
         }
@@ -36,7 +37,7 @@ pub struct SqliteEndpointStorage {
 }
 
 impl Debug for SqliteEndpointStorage {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("SqliteEndpointStorage").field("conn", &"rusqlite::Connection").finish()
     }
 }

@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{fs, time::Duration};
 
 use sysinfo::System;
 use tokio::{runtime::Handle, task::JoinHandle, time};
@@ -41,7 +41,7 @@ impl SystemSampler {
                 }
 
                 // Count open FDs
-                let fds = std::fs::read_dir("/dev/fd").map(|dir| dir.count()).unwrap_or(0);
+                let fds = fs::read_dir("/dev/fd").map(|dir| dir.count()).unwrap_or(0);
                 metrics::gauge!("substrate.system.open_fds").set(fds as f64);
 
                 // Count active tokio tasks

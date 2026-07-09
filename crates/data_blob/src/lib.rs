@@ -1,5 +1,7 @@
 //! Content-addressed, encrypted-at-rest blob object storage for `SynSvc`s.
 
+use std::fmt;
+
 pub mod crypto;
 pub mod errors;
 pub mod native_types;
@@ -19,8 +21,8 @@ pub use traits::{BlobProvider, DownloadSession, UploadSession};
 /// `input-stream`/`output-stream` resources to concrete types internally.
 pub struct HostUploadSession(pub Box<dyn UploadSession>);
 
-impl std::fmt::Debug for HostUploadSession {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for HostUploadSession {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HostUploadSession").finish_non_exhaustive()
     }
 }
@@ -28,8 +30,8 @@ impl std::fmt::Debug for HostUploadSession {
 /// See [`HostUploadSession`].
 pub struct HostDownloadSession(pub Box<dyn DownloadSession>);
 
-impl std::fmt::Debug for HostDownloadSession {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for HostDownloadSession {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HostDownloadSession").finish_non_exhaustive()
     }
 }

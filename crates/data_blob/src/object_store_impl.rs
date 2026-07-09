@@ -1,7 +1,9 @@
 use std::{
     collections::HashMap,
+    fmt, fs,
     path::PathBuf,
     sync::{Arc, LazyLock, Mutex},
+    time,
 };
 
 use async_trait::async_trait;
@@ -15,7 +17,7 @@ use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::{
-    crypto::{BlobDecryptor, BlobEncryptor, HEADER_LEN},
+    crypto::{BlobDecryptor, BlobEncryptor, HEADER_LEN, sign_url},
     errors::BlobError,
     traits::{BlobProvider, DownloadSession, UploadSession},
 };
@@ -73,8 +75,8 @@ pub struct ObjectStoreBlobProvider {
     usage: Arc<Mutex<HashMap<String, u64>>>,
 }
 
-impl std::fmt::Debug for ObjectStoreBlobProvider {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for ObjectStoreBlobProvider {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ObjectStoreBlobProvider")
             .field("local_root", &self.local_root)
             .field("max_blob_bytes", &self.max_blob_bytes)
@@ -91,7 +93,7 @@ impl ObjectStoreBlobProvider {
         max_service_total_bytes: Option<u64>,
     ) -> anyhow::Result<Self> {
         if !local_root.exists() {
-            std::fs::create_dir_all(&local_root)?;
+            fs::create_dir_all(&local_root)?;
         }
         let store = LocalFileSystem::new_with_prefix(&local_root)?;
         Ok(Self {
@@ -324,11 +326,11 @@ impl BlobProvider for ObjectStoreBlobProvider {
         self.store.head(&path).await.map_err(BlobError::from)?;
 
         let dek = dek.unwrap_or_default();
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let now = time::SystemTime::now()
+            .duration_since(time::UNIX_EPOCH)
             .map_err(|e| BlobError::Internal(e.to_string()))?
             .as_secs();
-        Ok(crate::crypto::sign_url(&dek, service_id, hash, ttl_secs, now))
+        Ok(sign_url(&dek, service_id, hash, ttl_secs, now))
     }
 }
 
@@ -550,6 +552,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+    use crate::crypto::SEGMENT_SIZE;
 
     async fn get_all(
         provider: &ObjectStoreBlobProvider,
@@ -788,11 +791,10 @@ mod tests {
     async fn open_download_with_offset_returns_suffix_encrypted() {
         let provider = in_memory_provider(1024 * 1024, None);
         let dek = [6u8; 32];
-        let data: Vec<u8> =
-            (0..(crate::crypto::SEGMENT_SIZE + 500)).map(|i| (i % 256) as u8).collect();
+        let data: Vec<u8> = (0..(SEGMENT_SIZE + 500)).map(|i| (i % 256) as u8).collect();
         let hash =
             provider.put_blob("svc-a", data.clone(), Some(Zeroizing::new(dek))).await.unwrap();
-        let offset = crate::crypto::SEGMENT_SIZE as u64 + 100;
+        let offset = SEGMENT_SIZE as u64 + 100;
         let mut session = provider
             .open_download("svc-a", &hash, offset, Some(Zeroizing::new(dek)))
             .await
@@ -824,7 +826,7 @@ mod tests {
         // Read the raw file bytes directly from disk, bypassing the
         // provider entirely.
         let path = dir.path().join("svc-a").join(&hash[0..2]).join(&hash[2..]);
-        let raw = std::fs::read(&path).unwrap();
+        let raw = fs::read(&path).unwrap();
         assert!(!raw.windows(secret_marker.len()).any(|w| w == secret_marker.as_slice()));
 
         // But it still round-trips correctly through the provider.

@@ -5,6 +5,8 @@
 //! from the same DEK via a distinct HKDF `info` string (no separate
 //! signing-key table).
 
+use std::fmt;
+
 use aead::{
     KeyInit,
     stream::{DecryptorBE32, EncryptorBE32},
@@ -63,8 +65,8 @@ pub struct BlobEncryptor {
     buf: Vec<u8>,
 }
 
-impl std::fmt::Debug for BlobEncryptor {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for BlobEncryptor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BlobEncryptor")
             .field("buffered_bytes", &self.buf.len())
             .finish_non_exhaustive()
@@ -128,8 +130,8 @@ pub struct BlobDecryptor {
     buf: Vec<u8>,
 }
 
-impl std::fmt::Debug for BlobDecryptor {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for BlobDecryptor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BlobDecryptor")
             .field("buffered_bytes", &self.buf.len())
             .finish_non_exhaustive()

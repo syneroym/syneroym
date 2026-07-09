@@ -6,6 +6,8 @@
 //! encrypted-vs-plaintext comparison on the data-layer side; blob content
 //! encryption has no separate budget row in `task.md`).
 
+use std::time::{Duration, Instant};
+
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
 use tokio::runtime::Builder;
@@ -21,7 +23,7 @@ fn bench_put_blob(c: &mut Criterion) {
         b.to_async(&runtime).iter_custom(|iters| {
             let payload = payload.clone();
             async move {
-                let mut total = std::time::Duration::ZERO;
+                let mut total = Duration::ZERO;
                 for _ in 0..iters {
                     let temp_dir = tempfile::tempdir().unwrap();
                     let provider = ObjectStoreBlobProvider::new_local(
@@ -31,7 +33,7 @@ fn bench_put_blob(c: &mut Criterion) {
                     )
                     .unwrap();
 
-                    let start = std::time::Instant::now();
+                    let start = Instant::now();
                     provider.put_blob("bench-svc", black_box(payload.clone()), None).await.unwrap();
                     total += start.elapsed();
                 }

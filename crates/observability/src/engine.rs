@@ -9,7 +9,7 @@
 
 use std::{
     fmt::{Debug, Formatter},
-    fs,
+    fs, io,
     sync::Mutex,
     time::Duration,
 };
@@ -29,6 +29,7 @@ pub struct ObservabilityEngine {
 }
 
 impl Debug for ObservabilityEngine {
+    // Fully qualified: `fmt` is already bound to `tracing_subscriber::fmt` below.
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ObservabilityEngine")
             .field("log_guard", &self.log_guard.as_ref().map(|_| "WorkerGuard"))
@@ -124,8 +125,8 @@ where
     S: Subscriber + for<'span> LookupSpan<'span>,
 {
     match config.logging.format {
-        LogFormat::Json => Box::new(fmt::layer().json().with_writer(std::io::stdout)),
-        LogFormat::Pretty => Box::new(fmt::layer().pretty().with_writer(std::io::stdout)),
+        LogFormat::Json => Box::new(fmt::layer().json().with_writer(io::stdout)),
+        LogFormat::Pretty => Box::new(fmt::layer().pretty().with_writer(io::stdout)),
     }
 }
 
