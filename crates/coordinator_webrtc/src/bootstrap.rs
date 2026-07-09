@@ -5,8 +5,9 @@
 
 use std::{
     collections::HashMap,
-    fmt::{Debug, Formatter},
-    io::Write,
+    fmt::{self, Debug, Formatter},
+    io::{Error as IoError, Write},
+    str,
     sync::{Arc, OnceLock},
 };
 
@@ -19,7 +20,7 @@ use axum::{
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
     http::{Request, StatusCode, header},
-    response::{Html, IntoResponse},
+    response::{Html, IntoResponse, Response},
     routing::{any, get},
 };
 use flate2::{Compression, write::GzEncoder};
@@ -28,7 +29,7 @@ use futures::{
     stream::{SplitSink, SplitStream},
 };
 use header::HOST;
-use iroh::{Endpoint, EndpointAddr, PublicKey, RelayUrl};
+use iroh::{Endpoint, EndpointAddr, PublicKey, RelayUrl, endpoint::Connection};
 use syneroym_core::{
     dht_registry::{EndpointMechanism, RegistryClient},
     local_registry::EndpointRegistry,
@@ -42,6 +43,7 @@ use tokio::{
     net::TcpListener,
     sync::Mutex,
 };
+use tower_http::compression::CompressionLayer;
 use tracing::{debug, error, info};
 
 pub struct BootstrapState {
@@ -58,11 +60,11 @@ pub struct BootstrapState {
     /// serialization, these overlapping `endpoint.connect()` calls can
     /// initiate competing handshakes to the same target peer,
     /// causing protocol conflicts and timeouts in the underlying QUIC stack.
-    pub connection_cache: Mutex<HashMap<PublicKey, iroh::endpoint::Connection>>,
+    pub connection_cache: Mutex<HashMap<PublicKey, Connection>>,
 }
 
 impl Debug for BootstrapState {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("BootstrapState")
             .field("iroh", &"iroh::Endpoint")
             .field("external_host", &self.external_host)
@@ -98,14 +100,14 @@ fn app(state: Arc<BootstrapState>) -> Router {
         .route("/__syneroym/peer-proxy.js", get(handle_peer_proxy_js))
         .route("/__syneroym/tunnel", any(handle_tunnel_upgrade))
         .fallback(handle_bootstrap)
-        .layer(tower_http::compression::CompressionLayer::new())
+        .layer(CompressionLayer::new())
         .with_state(state)
 }
 
 static SW_JS_GZ: OnceLock<Option<Vec<u8>>> = OnceLock::new();
 static PEER_PROXY_JS_GZ: OnceLock<Option<Vec<u8>>> = OnceLock::new();
 
-fn compress_gzip(data: &str) -> Result<Vec<u8>, std::io::Error> {
+fn compress_gzip(data: &str) -> Result<Vec<u8>, IoError> {
     let mut encoder = GzEncoder::new(Vec::new(), Compression::best());
     encoder.write_all(data.as_bytes())?;
     encoder.finish()
@@ -114,7 +116,7 @@ fn serve_cached_js(
     js_content: &'static str,
     name: &str,
     cache: &OnceLock<Option<Vec<u8>>>,
-) -> axum::response::Response {
+) -> Response {
     let gzipped_opt = cache.get_or_init(|| {
         compress_gzip(js_content).inspect_err(|e| error!("Failed to compress {}: {}", name, e)).ok()
     });
@@ -383,7 +385,7 @@ async fn connect_iroh_stream(
     state: Arc<BootstrapState>,
     endpoint_addr: EndpointAddr,
     preamble_str: &str,
-) -> Option<(IrohStream, iroh::endpoint::Connection)> {
+) -> Option<(IrohStream, Connection)> {
     let peer_id = endpoint_addr.id;
     debug!("[BlindTunnel] Connecting to Iroh node: {:?}", endpoint_addr);
 
@@ -416,7 +418,7 @@ async fn connect_iroh_stream(
                 Ok(c) => {
                     debug!(
                         "[BlindTunnel] Iroh connection established (ALPN={})",
-                        std::str::from_utf8(SYNEROYM_ALPN).unwrap_or("<invalid>")
+                        str::from_utf8(SYNEROYM_ALPN).unwrap_or("<invalid>")
                     );
                     c
                 }
@@ -471,7 +473,7 @@ async fn pipe_ws_and_iroh(
     mut ws_sender: SplitSink<WebSocket, Message>,
     mut ws_receiver: SplitStream<WebSocket>,
     iroh_stream: IrohStream,
-    connection: iroh::endpoint::Connection,
+    connection: Connection,
 ) {
     debug!("[BlindTunnel] Preamble sent; starting bidirectional pipe WS<->Iroh");
     let _conn_ref = &connection;

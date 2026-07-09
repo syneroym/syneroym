@@ -33,6 +33,7 @@ use syneroym_identity::Identity;
 use syneroym_rpc::{NativeDispatchRegistry, NativeService};
 use syneroym_sandbox_app::AppSandboxEngine;
 use syneroym_sandbox_podman::ContainerEngine;
+use tokio::io::AsyncWriteExt;
 use tracing::{debug, error};
 
 use crate::net_iroh::IrohStream;
@@ -300,9 +301,8 @@ impl IrohProtocolHandler for RouteHandler {
                 self.inner.max_connections
             );
             if let Ok((mut send, _recv)) = connection.accept_bi().await {
-                let _ =
-                    tokio::io::AsyncWriteExt::write_all(&mut send, b"ServiceUnavailable\n").await;
-                let _ = tokio::io::AsyncWriteExt::flush(&mut send).await;
+                let _ = send.write_all(b"ServiceUnavailable\n").await;
+                let _ = send.flush().await;
             }
             connection.close(503u32.into(), b"ServiceUnavailable");
             return Ok(());

@@ -2,7 +2,7 @@
 //!
 //! Structs and validation for signaling/relay address bindings and keypaths.
 
-use std::{net::SocketAddr, path::Path, sync::Arc};
+use std::{io, net::SocketAddr, path::Path, sync::Arc};
 
 use anyhow::{Context, Result};
 use iroh_base::EndpointId;
@@ -30,7 +30,7 @@ fn load_secret_key(filename: impl AsRef<Path>) -> Result<PrivateKeyDer<'static>>
     Ok(key)
 }
 
-pub async fn build_relay_config(role: &CoordinatorRole) -> Result<ServerConfig<std::io::Error>> {
+pub async fn build_relay_config(role: &CoordinatorRole) -> Result<ServerConfig<io::Error>> {
     let iroh_cfg = role.iroh.clone().unwrap_or_default();
 
     let http_bind_addr: SocketAddr =
@@ -80,7 +80,7 @@ pub async fn build_relay_config(role: &CoordinatorRole) -> Result<ServerConfig<s
     }
 
     let access_config = match &role.access {
-        AccessControl::String(s) if s == "everyone" => relay::AccessConfig::Everyone,
+        AccessControl::String(s) if s == "everyone" => AccessConfig::Everyone,
         AccessControl::List(l) => {
             let mut list = Vec::new();
             for s in l {

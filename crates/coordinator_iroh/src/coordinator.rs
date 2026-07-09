@@ -4,10 +4,11 @@
 //! the local Iroh endpoint and relay server.
 
 use std::{
-    fmt::{Debug, Formatter},
+    fmt::{self, Debug, Formatter},
     future,
     net::SocketAddr,
-    sync::Arc,
+    pin,
+    sync::{Arc, atomic::AtomicUsize},
     time::Duration,
 };
 
@@ -24,7 +25,11 @@ use syneroym_core::{
 };
 use syneroym_identity::{Identity, substrate::derive_did_key};
 use syneroym_router::{RouteHandler, SYNEROYM_ALPN, net_iroh};
-use tokio::{net::TcpListener, task::JoinHandle, time::timeout};
+use tokio::{
+    net::TcpListener,
+    task::JoinHandle,
+    time::{self, timeout},
+};
 use tracing::{debug, info, warn};
 
 use crate::{
@@ -41,7 +46,7 @@ pub struct CoordinatorIroh {
 }
 
 impl Debug for CoordinatorIroh {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("CoordinatorIroh")
             .field("relay_server", &self.relay_server.as_ref().map(|_| "Server"))
             .field("iroh_router", &self.iroh_router.as_ref().map(|_| "Router"))
@@ -218,7 +223,7 @@ impl CoordinatorIroh {
         iroh_endpoint: &Endpoint,
         iroh_cfg: &CoordinatorIrohConfig,
         config: &SubstrateConfig,
-    ) -> (IrohRouter, Arc<std::sync::atomic::AtomicUsize>) {
+    ) -> (IrohRouter, Arc<AtomicUsize>) {
         let parent_relay_url = config.parent_coordinator.iroh.as_ref().map(|u| u.url.clone());
         let registry_client = RegistryClient::new(
             config.substrate.enable_bep0044_dht,
@@ -244,7 +249,7 @@ impl CoordinatorIroh {
         iroh_cfg: &CoordinatorIrohConfig,
         iroh_endpoint: &Endpoint,
         relay_server: &Option<Server>,
-        active_connections: Arc<std::sync::atomic::AtomicUsize>,
+        active_connections: Arc<AtomicUsize>,
     ) -> Result<(JoinHandle<Result<()>>, SocketAddr)> {
         let mut http_info_addr: SocketAddr =
             iroh_cfg.http_bind_address.parse().context("invalid http_bind_address")?;
@@ -368,7 +373,7 @@ impl CoordinatorIroh {
     pub async fn run(&mut self) -> Result<()> {
         info!("Running Coordinator IROH");
 
-        let mut relay_fut = std::pin::pin!(async {
+        let mut relay_fut = pin::pin!(async {
             if let Some(server) = &mut self.relay_server {
                 server.task_handle().await.context("iroh relay server task panicked")??;
                 Ok(())
@@ -377,7 +382,7 @@ impl CoordinatorIroh {
             }
         });
 
-        let mut router_fut = std::pin::pin!(async {
+        let mut router_fut = pin::pin!(async {
             if let Some(router) = &self.iroh_router {
                 router.endpoint().closed().await;
                 Ok(())
@@ -386,7 +391,7 @@ impl CoordinatorIroh {
             }
         });
 
-        let mut http_fut = std::pin::pin!(async {
+        let mut http_fut = pin::pin!(async {
             if let Some(handle) = self.http_info_handle.as_mut() {
                 match handle.await {
                     Ok(res) => res.context("HTTPS/HTTP info server failed"),
@@ -468,9 +473,9 @@ async fn register_coordinator_in_registry(
     Ok(())
 }
 
-async fn wait_for_relay_server(addr: std::net::SocketAddr) -> Result<()> {
+async fn wait_for_relay_server(addr: SocketAddr) -> Result<()> {
     let url = format!("http://{}", addr);
-    let client = reqwest::Client::new();
+    let client = Client::new();
     let mut attempts = 0;
     loop {
         // We don't care about the status code (e.g. 404), just that the server accepts
@@ -482,7 +487,7 @@ async fn wait_for_relay_server(addr: std::net::SocketAddr) -> Result<()> {
         if attempts > 30 {
             anyhow::bail!("Relay server failed to start accepting connections at {}", url);
         }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        time::sleep(Duration::from_millis(100)).await;
     }
     Ok(())
 }

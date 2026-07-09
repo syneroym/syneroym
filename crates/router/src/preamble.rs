@@ -39,10 +39,11 @@
 //! (`plan_pipeline`) from the combination of preamble fields and target
 //! registry capability entries.
 
-use std::{convert::Infallible, fmt};
+use std::{convert::Infallible, fmt, result};
 
 use anyhow::{Result, anyhow};
 use fmt::{Display, Formatter};
+use syneroym_identity::DelegationCertificate;
 
 /// Separator used in the routing preamble between the interface name and
 /// service ID.
@@ -62,7 +63,7 @@ pub enum RouteTransport {
 impl FromStr for RouteTransport {
     type Err = anyhow::Error;
 
-    fn from_str(raw: &str) -> std::result::Result<Self, Self::Err> {
+    fn from_str(raw: &str) -> result::Result<Self, Self::Err> {
         match raw {
             "binary" => Ok(Self::Binary),
             "http" => Ok(Self::Http),
@@ -97,7 +98,7 @@ pub enum RouteProtocol {
 impl FromStr for RouteProtocol {
     type Err = Infallible;
 
-    fn from_str(raw: &str) -> std::result::Result<Self, Self::Err> {
+    fn from_str(raw: &str) -> result::Result<Self, Self::Err> {
         Ok(match raw {
             "json-rpc" => Self::JsonRpc,
             "wrpc" => Self::Wrpc,
@@ -134,7 +135,7 @@ pub struct RoutePreamble {
     pub pubkey: Option<String>,
     /// Client delegation certificate (optional, hex encoded JSON in query
     /// param)
-    pub delegation: Option<syneroym_identity::DelegationCertificate>,
+    pub delegation: Option<DelegationCertificate>,
 }
 
 impl RoutePreamble {
@@ -195,8 +196,7 @@ impl RoutePreamble {
                     } else if k == "delegation"
                         && let Ok(bytes) = hex::decode(v)
                         && let Ok(json_str) = String::from_utf8(bytes)
-                        && let Ok(cert) =
-                            syneroym_identity::DelegationCertificate::from_json(&json_str)
+                        && let Ok(cert) = DelegationCertificate::from_json(&json_str)
                     {
                         delegation = Some(cert);
                     }

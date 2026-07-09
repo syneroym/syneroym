@@ -52,11 +52,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<SignallingState>) {
     // Perform a simple handshake: wait for {"type": "register", "id": "my-id"}
     let peer_id = if let Some(Ok(Message::Text(text))) = ws_stream.next().await {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
-            if v["type"] == "register" {
-                v["id"].as_str().map(std::string::ToString::to_string)
-            } else {
-                None
-            }
+            if v["type"] == "register" { v["id"].as_str().map(ToString::to_string) } else { None }
         } else {
             None
         }
