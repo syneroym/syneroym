@@ -329,4 +329,46 @@ mod tests {
             assert_eq!(memory, &[0u8; 32]);
         }
     }
+
+    /// M3A exit criterion: "DEK never appears in plaintext on disk;
+    /// verified by hex dump of `substrate.db`." Uses a real file-backed
+    /// database (not `open_in_memory`) so the assertion covers what
+    /// actually lands on disk, then re-reads the raw file bytes after the
+    /// connection is closed and searches for the plaintext DEK as a
+    /// contiguous byte run.
+    #[test]
+    fn test_dek_never_plaintext_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("substrate.db");
+
+        let dek_plain = {
+            let db = Connection::open(&db_path).unwrap();
+            db.execute(
+                "CREATE TABLE dek_store (
+                    service_id    TEXT PRIMARY KEY,
+                    encrypted_dek BLOB NOT NULL,
+                    nonce         BLOB NOT NULL,
+                    created_at    INTEGER NOT NULL
+                )",
+                [],
+            )
+            .unwrap();
+
+            let ks = KeyStore::new();
+            ks.inject_kek([9u8; 32], None).unwrap();
+            let dek = ks.generate_dek("svc-disk-check", &db).unwrap();
+
+            // Sanity: the round trip still works against the on-disk file.
+            let loaded = ks.load_dek("svc-disk-check", &db).unwrap();
+            assert_eq!(dek, loaded);
+            dek
+        };
+        // Connection dropped here, forcing SQLite to flush all pages to disk.
+
+        let raw_bytes = std::fs::read(&db_path).unwrap();
+        assert!(
+            !raw_bytes.windows(dek_plain.len()).any(|window| window == dek_plain),
+            "plaintext DEK bytes found verbatim in substrate.db on disk"
+        );
+    }
 }

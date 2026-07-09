@@ -12,29 +12,25 @@ end of this milestone, a deployed `SynSvc` can provision an isolated, encrypted
 SQLite database (via SQLCipher); perform schema-initialised CRUD and batch
 operations through typed WIT host functions with a MongoDB-style query API;
 store and retrieve secrets from an in-database vault; receive versioned
-configuration through a typed host function; and — in 3B — store blobs via the
-`object_store` unified backend and exchange asynchronous events via an embedded
-`rumqttd` MQTT broker.
+configuration through a typed host function; and store blobs via the
+`object_store` unified backend.
 
-This milestone is split into three sequential sub-milestones:
+This milestone covers:
 
 - **M3A — Structured State and Security:** Encrypted SQLite isolation (`oltp`/`olap` profiles), full
   data-layer WIT surface, vault integration, and configuration delivery.
-- **M3B — Objects and Events:** Blob object service and the pub/sub half of
-  `syneroym:messaging` (MQTT API overlay).
-- **M3C — Unified Messaging Streams and HTTP Bridge:** Bidirectional streaming
-  half of `syneroym:messaging`, then an HTTP passthrough bridge onto the
-  native-dispatch surface (data-layer, blob-store, messaging).
+- **M3B (blob half only) — Objects:** Blob object service (Slice 5).
 
-M3B may begin only after M3A exit criteria are fully met. M3C may begin only
-after M3B exit criteria are fully met.
-
-> **Note:** `syneroym:messaging` was formerly planned as `syneroym:pubsub`.
-> It is renamed and split across M3B (pub/sub) and M3C (bidirectional
-> streaming) so the WIT package shape is stable from Day 1 without a breaking
-> v0.2 rename later. HTTP Passthrough — previously tracked as an open item at
-> the end of M3B — now lives in M3C because it depends on the streaming half,
-> not just pub/sub. See [meta-implementation-plan.md](../../meta-implementation-plan.md#milestone-3c-unified-messaging-streams-and-http-bridge).
+> **Scope split (2026-07-09):** The pub/sub half of M3B
+> (`syneroym:messaging` pub/sub, Slice 6A) and all of M3C (bidirectional
+> streaming, Slice 6B; HTTP passthrough bridge, Slice 7) were split out into
+> their own milestone, **[M03B-messaging](../M03B-messaging/task.md)**,
+> before implementation began — see that document's provenance note for
+> why. Everything below in this file covers only what remains here: M3A
+> (complete) and the blob object service (M3B/Slice 5, complete).
+> `syneroym:messaging`'s package naming/history (formerly `syneroym:pubsub`)
+> and its WIT versioning strategy are now documented in the split-out
+> milestone, not here.
 
 ---
 
@@ -48,6 +44,11 @@ after M3B exit criteria are fully met.
 | `[PLT-DAP-06]` | Generic Bidirectional Streaming | `syneroym:messaging` `stream-cursor` (guest-as-source pull) and `stream-sink` (guest-as-sink push) resources, `register-stream-protocol`/`handle-stream-request`/`accept-stream-upload` flows, and the HTTP passthrough bridge built on top of them (M3C) |
 | `[FND-SEC]` | Substrate Security (storage slice) | Envelope Encryption (DEK/KEK); secret vault inside encrypted SQLite; `mlock`-protected KEK RAM; DEK re-encryption on key rotation; DEK-encrypted blob content (M3B); production profiles default to encryption; opt-out produces persistent insecure-state warning |
 | `[FND-CFG]` | Service Configuration Delivery | `syneroym:app-config/get` WASM host function; schema validation and defaults at deploy-time; Podman env-var and file-mount fallback; versioned immutable configuration generation; out-of-band secret rotation policy |
+
+> The `[PLT-DAP-04]` and `[PLT-DAP-06]` rows above describe the overall
+> requirement scope (still accurate); the actual slice-level task tracking
+> for both now lives in
+> [M03B-messaging/task.md](../M03B-messaging/task.md), not in this file.
 
 > **Out of scope in this milestone (deferred):**
 > - `[FND-IAM]` FDAE access control and UCAN integration — **M4**.
@@ -65,7 +66,10 @@ after M3B exit criteria are fully met.
 > - `[FND-IDT]` Master Key export/recovery, ZK proof plugin — deferred post-M10.
 > - `[FND-SEC]` Hardware attestation (`substrate.attest`) — **M7**.
 > - `[FND-SEC]` Supply-chain binary signing — **M7**.
-> - `[ADV-OBS]` Advanced observability metric pipeline — **M7**.
+> - `[ADV-OBS]` Advanced observability metric pipeline — **M7**. Includes
+>   per-service security-posture reporting (e.g. encryption status) in
+>   `roymctl status`/health output — descoped from the M3A reference
+>   scenario at closeout; see "Descoped at Closeout" below.
 > - Active Control Plane / Server SynApp mode — **M5**.
 > - Multi-node clustering, topology epochs — **M7**.
 
@@ -184,18 +188,17 @@ M3 may begin **only when**:
    `docs/decisions/` before their respective slices begin.
 3. `cargo test --workspace` passes cleanly with zero clippy warnings on the M3 branch.
 
-**M3B gate (additional):**
+**M3B gate (additional, applies to Slice 5 — the only M3B slice remaining in
+this file; Slice 6A's own gate lives in
+[M03B-messaging](../M03B-messaging/task.md)):**
 
-4. M3A exit criteria verified and recorded in `status.md` before any M3B slice begins.
-5. Decisions D-03-04 and D-03-05 resolved before M3B Slices 5-6A begin.
+4. M3A exit criteria verified and recorded in `status.md` before Slice 5 begins.
+5. Decision D-03-04 resolved before Slice 5 begins.
 
-**M3C gate (additional):**
-
-6. M3B exit criteria verified and recorded in `status.md` before any M3C slice begins.
-7. A design note or ADR for host-side QUIC stream acceptance/routing (the
-   piece `handle-stream-request` delivery depends on, not covered by
-   D-03-01 through D-03-05) is recorded in `docs/decisions/` before Slice
-   6B implementation begins.
+> Gates for Slice 6A (M3B messaging), Slice 6B (M3C streaming), and Slice 7
+> (M3C HTTP bridge) are tracked in
+> [M03B-messaging/task.md](../M03B-messaging/task.md)'s own Dependency
+> Gates section, not here.
 
 ---
 
@@ -230,27 +233,18 @@ M3 may begin **only when**:
 | No schema validation at deploy-time for `custom-config` | Slice 4 |
 | No production-mode encryption enforcement warning | Slice 2A |
 
-### Gaps to Close in M3B
+### Gaps to Close in M3B (blob half)
 
 | Gap | Target Slice |
 |---|---|
 | No blob object service crate | Slice 5 |
 | No `syneroym:blob-store` WIT interface | Slice 5 |
 | No S3-compatible blob backend | Slice 5 |
-| No embedded MQTT broker (`rumqttd`) | Slice 6A |
-| No `syneroym:messaging` WIT interface (pub/sub half) | Slice 6A |
-| No MQTT wildcard topic or retained message support | Slice 6A |
 
-### Gaps to Close in M3C
-
-| Gap | Target Slice |
-|---|---|
-| No `syneroym:messaging` bidirectional streaming, guest-as-source (`stream-cursor`, `handle-stream-request`) | Slice 6B |
-| No `syneroym:messaging` bidirectional streaming, guest-as-sink (`stream-sink`, `accept-stream-upload`) | Slice 6B |
-| No `register-stream-protocol` host-side routing table | Slice 6B |
-| No host-side QUIC stream acceptance/routing for peer-initiated streams (either direction) | Slice 6B |
-| No HTTP verb/path routing bridged onto native dispatch (`crates/router/src/route_handler/http.rs` is JSON-RPC-over-POST only) | Slice 7 |
-| No chunked-upload-to-`stream-sink` bridge in the HTTP router | Slice 7 |
+> Remaining M3B gaps (messaging pub/sub, Slice 6A) and all M3C gaps
+> (streaming, Slice 6B; HTTP bridge, Slice 7) are tracked in
+> [M03B-messaging/task.md](../M03B-messaging/task.md)'s own Gaps to Close
+> section.
 
 ---
 
@@ -304,15 +298,13 @@ rotation_policy = "restart-on-rotation"  # or "none"
 ### WIT Boundary Versioning
 
 New WIT packages (`syneroym:data-layer@0.1.0`, `syneroym:vault@0.1.0`,
-`syneroym:app-config@0.1.0`, `syneroym:blob-store@0.1.0`, and
-`syneroym:messaging@0.1.0`) are added in M3. `syneroym:messaging` is
-introduced in M3B with only its pub/sub surface (`host-api::publish`/
-`subscribe`, `guest-api::handle-message`) wired; its `stream-types`
-(`stream-cursor` and `stream-sink` resources) and `register-stream-protocol`/
-`handle-stream-request`/`accept-stream-upload` surface are declared in the
-same WIT file for interface stability but only wired up in M3C, so no
-breaking v0.2 rename is needed later. (Formerly planned as a standalone
-`syneroym:pubsub@0.1.0` package — renamed for the reasons above.)
+`syneroym:app-config@0.1.0`, and `syneroym:blob-store@0.1.0`) are added in
+this milestone. `syneroym:messaging@0.1.0` (formerly planned as a
+standalone `syneroym:pubsub@0.1.0` package) is introduced in
+[M03B-messaging](../M03B-messaging/task.md) instead — see that document's
+own "WIT Boundary Versioning" section, which takes a deliberately different
+(simpler, breaking-changes-allowed) approach than the one originally
+sketched here.
 
 Slice 2A intentionally extends the host/control-plane boundary only where
 needed for storage encryption and vault bootstrap:
@@ -850,283 +842,16 @@ the traceability record reflects what was actually built.
   `crates/substrate/tests/basic_lifecycle.rs`'s
   `test_substrate_lifecycle_scenarios`, which caught this.
 
-### [ ] Slice 6A (M3B): Messaging WIT and Embedded Pub/Sub Broker
+### Slices 6A, 6B, 7: Moved to M03B-messaging
 
-**Requirement IDs:** `[PLT-DAP-04]`, `[PLT-DAT]` (MQTT event service sub-requirement)
-**ADR references:** [ADR-0010](../../../decisions/0010-mqtt-broker-rumqttd.md) (see amendment for the `syneroym:messaging` rename)
-**Depends on:** Slice 5 complete.
-
-> Scope note: this slice implements only the pub/sub half of
-> `syneroym:messaging`. The bidirectional-streaming half — both directions,
-> guest-as-source (`stream-cursor`, `handle-stream-request`) and
-> guest-as-sink (`stream-sink`, `accept-stream-upload`) — plus
-> `register-stream-protocol`, is declared in the same WIT file for interface
-> stability but wired up in Slice 6B (M3C), which needs new host-side QUIC
-> stream routing this slice does not build. `syneroym:messaging` was
-> formerly planned as a standalone `syneroym:pubsub` package — renamed so
-> pub/sub and streaming can share one WIT boundary from Day 1 without a
-> breaking v0.2 rename later.
-
-#### Tasks
-
-**WIT Interface:**
-
-+ [ ] Create `crates/bindings/wit/messaging/messaging.wit`, package
-  `syneroym:messaging@0.1.0`, split into three interfaces:
-  - `interface host-api` (host-imported, guest-triggered):
-    `publish(topic: string, payload: list<u8>) -> result<_, string>`,
-    `subscribe(topic: string) -> result<_, string>`,
-    `unsubscribe(topic: string) -> result<_, string>`,
-    `register-stream-protocol(protocol: string) -> result<_, string>`
-    (signature declared this slice; unimplemented — see Slice 6B).
-  - `interface stream-types`:
-    `resource stream-cursor { next-chunk: func() -> option<list<u8>>; }`
-    (guest-as-source, pull direction) and
-    `resource stream-sink { push-chunk: func(data: list<u8>) -> result<_,
-    string>; finalize: func() -> result<_, string>; }` (guest-as-sink, push
-    direction). Both declared this slice; unimplemented — see Slice 6B.
-  - `interface guest-api` (guest-exported, host-triggered):
-    `handle-message(topic: string, payload: list<u8>) -> result<_, string>`
-    (this slice's delivery path — replaces the earlier `on-message` naming
-    from ADR-0010's original text), `handle-stream-request(peer-id: string,
-    request-data: list<u8>) -> result<stream-cursor, string>` (guest-as-source),
-    and `accept-stream-upload(peer-id: string, metadata: string) ->
-    result<stream-sink, string>` (guest-as-sink). The latter two declared
-    this slice; unimplemented — see Slice 6B.
-  - World: `world messaging-guest { import host-api; export guest-api; }`.
-  - Delivery remains push-model: host invokes the component's exported
-    `guest-api::handle-message` if declared; if not declared, the
-    subscription is registered but messages are silently discarded (same
-    behavior as ADR-0010, renamed export).
-
-**Broker Embedding:**
-
-+ [ ] Add `rumqttd` (latest stable; pin version with rationale comment per workspace
-  convention) and `tokio-util` (if not already present) to `Cargo.toml`.
-+ [ ] Create `crates/mqtt-broker/` crate with `MqttBroker`:
-  - Starts `rumqttd` as a Tokio background task bridged by a **bounded channel**
-    (default capacity: 1024 messages, configurable via `[mqtt].channel_capacity`).
-  - When the channel is full, `publish` returns
-    `Err("broker channel full: backpressure")` — never blocks
-    the Wasmtime execution thread.
-  - Exposes `publish(topic, payload)` and `subscribe(topic, sender)` async APIs.
-  - Uses `CancellationToken` to cleanly terminate on `Drop` (applying the M2
-    epoch timer audit lesson).
-  - Topics are namespaced by the host: guest topic `t` published by service `s`
-    becomes `svc/s/t` in `rumqttd`. Cross-service subscriptions require explicit
-    `svc/<other_service_id>/...` topic strings.
-
-**Host Function Wiring:**
-
-+ [ ] Wire `syneroym:messaging/host-api.publish` in `engine.rs` → `MqttBroker::publish`.
-+ [ ] Wire delivery: broker message → host invokes component `guest-api::handle-message`
-  export via Wasmtime invocation path (if the component declares that export).
-
-**Wildcard and Retained Messages:**
-
-+ [ ] Verify `rumqttd` supports MQTT `+` and `#` wildcards; enable in config.
-+ [ ] Verify retained messages delivered to new subscribers after publish.
-
-**Tests:**
-
-+ [ ] Unit: `publish` + `subscribe` on same topic delivers message.
-+ [ ] Unit: wildcard `sensors/+/temp` matches `sensors/room1/temp`.
-+ [ ] Unit: retained message delivered to subscriber joining after publish.
-+ [ ] Unit: `CancellationToken` terminates broker task on `Drop` (no leak).
-+ [ ] Integration: two WASM components in different services exchange a message.
-+ [ ] Integration: MQTT topic namespacing — service A cannot receive messages
-  published in service B's namespace (without explicit opt-in).
-+ [ ] Integration: channel backpressure — when the bounded channel is saturated,
-  `publish` returns the backpressure error without blocking or crashing the substrate.
-+ [ ] Unit: broker task terminates within 1 second of `CancellationToken` cancellation.
-
-#### Acceptance Criteria
-
-- `publish`/`subscribe` round-trip works within a single service.
-- Wildcard topics and retained messages function correctly.
-- Broker task terminates cleanly on substrate shutdown.
-- Cross-service MQTT namespace isolation enforced.
-- `syneroym:messaging@0.1.0` WIT compiles with both `host-api`/`guest-api`
-  pub/sub functions wired and the streaming resource/functions declared
-  but unimplemented (returning a structured "not yet implemented" error if
-  called), so Slice 6B is purely additive.
-
----
-
-### [ ] Slice 6B (M3C): Bidirectional Streaming
-
-**Requirement IDs:** `[PLT-DAP-06]`
-**ADR references:** New design note/ADR required before implementation (see M3C dependency gate); documents host-side QUIC stream acceptance and routing.
-**Depends on:** Slice 6A complete; M3B exit criteria met.
-
-#### Tasks
-
-**Stream Protocol Registration:**
-
-+ [ ] Wire `syneroym:messaging/host-api.register-stream-protocol` in
-  `engine.rs`: records `(service_id, protocol)` in a host-side routing
-  table so inbound peer streams on that namespace can be dispatched to the
-  right guest instance.
-
-**Inbound Stream Routing (new host infrastructure):**
-
-+ [ ] Design and implement acceptance of peer-initiated QUIC streams
-  against a registered protocol namespace (likely `crates/coordinator_iroh`
-  and/or `crates/router`) — this is new infrastructure with no existing
-  precedent in the codebase; requires the design note/ADR from the M3C
-  dependency gate before implementation starts.
-+ [ ] The design note must specify how the host distinguishes a download
-  request (route to `handle-stream-request`) from an upload push (route to
-  `accept-stream-upload`) on the same registered protocol namespace — e.g. a
-  direction flag or small header in the peer's initial frame, decided and
-  documented once, not per-slice.
-+ [ ] Route an accepted download-request stream's initial request payload to
-  `guest-api::handle-stream-request(peer-id, request-data)`, and an accepted
-  upload stream's initial metadata to `guest-api::accept-stream-upload
-  (peer-id, metadata)`, through the normal Wasmtime invocation path.
-
-**Stateful Iterator — Guest as Source (Host Pull Loop):**
-
-+ [ ] Implement the `stream-cursor` resource on the guest side (bindings
-  generation) and the host-side pull loop: a Tokio task that calls
-  `next-chunk()` in a loop, transmits each chunk over the Iroh QUIC stream,
-  and stops on `none` (EOF), closing the stream and dropping the resource
-  handle. Model this on the `blob-writer`/`blob-reader` resource pattern
-  from Slice 5 (`crates/blob-store`), the first precedent for a custom
-  (non-WASI) resource type in this codebase's WIT interfaces.
-+ [ ] Apply backpressure consistent with `[PLT-DAP-05]`'s flow-control
-  approach where the QUIC transport allows it, but note this is a distinct,
-  simpler interface from `syneroym:data/stream` (no Arrow record batches,
-  no DataFusion integration) — see architecture doc §2 vs §4 disambiguation.
-
-**Stateful Sink — Guest as Sink (Host Push Loop):**
-
-+ [ ] Implement the `stream-sink` resource on the guest side (bindings
-  generation) and the host-side push loop: a Tokio task reads chunks off the
-  incoming Iroh QUIC stream and synchronously calls `push-chunk(data)` for
-  each one; when the QUIC stream closes (peer signals EOF), the host calls
-  `finalize()` so the guest can commit its write (e.g. flush a
-  `data-layer`/`blob-store` write session) and release state.
-+ [ ] `push-chunk` returning `Err` aborts the upload: the host stops reading
-  from the QUIC stream, does **not** call `finalize`, and resets/closes the
-  stream so the peer observes a clean failure rather than a hang.
-+ [ ] A guest that declines the upload (`Err` from `accept-stream-upload`)
-  causes the host to close the incoming QUIC stream immediately, without
-  creating a `stream-sink` or reading any payload bytes.
-
-**Tests:**
-
-+ [ ] Unit: `register-stream-protocol` records the namespace; duplicate
-  registration for the same service is idempotent or returns a structured
-  error (decide and document in the design note).
-+ [ ] Unit: `stream-cursor.next-chunk()` returning `none` closes the QUIC
-  stream and drops host-side state (no leak).
-+ [ ] Unit: `stream-sink.finalize()` is called exactly once, only after the
-  QUIC stream closes cleanly (not on abort).
-+ [ ] Unit: `push-chunk` returning `Err` aborts the upload without invoking
-  `finalize`; host-side state is dropped (no leak).
-+ [ ] Integration: two WASM components in different services exchange a
-  file-transfer-style byte stream end to end via `handle-stream-request`/
-  `stream-cursor` (mirrors the design note's worked example).
-+ [ ] Integration: two WASM components in different services exchange a
-  file-transfer-style byte stream end to end via `accept-stream-upload`/
-  `stream-sink` (upload direction).
-+ [ ] Integration: a guest that does not export `handle-stream-request`
-  causes the host to reject an inbound download request cleanly (no panic,
-  no hang); a guest that does not export `accept-stream-upload` does the
-  same for an inbound upload.
-+ [ ] Integration: cross-service stream namespace isolation — a peer cannot
-  address another service's registered protocol without going through the
-  substrate's routing.
-
-#### Acceptance Criteria
-
-- `register-stream-protocol` → peer opens matching QUIC stream →
-  `handle-stream-request` is invoked → returned `stream-cursor` is pulled by
-  the host until EOF → QUIC stream closes cleanly, end to end.
-- `register-stream-protocol` → peer opens matching QUIC stream to upload →
-  `accept-stream-upload` is invoked → returned `stream-sink` is pushed into
-  by the host until the peer closes the stream → `finalize()` is called
-  exactly once → QUIC stream closes cleanly, end to end.
-- No panics or hangs when a guest declines a stream request/upload or fails
-  to export `handle-stream-request`/`accept-stream-upload`.
-- An aborted upload (`push-chunk` error) never calls `finalize` and leaves
-  no dangling host-side state.
-- Streaming and pub/sub share the `syneroym:messaging@0.1.0` package with no
-  breaking change to the Slice 6A surface.
-
----
-
-### [ ] Slice 7 (M3C): HTTP Passthrough
-
-**Requirement IDs:** `[PLT-DAT]`, `[PLT-DAP-04]`, `[PLT-DAP-06]` (HTTP-facing translation of data-layer, blob-store, and messaging)
-**Depends on:** Slice 6B complete (needs both pub/sub and streaming, not pub/sub alone — this is why it moved to M3C instead of shipping as a follow-up inside M3B).
-
-> Formerly tracked as "Deferred: HTTP Passthrough" at the end of M3B Slice 5.
-> The user's original direction: build this "soon" as its own follow-up once
-> native-dispatch plumbing (Slice 5) existed. It is now sequenced after
-> messaging (6A+6B) rather than right after Slice 5, because HTTP access
-> needs to translate onto pub/sub-style subscription (SSE/long-poll) and
-> streaming uploads/downloads, not just request/response CRUD and blob
-> get/put.
-
-#### Tasks
-
-**HTTP Verb / Path Routing:**
-
-+ [ ] Extend `crates/router/src/route_handler/http.rs` (currently
-  JSON-RPC-over-POST only) to translate HTTP method + path + query + body
-  into a native or WASM call, and stream the response back as raw bytes
-  rather than JSON-RPC envelope, covering at minimum:
-  - `GET` → `data-layer::get`/`query` (DB access via REST-like conventions)
-    or `blob-store::get-blob`/streamed `blob-reader` (signed-URL blob
-    serving, static file access) depending on route configuration.
-  - `POST`/`PUT` (small body) → `data-layer::put`/`patch` or
-    `messaging::publish`.
-  - `PUT`/chunked upload (large body) → `messaging::accept-stream-upload`/
-    `stream-sink` (Slice 6B): the router treats the HTTP body as an inbound
-    stream, translating chunked-transfer-encoding reads into `push-chunk`
-    calls and end-of-body into `finalize()`. `stream-sink` resolved the
-    guest-as-sink gap in Slice 6B, so this task is direct wiring, not new
-    resource design. Where the upload target is specifically a blob (not a
-    guest-defined sink), the router may instead call `blob-store`'s
-    existing `blob-writer` directly — decide per-route via configuration,
-    not a global policy.
-  - `GET` with `Accept: text/event-stream` (or WebSocket upgrade) →
-    `messaging::subscribe`, bridging push-model `handle-message` delivery
-    onto SSE frames or WebSocket messages for the life of the connection.
-
-**Tests:**
-
-+ [ ] Integration: `GET /blobs/<hash>?sig=<hmac>&exp=<unix-ts>` resolves the
-  previously-implemented `signed-url`/`verify_signed_url` logic
-  (`crates/blob-store/src/crypto.rs`) end to end over a live HTTP endpoint —
-  closes the gap explicitly left open in Slice 5's "HTTP Serving" section.
-+ [ ] Integration: `GET` static file passthrough serves blob content with
-  correct `Content-Type`/`Content-Length`.
-+ [ ] Integration: `POST` JSON body passthrough performs a `data-layer::put`
-  and returns the resulting record.
-+ [ ] Integration: SSE/long-poll `GET` receives messages published via
-  `messaging::publish` from another connection.
-+ [ ] Integration: chunked `PUT` upload round-trips through
-  `accept-stream-upload`/`stream-sink` with content integrity verified end
-  to end (HTTP client → router → guest `finalize()`).
-+ [ ] Integration: a guest that declines the upload (`Err` from
-  `accept-stream-upload`) surfaces as a structured HTTP error (e.g. `4xx`),
-  not a hung connection or a `5xx` with no explanation.
-+ [ ] Integration: malformed or oversized request rejected with a structured
-  HTTP error, not a panic.
-
-#### Acceptance Criteria
-
-- Signed-URL blob serving and static file access work over plain HTTP `GET`,
-  closing the deferral from Slice 5.
-- `data-layer` and `messaging` are reachable over HTTP using conventional
-  verbs, without requiring a JSON-RPC envelope.
-- Chunked HTTP upload is wired end-to-end onto `stream-sink`/
-  `accept-stream-upload` (or `blob-store`'s `blob-writer` for blob-typed
-  routes), with no open design question left for this direction.
-- No regression to the existing JSON-RPC-over-POST native-dispatch path.
+The pub/sub half of M3B (Slice 6A: Messaging WIT and Embedded Pub/Sub
+Broker) and all of M3C (Slice 6B: Bidirectional Streaming; Slice 7: HTTP
+Passthrough) are tracked in their own milestone,
+[M03B-messaging/task.md](../M03B-messaging/task.md), split out before
+implementation began — see that document's provenance note. Their
+dependency gates, gaps, WIT versioning strategy, tasks, tests, reference
+scenario continuation (steps 14-19), failure/security tests, performance
+budgets, and exit criteria all live there now, not here.
 
 ---
 
@@ -1148,34 +873,19 @@ the traceability record reflects what was actually built.
 10. Service calls `vault/reveal("api_key")` → receives secret bytes; not logged.
 11. Operator rotates KEK (`roymctl kek rotate`). All DEKs re-encrypted atomically.
     Service continues operating with existing DB.
-12. `roymctl status` shows service healthy; encrypted DB confirmed in health output.
+12. `roymctl status` shows service healthy. (The "encrypted DB confirmed in
+    health output" half of this step is **descoped** — see "Descoped at
+    Closeout" below.)
 
-**M3B extension** (blob + messaging pub/sub):
+**M3B extension** (blob):
 
 13. Service stores a blob (`put-blob`); records SHA-256 hash in `profiles` collection.
-14. Service publishes messaging event `profiles/updated` with the record ID
-    (`syneroym:messaging` `host-api::publish`).
-15. Second test service subscribed to `profiles/+` receives the event via
-    `guest-api::handle-message` and reads the blob by hash.
 
-**M3C extension** (bidirectional streaming + HTTP):
-
-16. Service registers a stream protocol (`host-api::register-stream-protocol("file-transfer")`).
-17. A second test service opens a direct stream and requests the blob from
-    step 13 by hash; the first service's `handle-stream-request` returns a
-    `stream-cursor` that the host pulls until EOF, delivering the blob bytes
-    over a direct QUIC stream (not through `data-layer`/`blob-store`).
-18. A third test service uploads a new file to the first service by opening
-    a direct stream on the same `"file-transfer"` namespace; the first
-    service's `accept-stream-upload` returns a `stream-sink`, the host
-    pushes the uploaded bytes via `push-chunk`, and `finalize()` commits the
-    file — verified by the first service reading it back afterward.
-19. An external HTTP client performs `GET /blobs/<hash>?sig=...` against the
-    signed URL from step 13 and receives the raw blob bytes; a second HTTP
-    client opens an SSE connection and receives the `profiles/updated` event
-    from step 14 pushed live; a third HTTP client performs a chunked `PUT`
-    upload that is bridged onto `accept-stream-upload`/`stream-sink` the
-    same way as step 18.
+> Steps 14-19 (messaging pub/sub, bidirectional streaming, HTTP bridge) —
+> formerly "M3B extension" and "M3C extension" here — continue this
+> scenario in [M03B-messaging/task.md](../M03B-messaging/task.md)'s own
+> "Reference Scenario" section, using the blob from step 13 above as a
+> precondition.
 
 ---
 
@@ -1193,13 +903,13 @@ the traceability record reflects what was actually built.
 | WASM guest sets `creator_id` in payload | Host overwrites field; guest value ignored |
 | Blob exceeds service quota | `blob-error::quota-exceeded`; no substrate crash |
 | Read blob with bit-flipped bytes | `blob-error::internal("integrity check failed")` (AEAD tag failure when encrypted; plaintext SHA-256 mismatch otherwise) |
-| Service A publishes to service B's MQTT namespace | Delivery blocked by namespace isolation |
-| KEK rotation while service is handling a request | Re-encryption completes; in-flight request uses cached DEK |
-| Peer opens a stream against an unregistered protocol namespace | Host rejects the stream cleanly; no panic, no hang |
-| Guest declines a `handle-stream-request` (returns `Err`) | Host closes the QUIC stream without invoking `next-chunk` |
-| Guest declines an `accept-stream-upload` (returns `Err`) | Host closes the incoming QUIC stream without creating a `stream-sink` or reading payload bytes |
-| `push-chunk` returns `Err` mid-upload | Upload aborted; `finalize()` never called; host-side state dropped; peer observes a clean failure, not a hang |
-| HTTP request with tampered or expired signed-URL query params | `401`/`403`-equivalent structured error; blob not served |
+| KEK rotation while service is handling a request | Re-encryption completes; in-flight request uses cached DEK — **descoped at closeout (2026-07-09)**; see "Descoped at Closeout" below. Sequential correctness (rotate, then load, both DEKs still resolve) verified by `key_store.rs`'s `test_rotate_kek`. |
+
+> Messaging/streaming/HTTP failure and security tests (MQTT namespace
+> isolation, stream protocol rejection, upload abort, signed-URL tampering,
+> etc.) are tracked in
+> [M03B-messaging/task.md](../M03B-messaging/task.md)'s own "Failure and
+> Security Tests" table.
 
 ---
 
@@ -1220,111 +930,196 @@ the traceability record reflects what was actually built.
 | WASM `migrate()` hook (5 ALTER TABLE statements) | < 200 ms | Integration test |
 | `put-blob` (1 MB, `object_store` local backend) | < 100 ms p99 | Integration test |
 | `get-blob` (1 MB, local cache hit) | < 50 ms p99 | Integration test |
-| MQTT `publish` to `subscribe` delivery (same process) | < 5 ms p99 | Integration test |
-| `stream-cursor.next-chunk()` round trip (host pull, same process) | < 5 ms p99 | Integration test |
-| `stream-sink.push-chunk()` round trip (host push, same process) | < 5 ms p99 | Integration test |
-| HTTP `GET` signed-URL blob serve (1 MB) | < 100 ms p99 | Integration test |
-| HTTP chunked `PUT` upload (1 MB, via `stream-sink`) | < 150 ms p99 | Integration test |
+
+> Messaging/streaming/HTTP performance budgets are tracked in
+> [M03B-messaging/task.md](../M03B-messaging/task.md)'s own "Performance
+> Budgets" table (which also splits the MQTT delivery budget into a
+> native-subscriber row and a slower guest-`handle-message` row — see that
+> document's "Review Findings Incorporated" section for why).
 
 ---
 
 ## Tests Summary
 
+> **Closeout correction (2026-07-09):** this section originally named
+> hypothetical files under a `tests/integration/` directory that was never
+> created. Corrected below to the actual file paths, confirmed present at
+> closeout audit time.
+
 ### Unit Tests (adjacent to implementation crates)
 
-- `crates/key-store/src/tests.rs` — DEK generate/encrypt/decrypt/rotate/zeroize.
-- `crates/data-layer/src/tests.rs` — CRUD, filter compilation, batch, pagination,
-  DDL gating, `creator_id` injection, SQL injection resistance.
-- `crates/blob-store/src/tests.rs` — SHA-256 integrity, path guards, namespace isolation.
-- `crates/mqtt-broker/src/tests.rs` — publish/subscribe, wildcards, retained, cancellation.
-- `crates/mqtt-broker/src/tests.rs` (M3C additions) or a new
-  `crates/messaging-stream/src/tests.rs` — `register-stream-protocol`,
-  `stream-cursor` lifecycle/EOF handling, `stream-sink`
-  `push-chunk`/`finalize` lifecycle and abort-on-error handling.
+- `crates/key-store/src/key_store.rs` (`#[cfg(test)] mod tests`) — DEK
+  generate/encrypt/decrypt round-trip, KEK rotation, KEK zeroize-on-drop,
+  DEK-never-plaintext-on-disk (real on-disk file, exhaustive byte search).
+- `crates/data-layer/src/sqlite.rs`, `crates/data-layer/src/filter.rs`,
+  `crates/data-layer/src/tests_crud.rs` (`#[cfg(test)]` modules) — CRUD,
+  filter compilation, batch, pagination, DDL gating, `creator_id`/
+  `updated_at` host injection, SQL injection resistance, path traversal,
+  vault write/reveal, encryption-required and insecure-warning enforcement.
+- `crates/blob-store/src/object_store_impl.rs`,
+  `crates/blob-store/src/crypto.rs` (`#[cfg(test)]` modules) — SHA-256
+  integrity, path guards, namespace isolation, quota enforcement
+  (single-blob and aggregate), corrupted/wrong-DEK rejection, signed-URL
+  sign/verify.
 
-### Integration Tests (`tests/integration/`)
+> Messaging/streaming unit test files (`crates/mqtt-broker/src/tests.rs`,
+> `crates/messaging-stream/src/tests.rs`) are tracked in
+> [M03B-messaging/task.md](../M03B-messaging/task.md).
 
-- `encrypted_db.rs` — full lifecycle: deploy → inject KEK → init → CRUD → rotate KEK.
-- `vault.rs` — set secret → reveal → key not found.
-- `config.rs` — deploy with config → `config/get` → redeploy bumps generation.
-- `blob_roundtrip.rs` — put blob → get blob → SHA-256 verified.
-- `mqtt_exchange.rs` — two services publish/subscribe across MQTT.
-- `stream_exchange.rs` (M3C) — two services exchange a file-transfer-style
-  byte stream via `handle-stream-request`/`stream-cursor` (download) and via
-  `accept-stream-upload`/`stream-sink` (upload).
-- `http_passthrough.rs` (M3C) — signed-URL blob GET, JSON POST to
-  data-layer, SSE subscription to messaging, chunked upload round trip via
-  `stream-sink`.
+### Integration Tests (`crates/*/tests/`)
+
+- `crates/app_sandbox/tests/data_layer_integration.rs` — full lifecycle:
+  deploy → `init()` → CRUD → `migrate()`, `creator_id` host-injection
+  verified end-to-end through a real WASM component.
+- `crates/app_sandbox/tests/lifecycle_hooks.rs` — `execute-ddl` denied
+  outside `init`/`migrate` context; deploy skips the lifecycle hook
+  gracefully for a component that doesn't export it.
+- `crates/app_sandbox/tests/blob_store_integration.rs` — one-shot and
+  streaming put/get/delete round trip, abort, cross-service isolation,
+  ranged download, through the real WASM resource wiring.
+- `crates/app_sandbox/src/engine.rs` (`#[cfg(test)]`) —
+  `test_config_get_and_get_section`,
+  `test_config_isolation_and_generation_pinning` (redeploy bumps
+  generation; in-flight invocations retain prior generation).
+- `crates/control_plane/src/service.rs` (`#[cfg(test)]`) — native
+  (non-WASM) JSON-RPC dispatch round trip for data-layer and blob-store.
+
+> Messaging/streaming/HTTP integration test files (`mqtt_exchange.rs`,
+> `messaging_client_e2e.rs`, `stream_exchange.rs`, `http_passthrough.rs`)
+> are tracked in [M03B-messaging/task.md](../M03B-messaging/task.md).
+
+### Performance Benchmarks (`criterion`, `crates/*/benches/`)
+
+- `crates/app_sandbox/benches/data_layer_bench.rs` — `put`/`get`/`query`/
+  `batch-mutate`, WASM `init()`/`migrate()` hook timing.
+- `crates/data-layer/benches/security_config_bench.rs` (added at closeout
+  audit to close a gap — see `status.md`) — `vault/reveal`, `config/get`,
+  KEK rotation (100 DEKs), SQLCipher-vs-plaintext A/B overhead.
+- `crates/blob-store/benches/blob_bench.rs` (added at closeout audit) —
+  `put-blob`/`get-blob` (1 MB, local backend).
 
 ### End-to-End Tests (extending `mise run test:e2e`)
 
-- M3A reference scenario (steps 1-12) in a live substrate instance.
-- M3B reference scenario (steps 13-15) in a live substrate instance.
-- M3C reference scenario (steps 16-19) in a live substrate instance.
-- All failure/security tests produce documented outcomes.
+- M3A reference scenario (steps 1-12, with step 12 narrowed per "Descoped
+  at Closeout" below) in a live substrate instance.
+- M3B reference scenario (step 13, blob) in a live substrate instance.
+- All failure/security tests produce documented outcomes (with one row
+  descoped — see below).
+
+> Steps 14-19 of the reference scenario, and their e2e coverage, are
+> tracked in [M03B-messaging/task.md](../M03B-messaging/task.md).
+
+### Descoped at Closeout (2026-07-09)
+
+Two items were found during the closeout audit to have no actual
+implementation or test backing them, despite being named in this file's
+Reference Scenario and Failure/Security Tests summary sections (see
+`status.md`'s closeout audit for the full investigation). Neither was ever
+broken into an implementation or test-writing task under any Slice 0-5
+checklist above — both are gaps in how this milestone was originally
+decomposed, not work a slice's implementer skipped. Both are formally
+descoped from the M3A exit criteria, by user decision, with the rationale
+below recorded rather than silently dropped.
+
+**1. Reference scenario step 12, "encrypted DB confirmed in health
+output."** No requirement in `system-requirements-spec.md` or
+`system-architecture.md` calls for the health endpoint or `roymctl status`
+to surface per-service encryption state (confirmed by grep across both —
+zero matches); this was reference-scenario narrative flavor that was never
+connected to a buildable task. The actual security property this narrative
+step was gesturing at — that encryption is genuinely in effect — is
+already independently verified without any status-surface involvement:
+`test_encryption_key_required` (production profile refuses to open a DB
+without a KEK), `test_insecure_mode_warning` (persistent warning when
+disabled), and `test_dek_never_plaintext_on_disk` (added at this closeout)
+all verify the real guarantee directly. Surfacing that state in an
+operator-facing status/health display is a legitimate future enhancement,
+but it is an observability concern, not a data-security guarantee — it
+belongs with `[ADV-OBS]` Advanced observability (already deferred to M7
+above), not as an M3A gate.
+
+**2. Failure/security row, "KEK rotation while service is handling a
+request."** No Slice ever tasked a concurrency-specific test for this. The
+property is satisfied by construction, not by any explicit synchronization
+this milestone would need to add or verify: `rotate_kek`
+(`crates/key-store/src/key_store.rs`) only re-encrypts rows in
+`substrate.db`'s `dek_store` table inside its own transaction; it never
+touches an already-open `ServiceStore`. A request already in flight has
+already resolved its DEK via `StorageProvider::open_service_db` before any
+rotation could run, and nothing on the request path re-reads `dek_store`
+mid-request — so there is no shared mutable state between an in-flight
+request and a concurrent rotation for a race to occur in. This is an
+architectural invariant of the code as written (single-writer `dek_store`
+transaction, per-invocation DEK resolution with no mid-request re-fetch),
+not a race condition needing interleaving-sensitive test coverage.
+Sequential rotation correctness (all DEKs still resolve correctly after
+rotation; old KEK zeroized) remains verified by `test_rotate_kek`.
 
 ---
 
 ## Measurable Exit Criteria
 
+> **Closeout audit performed 2026-07-09** (see `status.md` for full
+> evidence). **Verdict: M3A and M3B (blob half) are CLOSED.** Two items
+> found during the audit (step 12's health-output claim, the KEK-rotation
+> concurrency-test row) had no implementation or test behind them and were
+> never tasked under any Slice — both are formally **descoped by user
+> decision**, with rationale recorded in "Descoped at Closeout" above, not
+> silently marked done. Everything else is verified with evidence in
+> `status.md`.
+
 ### M3A Exit Criteria
 
 All of the following must be verified and recorded in `status.md`:
 
-+ [ ] `cargo +nightly fmt --all` passes with zero diff.
-+ [ ] `cargo clippy --workspace --all-targets --all-features` passes with zero
++ [x] `cargo +nightly fmt --all` passes with zero diff.
++ [x] `cargo clippy --workspace --all-targets --all-features` passes with zero
   warnings and zero errors.
-+ [ ] `cargo test --workspace` passes with all tests green.
-+ [ ] `mise run test:e2e` passes (existing e2e scenarios must not regress).
-+ [ ] `cargo build --target wasm32-wasip2 -p syneroym-bindings` exits 0.
-+ [ ] `syneroym:data-layer@0.1.0`, `syneroym:vault@0.1.0`, and
++ [x] `cargo test --workspace` passes with all tests green.
++ [x] `mise run test:e2e` passes (existing e2e scenarios must not regress).
++ [x] `cargo build --target wasm32-wasip2 -p syneroym-bindings` exits 0.
++ [x] `syneroym:data-layer@0.1.0`, `syneroym:vault@0.1.0`, and
   `syneroym:app-config@0.1.0` WIT packages compile and generate valid Rust bindings.
-+ [ ] M3A reference scenario (steps 1-12) executes end-to-end without error.
-+ [ ] All M3A failure/security tests produce documented outcomes.
-+ [ ] Performance budgets for M3A metrics (rows 1-10 in table) verified;
-  `criterion` output captured in `status.md`.
-+ [ ] DEK never appears in plaintext on disk; verified by hex dump of `substrate.db`.
-+ [ ] Decisions D-03-01, D-03-02, D-03-03 resolved as ADRs in `docs/decisions/`.
-+ [ ] Traceability matrix updated with M3A evidence for `[PLT-DAT]` (structured
-  data), `[FND-SEC]` (storage encryption), and `[FND-CFG]`.
++ [x] M3A reference scenario (steps 1-12) executes end-to-end without error.
+  Steps 1-11 verified; step 12's "encrypted DB confirmed in health output"
+  half is descoped (see "Descoped at Closeout" above) — the "shows service
+  healthy" half is verified.
++ [x] All M3A failure/security tests produce documented outcomes. 10 of 11
+  rows verified; "KEK rotation while service is handling a request" is
+  descoped (see "Descoped at Closeout" above).
++ [x] Performance budgets for M3A metrics (rows 1-10 in table) verified;
+  `criterion` output captured in `status.md`. (4 of these 10 rows —
+  SQLCipher overhead A/B, `vault/reveal`, KEK rotation, `config/get` — had
+  no benchmark at audit time; added at closeout, see `status.md`.)
++ [x] DEK never appears in plaintext on disk; verified by hex dump of `substrate.db`.
+  (No such test existed at audit time; added at closeout —
+  `test_dek_never_plaintext_on_disk` in `crates/key-store/src/key_store.rs`,
+  a real on-disk file with an exhaustive byte-window search, not a sampled
+  spot check.)
++ [x] Decisions D-03-01, D-03-02, D-03-03 resolved as ADRs in `docs/decisions/`.
++ [x] Traceability matrix updated with M3A evidence for `[PLT-DAT]` (structured
+  data), `[FND-SEC]` (storage encryption), and `[FND-CFG]`. (No M3 rows
+  existed in `traceability-matrix.md` at audit time; added at closeout.)
 
-### M3B Exit Criteria (additional, after M3A is closed)
+### M3B Exit Criteria (blob half only, additional, after M3A is closed)
 
-+ [ ] `syneroym:messaging@0.1.0` (pub/sub surface wired; streaming surface
-  declared only) and `syneroym:blob-store@0.1.0` WIT packages compile and
-  generate valid Rust bindings.
-+ [ ] M3B reference scenario (steps 13-15) executes without error.
-+ [ ] All M3B failure/security tests produce documented outcomes.
-+ [ ] Performance budgets for M3B metrics verified; output captured in `status.md`.
-+ [ ] Decisions D-03-04 and D-03-05 resolved as ADRs in `docs/decisions/`.
-+ [ ] Traceability matrix updated with M3B evidence for `[PLT-DAT]` (blob and
-  MQTT sub-requirements).
+> M3A is closed (above), so this section's header condition is met. All six
+> items below are verified.
 
-### M3C Exit Criteria (additional, after M3B is closed)
++ [x] `syneroym:blob-store@0.1.0` WIT package compiles and generates valid
+  Rust bindings.
++ [x] Blob reference scenario (step 13) executes without error.
++ [x] Blob failure/security tests produce documented outcomes.
++ [x] Performance budgets for blob metrics verified; output captured in
+  `status.md`. (Both rows — `put-blob`, `get-blob` — had no benchmark at
+  audit time; added at closeout, see `status.md`.)
++ [x] Decision D-03-04 resolved as an ADR in `docs/decisions/`.
++ [x] Traceability matrix updated with evidence for `[PLT-DAT]` (blob sub-requirement).
 
-+ [ ] `syneroym:messaging@0.1.0` streaming surface — both guest-as-source
-  (`stream-cursor`, `handle-stream-request`) and guest-as-sink
-  (`stream-sink`, `accept-stream-upload`), plus
-  `register-stream-protocol` — is fully wired; WIT package compiles with no
-  breaking change to the Slice 6A pub/sub surface.
-+ [ ] Design note/ADR for host-side QUIC stream acceptance/routing recorded
-  in `docs/decisions/` before Slice 6B was implemented (per the M3C
-  dependency gate).
-+ [ ] `crates/router/src/route_handler/http.rs` serves `GET`/`POST`/streaming
-  `PUT` against `data-layer`, `blob-store`, and `messaging` without a
-  JSON-RPC envelope, alongside the existing JSON-RPC-over-POST path
-  (no regression).
-+ [ ] Guest-as-sink upload direction is implemented and documented (not left
-  as an open question).
-+ [ ] M3C reference scenario (steps 16-19) executes end-to-end without error.
-+ [ ] All M3C failure/security tests produce documented outcomes.
-+ [ ] Performance budgets for M3C metrics verified; output captured in `status.md`.
-+ [ ] `cargo +nightly fmt --all`, `cargo clippy --workspace --all-targets
-  --all-features`, `cargo test --workspace`, and `mise run test:e2e` all
-  pass on the M3C branch.
-+ [ ] Traceability matrix updated with M3C evidence for `[PLT-DAP-06]`
-  (bidirectional streaming) and the HTTP-facing sub-requirements of
-  `[PLT-DAT]`/`[PLT-DAP-04]`.
+> The remaining M3B exit criteria (messaging pub/sub, Slice 6A) and all M3C
+> exit criteria (streaming, Slice 6B; HTTP bridge, Slice 7) are tracked in
+> [M03B-messaging/task.md](../M03B-messaging/task.md)'s own "Measurable
+> Exit Criteria" section.
 
 ---
 
@@ -1340,7 +1135,7 @@ All of the following must be verified and recorded in `status.md`:
    (Proposed) specifies a `query-raw` host function for trusted contexts that
    need SQL expressivity beyond the JSON filter DSL, gated the same way as
    `execute-ddl`. Not in M3A scope; must appear as a gate item alongside
-   `AggregationPipeline` in the M4 (or M3B) milestone plan.
+   `AggregationPipeline` in the M4 milestone plan.
 
 2. **FDAE `execute-ddl` elevation model:** `is_init_context` flag in `HostState`
    is a temporary M3 scaffold. In M4 this becomes a proper Admin UCAN capability.

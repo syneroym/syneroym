@@ -83,7 +83,16 @@ When we begin work on any milestone below, we will generate a dedicated `task.md
 
 ## Milestone 3: Secure Stateful Services
 
-To prevent dependency cycles and scope creep, the data layer and storage mechanisms are split into two sequential sub-milestones.
+To prevent dependency cycles and scope creep, the data layer and storage mechanisms are split into sequential sub-milestones.
+
+> **Planning-doc split (2026-07-09):** M3A and the blob half of M3B are
+> tracked in `docs/planning/milestones/M03-sss/task.md` (complete). The
+> messaging half of M3B and all of M3C are tracked in their own document,
+> `docs/planning/milestones/M03B-messaging/task.md`, split out before
+> implementation began because pre-implementation planning for that
+> remaining work had grown large enough to make the original single file
+> unwieldy. The milestone numbering/labels below (M3A/M3B/M3C) are
+> unchanged — only which file carries the detailed task checklist differs.
 
 ### Milestone 3A: Structured State and Security
 **Goal:** Introduce the baseline SQLite data layer intimately paired with storage encryption and the secret vault.
@@ -101,6 +110,11 @@ To prevent dependency cycles and scope creep, the data layer and storage mechani
 4. **Configuration Delivery:** Finalize the delivery mechanics (WASM host functions vs. Podman environment mapping).
 
 ### Milestone 3B: Objects and Events
+
+> Blob storage (below) is tracked in `docs/planning/milestones/M03-sss/task.md`
+> (Slice 5, complete). The event-broker/messaging item is tracked in
+> `docs/planning/milestones/M03B-messaging/task.md` (Slice 6A).
+
 **Goal:** Provide the remaining fundamental asynchronous data primitives.
 
 **Feature Grouping:**
@@ -112,6 +126,10 @@ To prevent dependency cycles and scope creep, the data layer and storage mechani
 2. **Event Broker:** Embed the pub/sub half of `syneroym:messaging` as an in-process `rumqttd` Tokio task with host-enforced topic namespacing ([ADR-0010](../decisions/0010-mqtt-broker-rumqttd.md)). The package was formerly named `syneroym:pubsub`; renamed to `syneroym:messaging` to share a boundary with the bidirectional-streaming half added in Milestone 3C. Adapting the broker to decentralized P2P log replication over Iroh QUIC (avoiding classical TCP brokers, per `[PLT-DAP-04]`) is deferred to Milestone 5. The `stream-types`/`handle-stream-request` portion of the WIT package is declared in M3B for interface stability but not implemented until 3C.
 
 ### Milestone 3C: Unified Messaging Streams and HTTP Bridge
+
+> Tracked in `docs/planning/milestones/M03B-messaging/task.md` (Slice 6B:
+> streaming; Slice 7: HTTP bridge).
+
 **Goal:** Extend `syneroym:messaging` with generic bidirectional streaming, then bridge HTTP conventions onto the native-dispatch surface established across M3A/M3B/3C (data-layer, vault, app-config, blob-store, messaging).
 
 **Feature Grouping:**

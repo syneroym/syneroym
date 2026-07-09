@@ -167,8 +167,9 @@ package so the WIT boundary doesn't need a breaking rename later. See
   interface stability) but is implemented separately in **M3C (Slice 6B)**,
   which requires new host-side QUIC stream acceptance/routing infrastructure
   not covered by this ADR — see the M3C dependency gate in
-  `docs/planning/milestones/M03-sss/task.md`, which requires its own
-  design note or ADR before Slice 6B implementation begins.
+  `docs/planning/milestones/M03B-messaging/task.md` (split out from
+  `M03-sss/task.md` on 2026-07-09, before implementation began), which
+  requires its own design note or ADR before Slice 6B implementation begins.
 - This amendment is a rename and scope-boundary clarification only; it does
   not change any decision content above (broker deployment, delivery model,
   topic namespacing, backpressure, or cancellation).

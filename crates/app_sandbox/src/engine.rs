@@ -1402,4 +1402,30 @@ mod tests {
             ConfigHost::get(&mut host_a_gen1, "mode".to_string()).await.unwrap().unwrap();
         assert_eq!(val_a_old, "v1");
     }
+
+    /// M3A failure/security test: `vault/reveal` on a non-existent key
+    /// returns `vault-error::not-found` at the WIT host-function boundary
+    /// (not just `Ok(None)` one layer down at `ServiceStore::reveal_secret`,
+    /// which `syneroym-data-layer`'s own tests already cover).
+    #[tokio::test]
+    async fn test_vault_reveal_not_found_at_host_boundary() {
+        let key_store = Arc::new(KeyStore::new());
+        key_store.inject_kek([3u8; 32], None).unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage_provider = Arc::new(
+            syneroym_data_layer::SqliteStorageProvider::new(temp_dir.path(), true).unwrap(),
+        );
+        let mut host_state = HostState::new(
+            "vault-not-found-svc".to_string(),
+            None,
+            key_store,
+            storage_provider,
+            test_blob_provider(),
+            false,
+            0,
+        );
+
+        let result = vault::Host::reveal(&mut host_state, "does-not-exist".to_string()).await;
+        assert!(matches!(result, Err(VaultError::NotFound)));
+    }
 }

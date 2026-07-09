@@ -550,7 +550,206 @@ No regression from the M3A baseline.
   performance budget table rows) — not yet benchmarked with `criterion`;
   functional correctness is fully covered above, but the row 1MB-local
   latency numbers from the M3B Performance Budgets table are still open.
+  **Closed at the M3A/M3B closeout audit below.**
 - True resumable multipart uploads (persisted server-side offset across a
   reconnect) — `abort()` gives basic cleanup; see the "Deferred" note in
   `task.md`'s WIT interface section for why full resumability was judged
   disproportionate scope for this slice.
+
+---
+
+## Milestone Closeout Audit (2026-07-09)
+
+**Performed by:** Claude Fable 5 (Claude Code), at explicit user request to
+audit M3A + M3B (blob half) for completion against `task.md`'s Measurable
+Exit Criteria, cross-referenced against the traceability matrix,
+`system-requirements-spec.md`, `system-architecture.md`, the actual code,
+and the actual test suite — not just re-reading prior status entries.
+
+### Verdict: CLOSED (as of 2026-07-09, after a user decision on two items)
+
+Two genuine gaps were found that were not resolved by this audit's own
+verification work (see "Gaps found and descoped" below for why they
+weren't just patched like the others) — both were presented to the user as
+an implement-now-vs-descope-with-rationale choice, and the user chose to
+descope, with rationale recorded below. Everything else claimed by
+`task.md`'s exit criteria is now verified with real evidence, including
+several items that turned out to have **never actually been verified**
+despite the checklist implying otherwise (see "Gaps found and closed"
+below) — this audit did not simply confirm existing claims, it re-derived
+them from first principles (running commands, reading code, reading test
+bodies) and found the checklist had drifted ahead of reality in some
+places.
+
+### Validation commands (fresh run, this audit)
+
+All run against the working tree with the `syneroym-key-store`,
+`syneroym-app-sandbox`, `syneroym-data-layer`, and `syneroym-blob-store`
+additions described below already applied.
+
+```text
+$ cargo +nightly fmt --all -- --check
+(no output — zero diff)
+
+$ cargo clippy --workspace --all-targets --all-features
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 26.16s
+(zero warnings)
+
+$ cargo build --target wasm32-wasip2 -p syneroym-bindings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 40.65s
+
+$ cargo test --workspace
+254 tests passed across the workspace; 0 failed.
+(Note: the sandboxed tool environment blocks raw UDP/TCP socket binds,
+which fails one unrelated M2 test, crates/coordinator_iroh/tests/
+connection_limit.rs's test_connection_limit, with "Operation not
+permitted" trying to bind an iroh relay socket. Re-ran outside the sandbox
+restriction to get a true signal — 0 failures. Not an M3 regression: this
+test predates M3 and exercises coordinator connection-cap behavior,
+unrelated to data-layer/vault/config/blob.)
+
+$ mise run test:e2e
+  4 passed (19.3s)
+(Same sandbox caveat applied to the substrate process's own relay-socket
+bind during e2e global-setup; re-ran outside the restriction — 4/4 passed,
+no regression from the M3A baseline recorded earlier in this file.)
+```
+
+### Gaps found and closed during this audit
+
+Four things `task.md`'s exit criteria claimed as requirements had **no
+actual verifying evidence** anywhere in the codebase before this audit.
+Each is now closed with real, permanent, repeatable evidence (not a
+one-off manual check) rather than just documented as done:
+
+**1. "DEK never appears in plaintext on disk; verified by hex dump of
+`substrate.db`"** — no such test existed. All prior `KeyStore` tests used
+`Connection::open_in_memory()`, which never touches disk at all. Added
+`test_dek_never_plaintext_on_disk` in
+`crates/key-store/src/key_store.rs`, using a real file-backed SQLite
+database: generates a DEK, closes the connection (forcing SQLite to flush
+all pages), re-reads the raw file bytes, and asserts the plaintext DEK does
+not appear as a contiguous byte run anywhere in the file — an exhaustive
+search, not a sampled spot check. Passing. Sample evidence captured during
+development (removed from the permanent test, which asserts programmatically
+instead of printing):
+```text
+plaintext DEK (hex): 75cc14f9c300e3f32ef06ea8ae482d9d9a98671ee2512f9cf97eeb885c556f1c
+substrate.db first 256 bytes (hex dump):
+53 51 4c 69 74 65 20 66 6f 72 6d 61 74 20 33 00 10 00 01 01 00 40 20 20 00 ...
+(plaintext DEK bytes confirmed absent from the full file, not just this excerpt)
+```
+
+**2. Four performance-budget rows had no `criterion` benchmark at all**
+(not "not yet run" — the benchmark code itself didn't exist): SQLCipher
+overhead A/B, `vault/reveal`, KEK rotation, `config/get`. Added
+`crates/data-layer/benches/security_config_bench.rs`. Results (20-sample
+run):
+```text
+vault_reveal              time:   [10.963 µs 11.080 µs 11.276 µs]   (budget < 2 ms)
+config_get                time:   [9.7790 µs 9.9108 µs 10.117 µs]   (budget < 1 ms)
+kek_rotation_100_deks      time:   [859.16 µs 906.39 µs 983.91 µs]  (budget < 500 ms)
+sqlcipher_overhead/put_encrypted   time: [22.564 µs 23.232 µs 24.436 µs]
+sqlcipher_overhead/put_plaintext   time: [22.243 µs 23.060 µs 24.108 µs]  (≈0.7% overhead, budget < 10%)
+sqlcipher_overhead/get_encrypted   time: [17.410 µs 17.428 µs 17.447 µs]
+sqlcipher_overhead/get_plaintext   time: [17.326 µs 17.347 µs 17.370 µs]  (≈0.5% overhead, budget < 10%)
+```
+All six comfortably within budget.
+
+**3. Two blob performance-budget rows had no benchmark** (`put-blob`,
+`get-blob`; already flagged as open in Slice 5's own status above). Added
+`crates/blob-store/benches/blob_bench.rs`. Results (20-sample run):
+```text
+put_blob_1mb_local        time:   [4.8818 ms 5.0288 ms 5.1829 ms]   (budget < 100 ms)
+get_blob_1mb_local_warm    time:   [6.1223 ms 6.1445 ms 6.1982 ms]  (budget < 50 ms)
+```
+Both comfortably within budget.
+
+**4. "`vault/reveal` on non-existent key → `vault-error::not-found`"** —
+covered one layer down (`syneroym-data-layer`'s `test_vault_write_and_reveal`
+proves `ServiceStore::reveal_secret` returns `Ok(None)` for a missing key)
+but nothing tested the actual WIT host-function boundary
+(`vault::Host::reveal` in `crates/app_sandbox/src/engine.rs`), which maps
+`Ok(None)` to `Err(VaultError::NotFound)`. Added
+`test_vault_reveal_not_found_at_host_boundary` in `crates/app_sandbox/src/
+engine.rs`, calling `vault::Host::reveal` directly (no WASM component
+needed) and asserting the `NotFound` variant. Passing.
+
+**5. Traceability matrix had zero rows for any M3 requirement.**
+`[PLT-DAT]`, `[FND-SEC]` (M3 storage-encryption scope), `[FND-CFG]`,
+`[PLT-DAP]`, and (as `Pending`, correctly) `[PLT-DAP-04]`/`[PLT-DAP-06]`
+were entirely absent from `docs/planning/traceability-matrix.md` despite
+the exit criteria explicitly requiring them. Added.
+
+**6. `task.md`'s "Tests Summary" section named test files under a
+`tests/integration/` directory that was never created**
+(`encrypted_db.rs`, `vault.rs`, `config.rs`, `blob_roundtrip.rs`) — the
+actual coverage exists, just under different names/locations
+(`crates/app_sandbox/tests/data_layer_integration.rs`,
+`lifecycle_hooks.rs`, `blob_store_integration.rs`, plus unit tests in
+`crates/data-layer/src/sqlite.rs`, `filter.rs`, `tests_crud.rs`). This was
+a documentation-accuracy problem, not a coverage gap — the actual coverage
+is real and was independently confirmed by reading the test bodies, not
+just their names. Corrected in `task.md`.
+
+All new test/bench files pass `cargo +nightly fmt --all -- --check` and
+`cargo clippy --workspace --all-targets --all-features` cleanly (verified
+above, after these additions).
+
+### Gaps found and descoped, not implemented (user decision, 2026-07-09)
+
+Two items had no implementation or test behind them despite being named in
+`task.md`'s Reference Scenario and Failure/Security Tests summary sections.
+Both were investigated and confirmed to never have been broken into an
+implementation or test-writing task under any Slice 0-5 checklist — i.e.
+these are gaps in how the milestone was originally decomposed, not work a
+slice's implementer skipped. Presented to the user as a choice between
+implementing now or formally descoping with a recorded rationale; the user
+chose to descope. Full rationale recorded in `task.md`'s "Descoped at
+Closeout" section (summarized below); this is the authoritative record.
+
+**1. M3A reference scenario step 12's "encrypted DB confirmed in health
+output"** — `crates/substrate/src/runtime.rs`'s `/health` endpoint returns
+a static `"OK"` string; no code path reports per-service encryption
+status. Descoped: no requirement in `system-requirements-spec.md` or
+`system-architecture.md` calls for this (confirmed by grep — zero
+matches); the actual security property was reference-scenario narrative
+flavor never connected to a buildable task, and the property itself is
+independently verified without any status-surface involvement
+(`test_encryption_key_required`, `test_insecure_mode_warning`,
+`test_dek_never_plaintext_on_disk`). Folded into `[ADV-OBS]` Advanced
+observability, already deferred to M7 in this file's Requirement IDs
+table — an operator-facing status enhancement, not an M3A data-security
+gate. The "shows service healthy" half of step 12 is unaffected and
+remains verified.
+
+**2. Failure/security row "KEK rotation while service is handling a
+request"** — no test exercises a genuinely concurrent in-flight
+rotation; only sequential correctness is tested
+(`key_store.rs`'s `test_rotate_kek`). Descoped: the property is satisfied
+by construction, not by anything this milestone would need to add —
+`rotate_kek` only re-encrypts `substrate.db`'s `dek_store` table inside
+its own transaction and never touches an already-open `ServiceStore`; an
+in-flight request has already resolved its DEK via
+`StorageProvider::open_service_db` before any rotation could run, and
+nothing on the request path re-reads `dek_store` mid-request. No shared
+mutable state exists between an in-flight request and a concurrent
+rotation for a race to occur in — this is an architectural invariant, not
+a race condition needing interleaving-sensitive test coverage.
+
+Per the explicit closeout instruction — do not mark the milestone complete
+while any requirement, test, decision, or migration task remains
+*unresolved* — both items are now resolved (by explicit descope decision,
+not silently dropped), so **M3A and M3B (blob half) are CLOSED.**
+`task.md`'s exit-criteria checkboxes are updated accordingly: every item
+is checked, with the two descoped items' notes pointing to the rationale
+above rather than claiming they were verified as originally worded.
+
+### Requirements/architecture cross-check
+
+`docs/system-requirements-spec.md`'s `[FND-SEC]`, `[FND-CFG]`, `[PLT-DAT]`,
+and `[PLT-DAP]` sections were read in full against the actual implementation
+and found consistent — no claim there is unbacked by code. (The one
+overclaim found, step 12's health-output encryption confirmation, exists
+only in `task.md`'s reference scenario, not in the requirements spec or
+`system-architecture.md` — confirmed by grep across both, no matches.)
