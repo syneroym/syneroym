@@ -7,7 +7,7 @@ use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, Utc};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
-use serde_json::Map;
+use serde_json::{Map, Value};
 
 use crate::Identity;
 
@@ -101,9 +101,9 @@ pub fn resolve_did_key(did: &str) -> Result<VerifyingKey> {
 /// - Keys are sorted lexicographically
 /// - No extraneous whitespace
 /// - UTF-8 encoded with sorted object keys at all nesting levels
-pub fn canonicalize_json_value(value: &serde_json::Value) -> serde_json::Value {
+pub fn canonicalize_json_value(value: &Value) -> Value {
     match value {
-        serde_json::Value::Object(map) => {
+        Value::Object(map) => {
             let mut sorted_map = Map::new();
             let mut keys: Vec<_> = map.keys().collect();
             keys.sort();
@@ -112,11 +112,9 @@ pub fn canonicalize_json_value(value: &serde_json::Value) -> serde_json::Value {
                     sorted_map.insert(key.clone(), canonicalize_json_value(val));
                 }
             }
-            serde_json::Value::Object(sorted_map)
+            Value::Object(sorted_map)
         }
-        serde_json::Value::Array(arr) => {
-            serde_json::Value::Array(arr.iter().map(canonicalize_json_value).collect())
-        }
+        Value::Array(arr) => Value::Array(arr.iter().map(canonicalize_json_value).collect()),
         other => other.clone(),
     }
 }

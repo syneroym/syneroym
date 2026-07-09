@@ -1,5 +1,7 @@
 //! Common utilities and helpers.
 
+use std::{env, fs, path::Path};
+
 /// Parses a string representing a size into a number of bytes.
 ///
 /// Supports common suffixes like `Ki`, `Mi`, `Gi`, `K`, `M`, `G`.
@@ -57,16 +59,16 @@ pub fn generate_alias(nickname: Option<&str>, service_id: &str) -> String {
     }
 }
 
-pub fn read_local_artifact(path: &std::path::Path) -> anyhow::Result<Vec<u8>> {
-    std::fs::read(path)
+pub fn read_local_artifact(path: &Path) -> anyhow::Result<Vec<u8>> {
+    fs::read(path)
         .or_else(|_| {
-            if let Ok(cwd) = std::env::current_dir() {
+            if let Ok(cwd) = env::current_dir() {
                 let target = cwd.join(path);
                 if target.exists() {
-                    return std::fs::read(&target);
+                    return fs::read(&target);
                 }
             }
-            std::fs::read(path)
+            fs::read(path)
         })
         .map_err(|e| anyhow::anyhow!("Failed to read file at {:?}: {}", path, e))
 }

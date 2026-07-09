@@ -1,8 +1,12 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    fmt,
+    sync::{Arc, Mutex},
+};
 
 use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce, aead::Aead};
+use chrono::Utc;
 use rand::RngCore;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, Error as RusqliteError, params};
 use zeroize::Zeroizing;
 
 use crate::{KeyStoreError, Result};
@@ -13,8 +17,8 @@ pub struct KeyStore {
     kek: Arc<Mutex<Option<Zeroizing<[u8; 32]>>>>,
 }
 
-impl std::fmt::Debug for KeyStore {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for KeyStore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let is_configured = self.kek.lock().map(|g| g.is_some()).unwrap_or(false);
         f.debug_struct("KeyStore").field("kek_configured", &is_configured).finish()
     }
@@ -99,7 +103,7 @@ impl KeyStore {
             .map_err(|e| KeyStoreError::Crypto(e.to_string()))?;
 
         // Store encrypted DEK in database
-        let now = chrono::Utc::now().timestamp_millis();
+        let now = Utc::now().timestamp_millis();
         conn.execute(
             "INSERT OR REPLACE INTO dek_store (service_id, encrypted_dek, nonce, created_at)
              VALUES (?1, ?2, ?3, ?4)",
@@ -141,7 +145,7 @@ impl KeyStore {
             dek.copy_from_slice(&decrypted);
             Ok(dek)
         } else {
-            Err(KeyStoreError::Database(rusqlite::Error::QueryReturnedNoRows))
+            Err(KeyStoreError::Database(RusqliteError::QueryReturnedNoRows))
         }
     }
 
@@ -228,6 +232,10 @@ impl KeyStore {
 
 #[cfg(test)]
 mod tests {
+    use std::{fs, slice};
+
+    use zeroize::Zeroize;
+
     use super::*;
 
     #[test]
@@ -322,10 +330,10 @@ mod tests {
         ks.rotate_kek(new_kek, &mut db).unwrap();
 
         // Zeroize in-place before Box deallocation to prevent stack move copies
-        zeroize::Zeroize::zeroize(&mut **old_kek_zeroizing);
+        Zeroize::zeroize(&mut **old_kek_zeroizing);
 
         unsafe {
-            let memory = std::slice::from_raw_parts(ptr, 32);
+            let memory = slice::from_raw_parts(ptr, 32);
             assert_eq!(memory, &[0u8; 32]);
         }
     }
@@ -365,7 +373,7 @@ mod tests {
         };
         // Connection dropped here, forcing SQLite to flush all pages to disk.
 
-        let raw_bytes = std::fs::read(&db_path).unwrap();
+        let raw_bytes = fs::read(&db_path).unwrap();
         assert!(
             !raw_bytes.windows(dek_plain.len()).any(|window| window == dek_plain),
             "plaintext DEK bytes found verbatim in substrate.db on disk"

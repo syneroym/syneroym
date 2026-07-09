@@ -4,13 +4,15 @@
 //! generation, secure storage, signing, and DID document generation.
 
 use std::{
-    fmt::{Debug, Formatter},
-    fs,
+    fmt::{self, Debug, Formatter},
+    fs, io, mem,
     path::Path,
+    slice,
 };
 
 use anyhow::Context;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
+use zeroize::Zeroize;
 
 use crate::{IdentityDoc, substrate};
 
@@ -25,7 +27,7 @@ pub fn lock_memory(ptr: *const u8, len: usize) {
         #[allow(unsafe_code)]
         unsafe {
             if libc::mlock(ptr as *const libc::c_void, len) != 0 {
-                let err = std::io::Error::last_os_error();
+                let err = io::Error::last_os_error();
                 tracing::warn!(
                     "Failed to lock memory using mlock: {}. Key memory might be swapped to disk.",
                     err
@@ -40,7 +42,7 @@ pub fn lock_memory(ptr: *const u8, len: usize) {
             #[cfg(target_os = "linux")]
             {
                 if libc::madvise(ptr as *mut libc::c_void, len, libc::MADV_DONTDUMP) != 0 {
-                    let err = std::io::Error::last_os_error();
+                    let err = io::Error::last_os_error();
                     tracing::warn!(
                         "Failed to set MADV_DONTDUMP via madvise: {}. Key memory might be \
                          included in core dumps.",
@@ -74,9 +76,9 @@ impl Drop for ZeroizingKey {
         #[allow(unsafe_code)]
         unsafe {
             let ptr = &mut self.key as *mut SigningKey as *mut u8;
-            let len = std::mem::size_of::<SigningKey>();
-            let slice = std::slice::from_raw_parts_mut(ptr, len);
-            zeroize::Zeroize::zeroize(slice);
+            let len = mem::size_of::<SigningKey>();
+            let key_slice = slice::from_raw_parts_mut(ptr, len);
+            Zeroize::zeroize(key_slice);
         }
     }
 }
@@ -87,7 +89,7 @@ pub struct Identity {
 }
 
 impl Debug for Identity {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("Identity").field("public_key", &self.public_key()).finish()
     }
 }
@@ -103,11 +105,11 @@ impl Identity {
         getrandom::fill(&mut bytes)
             .context("Failed to generate random bytes for Ed25519 keypair")?;
         let signing_key = Box::new(ZeroizingKey { key: SigningKey::from_bytes(&bytes) });
-        zeroize::Zeroize::zeroize(&mut bytes);
+        Zeroize::zeroize(&mut bytes);
         let id = Self { signing_key };
         lock_memory(
             &id.signing_key.key as *const SigningKey as *const u8,
-            std::mem::size_of::<SigningKey>(),
+            mem::size_of::<SigningKey>(),
         );
         Ok(id)
     }
@@ -119,7 +121,7 @@ impl Identity {
         let id = Self { signing_key };
         lock_memory(
             &id.signing_key.key as *const SigningKey as *const u8,
-            std::mem::size_of::<SigningKey>(),
+            mem::size_of::<SigningKey>(),
         );
         id
     }
@@ -134,9 +136,9 @@ impl Identity {
         let mut bytes_array: [u8; 32] = bytes.as_slice().try_into().map_err(|_| {
             anyhow::anyhow!("Invalid key file size ({}) at {}", len, path.display())
         })?;
-        zeroize::Zeroize::zeroize(&mut bytes);
+        Zeroize::zeroize(&mut bytes);
         let id = Self::from_bytes(&bytes_array);
-        zeroize::Zeroize::zeroize(&mut bytes_array);
+        Zeroize::zeroize(&mut bytes_array);
         Ok(id)
     }
 
@@ -154,7 +156,7 @@ impl Identity {
         #[cfg(unix)]
         {
             use std::{io::Write, os::unix::fs::OpenOptionsExt};
-            std::fs::OpenOptions::new()
+            fs::OpenOptions::new()
                 .write(true)
                 .create(true)
                 .truncate(true)
@@ -169,7 +171,7 @@ impl Identity {
                 .with_context(|| format!("Failed to write identity file to {}", path.display()))?;
         }
 
-        zeroize::Zeroize::zeroize(&mut bytes);
+        Zeroize::zeroize(&mut bytes);
         Ok(())
     }
 
@@ -214,6 +216,8 @@ impl Identity {
 
 #[cfg(test)]
 mod tests {
+    use std::ptr;
+
     use serde_json::json;
 
     use super::*;
@@ -249,7 +253,7 @@ mod tests {
         assert_eq!(zero_key.key.to_bytes(), [42u8; 32]);
         let ptr = &zero_key.key as *const SigningKey as *const [u8; 32];
         unsafe { ManuallyDrop::drop(&mut zero_key) };
-        let after_drop: [u8; 32] = unsafe { std::ptr::read_volatile(ptr) };
+        let after_drop: [u8; 32] = unsafe { ptr::read_volatile(ptr) };
         assert_eq!(after_drop, [0u8; 32], "Key bytes must be zeroed on drop");
     }
 
@@ -269,14 +273,14 @@ mod tests {
     fn test_lock_memory_graceful_degradation() {
         // Test with invalid pointer/length to force mlock failure
         // and verify it degrades gracefully without panicking or returning error.
-        lock_memory(std::ptr::null(), 999999);
+        lock_memory(ptr::null(), 999999);
     }
 
     #[test]
     fn test_substrate_start_mlock_unavailable() {
         // Force mlock failure with invalid pointer, then check if identity generation
         // and load still work.
-        lock_memory(std::ptr::null(), 4096);
+        lock_memory(ptr::null(), 4096);
         let id = Identity::generate();
         assert!(id.is_ok());
     }

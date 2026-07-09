@@ -4,6 +4,8 @@
 //! Core module for RPC protocol compilation, providing framing,
 //! serialization, type conversions, and transport adapters.
 
+use std::result;
+
 mod converter;
 mod dispatch_registry;
 pub mod framing;
@@ -49,4 +51,4 @@ impl RpcError {
     }
 }
 
-pub type RpcResult<T> = std::result::Result<T, RpcError>;
+pub type RpcResult<T> = result::Result<T, RpcError>;

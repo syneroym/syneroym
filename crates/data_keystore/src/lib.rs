@@ -1,6 +1,8 @@
 //! KeyStore service for managing Key Encryption Keys (KEK) and Data Encryption
 //! Keys (DEK).
 
+use std::result;
+
 pub mod key_store;
 
 pub use key_store::KeyStore;
@@ -19,4 +21,4 @@ pub enum KeyStoreError {
     Internal(#[from] anyhow::Error),
 }
 
-pub type Result<T> = std::result::Result<T, KeyStoreError>;
+pub type Result<T> = result::Result<T, KeyStoreError>;
