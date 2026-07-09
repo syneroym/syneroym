@@ -6,6 +6,7 @@ rust = "stable"
 "cargo:cargo-component" = "0.21"
 "cargo:cargo-audit" = "latest"
 "cargo:cargo-llvm-cov" = "latest"
+"cargo:cargo-sweep" = "latest"
 node = "20"
 
 [settings]
@@ -67,5 +68,14 @@ run = "./scripts/build-release.sh \"${1:-}\""
 [tasks."test:smoke"]
 description = "Run automated smoke tests against local or remote coordinator/registry"
 run = "cargo run -p syneroym-smoke-tests -- ${@}"
+
+[tasks."clean:sweep"]
+description = """
+Prune stale build artifacts from target/ (anything untouched for 14+ days)
+instead of nuking the whole directory with `cargo clean`. Run this
+periodically (e.g. weekly, via your own cron/scheduler) to keep target/ from
+growing unbounded across many debug/clippy/test/bench builds.
+"""
+run = "cargo sweep --time 14"
 
 

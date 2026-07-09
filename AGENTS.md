@@ -53,6 +53,9 @@ cargo run --bin syneroym-substrate -- run --config <path>
 
 # After `cargo update`, iroh's pre-release crypto chain needs re-pinning:
 mise run deps:update
+
+# Prune stale target/ artifacts (untouched 14+ days) instead of `cargo clean`
+mise run clean:sweep
 ```
 Crate names are `syneroym-<dir>` (e.g. `crates/data_db` → `syneroym-data-db`, `crates/coordinator_iroh` → `syneroym-coordinator-iroh`) — use these with `cargo test -p` / `cargo build -p`.
 

@@ -4,7 +4,8 @@ members = ["crates/*", "apps/*", "test-components/*", "tests/perf", "xtask"]
 exclude = ["test-components/greeter", "test-components/data-layer-test"]
 
 [profile.dev]
-incremental = true # Compile your binary in smaller steps.
+incremental = true      # Compile your binary in smaller steps.
+split-debuginfo = "unpacked" # Keep debug info out-of-line instead of duplicated into each binary; much smaller target/.
 
 [profile.dev.package."*"]
 debug = false     # Disable debug symbols for all dependencies
