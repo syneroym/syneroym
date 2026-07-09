@@ -4,7 +4,8 @@
 //! handling peer discovery and connection routing.
 
 use std::{
-    fmt::{Debug, Formatter},
+    collections::HashMap,
+    fmt::{self, Debug, Formatter},
     sync::Arc,
 };
 
@@ -13,9 +14,9 @@ use iroh::Endpoint;
 use syneroym_core::{
     config::SubstrateConfig, dht_registry::RegistryClient, local_registry::EndpointRegistry,
 };
-use syneroym_data_layer::registry_store;
+use syneroym_data_db::registry_store;
 use syneroym_router::net_iroh;
-use tokio::net::TcpListener;
+use tokio::{net::TcpListener, sync::Mutex};
 use tracing::info;
 
 use crate::{
@@ -30,7 +31,7 @@ pub struct CoordinatorWebRtc {
 }
 
 impl Debug for CoordinatorWebRtc {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("CoordinatorWebRtc")
             .field(
                 "bootstrap_listener",
@@ -77,7 +78,7 @@ impl CoordinatorWebRtc {
             registry,
             registry_url: config.substrate.registry_url.clone(),
             registry_client,
-            connection_cache: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+            connection_cache: Mutex::new(HashMap::new()),
         });
 
         Ok(Self {

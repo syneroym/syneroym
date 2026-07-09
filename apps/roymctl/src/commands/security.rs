@@ -1,4 +1,7 @@
-use std::{io::Read, time::Duration};
+use std::{
+    io::{self, Read},
+    time::Duration,
+};
 
 use clap::Subcommand;
 use syneroym_sdk::SyneroymClient;
@@ -60,7 +63,7 @@ pub async fn handle_secret(
     match command {
         SecretCommands::Set { service_id, key } => {
             let mut value = Vec::new();
-            std::io::stdin().read_to_end(&mut value)?;
+            io::stdin().read_to_end(&mut value)?;
             client.set_secret(service_id.clone(), key.clone(), value).await?;
             println!("Secret '{}' set successfully for service {}", key, service_id);
         }

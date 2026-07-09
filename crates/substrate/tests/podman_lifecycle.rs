@@ -1,7 +1,7 @@
 #![allow(unsafe_code, clippy::unwrap_used, clippy::expect_used, clippy::panic, dead_code)]
 //! Integration tests for the Podman sandbox lifecycle
 
-use std::time::Duration;
+use std::{process::Command, time::Duration};
 
 use rustls::crypto::ring;
 use syneroym_core::{
@@ -134,11 +134,7 @@ impl SubstrateTestContext {
 }
 
 fn has_podman() -> bool {
-    std::process::Command::new("podman")
-        .arg("info")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    Command::new("podman").arg("info").output().map(|o| o.status.success()).unwrap_or(false)
 }
 
 #[tokio::test]
@@ -158,7 +154,7 @@ async fn test_podman_lifecycle() {
     // We deploy a simple alpine container that starts an HTTP echo or simple server
     // or just nginx to test port mapping.
     // Nginx is small and runs an HTTP server on port 80.
-    use syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::{
+    use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
         ContainerPortMapping, ContainerVolumeMapping,
     };
 

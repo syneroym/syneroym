@@ -26,12 +26,13 @@ reqwest.workspace = true
 
 # Substrate path
 syneroym-sdk.workspace = true
-syneroym-app-sandbox.workspace = true
+syneroym-sandbox-wasm.workspace = true
 syneroym-core.workspace = true
-syneroym-bindings.workspace = true
+syneroym-wit-interfaces.workspace = true
 syneroym-identity.workspace = true
-syneroym-key-store.workspace = true
-syneroym-data-layer.workspace = true
+syneroym-data-keystore.workspace = true
+syneroym-data-db.workspace = true
+syneroym-data-blob.workspace = true
 wasmtime.workspace = true
 z32.workspace = true
 

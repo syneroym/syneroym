@@ -19,19 +19,21 @@ use iroh::{
     endpoint::Connection,
     protocol::{AcceptError, ProtocolHandler as IrohProtocolHandler},
 };
-use syneroym_app_sandbox::AppSandboxEngine;
 use syneroym_control_plane::ControlPlaneService;
 use syneroym_core::{
-    config::{RetryPolicy, SubstrateConfig},
+    config::{BlobBackend, RetryPolicy, SubstrateConfig},
     dht_registry::RegistryClient,
     local_registry::EndpointRegistry,
     storage::MockStorage,
 };
-use syneroym_data_layer::{SqliteStorageProvider, traits::StorageProvider};
+use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
+use syneroym_data_db::{SqliteStorageProvider, traits::StorageProvider};
+use syneroym_data_keystore::KeyStore;
 use syneroym_identity::Identity;
-use syneroym_key_store::KeyStore;
-use syneroym_podman_sandbox::ContainerEngine;
-use syneroym_rpc::NativeService;
+use syneroym_rpc::{NativeDispatchRegistry, NativeService};
+use syneroym_sandbox_podman::ContainerEngine;
+use syneroym_sandbox_wasm::AppSandboxEngine;
+use tokio::io::AsyncWriteExt;
 use tracing::{debug, error};
 
 use crate::net_iroh::IrohStream;
@@ -74,7 +76,7 @@ impl Drop for ConnectionSlot {
 
 pub struct RouteHandlerInner {
     pub registry: EndpointRegistry,
-    pub native_dispatch: DashMap<String, Arc<dyn NativeService>>,
+    pub native_dispatch: NativeDispatchRegistry,
     pub app_sandbox_engine: Option<Arc<AppSandboxEngine>>,
     pub identity: Identity,
     pub iroh_endpoint: Option<Endpoint>,
@@ -94,6 +96,48 @@ impl Debug for RouteHandler {
     }
 }
 
+/// Constructs the configured blob backend (`Local` or `S3`). `S3` requires
+/// building with the `aws` cargo feature (off by default -- see the
+/// `object_store`/`digest` version-pin comment in the root `Cargo.toml`);
+/// selecting it otherwise fails fast here with an actionable message rather
+/// than silently falling back to `Local`.
+fn build_blob_provider(config: &SubstrateConfig) -> Result<Arc<dyn BlobProvider>> {
+    let bs = &config.storage.blob_store;
+    match bs.backend {
+        BlobBackend::Local => Ok(Arc::new(ObjectStoreBlobProvider::new_local(
+            bs.local_root.clone(),
+            bs.max_blob_bytes,
+            bs.max_service_total_bytes,
+        )?)),
+        BlobBackend::S3 => {
+            #[cfg(feature = "aws")]
+            {
+                let s3 = bs.s3.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "storage.blob_store.backend = \"s3\" requires [storage.blob_store.s3] to \
+                         be configured"
+                    )
+                })?;
+                Ok(Arc::new(ObjectStoreBlobProvider::new_s3(
+                    &s3.endpoint,
+                    &s3.bucket,
+                    &s3.region,
+                    bs.max_blob_bytes,
+                    bs.max_service_total_bytes,
+                )?))
+            }
+            #[cfg(not(feature = "aws"))]
+            {
+                Err(anyhow::anyhow!(
+                    "storage.blob_store.backend = \"s3\" requires building syneroym-router with \
+                     the `aws` feature (off by default -- see the object_store/digest version-pin \
+                     comment in the root Cargo.toml)"
+                ))
+            }
+        }
+    }
+}
+
 impl RouteHandler {
     pub async fn init(
         service_id: String,
@@ -106,6 +150,7 @@ impl RouteHandler {
             &config.storage.db_dir,
             config.storage.encryption,
         )?);
+        let blob_provider = build_blob_provider(config)?;
 
         let app_sandbox_engine = Arc::new(
             AppSandboxEngine::init(
@@ -113,6 +158,7 @@ impl RouteHandler {
                 registry.get_all_endpoints(),
                 key_store.clone(),
                 storage_provider.clone(),
+                blob_provider.clone(),
             )
             .await?,
         );
@@ -123,8 +169,11 @@ impl RouteHandler {
             .as_ref()
             .map(|cfg| cfg.podman_path.clone())
             .unwrap_or_else(|| "podman".to_string());
-        let podman_sandbox_engine =
-            Arc::new(ContainerEngine::new(podman_path, &config.app_local_data_dir));
+        let podman_sandbox_engine = Arc::new(ContainerEngine::new(
+            podman_path,
+            &config.app_local_data_dir,
+            Some(storage_provider.clone()),
+        ));
 
         let identity = Identity::from_bytes(&secret_key);
 
@@ -143,9 +192,16 @@ impl RouteHandler {
             .and_then(|c| c.iroh.as_ref())
             .and_then(|i| i.max_connections);
 
+        // Constructed before `RouteHandlerInner` so the identical shared
+        // handle can also be passed to `ControlPlaneService::init` below --
+        // `ControlPlaneService` needs to register/deregister per-deployment
+        // native services (data-layer/vault/app-config/blob-store) into the
+        // same registry `RouteHandler`'s own dispatch path reads from.
+        let native_dispatch: NativeDispatchRegistry = Arc::new(DashMap::new());
+
         let inner = Arc::new(RouteHandlerInner {
             registry: registry.clone(),
-            native_dispatch: DashMap::new(),
+            native_dispatch: native_dispatch.clone(),
             app_sandbox_engine: Some(app_sandbox_engine.clone()),
             identity,
             iroh_endpoint: None,
@@ -166,6 +222,8 @@ impl RouteHandler {
             config.hosted_apps_dir(),
             key_store,
             storage_provider,
+            blob_provider,
+            native_dispatch,
         )
         .await?;
         s.register_native_service(service_id, Arc::new(substrate_service));
@@ -183,9 +241,9 @@ impl RouteHandler {
     ) -> Self {
         let inner = Arc::new(RouteHandlerInner {
             registry: EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
-            native_dispatch: DashMap::new(),
+            native_dispatch: Arc::new(DashMap::new()),
             app_sandbox_engine: None,
-            identity: syneroym_identity::Identity::generate().expect("coordinator identity"),
+            identity: Identity::generate().expect("coordinator identity"),
             iroh_endpoint: Some(iroh_endpoint),
             registry_client,
             _parent_relay_url: parent_relay_url,
@@ -243,9 +301,8 @@ impl IrohProtocolHandler for RouteHandler {
                 self.inner.max_connections
             );
             if let Ok((mut send, _recv)) = connection.accept_bi().await {
-                let _ =
-                    tokio::io::AsyncWriteExt::write_all(&mut send, b"ServiceUnavailable\n").await;
-                let _ = tokio::io::AsyncWriteExt::flush(&mut send).await;
+                let _ = send.write_all(b"ServiceUnavailable\n").await;
+                let _ = send.flush().await;
             }
             connection.close(503u32.into(), b"ServiceUnavailable");
             return Ok(());

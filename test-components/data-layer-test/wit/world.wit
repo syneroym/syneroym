@@ -1,0 +1,28 @@
+package syneroym-test:data-layer-test@0.1.0;
+
+interface test-driver {
+    /// Puts `count` records into `profiles`, then queries them all back,
+    /// returning the number of records the query observed (as a decimal
+    /// string -- the substrate's current WASM-result-to-JSON conversion only
+    /// cleanly round-trips `string` results, not other scalar types).
+    run-crud-scenario: func(count: u32) -> result<string, string>;
+
+    /// Fetches a record by id and returns its host-injected creator-id.
+    get-creator-id: func(id: string) -> result<string, string>;
+}
+
+world data-layer-test {
+    import syneroym:data-layer/store@0.1.0;
+
+    /// Called by the host on first deploy only (fresh database). Creates the
+    /// `profiles` collection with an index on `age`. Root-level world export,
+    /// invoked directly (no wrapping interface) -- mirrors the
+    /// `data-layer-guest` world's own `init`/`migrate` shape.
+    export init: func() -> result<_, string>;
+
+    /// Called by the host on re-deploy (existing database). Adds a
+    /// `nickname` column to the `profiles` collection.
+    export migrate: func() -> result<_, string>;
+
+    export test-driver;
+}

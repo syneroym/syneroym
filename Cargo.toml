@@ -1,10 +1,11 @@
 [workspace]
 resolver = "2"
 members = ["crates/*", "apps/*", "test-components/*", "tests/perf", "xtask"]
-exclude = ["test-components/greeter"]
+exclude = ["test-components/greeter", "test-components/data-layer-test"]
 
 [profile.dev]
-incremental = true # Compile your binary in smaller steps.
+incremental = true      # Compile your binary in smaller steps.
+split-debuginfo = "unpacked" # Keep debug info out-of-line instead of duplicated into each binary; much smaller target/.
 
 [profile.dev.package."*"]
 debug = false     # Disable debug symbols for all dependencies
@@ -26,13 +27,14 @@ repository = "https://github.com/syneroym/syneroym"
 [workspace.dependencies]
 # Internal Workspace Crates
 syneroym-core = { path = "crates/core" }
-syneroym-bindings = { path = "crates/bindings" }
+syneroym-wit-interfaces = { path = "crates/wit_interfaces" }
 syneroym-rpc = { path = "crates/rpc" }
 syneroym-identity = { path = "crates/identity" }
-syneroym-key-store = { path = "crates/key-store" }
+syneroym-data-keystore = { path = "crates/data_keystore" }
 syneroym-app-orchestration = { path = "crates/app_orchestration" }
-syneroym-app-sandbox = { path = "crates/app_sandbox" }
-syneroym-data-layer = { path = "crates/data-layer" }
+syneroym-sandbox-wasm = { path = "crates/sandbox_wasm" }
+syneroym-data-db = { path = "crates/data_db" }
+syneroym-data-blob = { path = "crates/data_blob" }
 syneroym-router = { path = "crates/router" }
 syneroym-observability = { path = "crates/observability" }
 syneroym-community-registry = { path = "crates/community_registry" }
@@ -42,7 +44,7 @@ syneroym-client-gateway = { path = "crates/client_gateway" }
 syneroym-coordinator-iroh = { path = "crates/coordinator_iroh" }
 syneroym-coordinator-webrtc = { path = "crates/coordinator_webrtc" }
 syneroym-control-plane = { path = "crates/control_plane" }
-syneroym-podman-sandbox = { path = "crates/podman_sandbox" }
+syneroym-sandbox-podman = { path = "crates/sandbox_podman" }
 syneroym-sdk = { path = "crates/sdk" }
 syneroym-smoke-tests = { path = "crates/smoke-tests" }
 syneroym-substrate = { path = "crates/substrate" }
@@ -111,7 +113,18 @@ semver = "1.0"
 deadpool-sqlite = "0.13"
 deadpool = "0.13"
 regex = "1.10"
-
+jsonschema = { version = "0.46", default-features = false }
+hkdf = "0.12"
+hmac = "0.12"
+aead = "0.5"
+# object_store 0.14 bumps its md-5 dependency to require digest ^0.11.0
+# (stable), which conflicts with the digest 0.11.0-rc.10 pin below required
+# by iroh-base's pre-release ed25519-dalek/pkcs8 chain. 0.13.x is the newest
+# line that still resolves; a plain "0.13.1" (not "=0.13.1") stays capped
+# below 0.14.0 under Cargo's 0.x caret semantics without needing an exact
+# pin. Revisit alongside the iroh pins below once iroh ships a stable
+# ed25519-dalek v3 release.
+object_store = "0.13.1"
 
 # Iroh dependencies
 # NOTE: iroh v0.97 pulls in ed25519-dalek v3.0.0-pre.1, which in turn requires

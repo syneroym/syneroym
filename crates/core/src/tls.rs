@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{fmt, path::PathBuf};
 
 use axum_server::tls_rustls::RustlsConfig;
 use tracing::{error, info};
@@ -7,8 +7,8 @@ pub struct TlsCertLoader {
     config: RustlsConfig,
 }
 
-impl std::fmt::Debug for TlsCertLoader {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for TlsCertLoader {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TlsCertLoader").finish()
     }
 }
@@ -63,6 +63,7 @@ impl TlsCertLoader {
 mod tests {
     use std::fs;
 
+    use rustls::crypto::ring;
     use tempfile::tempdir;
 
     use super::*;
@@ -79,7 +80,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tls_cert_loader_valid_files() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        let _ = ring::default_provider().install_default();
         let base_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let cert_path = base_dir.join("../../test-components/miniapp-demo1-web/src/test_cert.pem");
         let key_path = base_dir.join("../../test-components/miniapp-demo1-web/src/test_key.pem");
@@ -90,7 +91,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tls_cert_loader_hot_reload() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        let _ = ring::default_provider().install_default();
         let base_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let src_cert_path =
             base_dir.join("../../test-components/miniapp-demo1-web/src/test_cert.pem");

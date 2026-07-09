@@ -5,8 +5,9 @@
 //! endpoints or sandbox instances.
 
 use std::{
-    future,
+    future, str,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use anyhow::Result;
@@ -19,6 +20,7 @@ use syneroym_core::{
     config::{IrohParentConfig, SubstrateConfig, WebRtcParentConfig},
     local_registry::EndpointRegistry,
 };
+use tokio::time;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, error, info};
 use webrtc::{
@@ -117,7 +119,7 @@ impl ConnectionRouter {
             IrohRouter::builder(ep.clone()).accept(SYNEROYM_ALPN, route_handler).spawn();
 
         let ep_clone = ep.clone();
-        match tokio::time::timeout(std::time::Duration::from_secs(30), ep_clone.online()).await {
+        match time::timeout(Duration::from_secs(30), ep_clone.online()).await {
             Ok(_) => {
                 debug!("Iroh endpoint is online");
             }
@@ -128,7 +130,7 @@ impl ConnectionRouter {
 
         info!(
             "Iroh listening on ALPN: {:?}",
-            std::str::from_utf8(SYNEROYM_ALPN).unwrap_or("<invalid utf8>")
+            str::from_utf8(SYNEROYM_ALPN).unwrap_or("<invalid utf8>")
         );
 
         Ok(iroh_router)

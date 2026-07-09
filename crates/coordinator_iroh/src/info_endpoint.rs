@@ -1,7 +1,16 @@
-use std::{fs, sync::Arc};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use axum::{Json, extract::State};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use syneroym_core::dht_registry::RegistryClient;
 use x509_parser::{
     pem::parse_x509_pem,
     prelude::{FromDer, X509Certificate},
@@ -59,14 +68,14 @@ pub struct InfoState {
     pub substrate_id: String,
     pub relay_url: Option<String>,
     pub parent_coordinator_url: Option<String>,
-    pub active_connections: Arc<std::sync::atomic::AtomicUsize>,
+    pub active_connections: Arc<AtomicUsize>,
     pub max_connections: Option<usize>,
-    pub tls_cert_path: Option<std::path::PathBuf>,
+    pub tls_cert_path: Option<PathBuf>,
     pub is_relay_enabled: bool,
-    pub registry_client: syneroym_core::dht_registry::RegistryClient,
+    pub registry_client: RegistryClient,
 }
 
-fn get_cert_expiry_days(path: &std::path::Path) -> Option<i64> {
+fn get_cert_expiry_days(path: &Path) -> Option<i64> {
     let cert_data = fs::read(path).ok()?;
     let der = match parse_x509_pem(&cert_data) {
         Ok((_, pem_obj)) => pem_obj.contents,
@@ -75,13 +84,13 @@ fn get_cert_expiry_days(path: &std::path::Path) -> Option<i64> {
 
     let (_, cert) = X509Certificate::from_der(&der).ok()?;
     let not_after = cert.validity().not_after.timestamp();
-    let now = chrono::Utc::now().timestamp();
+    let now = Utc::now().timestamp();
     let diff_seconds = not_after - now;
     Some(diff_seconds / (24 * 3600))
 }
 
 pub async fn get_info(State(state): State<Arc<InfoState>>) -> Json<CoordinatorInfo> {
-    let active = state.active_connections.load(std::sync::atomic::Ordering::SeqCst);
+    let active = state.active_connections.load(Ordering::SeqCst);
     let cap = state.max_connections;
 
     let tls = if let Some(ref path) = state.tls_cert_path {

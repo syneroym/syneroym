@@ -21,6 +21,21 @@ Two design axes required decisions:
   flexibility, familiar developer experience, handles complex joins, aggregates,
   and arbitrary filter combinations without WIT surface changes.
 
+  MongoDB's operator vocabulary (equality, `$gt`/`$gte`/`$lt`/`$lte`/`$ne`,
+  `$in`/`$nin`, `$and`/`$or`/`$not`) is not a Mongo-specific idiosyncrasy — it is
+  the same minimal predicate algebra that REST filtering conventions (OData,
+  JSON:API implementations, ad-hoc bracket-notation query params) converge on,
+  and that SQL `WHERE` clauses express natively. Choosing Mongo's spelling of
+  that algebra is deliberate for two reasons beyond familiarity: (1) it already
+  matches common REST filter conventions, and (2) unlike "REST filtering" (which
+  is not itself a standard), MongoDB's query and aggregation language is an
+  actual mature, versioned specification (`$group`, `$project`, `$lookup`,
+  `$unwind`, `$facet`, ...) that gives the M4 `AggregationPipeline` work a
+  concrete, well-precedented target to translate into SQLite constructs, rather
+  than inventing a bespoke aggregation DSL feature-by-feature. Precedent for
+  "Mongo query/aggregation language, non-Mongo engine underneath" translation
+  layers exists (e.g. FerretDB on PostgreSQL/SQLite).
+
 **Missing record semantics:**
 - Returning `data-layer-error::not-found` for a missing record forces every
   caller to handle an error path for a normal, expected state. A missing record
@@ -30,7 +45,12 @@ Two design axes required decisions:
 
 ### Query Interface
 
-**Use MongoDB-style JSON query strings at the WIT boundary** (Option B).
+**Use MongoDB-style JSON query strings, compiled to parameterised SQLite, at the
+WIT boundary** (Option B). The underlying engine is — and remains — always
+SQLite; "MongoDB-style" describes the wire syntax and operator vocabulary of
+the `filter` string only, never the execution engine. Every reference to
+"MongoDB-style" in this document and downstream docs should be read with that
+pairing implicit.
 
 The `query` function accepts a `filter: option<string>` where the string is a
 JSON-encoded filter document following MongoDB query operator conventions:
@@ -58,7 +78,23 @@ Supported operators in M3A scope:
   compiled to `json_extract(payload, '$.address.city')`
 
 **AggregationPipeline** (`$group`, `$having`, projections) is **deferred to M4**.
-The M3 `query` function returns raw records only.
+The M3 `query` function returns raw records only. When designed, it should
+translate MongoDB aggregation-pipeline stages to SQLite constructs (`GROUP BY`,
+`HAVING`, views) rather than invent independent syntax — see the rationale
+above.
+
+### Full-Power Escape Hatch (Trusted Contexts)
+
+The safe, whitelisted JSON filter DSL above is deliberately the only query
+surface available to ordinary (non-lifecycle) guest invocations — it is safe by
+construction and requires no SQL-grammar validation. Services that need full
+SQL expressivity beyond the whitelisted operator set (arbitrary joins, window
+functions, CTEs) may use a raw-SQL query path gated by the **same trust
+boundary already used for `execute-ddl`** (`HostState.is_init_context` today;
+an Admin UCAN capability in M4 — see the M4 TODO tracked in
+`docs/planning/milestones/M03-sss/task.md`). This is a distinct WIT host
+function, not an extension of `query`'s filter grammar, and is specified in
+[ADR-0011](0011-privileged-raw-sql-query.md).
 
 ### Missing Record Semantics
 
@@ -119,6 +155,11 @@ cannot be overridden by the WASM guest:
 - Full MongoDB operator compatibility is explicitly out of scope. The host only
   implements the operators listed above. Attempting an unsupported operator
   returns `data-layer-error::schema-violation("unsupported operator: $lookup")`.
-- AggregationPipeline must be tracked as an explicit M4 gate item.
+- AggregationPipeline must be tracked as an explicit M4 gate item, and its
+  design should map MongoDB aggregation-pipeline stages onto SQLite constructs
+  rather than invent parallel syntax.
+- The privileged raw-SQL escape hatch ([ADR-0011](0011-privileged-raw-sql-query.md))
+  is additive WIT surface, not a modification of `query`'s filter grammar, and
+  ships no earlier than M3B/M4.
 - The `migrate()` WIT export must be added to the `data-layer-guest` world and
   the `host.wit` world in Slice 3A.

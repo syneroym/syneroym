@@ -1,12 +1,19 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-use std::{fs, path::Path, process::Command, time::Duration};
+use std::{
+    fs,
+    path::Path,
+    process::{self, Command},
+    time::Duration,
+};
 
 use anyhow::Result;
-use reqwest::Client;
+use reqwest::{Certificate, Client};
+use rustls::crypto::ring;
 use syneroym_coordinator_iroh::CoordinatorIroh;
 use syneroym_core::config::{
     CoordinatorIrohConfig, CoordinatorRole, LogTarget, SubstrateConfig, SubstrateTlsConfig,
 };
+use tokio::time;
 
 fn generate_self_signed_cert(cert_path: &Path, key_path: &Path, common_name: &str) {
     let status = Command::new("openssl")
@@ -39,7 +46,7 @@ fn generate_self_signed_cert(cert_path: &Path, key_path: &Path, common_name: &st
 #[tokio::test]
 async fn test_tls_rotation_sigusr1() -> Result<()> {
     // Install default crypto provider for rustls
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    let _ = ring::default_provider().install_default();
 
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
     let base_path = temp_dir.path();
@@ -71,8 +78,15 @@ async fn test_tls_rotation_sigusr1() -> Result<()> {
 
     config.roles.coordinator = Some(CoordinatorRole {
         iroh: Some(CoordinatorIrohConfig {
-            enable_relay: false,
+            // Use a purely local relay instead of falling back to iroh's public N0
+            // relay/discovery infrastructure, so this test doesn't depend on real
+            // internet connectivity to bring the endpoint online. Relay TLS is
+            // intentionally left unconfigured (see `role.tls` in
+            // `CoordinatorRole`): it's independent of the `SubstrateTlsConfig`
+            // above, which only covers the /v1/info HTTPS endpoint under test.
+            enable_relay: true,
             http_bind_address: "127.0.0.1:0".to_string(), // Dynamic port
+            quic_bind_address: "127.0.0.1:0".to_string(), // Dynamic port
             ..Default::default()
         }),
         ..Default::default()
@@ -89,7 +103,7 @@ async fn test_tls_rotation_sigusr1() -> Result<()> {
     });
 
     // Create client A that only trusts Cert A
-    let reqwest_cert_a = reqwest::Certificate::from_pem(&cert_a_bytes)?;
+    let reqwest_cert_a = Certificate::from_pem(&cert_a_bytes)?;
     let client_a = Client::builder().add_root_certificate(reqwest_cert_a.clone()).build()?;
 
     let url = format!("https://{}/v1/info", info_addr);
@@ -103,7 +117,7 @@ async fn test_tls_rotation_sigusr1() -> Result<()> {
     let cert_b_bytes = fs::read(&cert_path)?;
 
     // Create client B that only trusts Cert B
-    let reqwest_cert_b = reqwest::Certificate::from_pem(&cert_b_bytes)?;
+    let reqwest_cert_b = Certificate::from_pem(&cert_b_bytes)?;
     let client_b = Client::builder().add_root_certificate(reqwest_cert_b).build()?;
 
     // Prior to rotation, client B should fail to connect
@@ -114,14 +128,14 @@ async fn test_tls_rotation_sigusr1() -> Result<()> {
     #[cfg(unix)]
     {
         let status = Command::new("kill")
-            .args(["-USR1", &std::process::id().to_string()])
+            .args(["-USR1", &process::id().to_string()])
             .status()
             .expect("Failed to run kill command");
         assert!(status.success(), "kill command failed");
     }
 
     // Wait for the watcher to detect the signal and reload
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    time::sleep(Duration::from_millis(500)).await;
 
     // A brand new client only trusting Cert A should now fail
     let client_a_new = Client::builder().add_root_certificate(reqwest_cert_a.clone()).build()?;

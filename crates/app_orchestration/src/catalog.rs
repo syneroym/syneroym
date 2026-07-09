@@ -1,6 +1,11 @@
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    path::{Component, Path, PathBuf},
+};
 
 use anyhow::{Result, anyhow};
+use semver::Version;
+use tokio::fs;
 
 use crate::models::{
     AppBlueprintId, LogicalServiceName, ServiceConfig, ServiceSpec, ServiceType, SynAppManifest,
@@ -24,12 +29,12 @@ pub trait ManifestCatalog: Send + Sync {
 /// A local filesystem-based `ManifestCatalog` implementation.
 #[derive(Debug, Clone)]
 pub struct LocalFilesystemCatalog {
-    base_dir: std::path::PathBuf,
+    base_dir: PathBuf,
     manifests: BTreeMap<AppBlueprintId, SynAppManifest>,
 }
 
 impl LocalFilesystemCatalog {
-    pub fn new(base_dir: std::path::PathBuf) -> Self {
+    pub fn new(base_dir: PathBuf) -> Self {
         Self { base_dir, manifests: BTreeMap::new() }
     }
 
@@ -49,6 +54,8 @@ impl LocalFilesystemCatalog {
             args: vec![],
             custom_config: None,
             quota: None,
+            schema_path: None,
+            rotation_policy: Default::default(),
         };
         services.insert(
             LogicalServiceName::new("legacy-main"),
@@ -57,7 +64,7 @@ impl LocalFilesystemCatalog {
 
         let manifest = SynAppManifest {
             id: id.clone(),
-            version: semver::Version::new(0, 0, 0),
+            version: Version::new(0, 0, 0),
             description: Some("Legacy Single-WASM Shim".to_string()),
             services,
             dependencies: BTreeMap::new(),
@@ -80,7 +87,7 @@ impl ManifestCatalog for LocalFilesystemCatalog {
 
         // Otherwise, resolve via filesystem
         let path = if let Some(path_hint) = manifest_path {
-            let hint_path = std::path::Path::new(path_hint);
+            let hint_path = Path::new(path_hint);
             if hint_path.is_absolute() {
                 return Err(anyhow!(
                     "Absolute manifest path hint is rejected for security: {}",
@@ -88,7 +95,7 @@ impl ManifestCatalog for LocalFilesystemCatalog {
                 ));
             }
             for component in hint_path.components() {
-                if matches!(component, std::path::Component::ParentDir) {
+                if matches!(component, Component::ParentDir) {
                     return Err(anyhow!(
                         "Directory traversal (../) in manifest path hint is rejected: {}",
                         path_hint
@@ -106,7 +113,7 @@ impl ManifestCatalog for LocalFilesystemCatalog {
             return Err(anyhow!("Manifest file not found at path: {:?}", path));
         }
 
-        let content = tokio::fs::read_to_string(&path).await.map_err(|e| {
+        let content = fs::read_to_string(&path).await.map_err(|e| {
             anyhow!("Failed to read manifest for '{}' at {:?}: {}", blueprint, path, e)
         })?;
 

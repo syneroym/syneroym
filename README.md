@@ -1,8 +1,8 @@
 # Syneroym
 
-Syneroym is a decentralized, peer-to-peer technology ecosystem that empowers individuals and small groups to run their own autonomous applications (SynApps) without relying on centralized platform monopolies. At its core, it provides a secure, identity-native substrate that handles complex networking, discovery, and trust, enabling these independent apps to seamlessly cooperate and interact directly with one another. Whether operating on a smartphone or a server, Syneroym facilitates diverse federated ecosystems—spanning private communications, community governance, and collaborative peer networks—where participants retain absolute control over their data and digital relationships, while still enjoying the powerful network effects of a unified platform.
+Syneroym is a truly peer-to-peer foundation for group communication and trust, on which independent mini-apps (SynApps) — chat, marketplace, social, AI — plug in and work together as one experience, with no central server in the middle. No blockchains or cryptocurrency. The [thesis](THESIS.md) states the full bet, and what this is and is not.
 
-To demonstrate these capabilities in a real-world scenario, our initial reference application is the **Provider Space**—a decentralized professional services network built entirely on the Syneroym substrate.
+Our flagship experience is **Roym** — mini-apps sharing one identity, one contact list, one set of groups, one trust model — starting with its first vertical, the Professional Services Guild. The substrate is generic — anyone can build their own SynApp on it.
 
 > ⚠️ **Status: Exploratory / Unstable**
 >
@@ -48,6 +48,8 @@ For more detailed workflows, port references, test suites (unit, e2e, and micro-
 
 ## Related Documentation
 
+- [Project thesis](THESIS.md)
+- [Terminology](docs/TERMINOLOGY.md) — canonical names and phrasings
 - [Product vision mapping ](docs/VISION.md) 
 - [Requirement specifications](docs/system-requirements-spec.md) 
 - [System Architecture](docs/system-architecture.md)

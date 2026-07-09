@@ -8,7 +8,7 @@ workspace = true
 
 [dependencies]
 syneroym-core.workspace = true
-syneroym-data-layer.workspace = true
+syneroym-data-db.workspace = true
 syneroym-router.workspace = true
 syneroym-identity.workspace = true
 anyhow.workspace = true

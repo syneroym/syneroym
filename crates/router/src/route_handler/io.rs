@@ -8,12 +8,14 @@ use iroh::{EndpointAddr, RelayUrl};
 use syneroym_core::dht_registry::EndpointMechanism;
 use tokio::{
     io,
-    io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader},
+    io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader},
+    net::TcpStream,
 };
 use tracing::debug;
 
 use super::{super::SYNEROYM_ALPN, RouteHandler, dispatch, encryption::ReaderWriter};
 use crate::{
+    handshake::HandshakeVerifier,
     net_iroh::{IrohStream, connect_with_retry},
     preamble::RoutePreamble,
     route_handler::encryption::{OwnedStream, apply_encryption_stage},
@@ -67,15 +69,12 @@ impl RouteHandler {
 
         // Handshake verification
         if preamble.delegation.is_some()
-            && let Err(e) = crate::handshake::HandshakeVerifier::verify_preamble(
-                &preamble,
-                &self.inner.registry_client,
-            )
-            .await
+            && let Err(e) =
+                HandshakeVerifier::verify_preamble(&preamble, &self.inner.registry_client).await
         {
             tracing::warn!("Handshake verification failed: {e}");
-            let _ = tokio::io::AsyncWriteExt::write_all(&mut writer, b"Unauthorized\n").await;
-            let _ = tokio::io::AsyncWriteExt::flush(&mut writer).await;
+            let _ = writer.write_all(b"Unauthorized\n").await;
+            let _ = writer.flush().await;
             return Err(e);
         }
 
@@ -181,7 +180,7 @@ impl RouteHandler {
         match &pipeline.service {
             ServiceStage::TcpProxy { host, port } => {
                 debug!("[Router] TcpProxy: connecting to {}:{}", host, port);
-                let mut target = tokio::net::TcpStream::connect(format!("{host}:{port}"))
+                let mut target = TcpStream::connect(format!("{host}:{port}"))
                     .await
                     .map_err(|e| anyhow!("Failed to connect to TCP target {host}:{port}: {e}"))?;
                 debug!("[Router] TCP connection to {}:{} established", host, port);

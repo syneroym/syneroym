@@ -8,7 +8,7 @@ There is no single "MVP" boundary or distinct "Pilot" launch. Instead, we build 
 1. **Inside-Out Development:** We build the core local primitives first (routing, security, data) before expanding to multi-node federation and high-level applications.
 2. **Continuous Walking Skeleton:** Do not defer product validation. Every milestone must expand a reference SynApp (focusing on the **Professional Services Guild**) to ensure we don't build isolated testing facades.
 3. **Strict Boundaries:** No communication crossing a `SynSvc` trust boundary may bypass identity and authorization enforcement. Statically composed components are treated as one `SynSvc` boundary.
-4. **Shared Orchestration:** Planning logic is not built independently inside `roymctl` and the Substrate. Instead, `crates/orchestration` acts as a pure manifest compiler producing an immutable `DeploymentPlan`. `roymctl` and the active controller act merely as effectful adapters around this shared planner.
+4. **Shared Orchestration:** Planning logic is not built independently inside `roymctl` and the Substrate. Instead, `crates/app_orchestration` acts as a pure manifest compiler producing an immutable `DeploymentPlan`. `roymctl` and the active controller act merely as effectful adapters around this shared planner.
 5. **Continuous Observability & Tooling:** Observability instrumentation and developer tooling begin early and mature throughout the milestones.
 
 ## Standard Milestone Documentation Format
@@ -34,7 +34,7 @@ When we begin work on any milestone below, we will generate a dedicated `task.md
 
 **Implementation Approach:**
 1. **Traceability Matrix:** Map every requirement and sub-requirement to its current implementation status, target milestone, and acceptance evidence.
-2. **Decision Register:** Resolve only milestone-blocking ADRs (e.g., encryption implementation, DLN scope, manifest versioning boundaries). Maintain a decision register for non-blocking deferred questions (Milestones 9–10).
+2. **Decision Register:** Resolve only milestone-blocking ADRs (e.g., encryption implementation, DLN scope, manifest versioning boundaries). Maintain a decision register for non-blocking open questions relevant to Milestones 9–10.
 3. **DLN Scope Resolution:** Explicitly decide the target milestone for the Dynamic Ledger Network (DLN) and whether signed-interaction-receipts (and therefore robust `[P2P-REP]` reputation) are scheduled early or assigned to later milestones.
 4. **SQLite Encryption ADR:** Build an ADR/feasibility prototype for the exact encrypted-SQLite mechanism to be used in M3.
 5. **Baseline Migration Plan:** Draft the plan to migrate current `roymctl` contracts.
@@ -54,7 +54,7 @@ When we begin work on any milestone below, we will generate a dedicated `task.md
 
 **Implementation Approach:**
 1. **Baseline Migration:** Migrate the current CLI and dispatcher contracts to align with the new `SynApp` vs `SynSvc` terminology.
-2. **Shared Orchestration:** Build the pure `DeploymentPlan` compiler in `crates/orchestration`.
+2. **Shared Orchestration:** Build the pure `DeploymentPlan` compiler in `crates/app_orchestration`.
 3. **Topology Work:** 
    - Implement strongly typed IDs and logical references.
    - Build dependency graph compilation with cycle detection, explicitly differentiating `Spawn` vs `Bind`.
@@ -83,7 +83,16 @@ When we begin work on any milestone below, we will generate a dedicated `task.md
 
 ## Milestone 3: Secure Stateful Services
 
-To prevent dependency cycles and scope creep, the data layer and storage mechanisms are split into two sequential sub-milestones.
+To prevent dependency cycles and scope creep, the data layer and storage mechanisms are split into sequential sub-milestones.
+
+> **Planning-doc split (2026-07-09):** M3A and the blob half of M3B are
+> tracked in `docs/planning/milestones/M03-sss/task.md` (complete). The
+> messaging half of M3B and all of M3C are tracked in their own document,
+> `docs/planning/milestones/M03B-messaging/task.md`, split out before
+> implementation began because pre-implementation planning for that
+> remaining work had grown large enough to make the original single file
+> unwieldy. The milestone numbering/labels below (M3A/M3B/M3C) are
+> unchanged — only which file carries the detailed task checklist differs.
 
 ### Milestone 3A: Structured State and Security
 **Goal:** Introduce the baseline SQLite data layer intimately paired with storage encryption and the secret vault.
@@ -96,11 +105,16 @@ To prevent dependency cycles and scope creep, the data layer and storage mechani
 
 **Implementation Approach:**
 1. **Encrypted Isolation:** Provision isolated, encrypted SQLite databases for each deployed `SynSvc` (based on the M0 prototype).
-2. **Data Interface:** Implement schema initialization, CRUD/batch operations, structured filters and aggregations, pagination, concurrency architecture, and nested WIT serialization. Include Cargo feature gates for `syneroym-olap` and `syneroym-oltp` profiles (both currently backed by standard SQLite).
+2. **Data Interface:** Implement schema initialization, CRUD/batch operations, structured MongoDB-style JSON filters, pagination, concurrency architecture, and nested WIT serialization (JSON payloads at the WIT boundary per [ADR-0007](../decisions/0007-data-layer-wit-interface.md)). The `AggregationPipeline` is deferred to Milestone 4 (gate item below). Include Cargo feature gates for `syneroym-olap` and `syneroym-oltp` profiles (both currently backed by standard SQLite).
 3. **Vault Integration:** Build the secret vault into the encrypted DB and implement `syneroym:vault/reveal`.
 4. **Configuration Delivery:** Finalize the delivery mechanics (WASM host functions vs. Podman environment mapping).
 
 ### Milestone 3B: Objects and Events
+
+> Blob storage (below) is tracked in `docs/planning/milestones/M03-sss/task.md`
+> (Slice 5, complete). The event-broker/messaging item is tracked in
+> `docs/planning/milestones/M03B-messaging/task.md` (Slice 6A).
+
 **Goal:** Provide the remaining fundamental asynchronous data primitives.
 
 **Feature Grouping:**
@@ -108,10 +122,39 @@ To prevent dependency cycles and scope creep, the data layer and storage mechani
 - `[PLT-DAP-04]` Decentralized Pub/Sub (MQTT API)
 
 **Implementation Approach:**
-1. **Blob Storage:** Implement the S3-compatible backend interface and signed HTTP object access.
-2. **Event Broker:** Embed the MQTT API abstraction, implemented as a decentralized P2P log replication overlay on Iroh QUIC (avoiding classical TCP brokers).
+1. **Blob Storage:** Implement the `object_store`-backed S3-compatible backend interface with signed (HMAC presigned) HTTP object access ([ADR-0009](../decisions/0009-blob-storage-object-store.md)); public unsigned serving is deferred. Blob content is DEK-encrypted at rest per `[FND-SEC]`.
+2. **Event Broker:** Embed the pub/sub half of `syneroym:messaging` as an in-process `rumqttd` Tokio task with host-enforced topic namespacing ([ADR-0010](../decisions/0010-mqtt-broker-rumqttd.md)). The package was formerly named `syneroym:pubsub`; renamed to `syneroym:messaging` to share a boundary with the bidirectional-streaming half added in Milestone 3C. Adapting the broker to decentralized P2P log replication over Iroh QUIC (avoiding classical TCP brokers, per `[PLT-DAP-04]`) is deferred to Milestone 5. The `stream-types`/`handle-stream-request` portion of the WIT package is declared in M3B for interface stability but not implemented until 3C.
+
+### Milestone 3C: Unified Messaging Streams and HTTP Bridge
+
+> Tracked in `docs/planning/milestones/M03B-messaging/task.md` (Slice 6B:
+> streaming; Slice 7: HTTP bridge).
+
+**Goal:** Extend `syneroym:messaging` with generic bidirectional streaming, then bridge HTTP conventions onto the native-dispatch surface established across M3A/M3B/3C (data-layer, vault, app-config, blob-store, messaging).
+
+**Feature Grouping:**
+- `[PLT-DAP-06]` Generic Bidirectional Streaming
+- HTTP Passthrough (GET/POST/streaming-upload/SSE-style translation onto native dispatch)
+
+**Implementation Approach:**
+1. **Streaming Out (guest as source):** Wire `host-api::register-stream-protocol`, `guest-api::handle-stream-request`, and the `stream-cursor` resource end to end, including host-side QUIC stream acceptance/routing (new infrastructure, not present in M3B — expected to need its own short design note/ADR before implementation, the way D-03-01 through D-03-05 preceded M3 slice work).
+2. **Streaming In (guest as sink):** Wire `guest-api::accept-stream-upload` and the `stream-sink` resource (`push-chunk`/`finalize`) end to end — the host runs the async QUIC-read loop and pushes chunks into the guest, the reverse of the pull loop above. Covered by the same QUIC routing infrastructure and design note as item 1.
+3. **HTTP Passthrough:** Convert an HTTP GET/POST/streaming request's path, method, and body into a native or WASM call against data-layer, blob-store, or messaging, and stream the response back — enabling signed-URL blob serving, static content, JSON-RPC-style DB access, SSE/long-poll pub/sub subscription, and chunked upload (via `accept-stream-upload`/`stream-sink`) over the same substrate HTTP surface.
+
+This was **Milestone 3B Slice 6 / "Deferred: HTTP Passthrough"** in earlier planning; split out because both items are new, undecided infrastructure (no prior ADR covers QUIC stream routing or HTTP-to-WIT translation) rather than execution of an already-resolved M3 decision, and neither should block M3B's close.
 
 ---
+
+> **Interstitial maintenance (2026-07-09):** between M03B's close and M4
+> start, the workspace crate layout was normalized (`data-layer` →
+> `data_db`, `blob-store` → `data_blob`, `key-store` → `data_keystore`,
+> `bindings` → `wit_interfaces`, `app_sandbox` → `sandbox_wasm`,
+> `podman_sandbox` → `sandbox_podman`) and workspace-wide import cleanup was
+> applied per `AGENTS.md`. No behavior change. See
+> [ADR-0012](../decisions/0012-crate-rename-refactor.md) and
+> [crate-rename-refactor.md](crate-rename-refactor.md) for the decision and
+> execution plan. File paths referencing the old crate names in *closed*
+> milestone docs (M0–M3B) below and above are left as-is by design.
 
 ## Milestone 4: Typed Communication and Authorization
 **Goal:** Bridge isolated services securely by introducing the Universal Proxy and layering the FDAE (Access Control) on top of the established Data Layer.
@@ -127,6 +170,8 @@ To prevent dependency cycles and scope creep, the data layer and storage mechani
 2. **UCAN Context:** Extract and normalize UCAN scopes/claims upon request ingress.
 3. **Local FDAE:** Implement the SQL Pushdown Sieve, compiling declarative policies into the SQLite engine (handling data-centric RLS/CLS).
 4. **Federated FDAE:** Expand the pipeline to support cross-service parameter fetching via the Universal Proxy.
+5. **`AggregationPipeline`** (gate item deferred from M3A, [ADR-0007](../decisions/0007-data-layer-wit-interface.md)): add `$group`/`$having`/projections to the data-layer `query` WIT surface, translating MongoDB aggregation-pipeline stages onto SQLite constructs (`GROUP BY`, `HAVING`, views) rather than inventing parallel syntax.
+6. **Privileged raw-SQL escape hatch** (gate item deferred from M3A, [ADR-0011](../decisions/0011-privileged-raw-sql-query.md)): add the `query-raw` host function for trusted contexts needing SQL expressivity beyond the JSON filter DSL, gated by the Admin UCAN capability introduced in this milestone (replacing the M3 `is_init_context` scaffold).
 
 ---
 
@@ -151,6 +196,20 @@ To prevent dependency cycles and scope creep, the data layer and storage mechani
 3. **Versioning:** Implement pre-upgrade SQLite snapshotting and automatic rollback mechanisms.
 4. **Developer Tools:** Release the mock SDK, project templates, the zero-drift `roymctl dev` local environment, and remote package retrieval over HTTP/OCI for the `ManifestCatalog`.
 
+> **Note:** Decentralized Pub/Sub completion (`[PLT-DAP-04]`, adapting the
+> M3B in-process `rumqttd` broker to synchronise its topic log with peer
+> nodes over Iroh QUIC) was previously planned here. It moved to **Milestone
+> 7**, alongside SQLite WAL replication and blob replication, because all
+> three are the same underlying problem — pull-based log/state
+> synchronisation to peer nodes over QUIC, purely for redundancy/failover of
+> the broker's own state if its hosting node is lost. This is exactly
+> parallel to WAL replication and is **not** a prerequisite for cross-node
+> pub/sub to function: a `publish`/`subscribe` call from a different
+> physical node is routed to whichever node hosts the target service via
+> the same RPC/native-dispatch path used for any cross-node host-function
+> call (e.g. `data-layer`), available well before M7. See
+> [ADR-0010 Amendment 2](../decisions/0010-mqtt-broker-rumqttd.md).
+
 ---
 
 ## Milestone 6: Initial Integrated Experience
@@ -168,10 +227,11 @@ To prevent dependency cycles and scope creep, the data layer and storage mechani
 ---
 
 ## Milestone 7: Resilience and Operability
-**Goal:** Harden the system for production by adding high-availability database replication and deep observability.
+**Goal:** Harden the system for production by adding high-availability replication (database, pub/sub, and blob), redundancy, and deep observability.
 
 **Feature Grouping:**
-- `[PLT-RED]` Service Redundancy (Declarative Replication Topology)
+- `[PLT-RED]` Service Redundancy (Declarative Replication Topology) — database, pub/sub log, and blob replication
+- `[PLT-DAP-04]` Decentralized Pub/Sub over Iroh QUIC (completes the M3B in-process broker)
 - `[FND-SEC]` Encrypted Backups, Attestation & Supply-chain signing
 - `[ADV-OBS]` Advanced Observability
 
@@ -179,10 +239,12 @@ To prevent dependency cycles and scope creep, the data layer and storage mechani
 1. **SQLite Replication Feasibility:** Validate the SQLite-safe replication mechanism through a bounded prototype with correctness, crash-recovery, and performance exit criteria.
 2. **Declarative Replication:** Implement live, reliable SQLite WAL replication across Substrate nodes based on the validated prototype, controlled by the `DeploymentPlan` (Primary, Read-Replica, Cold Backup).
    - *(Design TBD to resolve before M7: Define the distributed replication consistency model and failover behavior).*
-3. **HA Upgrade:** Upgrade the M5 active controller's database to rely on replicated HA storage.
-4. **Topology Control:** Implement Registry topology epochs, manual promotion workflows, and strict bidirectional quarantine fencing.
-5. **Security Hardening:** Add Attestation API and verification flows, binary signature verification, and support for scheduled, encrypted remote backups (with tested restore paths).
-6. **Metrics Pipeline:** Finalize data rollups and expose metrics via secured RPCs.
+3. **Decentralized Pub/Sub Completion** (deferred from M3B, [ADR-0010](../decisions/0010-mqtt-broker-rumqttd.md)): Adapt the in-process `rumqttd` broker to synchronise its topic log with peer nodes via pull-based log replication over Iroh QUIC streams (rather than raw TCP), fulfilling the `[PLT-DAP-04]` overlay requirement without changing the `syneroym:messaging` WIT surface shipped in M3B. Shares its replication primitive (ordered, checksummed frame streaming over an Iroh multiplexed stream) with item 2 above — the payload differs (SQLite WAL frames vs. MQTT topic-log entries) but the transport and pull/ack model do not.
+4. **Blob Replication:** For deployments without an S3-compatible backend, implement peer-to-peer blob replication across Substrate nodes (the "peer backup substrate" case), reusing the same declarative `DeploymentPlan` topology and Iroh QUIC transport as items 2 and 3. Content-addressing (SHA-256) makes this simpler than WAL/log replication — no ordering or frame-sequence invariants to preserve, just "does a valid copy of hash `H` exist on N nodes." Deployments that do configure an S3-compatible backend continue to rely on the provider's own redundancy (unchanged from the original `[PLT-RED]` decision).
+5. **HA Upgrade:** Upgrade the M5 active controller's database to rely on replicated HA storage.
+6. **Topology Control:** Implement Registry topology epochs, manual promotion workflows, and strict bidirectional quarantine fencing.
+7. **Security Hardening:** Add Attestation API and verification flows, binary signature verification, and support for scheduled, encrypted remote backups (with tested restore paths).
+8. **Metrics Pipeline:** Finalize data rollups and expose metrics via secured RPCs.
 
 ---
 
@@ -190,12 +252,12 @@ To prevent dependency cycles and scope creep, the data layer and storage mechani
 **Goal:** Expand the single-node capability into a robust, community-driven mesh network.
 
 **Feature Grouping:**
-- `[P2P-DSC]` Federated Tag-Routed Discovery
+- `[P2P-DSC]` Distributed Matching Fabric (discovery)
 - `[P2P-REP]` Peer Reputation & Trust
 
 **Implementation Approach:**
-1. **Tag Routing:** Implement hierarchical tag routing to push discovery intents. Include discovery TTL, request deduplication, fan-out limits, authentication, and tag privacy/abuse protections.
-2. **Reputation CRDT:** Implement `[P2P-REP]` only if M0 selects and schedules a mutually signed interaction-receipt mechanism (DLN); otherwise move `[P2P-REP]` to the deferred roadmap without weakening its cryptographic prerequisite.
+1. **Matching Fabric, flat slice:** Implement the signed Publication data model, one or two protocol routing dimensions (spatial + category), and deterministic placement via rendezvous hashing onto a small set of leaf index shards (the existing aggregator/super-peer nodes). Client-side verification — signature, timestamp, expiry — ships from day one. The hierarchical synopsis tree, composite routing descriptors, and cross-shard ranking are additive follow-on work once leaf-shard count makes flat fan-out expensive; none of them require reworking the Publication or placement contract shipped here.
+2. **Reputation CRDT:** Implement `[P2P-REP]` only if M0 selects and schedules a mutually signed interaction-receipt mechanism (DLN); otherwise sequence `[P2P-REP]` for a later milestone without weakening its cryptographic prerequisite.
 
 ---
 
@@ -233,14 +295,14 @@ Due to its complexity, the AI expansion track is subdivided into foundational an
 
 ---
 
-## Explicitly Deferred Work & Future Product Phases
-To strictly enforce focus and ensure achievable milestones, the following roadmap features are excluded from Milestones 1–10 and will be scheduled in subsequent roadmap iterations:
+## Later-Phase Additions
+To keep Milestones 1–10 achievable, the following features are sequenced after them, not shelved. Each is designed to compose with what ships in Milestones 1–10 without reworking it:
 - **`[FND-IDT]` Extensions:** Master Key export/recovery, Tier-1 Fallback processing, and Method B Zero-Knowledge (ZK) plugin verification.
 - **Phase 6 Product Expansion:** 
   - The Producer-Distributor Mesh application vertical.
   - Complete, rich Syneroym Hub UI surfaces.
   - Dedicated marketplace, aggregator, and facilitator `SynSvcs`.
-- **Financial & Escrow Services:** Any native settlement, mutual credit ledger operations, and integrated transaction escrow dependent on the full Dynamic Ledger Network.
+- **Financial & Escrow Services:** Native settlement, mutual credit ledger operations, and integrated transaction escrow, layered onto the pluggable Payment Abstraction Layer once the Dynamic Ledger Network is scoped.
 
 ---
 

@@ -3,6 +3,8 @@
 //! Provides structures and client methods for registering, querying, and
 //! resolving service/substrate endpoints in the Syneroym community registry.
 
+use std::time;
+
 use bytes::Bytes;
 use pkarr::{
     Client, Keypair, PublicKey, SignedPacket, Timestamp,
@@ -470,7 +472,7 @@ impl Default for MasterAnchorPayload {
 
 impl MasterAnchorPayload {
     pub fn sign(mut self, identity: &Identity) -> Result<SignedMasterAnchor, anyhow::Error> {
-        let master_id = syneroym_identity::substrate::derive_did_key(&identity.public_key());
+        let master_id = substrate::derive_did_key(&identity.public_key());
         let keypair = Keypair::from_secret_key(&identity.to_bytes());
 
         let timestamp = Timestamp::now();
@@ -520,8 +522,8 @@ impl SignedMasterAnchor {
         let mut found_txt = false;
         let packet_timestamp = signed_packet.timestamp().as_u64();
 
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let now = time::SystemTime::now()
+            .duration_since(time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_micros() as u64;
         let twenty_four_hours_micros = 24 * 60 * 60 * 1_000_000;

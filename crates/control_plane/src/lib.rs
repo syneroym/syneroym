@@ -4,7 +4,11 @@
 //! Exposes APIs for deploying apps, managing running services,
 //! and controlling the substrate environment.
 
+pub mod config_utils;
 pub mod dummy_sandbox;
+
 mod service;
+mod synsvc_native;
 
 pub use service::ControlPlaneService;
+pub use synsvc_native::SynSvcNativeService;

@@ -2,7 +2,12 @@
 
 ## Status
 
-Accepted
+Accepted (Amendment 1, 2026-07-08: `syneroym:pubsub` renamed to
+`syneroym:messaging`, folded into a broader messaging boundary that also
+covers bidirectional streaming, both guest-as-source and guest-as-sink.
+Amendment 2, 2026-07-08: decentralized QUIC overlay rescheduled from M5 to
+M7, alongside DB and blob replication as a shared primitive. See both
+amendments below.)
 
 ## Context
 
@@ -127,3 +132,88 @@ must not outlive the owning struct.
 - `rumqttd` version must be pinned in `Cargo.toml` at M3B implementation time
   and the pinning rationale documented as a comment, following the pattern
   established for `iroh` in the workspace.
+
+## Amendment 1 (2026-07-08): Renamed to `syneroym:messaging`, Split Across M3B/M3C
+
+### Context
+
+Planning for M3B Slice 6 identified that generic bidirectional streaming
+(point-to-point, IoC-style: guest registers a stream protocol, host pushes a
+peer-initiated request in, guest hands back a stateful iterator resource for
+the host to pull from) is a closely related but separate capability from MQTT
+pub/sub, and shares the same underlying design principle — guest stays
+synchronous, host owns all async orchestration. Rather than a second,
+unrelated WIT package, the two are unified under one `syneroym:messaging`
+package so the WIT boundary doesn't need a breaking rename later. See
+[system-architecture.md §2](../system-architecture.md) and
+[system-requirements-spec.md `[PLT-DAP-06]`](../system-requirements-spec.md).
+
+### Decision
+
+- The WIT package `syneroym:pubsub@0.1.0` described above is renamed
+  `syneroym:messaging@0.1.0`, split into three interfaces:
+  `host-api` (guest-triggered: `publish`, `subscribe`,
+  `register-stream-protocol`), `stream-types` (the `stream-cursor` resource
+  for guest-as-source streaming, and the `stream-sink` resource for
+  guest-as-sink streaming), and `guest-api` (host-triggered:
+  `handle-message`, `handle-stream-request`, `accept-stream-upload`).
+- The guest-exported push function for pub/sub delivery is renamed
+  `on-message` → `guest-api::handle-message`. Behavior (optional export;
+  silently discarded if absent) is unchanged.
+- **Sequencing:** all decisions and consequences recorded above for the
+  pub/sub half remain in force and are implemented in **M3B (Slice 6A)**
+  unchanged in substance. The `stream-types`/`register-stream-protocol`/
+  `handle-stream-request` surface is declared in the same WIT file (for
+  interface stability) but is implemented separately in **M3C (Slice 6B)**,
+  which requires new host-side QUIC stream acceptance/routing infrastructure
+  not covered by this ADR — see the M3C dependency gate in
+  `docs/planning/milestones/M03B-messaging/task.md` (split out from
+  `M03-sss/task.md` on 2026-07-09, before implementation began), which
+  requires its own design note or ADR before Slice 6B implementation begins.
+- This amendment is a rename and scope-boundary clarification only; it does
+  not change any decision content above (broker deployment, delivery model,
+  topic namespacing, backpressure, or cancellation).
+
+## Amendment 2 (2026-07-08): Decentralized Overlay Rescheduled from M5 to M7
+
+### Context
+
+The decentralized QUIC log-replication overlay for pub/sub (mentioned above
+and in the original M3 planning as "pending full QUIC P2P overlay in M5")
+was re-examined alongside `[PLT-RED]` Service Redundancy planning. It was
+recognized as the same underlying problem as SQLite WAL replication — a
+peer node pulling and applying an ordered, checksummed log over Iroh QUIC —
+just with a different payload (MQTT topic-log entries instead of WAL
+frames). Blob replication for non-S3 deployments was identified as a third
+instance of the same pattern (simplified by content-addressing).
+
+### Decision
+
+- The decentralized pub/sub overlay is **rescheduled from Milestone 5 to
+  Milestone 7**, to be implemented alongside SQLite WAL replication and
+  peer-to-peer blob replication under one `[PLT-RED]` effort, sharing the
+  same Iroh multiplexed-stream transport and ordered/checksummed
+  frame-shipping primitive. See
+  [meta-implementation-plan.md, Milestone 7](../planning/meta-implementation-plan.md).
+- **Correction (this amendment, not a later one):** the overlay is purely a
+  redundancy/failover feature for the broker's own topic-log state — making
+  it survive the loss of the node that hosts it — exactly parallel to WAL
+  replication for a service's DB. It is **not** a prerequisite for
+  cross-node pub/sub to function. A `publish`/`subscribe` call from a
+  different physical node than the target service's broker is routed there
+  via the same RPC/native-dispatch path used for any cross-node
+  host-function call (JSON-RPC bridge today, per Slice 5's native dispatch
+  registry; wRPC once the Universal Proxy ships in M4) — identical to how a
+  cross-node `data-layer` call already reaches whichever node holds the
+  target service's SQLite file. Moving the log-replication overlay to M7
+  therefore has no bearing on basic cross-node pub/sub delivery, which does
+  not wait on it.
+- `[PLT-RED]`'s "Blob Storage Redundancy" scope is correspondingly widened:
+  previously blob redundancy was delegated entirely to the S3-compatible
+  backend; it now also covers Syneroym-built peer-to-peer blob replication
+  for deployments with no S3-compatible backend configured. See
+  [system-requirements-spec.md `[PLT-RED]`](../system-requirements-spec.md).
+- No change to the M3B/M3C WIT surface, delivery model, or any other
+  decision content in this ADR — this amendment only moves *when* the
+  decentralized overlay ships and *why* it now ships alongside DB/blob
+  replication instead of in M5.

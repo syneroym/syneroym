@@ -1,14 +1,14 @@
 # Syneroym Ecosystem Requirements Specification
 
-Syneroym is a decentralized, peer-to-peer technology ecosystem that empowers individuals and small groups to run their own autonomous applications (SynApps) without relying on centralized platform monopolies. At its core, it provides a secure, identity-native substrate that handles complex networking, discovery, and trust, enabling these independent apps to seamlessly cooperate and interact directly with one another. Whether operating on a smartphone or a server, Syneroym facilitates diverse federated ecosystems—spanning private communications, community governance, and collaborative peer networks—where participants retain absolute control over their data and digital relationships, while still enjoying the powerful network effects of a unified platform.
+The [thesis](../THESIS.md) states the core bet: a truly peer-to-peer foundation for group communication and trust, on which independent mini-apps (SynApps) — chat, marketplace, social, AI — plug in and work together as one experience, with no central server in the middle. No blockchains or cryptocurrency.
 
-To demonstrate these capabilities in a real-world scenario, our initial reference application is the **Provider Space**—a decentralized professional services network built entirely on the Syneroym substrate.
+Our flagship experience and reference application is **Roym** — mini-apps sharing one identity, one contact list, one set of groups, one trust model. Its first vertical is the Professional Services Guild, built entirely on the Syneroym substrate.
 
 **Status:** Draft product baseline
 
 **Last product review:** 2026-06-22
 
-**Companion documents:** [Vision](./VISION.md) · [Architecture](./system-architecture.md)
+**Companion documents:** [Thesis](../THESIS.md) · [Vision](./VISION.md) · [Architecture](./system-architecture.md)
 
 This document is the canonical statement of **who Syneroym serves, what outcomes
 it must enable, and which constraints a conforming implementation must honour**.
@@ -24,10 +24,9 @@ technology substrate* into testable product and ecosystem requirements.
 - Product releases are vertical, end-to-end increments. Capability backlog
   phases are engineering sequencing bands and do not independently constitute a
   usable product release.
-- Unresolved choices are recorded in [Decision Register](#decision-register),
-  with a decision gate. Vague `[Architecture TBD]` markers do not waive the
-  product requirement.
-
+- Open questions are tracked as milestone decision gates in the
+  implementation plan and resolved before the milestone that needs them
+  starts.
 This requirements spec is structured as follows:
 
 - Philosophy & Design Constraints
@@ -48,32 +47,7 @@ This requirements spec is structured as follows:
 
 ## Philosophy & Design Constraints
 
-A key difference in the newly envisioned provider ecosystem compared to large-scale consumer platforms is the (often geographical) clustering of service providers and consumers. Global reach and scale from a single embedding source is not a fundamental requirement. Reach and scale are improved instead by pre-established collaboration and coordination patterns across clusters of autonomous participants. Given this differentiator, we need to preserve benefits and reduce the drawbacks of large-scale consumer platforms like those listed in the [vision document](./VISION.md#background).
-
-### Preserving Benefits
-
-- Technology enablement without requiring every provider to operate infrastructure
-- Useful local discovery and distribution, with federation as reach grows
-- Streamlining, standardization of interaction patterns
-- Legible, independently verifiable trust signals
-- Security at scale
-- Fault tolerance
-- Clear accountability and support for appropriate local legal structures
-- Reputation aggregation
-- Economies of scale
-- Network effects
-
-### Reducing Drawbacks
-
-- Non-availability in constrained geographies, power/network/technology scenarios
-- Vendor lock-in
-- Governance asymmetry — less freedom (but less decision-making hassle) for participants
-- Inflexibility to customise for localised scenarios
-- Data ownership loss
-- Sudden policy risk leading to unhappy participants
-- No transparency of how internal systems/algorithms work
-- Strategic dependency
-- Not friendly to building deep provider-client relationships; mostly transactional
+Providers and consumers cluster locally; global reach from one source is not required. Reach grows instead through federation across autonomous clusters — cooperation between independently owned peer clusters over shared protocols, not server federation; no server sits between participants. The system keeps the benefits and sheds the drawbacks of large platforms listed in [VISION.md](./VISION.md#background), and goes after the open problem stated in the [thesis](../THESIS.md): rich group activity at real scale, with no central server, where no participant's device needs to fully trust any other.
 
 ### Design Principles
 
@@ -106,6 +80,10 @@ possible.
 **End-to-end slices before platform breadth.** New substrate capabilities are
 validated through a real provider-consumer workflow before adjacent generality
 is added.
+
+**Additive evolution.** Nothing is shelved. Payments/ledger primitives, AI
+assistance, attestation, and stronger identity tiers are sequenced, not
+deferred — each lands in its turn and composes with shipped contracts without redesigning them.
 
 ---
 
@@ -324,7 +302,9 @@ These requirements apply across all business domains and SynApps.
   expiry, idempotency, and conflict behaviour. Reconnection either reaches the
   same valid final state for all parties or exposes a conflict requiring a named
   party's decision; silent last-write-wins is not acceptable for agreements,
-  payments, fulfilment, or access grants.
+  payments, fulfilment, or access grants. A single writer per service resolves
+  this by replaying queued requests through per-entity arbitration rules — no
+  multi-master merge is needed for these entities.
 - Users can cancel a still-pending operation when doing so is safe, and can see
   when cancellation is no longer guaranteed because delivery may have occurred.
 
@@ -454,7 +434,7 @@ Architecture and test plans.
 
 ## Trust Model
 
-Centralized platforms derive consumer trust from brand, legal accountability, and aggregated reviews. A federated system needs explicit mechanisms to establish equivalent trust without central authority.
+Centralized platforms derive consumer trust from brand, legal accountability, and aggregated reviews. A truly peer-to-peer system — where no participant's device needs to fully trust any other — needs explicit mechanisms to establish equivalent trust without central authority.
 
 ### The Trust Problem
 
@@ -774,7 +754,7 @@ The system accommodates the following variation axes across workflows:
 
 **Booking:** Event slots, consulting time slots, open-ended job requests.
 
-**Payment:** One-time; pre- or post-delivery; multi-part; negotiated; subscription; escrow; system coins; mutual credit systems. [See the Dynamic Ledger Network Specification](https://github.com/syneroym/foundation/blob/main/ideas/commitment-network.md) for mutual credit mechanics.
+**Payment:** One-time; pre- or post-delivery; multi-part; negotiated; subscription. Escrow, system coins, and mutual credit systems are deferred variation axes — see [Appendix: Later-Phase Additions](#appendix-later-phase-additions) and the [Dynamic Ledger Network Specification](https://github.com/syneroym/foundation/blob/main/ideas/commitment-network.md) for mutual credit mechanics.
 
 **Product type:** Time-bound (e.g. prepared food), digital content, physical goods.
 
@@ -794,9 +774,8 @@ The system accommodates the following variation axes across workflows:
 <a id="post-dd864a1-target-specifications-addendum"></a>
 
 ## Post-DD864A1 Specifications
-This section describes  pending features post git commit hash `dd864a18902bb8e71da0ff56bba4523688ad8ba1`.
 
-The earlier part of this doc describes broader product context and several implemented walking-skeleton choices. Where this captures features not yet implemented till the above commit id. 
+Features after commit `dd864a1`. The rest of this document covers the shipped walking-skeleton baseline; this section sequences what comes next.
 
 ### Tag Legend
 To ensure stable cross-referencing across commits and PRs, features are prefixed with category tags:
@@ -924,14 +903,14 @@ This defines the baseline resilience required for underlying node-to-node and cl
 
 ### [FND-SEC] Substrate Security
 - **Data at Rest Encryption (Envelope Encryption):** 
-  - To prevent catastrophic re-encryption of gigabytes of data during key rotation, the substrate uses Envelope Encryption. Unique Data Encryption Keys (DEKs) are generated to encrypt the actual blobs and `cr-sqlite` databases.
-  - The service owner negotiates and injects a Master Key (Key Encryption Key or KEK) securely into substrate RAM at startup. The KEK only encrypts the tiny DEKs stored on disk. Key rotation is instantaneous as only the DEKs are re-encrypted with the new KEK.
-  - **Secret Vault:** Application secrets (API keys, credentials) are stored securely inside a dedicated Vault table within the encrypted per-service SQLite/`cr-sqlite` database, rather than as vulnerable flat files on disk. Non-secret configuration may share the same encrypted store for convenience, but it is not treated as a secret unless marked as such.
+  - To prevent catastrophic re-encryption of gigabytes of data during key rotation, the substrate uses Envelope Encryption. Unique Data Encryption Keys (DEKs) are generated to encrypt the actual blobs and SQLite databases (via SQLCipher — see [ADR-0006](decisions/0006-sqlite-encryption-sqlcipher.md)).
+  - The service owner negotiates and injects a Master Key (Key Encryption Key or KEK) securely into substrate RAM at startup. The KEK only encrypts the tiny DEKs stored on disk. Key rotation is instantaneous as only the DEKs are re-encrypted with the new KEK. KEK scope narrows progressively: substrate-global first (M3), then per-SynApp-Instance (M4, gated on IAM), with per-service scoping as the eventual target; DEKs are per-service from day one.
+  - **Secret Vault:** Application secrets (API keys, credentials) are stored securely inside a dedicated Vault table within the encrypted per-service SQLite database, rather than as vulnerable flat files on disk. Non-secret configuration may share the same encrypted store for convenience, but it is not treated as a secret unless marked as such.
   - Production profiles default local databases and all remote backups to
     encryption. Opt-out is limited to explicitly marked non-sensitive
     development profiles and produces a persistent insecure-state warning.
   - Remote backups (e.g., WAL frames or object snapshots) are streamed to S3-compatible stores or peer backup substrates and are encrypted locally before transit when configured.
-- **Hardware Attestation (Optional, later unless required by a vertical):**
+- **Hardware Attestation (optional; layers on without changing the security model):**
   - The substrate exposes a `substrate.attest(nonce)` API to the network.
   - The App Deployer/Owner externally challenges the node (at deployment or periodically) and mathematically verifies the hardware quote (TPM, KeyAttestation, AppAttest).
   - The deployer alone decides whether to deploy the service in a degraded trust environment or halt execution if attestation fails. 
@@ -974,7 +953,7 @@ This defines the baseline resilience required for underlying node-to-node and cl
 Given that Syneroym supports both native WASM components and legacy Podman containers, configuration and secret management use a dual-target approach:
 
 - **Configuration Delivery**:
-  - **WASM (Native)**: Services retrieve their hierarchical configuration on-demand via a standard host function (e.g., `syneroym:config/get`). WASI environment variables or pre-opened files may be exposed only as an explicit compatibility mode for non-secret values.
+  - **WASM (Native)**: Services retrieve their hierarchical configuration on-demand via a standard host function (e.g., `syneroym:app-config/get`). WASI environment variables or pre-opened files may be exposed only as an explicit compatibility mode for non-secret values.
   - **Podman (Legacy)**: Because third-party containers expect specific formats, the `SynApp` manifest dictates how the orchestrator exposes the config. The orchestrator will either flatten the config into standard environment variables or serialize nested configurations (JSON/TOML/YAML) into temporary files and mount them read-only into the container.
 - **Secret Management**:
   - **WASM (Native)**: Strictly adheres to `[FND-SEC]`. The service pulls secrets directly into locked RAM via `syneroym:vault/reveal`. Secrets never touch the filesystem or environment variables.
@@ -1010,10 +989,11 @@ Given that Syneroym supports both native WASM components and legacy Podman conta
 ### [PLT-DAP] Distributed Data Topology
 The substrate models data as a distributed, programmable topology rather than isolated object state.
 - **[PLT-DAP-01] Logical Data Services:** The system MUST support logical data wrappers that abstract physical sharding across multiple substrates, allowing a single dataset definition to span nodes transparently.
-- **[PLT-DAP-02] Active Storage Pushdown:** The system SHOULD provide WIT interfaces (e.g., `syneroym:data/transform`) for deploying WASM modules directly to the data layer. This enables controlled ETL/ELT logic execution directly where the data lives. *(Note: This is an ambitious goal for M5 and may be moved to a Future Backlog or dedicated spike milestone based on scoping constraints).*
+- **[PLT-DAP-02] Active Storage Pushdown:** The system SHOULD provide WIT interfaces (e.g., `syneroym:data/transform`) for deploying WASM modules directly to the data layer. This enables controlled ETL/ELT logic execution directly where the data lives. *(Sequenced as a bounded spike after M5's core data layer ships, so it adds on rather than reworking the data layer.)*
 - **[PLT-DAP-03] Declarative Replication:** The `DeploymentPlan` MUST support a declarative topology mechanism to define replication states (e.g., Primary, Read-Replica, Cold Backup).
-- **[PLT-DAP-04] Decentralized Pub/Sub:** The system MUST support an MQTT-like API for decoupled event routing, implemented as a decentralized pull-based log replication over QUIC.
+- **[PLT-DAP-04] Decentralized Pub/Sub:** The system MUST support an MQTT-like API for decoupled event routing. Cross-node access to `publish`/`subscribe` works the same way any cross-node host-function call does — routed to whichever node hosts the target service via the standard RPC/native-dispatch path (JSON-RPC bridge today; wRPC once `[PLT-DAT]` Universal Proxy ships in M4) — no different from a cross-node `data-layer` call. Separately, the broker's own topic-log state is made redundant via peer nodes synchronising it through pull-based log replication over QUIC, purely for durability/failover if the hosting node is lost; this ships in M7 alongside database and blob replication, as they share the same replication primitive (see `[PLT-RED]`).
 - **[PLT-DAP-05] Data Pipeline Streams:** The system MUST provide a distinct `syneroym:data/stream` interface for direct, high-throughput, point-to-point QUIC streams with native credit-based flow control (backpressure) for heavy data shuffling.
+- **[PLT-DAP-06] Generic Bidirectional Streaming:** The system MUST provide a `syneroym:messaging` host boundary allowing a WASM guest to register interest in a stream protocol namespace and handle both directions of a peer-initiated stream: as source, hand the host a stateful iterator (`stream-cursor`) resource that the host pulls from asynchronously (e.g., file download); as sink, hand the host a stateful sink (`stream-sink`) resource that the host pushes chunks into asynchronously (e.g., file upload). Distinct from `[PLT-DAP-05]`, which is Arrow/Substrait-specific and reserved for the DataFusion pushdown pipeline.
 
 ### [PLT-DAT] Data Layer
 The Data Layer provides a complete foundation for distributed application state and communication, securely accessed via typed host functions or APIs without exposing raw database engines to the applications.
@@ -1024,8 +1004,8 @@ The Data Layer provides a complete foundation for distributed application state 
   - **Database Isolation (One DB per Service):** The canonical primitive for structured state (backed by SQLite). Instead of a monolithic combined database, every stateful `SynSvc` gets a fully isolated, separate SQLite database file (and WAL). The substrate also maintains its own separate database. This guarantees true concurrent write scaling across services, allows selective WAL replication, and isolates failure domains.
   - **Concurrency Model:** Designed for high throughput using a Single-Writer Thread / Multiple-Reader Pool architecture per database. This perfectly aligns with SQLite's WAL mode, eliminating `SQLITE_BUSY` lock contention and maximizing performance in asynchronous Rust.
   - **Resource Model:** Collections with lightweight schemas (loose enforcement of types, explicit indexed fields) containing JSON records. The data layer automatically injects a spoof-proof `creator_id` into every record.
-  - **Schema Initialization (DDL):** During the `init` phase of deployment, `SynSvc` manifests supply DDL as a variant collected by the `SynApp` manifest: initially plain SQL strings (e.g., `CREATE TABLE`, `CREATE VIEW`, `CREATE INDEX`) and, in the future, a structured data model object. Starting with plain SQL is safe for trusted services because each service owns an isolated database, and access is gated by IAM. Views defined during init are instantaneous (no write-lock penalty, unlike index creation) and can be targeted by the `AggregationPipeline` at runtime.
-  - **Operations & Queries:** Full CRUD operations (`create_collection`, `put`, `patch`, `get`, `delete`, `delete_many`). It also supports `batch_mutate` for atomic transactions across multiple records. The query engine translates an abstract `FilterExpr` (supporting `Eq`, `In`, `Contains` for full-text, etc.) and `AggregationPipeline` (for projections, `group_by`, `having`) into parameterized SQL queries with cursor-based pagination. Aggregations can target both physical collections and logical views.
+  - **Schema Initialization (DDL):** Stateful `SynSvcs` export `init()` (first deploy) and `migrate()` (re-deploy) lifecycle hooks; within these hooks the guest runs plain SQL DDL (e.g., `CREATE TABLE`, `CREATE VIEW`, `CREATE INDEX`) through the gated `execute-ddl` host function — see [ADR-0007](decisions/0007-data-layer-wit-interface.md). A structured data-model alternative is reserved for the future, when untrusted third-party developers must be restricted from arbitrary DDL. Starting with plain SQL is safe for trusted services because each service owns an isolated database, and access is gated by IAM. Views defined during init are instantaneous (no write-lock penalty, unlike index creation) and can be targeted by the `AggregationPipeline` at runtime.
+  - **Operations & Queries:** Full CRUD operations (`create_collection`, `put`, `patch`, `get`, `delete`, `delete_many`). It also supports `batch_mutate` for atomic transactions across multiple records. The query engine translates a MongoDB-style JSON filter document (equality, `$gt`/`$gte`/`$lt`/`$lte`/`$ne`, `$in`/`$nin`, `$regex`, `$and`/`$or`/`$not`, dot-notation paths — see [ADR-0007](decisions/0007-data-layer-wit-interface.md)) and an `AggregationPipeline` (for projections, `$group`, `$having`) into parameterized SQL queries with cursor-based pagination. Aggregations can target both physical collections and logical views. Full-text search operators are future backlog.
   - **WASM Serialization & WIT Boundary:** Expand the `syneroym:data-layer/store` WIT boundary to support robust nested record serialization/deserialization. Currently, only basic types are supported; this enables seamless passing of complex JSON object graphs between WASM components and the host.
 
 - **Object Service (Content-Addressed Blobs):**
@@ -1092,8 +1072,32 @@ the primary.
 - **SQLite-Safe Application:** The replication layer must respect SQLite WAL and shared-memory invariants. It must not depend on ad hoc mutation of another live SQLite process's `-wal` or `-shm` files.
 - **Disaster Recovery:** In addition to live node-to-node replication, the system must support periodic asynchronous backups to external object storage (S3-compatible) to enable cold starts and disaster recovery.
 
+**Pub/Sub Log Redundancy**
+- The `syneroym:messaging` pub/sub broker's topic log is replicated to peer
+  nodes using the same pull-based log-replication primitive as Database
+  Redundancy above (ordered, checksummed frame streaming over an Iroh
+  multiplexed stream; payload is MQTT topic-log entries rather than SQLite
+  WAL frames). This is purely a durability/failover feature — if the node
+  hosting the broker for a topic namespace is lost, a replica has an
+  up-to-date copy of the topic log and retained messages. It is not what
+  makes cross-node pub/sub *access* possible in the first place; that
+  already works via the standard RPC/native-dispatch routing to whichever
+  node hosts the target service, exactly like cross-node `data-layer`
+  access — see `[PLT-DAP-04]`. M3B ships a single-node in-process broker;
+  this redundancy requirement is met in M7.
+
 **Blob Storage Redundancy**
-- Large files and blobs are not replicated via SQLite. Instead, the platform relies on external, configurable S3-compatible storage backends. The underlying S3 provider is responsible for ensuring the redundancy of these blobs.
+- When a deployment configures an external, configurable S3-compatible
+  storage backend, that backend is responsible for the redundancy of its
+  blobs — Syneroym does not re-replicate blob content it already delegated
+  to S3-compatible storage.
+- When no S3-compatible backend is configured (a pure peer-to-peer
+  deployment), the platform performs its own peer-to-peer blob replication
+  across Substrate nodes, controlled by the same declarative `DeploymentPlan`
+  topology as Database Redundancy. Content-addressing (SHA-256) simplifies
+  this relative to WAL/log replication: there is no ordering or sequence
+  invariant to preserve, only ensuring a verified copy of each blob hash
+  exists on the configured number of peer nodes.
 
 **Registry & Topology Management**
 - **Single Source of Truth:** The Registry Service is the authoritative control plane for all cluster membership and routing topology.
@@ -1166,10 +1170,11 @@ the primary.
 
 Because Syneroym can be utilized as a general open cloud, this dedicated phase separates purely foundational low-level network connectivity (`[TOP]`) from higher-level community-driven peer networking primitives.
 
-### [P2P-DSC] Federated Tag-Routed Discovery
-- **Native P2P Message-Passing Graph:** High-level discovery is built directly into a federated routing graph. Nodes send discovery intents to their direct peers. If a peer cannot fulfill the request locally, it forwards the intent.
-- **Hierarchical Tags:** Intents are routed using hierarchical tags representing composed logical groups (e.g., `#close-friends`, `#office-network`). Queries are pushed only to relevant active connections matching the tag, which uniformly encompass both individual peers and service substrates.
-- **Aggregators as Super-Peers:** Directory applications ("Aggregators") are supported, but from the substrate's perspective, they simply present the identical standard interface as any other peer. The Syneroym community registry can point to default aggregators, which individual substrates can optionally configure as default "super-peers" to enhance discovery performance.
+### [P2P-DSC] Distributed Matching Fabric
+- **Publications, not a global index:** Providers, consumers, and services publish signed Publications (listings, intents, capabilities). Indexes are distributed caches, never authoritative; every result is client-verified (signature, timestamp, expiry) before use.
+- **Deterministic placement:** A protocol-defined Routing Schema (spatial cell, category, ...) plus rendezvous hashing maps each Publication onto leaf index shards. Providers compute their own placement; no coordinator required.
+- **Aggregators as index nodes:** Directory applications ("Aggregators") can opt in as leaf index shards, but from the substrate's perspective they present the identical standard interface as any other peer. No aggregator is a required or privileged intermediary.
+- **Additive, sequenced later:** a hierarchical synopsis tree and query planner (once leaf-shard count makes flat lookup expensive), composite routing descriptors, and cross-shard ranking layer on top without reworking the Publication or placement contract.
 
 ### [P2P-REP] Peer Reputation & Trust
 - **Coarse-Grained Satisfaction Signal:** Reputation is implemented as a low-resolution scale (e.g., 0=Poor, 1=Decent, 2=Great) to minimize cognitive load and mathematical complexity.
@@ -1255,9 +1260,9 @@ Because Syneroym can be utilized as a general open cloud, this dedicated phase s
 
 ---
 
-## Appendix: Future Backlog
+## Appendix: Later-Phase Additions
 
-Items deferred from the initial baseline requirements until detailed specifications are created.
+Sequenced after the baseline, pending detailed specs. Each must add on without reworking shipped contracts.
 
 ### Accessibility and Localisation
 
@@ -1267,6 +1272,11 @@ Items deferred from the initial baseline requirements until detailed specificati
 ### Non-IP Mesh Transport Interconnectivity
 
 - **IoT and Edge Networking:** Support for seamlessly integrating non-IP mesh networks (e.g., Zigbee, Thread, Bluetooth Low Energy (BLE)) into the existing IP-based topology.
+
+### Escrow, System Coins, and Mutual Credit
+
+- **Escrow:** Third-party or multi-signature custody of funds pending service completion or dispute resolution. Not part of the MVP payment surface; external or out-of-band settlement is the default until this is separately specced and legally reviewed.
+- **System coins and mutual credit:** A native ledger token (not a cryptocurrency or blockchain-based token) and bilateral IOU system layered onto the Payment Abstraction Layer. Requires legal review before launch. See the [Dynamic Ledger Network Specification](https://github.com/syneroym/foundation/blob/main/ideas/commitment-network.md).
 
 ## Appendix: Substrate Feature Coverage Matrix
 *(Ensuring core platform primitives are battle-tested across the application suite)*
@@ -1288,8 +1298,7 @@ Items deferred from the initial baseline requirements until detailed specificati
 | **[TOP-*] Routing & Relays** | **Substrate Core** | Establishing secure p2p connections across NATs and resolving cryptographic node IDs. |
 | **[FND-IDT/IAM] Identity & Access** | **Hub / Admin** | Generating root keypairs and enforcing role-based access for Space Managers. |
 | **[FND-DEP] App Deployment** | **roymctl** | Safely deploying the WASM Marketplace component into a sandboxed environment. |
-| **[P2P-DSC] Federated Discovery** | **Aggregator App** | Forwarding tag-based search queries across the mesh to find local service providers. |
+| **[P2P-DSC] Matching Fabric** | **Aggregator App** | Placing and resolving signed Publications across the mesh to find local service providers. |
 | **[P2P-REP] Peer Reputation** | **Marketplace** | Generating cryptographically tied interaction receipts and rendering trust summaries. |
-| **[ADV-DEV] Device Sync (CRDT)** | **Chat** | Reconciling message state across primary and secondary mobile devices. |
 | **[LFC-*] Lifecycle & Updates** | **Node Admin** | Safely rolling back a failed Marketplace version update. |
 | **[EDG-MOB] Mobile Operation** | **Mobile Hub** | Waking a suspended iOS client via out-of-band push to receive an incoming quote. |

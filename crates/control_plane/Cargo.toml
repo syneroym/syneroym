@@ -8,26 +8,29 @@ workspace = true
 
 [features]
 default = ["app_sandbox", "podman_sandbox"]
-app_sandbox = ["dep:syneroym-app-sandbox"]
-podman_sandbox = ["dep:syneroym-podman-sandbox"]
+app_sandbox = ["dep:syneroym-sandbox-wasm"]
+podman_sandbox = ["dep:syneroym-sandbox-podman"]
 
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
 syneroym-core.workspace = true
 syneroym-rpc.workspace = true
-syneroym-app-sandbox = { workspace = true, optional = true }
-syneroym-podman-sandbox = { workspace = true, optional = true }
+syneroym-sandbox-wasm = { workspace = true, optional = true }
+syneroym-sandbox-podman = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-syneroym-bindings.workspace = true
+syneroym-wit-interfaces.workspace = true
 syneroym-app-orchestration.workspace = true
-syneroym-key-store.workspace = true
-syneroym-data-layer.workspace = true
+syneroym-data-keystore.workspace = true
+syneroym-data-db.workspace = true
+syneroym-data-blob.workspace = true
 hex.workspace = true
-
+jsonschema.workspace = true
+uuid.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 wit-parser.workspace = true

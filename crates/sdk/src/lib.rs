@@ -5,21 +5,22 @@
 //! that integrate seamlessly with the Syneroym runtime and services.
 
 use std::{
-    fmt::{Debug, Formatter},
+    fmt::{self, Debug, Formatter},
     time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
 use iroh::{Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl, endpoint::Connection};
 pub mod mapper;
-pub use syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::{
+use serde_json::Value;
+use syneroym_core::dht_registry::{EndpointMechanism, RegistryClient, SignedEndpointInfo};
+use syneroym_router::{RoutePreamble, RouteProtocol, RouteTransport, SYNEROYM_ALPN};
+use syneroym_rpc::{JsonRpcRequest, JsonRpcResponse, framing};
+pub use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, ContainerManifest, ContainerPortMapping, ContainerVolumeMapping,
     DeployManifest, DeploymentPlan, NetworkEndpoint, PlannedService, ServiceConfig, ServiceType,
     TcpManifest, WasmManifest,
 };
-use syneroym_core::dht_registry::{EndpointMechanism, RegistryClient, SignedEndpointInfo};
-use syneroym_router::{RoutePreamble, RouteProtocol, RouteTransport, SYNEROYM_ALPN};
-use syneroym_rpc::{JsonRpcRequest, JsonRpcResponse, framing};
 use tokio::{io, net::TcpStream, time};
 use tracing::debug;
 
@@ -38,7 +39,7 @@ pub struct SyneroymClient {
 }
 
 impl Debug for SyneroymClient {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("SyneroymClient")
             .field("service_id", &self.service_id)
             .field("registry_url", &self.registry_url)
@@ -60,7 +61,7 @@ pub enum TransportConnection {
 }
 
 impl Debug for TransportConnection {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::Iroh { conn, .. } => f
                 .debug_struct("TransportConnection::Iroh")
@@ -213,13 +214,13 @@ impl SyneroymClient {
         &self,
         interface: &str,
         method: &str,
-        params: serde_json::Value,
+        params: Value,
     ) -> Result<JsonRpcResponse> {
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             method: method.to_string(),
             params,
-            id: Some(serde_json::Value::Number(1.into())),
+            id: Some(Value::Number(1.into())),
         };
         self.request_raw(interface, request).await
     }
@@ -269,7 +270,14 @@ impl SyneroymClient {
             .transpose()
             .map_err(|e| anyhow::anyhow!("Failed to serialize registry certificate: {e}"))?;
         let manifest = DeployManifest {
-            config: ServiceConfig { env: vec![], args: vec![], custom_config: None, quota: None },
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema_path: None,
+                rotation_policy: None,
+            },
             service_type: ServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(wasm_bytes),
                 hash: None,
@@ -297,7 +305,14 @@ impl SyneroymClient {
             .transpose()
             .map_err(|e| anyhow::anyhow!("Failed to serialize registry certificate: {e}"))?;
         let manifest = DeployManifest {
-            config: ServiceConfig { env: vec![], args: vec![], custom_config: None, quota: None },
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema_path: None,
+                rotation_policy: None,
+            },
             service_type: ServiceType::Tcp(TcpManifest { endpoints }),
             registry_certificate,
         };
@@ -323,7 +338,14 @@ impl SyneroymClient {
             .transpose()
             .map_err(|e| anyhow::anyhow!("Failed to serialize registry certificate: {e}"))?;
         let manifest = DeployManifest {
-            config: ServiceConfig { env: vec![], args: vec![], custom_config: None, quota: None },
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema_path: None,
+                rotation_policy: None,
+            },
             service_type: ServiceType::Container(ContainerManifest {
                 source: ArtifactSource::Binary(vec![]),
                 hash: None,

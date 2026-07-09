@@ -1,26 +1,29 @@
 use std::path::PathBuf;
 
-use syneroym_app_orchestration::models::ServiceType;
-use syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::{
-    ArtifactSource, ContainerPortMapping, ContainerVolumeMapping,
-    DeploymentPlan as WitDeploymentPlan, NetworkEndpoint, PlannedService,
-    ServiceConfig as WitServiceConfig, ServiceType as WitServiceType, TcpManifest, WasmManifest,
+use syneroym_app_orchestration::models::{DeploymentPlan, RotationPolicy, ServiceType};
+use syneroym_core::util;
+use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
+    ArtifactSource, ContainerManifest, ContainerPortMapping, ContainerVolumeMapping,
+    DeployManifest, DeploymentPlan as WitDeploymentPlan, NetworkEndpoint, PlannedService,
+    ResourceQuota, RotationPolicy as WitRotationPolicy, ServiceConfig as WitServiceConfig,
+    ServiceType as WitServiceType, TcpManifest, WasmManifest,
 };
 
-pub fn map_deployment_plan_to_wit(
-    plan: syneroym_app_orchestration::models::DeploymentPlan,
-) -> anyhow::Result<WitDeploymentPlan> {
+pub fn map_deployment_plan_to_wit(plan: DeploymentPlan) -> anyhow::Result<WitDeploymentPlan> {
     let mut services = Vec::new();
     for svc in plan.services {
         let wit_config = WitServiceConfig {
             env: svc.config.env.into_iter().collect(),
             args: svc.config.args,
             custom_config: svc.config.custom_config.clone(),
-            quota: svc.config.quota.map(|q| {
-                syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::ResourceQuota {
-                    max_instructions: q.max_instructions,
-                    max_memory_bytes: q.max_memory_bytes,
-                }
+            quota: svc.config.quota.map(|q| ResourceQuota {
+                max_instructions: q.max_instructions,
+                max_memory_bytes: q.max_memory_bytes,
+            }),
+            schema_path: svc.config.schema_path.clone(),
+            rotation_policy: Some(match svc.config.rotation_policy {
+                RotationPolicy::RestartOnRotation => WitRotationPolicy::RestartOnRotation,
+                RotationPolicy::None => WitRotationPolicy::None,
             }),
         };
 
@@ -32,7 +35,7 @@ pub fn map_deployment_plan_to_wit(
                     ArtifactSource::Url(svc.config.source.clone())
                 } else {
                     let path = PathBuf::from(&svc.config.source);
-                    let bytes = syneroym_core::util::read_local_artifact(&path)?;
+                    let bytes = util::read_local_artifact(&path)?;
                     ArtifactSource::Binary(bytes)
                 };
                 WitServiceType::Wasm(WasmManifest {
@@ -92,7 +95,7 @@ pub fn map_deployment_plan_to_wit(
                     }
                 }
 
-                WitServiceType::Container(syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::ContainerManifest {
+                WitServiceType::Container(ContainerManifest {
                     source: ArtifactSource::Binary(vec![]),
                     hash: svc.config.hash.clone(),
                     image,
@@ -109,7 +112,7 @@ pub fn map_deployment_plan_to_wit(
         services.push(PlannedService {
             service_id: svc.service_id.to_string(),
             logical_ref: svc.logical_ref.to_string(),
-            manifest: syneroym_bindings::control_plane::exports::syneroym::control_plane::orchestrator::DeployManifest {
+            manifest: DeployManifest {
                 config: wit_config,
                 service_type,
                 registry_certificate: None,

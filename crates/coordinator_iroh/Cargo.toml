@@ -40,5 +40,5 @@ tracing-subscriber.workspace = true
 tempfile.workspace = true
 syneroym-community-registry.workspace = true
 syneroym-sdk.workspace = true
-syneroym-data-layer.workspace = true
+syneroym-data-db.workspace = true
 libc.workspace = true

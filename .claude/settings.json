@@ -1,0 +1,27 @@
+{
+    "sandbox": {
+        "enabled": true,
+        "autoAllowBashIfSandboxed": true,
+        "excludedCommands": [
+            "git"
+        ]
+    },
+    "permissions": {
+        "allow": [
+            "Bash(cargo test *)",
+            "Bash(cargo check *)",
+            "Bash(cargo clippy *)",
+            "Bash(cargo +nightly fmt --all -- --check)",
+            "Bash(cargo build *)",
+            "Bash(mise run test:e2e)",
+            "Bash(cargo bench *)",
+            "Bash(git -C * diff *)"
+        ],
+        "deny": [
+            "Read(.env*)",
+            "Bash(rm -rf*)",
+            "Bash(sudo:*)",
+            "Bash(curl:*)"
+        ]
+    }
+}

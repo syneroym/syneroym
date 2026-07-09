@@ -44,8 +44,29 @@ require_agreement = false
 engine = "sqlite"
 # For database storage. If relative path is given, it will go under app_local_data_dir.
 db_dir = "db"
-# Default location for large object or file storage (e.g. WASM binaries). If relative path is given, it will go under app_local_data_dir.
+# Compiled WASM component binary cache. NOT the M3B blob object service --
+# see [storage.blob_store] below for that. If relative path is given, it
+# will go under app_local_data_dir.
 blobs_dir = "blobs"
+
+[storage.blob_store]
+# "local" or "s3". S3 support requires building with the `aws` cargo
+# feature on syneroym-data-blob (off by default -- see the object_store
+# pin comment in the root Cargo.toml).
+backend = "local"
+# Content-addressed blob storage root. If relative path is given, it will
+# go under app_local_data_dir.
+local_root = "blob_objects"
+# Single-blob size cap in bytes.
+max_blob_bytes = 104857600 # 100 MiB
+# Optional aggregate per-service cap in bytes. Omit for unlimited.
+# max_service_total_bytes = 5368709120 # 5 GiB
+
+# [storage.blob_store.s3]
+# endpoint = "https://s3.amazonaws.com"
+# bucket = "my-syneroym-blobs"
+# region = "us-east-1"
+# Credentials via environment variables (AWS_ACCESS_KEY_ID, etc.)
 
 [logging]
 # Default log level: "error", "warn", "info", "debug", "trace"

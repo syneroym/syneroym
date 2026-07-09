@@ -15,14 +15,14 @@ jobs:
           script: |
             const body = context.payload.pull_request.body || "";
             
-            // Regex to check if the specific CLA box has an 'x' or 'X' in it
-            const claRegex = /- \[[xX]\] I have read and agree to the \[Syneroym CLA\]/i;
+            // Regex to strictly check that the CLA line is exact, on its own line, with the correct URL
+            const claRegex = /^\s*- \[[xX]\] I have read and agree to the \[Syneroym CLA\]\(https:\/\/github\.com\/syneroym\/syneroym\/blob\/main\/CLA\.md\)\.\s*$/m;
             const hasAgreed = claRegex.test(body);
             
             if (!hasAgreed) {
               core.setFailed(
-                "❌ CLA Agreement Missing! Please edit your Pull Request description and check the box indicating you agree to the Syneroym Contributor License Agreement."
+                "❌ CLA Agreement Missing or Modified! Please edit your Pull Request description and check the exact box indicating you agree to the Syneroym Contributor License Agreement, without modifying the text or URL."
               );
             } else {
-              console.log("✅ CLA Agreement checkbox is checked.");
+              console.log("✅ CLA Agreement checkbox is correctly checked and unmodified.");
             }

@@ -1,4 +1,9 @@
 # Background
+
+The [thesis](../THESIS.md) states the core bet: a truly peer-to-peer foundation for group communication and trust, on which independent mini-apps — chat, marketplace, social, AI — plug in and work together as one experience, with no central server in the middle. No blockchains or cryptocurrency. This document builds on that and describes what we will actually pursue and build.
+
+The rest of this section looks at what today's platforms get right and wrong, because a credible alternative must keep their benefits while shedding their drawbacks.
+
 - Popular online consumer platforms like Swiggy, Urban Company, AirBnb, Uber, Upwork, Amazon, Upgrad, Practo:
     - have benefited consumers as well as providers big time
     - For example:
@@ -35,14 +40,12 @@
     - Not friendly to buildup of deep provider-client relationships, mostly transactional
 
 # Our objective
-We feel there is room for alternate systems that bring the best of both worlds, which many providers and customers would appreciate. Systems which maintain the above-mentioned benefits of centrally controlled systems, minus their drawbacks.
+Realize the thesis in a way that keeps the above-mentioned benefits of centrally controlled systems, minus their drawbacks. We will take a shot at this with `Autonomous Cooperating Mini-Apps over a common technology substrate`. Specifically we will build:
 
-We will take a shot at building one such an alternative with `Autonomous Cooperating Mini-Apps over a common technology substrate`. Specifically we will build:
+- A technology substrate — the truly peer-to-peer foundation — that catalyzes building value generation ecosystems by providing useful technology primitives (identity, contacts, groups, trust, discovery) to Mini-apps (SynApps) running on top of it.
 
-- A technology substrate that catalyzes building similar value generation ecosystems by providing useful technology primitives to Mini-apps running on top of it.
-
-- Mini-apps for selected business verticals that act as fundamental blocks of the new ecosystem. We will start by building the following two.
-    1. Federated Professional Services Guild (Home services first)
+- **Roym** — our flagship combined experience: mini-apps sharing one identity, one contact list, one set of groups, one trust model. We will start with two business verticals inside it.
+    1. Professional Services Guild (Home services first)
     - E.g. Local equivalent of Urban Company or TaskRabbit
     - This will be built as a deep, real vertical
     2. Local Producer-Distributor Mesh (Food + small retail)
@@ -63,7 +66,7 @@ Mini-apps have the following characteristics
 We selected the 2 mini-apps mentioned above, namely, Services Guild, and Producer-Distributor mesh, due to their following inherent characteristics:
 - They have a strong chance of being viable alternatives to platforms like those listed above that providers use currently for various reasons such as:
     - Fragmented supply side (many small providers)
-    - Local density effects (in local settings, trust and word of mouth can beat algorithmic ranking)
+    - Local density effects (in local settings, trust and word of mouth can outperform algorithmic ranking)
     - Strong dissatisfaction with existing platforms
     - Manageable trust surface (not life-critical at first)
     - Low regulatory friction

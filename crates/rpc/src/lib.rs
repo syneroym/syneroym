@@ -4,12 +4,16 @@
 //! Core module for RPC protocol compilation, providing framing,
 //! serialization, type conversions, and transport adapters.
 
+use std::result;
+
 mod converter;
+mod dispatch_registry;
 pub mod framing;
 mod native;
 mod types;
 
 pub use converter::JsonRpcConverter;
+pub use dispatch_registry::NativeDispatchRegistry;
 pub use native::{NativeInvocation, NativeResponse, NativeService};
 use serde_json::Value;
 use thiserror::Error;
@@ -47,4 +51,4 @@ impl RpcError {
     }
 }
 
-pub type RpcResult<T> = std::result::Result<T, RpcError>;
+pub type RpcResult<T> = result::Result<T, RpcError>;

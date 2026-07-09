@@ -1,0 +1,146 @@
+package syneroym:control-plane;
+
+interface orchestrator {
+    /// Represents where a deployment artifact can be fetched from.
+    variant artifact-source {
+        /// A URL pointing to the artifact (e.g., OCI registry, HTTPS URL).
+        url(string),
+        /// The raw binary bytes of the artifact itself.
+        binary(list<u8>),
+    }
+
+    record resource-quota {
+        max-instructions: option<u64>,
+        max-memory-bytes: option<u64>,
+    }
+
+    variant rotation-policy {
+        restart-on-rotation,
+        none,
+    }
+
+    /// General configuration provided to the deployed service.
+    record service-config {
+        /// Environment variables represented as key-value pairs.
+        env: list<tuple<string, string>>,
+        /// Command-line arguments.
+        args: list<string>,
+        /// Arbitrary nested configuration (e.g., serialized JSON).
+        custom-config: option<string>,
+        quota: option<resource-quota>,
+        schema-path: option<string>,
+        rotation-policy: option<rotation-policy>,
+    }
+
+    /// Manifest details for a Wasm component deployment.
+    record wasm-manifest {
+        source: artifact-source,
+        hash: option<string>,
+        interfaces: list<string>,
+    }
+
+    /// Port mapping for container
+    record container-port-mapping {
+        interface-name: string,
+        host-port: option<u16>,
+        container-port: u16,
+        protocol: string,
+    }
+
+    /// Volume mapping for container
+    record container-volume-mapping {
+        host-path: string,
+        container-path: string,
+    }
+
+    /// Manifest details for a container (Podman) deployment.
+    record container-manifest {
+        source: artifact-source,
+        hash: option<string>,
+        image: string,
+        ports: list<container-port-mapping>,
+        volumes: list<container-volume-mapping>,
+    }
+
+    /// Endpoint configuration for network services
+    record network-endpoint {
+        interface-name: string,
+        host: string,
+        port: u16,
+    }
+
+    /// Manifest details for an existing TCP service.
+    record tcp-manifest {
+        endpoints: list<network-endpoint>,
+    }
+
+    /// Defines the specific type of service and carries its specific payload.
+    variant service-type {
+        wasm(wasm-manifest),
+        container(container-manifest),
+        tcp(tcp-manifest),
+    }
+
+    /// A comprehensive manifest for deploying a service on the substrate.
+    record deploy-manifest {
+        /// Base configuration applied to the service
+        config: service-config,
+        /// Type and specific configurations for the service
+        service-type: service-type,
+        /// Optional serialized SignedEndpointInfo to proxy registration to the community registry
+        registry-certificate: option<string>,
+    }
+
+    record deployed-service {
+        service-id: string,
+        interfaces: list<string>,
+        endpoint-type: string,
+    }
+
+    /// Deploy a new service using a deployment manifest
+    deploy: func(service-id: string, manifest: deploy-manifest) -> result<_, string>;
+
+    /// Undeploy a service, stopping it and cleaning up resources
+    undeploy: func(service-id: string) -> result<_, string>;
+
+    /// List currently deployed services
+    %list: func() -> result<list<deployed-service>, string>;
+
+    /// Check the readiness of the orchestrator
+    readyz: func(service-id: string) -> result<_, string>;
+
+    /// A planned service in a deployment plan.
+    record planned-service {
+        service-id: string,
+        logical-ref: string,
+        manifest: deploy-manifest,
+    }
+
+    /// A deployment plan containing multiple planned services.
+    record deployment-plan {
+        app-instance-id: string,
+        blueprint-id: string,
+        version: string,
+        services: list<planned-service>,
+    }
+
+    /// Deploy an entire compiled deployment plan
+    deploy-plan: func(plan: deployment-plan) -> result<_, string>;
+}
+
+interface health {
+    /// Ping the service to check its health
+    ping: func() -> result<string, string>;
+}
+
+interface security {
+    inject-kek: func(kek-hex: string) -> result<_, string>;
+    rotate-kek: func(new-kek-hex: string) -> result<_, string>;
+    set-secret: func(service-id: string, key: string, value: list<u8>) -> result<_, string>;
+}
+
+world control-plane-service {
+    export orchestrator;
+    export health;
+    export security;
+}

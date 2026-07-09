@@ -4,14 +4,16 @@
 //! connection requests.
 
 use std::{
-    fmt::{Debug, Formatter},
+    fmt::{self, Debug, Formatter},
+    io,
     pin::Pin,
     task::{Context as TaskContext, Poll},
+    time::Duration,
 };
 
 use iroh::{
     Endpoint, RelayMap, RelayMode, RelayUrl, SecretKey,
-    endpoint::{Connection, RecvStream, SendStream, presets::N0},
+    endpoint::{Connection, QuicTransportConfig, RecvStream, SendStream, presets::N0},
 };
 use syneroym_core::{config::RetryPolicy, retry::retry_with_backoff};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -19,11 +21,11 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 pub struct IrohStream {
     send: SendStream,
     recv: RecvStream,
-    conn: Option<iroh::endpoint::Connection>,
+    conn: Option<Connection>,
 }
 
 impl Debug for IrohStream {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("IrohStream")
             .field("send", &"iroh::endpoint::SendStream")
             .field("recv", &"iroh::endpoint::RecvStream")
@@ -39,7 +41,7 @@ impl IrohStream {
     }
 
     #[must_use]
-    pub fn with_conn(mut self, conn: iroh::endpoint::Connection) -> Self {
+    pub fn with_conn(mut self, conn: Connection) -> Self {
         self.conn = Some(conn);
         self
     }
@@ -50,7 +52,7 @@ impl AsyncRead for IrohStream {
         mut self: Pin<&mut Self>,
         cx: &mut TaskContext<'_>,
         buf: &mut ReadBuf<'_>,
-    ) -> Poll<std::io::Result<()>> {
+    ) -> Poll<io::Result<()>> {
         Pin::new(&mut self.recv).poll_read(cx, buf)
     }
 }
@@ -60,18 +62,15 @@ impl AsyncWrite for IrohStream {
         mut self: Pin<&mut Self>,
         cx: &mut TaskContext<'_>,
         buf: &[u8],
-    ) -> Poll<std::io::Result<usize>> {
-        Pin::new(&mut self.send).poll_write(cx, buf).map_err(std::io::Error::other)
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.send).poll_write(cx, buf).map_err(io::Error::other)
     }
 
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<std::io::Result<()>> {
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
         Pin::new(&mut self.send).poll_flush(cx)
     }
 
-    fn poll_shutdown(
-        mut self: Pin<&mut Self>,
-        cx: &mut TaskContext<'_>,
-    ) -> Poll<std::io::Result<()>> {
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
         Pin::new(&mut self.send).poll_shutdown(cx)
     }
 }
@@ -98,9 +97,8 @@ pub async fn build_iroh_endpoint(
     }
 
     if let Some(timeout) = idle_timeout_secs {
-        let mut builder_cfg = iroh::endpoint::QuicTransportConfig::builder();
-        builder_cfg =
-            builder_cfg.max_idle_timeout(Some(std::time::Duration::from_secs(timeout).try_into()?));
+        let mut builder_cfg = QuicTransportConfig::builder();
+        builder_cfg = builder_cfg.max_idle_timeout(Some(Duration::from_secs(timeout).try_into()?));
         builder = builder.transport_config(builder_cfg.build());
     }
 

@@ -1,12 +1,30 @@
-use std::time::Duration;
+use std::{env, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use iroh::{
+    Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl, SecretKey, endpoint::presets::N0,
+};
 use reqwest::Client;
-use syneroym_coordinator_iroh::info_endpoint::CoordinatorInfo;
-use syneroym_core::dht_registry::{EndpointInfo, EndpointMechanism, EndpointType, RegistryClient};
+use serde_json::{Number, Value};
+use syneroym_community_registry::EcosystemRegistry;
+use syneroym_coordinator_iroh::{CoordinatorIroh, info_endpoint::CoordinatorInfo};
+use syneroym_core::{
+    config::{
+        AccessControl, AppSandboxRole, CoordinatorIrohConfig, CoordinatorRole, RetryPolicy,
+        ServiceRegistryRole, SubstrateConfig,
+    },
+    dht_registry::{EndpointInfo, EndpointMechanism, EndpointType, RegistryClient},
+    retry,
+};
+use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
+use syneroym_data_db::SqliteStorageProvider;
+use syneroym_data_keystore::KeyStore;
 use syneroym_identity::{Identity, substrate::derive_did_key};
+use syneroym_router::SYNEROYM_ALPN;
 use syneroym_rpc::JsonRpcRequest;
+use syneroym_sandbox_wasm::{AppSandboxEngine, WasmResourceQuota};
+use tokio::{io::AsyncWriteExt, sync::oneshot, time};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -39,23 +57,23 @@ async fn main() -> Result<()> {
              registry..."
         );
 
-        let mut reg_config = syneroym_core::config::SubstrateConfig::default();
-        reg_config.roles.community_registry = Some(syneroym_core::config::ServiceRegistryRole {
-            access: syneroym_core::config::AccessControl::String("everyone".to_string()),
+        let mut reg_config = SubstrateConfig::default();
+        reg_config.roles.community_registry = Some(ServiceRegistryRole {
+            access: AccessControl::String("everyone".to_string()),
             http_bind_address: "127.0.0.1:7961".to_string(),
             parent_registry_url: None,
         });
-        let mut registry = syneroym_community_registry::EcosystemRegistry::init(&reg_config)
+        let mut registry = EcosystemRegistry::init(&reg_config)
             .await
             .context("Failed to init in-process registry")?;
         registry.spawn().await.context("Failed to spawn in-process registry")?;
         _registry_server = Some(registry);
 
-        let mut coord_config = syneroym_core::config::SubstrateConfig::default();
-        coord_config.roles.coordinator = Some(syneroym_core::config::CoordinatorRole {
-            access: syneroym_core::config::AccessControl::String("everyone".to_string()),
+        let mut coord_config = SubstrateConfig::default();
+        coord_config.roles.coordinator = Some(CoordinatorRole {
+            access: AccessControl::String("everyone".to_string()),
             tls: None,
-            iroh: Some(syneroym_core::config::CoordinatorIrohConfig {
+            iroh: Some(CoordinatorIrohConfig {
                 enable_signalling: false,
                 enable_relay: true,
                 http_bind_address: "127.0.0.1:7964".to_string(),
@@ -69,7 +87,7 @@ async fn main() -> Result<()> {
             transport_bridge: None,
         });
 
-        let coordinator = syneroym_coordinator_iroh::CoordinatorIroh::init(&coord_config)
+        let coordinator = CoordinatorIroh::init(&coord_config)
             .await
             .context("Failed to init in-process coordinator")?;
 
@@ -78,7 +96,7 @@ async fn main() -> Result<()> {
         println!("In-process coordinator listening on info: {}", coord_info_addr);
         info_url = format!("http://{}/v1/info", coord_info_addr);
 
-        let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
+        let (tx, mut rx) = oneshot::channel::<()>();
         let mut coord_run = coordinator;
         tokio::spawn(async move {
             tokio::select! {
@@ -97,7 +115,7 @@ async fn main() -> Result<()> {
 
         _coordinator_shutdown = Some(tx);
 
-        tokio::time::sleep(Duration::from_millis(1500)).await;
+        time::sleep(Duration::from_millis(1500)).await;
     }
 
     // Test 1: Connectivity (Coordinator /v1/info)
@@ -162,30 +180,29 @@ async fn main() -> Result<()> {
 
     // Test 4: Retry mechanism
     println!("\n[Test 4] Inducing transient failure for Iroh QUIC transport retry logic...");
-    let retry_policy = syneroym_core::config::RetryPolicy {
+    let retry_policy = RetryPolicy {
         max_attempts: 3,
         initial_backoff_ms: 50,
         backoff_multiplier: 2.0,
         max_backoff_ms: 1000,
     };
 
-    let mut builder = iroh::Endpoint::builder(iroh::endpoint::presets::N0);
+    let mut builder = Endpoint::builder(N0);
     if let Some(ref relay_url_str) = info.relay_url
-        && let Ok(parsed) = relay_url_str.parse::<iroh::RelayUrl>()
+        && let Ok(parsed) = relay_url_str.parse::<RelayUrl>()
     {
-        builder = iroh::Endpoint::empty_builder()
-            .relay_mode(iroh::RelayMode::Custom(iroh::RelayMap::from(parsed)));
+        builder = Endpoint::empty_builder().relay_mode(RelayMode::Custom(RelayMap::from(parsed)));
     }
     let test_endpoint = builder.bind().await.context("Failed to bind test endpoint")?;
-    let good_addr: iroh::EndpointAddr = serde_json::from_slice(&info.endpoint_addr_bytes)?;
+    let good_addr: EndpointAddr = serde_json::from_slice(&info.endpoint_addr_bytes)?;
 
     let mut rng = rand::rng();
-    let bad_secret_key = iroh::SecretKey::generate(&mut rng);
+    let bad_secret_key = SecretKey::generate(&mut rng);
     let bad_node_id = bad_secret_key.public();
-    let bad_addr = iroh::EndpointAddr::new(bad_node_id);
+    let bad_addr = EndpointAddr::new(bad_node_id);
 
     let mut attempt = 0;
-    let retry_res = syneroym_core::retry::retry_with_backoff(&retry_policy, || {
+    let retry_res = retry::retry_with_backoff(&retry_policy, || {
         attempt += 1;
         let test_endpoint = test_endpoint.clone();
         let good_addr = good_addr.clone();
@@ -196,25 +213,23 @@ async fn main() -> Result<()> {
                     "  Attempt 1: Simulating Iroh QUIC transport failure (dialing non-existent \
                      node)"
                 );
-                let _conn = tokio::time::timeout(
+                let _conn = time::timeout(
                     Duration::from_millis(300),
-                    test_endpoint.connect(bad_addr, syneroym_router::SYNEROYM_ALPN),
+                    test_endpoint.connect(bad_addr, SYNEROYM_ALPN),
                 )
                 .await
                 .map_err(|_| anyhow::anyhow!("QUIC connection timed out"))??;
                 Ok(())
             } else {
                 println!("  Attempt {}: Reconnecting to valid Iroh endpoint", attempt);
-                match test_endpoint.connect(good_addr, syneroym_router::SYNEROYM_ALPN).await {
+                match test_endpoint.connect(good_addr, SYNEROYM_ALPN).await {
                     Ok(conn) => match conn.open_bi().await {
                         Ok((mut send, _recv)) => {
-                            if let Err(e) =
-                                tokio::io::AsyncWriteExt::write_all(&mut send, b"PING\n").await
-                            {
+                            if let Err(e) = send.write_all(b"PING\n").await {
                                 println!("    Write error: {:?}", e);
                                 return Err(e.into());
                             }
-                            if let Err(e) = tokio::io::AsyncWriteExt::flush(&mut send).await {
+                            if let Err(e) = send.flush().await {
                                 println!("    Flush error: {:?}", e);
                                 return Err(e.into());
                             }
@@ -262,8 +277,8 @@ async fn main() -> Result<()> {
   (export "test-interface" (instance $interface))
 )
 "#;
-    let mut config = syneroym_core::config::SubstrateConfig::default();
-    config.roles.app_sandbox = Some(syneroym_core::config::AppSandboxRole {
+    let mut config = SubstrateConfig::default();
+    config.roles.app_sandbox = Some(AppSandboxRole {
         wasm_sandbox: true,
         cpu_limit: 1,
         memory_limit: "64Mi".to_string(),
@@ -271,20 +286,19 @@ async fn main() -> Result<()> {
         default_max_instructions: Some(5_000),
         default_max_memory_bytes: Some(1024 * 1024), // 1MB
     });
-    config.storage.blobs_dir = std::env::temp_dir();
+    config.storage.blobs_dir = env::temp_dir();
 
-    let key_store = std::sync::Arc::new(syneroym_key_store::KeyStore::new());
-    let storage_provider = std::sync::Arc::new(syneroym_data_layer::SqliteStorageProvider::new(
-        std::env::temp_dir(),
-        false,
-    )?);
+    let key_store = Arc::new(KeyStore::new());
+    let storage_provider = Arc::new(SqliteStorageProvider::new(env::temp_dir(), false)?);
+    let blob_provider: Arc<dyn BlobProvider> =
+        Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
 
     let app_engine =
-        syneroym_app_sandbox::AppSandboxEngine::init(&config, vec![], key_store, storage_provider)
+        AppSandboxEngine::init(&config, vec![], key_store, storage_provider, blob_provider)
             .await
             .context("Failed to init app engine")?;
 
-    let quota = Some(syneroym_app_sandbox::WasmResourceQuota {
+    let quota = Some(WasmResourceQuota {
         max_instructions: Some(5_000),
         max_memory_bytes: Some(1024 * 1024),
     });
@@ -296,7 +310,7 @@ async fn main() -> Result<()> {
     let request_loop = JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
         method: "loop-forever".to_string(),
-        params: serde_json::Value::Array(vec![]),
+        params: Value::Array(vec![]),
         id: None,
     };
     let res_loop = app_engine.execute_wasm("smoke_service", "test-interface", &request_loop).await;
@@ -310,9 +324,7 @@ async fn main() -> Result<()> {
     let request_mem = JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
         method: "allocate-too-much".to_string(),
-        params: serde_json::Value::Array(vec![serde_json::Value::Number(
-            serde_json::Number::from(100),
-        )]),
+        params: Value::Array(vec![Value::Number(Number::from(100))]),
         id: None,
     };
     let res_mem = app_engine.execute_wasm("smoke_service", "test-interface", &request_mem).await;

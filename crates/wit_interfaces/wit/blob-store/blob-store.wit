@@ -1,0 +1,42 @@
+package syneroym:blob-store@0.1.0;
+
+interface blob-store {
+    variant blob-error {
+        not-found,
+        quota-exceeded,
+        internal(string),
+    }
+
+    resource blob-writer {
+        write: func(chunk: list<u8>) -> result<_, blob-error>;
+        finish: func() -> result<string, blob-error>;
+        /// Discards a partial upload (e.g. after a failure). Safe to call
+        /// instead of `finish`; the blob is never committed.
+        abort: func();
+    }
+
+    resource blob-reader {
+        /// Returns up to `max-bytes`. An empty list signals end of stream.
+        read: func(max-bytes: u32) -> result<list<u8>, blob-error>;
+    }
+
+    /// One-shot convenience for small blobs; buffers the full payload in
+    /// guest and host memory. Prefer open-upload for anything beyond a few MB.
+    put-blob: func(data: list<u8>) -> result<string, blob-error>;
+
+    /// One-shot convenience for small blobs.
+    get-blob: func(hash: string) -> result<list<u8>, blob-error>;
+
+    open-upload: func() -> result<blob-writer, blob-error>;
+
+    /// `offset` supports resuming/seeking a download (ranged reads).
+    open-download: func(hash: string, offset: u64) -> result<blob-reader, blob-error>;
+
+    delete-blob: func(hash: string) -> result<_, blob-error>;
+
+    signed-url: func(hash: string, ttl-secs: u32) -> result<string, blob-error>;
+}
+
+world blob-store-guest {
+    import blob-store;
+}
