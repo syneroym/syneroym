@@ -23,7 +23,7 @@ use syneroym_data_keystore::KeyStore;
 use syneroym_identity::{Identity, substrate::derive_did_key};
 use syneroym_router::SYNEROYM_ALPN;
 use syneroym_rpc::JsonRpcRequest;
-use syneroym_sandbox_app::{AppSandboxEngine, WasmResourceQuota};
+use syneroym_sandbox_wasm::{AppSandboxEngine, WasmResourceQuota};
 use tokio::{io::AsyncWriteExt, sync::oneshot, time};
 
 #[derive(Parser, Debug)]

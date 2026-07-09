@@ -31,8 +31,8 @@ use syneroym_data_db::{SqliteStorageProvider, traits::StorageProvider};
 use syneroym_data_keystore::KeyStore;
 use syneroym_identity::Identity;
 use syneroym_rpc::{NativeDispatchRegistry, NativeService};
-use syneroym_sandbox_app::AppSandboxEngine;
 use syneroym_sandbox_podman::ContainerEngine;
+use syneroym_sandbox_wasm::AppSandboxEngine;
 use tokio::io::AsyncWriteExt;
 use tracing::{debug, error};
 

@@ -25,7 +25,7 @@ syneroym-observability.workspace = true
 syneroym-community-registry = { workspace = true, optional = true }
 syneroym-coordinator = { workspace = true, optional = true, default-features = false }
 syneroym-client-gateway = { workspace = true, optional = true }
-syneroym-sandbox-app = { workspace = true, optional = true }
+syneroym-sandbox-wasm = { workspace = true, optional = true }
 tracing.workspace = true
 reqwest.workspace = true
 z32.workspace = true
@@ -44,7 +44,7 @@ default = [
 minimal = ["client_gateway"]
 community_registry = ["dep:syneroym-community-registry"]
 client_gateway = ["dep:syneroym-client-gateway"]
-app_sandbox = ["dep:syneroym-sandbox-app"]
+app_sandbox = ["dep:syneroym-sandbox-wasm"]
 coordinator = ["dep:syneroym-coordinator"]
 coordinator_iroh = ["coordinator", "syneroym-coordinator/iroh"]
 coordinator_webrtc = ["coordinator", "syneroym-coordinator/webrtc"]

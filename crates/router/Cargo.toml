@@ -15,7 +15,7 @@ aws = ["syneroym-data-blob/aws"]
 
 [dependencies]
 syneroym-core.workspace = true
-syneroym-sandbox-app.workspace = true
+syneroym-sandbox-wasm.workspace = true
 syneroym-sandbox-podman.workspace = true
 syneroym-rpc.workspace = true
 syneroym-control-plane.workspace = true

@@ -148,7 +148,7 @@ This was **Milestone 3B Slice 6 / "Deferred: HTTP Passthrough"** in earlier plan
 > **Interstitial maintenance (2026-07-09):** between M03B's close and M4
 > start, the workspace crate layout was normalized (`data-layer` →
 > `data_db`, `blob-store` → `data_blob`, `key-store` → `data_keystore`,
-> `bindings` → `wit_interfaces`, `app_sandbox` → `sandbox_app`,
+> `bindings` → `wit_interfaces`, `app_sandbox` → `sandbox_wasm`,
 > `podman_sandbox` → `sandbox_podman`) and workspace-wide import cleanup was
 > applied per `AGENTS.md`. No behavior change. See
 > [ADR-0012](../decisions/0012-crate-rename-refactor.md) and

@@ -17,7 +17,7 @@ use syneroym_data_db::{
     host_store::{CollectionSchema, Mutation, QueryOptions, RecordWriteValue},
 };
 use syneroym_data_keystore::KeyStore;
-use syneroym_sandbox_app::AppSandboxEngine;
+use syneroym_sandbox_wasm::AppSandboxEngine;
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, DeployManifest, ServiceConfig, ServiceType, WasmManifest,
 };

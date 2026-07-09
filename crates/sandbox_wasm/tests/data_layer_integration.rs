@@ -12,7 +12,7 @@ use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
 use syneroym_data_db::{SqliteStorageProvider, StorageProvider};
 use syneroym_data_keystore::KeyStore;
 use syneroym_rpc::JsonRpcRequest;
-use syneroym_sandbox_app::AppSandboxEngine;
+use syneroym_sandbox_wasm::AppSandboxEngine;
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, DeployManifest, ServiceConfig, ServiceType, WasmManifest,
 };
@@ -70,7 +70,7 @@ async fn run_crud_scenario(engine: &AppSandboxEngine, count: u32) -> u32 {
     };
     // `execute_wasm` returns a successful `result<string, _>` guest value as
     // the raw string, not JSON-quoted -- see
-    // `crates/sandbox_app/src/conversions.rs::wasm_results_to_json_string`.
+    // `crates/sandbox_wasm/src/conversions.rs::wasm_results_to_json_string`.
     let result = engine.execute_wasm(SERVICE_ID, TEST_DRIVER_INTERFACE, &request).await.unwrap();
     result.parse::<u32>().unwrap()
 }

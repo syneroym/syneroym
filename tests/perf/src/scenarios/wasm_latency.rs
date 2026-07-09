@@ -10,7 +10,7 @@ use syneroym_core::{
     test_constants,
 };
 use syneroym_identity::{Identity, substrate};
-use syneroym_sandbox_app::{AppSandboxEngine, HostState};
+use syneroym_sandbox_wasm::{AppSandboxEngine, HostState};
 use syneroym_sdk::SyneroymClient;
 use test_constants::GREETER_INTERFACE_NAME;
 use wasmtime::{

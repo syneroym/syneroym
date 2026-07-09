@@ -32,7 +32,7 @@ syneroym-rpc = { path = "crates/rpc" }
 syneroym-identity = { path = "crates/identity" }
 syneroym-data-keystore = { path = "crates/data_keystore" }
 syneroym-app-orchestration = { path = "crates/app_orchestration" }
-syneroym-sandbox-app = { path = "crates/sandbox_app" }
+syneroym-sandbox-wasm = { path = "crates/sandbox_wasm" }
 syneroym-data-db = { path = "crates/data_db" }
 syneroym-data-blob = { path = "crates/data_blob" }
 syneroym-router = { path = "crates/router" }

@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
 //! M03-sss performance budgets not covered by
-//! `crates/sandbox_app/benches/data_layer_bench.rs`: `vault/reveal`,
+//! `crates/sandbox_wasm/benches/data_layer_bench.rs`: `vault/reveal`,
 //! `config/get`, KEK rotation (100 DEKs), and the SQLCipher-vs-plaintext A/B
 //! overhead comparison for `put`/`get`.
 
@@ -51,7 +51,7 @@ fn bench_vault_reveal(c: &mut Criterion) {
 /// Benchmark: `config/get` (cache-warm, pinned generation) —
 /// `StorageProvider::get_latest_config_generation`, the call
 /// `build_store_and_instantiate` makes on every WASM invocation to resolve
-/// the active generation (`crates/sandbox_app/src/engine.rs`).
+/// the active generation (`crates/sandbox_wasm/src/engine.rs`).
 fn bench_config_get(c: &mut Criterion) {
     let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
     let temp_dir = tempfile::tempdir().unwrap();

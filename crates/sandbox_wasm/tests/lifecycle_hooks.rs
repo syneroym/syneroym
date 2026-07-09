@@ -9,7 +9,7 @@ use syneroym_core::{config::SubstrateConfig, test_constants};
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
 use syneroym_data_db::{SqliteStorageProvider, StorageProvider};
 use syneroym_data_keystore::KeyStore;
-use syneroym_sandbox_app::{AppSandboxEngine, HostState};
+use syneroym_sandbox_wasm::{AppSandboxEngine, HostState};
 use syneroym_wit_interfaces::{
     control_plane::exports::syneroym::control_plane::orchestrator::{
         ArtifactSource, DeployManifest, ServiceConfig, ServiceType, WasmManifest,

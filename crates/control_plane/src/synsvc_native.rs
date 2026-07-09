@@ -4,11 +4,11 @@
 //! One instance is registered per deployed `service_id` in
 //! `ControlPlaneService::deploy` (`crates/control_plane/src/service.rs`),
 //! mirroring the same host-provided capabilities the WASM `Host` trait
-//! impls in `crates/sandbox_app/src/engine.rs` expose to guests -- this is
+//! impls in `crates/sandbox_wasm/src/engine.rs` expose to guests -- this is
 //! the second, independent adapter over the same underlying
 //! `StorageProvider`/`ServiceStore`/`BlobProvider` traits, not a
 //! reimplementation of their logic. Does **not** depend on
-//! `syneroym-sandbox-app`: that crate is an optional, feature-gated
+//! `syneroym-sandbox-wasm`: that crate is an optional, feature-gated
 //! dependency of `control_plane` (see `crate::dummy_sandbox`), and native
 //! data-layer/blob-store access must work even in builds without the WASM
 //! sandbox feature enabled.

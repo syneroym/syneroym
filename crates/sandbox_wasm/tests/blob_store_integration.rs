@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Slice 5 integration test: exercises the real `Host`/`HostBlobWriter`/
-//! `HostBlobReader` WIT wiring in `crates/sandbox_app/src/engine.rs`
+//! `HostBlobReader` WIT wiring in `crates/sandbox_wasm/src/engine.rs`
 //! directly against a `HostState` -- the same level
 //! `test_config_get_and_get_section` in `engine.rs` already uses for
 //! `app-config`, rather than a full compiled WASM component (no
@@ -14,7 +14,7 @@ use std::{path::Path, sync::Arc};
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
 use syneroym_data_db::{SqliteStorageProvider, StorageProvider};
 use syneroym_data_keystore::KeyStore;
-use syneroym_sandbox_app::HostState;
+use syneroym_sandbox_wasm::HostState;
 use syneroym_wit_interfaces::host::syneroym::blob_store::blob_store::{
     BlobError, Host as BlobStoreHost, HostBlobReader, HostBlobWriter,
 };

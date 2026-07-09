@@ -42,8 +42,22 @@ tolerance we'd apply to a refactor that changes logic.
 
 | Directory (old) | Directory (new) | Crate (old) | Crate (new) |
 |---|---|---|---|
-| `crates/app_sandbox` | `crates/sandbox_app` | `syneroym-app-sandbox` | `syneroym-sandbox-app` |
+| `crates/app_sandbox` | `crates/sandbox_wasm` | `syneroym-app-sandbox` | `syneroym-sandbox-wasm` |
 | `crates/podman_sandbox` | `crates/sandbox_podman` | `syneroym-podman-sandbox` | `syneroym-sandbox-podman` |
+
+> **Revised during PR review (still pre-merge):** the first pass landed
+> `sandbox_app`/`syneroym-sandbox-app`, pairing it with `sandbox_podman` on a
+> `sandbox_<backend-kind>` shape. On review this was found to be vague and
+> collided with existing vocabulary: "app" doesn't distinguish the WASM
+> backend from the Podman backend (a `SynApp` can run in either), and
+> `system-architecture.md` already labels the two backends "WASM sandbox"
+> vs. "Podman container." `syneroym-rpc`'s `NativeService`/
+> `NativeDispatchRegistry` also already claims "native" for the substrate's
+> own in-process Rust services, unrelated to this crate. Renamed to
+> `sandbox_wasm`/`syneroym-sandbox-wasm` to match the docs' existing
+> WASM/Podman split. The `app_sandbox` Cargo feature flag and
+> `SubstrateConfig` role name are unaffected — those stay put as
+> external-facing contracts per the non-goals below.
 | `crates/data-layer` | `crates/data_db` | `syneroym-data-layer` | `syneroym-data-db` |
 | `crates/blob-store` | `crates/data_blob` | `syneroym-blob-store` | `syneroym-data-blob` |
 | `crates/key-store` | `crates/data_keystore` | `syneroym-key-store` | `syneroym-data-keystore` |

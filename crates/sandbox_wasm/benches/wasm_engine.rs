@@ -7,7 +7,7 @@ use syneroym_core::test_constants;
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
 use syneroym_data_db::{SqliteStorageProvider, StorageProvider};
 use syneroym_data_keystore::KeyStore;
-use syneroym_sandbox_app::{AppSandboxEngine, HostState, conversions::json_to_wasm_params};
+use syneroym_sandbox_wasm::{AppSandboxEngine, HostState, conversions::json_to_wasm_params};
 use test_constants::GREETER_INTERFACE_NAME;
 use tokio::runtime::Builder;
 use wasmtime::{

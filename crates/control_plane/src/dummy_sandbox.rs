@@ -8,7 +8,7 @@ use syneroym_core::config::SubstrateConfig;
 #[cfg(not(feature = "app_sandbox"))]
 use syneroym_core::local_registry::SubstrateEndpoint;
 #[cfg(feature = "app_sandbox")]
-pub use syneroym_sandbox_app::AppSandboxEngine;
+pub use syneroym_sandbox_wasm::AppSandboxEngine;
 
 /// A dummy implementation of the sandbox engine used when the feature is
 /// disabled. This allows the rest of the codebase to use the engine

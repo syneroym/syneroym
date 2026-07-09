@@ -7178,8 +7178,8 @@ dependencies = [
  "syneroym-data-db",
  "syneroym-data-keystore",
  "syneroym-rpc",
- "syneroym-sandbox-app",
  "syneroym-sandbox-podman",
+ "syneroym-sandbox-wasm",
  "syneroym-wit-interfaces",
  "tempfile",
  "tokio",
@@ -7431,7 +7431,7 @@ dependencies = [
  "syneroym-data-db",
  "syneroym-data-keystore",
  "syneroym-identity",
- "syneroym-sandbox-app",
+ "syneroym-sandbox-wasm",
  "syneroym-sdk",
  "syneroym-wit-interfaces",
  "sysinfo",
@@ -7474,8 +7474,8 @@ dependencies = [
  "syneroym-data-keystore",
  "syneroym-identity",
  "syneroym-rpc",
- "syneroym-sandbox-app",
  "syneroym-sandbox-podman",
+ "syneroym-sandbox-wasm",
  "tokio",
  "tokio-tungstenite",
  "tracing",
@@ -7498,7 +7498,25 @@ dependencies = [
 ]
 
 [[package]]
-name = "syneroym-sandbox-app"
+name = "syneroym-sandbox-podman"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "hex",
+ "metrics 0.23.1",
+ "reqwest 0.13.4",
+ "serde_json",
+ "sha2 0.10.9",
+ "syneroym-core",
+ "syneroym-data-db",
+ "syneroym-wit-interfaces",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "syneroym-sandbox-wasm"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -7523,24 +7541,6 @@ dependencies = [
  "wasmtime",
  "wasmtime-wasi",
  "zeroize",
-]
-
-[[package]]
-name = "syneroym-sandbox-podman"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "hex",
- "metrics 0.23.1",
- "reqwest 0.13.4",
- "serde_json",
- "sha2 0.10.9",
- "syneroym-core",
- "syneroym-data-db",
- "syneroym-wit-interfaces",
- "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -7585,7 +7585,7 @@ dependencies = [
  "syneroym-identity",
  "syneroym-router",
  "syneroym-rpc",
- "syneroym-sandbox-app",
+ "syneroym-sandbox-wasm",
  "syneroym-sdk",
  "tokio",
 ]
@@ -7623,7 +7623,7 @@ dependencies = [
  "syneroym-observability",
  "syneroym-router",
  "syneroym-rpc",
- "syneroym-sandbox-app",
+ "syneroym-sandbox-wasm",
  "syneroym-sdk",
  "syneroym-wit-interfaces",
  "tempfile",

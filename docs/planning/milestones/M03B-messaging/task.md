@@ -231,7 +231,7 @@ Concretely:
 > architecture but never operationalized as a task in the original Slice 6A
 > plan. Under the current WASM execution model
 > (`AppSandboxEngine::build_store_and_instantiate`,
-> `crates/sandbox_app/src/engine.rs`), every invocation gets a **fresh**
+> `crates/sandbox_wasm/src/engine.rs`), every invocation gets a **fresh**
 > `Store`/`Instance` — there is no long-lived guest instance for the broker
 > to hold a subscription against. Without persistence, every substrate
 > restart silently drops all subscriptions with no guest code path ever
@@ -265,9 +265,9 @@ Concretely:
 - [ ] Wire delivery: broker message → host invokes the deployed component's
   `guest-api::handle-message` export, **if declared**, via a new direct
   `Val`-construction invocation helper modeled on the existing
-  `invoke_lifecycle_hook` (`crates/sandbox_app/src/engine.rs`) — **not**
+  `invoke_lifecycle_hook` (`crates/sandbox_wasm/src/engine.rs`) — **not**
   through `execute_wasm`'s JSON-parameter path. `json_to_wasm_params`
-  (`crates/sandbox_app/src/conversions.rs`) only handles `String`/`U32`/
+  (`crates/sandbox_wasm/src/conversions.rs`) only handles `String`/`U32`/
   `Bool` today; `handle-message`'s `payload: list<u8>` parameter is
   unsupported by it, and routing binary payloads through a JSON
   intermediate would be both lossy-prone and slower than constructing
@@ -505,7 +505,7 @@ The note must specify, at minimum:
    invocation gets a fresh `Store` with a fixed epoch deadline
    (`store.set_epoch_deadline(50)`, i.e. 5s wall-clock — see
    `AppSandboxEngine::build_store_and_instantiate`,
-   `crates/sandbox_app/src/engine.rs`) and one fixed fuel budget. A
+   `crates/sandbox_wasm/src/engine.rs`) and one fixed fuel budget. A
    multi-minute file transfer held open across many `next-chunk`/
    `push-chunk` calls on the *same* instance will trap on epoch deadline
    and/or exhaust fuel mid-stream unless the note specifies: whether the

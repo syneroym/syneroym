@@ -29,7 +29,7 @@ follow-up batches:
 
 | Directory (old) | Directory (new) | Crate (old) | Crate (new) |
 |---|---|---|---|
-| `crates/app_sandbox` | `crates/sandbox_app` | `syneroym-app-sandbox` | `syneroym-sandbox-app` |
+| `crates/app_sandbox` | `crates/sandbox_wasm` | `syneroym-app-sandbox` | `syneroym-sandbox-wasm` |
 | `crates/podman_sandbox` | `crates/sandbox_podman` | `syneroym-podman-sandbox` | `syneroym-sandbox-podman` |
 | `crates/data-layer` | `crates/data_db` | `syneroym-data-layer` | `syneroym-data-db` |
 | `crates/blob-store` | `crates/data_blob` | `syneroym-blob-store` | `syneroym-data-blob` |
@@ -38,6 +38,16 @@ follow-up batches:
 
 `crates/app_orchestration` is explicitly left unchanged — its domain is
 orchestration, not sandboxing.
+
+**Revised during PR review, before merge:** the sandbox crate landed first
+as `sandbox_app`/`syneroym-sandbox-app`, then was renamed again to
+`sandbox_wasm`/`syneroym-sandbox-wasm` — "app" didn't distinguish the WASM
+backend from the Podman backend and collided with `syneroym-rpc`'s
+`NativeService` terminology; `sandbox_wasm` matches the WASM/Podman split
+`system-architecture.md` already uses. This table reflects the final state;
+the "Historical documents are not retroactively renamed" rule below applies
+from this ADR's acceptance onward, not to revisions made while it was still
+an open PR.
 
 ### WIT package names are decoupled from the Rust crate rename
 

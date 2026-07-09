@@ -1,5 +1,5 @@
 [package]
-name = "syneroym-sandbox-app"
+name = "syneroym-sandbox-wasm"
 version.workspace = true
 edition.workspace = true
 
