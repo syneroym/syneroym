@@ -9,7 +9,7 @@
 //! `open-download`/`read`), not just the `crates/data_blob` crate in
 //! isolation.
 
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
 use syneroym_data_db::{SqliteStorageProvider, StorageProvider};
@@ -35,7 +35,7 @@ fn make_host_state(component_id: &str, storage_provider: Arc<dyn StorageProvider
     )
 }
 
-fn shared_storage_provider(dir: &std::path::Path) -> Arc<dyn StorageProvider> {
+fn shared_storage_provider(dir: &Path) -> Arc<dyn StorageProvider> {
     Arc::new(SqliteStorageProvider::new(dir, false).unwrap())
 }
 

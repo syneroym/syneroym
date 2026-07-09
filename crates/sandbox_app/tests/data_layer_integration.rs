@@ -5,9 +5,10 @@
 //! host-injected `creator-id`, then re-deploy and verify `migrate()` runs
 //! instead of `init()` and prior data survives.
 
-use std::sync::Arc;
+use std::{fs, path::Path, sync::Arc};
 
-use syneroym_core::config::SubstrateConfig;
+use syneroym_core::{config::SubstrateConfig, test_constants};
+use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
 use syneroym_data_db::{SqliteStorageProvider, StorageProvider};
 use syneroym_data_keystore::KeyStore;
 use syneroym_rpc::JsonRpcRequest;
@@ -19,7 +20,7 @@ use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::or
 const TEST_DRIVER_INTERFACE: &str = "syneroym-test:data-layer-test/test-driver@0.1.0";
 const SERVICE_ID: &str = "data-layer-test-svc";
 
-async fn make_engine(dir: &std::path::Path) -> AppSandboxEngine {
+async fn make_engine(dir: &Path) -> AppSandboxEngine {
     let mut config = SubstrateConfig {
         app_local_data_dir: dir.join("data"),
         app_data_dir: dir.join("user_data"),
@@ -33,8 +34,8 @@ async fn make_engine(dir: &std::path::Path) -> AppSandboxEngine {
     let key_store = Arc::new(KeyStore::new());
     let storage_provider: Arc<dyn StorageProvider> =
         Arc::new(SqliteStorageProvider::new(&config.storage.db_dir, false).unwrap());
-    let blob_provider: Arc<dyn syneroym_data_blob::BlobProvider> =
-        Arc::new(syneroym_data_blob::ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+    let blob_provider: Arc<dyn BlobProvider> =
+        Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
 
     AppSandboxEngine::init(&config, vec![], key_store, storage_provider, blob_provider)
         .await
@@ -86,8 +87,7 @@ async fn get_creator_id(engine: &AppSandboxEngine, id: &str) -> String {
 
 #[tokio::test]
 async fn test_deploy_init_crud_creator_id_and_migrate() {
-    let Ok(wasm_bytes) = std::fs::read(syneroym_core::test_constants::data_layer_test_wasm_path())
-    else {
+    let Ok(wasm_bytes) = fs::read(test_constants::data_layer_test_wasm_path()) else {
         eprintln!(
             "Skipping test_deploy_init_crud_creator_id_and_migrate: data-layer-test WASM artifact \
              not found (run `cargo build --target wasm32-wasip2 --release` in \

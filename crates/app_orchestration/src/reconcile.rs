@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use anyhow::Result;
 
 use crate::{
@@ -84,7 +86,7 @@ impl<'a> Reconciler<'a> {
         let mut actions = Vec::new();
 
         if let Some(active_plan) = active {
-            let mut active_map = std::collections::HashMap::new();
+            let mut active_map = HashMap::new();
             for s in &active_plan.services {
                 active_map.insert(s.logical_ref.clone(), s);
             }
@@ -123,6 +125,8 @@ impl<'a> Reconciler<'a> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use semver::Version;
 
     use super::*;
@@ -146,7 +150,7 @@ mod tests {
                     source: "test.wasm".to_string(),
                     hash: None,
                     interfaces: vec![],
-                    env: std::collections::BTreeMap::new(),
+                    env: BTreeMap::new(),
                     args: vec![],
                     custom_config: None,
                     quota: None,

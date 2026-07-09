@@ -3,10 +3,15 @@
 //! against an encrypted per-service SQLite database, plus WASM lifecycle
 //! hook (`init`/`migrate`) timing through a real deployed component.
 
-use std::{fs, sync::Arc};
+use std::{
+    fs,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use syneroym_core::{config::SubstrateConfig, test_constants};
+use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
 use syneroym_data_db::{
     SqliteStorageProvider, StorageProvider,
     host_store::{CollectionSchema, Mutation, QueryOptions, RecordWriteValue},
@@ -117,8 +122,8 @@ async fn fresh_engine() -> (tempfile::TempDir, AppSandboxEngine) {
     let key_store = Arc::new(KeyStore::new());
     let storage_provider: Arc<dyn StorageProvider> =
         Arc::new(SqliteStorageProvider::new(&config.storage.db_dir, false).unwrap());
-    let blob_provider: Arc<dyn syneroym_data_blob::BlobProvider> =
-        Arc::new(syneroym_data_blob::ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+    let blob_provider: Arc<dyn BlobProvider> =
+        Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
     let engine =
         AppSandboxEngine::init(&config, vec![], key_store, storage_provider, blob_provider)
             .await
@@ -179,10 +184,10 @@ fn bench_lifecycle_hooks(c: &mut Criterion) {
             b.to_async(&runtime).iter_custom(|iters| {
                 let manifest = manifest.clone();
                 async move {
-                    let mut total = std::time::Duration::ZERO;
+                    let mut total = Duration::ZERO;
                     for _ in 0..iters {
                         let (temp_dir, engine) = fresh_engine().await;
-                        let start = std::time::Instant::now();
+                        let start = Instant::now();
                         engine.deploy_wasm(black_box("init-bench-svc"), &manifest).await.unwrap();
                         total += start.elapsed();
                         drop(temp_dir);
@@ -198,12 +203,12 @@ fn bench_lifecycle_hooks(c: &mut Criterion) {
         b.to_async(&runtime).iter_custom(|iters| {
             let manifest = manifest.clone();
             async move {
-                let mut total = std::time::Duration::ZERO;
+                let mut total = Duration::ZERO;
                 for _ in 0..iters {
                     let (temp_dir, engine) = fresh_engine().await;
                     // First deploy runs init(); untimed.
                     engine.deploy_wasm("migrate-bench-svc", &manifest).await.unwrap();
-                    let start = std::time::Instant::now();
+                    let start = Instant::now();
                     // Second deploy of the same service_id runs migrate().
                     engine.deploy_wasm(black_box("migrate-bench-svc"), &manifest).await.unwrap();
                     total += start.elapsed();

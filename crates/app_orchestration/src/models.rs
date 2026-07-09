@@ -1,6 +1,7 @@
-use std::{collections::BTreeMap, fmt, str::FromStr};
+use std::{collections::BTreeMap, error, fmt, ops::Deref, str::FromStr};
 
 use anyhow::{Result, anyhow};
+use semver::Version;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -12,7 +13,7 @@ impl fmt::Display for ParseError {
     }
 }
 
-impl std::error::Error for ParseError {}
+impl error::Error for ParseError {}
 
 macro_rules! define_string_wrapper {
     ($name:ident, $doc:expr) => {
@@ -76,7 +77,7 @@ macro_rules! define_string_wrapper {
             }
         }
 
-        impl std::ops::Deref for $name {
+        impl Deref for $name {
             type Target = String;
 
             fn deref(&self) -> &Self::Target {
@@ -248,7 +249,7 @@ pub enum AppDependencySpec {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SynAppManifest {
     pub id: AppBlueprintId,
-    pub version: semver::Version,
+    pub version: Version,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(default)]
@@ -360,7 +361,7 @@ pub struct PlannedService {
 pub struct DeploymentPlan {
     pub app_instance_id: AppInstanceId,
     pub blueprint_id: AppBlueprintId,
-    pub version: semver::Version,
+    pub version: Version,
     #[serde(default)]
     pub services: Vec<PlannedService>,
 }
@@ -487,7 +488,7 @@ mod tests {
         let plan = DeploymentPlan {
             app_instance_id: AppInstanceId::new("guild-instance-1"),
             blueprint_id: AppBlueprintId::new("syneroym:guild-app"),
-            version: semver::Version::parse("0.1.0").unwrap(),
+            version: Version::parse("0.1.0").unwrap(),
             services: vec![PlannedService {
                 service_id: ServiceId::new("did:key:h123"),
                 logical_ref: LogicalServiceRef {
@@ -600,7 +601,7 @@ mod tests {
         let plan = DeploymentPlan {
             app_instance_id: AppInstanceId::new("guild-instance-1"),
             blueprint_id: AppBlueprintId::new("syneroym:guild-app"),
-            version: semver::Version::parse("0.1.0").unwrap(),
+            version: Version::parse("0.1.0").unwrap(),
             services: vec![PlannedService {
                 service_id: ServiceId::new("did:key:h123"),
                 logical_ref: LogicalServiceRef {

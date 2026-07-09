@@ -2,8 +2,10 @@
 use std::{fs, sync::Arc};
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use serde_json::Value;
 use syneroym_core::test_constants;
-use syneroym_data_db::SqliteStorageProvider;
+use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
+use syneroym_data_db::{SqliteStorageProvider, StorageProvider};
 use syneroym_data_keystore::KeyStore;
 use syneroym_sandbox_app::{AppSandboxEngine, HostState, conversions::json_to_wasm_params};
 use test_constants::GREETER_INTERFACE_NAME;
@@ -31,10 +33,10 @@ fn bench_wasm_engine(c: &mut Criterion) {
 
     let key_store = Arc::new(KeyStore::new());
     let temp_dir = tempfile::tempdir().unwrap();
-    let storage_provider: Arc<dyn syneroym_data_db::StorageProvider> =
+    let storage_provider: Arc<dyn StorageProvider> =
         Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
-    let blob_provider: Arc<dyn syneroym_data_blob::BlobProvider> =
-        Arc::new(syneroym_data_blob::ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+    let blob_provider: Arc<dyn BlobProvider> =
+        Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
 
     let engine = AppSandboxEngine::build_wasm_engine(None, None).unwrap();
     let linker: Linker<HostState> = AppSandboxEngine::build_wasm_linker(&engine).unwrap();
@@ -100,7 +102,7 @@ fn bench_wasm_engine(c: &mut Criterion) {
             .unwrap();
 
     // Benchmark 3: json_to_wasm_params conversion
-    let json_params = vec![serde_json::Value::String("BenchmarkUser".to_string())];
+    let json_params = vec![Value::String("BenchmarkUser".to_string())];
 
     c.bench_function("json_to_wasm_params", |b| {
         b.iter(|| {

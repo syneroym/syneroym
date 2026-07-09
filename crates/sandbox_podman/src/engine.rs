@@ -4,18 +4,20 @@
 //! Handles lifecycle of Podman containers using std::process::Command.
 
 use std::{
-    fs,
+    collections::BTreeMap,
+    fmt, fs,
     path::{Component, Path, PathBuf},
     process::Command,
     sync::Arc,
 };
 
 use anyhow::{Context, Result, anyhow};
+use serde_json::Value;
 use syneroym_data_db::traits::StorageProvider;
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     DeployManifest, ServiceType,
 };
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 #[derive(Clone)]
 pub struct ContainerEngine {
@@ -24,8 +26,8 @@ pub struct ContainerEngine {
     storage_provider: Option<Arc<dyn StorageProvider>>,
 }
 
-impl std::fmt::Debug for ContainerEngine {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for ContainerEngine {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ContainerEngine")
             .field("podman_path", &self.podman_path)
             .field("containers_dir", &self.containers_dir)
@@ -107,12 +109,12 @@ impl ContainerEngine {
         // 3. Environment variables
         let mut env_args = Vec::new();
 
-        let mut config_map = std::collections::BTreeMap::new();
+        let mut config_map = BTreeMap::new();
         #[allow(clippy::collapsible_if)]
         if let Some(sp) = &self.storage_provider {
             match sp.get_latest_config_generation(service_id).await {
                 Ok(Some((_, blob))) => {
-                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&blob) {
+                    if let Ok(json) = serde_json::from_str::<Value>(&blob) {
                         if let Some(map) = json.as_object() {
                             for (k, v) in map {
                                 if let Some(s) = v.as_str() {
@@ -124,7 +126,7 @@ impl ContainerEngine {
                 }
                 Ok(None) => {}
                 Err(e) => {
-                    tracing::error!("Failed to fetch config generation for {}: {}", service_id, e);
+                    error!("Failed to fetch config generation for {}: {}", service_id, e);
                 }
             }
         }

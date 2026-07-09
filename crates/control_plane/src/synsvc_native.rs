@@ -13,8 +13,9 @@
 //! data-layer/blob-store access must work even in builds without the WASM
 //! sandbox feature enabled.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, fmt, sync::Arc};
 
+use serde_json::Value;
 use syneroym_data_blob::{
     BlobError, BlobProvider,
     native_types::{
@@ -47,19 +48,19 @@ pub struct SynSvcNativeService {
     download_sessions: Mutex<HashMap<String, Box<dyn DownloadSession>>>,
 }
 
-impl std::fmt::Debug for SynSvcNativeService {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for SynSvcNativeService {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SynSvcNativeService")
             .field("service_id", &self.service_id)
             .finish_non_exhaustive()
     }
 }
 
-fn internal(msg: impl std::fmt::Display) -> RpcError {
+fn internal(msg: impl fmt::Display) -> RpcError {
     RpcError::InternalError(msg.to_string())
 }
 
-fn invalid_params(msg: impl std::fmt::Display) -> RpcError {
+fn invalid_params(msg: impl fmt::Display) -> RpcError {
     RpcError::InvalidParams(msg.to_string())
 }
 
@@ -336,7 +337,7 @@ impl SynSvcNativeService {
                 let Some((_, blob)) = generation else {
                     return to_payload(&Option::<String>::None);
                 };
-                let json: serde_json::Value = serde_json::from_str(&blob)
+                let json: Value = serde_json::from_str(&blob)
                     .map_err(|e| internal(ConfigError::Internal(e.to_string()).to_string()))?;
                 let val = json.get(&req.key).and_then(|v| v.as_str()).map(str::to_string);
                 to_payload(&val)
@@ -350,10 +351,10 @@ impl SynSvcNativeService {
                 let Some((_, blob)) = generation else {
                     return to_payload(&Vec::<(String, String)>::new());
                 };
-                let json: serde_json::Value = serde_json::from_str(&blob)
+                let json: Value = serde_json::from_str(&blob)
                     .map_err(|e| internal(ConfigError::Internal(e.to_string()).to_string()))?;
                 let mut results = Vec::new();
-                if let serde_json::Value::Object(map) = json {
+                if let Value::Object(map) = json {
                     for (k, v) in map {
                         if (k == req.prefix || k.starts_with(&format!("{}.", req.prefix)))
                             && let Some(s) = v.as_str()

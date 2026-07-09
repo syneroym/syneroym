@@ -4,15 +4,16 @@
 //! registers host capabilities, and runs WASM component binaries.
 
 use std::{
-    fmt::{Debug, Formatter},
-    path::PathBuf,
+    fmt::{self, Debug, Formatter},
+    path::{Path, PathBuf},
     sync::Arc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use syneroym_core::{config::SubstrateConfig, local_registry::SubstrateEndpoint};
 use syneroym_data_blob::{
     BlobError as BlobStoreError, HostDownloadSession, HostUploadSession, traits::BlobProvider,
@@ -37,11 +38,11 @@ use syneroym_wit_interfaces::{
         vault::vault::{self, VaultError},
     },
 };
-use tokio::fs as tokio_fs;
-use tracing::debug;
+use tokio::{fs as tokio_fs, sync::oneshot, time};
+use tracing::{debug, error, info, warn};
 use wasmtime::{
     Config, Engine, InstanceAllocationStrategy, PoolingAllocationConfig, Store, StoreLimits,
-    StoreLimitsBuilder,
+    StoreLimitsBuilder, Trap,
     component::{
         Component, Func, HasSelf, Instance, InstancePre, Linker, Resource, Val,
         types::ComponentItem,
@@ -74,7 +75,7 @@ pub struct HostState {
 }
 
 impl Debug for HostState {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("HostState")
             .field("component_id", &self.component_id)
             .field("request_ctx", &self.request_ctx)
@@ -144,10 +145,9 @@ impl vault::Host for HostState {
         let store = match provider.open_service_db(&service_id, &key_store).await {
             Ok(s) => s,
             Err(e) => {
-                tracing::error!(
+                error!(
                     "Vault reveal failed to open service DB for service_id {}: {}",
-                    service_id,
-                    e
+                    service_id, e
                 );
                 return Err(VaultError::Internal(e.to_string()));
             }
@@ -157,11 +157,7 @@ impl vault::Host for HostState {
             Ok(Some(bytes)) => Ok(bytes),
             Ok(None) => Err(VaultError::NotFound),
             Err(e) => {
-                tracing::error!(
-                    "Vault reveal failed to read secret for service_id {}: {}",
-                    service_id,
-                    e
-                );
+                error!("Vault reveal failed to read secret for service_id {}: {}", service_id, e);
                 Err(VaultError::Internal(e.to_string()))
             }
         }
@@ -202,15 +198,15 @@ impl app_config::Host for HostState {
             Ok(Some(s)) => s,
             Ok(None) => return Ok(None),
             Err(e) => {
-                tracing::error!("Failed to read config for {}: {}", self.component_id, e);
+                error!("Failed to read config for {}: {}", self.component_id, e);
                 return Err(ConfigError::Internal(e.to_string()));
             }
         };
 
-        let config_json: serde_json::Value = match serde_json::from_str(&config_str) {
+        let config_json: Value = match serde_json::from_str(&config_str) {
             Ok(j) => j,
             Err(e) => {
-                tracing::error!("Invalid config JSON for {}: {}", self.component_id, e);
+                error!("Invalid config JSON for {}: {}", self.component_id, e);
                 return Err(ConfigError::Internal(e.to_string()));
             }
         };
@@ -232,21 +228,21 @@ impl app_config::Host for HostState {
             Ok(Some(s)) => s,
             Ok(None) => return Ok(vec![]),
             Err(e) => {
-                tracing::error!("Failed to read config for {}: {}", self.component_id, e);
+                error!("Failed to read config for {}: {}", self.component_id, e);
                 return Err(ConfigError::Internal(e.to_string()));
             }
         };
 
-        let config_json: serde_json::Value = match serde_json::from_str(&config_str) {
+        let config_json: Value = match serde_json::from_str(&config_str) {
             Ok(j) => j,
             Err(e) => {
-                tracing::error!("Invalid config JSON for {}: {}", self.component_id, e);
+                error!("Invalid config JSON for {}: {}", self.component_id, e);
                 return Err(ConfigError::Internal(e.to_string()));
             }
         };
 
         let mut results = vec![];
-        if let serde_json::Value::Object(map) = config_json {
+        if let Value::Object(map) = config_json {
             for (k, v) in map {
                 #[allow(clippy::collapsible_if)]
                 if k == prefix || k.starts_with(&format!("{prefix}.")) {
@@ -551,14 +547,14 @@ pub struct AppSandboxEngine {
     components: DashMap<String, (InstancePre<HostState>, Option<WasmResourceQuota>)>,
     default_max_instructions: Option<u64>,
     default_max_memory_bytes: Option<u64>,
-    _shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    _shutdown_tx: Option<oneshot::Sender<()>>,
     pub key_store: Arc<KeyStore>,
     pub storage_provider: Arc<dyn StorageProvider>,
     pub blob_provider: Arc<dyn BlobProvider>,
 }
 
 impl Debug for AppSandboxEngine {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("AppSandboxEngine")
             .field("blobs_dir", &self.blobs_dir)
             .field("components_len", &self.components.len())
@@ -574,7 +570,7 @@ impl AppSandboxEngine {
             || service_id.contains('/')
             || service_id.contains('\\')
             || service_id.contains("..")
-            || std::path::Path::new(service_id).is_absolute()
+            || Path::new(service_id).is_absolute()
         {
             return Err(anyhow::anyhow!(
                 "Invalid service_id: path traversal or invalid characters"
@@ -618,7 +614,7 @@ impl AppSandboxEngine {
                 (Some(10_000_000_000), Some(256 * 1024 * 1024))
             };
 
-        let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
 
         let app_engine = Self {
             blobs_dir: component_dir,
@@ -635,21 +631,21 @@ impl AppSandboxEngine {
 
         for (service_id, _interface_name, endpoint) in endpoints {
             if let SubstrateEndpoint::WasmChannel { service_id: channel_id } = endpoint {
-                tracing::info!(
+                info!(
                     service_id = %service_id,
                     channel_id = %channel_id,
                     "Warming up WASM component"
                 );
 
                 if let Err(e) = app_engine.load_cached_wasm(&service_id).await {
-                    tracing::error!("Failed to warm up WASM component {}: {}", service_id, e);
+                    error!("Failed to warm up WASM component {}: {}", service_id, e);
                 }
             }
         }
 
         let engine_clone = app_engine.engine.clone();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
+            let mut interval = time::interval(Duration::from_millis(100));
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
@@ -703,7 +699,7 @@ impl AppSandboxEngine {
     async fn fetch_wasm_bytes(source: &ArtifactSource) -> Result<Vec<u8>> {
         match source {
             ArtifactSource::Url(url) => {
-                tracing::info!("Fetching WASM from URL: {}", url);
+                info!("Fetching WASM from URL: {}", url);
                 Ok(reqwest::get(url)
                     .await
                     .context("Failed to fetch WASM from URL")?
@@ -732,7 +728,7 @@ impl AppSandboxEngine {
                     "Hash mismatch: expected {expected_hash_clean}, got {computed_hash}"
                 ));
             }
-            tracing::info!("WASM hash verified successfully");
+            info!("WASM hash verified successfully");
         }
         Ok(())
     }
@@ -782,7 +778,7 @@ impl AppSandboxEngine {
     /// Deploy and compile a WASM component for a given service
     pub async fn deploy_wasm(&self, service_id: &str, manifest: &DeployManifest) -> Result<()> {
         Self::validate_service_id(service_id)?;
-        tracing::info!("AppSandboxEngine: Deploying Wasm component for {}", service_id);
+        info!("AppSandboxEngine: Deploying Wasm component for {}", service_id);
 
         let ServiceType::Wasm(wasm_manifest) = &manifest.service_type else {
             return Err(anyhow::anyhow!("Expected Wasm manifest"));
@@ -796,9 +792,9 @@ impl AppSandboxEngine {
 
         // 3. Store locally in blobs_dir
         let file_path = self.blobs_dir.join(format!("{service_id}.wasm"));
-        tokio::fs::write(&file_path, &bytes).await.context("Failed to save WASM binary locally")?;
+        tokio_fs::write(&file_path, &bytes).await.context("Failed to save WASM binary locally")?;
 
-        tracing::info!("WASM binary stored at {:?}", file_path);
+        info!("WASM binary stored at {:?}", file_path);
 
         let quota = manifest.config.quota.as_ref().map(|q| WasmResourceQuota {
             max_instructions: q.max_instructions,
@@ -808,7 +804,7 @@ impl AppSandboxEngine {
         if let Some(ref q) = quota {
             let quota_path = self.blobs_dir.join(format!("{service_id}.quota.json"));
             if let Ok(quota_json) = serde_json::to_string(q) {
-                let _ = tokio::fs::write(&quota_path, quota_json).await;
+                let _ = tokio_fs::write(&quota_path, quota_json).await;
             }
         }
 
@@ -880,7 +876,7 @@ impl AppSandboxEngine {
 
         // Dynamic parameter resolution
         let json_params = match &request.params {
-            serde_json::Value::Array(arr) => arr.clone(),
+            Value::Array(arr) => arr.clone(),
             other => vec![other.clone()],
         };
 
@@ -899,13 +895,13 @@ impl AppSandboxEngine {
         debug!("called wasm function, processing results");
 
         if let Err(e) = res {
-            if let Some(wasmtime::Trap::OutOfFuel) = e.downcast_ref::<wasmtime::Trap>() {
-                tracing::warn!("Wasm execution exceeded fuel limit for service: {}", service_id);
+            if let Some(Trap::OutOfFuel) = e.downcast_ref::<Trap>() {
+                warn!("Wasm execution exceeded fuel limit for service: {}", service_id);
                 return Err(anyhow::anyhow!("QuotaExceeded: Wasm execution exceeded fuel limit"));
             }
             let err_str = e.root_cause().to_string();
             if err_str.contains("all fuel consumed") || err_str.contains("out of fuel") {
-                tracing::warn!("Wasm execution exceeded fuel limit for service: {}", service_id);
+                warn!("Wasm execution exceeded fuel limit for service: {}", service_id);
                 return Err(anyhow::anyhow!("QuotaExceeded: Wasm execution exceeded fuel limit"));
             }
             if err_str.contains("exceeded its memory limits") || err_str.contains("MemoryFault") {
@@ -950,7 +946,7 @@ impl AppSandboxEngine {
                 Ok(Some((g, _))) => g,
                 Ok(None) => 0,
                 Err(e) => {
-                    tracing::error!("Failed to fetch config generation for {}: {}", service_id, e);
+                    error!("Failed to fetch config generation for {}: {}", service_id, e);
                     0
                 }
             };
@@ -1019,7 +1015,7 @@ impl AppSandboxEngine {
         let (mut store, instance) = self.build_store_and_instantiate(service_id, true).await?;
 
         if instance.get_export(&mut store, None, hook).is_none() {
-            tracing::debug!(service_id, hook, "component does not export lifecycle hook, skipping");
+            debug!(service_id, hook, "component does not export lifecycle hook, skipping");
             return Ok(());
         }
 
@@ -1045,7 +1041,7 @@ impl AppSandboxEngine {
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             method: "run".to_string(), // Default method for test
-            params: serde_json::Value::String(request_ctx.to_string()),
+            params: Value::String(request_ctx.to_string()),
             id: None,
         };
         self.execute_wasm(service_id, component_id, &request).await
@@ -1054,7 +1050,7 @@ impl AppSandboxEngine {
     /// Stop and evict a running Wasm component from the in-memory cache.
     pub async fn stop_wasm(&self, service_id: &str) -> Result<()> {
         Self::validate_service_id(service_id)?;
-        tracing::info!(service_id = %service_id, "AppSandboxEngine: stopping Wasm component");
+        info!(service_id = %service_id, "AppSandboxEngine: stopping Wasm component");
         self.components.remove(service_id);
         metrics::gauge!("substrate.wasm.component_cache_size").set(self.components.len() as f64);
         Ok(())
@@ -1063,7 +1059,7 @@ impl AppSandboxEngine {
     /// Remove a stopped Wasm component's binary from disk.
     pub async fn remove_wasm(&self, service_id: &str) -> Result<()> {
         Self::validate_service_id(service_id)?;
-        tracing::info!(service_id = %service_id, "AppSandboxEngine: removing Wasm component");
+        info!(service_id = %service_id, "AppSandboxEngine: removing Wasm component");
         let file_path = self.blobs_dir.join(format!("{service_id}.wasm"));
         if file_path.exists() {
             tokio_fs::remove_file(&file_path)
@@ -1097,7 +1093,7 @@ impl AppSandboxEngine {
             };
             self.compile_and_cache_wasm(service_id, &bytes, quota)?;
         } else {
-            tracing::warn!("WASM file not found on disk for service: {:?}", file_path);
+            warn!("WASM file not found on disk for service: {:?}", file_path);
         }
         Ok(())
     }
@@ -1118,23 +1114,25 @@ impl AppSandboxEngine {
             .map_err(|e| anyhow::anyhow!("Failed to pre-link WASM component: {e}"))?;
 
         self.components.insert(service_id.to_string(), (instance_pre, quota));
-        tracing::info!("WASM component compiled and cached for {}", service_id);
+        info!("WASM component compiled and cached for {}", service_id);
         metrics::gauge!("substrate.wasm.component_cache_size").set(self.components.len() as f64);
         Ok(())
     }
 
     /// Spin up a new Podman instance
     pub async fn deploy_podman(&self, _service_id: &str, _manifest: &[u8]) -> Result<()> {
-        tracing::info!("AppSandboxEngine: Deploying Podman container for {}", _service_id);
+        info!("AppSandboxEngine: Deploying Podman container for {}", _service_id);
         Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{env, fs};
 
     use syneroym_core::test_constants;
+    use syneroym_data_blob::ObjectStoreBlobProvider;
+    use syneroym_data_db::SqliteStorageProvider;
     use wasmtime::component::Component;
 
     use super::*;
@@ -1142,7 +1140,7 @@ mod tests {
     /// Test-only blob provider: in-memory backend, effectively unlimited
     /// quota.
     fn test_blob_provider() -> Arc<dyn BlobProvider> {
-        Arc::new(syneroym_data_blob::ObjectStoreBlobProvider::in_memory(u64::MAX, None))
+        Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None))
     }
 
     #[tokio::test]
@@ -1152,11 +1150,7 @@ mod tests {
 
         let key_store = Arc::new(KeyStore::new());
         let storage_provider = Arc::new(
-            syneroym_data_db::SqliteStorageProvider::new(
-                tempfile::tempdir().unwrap().path(),
-                false,
-            )
-            .unwrap(),
+            SqliteStorageProvider::new(tempfile::tempdir().unwrap().path(), false).unwrap(),
         );
         let host_state = HostState::new(
             "test_component".to_string(),
@@ -1206,7 +1200,7 @@ mod tests {
                         let result = func
                             .call_async(
                                 &mut store,
-                                &[wasmtime::component::Val::String("TestUser".to_string())],
+                                &[Val::String("TestUser".to_string())],
                                 &mut wasm_results,
                             )
                             .await
@@ -1254,7 +1248,7 @@ mod tests {
         let linker = AppSandboxEngine::build_wasm_linker(&engine).unwrap();
 
         let app_engine = AppSandboxEngine {
-            blobs_dir: std::env::temp_dir(),
+            blobs_dir: env::temp_dir(),
             engine,
             linker,
             components: DashMap::new(),
@@ -1262,9 +1256,7 @@ mod tests {
             default_max_memory_bytes: Some(1024 * 1024), // 1MB
             _shutdown_tx: None,
             key_store: Arc::new(KeyStore::new()),
-            storage_provider: Arc::new(
-                syneroym_data_db::SqliteStorageProvider::new(std::env::temp_dir(), false).unwrap(),
-            ),
+            storage_provider: Arc::new(SqliteStorageProvider::new(env::temp_dir(), false).unwrap()),
             blob_provider: test_blob_provider(),
         };
 
@@ -1275,7 +1267,7 @@ mod tests {
         let request_loop = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             method: "loop-forever".to_string(),
-            params: serde_json::Value::Array(vec![]),
+            params: Value::Array(vec![]),
             id: None,
         };
         let res_loop =
@@ -1290,9 +1282,7 @@ mod tests {
         let request_mem = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             method: "allocate-too-much".to_string(),
-            params: serde_json::Value::Array(vec![serde_json::Value::Number(
-                serde_json::Number::from(100),
-            )]),
+            params: Value::Array(vec![Value::Number(serde_json::Number::from(100))]),
             id: None,
         };
         let res_mem = app_engine.execute_wasm("test_service", "test-interface", &request_mem).await;
@@ -1308,8 +1298,7 @@ mod tests {
     #[tokio::test]
     async fn test_config_get_and_get_section() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let storage =
-            Arc::new(syneroym_data_db::SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let storage = Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
 
         let config_json =
             r#"{"db_host": "localhost", "db_port": "5432", "db.password": "secret", "db": "mydb"}"#;
@@ -1346,8 +1335,7 @@ mod tests {
     #[tokio::test]
     async fn test_config_isolation_and_generation_pinning() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let storage =
-            Arc::new(syneroym_data_db::SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let storage = Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
 
         // Service A Gen 1
         let gen1_a = storage.save_config_generation("svc_a", r#"{"mode": "v1"}"#).await.unwrap();
@@ -1409,8 +1397,7 @@ mod tests {
         let key_store = Arc::new(KeyStore::new());
         key_store.inject_kek([3u8; 32], None).unwrap();
         let temp_dir = tempfile::tempdir().unwrap();
-        let storage_provider =
-            Arc::new(syneroym_data_db::SqliteStorageProvider::new(temp_dir.path(), true).unwrap());
+        let storage_provider = Arc::new(SqliteStorageProvider::new(temp_dir.path(), true).unwrap());
         let mut host_state = HostState::new(
             "vault-not-found-svc".to_string(),
             None,

@@ -1,32 +1,32 @@
-pub fn flatten_json_config(
-    json: &serde_json::Value,
-    prefix: &str,
-    map: &mut std::collections::BTreeMap<String, String>,
-) {
+use std::collections::BTreeMap;
+
+use serde_json::Value;
+
+pub fn flatten_json_config(json: &Value, prefix: &str, map: &mut BTreeMap<String, String>) {
     match json {
-        serde_json::Value::Object(obj) => {
+        Value::Object(obj) => {
             for (k, v) in obj {
                 let new_prefix =
                     if prefix.is_empty() { k.clone() } else { format!("{}.{}", prefix, k) };
                 flatten_json_config(v, &new_prefix, map);
             }
         }
-        serde_json::Value::Array(arr) => {
+        Value::Array(arr) => {
             for (i, v) in arr.iter().enumerate() {
                 let new_prefix = format!("{}[{}]", prefix, i);
                 flatten_json_config(v, &new_prefix, map);
             }
         }
-        serde_json::Value::Null => {
+        Value::Null => {
             map.insert(prefix.to_string(), "null".to_string());
         }
-        serde_json::Value::Bool(b) => {
+        Value::Bool(b) => {
             map.insert(prefix.to_string(), b.to_string());
         }
-        serde_json::Value::Number(n) => {
+        Value::Number(n) => {
             map.insert(prefix.to_string(), n.to_string());
         }
-        serde_json::Value::String(s) => {
+        Value::String(s) => {
             map.insert(prefix.to_string(), s.clone());
         }
     }

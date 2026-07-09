@@ -1,4 +1,5 @@
 use anyhow::Result;
+use serde_json::Value;
 use wasmtime::component::{Val, types::Type};
 
 // TODO: This is a very basic implementation. We need to handle more complex
@@ -7,18 +8,18 @@ use wasmtime::component::{Val, types::Type};
 /// Convert JSON parameters to wasmtime Val vector based on function signature
 pub fn json_to_wasm_params<'a>(
     params_iter: impl Iterator<Item = (&'a str, Type)>,
-    json_params: Vec<serde_json::Value>,
+    json_params: Vec<Value>,
 ) -> Result<Vec<Val>> {
     let mut wasm_params = Vec::new();
 
     // TODO: Instead of positional params, better to use named params. Since we use
     // WIT, the names should be available in the loaded component
     for (i, (_param_name, ty)) in params_iter.enumerate() {
-        let val = json_params.get(i).unwrap_or(&serde_json::Value::Null);
+        let val = json_params.get(i).unwrap_or(&Value::Null);
         match ty {
             Type::String => {
                 let s: String = match val {
-                    serde_json::Value::String(s) => s.clone(),
+                    Value::String(s) => s.clone(),
                     _ => val.to_string(),
                 };
                 wasm_params.push(Val::String(s));
