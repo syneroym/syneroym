@@ -1,7 +1,7 @@
 #![allow(unsafe_code, clippy::unwrap_used, clippy::expect_used, clippy::panic, dead_code)]
 //! Integration tests for the Podman sandbox lifecycle
 
-use std::time::Duration;
+use std::{process::Command, time::Duration};
 
 use rustls::crypto::ring;
 use syneroym_core::{
@@ -134,11 +134,7 @@ impl SubstrateTestContext {
 }
 
 fn has_podman() -> bool {
-    std::process::Command::new("podman")
-        .arg("info")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    Command::new("podman").arg("info").output().map(|o| o.status.success()).unwrap_or(false)
 }
 
 #[tokio::test]

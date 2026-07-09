@@ -7,7 +7,8 @@ use std::{fs, path::Path};
 
 use anyhow::Context;
 use clap::Subcommand;
-use syneroym_identity::{Identity, substrate};
+use syneroym_core::dht_registry::RegistryClient;
+use syneroym_identity::{DelegationCertificate, Identity, substrate};
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum IdentityCommands {
@@ -116,7 +117,7 @@ pub async fn handle(command: &IdentityCommands, dir: &Path) -> anyhow::Result<()
             let temp_pubkey =
                 substrate::resolve_did_key(temp_did).context("Failed to resolve temporary DID")?;
 
-            let cert = syneroym_identity::DelegationCertificate::issue(
+            let cert = DelegationCertificate::issue(
                 &identity,
                 temp_pubkey,
                 expires_days * 24 * 3600,
@@ -131,8 +132,7 @@ pub async fn handle(command: &IdentityCommands, dir: &Path) -> anyhow::Result<()
             }
             let identity = Identity::load_from_path(&key_path)?;
 
-            let client =
-                syneroym_core::dht_registry::RegistryClient::new(true, Some(registry_url.clone()));
+            let client = RegistryClient::new(true, Some(registry_url.clone()));
             let master_id = substrate::derive_did_key(&identity.public_key());
 
             client.publish_master_anchor(&master_id, vec![], None, &identity, true).await?;

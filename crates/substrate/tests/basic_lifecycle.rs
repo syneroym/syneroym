@@ -15,8 +15,9 @@ use std::{
 use assert_cmd::{assert::OutputAssertExt, cargo::CommandCargoExt};
 use libc::SIGINT;
 use miniapp_demo1_web::Args;
-use reqwest::Client;
+use reqwest::{Client, StatusCode};
 use rustls::crypto::ring;
+use serde_json::Value;
 use syneroym_core::{
     config::{ClientGatewayRole, IrohParentConfig, LogTarget, SubstrateConfig},
     dht_registry::{EndpointInfo, EndpointMechanism, EndpointType},
@@ -425,7 +426,7 @@ async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
         .send()
         .await
         .expect("POST /api/comments failed");
-    assert_eq!(res.status(), reqwest::StatusCode::CREATED);
+    assert_eq!(res.status(), StatusCode::CREATED);
 
     // 3. GET /api/comments
     let res = req_client
@@ -435,7 +436,7 @@ async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
         .await
         .expect("GET /api/comments failed");
     assert!(res.status().is_success());
-    let comments: serde_json::Value = res.json().await.unwrap();
+    let comments: Value = res.json().await.unwrap();
     assert!(!comments.as_array().unwrap().is_empty());
     assert_eq!(comments[0]["text"], "test comment");
 
@@ -457,7 +458,7 @@ async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
         ws_stream.next().await.expect("No response from websocket").expect("Websocket error");
 
     if let Message::Text(text) = response {
-        let ws_resp: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let ws_resp: Value = serde_json::from_str(&text).unwrap();
         assert!(ws_resp["recdMsg"].as_str().unwrap().contains(test_msg));
     } else {
         panic!("Expected text message, got {response:?}");
@@ -481,7 +482,7 @@ async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
         .expect("Websocket error");
 
     if let Message::Text(text) = response {
-        let ws_resp: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let ws_resp: Value = serde_json::from_str(&text).unwrap();
         assert!(ws_resp["commentUpdateTimestamp"].is_string());
     } else {
         panic!("Expected text message, got {response:?}");
@@ -577,7 +578,7 @@ async fn test_http_proxy_invocation(
         jsonrpc: "2.0".to_string(),
         method: "greet".to_string(),
         params: serde_json::json!(["proxy-tester"]),
-        id: Some(serde_json::Value::Number(42.into())),
+        id: Some(Value::Number(42.into())),
     };
 
     let req_client = Client::new();

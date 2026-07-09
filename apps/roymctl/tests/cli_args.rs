@@ -2,6 +2,8 @@
 //!
 //! Verifies correct routing and option validations for roymctl subcommands.
 
+use std::error::Error;
+
 use assert_cmd::Command;
 
 // TODO: Expand CLI argument parsing tests.
@@ -9,7 +11,7 @@ use assert_cmd::Command;
 // args like --wasm/--tcp), testing invalid arguments, and ensuring proper error
 // messages are propagated.
 #[test]
-fn test_cli_parsing() -> Result<(), Box<dyn std::error::Error>> {
+fn test_cli_parsing() -> Result<(), Box<dyn Error>> {
     // 1. Check node status help
     let mut cmd = Command::cargo_bin("roymctl")?;
     cmd.arg("node").arg("status").arg("--help").assert().success();
