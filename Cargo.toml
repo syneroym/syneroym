@@ -167,7 +167,11 @@ tokio-util = "0.7"
 # conflicts with other workspace deps yet, pinned per the iroh/sha2/object_store
 # convention above so a future `cargo update` doesn't silently drift the
 # in-process router API this crate depends on (see crates/mqtt_broker).
-rumqttd = "0.20"
+# Default features pull in rustls-webpki/rustls-pemfile (vulnerable/unmaintained,
+# RUSTSEC-2026-0104/0098/0099/0049, RUSTSEC-2025-0134) and a websocket stack for
+# the v4/v5/ws TCP listeners; `MqttBroker` never binds any of those (see
+# crates/mqtt_broker doc comment), so they're disabled entirely.
+rumqttd = { version = "0.20", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "deny"
