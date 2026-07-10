@@ -17,6 +17,7 @@ use syneroym_data_db::{
     host_store::{CollectionSchema, Mutation, QueryOptions, RecordWriteValue},
 };
 use syneroym_data_keystore::KeyStore;
+use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
 use syneroym_sandbox_wasm::AppSandboxEngine;
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, DeployManifest, ServiceConfig, ServiceType, WasmManifest,
@@ -124,10 +125,16 @@ async fn fresh_engine() -> (tempfile::TempDir, AppSandboxEngine) {
         Arc::new(SqliteStorageProvider::new(&config.storage.db_dir, false).unwrap());
     let blob_provider: Arc<dyn BlobProvider> =
         Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
-    let engine =
-        AppSandboxEngine::init(&config, vec![], key_store, storage_provider, blob_provider)
-            .await
-            .unwrap();
+    let engine = AppSandboxEngine::init(
+        &config,
+        vec![],
+        key_store,
+        storage_provider,
+        blob_provider,
+        Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap()),
+    )
+    .await
+    .unwrap();
     (temp_dir, engine)
 }
 

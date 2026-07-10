@@ -3,19 +3,31 @@
 //! must be denied outside an `init`/`migrate` context, and deploying a
 //! component that doesn't export `init`/`migrate` at all must not error.
 
-use std::{fs, path::Path, sync::Arc};
+use std::{
+    fs,
+    path::Path,
+    sync::{Arc, Weak},
+};
 
 use syneroym_core::{config::SubstrateConfig, test_constants};
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
 use syneroym_data_db::{SqliteStorageProvider, StorageProvider};
 use syneroym_data_keystore::KeyStore;
-use syneroym_sandbox_wasm::{AppSandboxEngine, HostState};
+use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
+use syneroym_sandbox_wasm::{AppSandboxEngine, HostState, MessagingContext};
 use syneroym_wit_interfaces::{
     control_plane::exports::syneroym::control_plane::orchestrator::{
         ArtifactSource, DeployManifest, ServiceConfig, ServiceType, WasmManifest,
     },
     host::syneroym::data_layer::store::{DataLayerError, Host as DataLayerHost},
 };
+
+fn test_messaging_context() -> MessagingContext {
+    MessagingContext {
+        broker: Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap()),
+        engine: Weak::new(),
+    }
+}
 
 async fn make_engine(dir: &Path) -> AppSandboxEngine {
     let mut config = SubstrateConfig {
@@ -34,9 +46,16 @@ async fn make_engine(dir: &Path) -> AppSandboxEngine {
     let blob_provider: Arc<dyn BlobProvider> =
         Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
 
-    AppSandboxEngine::init(&config, vec![], key_store, storage_provider, blob_provider)
-        .await
-        .unwrap()
+    AppSandboxEngine::init(
+        &config,
+        vec![],
+        key_store,
+        storage_provider,
+        blob_provider,
+        Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap()),
+    )
+    .await
+    .unwrap()
 }
 
 fn wasm_deploy_manifest(bytes: Vec<u8>, interfaces: Vec<String>) -> DeployManifest {
@@ -77,6 +96,7 @@ async fn test_execute_ddl_denied_outside_lifecycle_context() {
         blob_provider,
         false,
         0,
+        test_messaging_context(),
     );
 
     let err = DataLayerHost::execute_ddl(&mut host_state, "CREATE TABLE x (id TEXT)".to_string())

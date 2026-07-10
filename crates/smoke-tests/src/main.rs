@@ -21,6 +21,7 @@ use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
 use syneroym_data_db::SqliteStorageProvider;
 use syneroym_data_keystore::KeyStore;
 use syneroym_identity::{Identity, substrate::derive_did_key};
+use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
 use syneroym_router::SYNEROYM_ALPN;
 use syneroym_rpc::JsonRpcRequest;
 use syneroym_sandbox_wasm::{AppSandboxEngine, WasmResourceQuota};
@@ -293,10 +294,17 @@ async fn main() -> Result<()> {
     let blob_provider: Arc<dyn BlobProvider> =
         Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
 
-    let app_engine =
-        AppSandboxEngine::init(&config, vec![], key_store, storage_provider, blob_provider)
-            .await
-            .context("Failed to init app engine")?;
+    let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default())?);
+    let app_engine = AppSandboxEngine::init(
+        &config,
+        vec![],
+        key_store,
+        storage_provider,
+        blob_provider,
+        messaging_broker,
+    )
+    .await
+    .context("Failed to init app engine")?;
 
     let quota = Some(WasmResourceQuota {
         max_instructions: Some(5_000),

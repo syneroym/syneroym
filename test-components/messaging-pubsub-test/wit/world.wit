@@ -1,0 +1,38 @@
+package syneroym-test:messaging-pubsub-test@0.1.0;
+
+interface test-driver {
+    /// Subscribes to `topic` via the host's `syneroym:messaging/host-api`.
+    subscribe-to: func(topic: string) -> result<_, string>;
+
+    /// Publishes `payload` (as UTF-8 bytes) on `topic` via the host's
+    /// `syneroym:messaging/host-api`. `string`, not `list<u8>`, purely so
+    /// this test-only interface stays within what the substrate's generic
+    /// JSON-RPC parameter/result conversion
+    /// (`crates/sandbox_wasm/src/conversions.rs`) supports today
+    /// (`string`/`u32`/`bool` only) -- unrelated to `guest-api::handle-
+    /// message`'s real `list<u8>` contract, which the host invokes through
+    /// a separate, direct `Val`-construction path with no such limitation.
+    publish-to: func(topic: string, payload: string) -> result<_, string>;
+
+    /// Returns every message this component's exported
+    /// `guest-api::handle-message` has received so far, oldest first, as
+    /// `topic\tpayload` lines (test payloads are UTF-8 text). Backed by
+    /// `syneroym:data-layer/store` (not in-guest memory): every host
+    /// invocation gets a fresh `Store`/instance, so a plain Rust static
+    /// wouldn't survive between a `handle-message` delivery and a later
+    /// `get-received-messages` call.
+    get-received-messages: func() -> result<string, string>;
+}
+
+world messaging-pubsub-test {
+    import syneroym:messaging/host-api@0.1.0;
+    import syneroym:data-layer/store@0.1.0;
+    export syneroym:messaging/guest-api@0.1.0;
+
+    /// Creates the `received_messages` collection `handle-message`/
+    /// `get-received-messages` persist deliveries through.
+    export init: func() -> result<_, string>;
+    export migrate: func() -> result<_, string>;
+
+    export test-driver;
+}

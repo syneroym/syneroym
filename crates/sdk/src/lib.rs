@@ -10,7 +10,10 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use iroh::{Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl, endpoint::Connection};
+use iroh::{
+    Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl,
+    endpoint::{Connection, SendStream},
+};
 pub mod mapper;
 use serde_json::Value;
 use syneroym_core::dht_registry::{EndpointMechanism, RegistryClient, SignedEndpointInfo};
@@ -21,7 +24,7 @@ pub use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane
     DeployManifest, DeploymentPlan, NetworkEndpoint, PlannedService, ServiceConfig, ServiceType,
     TcpManifest, WasmManifest,
 };
-use tokio::{io, net::TcpStream, time};
+use tokio::{io, net::TcpStream, sync::mpsc, time};
 use tracing::debug;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -69,6 +72,35 @@ impl Debug for TransportConnection {
                 .field("conn", &format!("{:?}", conn.remote_id()))
                 .finish(),
         }
+    }
+}
+
+/// A live `messaging/subscribe` stream: `.recv()` yields `(topic, payload)`
+/// pairs as the broker delivers them. Dropping it drops the send half of
+/// the underlying bidirectional stream, which the router-side handler
+/// observes as the client having gone away (close-as-unsubscribe).
+pub struct MessageStream {
+    receiver: mpsc::Receiver<(String, Vec<u8>)>,
+    send: SendStream,
+}
+
+impl Debug for MessageStream {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MessageStream").finish_non_exhaustive()
+    }
+}
+
+impl MessageStream {
+    pub async fn recv(&mut self) -> Option<(String, Vec<u8>)> {
+        self.receiver.recv().await
+    }
+
+    /// Closes the send half only (without dropping `self`), signalling
+    /// the router-side handler to unsubscribe (close-as-unsubscribe).
+    /// `.recv()` remains usable afterward and resolves to `None` once the
+    /// router's own writer task exits in response and closes its side.
+    pub fn stop(&mut self) -> Result<()> {
+        self.send.finish().map_err(Into::into)
     }
 }
 
@@ -254,6 +286,77 @@ impl SyneroymClient {
                 let res: JsonRpcResponse = serde_json::from_slice(&frame)?;
                 debug!("got json response for method: {}: {:?}", request.method, res);
                 Ok(res)
+            }
+        }
+    }
+
+    /// Subscribes to `topic` on `interface`'s messaging capability, over a
+    /// live push channel. Unlike `request`/`request_raw`, this does **not**
+    /// finish the send half of the stream after writing the request:
+    /// finishing it would make the router-side reader hit EOF and tear the
+    /// whole handler down before any notification arrives. Dropping the
+    /// returned `MessageStream` closes the send half, which the router
+    /// treats as the unsubscribe signal.
+    pub async fn subscribe(&self, interface: &str, topic: &str) -> Result<MessageStream> {
+        let conn_wrapper = self.connection.as_ref().context("Not connected")?;
+        match conn_wrapper {
+            TransportConnection::Iroh { conn, .. } => {
+                let (mut send, mut recv) = conn.open_bi().await?;
+
+                let preamble = RoutePreamble::binary_json_rpc(&self.service_id, interface);
+                send.write_all(preamble.to_preamble_line().as_bytes()).await?;
+
+                let request = JsonRpcRequest {
+                    jsonrpc: "2.0".to_string(),
+                    method: "subscribe".to_string(),
+                    params: serde_json::json!({"topic": topic}),
+                    id: Some(Value::Number(1.into())),
+                };
+                let req_bytes = serde_json::to_vec(&request)?;
+                framing::write_frame(&mut send, &req_bytes).await?;
+
+                let ack_frame = framing::read_frame(&mut recv).await?;
+                if ack_frame.is_empty() {
+                    return Err(anyhow::anyhow!(
+                        "Empty ack for subscribe on topic {topic} (interface {interface})"
+                    ));
+                }
+                let ack: JsonRpcResponse = serde_json::from_slice(&ack_frame)?;
+                debug!("subscribe ack for topic {}: {:?}", topic, ack);
+
+                let (tx, rx) = mpsc::channel(1024);
+                tokio::spawn(async move {
+                    loop {
+                        match framing::read_frame(&mut recv).await {
+                            Ok(frame) if frame.is_empty() => break,
+                            Ok(frame) => {
+                                let Ok(notify) = serde_json::from_slice::<JsonRpcRequest>(&frame)
+                                else {
+                                    continue;
+                                };
+                                if notify.method != "messaging/message" {
+                                    continue;
+                                }
+                                let Some(topic) =
+                                    notify.params.get("topic").and_then(|v| v.as_str())
+                                else {
+                                    continue;
+                                };
+                                let Some(payload) = notify.params.get("payload").and_then(|v| {
+                                    serde_json::from_value::<Vec<u8>>(v.clone()).ok()
+                                }) else {
+                                    continue;
+                                };
+                                if tx.send((topic.to_string(), payload)).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                });
+
+                Ok(MessageStream { receiver: rx, send })
             }
         }
     }

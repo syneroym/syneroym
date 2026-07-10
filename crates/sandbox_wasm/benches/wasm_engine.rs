@@ -1,5 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
-use std::{fs, sync::Arc};
+use std::{
+    fs,
+    sync::{Arc, Weak},
+};
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use serde_json::Value;
@@ -7,13 +10,23 @@ use syneroym_core::test_constants;
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
 use syneroym_data_db::{SqliteStorageProvider, StorageProvider};
 use syneroym_data_keystore::KeyStore;
-use syneroym_sandbox_wasm::{AppSandboxEngine, HostState, conversions::json_to_wasm_params};
+use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
+use syneroym_sandbox_wasm::{
+    AppSandboxEngine, HostState, MessagingContext, conversions::json_to_wasm_params,
+};
 use test_constants::GREETER_INTERFACE_NAME;
 use tokio::runtime::Builder;
 use wasmtime::{
     Store,
     component::{Component, Linker, types::ComponentItem},
 };
+
+fn test_messaging_context() -> MessagingContext {
+    MessagingContext {
+        broker: Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap()),
+        engine: Weak::new(),
+    }
+}
 
 fn bench_wasm_engine(c: &mut Criterion) {
     let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
@@ -53,6 +66,7 @@ fn bench_wasm_engine(c: &mut Criterion) {
                 blob_provider.clone(),
                 false,
                 0,
+                test_messaging_context(),
             );
             let _store = Store::new(&engine, host_state);
         });
@@ -69,6 +83,7 @@ fn bench_wasm_engine(c: &mut Criterion) {
                 blob_provider.clone(),
                 false,
                 0,
+                test_messaging_context(),
             );
             let mut store: Store<HostState> = Store::new(&engine, host_state);
             store.set_fuel(1_000_000).unwrap();
@@ -87,6 +102,7 @@ fn bench_wasm_engine(c: &mut Criterion) {
         blob_provider.clone(),
         false,
         0,
+        test_messaging_context(),
     );
     let mut store: Store<HostState> = Store::new(&engine, host_state);
 

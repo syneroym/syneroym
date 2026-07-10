@@ -149,7 +149,7 @@ Concretely:
 
 ### Day-1 Spike (do this first, before committing to the broker integration shape)
 
-- [ ] Add `rumqttd` behind a throwaway `examples/` or test binary and prove,
+- [x] Add `rumqttd` behind a throwaway `examples/` or test binary and prove,
   against the actual pinned version, that:
   - The in-process `Broker::link(client_id)` API (`LinkTx`/`LinkRx`) works
     without a network listener bound (see "Broker Embedding" below — no
@@ -164,13 +164,13 @@ Concretely:
     and record the concrete approach here before writing broker-wrapper code
     against it.
   - `+`/`#` wildcard subscriptions match as expected through the link API.
-- [ ] Record the spike's findings (working code path, any surprises) in this
+- [x] Record the spike's findings (working code path, any surprises) in this
   milestone's `status.md` before proceeding — this de-risks the rest of the
   slice instead of discovering broker API gaps mid-integration.
 
 ### WIT Interface
 
-- [ ] Create `crates/wit_interfaces/wit/messaging/messaging.wit`, package
+- [x] Create `crates/wit_interfaces/wit/messaging/messaging.wit`, package
   `syneroym:messaging@0.1.0`:
   - `interface host-api` (host-imported, guest-triggered):
     - `publish(topic: string, payload: list<u8>) -> result<_, messaging-error>`
@@ -195,10 +195,10 @@ Concretely:
 
 ### Broker Embedding
 
-- [ ] Add `rumqttd` (pin the exact version proven in the day-1 spike, with
+- [x] Add `rumqttd` (pin the exact version proven in the day-1 spike, with
   the pinning rationale as a comment per workspace convention) and
   `tokio-util` (if not already present) to `Cargo.toml`.
-- [ ] Create `crates/mqtt-broker/` crate with `MqttBroker`:
+- [x] Create `crates/mqtt-broker/` crate with `MqttBroker`:
   - Starts `rumqttd`'s router as a Tokio background task; the substrate
     process talks to it exclusively through `Broker::link()` in-process
     links. **No `[mqtt] bind_addr` / network listener is configured** — see
@@ -237,7 +237,7 @@ Concretely:
 > restart silently drops all subscriptions with no guest code path ever
 > re-invoked to restore them (there is no `on-start` lifecycle hook).
 
-- [ ] Add a `messaging_subscriptions` table to `substrate.db`:
+- [x] Add a `messaging_subscriptions` table to `substrate.db`:
   ```sql
   CREATE TABLE IF NOT EXISTS messaging_subscriptions (
     service_id TEXT NOT NULL,
@@ -246,23 +246,23 @@ Concretely:
     PRIMARY KEY (service_id, topic)
   );
   ```
-- [ ] `host-api::subscribe`/`unsubscribe` (guest path) write/delete rows here
+- [x] `host-api::subscribe`/`unsubscribe` (guest path) write/delete rows here
   in addition to registering with `MqttBroker`.
-- [ ] On substrate startup, after `MqttBroker` is constructed, replay every
+- [x] On substrate startup, after `MqttBroker` is constructed, replay every
   row in `messaging_subscriptions` into the broker so guest subscriptions
   survive a restart. (A native caller's subscription is inherently
   connection-scoped — see Slice 6A "Native Push Delivery" below — and is
   *not* persisted or replayed; only guest-delivery subscriptions are.)
-- [ ] `ControlPlaneService::undeploy` removes all `messaging_subscriptions`
+- [x] `ControlPlaneService::undeploy` removes all `messaging_subscriptions`
   rows for the undeployed `service_id` and unsubscribes them from the live
   broker. (This was missing from the original plan entirely — undeploy only
   deregistered the `EndpointRegistry` interface.)
 
 ### Host Function Wiring
 
-- [ ] Wire `syneroym:messaging/host-api.publish`/`subscribe`/`unsubscribe`
+- [x] Wire `syneroym:messaging/host-api.publish`/`subscribe`/`unsubscribe`
   in `engine.rs` → `MqttBroker`.
-- [ ] Wire delivery: broker message → host invokes the deployed component's
+- [x] Wire delivery: broker message → host invokes the deployed component's
   `guest-api::handle-message` export, **if declared**, via a new direct
   `Val`-construction invocation helper modeled on the existing
   `invoke_lifecycle_hook` (`crates/sandbox_wasm/src/engine.rs`) — **not**
@@ -277,7 +277,7 @@ Concretely:
   own delivery loop (per ADR-0010), instantiating a fresh Store per
   delivery (see the performance-budget note below on why this doesn't hit
   a 5ms target).
-- [ ] Re-arm each delivery instance's epoch deadline and fuel budget exactly
+- [x] Re-arm each delivery instance's epoch deadline and fuel budget exactly
   as `build_store_and_instantiate` already does for every other invocation
   — no special-casing needed here since each `handle-message` delivery is
   its own fresh Store/instance (same reasoning as any other WASM call), but
@@ -292,7 +292,7 @@ Concretely:
 > native-capability interface so an external caller doesn't need a WASM
 > component in the loop.
 
-- [ ] Extend `crates/control_plane/src/synsvc_native.rs`'s
+- [x] Extend `crates/control_plane/src/synsvc_native.rs`'s
   `SynSvcNativeService` with `dispatch_messaging`, handling
   `messaging/publish` (request/response — fits the existing `NativeService`
   trait unchanged) onto the same `MqttBroker` the WASM `Host` impl uses.
@@ -300,15 +300,15 @@ Concretely:
   "Native Push Delivery" below, which requires router-level changes
   `NativeService::dispatch`'s single-request/single-response shape cannot
   express.
-- [ ] `ControlPlaneService::deploy`/`undeploy`: register/deregister the
+- [x] `ControlPlaneService::deploy`/`undeploy`: register/deregister the
   `messaging` native-capability `EndpointRegistry` interface alongside the
   existing four for every deployed service.
-- [ ] Add `"messaging"` to `NATIVE_CAPABILITY_INTERFACES` in
+- [x] Add `"messaging"` to `NATIVE_CAPABILITY_INTERFACES` in
   `crates/control_plane/src/service.rs` (currently a fixed `[&str; 4]` —
   see Finding B3). Forgetting this reproduces the exact `endpoint_type`
   flake Slice 5 already hit and fixed once (`ControlPlaneService::list()`
   picking `endpoint_type` from whichever interface iterates first).
-- [ ] Add the missing round-trip tests for `vault` and `app-config` native
+- [x] Add the missing round-trip tests for `vault` and `app-config` native
   dispatch while touching this file — both currently have dispatch code but
   no dedicated test, a gap the original plan flagged but didn't schedule.
 
@@ -371,10 +371,10 @@ Concretely:
 >   guest-delivery path's own backpressure story (ADR-0010's bounded
 >   *publish*-side channel).
 
-- [ ] Implement the design above: router-level special-casing for
+- [x] Implement the design above: router-level special-casing for
   `messaging/subscribe` on the native-dispatch path, writer task, mpsc
   bridge, `SendStream::stopped()`-driven cleanup.
-- [ ] Client side: add `SyneroymClient::subscribe(interface, topic) ->
+- [x] Client side: add `SyneroymClient::subscribe(interface, topic) ->
   Result<MessageStream>` in `crates/sdk/src/lib.rs` — opens a bidirectional
   stream (not via `request_raw`, for the EOF reason above), sends the
   `subscribe` request, does **not** finish the send side, then loops
@@ -386,16 +386,16 @@ Concretely:
 
 ### Wildcard and Retained Messages
 
-- [ ] Wire `+`/`#` wildcard subscriptions through to `rumqttd`'s router (no
+- [x] Wire `+`/`#` wildcard subscriptions through to `rumqttd`'s router (no
   substrate-side wildcard logic needed if the day-1 spike confirms the link
   API passes them through as MQTT topic filters).
-- [ ] Wire retained-message support per the day-1 spike's findings (raw
+- [x] Wire retained-message support per the day-1 spike's findings (raw
   `Publish` packet construction via `LinkTx::send()` if `LinkTx::publish`
   indeed has no retain parameter, as expected).
 
 ### No Unauthenticated Broker Listener (Finding A5)
 
-- [ ] Confirm (and add a regression test if feasible) that no TCP port is
+- [x] Confirm (and add a regression test if feasible) that no TCP port is
   opened by `MqttBroker` beyond the substrate's own Iroh/HTTP/gateway
   surfaces — namespace isolation is enforced entirely by the host-side
   topic-prefixing wrapper in "Broker Embedding" above, and a bare MQTT
@@ -407,28 +407,28 @@ Concretely:
 (kept to 1-2 basic-path tests per API, not exhaustive variation coverage —
 see Slice 7's note on the same principle)
 
-- [ ] Unit: `publish` + `subscribe` on same topic delivers message (via
+- [x] Unit: `publish` + `subscribe` on same topic delivers message (via
   `MqttBroker`'s own API, not through Wasmtime).
-- [ ] Unit: wildcard `sensors/+/temp` matches `sensors/room1/temp`.
-- [ ] Unit: retained message delivered to subscriber joining after publish.
-- [ ] Unit: `CancellationToken` terminates broker task on `Drop` within 1
+- [x] Unit: wildcard `sensors/+/temp` matches `sensors/room1/temp`.
+- [x] Unit: retained message delivered to subscriber joining after publish.
+- [x] Unit: `CancellationToken` terminates broker task on `Drop` within 1
   second (no leak).
-- [ ] Unit: subscribe-topic disambiguation — a topic starting with `svc/` is
+- [x] Unit: subscribe-topic disambiguation — a topic starting with `svc/` is
   taken literally; any other topic is prefixed with the caller's own
   `svc/<service_id>/`.
-- [ ] Integration: two WASM components in different services exchange a
+- [x] Integration: two WASM components in different services exchange a
   message (guest-to-guest), using the fully-qualified cross-service topic.
-- [ ] Integration: substrate restart replays `messaging_subscriptions` and a
+- [x] Integration: substrate restart replays `messaging_subscriptions` and a
   previously-subscribed guest still receives a post-restart publish.
-- [ ] Integration: `undeploy` removes a service's subscriptions; a publish
+- [x] Integration: `undeploy` removes a service's subscriptions; a publish
   to that topic after undeploy is not delivered to (and doesn't error on)
   the now-undeployed service.
-- [ ] Integration (native dispatch, in-process): deploy a service,
+- [x] Integration (native dispatch, in-process): deploy a service,
   `publish` via `SynSvcNativeService` with no WASM component involved —
   mirrors M03-sss Slice 5's
   `test_native_dispatch_data_layer_and_blob_store_round_trip`. Include the
   previously-missing `vault`/`app-config` round-trip tests here too.
-- [ ] Integration (real client, end-to-end, 1 test): a `SyneroymClient`
+- [x] Integration (real client, end-to-end, 1 test): a `SyneroymClient`
   connects over a live substrate/Iroh connection, calls
   `SyneroymClient::subscribe` on a topic, then `publish`es to that same
   topic from a second connection (or a WASM guest) and asserts the first
@@ -436,16 +436,16 @@ see Slice 7's note on the same principle)
   to exercise a native-capability interface through a real `SyneroymClient`
   connection (existing e2e coverage only reaches the toy `greeter`
   interface), and the first to exercise push delivery to a non-WASM caller.
-- [ ] Integration: a native subscriber that closes its stream is
+- [x] Integration: a native subscriber that closes its stream is
   unsubscribed and stops receiving messages (proves the close-as-unsubscribe
   rule, not just that subscribe works).
-- [ ] Integration: MQTT topic namespacing — service A cannot receive
+- [x] Integration: MQTT topic namespacing — service A cannot receive
   messages published in service B's namespace without the explicit
   fully-qualified `svc/<other>/...` opt-in.
-- [ ] Integration: channel backpressure — when the bounded channel is
+- [x] Integration: channel backpressure — when the bounded channel is
   saturated, `publish` returns the backpressure error without blocking or
   crashing the substrate.
-- [ ] New test fixture (Finding B5): a `messaging-pubsub-test` WASM
+- [x] New test fixture (Finding B5): a `messaging-pubsub-test` WASM
   component under `test-components/`, exporting `guest-api::handle-message`
   and a small `test-driver` interface (record received messages so
   integration tests can assert on delivery), mirroring
@@ -917,22 +917,22 @@ decision to record in `status.md` at slice close.
 
 ### Slice 6A Exit Criteria (M3B messaging)
 
-- [ ] `cargo +nightly fmt --all` passes with zero diff.
-- [ ] `cargo clippy --workspace --all-targets --all-features` passes with
+- [x] `cargo +nightly fmt --all` passes with zero diff.
+- [x] `cargo clippy --workspace --all-targets --all-features` passes with
   zero warnings and zero errors.
-- [ ] `cargo test --workspace` passes with all tests green.
-- [ ] `mise run test:e2e` passes (existing e2e scenarios must not regress).
-- [ ] `syneroym:messaging@0.1.0` (pub/sub surface only) WIT compiles and
+- [x] `cargo test --workspace` passes with all tests green.
+- [x] `mise run test:e2e` passes (existing e2e scenarios must not regress).
+- [x] `syneroym:messaging@0.1.0` (pub/sub surface only) WIT compiles and
   generates valid Rust bindings.
-- [ ] `messaging` is dispatchable natively (non-WASM) via `SynSvcNativeService`
+- [x] `messaging` is dispatchable natively (non-WASM) via `SynSvcNativeService`
   for every deployed service, with a passing `SyneroymClient`-over-the-wire
   subscribe test — not just an in-process dispatch-registry test.
-- [ ] Guest subscriptions survive a substrate restart; `undeploy` cleans up
+- [x] Guest subscriptions survive a substrate restart; `undeploy` cleans up
   subscriptions.
-- [ ] No unauthenticated broker network listener exists.
-- [ ] Reference scenario steps 14-15 execute without error.
-- [ ] All Slice 6A failure/security test rows produce documented outcomes.
-- [ ] Performance budgets for the two MQTT delivery rows verified; output
+- [x] No unauthenticated broker network listener exists.
+- [x] Reference scenario steps 14-15 execute without error.
+- [x] All Slice 6A failure/security test rows produce documented outcomes.
+- [x] Performance budgets for the two MQTT delivery rows verified; output
   captured in `status.md`.
 
 ### Slice 6B Exit Criteria

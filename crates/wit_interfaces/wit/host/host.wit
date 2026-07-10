@@ -17,5 +17,7 @@ world host-environment {
     import syneroym:data-layer/store@0.1.0;
     import syneroym:app-config/app-config@0.1.0;
     import syneroym:blob-store/blob-store@0.1.0;
+    import syneroym:messaging/host-api@0.1.0;
     export app;
+    export syneroym:messaging/guest-api@0.1.0;
 }

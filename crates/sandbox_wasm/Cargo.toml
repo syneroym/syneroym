@@ -19,6 +19,7 @@ syneroym-rpc.workspace = true
 syneroym-data-keystore.workspace = true
 syneroym-data-db.workspace = true
 syneroym-data-blob.workspace = true
+syneroym-mqtt-broker.workspace = true
 
 wasmtime.workspace = true
 wasmtime-wasi.workspace = true

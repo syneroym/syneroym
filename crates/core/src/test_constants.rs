@@ -23,3 +23,15 @@ pub fn data_layer_test_wasm_path() -> PathBuf {
          syneroym_test_data_layer.wasm",
     )
 }
+
+/// Returns the workspace-relative path to the messaging-pubsub-test
+/// component WASM module (imports `syneroym:messaging/host-api`, exports
+/// `syneroym:messaging/guest-api::handle-message` and a `test-driver`
+/// interface for subscribing/publishing/reading back received messages --
+/// see `test-components/messaging-pubsub-test`).
+pub fn messaging_pubsub_test_wasm_path() -> PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+        "../../test-components/messaging-pubsub-test/target/wasm32-wasip2/release/\
+         syneroym_test_messaging_pubsub.wasm",
+    )
+}

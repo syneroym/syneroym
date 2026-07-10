@@ -169,8 +169,8 @@ impl RouteHandler {
                 self.handle_http_stream(io, preamble, pipeline).await
             }
             TransportStage::Binary => {
-                let (r, mut w) = (stream.reader, stream.writer);
-                self.handle_json_rpc_loop(BufReader::new(r), &mut w, &preamble, &pipeline).await
+                let (r, w) = (stream.reader, stream.writer);
+                self.handle_binary_stream(BufReader::new(r), w, &preamble, &pipeline).await
             }
         }
     }
