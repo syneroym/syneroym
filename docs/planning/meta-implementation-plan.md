@@ -303,6 +303,7 @@ To keep Milestones 1–10 achievable, the following features are sequenced after
   - Complete, rich Syneroym Hub UI surfaces.
   - Dedicated marketplace, aggregator, and facilitator `SynSvcs`.
 - **Financial & Escrow Services:** Native settlement, mutual credit ledger operations, and integrated transaction escrow, layered onto the pluggable Payment Abstraction Layer once the Dynamic Ledger Network is scoped.
+- **MQTT Shared Subscriptions:** `$share/<group>/<filter>` competing-consumer delivery for fleets of external `SyneroymClient` workers. `rumqttd 0.20` already supports this; the work is a small fix to `namespace_topic` in `crates/mqtt_broker`. Deferred post-M3B as it doesn't block any subsequent milestone.
 
 ---
 
