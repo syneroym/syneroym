@@ -26,6 +26,7 @@ use syneroym_data_blob::{
 };
 use syneroym_data_db::traits::{ServiceStore, StorageProvider};
 use syneroym_data_keystore::KeyStore;
+use syneroym_mqtt_broker::{MqttBroker, namespace_topic_for_publish};
 use syneroym_rpc::{NativeInvocation, NativeResponse, NativeService, RpcError, RpcResult};
 use syneroym_wit_interfaces::host::syneroym::{
     app_config::app_config::ConfigError,
@@ -44,6 +45,7 @@ pub struct SynSvcNativeService {
     key_store: Arc<KeyStore>,
     storage_provider: Arc<dyn StorageProvider>,
     blob_provider: Arc<dyn BlobProvider>,
+    messaging_broker: Arc<MqttBroker>,
     upload_sessions: Mutex<HashMap<String, Box<dyn UploadSession>>>,
     download_sessions: Mutex<HashMap<String, Box<dyn DownloadSession>>>,
 }
@@ -98,12 +100,14 @@ impl SynSvcNativeService {
         key_store: Arc<KeyStore>,
         storage_provider: Arc<dyn StorageProvider>,
         blob_provider: Arc<dyn BlobProvider>,
+        messaging_broker: Arc<MqttBroker>,
     ) -> Self {
         Self {
             service_id,
             key_store,
             storage_provider,
             blob_provider,
+            messaging_broker,
             upload_sessions: Mutex::new(HashMap::new()),
             download_sessions: Mutex::new(HashMap::new()),
         }
@@ -509,6 +513,29 @@ impl SynSvcNativeService {
             other => Err(RpcError::MethodNotFound(format!("blob-store/{other}"))),
         }
     }
+
+    // -- messaging --------------------------------------------------------
+
+    /// Only `publish` is dispatched here: `subscribe`/`unsubscribe` need a
+    /// long-lived push channel back to the caller, which `NativeService`'s
+    /// one-request-one-response shape can't express -- see the router-level
+    /// `messaging/subscribe` special-casing instead (ADR-0010 Finding A2).
+    async fn dispatch_messaging(&self, invocation: NativeInvocation) -> RpcResult<NativeResponse> {
+        match invocation.method.as_str() {
+            "publish" => {
+                #[derive(serde::Deserialize)]
+                struct Req {
+                    topic: String,
+                    payload: Vec<u8>,
+                }
+                let req: Req = parse_params(&invocation)?;
+                let namespaced = namespace_topic_for_publish(&self.service_id, &req.topic);
+                self.messaging_broker.publish(namespaced, req.payload).await.map_err(internal)?;
+                to_payload(&())
+            }
+            other => Err(RpcError::MethodNotFound(format!("messaging/{other}"))),
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -519,6 +546,7 @@ impl NativeService for SynSvcNativeService {
             "vault" => self.dispatch_vault(invocation).await,
             "app-config" => self.dispatch_app_config(invocation).await,
             "blob-store" => self.dispatch_blob_store(invocation).await,
+            "messaging" => self.dispatch_messaging(invocation).await,
             other => Err(RpcError::MethodNotFound(format!("unknown interface: {other}"))),
         }
     }

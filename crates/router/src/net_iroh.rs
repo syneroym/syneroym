@@ -5,6 +5,7 @@
 
 use std::{
     fmt::{self, Debug, Formatter},
+    future::Future,
     io,
     pin::Pin,
     task::{Context as TaskContext, Poll},
@@ -17,6 +18,8 @@ use iroh::{
 };
 use syneroym_core::{config::RetryPolicy, retry::retry_with_backoff};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+
+use crate::stop_signal::StopSignal;
 
 pub struct IrohStream {
     send: SendStream,
@@ -72,6 +75,15 @@ impl AsyncWrite for IrohStream {
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
         Pin::new(&mut self.send).poll_shutdown(cx)
+    }
+}
+
+impl StopSignal for IrohStream {
+    fn stop_signal(&self) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        let stopped = self.send.stopped();
+        Box::pin(async move {
+            let _ = stopped.await;
+        })
     }
 }
 

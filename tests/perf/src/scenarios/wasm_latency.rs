@@ -10,7 +10,8 @@ use syneroym_core::{
     test_constants,
 };
 use syneroym_identity::{Identity, substrate};
-use syneroym_sandbox_wasm::{AppSandboxEngine, HostState};
+use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
+use syneroym_sandbox_wasm::{AppSandboxEngine, HostState, MessagingContext};
 use syneroym_sdk::SyneroymClient;
 use test_constants::GREETER_INTERFACE_NAME;
 use wasmtime::{
@@ -44,6 +45,10 @@ pub async fn run_scenario() -> Result<()> {
     )?);
     let blob_provider: std::sync::Arc<dyn syneroym_data_blob::BlobProvider> =
         std::sync::Arc::new(syneroym_data_blob::ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+    let messaging_context = MessagingContext {
+        broker: std::sync::Arc::new(MqttBroker::new(MqttBrokerConfig::default())?),
+        engine: std::sync::Weak::new(),
+    };
 
     // Warmup Baseline
     for _ in 0..10 {
@@ -55,6 +60,7 @@ pub async fn run_scenario() -> Result<()> {
             blob_provider.clone(),
             false,
             0,
+            messaging_context.clone(),
         );
         let mut store = Store::new(&engine, host_state);
         let instance = linker.instantiate_async(&mut store, &component).await?;
@@ -85,6 +91,7 @@ pub async fn run_scenario() -> Result<()> {
             blob_provider.clone(),
             false,
             0,
+            messaging_context.clone(),
         );
         let mut store = Store::new(&engine, host_state);
         let instance = linker.instantiate_async(&mut store, &component).await?;

@@ -40,3 +40,18 @@ pub struct JsonRpcErrorResponse {
     pub error: JsonRpcError,
     pub id: Option<Value>,
 }
+
+/// Method name for a broker-pushed `messaging/subscribe` notification
+/// frame -- see [`MessagingNotification`].
+pub const MESSAGING_MESSAGE_METHOD: &str = "messaging/message";
+
+/// The `params` shape of a `messaging/message` notification frame pushed
+/// by the router to a live `messaging/subscribe` stream. Shared by the
+/// router (which builds it) and the SDK (which parses it), so a
+/// field-name drift between the two fails to compile instead of silently
+/// dropping every message client-side.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct MessagingNotification {
+    pub topic: String,
+    pub payload: Vec<u8>,
+}

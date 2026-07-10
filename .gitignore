@@ -29,6 +29,11 @@ crates/substrate/config.dev.toml
 workdir/
 data/
 
+# AppSandboxEngine's wasm component cache -- control_plane's tests pass
+# SubstrateConfig::default() (relative "blobs" dir) straight through, so
+# this lands under the crate root instead of a tempdir.
+crates/control_plane/blobs/
+
 # AI
 .gemini
 GEMINI.md

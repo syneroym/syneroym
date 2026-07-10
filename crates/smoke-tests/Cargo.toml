@@ -19,6 +19,7 @@ syneroym-router.workspace = true
 syneroym-data-keystore.workspace = true
 syneroym-data-db.workspace = true
 syneroym-data-blob.workspace = true
+syneroym-mqtt-broker.workspace = true
 
 
 anyhow.workspace = true

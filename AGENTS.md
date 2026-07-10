@@ -63,6 +63,7 @@ Crate names are `syneroym-<dir>` (e.g. `crates/data_db` → `syneroym-data-db`, 
 - Given the presence of WASM component configurations (`wasm32-wasip2`), maintain clean `wit` file boundaries and consider cross-compilation constraints.
 - Emphasize idiomatic Rust formatting, leveraging the language's strong typing to guarantee correctness.
 - Ensure any added dependencies reflect widely supported community standards.
+- **New crate naming**: a new crate always goes under `crates/<snake_case_name>/` with Cargo package name `syneroym-<kebab-case-name>` — directory uses underscores, package name uses hyphens (e.g. `crates/mqtt_broker` → `syneroym-mqtt-broker`), matching every existing crate. This holds even when a planning doc's prose uses a hyphenated directory name (e.g. writes `crates/mqtt-broker/`) — the directory name is still snake_case.
 
 ## Functionality, Architecture Documents
 - The [vision doc](docs/VISION.md) contains the vision for Syneroym

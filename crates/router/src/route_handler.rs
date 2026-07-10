@@ -30,6 +30,7 @@ use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
 use syneroym_data_db::{SqliteStorageProvider, traits::StorageProvider};
 use syneroym_data_keystore::KeyStore;
 use syneroym_identity::Identity;
+use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
 use syneroym_rpc::{NativeDispatchRegistry, NativeService};
 use syneroym_sandbox_podman::ContainerEngine;
 use syneroym_sandbox_wasm::AppSandboxEngine;
@@ -85,6 +86,11 @@ pub struct RouteHandlerInner {
     pub retry_policy: RetryPolicy,
     pub active_connections: Arc<AtomicUsize>,
     pub max_connections: Option<usize>,
+    /// Core, always-on per-node capability (ADR-0010) -- kept alive for as
+    /// long as any `RouteHandler` clone is; its `Drop` cancels the
+    /// `CancellationToken` governing its own subscription-forwarding
+    /// tasks, mirroring `AppSandboxEngine`'s epoch-timer task lifecycle.
+    pub messaging_broker: Arc<MqttBroker>,
 }
 
 impl Debug for RouteHandler {
@@ -152,6 +158,10 @@ impl RouteHandler {
         )?);
         let blob_provider = build_blob_provider(config)?;
 
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig {
+            channel_capacity: config.mqtt.channel_capacity as usize,
+        })?);
+
         let app_sandbox_engine = Arc::new(
             AppSandboxEngine::init(
                 config,
@@ -159,9 +169,40 @@ impl RouteHandler {
                 key_store.clone(),
                 storage_provider.clone(),
                 blob_provider.clone(),
+                messaging_broker.clone(),
             )
             .await?,
         );
+        app_sandbox_engine
+            .self_weak
+            .set(Arc::downgrade(&app_sandbox_engine))
+            .map_err(|_| anyhow::anyhow!("AppSandboxEngine::self_weak set more than once"))?;
+
+        // Guest subscriptions survive a restart (ADR-0010 Finding A1):
+        // replay every persisted row into the broker before the router
+        // starts accepting connections. Best-effort per row -- one bad
+        // topic shouldn't block substrate startup. Replayed concurrently
+        // (independent rows, no shared state) to keep this bounded by the
+        // slowest single subscribe rather than their sum.
+        let persisted_subscriptions = storage_provider.list_all_messaging_subscriptions().await?;
+        let replay_results = futures::future::join_all(persisted_subscriptions.iter().map(
+            |(subscribed_service_id, topic)| {
+                app_sandbox_engine.register_internal_subscription(subscribed_service_id, topic)
+            },
+        ))
+        .await;
+        for ((subscribed_service_id, topic), result) in
+            persisted_subscriptions.iter().zip(replay_results)
+        {
+            if let Err(e) = result {
+                tracing::warn!(
+                    service_id = %subscribed_service_id,
+                    topic = %topic,
+                    error = %e,
+                    "Failed to replay messaging subscription on startup"
+                );
+            }
+        }
 
         let podman_path = config
             .roles
@@ -210,6 +251,7 @@ impl RouteHandler {
             retry_policy: config.retry.clone(),
             active_connections: Arc::new(AtomicUsize::new(0)),
             max_connections,
+            messaging_broker: messaging_broker.clone(),
         });
 
         let s = Self { inner };
@@ -223,6 +265,7 @@ impl RouteHandler {
             key_store,
             storage_provider,
             blob_provider,
+            messaging_broker,
             native_dispatch,
         )
         .await?;
@@ -250,6 +293,9 @@ impl RouteHandler {
             retry_policy,
             active_connections: Arc::new(AtomicUsize::new(0)),
             max_connections,
+            messaging_broker: Arc::new(
+                MqttBroker::new(MqttBrokerConfig::default()).expect("coordinator mqtt broker"),
+            ),
         });
         Self { inner }
     }

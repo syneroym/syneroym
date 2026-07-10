@@ -3,13 +3,20 @@
 //! Hooks active streams up to their target local services (e.g. WASM sandbox
 //! input, native services, or TCP socket).
 
-use std::{sync::Arc, time::Instant};
+use std::{future::Future, pin::Pin, sync::Arc, time::Instant};
 
 use anyhow::{Result, anyhow};
 use serde_json::Value;
 use syneroym_core::local_registry::SubstrateEndpoint;
-use syneroym_rpc::{JsonRpcConverter, JsonRpcRequest, JsonRpcResponse, NativeService, framing};
-use tokio::io::{AsyncRead, AsyncWrite, BufReader};
+use syneroym_mqtt_broker::namespace_topic;
+use syneroym_rpc::{
+    JsonRpcConverter, JsonRpcRequest, JsonRpcResponse, MESSAGING_MESSAGE_METHOD,
+    MessagingNotification, NativeService, framing,
+};
+use tokio::{
+    io::{AsyncRead, AsyncWrite, BufReader},
+    sync::oneshot,
+};
 use tracing::{debug, error};
 
 use super::RouteHandler;
@@ -17,6 +24,31 @@ use crate::{
     preamble::{RoutePreamble, RouteProtocol, RouteTransport},
     routing::{AdaptationStage, RoutePipeline, ServiceStage},
 };
+
+/// A native-capability `(interface, method)` pair that needs to hold a
+/// binary stream's writer open across multiple pushed frames instead of
+/// returning after a single response (ADR-0010 Finding A2) -- declared
+/// here as a single reusable lookup rather than an ad-hoc condition, so
+/// Slice 6B's `stream-cursor`/`stream-sink` methods (`task.md` lines
+/// 472-663) add a variant + [`Self::lookup`] entry + match arm in
+/// `handle_binary_stream`, not another hand-rolled "read the first frame,
+/// check interface/method, dispatch" special-case.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LongLivedStreamMethod {
+    MessagingSubscribe,
+}
+
+impl LongLivedStreamMethod {
+    const REGISTRY: &'static [(&'static str, &'static str, Self)] =
+        &[("messaging", "subscribe", Self::MessagingSubscribe)];
+
+    fn lookup(interface: &str, method: &str) -> Option<Self> {
+        Self::REGISTRY
+            .iter()
+            .find(|(i, m, _)| *i == interface && *m == method)
+            .map(|(_, _, kind)| *kind)
+    }
+}
 
 impl RouteHandler {
     /// Looks up a native service by its channel ID.
@@ -164,6 +196,31 @@ impl RouteHandler {
         RoutePipeline { encryption, transport, adaptation, service }
     }
 
+    /// Dispatches one JSON-RPC frame and writes the response -- or a
+    /// JSON-RPC error frame, on dispatch failure -- back to `writer`.
+    /// Shared by `handle_binary_stream`'s first frame and
+    /// `handle_json_rpc_loop`'s per-frame body.
+    async fn dispatch_and_write_frame<W>(
+        &self,
+        writer: &mut W,
+        pipeline: &RoutePipeline,
+        preamble: &RoutePreamble,
+        frame: &[u8],
+    ) -> Result<()>
+    where
+        W: AsyncWrite + Unpin + Send,
+    {
+        match self.dispatch_json_rpc_once(pipeline, preamble, frame).await {
+            Ok(payload) => framing::write_frame(writer, &payload).await?,
+            Err(e) => {
+                error!("JSON-RPC dispatch error: {}", e);
+                let error_payload = JsonRpcConverter::json_error(None, -32603, e.to_string())?;
+                framing::write_frame(writer, &error_payload).await?;
+            }
+        }
+        Ok(())
+    }
+
     /// Runs a loop that reads JSON-RPC frames from the reader and dispatches
     /// them.
     ///
@@ -185,18 +242,143 @@ impl RouteHandler {
             if frame.is_empty() {
                 break;
             }
+            self.dispatch_and_write_frame(writer, pipeline, preamble, &frame).await?;
+        }
+        Ok(())
+    }
 
-            match self.dispatch_json_rpc_once(pipeline, preamble, &frame).await {
-                Ok(payload) => {
-                    framing::write_frame(writer, &payload).await?;
+    /// Entry point for `TransportStage::Binary` streams. Reads the first
+    /// frame itself (rather than re-implementing frame reading inside
+    /// `handle_json_rpc_loop` too) so it can special-case the small set of
+    /// native-capability methods in [`LongLivedStreamMethod`] that need
+    /// to hold the writer open across multiple pushed frames instead of
+    /// returning after a single response (`NativeService::dispatch`'s
+    /// one-request-one-response shape can't express this; see ADR-0010
+    /// Finding A2). Every other method falls through into the unchanged
+    /// generic per-frame loop.
+    pub async fn handle_binary_stream<R, W>(
+        &self,
+        mut reader: BufReader<R>,
+        mut writer: W,
+        preamble: &RoutePreamble,
+        pipeline: &RoutePipeline,
+        stop_signal: Pin<Box<dyn Future<Output = ()> + Send>>,
+    ) -> Result<()>
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+        W: AsyncWrite + Unpin + Send + 'static,
+    {
+        let frame = framing::read_frame(&mut reader).await?;
+        if frame.is_empty() {
+            return Ok(());
+        }
+
+        if let ServiceStage::NativeService { service_id } = &pipeline.service
+            && let Ok(request) = serde_json::from_slice::<JsonRpcRequest>(&frame)
+            && let Some(method) =
+                LongLivedStreamMethod::lookup(&preamble.interface, &request.method)
+        {
+            return match method {
+                LongLivedStreamMethod::MessagingSubscribe => {
+                    #[derive(serde::Deserialize)]
+                    struct SubscribeParams {
+                        topic: String,
+                    }
+                    let params: SubscribeParams = serde_json::from_value(request.params)
+                        .map_err(|e| anyhow!("messaging/subscribe: invalid params: {e}"))?;
+                    self.handle_messaging_subscribe(
+                        reader,
+                        writer,
+                        service_id.clone(),
+                        params.topic,
+                        request.id,
+                        stop_signal,
+                    )
+                    .await
                 }
-                Err(e) => {
-                    error!("JSON-RPC dispatch error: {}", e);
-                    let error_payload = JsonRpcConverter::json_error(None, -32603, e.to_string())?;
-                    framing::write_frame(writer, &error_payload).await?;
+            };
+        }
+
+        self.dispatch_and_write_frame(&mut writer, pipeline, preamble, &frame).await?;
+        self.handle_json_rpc_loop(reader, &mut writer, preamble, pipeline).await
+    }
+
+    /// Holds `writer` open across the connection's lifetime, forwarding
+    /// every message the broker delivers as a `messaging/message`
+    /// notification frame (`id: null`). A native subscriber has no
+    /// separate stream to send an explicit `unsubscribe` request on, so
+    /// either client-initiated stream closure (detected on its own task,
+    /// rather than raced per-loop-iteration against `receiver.recv()`, so
+    /// a partially-read frame can never be silently dropped mid-
+    /// cancellation) or the transport signaling it no longer wants data
+    /// pushed to it (`stop_signal`, e.g. QUIC `STOP_SENDING` -- see
+    /// `crate::stop_signal`) is treated as the unsubscribe signal.
+    async fn handle_messaging_subscribe<R, W>(
+        &self,
+        mut reader: BufReader<R>,
+        mut writer: W,
+        service_id: String,
+        topic: String,
+        request_id: Option<Value>,
+        mut stop_signal: Pin<Box<dyn Future<Output = ()> + Send>>,
+    ) -> Result<()>
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+        W: AsyncWrite + Unpin + Send + 'static,
+    {
+        let namespaced = namespace_topic(&service_id, &topic);
+        let (handle, mut receiver) = self
+            .inner
+            .messaging_broker
+            .subscribe(namespaced)
+            .await
+            .map_err(|e| anyhow!("broker subscribe failed: {e}"))?;
+
+        let ack = JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            result: Value::String("subscribed".to_string()),
+            id: request_id,
+        };
+        framing::write_frame(&mut writer, &serde_json::to_vec(&ack)?).await?;
+
+        let (closed_tx, mut closed_rx) = oneshot::channel::<()>();
+        let reader_task = tokio::spawn(async move {
+            loop {
+                match framing::read_frame(&mut reader).await {
+                    Ok(f) if f.is_empty() => break,
+                    Ok(_) => continue,
+                    Err(_) => break,
                 }
             }
+            let _ = closed_tx.send(());
+        });
+
+        loop {
+            tokio::select! {
+                notification = receiver.recv() => {
+                    let Some((topic, payload)) = notification else { break };
+                    let Ok(params) = serde_json::to_value(MessagingNotification { topic, payload })
+                    else {
+                        continue;
+                    };
+                    let notify = JsonRpcRequest {
+                        jsonrpc: "2.0".to_string(),
+                        method: MESSAGING_MESSAGE_METHOD.to_string(),
+                        params,
+                        id: None,
+                    };
+                    let Ok(bytes) = serde_json::to_vec(&notify) else { continue };
+                    if framing::write_frame(&mut writer, &bytes).await.is_err() {
+                        break;
+                    }
+                }
+                _ = &mut closed_rx => break,
+                () = &mut stop_signal => break,
+            }
         }
+
+        reader_task.abort();
+        drop(handle);
         Ok(())
     }
 }

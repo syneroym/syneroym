@@ -40,7 +40,7 @@ static SERVICE_ID_REGEX: LazyLock<Regex> =
 static IDENTIFIER_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$").unwrap());
 
-const SUBSTRATE_SCHEMA_VERSION: &str = "m3a";
+const SUBSTRATE_SCHEMA_VERSION: &str = "m3b";
 
 /// Hard upper bound on records returned per `query` page, enforced
 /// regardless of what the guest requests via `query-options.limit`.
@@ -434,6 +434,7 @@ impl SqliteStorageProvider {
             );
         }
         Self::run_m3a_migration(&tx)?;
+        Self::run_m3b_migration(&tx)?;
         let updated =
             tx.execute("UPDATE schema_version SET version = ?1", [SUBSTRATE_SCHEMA_VERSION])?;
         if updated == 0 {
@@ -469,6 +470,19 @@ impl SqliteStorageProvider {
                 config_blob TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
                 PRIMARY KEY (service_id, generation)
+            )",
+            [],
+        )?;
+        Ok(())
+    }
+
+    fn run_m3b_migration(conn: &Connection) -> rusqlite::Result<()> {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS messaging_subscriptions (
+                service_id TEXT NOT NULL,
+                topic      TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY (service_id, topic)
             )",
             [],
         )?;
@@ -907,6 +921,77 @@ impl StorageProvider for SqliteStorageProvider {
             } else {
                 Ok(None)
             }
+        })
+        .await?
+    }
+
+    async fn save_messaging_subscription(
+        &self,
+        service_id: &str,
+        topic: &str,
+    ) -> anyhow::Result<()> {
+        let conn_arc = self.substrate_conn.clone();
+        let s_id = service_id.to_string();
+        let topic = topic.to_string();
+        task::spawn_blocking(move || -> anyhow::Result<()> {
+            let conn = conn_arc.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {}", e))?;
+            let now = Utc::now().timestamp_millis();
+            conn.execute(
+                "INSERT INTO messaging_subscriptions (service_id, topic, created_at)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT (service_id, topic) DO NOTHING",
+                params![s_id, topic, now],
+            )?;
+            Ok(())
+        })
+        .await?
+    }
+
+    async fn delete_messaging_subscription(
+        &self,
+        service_id: &str,
+        topic: &str,
+    ) -> anyhow::Result<()> {
+        let conn_arc = self.substrate_conn.clone();
+        let s_id = service_id.to_string();
+        let topic = topic.to_string();
+        task::spawn_blocking(move || -> anyhow::Result<()> {
+            let conn = conn_arc.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {}", e))?;
+            conn.execute(
+                "DELETE FROM messaging_subscriptions WHERE service_id = ?1 AND topic = ?2",
+                params![s_id, topic],
+            )?;
+            Ok(())
+        })
+        .await?
+    }
+
+    async fn delete_all_messaging_subscriptions_for_service(
+        &self,
+        service_id: &str,
+    ) -> anyhow::Result<()> {
+        let conn_arc = self.substrate_conn.clone();
+        let s_id = service_id.to_string();
+        task::spawn_blocking(move || -> anyhow::Result<()> {
+            let conn = conn_arc.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {}", e))?;
+            conn.execute(
+                "DELETE FROM messaging_subscriptions WHERE service_id = ?1",
+                params![s_id],
+            )?;
+            Ok(())
+        })
+        .await?
+    }
+
+    async fn list_all_messaging_subscriptions(&self) -> anyhow::Result<Vec<(String, String)>> {
+        let conn_arc = self.substrate_conn.clone();
+        task::spawn_blocking(move || -> anyhow::Result<Vec<(String, String)>> {
+            let conn = conn_arc.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {}", e))?;
+            let mut stmt = conn.prepare("SELECT service_id, topic FROM messaging_subscriptions")?;
+            let rows = stmt
+                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
         })
         .await?
     }
@@ -1401,6 +1486,53 @@ mod tests {
             let store = provider.open_service_db("restart-test", &key_store).await.unwrap();
             let revealed = store.reveal_secret("secret_key").await.unwrap();
             assert_eq!(revealed, Some(b"survival-data-100".to_vec()));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_messaging_subscriptions_roundtrip_and_restart_survival() {
+        let dir = tempdir().unwrap();
+
+        {
+            let provider = SqliteStorageProvider::new(dir.path(), false).unwrap();
+            provider.save_messaging_subscription("svc-a", "svc/svc-a/orders/new").await.unwrap();
+            provider.save_messaging_subscription("svc-a", "sensors/+/temp").await.unwrap();
+            provider.save_messaging_subscription("svc-b", "svc/svc-b/status").await.unwrap();
+            // Re-subscribing to the same topic is idempotent, not an error.
+            provider.save_messaging_subscription("svc-a", "sensors/+/temp").await.unwrap();
+
+            let mut all = provider.list_all_messaging_subscriptions().await.unwrap();
+            all.sort();
+            assert_eq!(
+                all,
+                vec![
+                    ("svc-a".to_string(), "sensors/+/temp".to_string()),
+                    ("svc-a".to_string(), "svc/svc-a/orders/new".to_string()),
+                    ("svc-b".to_string(), "svc/svc-b/status".to_string()),
+                ]
+            );
+
+            provider.delete_messaging_subscription("svc-a", "sensors/+/temp").await.unwrap();
+            let mut after_delete = provider.list_all_messaging_subscriptions().await.unwrap();
+            after_delete.sort();
+            assert_eq!(
+                after_delete,
+                vec![
+                    ("svc-a".to_string(), "svc/svc-a/orders/new".to_string()),
+                    ("svc-b".to_string(), "svc/svc-b/status".to_string()),
+                ]
+            );
+
+            provider.delete_all_messaging_subscriptions_for_service("svc-a").await.unwrap();
+            let after_undeploy = provider.list_all_messaging_subscriptions().await.unwrap();
+            assert_eq!(after_undeploy, vec![("svc-b".to_string(), "svc/svc-b/status".to_string())]);
+        }
+
+        // Surviving row is still there after "restart" (re-opening the same db_dir).
+        {
+            let provider = SqliteStorageProvider::new(dir.path(), false).unwrap();
+            let all = provider.list_all_messaging_subscriptions().await.unwrap();
+            assert_eq!(all, vec![("svc-b".to_string(), "svc/svc-b/status".to_string())]);
         }
     }
 

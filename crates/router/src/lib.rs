@@ -11,6 +11,7 @@ pub mod net_webrtc;
 mod preamble;
 mod route_handler;
 mod routing;
+mod stop_signal;
 
 pub use connection_router::{ConnectionRouter, SYNEROYM_ALPN};
 pub use handshake::{HandshakeVerifier, MasterAnchorResolver, VerifiedIdentity};

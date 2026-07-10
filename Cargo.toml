@@ -1,7 +1,11 @@
 [workspace]
 resolver = "2"
 members = ["crates/*", "apps/*", "test-components/*", "tests/perf", "xtask"]
-exclude = ["test-components/greeter", "test-components/data-layer-test"]
+exclude = [
+    "test-components/greeter",
+    "test-components/data-layer-test",
+    "test-components/messaging-pubsub-test",
+]
 
 [profile.dev]
 incremental = true      # Compile your binary in smaller steps.
@@ -48,6 +52,7 @@ syneroym-sandbox-podman = { path = "crates/sandbox_podman" }
 syneroym-sdk = { path = "crates/sdk" }
 syneroym-smoke-tests = { path = "crates/smoke-tests" }
 syneroym-substrate = { path = "crates/substrate" }
+syneroym-mqtt-broker = { path = "crates/mqtt_broker" }
 miniapp-demo1-web = { path = "test-components/miniapp-demo1-web" }
 
 # Networking & Async
@@ -156,6 +161,17 @@ futures-util = "0.3"
 futures = "0.3"
 chromiumoxide = { version = "0.9" }
 tokio-stream = "0.1"
+tokio-util = "0.7"
+# Embedded MQTT broker for syneroym:messaging (M3B Slice 6A, ADR-0010).
+# 0.20 is the latest published release as of this pin (2026-07-09); no known
+# conflicts with other workspace deps yet, pinned per the iroh/sha2/object_store
+# convention above so a future `cargo update` doesn't silently drift the
+# in-process router API this crate depends on (see crates/mqtt_broker).
+# Default features pull in rustls-webpki/rustls-pemfile (vulnerable/unmaintained,
+# RUSTSEC-2026-0104/0098/0099/0049, RUSTSEC-2025-0134) and a websocket stack for
+# the v4/v5/ws TCP listeners; `MqttBroker` never binds any of those (see
+# crates/mqtt_broker doc comment), so they're disabled entirely.
+rumqttd = { version = "0.20", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

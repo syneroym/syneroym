@@ -218,11 +218,13 @@ This was **Milestone 3B Slice 6 / "Deferred: HTTP Passthrough"** in earlier plan
 **Feature Grouping:**
 - Thin Syneroym Hub (Desktop/Web surface only)
 - Professional Services Guild Application
+- Chat SynApp (`[PLT-DAT]`/`[PLT-ASY]`/`[FND-FDA]` per the requirements-spec Substrate Feature Coverage Matrix)
 
 **Implementation Approach:**
 1. **Headless Native Shell:** Build the thin desktop/web UI shell that renders JSON Action Cards.
 2. **Product Polish:** Finalize the `SynSvcs` necessary for the Professional Guild to operate end-to-end.
-3. **Exclusions:** Native ledger/mutual credit and integrated escrow are explicitly excluded at this stage.
+3. **Chat SynApp:** Implement the default Layer 4 chat wrapper described in [ADR-0013](../decisions/0013-p2p-messaging-architecture.md) — Actor/Infrastructure identity delegation, Primary Substrate multi-device sync, 1-to-1 delivery via X3DH + Double Ratchet (`libsignal-protocol-rust`), group chat via the Gossip DAG + MLS (`openmls`), and relative-clock deterministic ordering. Builds on the M3B pub/sub broker, M4 FDAE access control, and M5 outbox/DLQ primitives, all of which are already in place by this milestone.
+4. **Exclusions:** Native ledger/mutual credit and integrated escrow are explicitly excluded at this stage. AI participants in group chats (`[APP-AGI]`) are also excluded here — they depend on the Milestone 9A inference/tooling foundations and are sequenced as a Milestone 9 follow-on once Chat itself exists.
 
 ---
 
@@ -303,6 +305,7 @@ To keep Milestones 1–10 achievable, the following features are sequenced after
   - Complete, rich Syneroym Hub UI surfaces.
   - Dedicated marketplace, aggregator, and facilitator `SynSvcs`.
 - **Financial & Escrow Services:** Native settlement, mutual credit ledger operations, and integrated transaction escrow, layered onto the pluggable Payment Abstraction Layer once the Dynamic Ledger Network is scoped.
+- **MQTT Shared Subscriptions:** `$share/<group>/<filter>` competing-consumer delivery for fleets of external `SyneroymClient` workers. `rumqttd 0.20` already supports this; the work is a small fix to `namespace_topic` in `crates/mqtt_broker`. Deferred post-M3B as it doesn't block any subsequent milestone.
 
 ---
 

@@ -62,6 +62,10 @@ pub struct SubstrateConfig {
     pub substrate: SubstrateGlobalConfig,
     pub retry: RetryPolicy,
     pub tls: Option<SubstrateTlsConfig>,
+    /// Embedded MQTT broker for `syneroym:messaging` (M3B Slice 6A,
+    /// ADR-0010). A core, always-on capability -- not an optional
+    /// deployment role like `RolesConfig`'s members.
+    pub mqtt: MessagingConfig,
 }
 
 /// Useful helper functions
@@ -139,6 +143,7 @@ impl Default for SubstrateConfig {
             substrate: Default::default(),
             retry: Default::default(),
             tls: None,
+            mqtt: Default::default(),
         }
     }
 }
@@ -725,6 +730,32 @@ impl Default for RetryPolicy {
     }
 }
 
+const fn default_mqtt_channel_capacity() -> u64 {
+    1024
+}
+
+// Mirrors `syneroym_mqtt_broker::MqttBrokerConfig` (same `channel_capacity`
+// field, `u64` here vs. `usize` there, bridged with an `as usize` cast at
+// the one call site in `crates/router/src/route_handler.rs`) -- `core`
+// can't depend on `mqtt_broker`, so this is intentional duplication, not
+// accidental drift.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MessagingConfig {
+    /// Messages in flight between the host and the embedded broker (and
+    /// separately, per-subscriber forwarding capacity). No `bind_addr`
+    /// field -- ADR-0010's aspirational `[mqtt] bind_addr` network listener
+    /// is explicitly dropped (Finding A5); the broker is reachable only
+    /// in-process, via `Broker::link`.
+    pub channel_capacity: u64,
+}
+
+impl Default for MessagingConfig {
+    fn default() -> Self {
+        Self { channel_capacity: default_mqtt_channel_capacity() }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -772,6 +803,12 @@ mod tests {
         assert_eq!(config.max_blob_bytes, 100 * 1024 * 1024);
         assert_eq!(config.max_service_total_bytes, None);
         assert!(config.s3.is_none());
+    }
+
+    #[test]
+    fn test_messaging_config_defaults() {
+        let config = MessagingConfig::default();
+        assert_eq!(config.channel_capacity, 1024);
     }
 
     #[test]

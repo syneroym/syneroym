@@ -20,6 +20,7 @@ use crate::{
     preamble::RoutePreamble,
     route_handler::encryption::{OwnedStream, apply_encryption_stage},
     routing::{RoutePipeline, ServiceStage, TransportStage},
+    stop_signal::StopSignal,
 };
 
 /// Reads a single line from the reader and parses it as a `RoutePreamble`.
@@ -47,8 +48,12 @@ impl RouteHandler {
     /// 5. Dispatch by transport stage
     pub async fn handle_stream<S>(self, stream: S) -> Result<()>
     where
-        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        S: AsyncRead + AsyncWrite + Unpin + Send + StopSignal + 'static,
     {
+        // Captured before `io::split` erases the concrete stream type --
+        // see `handle_messaging_subscribe`'s dead-subscriber detection.
+        let stop_signal = stream.stop_signal();
+
         // 1. Parse preamble
         let (read_half, write_half) = io::split(stream);
         let mut reader = BufReader::new(read_half);
@@ -169,8 +174,9 @@ impl RouteHandler {
                 self.handle_http_stream(io, preamble, pipeline).await
             }
             TransportStage::Binary => {
-                let (r, mut w) = (stream.reader, stream.writer);
-                self.handle_json_rpc_loop(BufReader::new(r), &mut w, &preamble, &pipeline).await
+                let (r, w) = (stream.reader, stream.writer);
+                self.handle_binary_stream(BufReader::new(r), w, &preamble, &pipeline, stop_signal)
+                    .await
             }
         }
     }

@@ -33,6 +33,7 @@ use syneroym_core::{
 use syneroym_data_blob::BlobProvider;
 use syneroym_data_db::traits::StorageProvider;
 use syneroym_data_keystore::KeyStore;
+use syneroym_mqtt_broker::MqttBroker;
 use syneroym_rpc::{
     NativeDispatchRegistry, NativeInvocation, NativeResponse, NativeService, RpcError, RpcResult,
 };
@@ -47,7 +48,8 @@ use crate::{
 
 const ORCHESTRATOR_INTERFACE: &str = "orchestrator";
 const SECURITY_INTERFACE: &str = "security";
-const NATIVE_CAPABILITY_INTERFACES: [&str; 4] = ["data-layer", "vault", "app-config", "blob-store"];
+const NATIVE_CAPABILITY_INTERFACES: [&str; 5] =
+    ["data-layer", "vault", "app-config", "blob-store", "messaging"];
 
 /// The Substrate Service (The Control Plane Orchestrator)
 /// This service handles the deployment and lifecycle of applications
@@ -62,6 +64,7 @@ pub struct ControlPlaneService {
     key_store: Arc<KeyStore>,
     storage_provider: Arc<dyn StorageProvider>,
     blob_provider: Arc<dyn BlobProvider>,
+    messaging_broker: Arc<MqttBroker>,
     native_dispatch: NativeDispatchRegistry,
 }
 
@@ -84,6 +87,7 @@ impl ControlPlaneService {
         key_store: Arc<KeyStore>,
         storage_provider: Arc<dyn StorageProvider>,
         blob_provider: Arc<dyn BlobProvider>,
+        messaging_broker: Arc<MqttBroker>,
         native_dispatch: NativeDispatchRegistry,
     ) -> Result<Self> {
         info!("Initializing ControlPlaneService (Orchestrator)...");
@@ -101,6 +105,7 @@ impl ControlPlaneService {
             key_store,
             storage_provider,
             blob_provider,
+            messaging_broker,
             native_dispatch,
         })
     }
@@ -501,6 +506,7 @@ impl OrchestratorInterface for ControlPlaneService {
                 self.key_store.clone(),
                 self.storage_provider.clone(),
                 self.blob_provider.clone(),
+                self.messaging_broker.clone(),
             )) as Arc<dyn NativeService>,
         );
 
@@ -555,7 +561,25 @@ impl OrchestratorInterface for ControlPlaneService {
             }
         }
 
-        // The endpoint-registry loop above already removed the 4 native
+        // Messaging subscriptions have no analogue among the other 4 native
+        // capabilities: they're a long-lived stateful subsystem (persisted
+        // rows plus live broker registrations), not pure request/response,
+        // so they need an explicit "forget this service" step the
+        // endpoint-registry loop above doesn't cover.
+        if let Err(e) =
+            self.storage_provider.delete_all_messaging_subscriptions_for_service(&service_id).await
+        {
+            tracing::warn!(
+                "Failed to remove messaging subscriptions for service {}: {}",
+                service_id,
+                e
+            );
+        }
+        if is_wasm {
+            self.app_sandbox_engine.unsubscribe_all(&service_id);
+        }
+
+        // The endpoint-registry loop above already removed the 5 native
         // capability interfaces generically (it iterates every registered
         // interface for this service_id); just drop the in-memory dispatch
         // entry too.
@@ -569,9 +593,9 @@ impl OrchestratorInterface for ControlPlaneService {
         let mut services: HashMap<String, DeployedService> = HashMap::new();
 
         for (service_id, interface, endpoint) in endpoints {
-            // The 4 native-capability interfaces (data-layer/vault/app-config/
-            // blob-store) are host-provided plumbing registered on every
-            // deployed service regardless of type -- they must not be
+            // The native-capability interfaces (data-layer/vault/app-config/
+            // blob-store/messaging) are host-provided plumbing registered on
+            // every deployed service regardless of type -- they must not be
             // mistaken for the service's own declared interfaces, nor
             // influence `endpoint_type` (every deployed service also always
             // has its real wasm/container/tcp endpoint registered).
@@ -654,17 +678,56 @@ fn ready_response() -> NativeResponse {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::{path::Path, time::Duration};
 
-    use syneroym_core::{config::SubstrateConfig, storage::MockStorage};
+    use syneroym_core::{config::SubstrateConfig, storage::MockStorage, test_constants};
     use syneroym_data_blob::ObjectStoreBlobProvider;
     use syneroym_data_db::SqliteStorageProvider;
+    use syneroym_mqtt_broker::MqttBrokerConfig;
+    use syneroym_rpc::JsonRpcRequest;
     use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
         ArtifactSource, PlannedService, ServiceConfig, TcpManifest, WasmManifest,
     };
     use wit_parser::Resolve;
 
     use super::*;
+
+    const MESSAGING_TEST_DRIVER_INTERFACE: &str =
+        "syneroym-test:messaging-pubsub-test/test-driver@0.1.0";
+
+    fn messaging_wasm_manifest(bytes: Vec<u8>) -> DeployManifest {
+        DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema_path: None,
+                rotation_policy: None,
+            },
+            service_type: WitServiceType::Wasm(WasmManifest {
+                source: ArtifactSource::Binary(bytes),
+                hash: None,
+                interfaces: vec![MESSAGING_TEST_DRIVER_INTERFACE.to_string()],
+            }),
+            registry_certificate: None,
+        }
+    }
+
+    async fn call_test_driver(
+        engine: &AppSandboxEngine,
+        service_id: &str,
+        method: &str,
+        params: serde_json::Value,
+    ) -> String {
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: method.to_string(),
+            params,
+            id: None,
+        };
+        engine.execute_wasm(service_id, MESSAGING_TEST_DRIVER_INTERFACE, &request).await.unwrap()
+    }
 
     #[tokio::test]
     async fn test_wit_adherence() {
@@ -694,6 +757,7 @@ mod tests {
             Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
         let blob_provider: Arc<dyn BlobProvider> =
             Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
         let app_sandbox = Arc::new(
             AppSandboxEngine::init(
                 &config,
@@ -701,6 +765,7 @@ mod tests {
                 key_store.clone(),
                 storage_provider.clone(),
                 blob_provider.clone(),
+                messaging_broker.clone(),
             )
             .await
             .unwrap(),
@@ -718,6 +783,7 @@ mod tests {
             key_store,
             storage_provider,
             blob_provider.clone(),
+            messaging_broker.clone(),
             NativeDispatchRegistry::default(),
         )
         .await
@@ -753,6 +819,7 @@ mod tests {
             Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
         let blob_provider: Arc<dyn BlobProvider> =
             Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
         let app_sandbox = Arc::new(
             AppSandboxEngine::init(
                 &config,
@@ -760,6 +827,7 @@ mod tests {
                 key_store.clone(),
                 storage_provider.clone(),
                 blob_provider.clone(),
+                messaging_broker.clone(),
             )
             .await
             .unwrap(),
@@ -777,6 +845,7 @@ mod tests {
             key_store,
             storage_provider,
             blob_provider.clone(),
+            messaging_broker.clone(),
             NativeDispatchRegistry::default(),
         )
         .await
@@ -823,6 +892,7 @@ mod tests {
             Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
         let blob_provider: Arc<dyn BlobProvider> =
             Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
         let app_sandbox = Arc::new(
             AppSandboxEngine::init(
                 &config,
@@ -830,6 +900,7 @@ mod tests {
                 key_store.clone(),
                 storage_provider.clone(),
                 blob_provider.clone(),
+                messaging_broker.clone(),
             )
             .await
             .unwrap(),
@@ -847,6 +918,7 @@ mod tests {
             key_store,
             storage_provider,
             blob_provider.clone(),
+            messaging_broker.clone(),
             NativeDispatchRegistry::default(),
         )
         .await
@@ -896,6 +968,7 @@ mod tests {
             Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
         let blob_provider: Arc<dyn BlobProvider> =
             Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
         let app_sandbox = Arc::new(
             AppSandboxEngine::init(
                 &config,
@@ -903,6 +976,7 @@ mod tests {
                 key_store.clone(),
                 storage_provider.clone(),
                 blob_provider.clone(),
+                messaging_broker.clone(),
             )
             .await
             .unwrap(),
@@ -920,6 +994,7 @@ mod tests {
             key_store,
             storage_provider,
             blob_provider.clone(),
+            messaging_broker.clone(),
             NativeDispatchRegistry::default(),
         )
         .await
@@ -971,6 +1046,7 @@ mod tests {
             Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
         let blob_provider: Arc<dyn BlobProvider> =
             Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
         let app_sandbox = Arc::new(
             AppSandboxEngine::init(
                 &config,
@@ -978,6 +1054,7 @@ mod tests {
                 key_store.clone(),
                 storage_provider.clone(),
                 blob_provider.clone(),
+                messaging_broker.clone(),
             )
             .await
             .unwrap(),
@@ -995,6 +1072,7 @@ mod tests {
             key_store,
             storage_provider,
             blob_provider.clone(),
+            messaging_broker.clone(),
             NativeDispatchRegistry::default(),
         )
         .await
@@ -1039,6 +1117,7 @@ mod tests {
             Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
         let blob_provider: Arc<dyn BlobProvider> =
             Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
         let app_sandbox = Arc::new(
             AppSandboxEngine::init(
                 &config,
@@ -1046,6 +1125,7 @@ mod tests {
                 key_store.clone(),
                 storage_provider.clone(),
                 blob_provider.clone(),
+                messaging_broker.clone(),
             )
             .await
             .unwrap(),
@@ -1063,6 +1143,7 @@ mod tests {
             key_store,
             storage_provider.clone(),
             blob_provider.clone(),
+            messaging_broker.clone(),
             NativeDispatchRegistry::default(),
         )
         .await
@@ -1108,6 +1189,7 @@ mod tests {
             Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
         let blob_provider: Arc<dyn BlobProvider> =
             Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
         let app_sandbox = Arc::new(
             AppSandboxEngine::init(
                 &config,
@@ -1115,6 +1197,7 @@ mod tests {
                 key_store.clone(),
                 storage_provider.clone(),
                 blob_provider.clone(),
+                messaging_broker.clone(),
             )
             .await
             .unwrap(),
@@ -1129,9 +1212,10 @@ mod tests {
             container_engine,
             registry,
             temp_dir.path().to_path_buf(),
-            key_store,
-            storage_provider,
+            key_store.clone(),
+            storage_provider.clone(),
             blob_provider,
+            messaging_broker.clone(),
             NativeDispatchRegistry::default(),
         )
         .await
@@ -1267,6 +1351,64 @@ mod tests {
         assert_eq!(chunk, b"streamed content".to_vec());
         assert_eq!(read_resp.payload["eof"], false);
 
+        // vault: reveal a secret written directly via the service's own
+        // ServiceStore (previously had dispatch code but no dedicated
+        // round-trip test anywhere in the repo).
+        let store = storage_provider.open_service_db(&service_id, &key_store).await.unwrap();
+        store.write_secret("db-password", b"s3cr3t").await.unwrap();
+        let reveal_resp = native
+            .dispatch(NativeInvocation {
+                interface: "vault".to_string(),
+                method: "reveal".to_string(),
+                params: serde_json::json!({"key": "db-password"}),
+            })
+            .await
+            .unwrap();
+        let revealed: Vec<u8> = serde_json::from_value(reveal_resp.payload).unwrap();
+        assert_eq!(revealed, b"s3cr3t".to_vec());
+
+        // app-config: get a key from a config generation saved directly
+        // (previously had dispatch code but no dedicated round-trip test
+        // anywhere in the repo).
+        storage_provider
+            .save_config_generation(&service_id, r#"{"greeting": "hello"}"#)
+            .await
+            .unwrap();
+        let config_resp = native
+            .dispatch(NativeInvocation {
+                interface: "app-config".to_string(),
+                method: "get".to_string(),
+                params: serde_json::json!({"key": "greeting"}),
+            })
+            .await
+            .unwrap();
+        assert_eq!(config_resp.payload, serde_json::json!("hello"));
+
+        // messaging: publish (subscribe/unsubscribe go through the
+        // router-level push-delivery path, not this request/response one --
+        // see ADR-0010 Finding A2). Subscribed directly through the broker
+        // (bypassing the native dispatch layer, which has no subscribe) so
+        // the assertion below proves actual delivery, not just that the
+        // RPC call didn't error.
+        let (_sub_handle, mut sub_rx) =
+            messaging_broker.subscribe(format!("svc/{service_id}/orders/new")).await.unwrap();
+        let publish_resp = native
+            .dispatch(NativeInvocation {
+                interface: "messaging".to_string(),
+                method: "publish".to_string(),
+                params: serde_json::json!({"topic": "orders/new", "payload": b"order-1".to_vec()}),
+            })
+            .await
+            .unwrap();
+        assert_eq!(publish_resp.payload, Value::Null);
+        let (delivered_topic, delivered_payload) =
+            tokio::time::timeout(std::time::Duration::from_secs(2), sub_rx.recv())
+                .await
+                .expect("did not time out waiting for native publish to be delivered")
+                .expect("subscriber channel closed unexpectedly");
+        assert_eq!(delivered_topic, format!("svc/{service_id}/orders/new"));
+        assert_eq!(delivered_payload, b"order-1");
+
         // undeploy removes the native dispatch registration
         service.undeploy(service_id.clone()).await.unwrap();
         assert!(service.native_dispatch.get(&service_id).is_none());
@@ -1281,6 +1423,7 @@ mod tests {
             Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
         let blob_provider: Arc<dyn BlobProvider> =
             Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
         let app_sandbox = Arc::new(
             AppSandboxEngine::init(
                 &config,
@@ -1288,6 +1431,7 @@ mod tests {
                 key_store.clone(),
                 storage_provider.clone(),
                 blob_provider.clone(),
+                messaging_broker.clone(),
             )
             .await
             .unwrap(),
@@ -1305,6 +1449,7 @@ mod tests {
             key_store,
             storage_provider,
             blob_provider,
+            messaging_broker.clone(),
             NativeDispatchRegistry::default(),
         )
         .await
@@ -1400,6 +1545,7 @@ mod tests {
         // `BlobError::QuotaExceeded`.
         let blob_provider: Arc<dyn BlobProvider> =
             Arc::new(ObjectStoreBlobProvider::in_memory(4, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
         let app_sandbox = Arc::new(
             AppSandboxEngine::init(
                 &config,
@@ -1407,6 +1553,7 @@ mod tests {
                 key_store.clone(),
                 storage_provider.clone(),
                 blob_provider.clone(),
+                messaging_broker.clone(),
             )
             .await
             .unwrap(),
@@ -1424,6 +1571,7 @@ mod tests {
             key_store,
             storage_provider,
             blob_provider,
+            messaging_broker.clone(),
             NativeDispatchRegistry::default(),
         )
         .await
@@ -1468,5 +1616,290 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(quota_err, RpcError::Custom(-32002, _, _)));
+    }
+
+    /// M3B Slice 6A: a guest subscription's `messaging_subscriptions` row
+    /// and live broker registration are both removed by `undeploy`, and a
+    /// publish to that topic afterward does not error (nothing is left to
+    /// deliver to).
+    #[tokio::test]
+    async fn test_messaging_undeploy_removes_subscriptions() {
+        let Ok(wasm_bytes) = std::fs::read(test_constants::messaging_pubsub_test_wasm_path())
+        else {
+            eprintln!(
+                "Skipping test_messaging_undeploy_removes_subscriptions: messaging-pubsub-test \
+                 WASM artifact not found (run `cargo build --target wasm32-wasip2 --release` in \
+                 test-components/messaging-pubsub-test)"
+            );
+            return;
+        };
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider: Arc<dyn StorageProvider> =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+            )
+            .await
+            .unwrap(),
+        );
+        app_sandbox.self_weak.set(Arc::downgrade(&app_sandbox)).unwrap();
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider.clone(),
+            blob_provider,
+            messaging_broker.clone(),
+            NativeDispatchRegistry::default(),
+        )
+        .await
+        .unwrap();
+
+        let service_id = "messaging-undeploy-svc".to_string();
+        service.deploy(service_id.clone(), messaging_wasm_manifest(wasm_bytes)).await.unwrap();
+        call_test_driver(
+            &service.app_sandbox_engine,
+            &service_id,
+            "subscribe-to",
+            serde_json::json!(["orders/new"]),
+        )
+        .await;
+
+        let namespaced_topic = format!("svc/{service_id}/orders/new");
+        let persisted = storage_provider.list_all_messaging_subscriptions().await.unwrap();
+        assert_eq!(persisted, vec![(service_id.clone(), namespaced_topic.clone())]);
+
+        service.undeploy(service_id.clone()).await.unwrap();
+
+        let after_undeploy = storage_provider.list_all_messaging_subscriptions().await.unwrap();
+        assert!(after_undeploy.is_empty(), "subscription row must be gone after undeploy");
+
+        // Publishing to the now-unsubscribed topic must not error, even
+        // though the (undeployed) component can no longer be delivered to.
+        messaging_broker.publish(namespaced_topic, b"post-undeploy".to_vec()).await.unwrap();
+    }
+
+    /// M3B Slice 6A: service A cannot receive messages published in
+    /// service B's own namespace without the explicit fully-qualified
+    /// `svc/<other>/...` opt-in (ADR-0010's Topic Namespace Isolation).
+    #[tokio::test]
+    async fn test_messaging_namespace_isolation() {
+        let Ok(wasm_bytes) = std::fs::read(test_constants::messaging_pubsub_test_wasm_path())
+        else {
+            eprintln!(
+                "Skipping test_messaging_namespace_isolation: messaging-pubsub-test WASM artifact \
+                 not found (run `cargo build --target wasm32-wasip2 --release` in \
+                 test-components/messaging-pubsub-test)"
+            );
+            return;
+        };
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider: Arc<dyn StorageProvider> =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+            )
+            .await
+            .unwrap(),
+        );
+        app_sandbox.self_weak.set(Arc::downgrade(&app_sandbox)).unwrap();
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider,
+            blob_provider,
+            messaging_broker,
+            NativeDispatchRegistry::default(),
+        )
+        .await
+        .unwrap();
+
+        let service_a = "messaging-isolation-a".to_string();
+        let service_b = "messaging-isolation-b".to_string();
+        service
+            .deploy(service_a.clone(), messaging_wasm_manifest(wasm_bytes.clone()))
+            .await
+            .unwrap();
+        service.deploy(service_b.clone(), messaging_wasm_manifest(wasm_bytes)).await.unwrap();
+
+        // B subscribes to its own bare namespace only.
+        call_test_driver(
+            &service.app_sandbox_engine,
+            &service_b,
+            "subscribe-to",
+            serde_json::json!(["orders/new"]),
+        )
+        .await;
+        // A publishes to *its own* bare namespace -- a different topic.
+        call_test_driver(
+            &service.app_sandbox_engine,
+            &service_a,
+            "publish-to",
+            serde_json::json!(["orders/new", "should not cross into B"]),
+        )
+        .await;
+
+        // Give any (incorrect) delivery a real chance to happen before
+        // asserting the negative.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let received = call_test_driver(
+            &service.app_sandbox_engine,
+            &service_b,
+            "get-received-messages",
+            serde_json::json!([]),
+        )
+        .await;
+        assert!(
+            received.is_empty(),
+            "service B must not observe service A's own-namespace publish"
+        );
+    }
+
+    /// M3B Slice 6A (ADR-0010 Finding A1): a guest subscription's
+    /// `messaging_subscriptions` row survives a substrate restart, and
+    /// replaying it into a freshly-constructed broker/engine (the same
+    /// steps `RouteHandler::init` performs on real startup) restores
+    /// delivery without the guest calling `subscribe` again.
+    #[tokio::test]
+    async fn test_messaging_subscriptions_survive_restart_replay() {
+        let Ok(wasm_bytes) = std::fs::read(test_constants::messaging_pubsub_test_wasm_path())
+        else {
+            eprintln!(
+                "Skipping test_messaging_subscriptions_survive_restart_replay: \
+                 messaging-pubsub-test WASM artifact not found (run `cargo build --target \
+                 wasm32-wasip2 --release` in test-components/messaging-pubsub-test)"
+            );
+            return;
+        };
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider: Arc<dyn StorageProvider> =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let service_id = "messaging-restart-svc".to_string();
+        let manifest = messaging_wasm_manifest(wasm_bytes);
+
+        // "First boot": deploy, subscribe, then drop the broker/engine
+        // entirely (nothing here survives a real restart except the DB).
+        {
+            let broker1 = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+            let engine1 = Arc::new(
+                AppSandboxEngine::init(
+                    &config,
+                    vec![],
+                    key_store.clone(),
+                    storage_provider.clone(),
+                    blob_provider.clone(),
+                    broker1,
+                )
+                .await
+                .unwrap(),
+            );
+            engine1.self_weak.set(Arc::downgrade(&engine1)).unwrap();
+            engine1.deploy_wasm(&service_id, &manifest).await.unwrap();
+            call_test_driver(
+                &engine1,
+                &service_id,
+                "subscribe-to",
+                serde_json::json!(["orders/new"]),
+            )
+            .await;
+        }
+
+        let namespaced_topic = format!("svc/{service_id}/orders/new");
+        let persisted = storage_provider.list_all_messaging_subscriptions().await.unwrap();
+        assert_eq!(
+            persisted,
+            vec![(service_id.clone(), namespaced_topic.clone())],
+            "subscription row must survive across the simulated restart"
+        );
+
+        // "Second boot": fresh broker + engine, re-deploy the same wasm
+        // bytes (mirrors AppSandboxEngine::init's own endpoint-driven
+        // warmup, which isn't exercised directly here), then replay every
+        // persisted row -- exactly what `RouteHandler::init` does before
+        // accepting connections.
+        let broker2 = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let engine2 = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store,
+                storage_provider.clone(),
+                blob_provider,
+                broker2.clone(),
+            )
+            .await
+            .unwrap(),
+        );
+        engine2.self_weak.set(Arc::downgrade(&engine2)).unwrap();
+        engine2.deploy_wasm(&service_id, &manifest).await.unwrap();
+
+        for (subscribed_service_id, topic) in
+            storage_provider.list_all_messaging_subscriptions().await.unwrap()
+        {
+            engine2.register_internal_subscription(&subscribed_service_id, &topic).await.unwrap();
+        }
+
+        broker2.publish(namespaced_topic.clone(), b"post-restart".to_vec()).await.unwrap();
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let mut received = String::new();
+        while tokio::time::Instant::now() < deadline {
+            received = call_test_driver(
+                &engine2,
+                &service_id,
+                "get-received-messages",
+                serde_json::json!([]),
+            )
+            .await;
+            if !received.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(received, format!("{namespaced_topic}\tpost-restart"));
     }
 }

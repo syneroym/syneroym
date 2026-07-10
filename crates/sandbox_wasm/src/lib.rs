@@ -4,4 +4,4 @@
 pub mod conversions;
 mod engine;
 
-pub use engine::{AppSandboxEngine, HostState, WasmResourceQuota};
+pub use engine::{AppSandboxEngine, HostState, MessagingContext, WasmResourceQuota};

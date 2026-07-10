@@ -1,0 +1,27 @@
+package syneroym:messaging@0.1.0;
+
+interface host-api {
+    variant messaging-error {
+        permission-denied,
+        internal(string),
+    }
+
+    publish: func(topic: string, payload: list<u8>) -> result<_, messaging-error>;
+
+    subscribe: func(topic: string) -> result<_, messaging-error>;
+
+    unsubscribe: func(topic: string) -> result<_, messaging-error>;
+}
+
+interface guest-api {
+    /// Invoked by the host when a message matching one of this
+    /// component's subscriptions arrives. Optional: components that
+    /// don't export this still succeed at `subscribe`, and matching
+    /// messages are silently discarded (per ADR-0010).
+    handle-message: func(topic: string, payload: list<u8>) -> result<_, string>;
+}
+
+world messaging-guest {
+    import host-api;
+    export guest-api;
+}

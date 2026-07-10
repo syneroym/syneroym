@@ -62,6 +62,35 @@ pub trait StorageProvider: Send + Sync {
         &self,
         service_id: &str,
     ) -> anyhow::Result<Option<(u64, String)>>;
+
+    /// Records a guest messaging subscription so it survives a substrate
+    /// restart (see `messaging_subscriptions`, M3B Slice 6A / ADR-0010
+    /// Finding A1). Idempotent: re-subscribing to the same topic is a
+    /// no-op, not an error.
+    async fn save_messaging_subscription(
+        &self,
+        service_id: &str,
+        topic: &str,
+    ) -> anyhow::Result<()>;
+
+    /// Removes one guest messaging subscription. Idempotent: deleting a
+    /// non-existent row is not an error.
+    async fn delete_messaging_subscription(
+        &self,
+        service_id: &str,
+        topic: &str,
+    ) -> anyhow::Result<()>;
+
+    /// Removes every messaging subscription for a service (called from
+    /// `ControlPlaneService::undeploy`'s cleanup).
+    async fn delete_all_messaging_subscriptions_for_service(
+        &self,
+        service_id: &str,
+    ) -> anyhow::Result<()>;
+
+    /// Lists every persisted `(service_id, topic)` subscription, replayed
+    /// into the broker on substrate startup.
+    async fn list_all_messaging_subscriptions(&self) -> anyhow::Result<Vec<(String, String)>>;
 }
 
 #[async_trait]

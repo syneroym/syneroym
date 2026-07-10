@@ -6,7 +6,7 @@
 use std::{
     fmt::{self, Debug, Formatter},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, OnceLock, Weak},
     time::{Duration, Instant},
 };
 
@@ -20,6 +20,10 @@ use syneroym_data_blob::{
 };
 use syneroym_data_db::traits::{ServiceStore, StorageProvider};
 use syneroym_data_keystore::KeyStore;
+use syneroym_mqtt_broker::{
+    MessagingError as BrokerMessagingError, MqttBroker, SubscriptionHandle, namespace_topic,
+    namespace_topic_for_publish,
+};
 use syneroym_rpc::JsonRpcRequest;
 use syneroym_wit_interfaces::{
     control_plane::exports::syneroym::control_plane::orchestrator::{
@@ -35,6 +39,7 @@ use syneroym_wit_interfaces::{
             RecordReadValue, RecordWriteValue,
         },
         host::{context, context::Host},
+        messaging::host_api::{self, MessagingError},
         vault::vault::{self, VaultError},
     },
 };
@@ -59,6 +64,23 @@ pub struct WasmResourceQuota {
     pub max_memory_bytes: Option<u64>,
 }
 
+/// Bundles the messaging-specific pieces of `HostState`: the broker every
+/// service shares, and a weak handle back to the owning `AppSandboxEngine`
+/// so a live `subscribe()` call can register a delivery task that outlives
+/// the ephemeral `Store`/`HostState` it was made from (every WASM
+/// invocation gets a fresh `Store` -- see `AppSandboxEngine::self_weak`).
+#[derive(Debug, Clone)]
+pub struct MessagingContext {
+    pub broker: Arc<MqttBroker>,
+    pub engine: Weak<AppSandboxEngine>,
+}
+
+fn map_broker_error(e: BrokerMessagingError) -> MessagingError {
+    match e {
+        BrokerMessagingError::Internal(msg) => MessagingError::Internal(msg),
+    }
+}
+
 /// Host state instantiated per-request for WASM components
 pub struct HostState {
     pub wasi: WasiCtx,
@@ -72,6 +94,7 @@ pub struct HostState {
     pub blob_provider: Arc<dyn BlobProvider>,
     pub is_init_context: bool,
     pub config_generation: u64,
+    pub messaging: MessagingContext,
 }
 
 impl Debug for HostState {
@@ -95,6 +118,7 @@ impl HostState {
         blob_provider: Arc<dyn BlobProvider>,
         is_init_context: bool,
         config_generation: u64,
+        messaging: MessagingContext,
     ) -> Self {
         let wasi = WasiCtx::builder().build();
         let table = ResourceTable::new();
@@ -115,6 +139,7 @@ impl HostState {
             blob_provider,
             is_init_context,
             config_generation,
+            messaging,
         }
     }
 }
@@ -161,6 +186,64 @@ impl vault::Host for HostState {
                 Err(VaultError::Internal(e.to_string()))
             }
         }
+    }
+}
+
+impl host_api::Host for HostState {
+    async fn publish(&mut self, topic: String, payload: Vec<u8>) -> Result<(), MessagingError> {
+        let namespaced = namespace_topic_for_publish(&self.component_id, &topic);
+        let broker = self.messaging.broker.clone();
+        broker.publish(namespaced, payload).await.map_err(map_broker_error)
+    }
+
+    async fn subscribe(&mut self, topic: String) -> Result<(), MessagingError> {
+        let namespaced = namespace_topic(&self.component_id, &topic);
+        let service_id = self.component_id.clone();
+        let storage_provider = self.storage_provider.clone();
+        let engine = self.messaging.engine.clone();
+
+        // Checked before the DB write (rather than after) so a teardown
+        // race never leaves a persisted subscription row with no live
+        // broker registration behind it.
+        let Some(engine) = engine.upgrade() else {
+            return Err(MessagingError::Internal(
+                "sandbox engine unavailable for subscription registration".to_string(),
+            ));
+        };
+
+        storage_provider
+            .save_messaging_subscription(&service_id, &namespaced)
+            .await
+            .map_err(|e| MessagingError::Internal(e.to_string()))?;
+
+        engine
+            .register_internal_subscription(&service_id, &namespaced)
+            .await
+            .map_err(|e| MessagingError::Internal(e.to_string()))
+    }
+
+    async fn unsubscribe(&mut self, topic: String) -> Result<(), MessagingError> {
+        let namespaced = namespace_topic(&self.component_id, &topic);
+        let service_id = self.component_id.clone();
+        let storage_provider = self.storage_provider.clone();
+        let engine = self.messaging.engine.clone();
+
+        storage_provider
+            .delete_messaging_subscription(&service_id, &namespaced)
+            .await
+            .map_err(|e| MessagingError::Internal(e.to_string()))?;
+
+        // Surfaced as an error (rather than silently `Ok`) since the DB
+        // row is already gone at this point: a caller told "success" here
+        // while the live subscription stays active would have no way to
+        // rediscover and clean it up later, via replay or otherwise.
+        let Some(engine) = engine.upgrade() else {
+            return Err(MessagingError::Internal(
+                "sandbox engine unavailable for subscription deregistration".to_string(),
+            ));
+        };
+        engine.subscriptions.remove(&(service_id, namespaced));
+        Ok(())
     }
 }
 
@@ -551,6 +634,17 @@ pub struct AppSandboxEngine {
     pub key_store: Arc<KeyStore>,
     pub storage_provider: Arc<dyn StorageProvider>,
     pub blob_provider: Arc<dyn BlobProvider>,
+    pub messaging_broker: Arc<MqttBroker>,
+    /// Set once, immediately after the engine is wrapped in an `Arc` by its
+    /// owner (see module docs on [`MessagingContext`]). Lets a live
+    /// `subscribe()` call's forwarding task reach back into the engine to
+    /// invoke `deliver_message` long after the `Store` that made the call
+    /// is gone.
+    pub self_weak: OnceLock<Weak<AppSandboxEngine>>,
+    /// Live guest-delivery subscriptions, keyed `(service_id,
+    /// namespaced_topic)`. Dropping an entry unsubscribes from the broker
+    /// (see `SubscriptionHandle::drop`).
+    subscriptions: DashMap<(String, String), SubscriptionHandle>,
 }
 
 impl Debug for AppSandboxEngine {
@@ -580,12 +674,14 @@ impl AppSandboxEngine {
     }
 
     /// Initializes the App Sandbox and warms up any existing WASM endpoints
+    #[allow(clippy::too_many_arguments)]
     pub async fn init(
         config: &SubstrateConfig,
         endpoints: Vec<(String, String, SubstrateEndpoint)>,
         key_store: Arc<KeyStore>,
         storage_provider: Arc<dyn StorageProvider>,
         blob_provider: Arc<dyn BlobProvider>,
+        messaging_broker: Arc<MqttBroker>,
     ) -> anyhow::Result<Self> {
         let component_dir = config.storage.blobs_dir.join("app_sandbox");
 
@@ -627,6 +723,9 @@ impl AppSandboxEngine {
             key_store,
             storage_provider,
             blob_provider,
+            messaging_broker,
+            self_weak: OnceLock::new(),
+            subscriptions: DashMap::new(),
         };
 
         for (service_id, _interface_name, endpoint) in endpoints {
@@ -692,6 +791,7 @@ impl AppSandboxEngine {
         store::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
         app_config::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
         blob_store::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
+        host_api::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
         Ok(linker)
     }
 
@@ -773,6 +873,21 @@ impl AppSandboxEngine {
         };
 
         Ok((func, results_len, item))
+    }
+
+    /// Extracts the failure message from a guest function's `result<_,
+    /// string>` return value, if it returned `Err`. Shared by
+    /// `invoke_lifecycle_hook` and `deliver_message`, which both call
+    /// guest exports returning this shape and only care about the
+    /// failure message.
+    fn wasm_result_err(results: &[Val]) -> Option<&str> {
+        if let Some(Val::Result(Err(Some(boxed)))) = results.first()
+            && let Val::String(msg) = boxed.as_ref()
+        {
+            Some(msg.as_str())
+        } else {
+            None
+        }
     }
 
     /// Deploy and compile a WASM component for a given service
@@ -952,6 +1067,10 @@ impl AppSandboxEngine {
             };
 
         // Create host state
+        let messaging = MessagingContext {
+            broker: self.messaging_broker.clone(),
+            engine: self.self_weak.get().cloned().unwrap_or_default(),
+        };
         let host_state = HostState::new(
             service_id.to_string(),
             max_memory_bytes,
@@ -960,6 +1079,7 @@ impl AppSandboxEngine {
             self.blob_provider.clone(),
             is_init_context,
             config_generation,
+            messaging,
         );
 
         debug!("created wasi ctx and host state");
@@ -1023,12 +1143,106 @@ impl AppSandboxEngine {
         let mut results = vec![Val::Bool(false); results_len];
         func.call_async(&mut store, &[], &mut results).await?;
 
-        if let Some(Val::Result(Err(Some(boxed)))) = results.first()
-            && let Val::String(msg) = boxed.as_ref()
-        {
+        if let Some(msg) = Self::wasm_result_err(&results) {
             return Err(anyhow::anyhow!("{hook}() failed: {msg}"));
         }
         Ok(())
+    }
+
+    /// Core in-memory subscribe logic shared by a live guest `subscribe()`
+    /// call and substrate-startup replay (the latter has no `HostState` to
+    /// call through, since it runs before any request is served). Spawns a
+    /// forwarding task that calls `deliver_message` per broker message and
+    /// exits when the broker's receiver closes (including when this
+    /// engine itself is dropped, via `MqttBroker`'s `CancellationToken`).
+    pub async fn register_internal_subscription(
+        &self,
+        service_id: &str,
+        namespaced_topic: &str,
+    ) -> Result<()> {
+        let key = (service_id.to_string(), namespaced_topic.to_string());
+        if self.subscriptions.contains_key(&key) {
+            // Already live (e.g. a guest retrying `subscribe` after a
+            // transient error it couldn't distinguish from "already
+            // subscribed") -- opening a second broker link here would
+            // double-deliver every message on this topic until the first
+            // link's handle is eventually dropped.
+            return Ok(());
+        }
+
+        let (handle, mut receiver) = self
+            .messaging_broker
+            .subscribe(key.1.clone())
+            .await
+            .map_err(|e| anyhow::anyhow!("broker subscribe failed: {e}"))?;
+
+        let engine_weak = self.self_weak.get().cloned().unwrap_or_default();
+        let service_id_owned = service_id.to_string();
+        tokio::spawn(async move {
+            while let Some((topic, payload)) = receiver.recv().await {
+                let Some(engine) = engine_weak.upgrade() else { break };
+                engine.deliver_message(&service_id_owned, &topic, payload).await;
+            }
+        });
+
+        self.subscriptions.insert(key, handle);
+        Ok(())
+    }
+
+    /// Drops every live guest-delivery subscription for `service_id`
+    /// (called from `ControlPlaneService::undeploy`'s cleanup).
+    pub fn unsubscribe_all(&self, service_id: &str) {
+        self.subscriptions.retain(|(sid, _topic), _handle| sid != service_id);
+    }
+
+    /// Invokes the deployed component's exported `guest-api::handle-message`
+    /// with a freshly-instantiated `Store` (same reasoning as any other
+    /// invocation -- see `build_store_and_instantiate`), if it declares
+    /// that export. If not, the message is silently discarded (per
+    /// ADR-0010): this makes it safe to call for every subscription
+    /// regardless of whether the target component implements messaging.
+    async fn deliver_message(&self, service_id: &str, topic: &str, payload: Vec<u8>) {
+        let (mut store, instance) = match self.build_store_and_instantiate(service_id, false).await
+        {
+            Ok(pair) => pair,
+            Err(e) => {
+                debug!(
+                    service_id,
+                    error = %e,
+                    "messaging: failed to instantiate component for delivery"
+                );
+                return;
+            }
+        };
+
+        const GUEST_API_INTERFACE: &str = "syneroym:messaging/guest-api@0.1.0";
+        let (func, results_len, _item) = match Self::get_wasm_func(
+            &mut store,
+            &instance,
+            Some(GUEST_API_INTERFACE),
+            "handle-message",
+        ) {
+            Ok(found) => found,
+            Err(_) => {
+                debug!(
+                    service_id,
+                    "messaging: component does not export guest-api::handle-message, discarding"
+                );
+                return;
+            }
+        };
+
+        let args =
+            [Val::String(topic.to_string()), Val::List(payload.into_iter().map(Val::U8).collect())];
+        let mut results = vec![Val::Bool(false); results_len];
+        if let Err(e) = func.call_async(&mut store, &args, &mut results).await {
+            warn!(service_id, error = %e, "messaging: handle-message invocation trapped");
+            return;
+        }
+
+        if let Some(msg) = Self::wasm_result_err(&results) {
+            warn!(service_id, error = %msg, "messaging: handle-message returned an error");
+        }
     }
 
     /// Simple test function to invoke test context
@@ -1133,6 +1347,7 @@ mod tests {
     use syneroym_core::test_constants;
     use syneroym_data_blob::ObjectStoreBlobProvider;
     use syneroym_data_db::SqliteStorageProvider;
+    use syneroym_mqtt_broker::MqttBrokerConfig;
     use wasmtime::component::Component;
 
     use super::*;
@@ -1141,6 +1356,16 @@ mod tests {
     /// quota.
     fn test_blob_provider() -> Arc<dyn BlobProvider> {
         Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None))
+    }
+
+    /// Test-only messaging context: a real (but throwaway, no network
+    /// listener) broker with no engine backreference -- sufficient for
+    /// tests that don't exercise guest-delivery messaging.
+    fn test_messaging_context() -> MessagingContext {
+        MessagingContext {
+            broker: Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap()),
+            engine: Weak::new(),
+        }
     }
 
     #[tokio::test]
@@ -1160,6 +1385,7 @@ mod tests {
             test_blob_provider(),
             false,
             0,
+            test_messaging_context(),
         );
 
         let mut store = Store::new(&engine, host_state);
@@ -1258,6 +1484,9 @@ mod tests {
             key_store: Arc::new(KeyStore::new()),
             storage_provider: Arc::new(SqliteStorageProvider::new(env::temp_dir(), false).unwrap()),
             blob_provider: test_blob_provider(),
+            messaging_broker: Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap()),
+            self_weak: OnceLock::new(),
+            subscriptions: DashMap::new(),
         };
 
         // Cache the test component
@@ -1312,6 +1541,7 @@ mod tests {
             test_blob_provider(),
             false,
             generation,
+            test_messaging_context(),
         );
 
         use app_config::Host as ConfigHost;
@@ -1357,6 +1587,7 @@ mod tests {
             test_blob_provider(),
             false,
             gen2_a,
+            test_messaging_context(),
         );
         let mut host_b = HostState::new(
             "svc_b".to_string(),
@@ -1366,6 +1597,7 @@ mod tests {
             test_blob_provider(),
             false,
             gen1_b,
+            test_messaging_context(),
         );
 
         let val_a = ConfigHost::get(&mut host_a_gen2, "mode".to_string()).await.unwrap().unwrap();
@@ -1382,6 +1614,7 @@ mod tests {
             test_blob_provider(),
             false,
             gen1_a,
+            test_messaging_context(),
         );
         let val_a_old =
             ConfigHost::get(&mut host_a_gen1, "mode".to_string()).await.unwrap().unwrap();
@@ -1406,6 +1639,7 @@ mod tests {
             test_blob_provider(),
             false,
             0,
+            test_messaging_context(),
         );
 
         let result = vault::Host::reveal(&mut host_state, "does-not-exist".to_string()).await;
