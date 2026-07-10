@@ -35,20 +35,22 @@ use rumqttd::{
 };
 use thiserror::Error;
 use tokio::{
-    sync::{Mutex, mpsc},
+    sync::{Mutex, mpsc, mpsc::error::TrySendError},
     task::JoinHandle,
 };
 use tokio_util::sync::CancellationToken;
+use tracing::warn;
 use uuid::Uuid;
 
 #[derive(Debug, Error)]
 pub enum MessagingError {
-    #[error("permission denied")]
-    PermissionDenied,
     #[error("internal: {0}")]
     Internal(String),
 }
 
+// Mirrors `syneroym_core::config::MessagingConfig` (same `channel_capacity`
+// field, `usize` here vs. `u64` there) -- `core` can't depend on this
+// crate, so this is intentional duplication, not accidental drift.
 #[derive(Debug, Clone)]
 pub struct MqttBrokerConfig {
     pub channel_capacity: usize,
@@ -63,13 +65,32 @@ impl Default for MqttBrokerConfig {
 /// Prefixes `topic` into the calling service's namespace unless it is
 /// already a fully-qualified `svc/<other_service>/...` topic, in which
 /// case it is used literally (explicit cross-service opt-in per
-/// ADR-0010's Topic Namespace Isolation section).
+/// ADR-0010's Topic Namespace Isolation section). **Subscribe-side only**
+/// — see [`namespace_topic_for_publish`] for why publish cannot reuse this.
 pub fn namespace_topic(service_id: &str, topic: &str) -> String {
     if topic.starts_with("svc/") { topic.to_string() } else { format!("svc/{service_id}/{topic}") }
 }
 
+/// Prefixes `topic` into the calling service's namespace unconditionally,
+/// even if `topic` already looks like a fully-qualified `svc/<other>/...`
+/// topic. Publish has no cross-service opt-in (only subscribe does, via
+/// [`namespace_topic`]): letting a caller-supplied `svc/` prefix through
+/// literally on publish would let any caller spoof any other service's
+/// topic namespace.
+pub fn namespace_topic_for_publish(service_id: &str, topic: &str) -> String {
+    format!("svc/{service_id}/{topic}")
+}
+
 pub struct MqttBroker {
     broker: Broker,
+    /// Shared substrate-wide: every WASM guest publish and every native
+    /// `dispatch_messaging` publish across the process serializes through
+    /// this one link. `try_publish` itself is fast/non-blocking, so this
+    /// is a contention point rather than a correctness bug -- a deliberate
+    /// accepted tradeoff for Slice 6A, capping publish throughput on
+    /// total substrate-wide volume rather than per-service/per-topic
+    /// volume. Worth moving to a per-caller link if publish volume
+    /// becomes a real bottleneck.
     host_link: Mutex<(LinkTx, LinkRx)>,
     cancellation: CancellationToken,
     channel_capacity: usize,
@@ -83,6 +104,17 @@ impl fmt::Debug for MqttBroker {
 
 impl MqttBroker {
     pub fn new(config: MqttBrokerConfig) -> Result<Self, MessagingError> {
+        if config.channel_capacity == 0 {
+            // `mpsc::channel(0)` panics (`assert!(buffer > 0)`) the first
+            // time a subscribe tries to create its forwarding channel;
+            // caught here, at construction, so a bad `[mqtt]
+            // channel_capacity = 0` in the substrate TOML surfaces as a
+            // clean config error instead of a panic well downstream.
+            return Err(MessagingError::Internal(
+                "MqttBrokerConfig::channel_capacity must be greater than 0".to_string(),
+            ));
+        }
+
         let rumqttd_config = RumqttdConfig {
             id: 0,
             router: RouterConfig {
@@ -114,11 +146,12 @@ impl MqttBroker {
     /// Publishes `payload` on `topic` (already fully-namespaced by the
     /// caller). Backpressure on the host<->router bridge surfaces as
     /// [`MessagingError::Internal`] rather than blocking.
-    pub async fn publish(&self, topic: &str, payload: Vec<u8>) -> Result<(), MessagingError> {
+    pub async fn publish(&self, topic: String, payload: Vec<u8>) -> Result<(), MessagingError> {
         let mut host_link = self.host_link.lock().await;
-        host_link.0.try_publish(topic.to_string(), payload).map_err(|_| {
-            MessagingError::Internal("broker channel full: backpressure".to_string())
-        })?;
+        host_link
+            .0
+            .try_publish(topic, payload)
+            .map_err(|e| MessagingError::Internal(format!("broker publish failed: {e}")))?;
         Ok(())
     }
 
@@ -147,13 +180,13 @@ impl MqttBroker {
     /// bounded receiver fed by an internal forwarding task.
     pub async fn subscribe(
         &self,
-        topic_filter: &str,
+        topic_filter: String,
     ) -> Result<(SubscriptionHandle, mpsc::Receiver<(String, Vec<u8>)>), MessagingError> {
         let client_id = format!("sub-{}", Uuid::new_v4());
         let (mut link_tx, mut link_rx) =
             self.broker.link(&client_id).map_err(|e| MessagingError::Internal(e.to_string()))?;
         link_tx
-            .subscribe(topic_filter.to_string())
+            .subscribe(topic_filter.clone())
             .map_err(|e| MessagingError::Internal(e.to_string()))?;
 
         let (sender, receiver) = mpsc::channel(self.channel_capacity);
@@ -168,8 +201,18 @@ impl MqttBroker {
                             Ok(Some(Notification::Forward(forward))) => {
                                 let topic = String::from_utf8_lossy(&forward.publish.topic).into_owned();
                                 let payload = forward.publish.payload.to_vec();
-                                if sender.send((topic, payload)).await.is_err() {
-                                    break;
+                                // Best-effort delivery: a subscriber that
+                                // can't keep up gets messages dropped past
+                                // the bound rather than blocking this
+                                // task's draining of `link_rx`, which
+                                // would otherwise back-pressure into
+                                // rumqttd's own internal per-link buffer.
+                                match sender.try_send((topic, payload)) {
+                                    Ok(()) => {}
+                                    Err(TrySendError::Full(_)) => {
+                                        warn!("messaging: dropping message, subscriber channel full");
+                                    }
+                                    Err(TrySendError::Closed(_)) => break,
                                 }
                             }
                             Ok(Some(_)) => continue,
@@ -184,7 +227,7 @@ impl MqttBroker {
             SubscriptionHandle {
                 cancellation: child_token,
                 link_tx: Some(link_tx),
-                topic_filter: topic_filter.to_string(),
+                topic_filter,
                 task: Some(task),
             },
             receiver,
@@ -220,7 +263,12 @@ impl Drop for SubscriptionHandle {
             task.abort();
         }
         if let Some(mut link_tx) = self.link_tx.take() {
-            let _ = link_tx.unsubscribe(self.topic_filter.clone());
+            // Non-blocking: `unsubscribe` is a synchronous, blocking call
+            // into rumqttd's internal event channel, which risks stalling
+            // whatever Tokio worker thread happens to run this `Drop` if
+            // that channel is momentarily full (mirrors the publish/
+            // try_publish split already used elsewhere in this file).
+            let _ = link_tx.try_unsubscribe(self.topic_filter.clone());
         }
     }
 }

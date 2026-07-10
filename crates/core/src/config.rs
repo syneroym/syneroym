@@ -734,6 +734,11 @@ const fn default_mqtt_channel_capacity() -> u64 {
     1024
 }
 
+// Mirrors `syneroym_mqtt_broker::MqttBrokerConfig` (same `channel_capacity`
+// field, `u64` here vs. `usize` there, bridged with an `as usize` cast at
+// the one call site in `crates/router/src/route_handler.rs`) -- `core`
+// can't depend on `mqtt_broker`, so this is intentional duplication, not
+// accidental drift.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MessagingConfig {

@@ -17,7 +17,10 @@ pub use dispatch_registry::NativeDispatchRegistry;
 pub use native::{NativeInvocation, NativeResponse, NativeService};
 use serde_json::Value;
 use thiserror::Error;
-pub use types::{JsonRpcError, JsonRpcErrorResponse, JsonRpcRequest, JsonRpcResponse};
+pub use types::{
+    JsonRpcError, JsonRpcErrorResponse, JsonRpcRequest, JsonRpcResponse, MESSAGING_MESSAGE_METHOD,
+    MessagingNotification,
+};
 
 #[derive(Error, Debug)]
 pub enum RpcError {

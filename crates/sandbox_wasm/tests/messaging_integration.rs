@@ -134,6 +134,47 @@ async fn test_guest_to_guest_cross_service_message_delivery() {
     assert_eq!(received, format!("{fully_qualified_topic}\thello from A"));
 }
 
+/// ADR-0010 Topic Namespace Isolation / task.md:854 Security Test: a
+/// publish-side `svc/`-prefixed topic must not let one service impersonate
+/// another's namespace. Service B subscribes to its own bare topic (which
+/// the host namespaces to `svc/messaging-svc-b/orders/new`); Service A then
+/// publishes to a spoofed literal `svc/messaging-svc-b/orders/new` topic.
+/// If publish namespacing were vulnerable (reusing the subscribe-side
+/// literal-passthrough rule for `svc/`-prefixed topics), Service B would
+/// wrongly receive A's message.
+#[tokio::test]
+async fn test_publish_cannot_spoof_another_services_namespace() {
+    let Ok(wasm_bytes) = fs::read(test_constants::messaging_pubsub_test_wasm_path()) else {
+        eprintln!(
+            "Skipping test_publish_cannot_spoof_another_services_namespace: messaging-pubsub-test \
+             WASM artifact not found (run `cargo build --target wasm32-wasip2 --release` in \
+             test-components/messaging-pubsub-test)"
+        );
+        return;
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = make_engine(dir.path()).await;
+
+    let manifest = wasm_deploy_manifest(wasm_bytes);
+    engine.deploy_wasm(SERVICE_A, &manifest).await.unwrap();
+    engine.deploy_wasm(SERVICE_B, &manifest).await.unwrap();
+
+    // Service B subscribes to its own bare topic.
+    call(&engine, SERVICE_B, "subscribe-to", serde_json::json!(["orders/new"])).await;
+
+    // Service A tries to spoof service B's namespace by publishing to a
+    // topic that already looks fully-qualified as `svc/<B>/...`.
+    let spoofed_topic = format!("svc/{SERVICE_B}/orders/new");
+    call(&engine, SERVICE_A, "publish-to", serde_json::json!([spoofed_topic, "spoofed"])).await;
+
+    // Give any (incorrect) delivery a chance to land before asserting
+    // absence.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let received = call(&engine, SERVICE_B, "get-received-messages", serde_json::json!([])).await;
+    assert_eq!(received, "", "service B must not receive a publish spoofed via svc/<B>/...");
+}
+
 /// task.md's Measurable Exit Criteria: guest `handle-message` delivery
 /// <25ms p99 (the guest path is more expensive than the native-subscriber
 /// path due to fresh-Store-per-delivery instantiation cost).
@@ -187,4 +228,9 @@ async fn test_guest_delivery_latency_budget() {
         latencies.last().unwrap(),
         latencies.len()
     );
+    // task.md's Measurable Exit Criteria budget is 25ms p99; asserted here
+    // at 3x that (75ms) for headroom against shared-CI-runner variance and
+    // this loop's own 2ms polling granularity, while still catching an
+    // order-of-magnitude regression.
+    assert!(p99 < Duration::from_millis(75), "guest delivery p99 budget blown: {p99:?}");
 }

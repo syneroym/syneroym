@@ -181,14 +181,20 @@ impl RouteHandler {
         // Guest subscriptions survive a restart (ADR-0010 Finding A1):
         // replay every persisted row into the broker before the router
         // starts accepting connections. Best-effort per row -- one bad
-        // topic shouldn't block substrate startup.
-        for (subscribed_service_id, topic) in
-            storage_provider.list_all_messaging_subscriptions().await?
+        // topic shouldn't block substrate startup. Replayed concurrently
+        // (independent rows, no shared state) to keep this bounded by the
+        // slowest single subscribe rather than their sum.
+        let persisted_subscriptions = storage_provider.list_all_messaging_subscriptions().await?;
+        let replay_results = futures::future::join_all(persisted_subscriptions.iter().map(
+            |(subscribed_service_id, topic)| {
+                app_sandbox_engine.register_internal_subscription(subscribed_service_id, topic)
+            },
+        ))
+        .await;
+        for ((subscribed_service_id, topic), result) in
+            persisted_subscriptions.iter().zip(replay_results)
         {
-            if let Err(e) = app_sandbox_engine
-                .register_internal_subscription(&subscribed_service_id, &topic)
-                .await
-            {
+            if let Err(e) = result {
                 tracing::warn!(
                     service_id = %subscribed_service_id,
                     topic = %topic,

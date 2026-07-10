@@ -22,6 +22,7 @@ use syneroym_data_db::traits::{ServiceStore, StorageProvider};
 use syneroym_data_keystore::KeyStore;
 use syneroym_mqtt_broker::{
     MessagingError as BrokerMessagingError, MqttBroker, SubscriptionHandle, namespace_topic,
+    namespace_topic_for_publish,
 };
 use syneroym_rpc::JsonRpcRequest;
 use syneroym_wit_interfaces::{
@@ -76,7 +77,6 @@ pub struct MessagingContext {
 
 fn map_broker_error(e: BrokerMessagingError) -> MessagingError {
     match e {
-        BrokerMessagingError::PermissionDenied => MessagingError::PermissionDenied,
         BrokerMessagingError::Internal(msg) => MessagingError::Internal(msg),
     }
 }
@@ -191,9 +191,9 @@ impl vault::Host for HostState {
 
 impl host_api::Host for HostState {
     async fn publish(&mut self, topic: String, payload: Vec<u8>) -> Result<(), MessagingError> {
-        let namespaced = namespace_topic(&self.component_id, &topic);
+        let namespaced = namespace_topic_for_publish(&self.component_id, &topic);
         let broker = self.messaging.broker.clone();
-        broker.publish(&namespaced, payload).await.map_err(map_broker_error)
+        broker.publish(namespaced, payload).await.map_err(map_broker_error)
     }
 
     async fn subscribe(&mut self, topic: String) -> Result<(), MessagingError> {
@@ -202,16 +202,20 @@ impl host_api::Host for HostState {
         let storage_provider = self.storage_provider.clone();
         let engine = self.messaging.engine.clone();
 
-        storage_provider
-            .save_messaging_subscription(&service_id, &namespaced)
-            .await
-            .map_err(|e| MessagingError::Internal(e.to_string()))?;
-
+        // Checked before the DB write (rather than after) so a teardown
+        // race never leaves a persisted subscription row with no live
+        // broker registration behind it.
         let Some(engine) = engine.upgrade() else {
             return Err(MessagingError::Internal(
                 "sandbox engine unavailable for subscription registration".to_string(),
             ));
         };
+
+        storage_provider
+            .save_messaging_subscription(&service_id, &namespaced)
+            .await
+            .map_err(|e| MessagingError::Internal(e.to_string()))?;
+
         engine
             .register_internal_subscription(&service_id, &namespaced)
             .await
@@ -229,9 +233,16 @@ impl host_api::Host for HostState {
             .await
             .map_err(|e| MessagingError::Internal(e.to_string()))?;
 
-        if let Some(engine) = engine.upgrade() {
-            engine.subscriptions.remove(&(service_id, namespaced));
-        }
+        // Surfaced as an error (rather than silently `Ok`) since the DB
+        // row is already gone at this point: a caller told "success" here
+        // while the live subscription stays active would have no way to
+        // rediscover and clean it up later, via replay or otherwise.
+        let Some(engine) = engine.upgrade() else {
+            return Err(MessagingError::Internal(
+                "sandbox engine unavailable for subscription deregistration".to_string(),
+            ));
+        };
+        engine.subscriptions.remove(&(service_id, namespaced));
         Ok(())
     }
 }
@@ -864,6 +875,21 @@ impl AppSandboxEngine {
         Ok((func, results_len, item))
     }
 
+    /// Extracts the failure message from a guest function's `result<_,
+    /// string>` return value, if it returned `Err`. Shared by
+    /// `invoke_lifecycle_hook` and `deliver_message`, which both call
+    /// guest exports returning this shape and only care about the
+    /// failure message.
+    fn wasm_result_err(results: &[Val]) -> Option<&str> {
+        if let Some(Val::Result(Err(Some(boxed)))) = results.first()
+            && let Val::String(msg) = boxed.as_ref()
+        {
+            Some(msg.as_str())
+        } else {
+            None
+        }
+    }
+
     /// Deploy and compile a WASM component for a given service
     pub async fn deploy_wasm(&self, service_id: &str, manifest: &DeployManifest) -> Result<()> {
         Self::validate_service_id(service_id)?;
@@ -1117,9 +1143,7 @@ impl AppSandboxEngine {
         let mut results = vec![Val::Bool(false); results_len];
         func.call_async(&mut store, &[], &mut results).await?;
 
-        if let Some(Val::Result(Err(Some(boxed)))) = results.first()
-            && let Val::String(msg) = boxed.as_ref()
-        {
+        if let Some(msg) = Self::wasm_result_err(&results) {
             return Err(anyhow::anyhow!("{hook}() failed: {msg}"));
         }
         Ok(())
@@ -1136,9 +1160,19 @@ impl AppSandboxEngine {
         service_id: &str,
         namespaced_topic: &str,
     ) -> Result<()> {
+        let key = (service_id.to_string(), namespaced_topic.to_string());
+        if self.subscriptions.contains_key(&key) {
+            // Already live (e.g. a guest retrying `subscribe` after a
+            // transient error it couldn't distinguish from "already
+            // subscribed") -- opening a second broker link here would
+            // double-deliver every message on this topic until the first
+            // link's handle is eventually dropped.
+            return Ok(());
+        }
+
         let (handle, mut receiver) = self
             .messaging_broker
-            .subscribe(namespaced_topic)
+            .subscribe(key.1.clone())
             .await
             .map_err(|e| anyhow::anyhow!("broker subscribe failed: {e}"))?;
 
@@ -1151,7 +1185,7 @@ impl AppSandboxEngine {
             }
         });
 
-        self.subscriptions.insert((service_id.to_string(), namespaced_topic.to_string()), handle);
+        self.subscriptions.insert(key, handle);
         Ok(())
     }
 
@@ -1206,9 +1240,7 @@ impl AppSandboxEngine {
             return;
         }
 
-        if let Some(Val::Result(Err(Some(boxed)))) = results.first()
-            && let Val::String(msg) = boxed.as_ref()
-        {
+        if let Some(msg) = Self::wasm_result_err(&results) {
             warn!(service_id, error = %msg, "messaging: handle-message returned an error");
         }
     }

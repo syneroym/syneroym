@@ -173,7 +173,7 @@ some of which **correct assumptions in this doc's original plan**:
 | Service A publishes to service B's MQTT namespace | Blocked — `test_messaging_namespace_isolation` (`crates/control_plane`) |
 | A process speaks raw MQTT to the broker's port | N/A confirmed — `no_network_listener_is_bound` (`crates/mqtt_broker`) binds `127.0.0.1:1883` successfully right after constructing a broker |
 | Substrate restarts with active subscriptions | Replayed from `substrate.db`, no manual re-subscribe — `test_messaging_subscriptions_survive_restart_replay` (`crates/control_plane`) |
-| Native subscriber's stream dies without a clean unsubscribe | Subscription dropped, not leaked — `test_native_subscriber_receives_push_delivery_and_close_unsubscribes` (`crates/substrate`), via the read-EOF mechanism described above rather than a literal `SendStream::stopped()` call |
+| Native subscriber's stream dies without a clean unsubscribe | Subscription dropped, not leaked — `test_native_subscriber_receives_push_delivery_and_close_unsubscribes` (`crates/substrate`), via both the read-EOF mechanism described above and a raced `SendStream::stopped()` (QUIC `STOP_SENDING`) signal on the Iroh transport — see `crates/router/src/stop_signal.rs` |
 
 (The remaining rows in that table are Slice 6B/7 concerns — QUIC stream
 protocols, `stream-cursor`/`stream-sink`, signed-URL HTTP — out of scope here.)
@@ -187,6 +187,13 @@ subscribes to the fully-qualified topic and receives it via
 `guest-api::handle-message`. (Step 15's "then reads the blob from step 13 by
 hash" is an M03-sss Slice 5 blob-store detail, already covered by that slice's
 own tests — not re-exercised here.)
+
+Retained-message support ("A4" decision) is broker-internal/plumbing-only in
+Slice 6A: `retained_message_delivered_to_late_subscriber`
+(`crates/mqtt_broker/src/tests.rs`) proves the mechanism works via the raw-
+packet escape hatch, but the production `publish()` path never sets the
+retain flag and the WIT surface has no `retain` parameter by design, so
+there is no guest/native-facing trigger yet.
 
 ### Performance budgets (measured)
 

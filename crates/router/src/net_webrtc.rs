@@ -17,6 +17,8 @@ use tokio::{
 use tracing::{debug, error};
 use webrtc::data::data_channel::DataChannel as DetachedDataChannel;
 
+use crate::stop_signal::StopSignal;
+
 /// A wrapper around WebRTC `DetachedDataChannel` that implements
 /// `tokio::io::AsyncRead` and `tokio::io::AsyncWrite`.
 ///
@@ -123,3 +125,7 @@ impl AsyncWrite for WebRTCStream {
         Pin::new(&mut self.inner).poll_shutdown(cx)
     }
 }
+
+/// WebRTC data channels have no equivalent to QUIC's `STOP_SENDING`, so
+/// this accepts the trait's default never-resolving signal.
+impl StopSignal for WebRTCStream {}

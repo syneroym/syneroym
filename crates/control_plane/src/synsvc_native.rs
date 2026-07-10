@@ -26,7 +26,7 @@ use syneroym_data_blob::{
 };
 use syneroym_data_db::traits::{ServiceStore, StorageProvider};
 use syneroym_data_keystore::KeyStore;
-use syneroym_mqtt_broker::{MqttBroker, namespace_topic};
+use syneroym_mqtt_broker::{MqttBroker, namespace_topic_for_publish};
 use syneroym_rpc::{NativeInvocation, NativeResponse, NativeService, RpcError, RpcResult};
 use syneroym_wit_interfaces::host::syneroym::{
     app_config::app_config::ConfigError,
@@ -529,8 +529,8 @@ impl SynSvcNativeService {
                     payload: Vec<u8>,
                 }
                 let req: Req = parse_params(&invocation)?;
-                let namespaced = namespace_topic(&self.service_id, &req.topic);
-                self.messaging_broker.publish(&namespaced, req.payload).await.map_err(internal)?;
+                let namespaced = namespace_topic_for_publish(&self.service_id, &req.topic);
+                self.messaging_broker.publish(namespaced, req.payload).await.map_err(internal)?;
                 to_payload(&())
             }
             other => Err(RpcError::MethodNotFound(format!("messaging/{other}"))),

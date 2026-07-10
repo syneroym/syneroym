@@ -12,13 +12,15 @@ use std::{
 use anyhow::{Context, Result};
 use iroh::{
     Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl,
-    endpoint::{Connection, SendStream},
+    endpoint::{Connection, RecvStream, SendStream},
 };
 pub mod mapper;
 use serde_json::Value;
 use syneroym_core::dht_registry::{EndpointMechanism, RegistryClient, SignedEndpointInfo};
 use syneroym_router::{RoutePreamble, RouteProtocol, RouteTransport, SYNEROYM_ALPN};
-use syneroym_rpc::{JsonRpcRequest, JsonRpcResponse, framing};
+use syneroym_rpc::{
+    JsonRpcRequest, JsonRpcResponse, MESSAGING_MESSAGE_METHOD, MessagingNotification, framing,
+};
 pub use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, ContainerManifest, ContainerPortMapping, ContainerVolumeMapping,
     DeployManifest, DeploymentPlan, NetworkEndpoint, PlannedService, ServiceConfig, ServiceType,
@@ -257,37 +259,51 @@ impl SyneroymClient {
         self.request_raw(interface, request).await
     }
 
-    pub async fn request_raw(
+    /// Opens a new bidirectional stream to the connected peer, writes the
+    /// route preamble and the JSON-RPC request frame, and returns the raw
+    /// send/recv halves. Shared by `request_raw` (which finishes the send
+    /// half immediately after) and `subscribe` (which must not, so the
+    /// stream stays open for pushed notifications).
+    async fn open_request_stream(
         &self,
         interface_name: &str,
-        request: JsonRpcRequest,
-    ) -> Result<JsonRpcResponse> {
+        request: &JsonRpcRequest,
+    ) -> Result<(SendStream, RecvStream)> {
         let conn_wrapper = self.connection.as_ref().context("Not connected")?;
         match conn_wrapper {
             TransportConnection::Iroh { conn, .. } => {
-                let (mut send, mut recv) = conn.open_bi().await?;
+                let (mut send, recv) = conn.open_bi().await?;
 
                 // Every stream must start with a RoutePreamble identifying the target service.
                 let preamble = RoutePreamble::binary_json_rpc(&self.service_id, interface_name);
                 send.write_all(preamble.to_preamble_line().as_bytes()).await?;
 
-                let req_bytes = serde_json::to_vec(&request)?;
+                let req_bytes = serde_json::to_vec(request)?;
                 framing::write_frame(&mut send, &req_bytes).await?;
-                debug!(">>> Wrote request for method: {} to {}", request.method, self.service_id);
-                send.finish()?;
-
-                let frame = framing::read_frame(&mut recv).await?;
-                if frame.is_empty() {
-                    return Err(anyhow::anyhow!(
-                        "Empty response from stream for method {}",
-                        request.method
-                    ));
-                }
-                let res: JsonRpcResponse = serde_json::from_slice(&frame)?;
-                debug!("got json response for method: {}: {:?}", request.method, res);
-                Ok(res)
+                Ok((send, recv))
             }
         }
+    }
+
+    pub async fn request_raw(
+        &self,
+        interface_name: &str,
+        request: JsonRpcRequest,
+    ) -> Result<JsonRpcResponse> {
+        let (mut send, mut recv) = self.open_request_stream(interface_name, &request).await?;
+        debug!(">>> Wrote request for method: {} to {}", request.method, self.service_id);
+        send.finish()?;
+
+        let frame = framing::read_frame(&mut recv).await?;
+        if frame.is_empty() {
+            return Err(anyhow::anyhow!(
+                "Empty response from stream for method {}",
+                request.method
+            ));
+        }
+        let res: JsonRpcResponse = serde_json::from_slice(&frame)?;
+        debug!("got json response for method: {}: {:?}", request.method, res);
+        Ok(res)
     }
 
     /// Subscribes to `topic` on `interface`'s messaging capability, over a
@@ -298,67 +314,50 @@ impl SyneroymClient {
     /// returned `MessageStream` closes the send half, which the router
     /// treats as the unsubscribe signal.
     pub async fn subscribe(&self, interface: &str, topic: &str) -> Result<MessageStream> {
-        let conn_wrapper = self.connection.as_ref().context("Not connected")?;
-        match conn_wrapper {
-            TransportConnection::Iroh { conn, .. } => {
-                let (mut send, mut recv) = conn.open_bi().await?;
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "subscribe".to_string(),
+            params: serde_json::json!({"topic": topic}),
+            id: Some(Value::Number(1.into())),
+        };
+        let (send, mut recv) = self.open_request_stream(interface, &request).await?;
 
-                let preamble = RoutePreamble::binary_json_rpc(&self.service_id, interface);
-                send.write_all(preamble.to_preamble_line().as_bytes()).await?;
+        let ack_frame = framing::read_frame(&mut recv).await?;
+        if ack_frame.is_empty() {
+            return Err(anyhow::anyhow!(
+                "Empty ack for subscribe on topic {topic} (interface {interface})"
+            ));
+        }
+        let ack: JsonRpcResponse = serde_json::from_slice(&ack_frame)?;
+        debug!("subscribe ack for topic {}: {:?}", topic, ack);
 
-                let request = JsonRpcRequest {
-                    jsonrpc: "2.0".to_string(),
-                    method: "subscribe".to_string(),
-                    params: serde_json::json!({"topic": topic}),
-                    id: Some(Value::Number(1.into())),
-                };
-                let req_bytes = serde_json::to_vec(&request)?;
-                framing::write_frame(&mut send, &req_bytes).await?;
-
-                let ack_frame = framing::read_frame(&mut recv).await?;
-                if ack_frame.is_empty() {
-                    return Err(anyhow::anyhow!(
-                        "Empty ack for subscribe on topic {topic} (interface {interface})"
-                    ));
-                }
-                let ack: JsonRpcResponse = serde_json::from_slice(&ack_frame)?;
-                debug!("subscribe ack for topic {}: {:?}", topic, ack);
-
-                let (tx, rx) = mpsc::channel(1024);
-                tokio::spawn(async move {
-                    loop {
-                        match framing::read_frame(&mut recv).await {
-                            Ok(frame) if frame.is_empty() => break,
-                            Ok(frame) => {
-                                let Ok(notify) = serde_json::from_slice::<JsonRpcRequest>(&frame)
-                                else {
-                                    continue;
-                                };
-                                if notify.method != "messaging/message" {
-                                    continue;
-                                }
-                                let Some(topic) =
-                                    notify.params.get("topic").and_then(|v| v.as_str())
-                                else {
-                                    continue;
-                                };
-                                let Some(payload) = notify.params.get("payload").and_then(|v| {
-                                    serde_json::from_value::<Vec<u8>>(v.clone()).ok()
-                                }) else {
-                                    continue;
-                                };
-                                if tx.send((topic.to_string(), payload)).await.is_err() {
-                                    break;
-                                }
-                            }
-                            Err(_) => break,
+        let (tx, rx) = mpsc::channel(1024);
+        tokio::spawn(async move {
+            loop {
+                match framing::read_frame(&mut recv).await {
+                    Ok(frame) if frame.is_empty() => break,
+                    Ok(frame) => {
+                        let Ok(notify) = serde_json::from_slice::<JsonRpcRequest>(&frame) else {
+                            continue;
+                        };
+                        if notify.method != MESSAGING_MESSAGE_METHOD {
+                            continue;
+                        }
+                        let Ok(MessagingNotification { topic, payload }) =
+                            serde_json::from_value(notify.params)
+                        else {
+                            continue;
+                        };
+                        if tx.send((topic, payload)).await.is_err() {
+                            break;
                         }
                     }
-                });
-
-                Ok(MessageStream { receiver: rx, send })
+                    Err(_) => break,
+                }
             }
-        }
+        });
+
+        Ok(MessageStream { receiver: rx, send })
     }
 
     pub async fn deploy_svc_wasm(

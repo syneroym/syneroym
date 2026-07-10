@@ -593,9 +593,9 @@ impl OrchestratorInterface for ControlPlaneService {
         let mut services: HashMap<String, DeployedService> = HashMap::new();
 
         for (service_id, interface, endpoint) in endpoints {
-            // The 4 native-capability interfaces (data-layer/vault/app-config/
-            // blob-store) are host-provided plumbing registered on every
-            // deployed service regardless of type -- they must not be
+            // The native-capability interfaces (data-layer/vault/app-config/
+            // blob-store/messaging) are host-provided plumbing registered on
+            // every deployed service regardless of type -- they must not be
             // mistaken for the service's own declared interfaces, nor
             // influence `endpoint_type` (every deployed service also always
             // has its real wasm/container/tcp endpoint registered).
@@ -1386,7 +1386,12 @@ mod tests {
 
         // messaging: publish (subscribe/unsubscribe go through the
         // router-level push-delivery path, not this request/response one --
-        // see ADR-0010 Finding A2).
+        // see ADR-0010 Finding A2). Subscribed directly through the broker
+        // (bypassing the native dispatch layer, which has no subscribe) so
+        // the assertion below proves actual delivery, not just that the
+        // RPC call didn't error.
+        let (_sub_handle, mut sub_rx) =
+            messaging_broker.subscribe(format!("svc/{service_id}/orders/new")).await.unwrap();
         let publish_resp = native
             .dispatch(NativeInvocation {
                 interface: "messaging".to_string(),
@@ -1396,6 +1401,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(publish_resp.payload, Value::Null);
+        let (delivered_topic, delivered_payload) =
+            tokio::time::timeout(std::time::Duration::from_secs(2), sub_rx.recv())
+                .await
+                .expect("did not time out waiting for native publish to be delivered")
+                .expect("subscriber channel closed unexpectedly");
+        assert_eq!(delivered_topic, format!("svc/{service_id}/orders/new"));
+        assert_eq!(delivered_payload, b"order-1");
 
         // undeploy removes the native dispatch registration
         service.undeploy(service_id.clone()).await.unwrap();
@@ -1683,7 +1695,7 @@ mod tests {
 
         // Publishing to the now-unsubscribed topic must not error, even
         // though the (undeployed) component can no longer be delivered to.
-        messaging_broker.publish(&namespaced_topic, b"post-undeploy".to_vec()).await.unwrap();
+        messaging_broker.publish(namespaced_topic, b"post-undeploy".to_vec()).await.unwrap();
     }
 
     /// M3B Slice 6A: service A cannot receive messages published in
@@ -1871,7 +1883,7 @@ mod tests {
             engine2.register_internal_subscription(&subscribed_service_id, &topic).await.unwrap();
         }
 
-        broker2.publish(&namespaced_topic, b"post-restart".to_vec()).await.unwrap();
+        broker2.publish(namespaced_topic.clone(), b"post-restart".to_vec()).await.unwrap();
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         let mut received = String::new();

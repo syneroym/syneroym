@@ -9,7 +9,7 @@ pub fn greeter_wasm_path() -> PathBuf {
     // The CARGO_MANIFEST_DIR for syneroym-core is `crates/core`
     // We navigate up to the workspace root and then to the test-components/greeter
     // target
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
         "../../test-components/greeter/target/wasm32-wasip2/release/syneroym_test_greeter.wasm",
     )
 }
@@ -18,7 +18,7 @@ pub fn greeter_wasm_path() -> PathBuf {
 /// module (imports `syneroym:data-layer/store`, exports `init`/`migrate` and
 /// CRUD test-driver functions -- see `test-components/data-layer-test`).
 pub fn data_layer_test_wasm_path() -> PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
         "../../test-components/data-layer-test/target/wasm32-wasip2/release/\
          syneroym_test_data_layer.wasm",
     )
@@ -30,7 +30,7 @@ pub fn data_layer_test_wasm_path() -> PathBuf {
 /// interface for subscribing/publishing/reading back received messages --
 /// see `test-components/messaging-pubsub-test`).
 pub fn messaging_pubsub_test_wasm_path() -> PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
         "../../test-components/messaging-pubsub-test/target/wasm32-wasip2/release/\
          syneroym_test_messaging_pubsub.wasm",
     )
