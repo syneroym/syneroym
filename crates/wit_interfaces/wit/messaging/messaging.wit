@@ -11,17 +11,68 @@ interface host-api {
     subscribe: func(topic: string) -> result<_, messaging-error>;
 
     unsubscribe: func(topic: string) -> result<_, messaging-error>;
+
+    /// Registers this service as the handler for a named bidirectional
+    /// stream protocol (M3B Slice 6B, ADR-0014). A peer that opens a
+    /// `raw://<protocol>|<service_id>` stream is routed to
+    /// `guest-api::handle-stream-request`/`accept-stream-upload` depending
+    /// on direction. Idempotent: re-registering the same protocol is a
+    /// last-write-wins upsert, not a structured error.
+    register-stream-protocol: func(protocol: string) -> result<_, messaging-error>;
+}
+
+/// Guest-implemented bidirectional streaming resources (M3B Slice 6B,
+/// ADR-0014). Unlike `blob-store`'s `blob-writer`/`blob-reader` (host-
+/// implemented, guest calls into them), the host calls methods *on* an
+/// instance the guest returns -- see ADR-0014 "Resource Mechanics" for why
+/// this requires `stream-types` to be **exported**, not imported, by
+/// `messaging-guest` below.
+interface stream-types {
+    resource stream-cursor {
+        /// Pulled by the host in a loop. `Ok(Some(chunk))` for each chunk,
+        /// `Ok(None)` on clean EOF, `Err` aborts the transfer.
+        next-chunk: func() -> result<option<list<u8>>, string>;
+    }
+
+    resource stream-sink {
+        /// Pushed by the host for each chunk read off the incoming QUIC
+        /// stream. `Err` aborts the upload -- the host stops reading and
+        /// never calls `finalize`.
+        push-chunk: func(data: list<u8>) -> result<_, string>;
+
+        /// Called by the host exactly once, only after the incoming QUIC
+        /// stream closes cleanly (never after an aborted upload).
+        finalize: func() -> result<_, string>;
+    }
 }
 
 interface guest-api {
+    use stream-types.{stream-cursor, stream-sink};
+
     /// Invoked by the host when a message matching one of this
     /// component's subscriptions arrives. Optional: components that
     /// don't export this still succeed at `subscribe`, and matching
     /// messages are silently discarded (per ADR-0010).
     handle-message: func(topic: string, payload: list<u8>) -> result<_, string>;
+
+    /// Invoked when a peer opens a download-direction stream against
+    /// `protocol` (a name this service previously passed to
+    /// `register-stream-protocol`). `protocol` disambiguates which of this
+    /// service's possibly-multiple registered protocols the request is for
+    /// -- a deliberate addition over the originally planned
+    /// `(peer-id, request-data)` signature (ADR-0014, deviation 1). `Err`
+    /// declines the request; the host closes the stream without pulling
+    /// `stream-cursor`.
+    handle-stream-request: func(protocol: string, peer-id: string, request-data: list<u8>) -> result<stream-cursor, string>;
+
+    /// Invoked when a peer opens an upload-direction stream against
+    /// `protocol`. `Err` declines the upload; the host closes the incoming
+    /// stream without creating a `stream-sink` or reading payload bytes.
+    accept-stream-upload: func(protocol: string, peer-id: string, metadata: string) -> result<stream-sink, string>;
 }
 
 world messaging-guest {
     import host-api;
+    export stream-types;
     export guest-api;
 }

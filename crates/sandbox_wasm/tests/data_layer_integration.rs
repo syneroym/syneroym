@@ -7,7 +7,9 @@
 
 use std::{fs, path::Path, sync::Arc};
 
-use syneroym_core::{config::SubstrateConfig, test_constants};
+use syneroym_core::{
+    config::SubstrateConfig, local_registry::EndpointRegistry, storage::MockStorage, test_constants,
+};
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
 use syneroym_data_db::{SqliteStorageProvider, StorageProvider};
 use syneroym_data_keystore::KeyStore;
@@ -45,6 +47,7 @@ async fn make_engine(dir: &Path) -> AppSandboxEngine {
         storage_provider,
         blob_provider,
         Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap()),
+        EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
     )
     .await
     .unwrap()

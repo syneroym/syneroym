@@ -170,6 +170,7 @@ impl RouteHandler {
                 storage_provider.clone(),
                 blob_provider.clone(),
                 messaging_broker.clone(),
+                registry.clone(),
             )
             .await?,
         );

@@ -66,6 +66,9 @@ pub struct SubstrateConfig {
     /// ADR-0010). A core, always-on capability -- not an optional
     /// deployment role like `RolesConfig`'s members.
     pub mqtt: MessagingConfig,
+    /// Bidirectional stream protocols (M3B Slice 6B, ADR-0014). A core,
+    /// always-on capability, mirroring `mqtt`'s placement above.
+    pub streaming: StreamingConfig,
 }
 
 /// Useful helper functions
@@ -144,6 +147,7 @@ impl Default for SubstrateConfig {
             retry: Default::default(),
             tls: None,
             mqtt: Default::default(),
+            streaming: Default::default(),
         }
     }
 }
@@ -756,6 +760,25 @@ impl Default for MessagingConfig {
     }
 }
 
+const fn default_max_concurrent_streams_per_service() -> u32 {
+    8
+}
+
+/// M3B Slice 6B bidirectional streaming (ADR-0014). Each open stream holds a
+/// live `Store`/`Instance` for its duration, so this caps per-service memory
+/// use.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StreamingConfig {
+    pub max_concurrent_streams_per_service: u32,
+}
+
+impl Default for StreamingConfig {
+    fn default() -> Self {
+        Self { max_concurrent_streams_per_service: default_max_concurrent_streams_per_service() }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -809,6 +832,12 @@ mod tests {
     fn test_messaging_config_defaults() {
         let config = MessagingConfig::default();
         assert_eq!(config.channel_capacity, 1024);
+    }
+
+    #[test]
+    fn test_streaming_config_defaults() {
+        let config = StreamingConfig::default();
+        assert_eq!(config.max_concurrent_streams_per_service, 8);
     }
 
     #[test]

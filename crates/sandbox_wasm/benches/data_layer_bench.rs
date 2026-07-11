@@ -10,7 +10,9 @@ use std::{
 };
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use syneroym_core::{config::SubstrateConfig, test_constants};
+use syneroym_core::{
+    config::SubstrateConfig, local_registry::EndpointRegistry, storage::MockStorage, test_constants,
+};
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
 use syneroym_data_db::{
     SqliteStorageProvider, StorageProvider,
@@ -132,6 +134,7 @@ async fn fresh_engine() -> (tempfile::TempDir, AppSandboxEngine) {
         storage_provider,
         blob_provider,
         Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap()),
+        EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
     )
     .await
     .unwrap();

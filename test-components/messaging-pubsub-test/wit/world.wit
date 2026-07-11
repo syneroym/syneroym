@@ -27,6 +27,13 @@ interface test-driver {
 world messaging-pubsub-test {
     import syneroym:messaging/host-api@0.1.0;
     import syneroym:data-layer/store@0.1.0;
+    // Exported (not imported): `guest-api` uses `stream-cursor`/`stream-sink`
+    // from `stream-types`, and those resources are guest-implemented (M3B
+    // Slice 6B, ADR-0014) -- this fixture doesn't exercise streaming, so it
+    // declines both stream exports below, but must still declare the
+    // interface in the correct (export) direction for the world to satisfy
+    // `guest-api`'s `use` reference.
+    export syneroym:messaging/stream-types@0.1.0;
     export syneroym:messaging/guest-api@0.1.0;
 
     /// Creates the `received_messages` collection `handle-message`/

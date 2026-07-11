@@ -37,6 +37,7 @@ zeroize.workspace = true
 uuid.workspace = true
 object_store.workspace = true
 bytes.workspace = true
+syneroym-chunk-transfer.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

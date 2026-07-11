@@ -43,6 +43,7 @@ use std::{convert::Infallible, fmt, result};
 
 use anyhow::{Result, anyhow};
 use fmt::{Display, Formatter};
+use syneroym_core::streaming::StreamDirection;
 use syneroym_identity::DelegationCertificate;
 
 /// Separator used in the routing preamble between the interface name and
@@ -136,6 +137,11 @@ pub struct RoutePreamble {
     /// Client delegation certificate (optional, hex encoded JSON in query
     /// param)
     pub delegation: Option<DelegationCertificate>,
+    /// Stream direction for a `raw://` stream-protocol request (M3B Slice
+    /// 6B, ADR-0014's `?dir=upload|download`). `None` for every other
+    /// preamble shape; strictly validated (not defaulted) by the router
+    /// before a stream-protocol route is served.
+    pub dir: Option<StreamDirection>,
 }
 
 impl RoutePreamble {
@@ -186,6 +192,7 @@ impl RoutePreamble {
         let mut enc = None;
         let mut pubkey = None;
         let mut delegation = None;
+        let mut dir = None;
         if let Some(q) = query {
             for part in q.split('&') {
                 if let Some((k, v)) = part.split_once('=') {
@@ -199,6 +206,14 @@ impl RoutePreamble {
                         && let Ok(cert) = DelegationCertificate::from_json(&json_str)
                     {
                         delegation = Some(cert);
+                    } else if k == "dir" {
+                        // Left as `None` on an unparseable value, matching
+                        // this loop's existing permissive style for the
+                        // other params -- the router validates `dir`
+                        // strictly (reject, don't default) once a preamble
+                        // is known to target a stream-protocol route (see
+                        // ADR-0014).
+                        dir = v.parse::<StreamDirection>().ok();
                     }
                 }
             }
@@ -219,6 +234,7 @@ impl RoutePreamble {
             enc,
             pubkey,
             delegation,
+            dir,
         })
     }
 
@@ -236,6 +252,7 @@ impl RoutePreamble {
             enc: None,
             pubkey: None,
             delegation: None,
+            dir: None,
         }
     }
 
@@ -266,6 +283,7 @@ impl RoutePreamble {
             enc: None,
             pubkey: None,
             delegation: None,
+            dir: None,
         })
     }
 
@@ -309,6 +327,9 @@ impl Display for RoutePreamble {
             && let Ok(json_str) = delegation.to_json()
         {
             params.push(format!("delegation={}", hex::encode(json_str)));
+        }
+        if let Some(dir) = &self.dir {
+            params.push(format!("dir={dir}"));
         }
         if !params.is_empty() {
             base = format!("{base}?{}", params.join("&"));
@@ -390,6 +411,28 @@ mod tests {
         assert_eq!(parsed.service_id, "substrate-123");
         assert_eq!(parsed.enc, Some("ecdh-p256".to_string()));
         assert_eq!(parsed.pubkey, Some("abc123".to_string()));
+    }
+
+    #[test]
+    fn parses_and_round_trips_dir_query_param() {
+        let parsed = RoutePreamble::parse("raw://file-transfer|svc-1?dir=download\n").unwrap();
+        assert_eq!(parsed.dir, Some(StreamDirection::Download));
+        assert_eq!(parsed.to_string(), "raw://file-transfer|svc-1?dir=download");
+
+        let parsed = RoutePreamble::parse("raw://file-transfer|svc-1?dir=upload\n").unwrap();
+        assert_eq!(parsed.dir, Some(StreamDirection::Upload));
+    }
+
+    #[test]
+    fn invalid_dir_value_parses_as_none_not_an_error() {
+        let parsed = RoutePreamble::parse("raw://file-transfer|svc-1?dir=sideways\n").unwrap();
+        assert_eq!(parsed.dir, None);
+    }
+
+    #[test]
+    fn missing_dir_is_none() {
+        let parsed = RoutePreamble::parse("raw://file-transfer|svc-1\n").unwrap();
+        assert_eq!(parsed.dir, None);
     }
 
     #[test]

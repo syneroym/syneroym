@@ -3,5 +3,7 @@
 
 pub mod conversions;
 mod engine;
+mod stream;
 
 pub use engine::{AppSandboxEngine, HostState, MessagingContext, WasmResourceQuota};
+pub use stream::{GuestStreamCursor, GuestStreamSink, StreamContext, StreamRegistry};

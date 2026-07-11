@@ -2,6 +2,7 @@
 
 use std::fmt;
 
+pub mod chunk_transfer;
 pub mod crypto;
 pub mod errors;
 pub mod native_types;

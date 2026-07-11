@@ -6,6 +6,7 @@ use anyhow::{Result, anyhow};
 use hyper_util::rt::TokioIo;
 use iroh::{EndpointAddr, RelayUrl};
 use syneroym_core::dht_registry::EndpointMechanism;
+use syneroym_rpc::framing;
 use tokio::{
     io,
     io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader},
@@ -168,7 +169,7 @@ impl RouteHandler {
 
         // 5. Dispatch by transport stage
         match pipeline.transport {
-            TransportStage::Raw => self.handle_raw_stream(stream, &pipeline).await,
+            TransportStage::Raw => self.handle_raw_stream(stream, &preamble, &pipeline).await,
             TransportStage::Http => {
                 let io = TokioIo::new(stream);
                 self.handle_http_stream(io, preamble, pipeline).await
@@ -182,7 +183,12 @@ impl RouteHandler {
     }
 
     /// Handles a raw bidirectional stream passthrough to a `ServiceStage`.
-    async fn handle_raw_stream(&self, stream: OwnedStream, pipeline: &RoutePipeline) -> Result<()> {
+    async fn handle_raw_stream(
+        &self,
+        stream: OwnedStream,
+        preamble: &RoutePreamble,
+        pipeline: &RoutePipeline,
+    ) -> Result<()> {
         match &pipeline.service {
             ServiceStage::TcpProxy { host, port } => {
                 debug!("[Router] TcpProxy: connecting to {}:{}", host, port);
@@ -201,19 +207,74 @@ impl RouteHandler {
                 }
                 Ok(())
             }
+            // M3B Slice 6B bidirectional stream protocols (ADR-0014):
+            // `preamble.interface` carries the registered protocol name
+            // (the WasmChannel endpoint was resolved via the same registry
+            // `register-stream-protocol` writes into -- see the ADR's
+            // "Where Registration Lives"). A guest that doesn't export the
+            // relevant handler, or declines, is handled inside
+            // `AppSandboxEngine::handle_stream_protocol_request` as a clean
+            // close, not an error here.
             ServiceStage::WasmComponent { service_id } => {
-                // TODO(wRPC): passthrough not yet implemented
-                debug!("Passthrough stream to Wasm channel: {}", service_id);
-                tracing::warn!(
-                    service_id = %service_id,
-                    "wRPC passthrough not yet implemented; dropping stream"
-                );
-                Ok(())
+                self.handle_stream_protocol_request(stream, preamble, service_id).await
             }
             _ => Err(anyhow!(
                 "ServiceStage {:?} is not supported for Raw transport",
                 pipeline.service
             )),
         }
+    }
+
+    /// `dir=` is validated strictly here, before any WASM instantiation
+    /// (ADR-0014 item 1) -- a missing or invalid direction is rejected
+    /// immediately rather than surfacing later as a confusing WASM-side
+    /// failure. The single framed initial payload (the download request
+    /// bytes, or the upload's metadata) is read here too, per the ADR's
+    /// "one framed frame, then truly raw bytes" contract; everything after
+    /// it flows unframed into
+    /// `AppSandboxEngine::handle_stream_protocol_request`.
+    async fn handle_stream_protocol_request(
+        &self,
+        stream: OwnedStream,
+        preamble: &RoutePreamble,
+        service_id: &str,
+    ) -> Result<()> {
+        const UNKNOWN_PEER_ID: &str = "unknown-peer";
+
+        let Some(dir) = preamble.dir else {
+            return Err(anyhow!(
+                "raw:// stream request to {service_id}/{} missing or invalid `dir` query \
+                 parameter (expected `dir=upload` or `dir=download`)",
+                preamble.interface
+            ));
+        };
+
+        let Some(app_sandbox_engine) = self.inner.app_sandbox_engine.clone() else {
+            return Err(anyhow!(
+                "app sandbox engine not available (coordinator mode) for stream request to \
+                 {service_id}"
+            ));
+        };
+
+        let peer_id = preamble
+            .delegation
+            .as_ref()
+            .map(|d| d.master_did.clone())
+            .unwrap_or_else(|| UNKNOWN_PEER_ID.to_string());
+
+        let ReaderWriter { mut reader, writer } = stream;
+        let initial_payload = framing::read_frame(&mut reader).await?;
+
+        app_sandbox_engine
+            .handle_stream_protocol_request(
+                service_id,
+                &preamble.interface,
+                &peer_id,
+                dir,
+                initial_payload,
+                reader,
+                writer,
+            )
+            .await
     }
 }

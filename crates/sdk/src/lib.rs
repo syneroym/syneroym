@@ -529,6 +529,7 @@ impl SyneroymClient {
                     enc: None,
                     pubkey: None,
                     delegation: None,
+                    dir: None,
                 }
                 .to_preamble_line();
                 send.write_all(preamble.as_bytes()).await?;
