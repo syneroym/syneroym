@@ -8,7 +8,9 @@
 
 use std::{fs, path::Path, sync::Arc, time::Duration};
 
-use syneroym_core::{config::SubstrateConfig, test_constants};
+use syneroym_core::{
+    config::SubstrateConfig, local_registry::EndpointRegistry, storage::MockStorage, test_constants,
+};
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
 use syneroym_data_db::{SqliteStorageProvider, StorageProvider};
 use syneroym_data_keystore::KeyStore;
@@ -54,6 +56,7 @@ async fn make_engine(dir: &Path) -> Arc<AppSandboxEngine> {
             storage_provider,
             blob_provider,
             messaging_broker,
+            EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
         )
         .await
         .unwrap(),

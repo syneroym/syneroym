@@ -36,6 +36,7 @@ use syneroym_data_keystore::KeyStore;
 use syneroym_mqtt_broker::MqttBroker;
 use syneroym_rpc::{
     NativeDispatchRegistry, NativeInvocation, NativeResponse, NativeService, RpcError, RpcResult,
+    WeakNativeDispatchRegistry,
 };
 use tokio::task;
 use tracing::info;
@@ -65,7 +66,10 @@ pub struct ControlPlaneService {
     storage_provider: Arc<dyn StorageProvider>,
     blob_provider: Arc<dyn BlobProvider>,
     messaging_broker: Arc<MqttBroker>,
-    native_dispatch: NativeDispatchRegistry,
+    // `Weak`, not `NativeDispatchRegistry` -- see the cycle explained in
+    // `syneroym_rpc::dispatch_registry`'s module docs. `RouteHandlerInner`
+    // owns the strong clone for as long as the router itself is alive.
+    native_dispatch: WeakNativeDispatchRegistry,
 }
 
 impl Debug for ControlPlaneService {
@@ -106,7 +110,7 @@ impl ControlPlaneService {
             storage_provider,
             blob_provider,
             messaging_broker,
-            native_dispatch,
+            native_dispatch: Arc::downgrade(&native_dispatch),
         })
     }
 }
@@ -499,16 +503,25 @@ impl OrchestratorInterface for ControlPlaneService {
                 return Err(format!("Native capability registration failed: {e}"));
             }
         }
-        self.native_dispatch.insert(
-            service_id.clone(),
-            Arc::new(SynSvcNativeService::new(
+        if let Some(native_dispatch) = self.native_dispatch.upgrade() {
+            native_dispatch.insert(
                 service_id.clone(),
-                self.key_store.clone(),
-                self.storage_provider.clone(),
-                self.blob_provider.clone(),
-                self.messaging_broker.clone(),
-            )) as Arc<dyn NativeService>,
-        );
+                Arc::new(SynSvcNativeService::new(
+                    service_id.clone(),
+                    self.key_store.clone(),
+                    self.storage_provider.clone(),
+                    self.blob_provider.clone(),
+                    self.messaging_broker.clone(),
+                )) as Arc<dyn NativeService>,
+            );
+        } else {
+            tracing::error!(
+                "Native dispatch registry unavailable for service {}: registered its native \
+                 capability endpoints but could not insert a dispatch entry, so calls into them \
+                 will fail",
+                service_id
+            );
+        }
 
         Ok(())
     }
@@ -583,7 +596,15 @@ impl OrchestratorInterface for ControlPlaneService {
         // capability interfaces generically (it iterates every registered
         // interface for this service_id); just drop the in-memory dispatch
         // entry too.
-        self.native_dispatch.remove(&service_id);
+        if let Some(native_dispatch) = self.native_dispatch.upgrade() {
+            native_dispatch.remove(&service_id);
+        } else {
+            tracing::error!(
+                "Native dispatch registry unavailable while undeploying service {}: its in-memory \
+                 dispatch entry, if any, was left behind",
+                service_id
+            );
+        }
 
         Ok(())
     }
@@ -688,6 +709,7 @@ mod tests {
     use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
         ArtifactSource, PlannedService, ServiceConfig, TcpManifest, WasmManifest,
     };
+    use tokio::time::Instant;
     use wit_parser::Resolve;
 
     use super::*;
@@ -766,6 +788,7 @@ mod tests {
                 storage_provider.clone(),
                 blob_provider.clone(),
                 messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
             )
             .await
             .unwrap(),
@@ -774,6 +797,7 @@ mod tests {
             Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
         let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
 
+        let native_dispatch = NativeDispatchRegistry::default();
         let service = ControlPlaneService::init(
             "orchestrator".to_string(),
             app_sandbox,
@@ -784,7 +808,7 @@ mod tests {
             storage_provider,
             blob_provider.clone(),
             messaging_broker.clone(),
-            NativeDispatchRegistry::default(),
+            native_dispatch.clone(),
         )
         .await
         .unwrap();
@@ -828,6 +852,7 @@ mod tests {
                 storage_provider.clone(),
                 blob_provider.clone(),
                 messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
             )
             .await
             .unwrap(),
@@ -836,6 +861,7 @@ mod tests {
             Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
         let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
 
+        let native_dispatch = NativeDispatchRegistry::default();
         let service = ControlPlaneService::init(
             "orchestrator".to_string(),
             app_sandbox,
@@ -846,7 +872,7 @@ mod tests {
             storage_provider,
             blob_provider.clone(),
             messaging_broker.clone(),
-            NativeDispatchRegistry::default(),
+            native_dispatch.clone(),
         )
         .await
         .unwrap();
@@ -901,6 +927,7 @@ mod tests {
                 storage_provider.clone(),
                 blob_provider.clone(),
                 messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
             )
             .await
             .unwrap(),
@@ -909,6 +936,7 @@ mod tests {
             Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
         let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
 
+        let native_dispatch = NativeDispatchRegistry::default();
         let service = ControlPlaneService::init(
             "orchestrator".to_string(),
             app_sandbox,
@@ -919,7 +947,7 @@ mod tests {
             storage_provider,
             blob_provider.clone(),
             messaging_broker.clone(),
-            NativeDispatchRegistry::default(),
+            native_dispatch.clone(),
         )
         .await
         .unwrap();
@@ -977,6 +1005,7 @@ mod tests {
                 storage_provider.clone(),
                 blob_provider.clone(),
                 messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
             )
             .await
             .unwrap(),
@@ -985,6 +1014,7 @@ mod tests {
             Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
         let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
 
+        let native_dispatch = NativeDispatchRegistry::default();
         let service = ControlPlaneService::init(
             "orchestrator".to_string(),
             app_sandbox,
@@ -995,7 +1025,7 @@ mod tests {
             storage_provider,
             blob_provider.clone(),
             messaging_broker.clone(),
-            NativeDispatchRegistry::default(),
+            native_dispatch.clone(),
         )
         .await
         .unwrap();
@@ -1055,6 +1085,7 @@ mod tests {
                 storage_provider.clone(),
                 blob_provider.clone(),
                 messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
             )
             .await
             .unwrap(),
@@ -1063,6 +1094,7 @@ mod tests {
             Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
         let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
 
+        let native_dispatch = NativeDispatchRegistry::default();
         let service = ControlPlaneService::init(
             "orchestrator".to_string(),
             app_sandbox,
@@ -1073,7 +1105,7 @@ mod tests {
             storage_provider,
             blob_provider.clone(),
             messaging_broker.clone(),
-            NativeDispatchRegistry::default(),
+            native_dispatch.clone(),
         )
         .await
         .unwrap();
@@ -1126,6 +1158,7 @@ mod tests {
                 storage_provider.clone(),
                 blob_provider.clone(),
                 messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
             )
             .await
             .unwrap(),
@@ -1134,6 +1167,7 @@ mod tests {
             Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
         let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
 
+        let native_dispatch = NativeDispatchRegistry::default();
         let service = ControlPlaneService::init(
             "orchestrator".to_string(),
             app_sandbox,
@@ -1144,7 +1178,7 @@ mod tests {
             storage_provider.clone(),
             blob_provider.clone(),
             messaging_broker.clone(),
-            NativeDispatchRegistry::default(),
+            native_dispatch.clone(),
         )
         .await
         .unwrap();
@@ -1198,6 +1232,7 @@ mod tests {
                 storage_provider.clone(),
                 blob_provider.clone(),
                 messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
             )
             .await
             .unwrap(),
@@ -1206,6 +1241,7 @@ mod tests {
             Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
         let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
 
+        let native_dispatch = NativeDispatchRegistry::default();
         let service = ControlPlaneService::init(
             "orchestrator".to_string(),
             app_sandbox,
@@ -1216,7 +1252,7 @@ mod tests {
             storage_provider.clone(),
             blob_provider,
             messaging_broker.clone(),
-            NativeDispatchRegistry::default(),
+            native_dispatch.clone(),
         )
         .await
         .unwrap();
@@ -1238,6 +1274,8 @@ mod tests {
 
         let native = service
             .native_dispatch
+            .upgrade()
+            .expect("native_dispatch registry still alive")
             .get(&service_id)
             .expect("native service registered on deploy")
             .clone();
@@ -1402,7 +1440,7 @@ mod tests {
             .unwrap();
         assert_eq!(publish_resp.payload, Value::Null);
         let (delivered_topic, delivered_payload) =
-            tokio::time::timeout(std::time::Duration::from_secs(2), sub_rx.recv())
+            tokio::time::timeout(Duration::from_secs(2), sub_rx.recv())
                 .await
                 .expect("did not time out waiting for native publish to be delivered")
                 .expect("subscriber channel closed unexpectedly");
@@ -1411,7 +1449,14 @@ mod tests {
 
         // undeploy removes the native dispatch registration
         service.undeploy(service_id.clone()).await.unwrap();
-        assert!(service.native_dispatch.get(&service_id).is_none());
+        assert!(
+            service
+                .native_dispatch
+                .upgrade()
+                .expect("native_dispatch registry still alive")
+                .get(&service_id)
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -1432,6 +1477,7 @@ mod tests {
                 storage_provider.clone(),
                 blob_provider.clone(),
                 messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
             )
             .await
             .unwrap(),
@@ -1440,6 +1486,7 @@ mod tests {
             Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
         let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
 
+        let native_dispatch = NativeDispatchRegistry::default();
         let service = ControlPlaneService::init(
             "orchestrator".to_string(),
             app_sandbox,
@@ -1450,7 +1497,7 @@ mod tests {
             storage_provider,
             blob_provider,
             messaging_broker.clone(),
-            NativeDispatchRegistry::default(),
+            native_dispatch.clone(),
         )
         .await
         .unwrap();
@@ -1472,6 +1519,8 @@ mod tests {
 
         let native = service
             .native_dispatch
+            .upgrade()
+            .expect("native_dispatch registry still alive")
             .get(&service_id)
             .expect("native service registered on deploy")
             .clone();
@@ -1554,6 +1603,7 @@ mod tests {
                 storage_provider.clone(),
                 blob_provider.clone(),
                 messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
             )
             .await
             .unwrap(),
@@ -1562,6 +1612,7 @@ mod tests {
             Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
         let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
 
+        let native_dispatch = NativeDispatchRegistry::default();
         let service = ControlPlaneService::init(
             "orchestrator".to_string(),
             app_sandbox,
@@ -1572,7 +1623,7 @@ mod tests {
             storage_provider,
             blob_provider,
             messaging_broker.clone(),
-            NativeDispatchRegistry::default(),
+            native_dispatch.clone(),
         )
         .await
         .unwrap();
@@ -1591,7 +1642,8 @@ mod tests {
             registry_certificate: None,
         };
         service.deploy(service_id.clone(), manifest).await.unwrap();
-        let native = service.native_dispatch.get(&service_id).unwrap();
+        let native_dispatch = service.native_dispatch.upgrade().unwrap();
+        let native = native_dispatch.get(&service_id).unwrap();
 
         // Not-found must surface as a distinct `Custom` code, not a generic
         // `InternalError` that a client can't distinguish from any other
@@ -1650,6 +1702,7 @@ mod tests {
                 storage_provider.clone(),
                 blob_provider.clone(),
                 messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
             )
             .await
             .unwrap(),
@@ -1659,6 +1712,7 @@ mod tests {
             Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
         let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
 
+        let native_dispatch = NativeDispatchRegistry::default();
         let service = ControlPlaneService::init(
             "orchestrator".to_string(),
             app_sandbox,
@@ -1669,7 +1723,7 @@ mod tests {
             storage_provider.clone(),
             blob_provider,
             messaging_broker.clone(),
-            NativeDispatchRegistry::default(),
+            native_dispatch.clone(),
         )
         .await
         .unwrap();
@@ -1729,6 +1783,7 @@ mod tests {
                 storage_provider.clone(),
                 blob_provider.clone(),
                 messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
             )
             .await
             .unwrap(),
@@ -1738,6 +1793,7 @@ mod tests {
             Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
         let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
 
+        let native_dispatch = NativeDispatchRegistry::default();
         let service = ControlPlaneService::init(
             "orchestrator".to_string(),
             app_sandbox,
@@ -1748,7 +1804,7 @@ mod tests {
             storage_provider,
             blob_provider,
             messaging_broker,
-            NativeDispatchRegistry::default(),
+            native_dispatch.clone(),
         )
         .await
         .unwrap();
@@ -1833,6 +1889,7 @@ mod tests {
                     storage_provider.clone(),
                     blob_provider.clone(),
                     broker1,
+                    EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
                 )
                 .await
                 .unwrap(),
@@ -1870,6 +1927,7 @@ mod tests {
                 storage_provider.clone(),
                 blob_provider,
                 broker2.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
             )
             .await
             .unwrap(),
@@ -1885,9 +1943,9 @@ mod tests {
 
         broker2.publish(namespaced_topic.clone(), b"post-restart".to_vec()).await.unwrap();
 
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(5);
         let mut received = String::new();
-        while tokio::time::Instant::now() < deadline {
+        while Instant::now() < deadline {
             received = call_test_driver(
                 &engine2,
                 &service_id,
@@ -1901,5 +1959,105 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert_eq!(received, format!("{namespaced_topic}\tpost-restart"));
+    }
+
+    const STREAM_TEST_DRIVER_INTERFACE: &str = "syneroym-test:stream-test/test-driver@0.1.0";
+    const STREAM_PROTOCOL: &str = "file-transfer";
+
+    fn stream_wasm_manifest(bytes: Vec<u8>) -> DeployManifest {
+        DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema_path: None,
+                rotation_policy: None,
+            },
+            service_type: WitServiceType::Wasm(WasmManifest {
+                source: ArtifactSource::Binary(bytes),
+                hash: None,
+                interfaces: vec![STREAM_TEST_DRIVER_INTERFACE.to_string()],
+            }),
+            registry_certificate: None,
+        }
+    }
+
+    /// M3B Slice 6B (ADR-0014): `ControlPlaneService::undeploy` already
+    /// iterates every registered interface for a `service_id` and removes
+    /// it generically (see the ADR's "Where Registration Lives") -- this
+    /// proves that generic loop also cleans up a `register-stream-protocol`
+    /// registration (the stream-test fixture registers `"file-transfer"`
+    /// from its own `init()`), with no Slice-6B-specific cleanup code
+    /// needed in `undeploy` itself.
+    #[tokio::test]
+    async fn test_stream_protocol_undeploy_removes_registration() {
+        let Ok(wasm_bytes) = std::fs::read(test_constants::stream_test_wasm_path()) else {
+            eprintln!(
+                "Skipping test_stream_protocol_undeploy_removes_registration: stream-test WASM \
+                 artifact not found (run `cargo build --target wasm32-wasip2 --release` in \
+                 test-components/stream-test)"
+            );
+            return;
+        };
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider: Arc<dyn StorageProvider> =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                registry.clone(),
+            )
+            .await
+            .unwrap(),
+        );
+        app_sandbox.self_weak.set(Arc::downgrade(&app_sandbox)).unwrap();
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+
+        let native_dispatch = NativeDispatchRegistry::default();
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            app_sandbox,
+            container_engine,
+            registry.clone(),
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider,
+            blob_provider,
+            messaging_broker,
+            native_dispatch.clone(),
+        )
+        .await
+        .unwrap();
+
+        let service_id = "stream-undeploy-svc".to_string();
+        service.deploy(service_id.clone(), stream_wasm_manifest(wasm_bytes)).await.unwrap();
+
+        assert!(
+            registry.lookup(&service_id, STREAM_PROTOCOL).is_some(),
+            "register-stream-protocol (called from the fixture's init()) must be visible in the \
+             registry after deploy"
+        );
+
+        service.undeploy(service_id.clone()).await.unwrap();
+
+        assert!(
+            registry.lookup(&service_id, STREAM_PROTOCOL).is_none(),
+            "undeploy must remove the stream-protocol registration along with every other \
+             registered interface"
+        );
     }
 }

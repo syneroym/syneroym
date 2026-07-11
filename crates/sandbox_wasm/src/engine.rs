@@ -10,11 +10,16 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use syneroym_core::{config::SubstrateConfig, local_registry::SubstrateEndpoint};
+use syneroym_chunk_transfer::{self as chunk_transfer, ChunkSink};
+use syneroym_core::{
+    config::SubstrateConfig,
+    local_registry::{EndpointRegistry, SubstrateEndpoint},
+    streaming::StreamDirection,
+};
 use syneroym_data_blob::{
     BlobError as BlobStoreError, HostDownloadSession, HostUploadSession, traits::BlobProvider,
 };
@@ -43,7 +48,12 @@ use syneroym_wit_interfaces::{
         vault::vault::{self, VaultError},
     },
 };
-use tokio::{fs as tokio_fs, sync::oneshot, time};
+use tokio::{
+    fs as tokio_fs,
+    io::{AsyncRead, AsyncWrite, AsyncWriteExt},
+    sync::{Semaphore, oneshot},
+    time,
+};
 use tracing::{debug, error, info, warn};
 use wasmtime::{
     Config, Engine, InstanceAllocationStrategy, PoolingAllocationConfig, Store, StoreLimits,
@@ -56,7 +66,10 @@ use wasmtime::{
 use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxView, WasiView, p2};
 use zeroize::Zeroizing;
 
-use crate::conversions::{json_to_wasm_params, wasm_results_to_json_string};
+use crate::{
+    conversions::{json_to_wasm_params, wasm_results_to_json_string},
+    stream::{self, GuestStreamCursor, GuestStreamSink, StreamContext, StreamRegistry},
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WasmResourceQuota {
@@ -95,6 +108,7 @@ pub struct HostState {
     pub is_init_context: bool,
     pub config_generation: u64,
     pub messaging: MessagingContext,
+    pub streaming: StreamContext,
 }
 
 impl Debug for HostState {
@@ -119,6 +133,7 @@ impl HostState {
         is_init_context: bool,
         config_generation: u64,
         messaging: MessagingContext,
+        streaming: StreamContext,
     ) -> Self {
         let wasi = WasiCtx::builder().build();
         let table = ResourceTable::new();
@@ -140,6 +155,7 @@ impl HostState {
             is_init_context,
             config_generation,
             messaging,
+            streaming,
         }
     }
 }
@@ -244,6 +260,15 @@ impl host_api::Host for HostState {
         };
         engine.subscriptions.remove(&(service_id, namespaced));
         Ok(())
+    }
+
+    async fn register_stream_protocol(&mut self, protocol: String) -> Result<(), MessagingError> {
+        let service_id = self.component_id.clone();
+        self.streaming
+            .registry
+            .register(service_id.clone(), protocol, SubstrateEndpoint::WasmChannel { service_id })
+            .await
+            .map_err(|e| MessagingError::Internal(e.to_string()))
     }
 }
 
@@ -645,7 +670,32 @@ pub struct AppSandboxEngine {
     /// namespaced_topic)`. Dropping an entry unsubscribes from the broker
     /// (see `SubscriptionHandle::drop`).
     subscriptions: DashMap<(String, String), SubscriptionHandle>,
+    /// `register-stream-protocol` (M3B Slice 6B, ADR-0014) writes into this
+    /// same registry the router reads from, giving restart-replay and
+    /// undeploy-cleanup for free -- see ADR-0014 "Where Registration Lives".
+    endpoint_registry: EndpointRegistry,
+    /// Per-service open-stream-instance task tracking; see `StreamRegistry`.
+    stream_registry: StreamRegistry,
+    max_concurrent_streams_per_service: u32,
+    /// Bounds how many M3B Slice 6B stream instances may be open across
+    /// *all* services at once. Each open stream holds a pooled component
+    /// instance for its whole lifetime (`open_stream_instance`), competing
+    /// for the same engine-wide `total_component_instances` pool
+    /// (`build_wasm_engine`) as every short-lived RPC/message-delivery call
+    /// across every deployed service -- `max_concurrent_streams_per_service`
+    /// alone only bounds one service's contribution, not the aggregate
+    /// across services. Acquiring a permit here before opening a stream
+    /// instance (see `run_stream_protocol_request`) keeps
+    /// `STREAM_INSTANCE_POOL_HEADROOM` pool slots always available for
+    /// ordinary calls, instead of letting streams silently starve them.
+    stream_instance_permits: Arc<Semaphore>,
 }
+
+/// Pool slots reserved out of `max_concurrent_instances` for short-lived
+/// RPC/message-delivery calls; the remainder is the budget
+/// `stream_instance_permits` hands out to long-lived stream instances. See
+/// that field's doc comment for the cross-service DoS this prevents.
+const STREAM_INSTANCE_POOL_HEADROOM: u32 = 2;
 
 impl Debug for AppSandboxEngine {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
@@ -682,6 +732,7 @@ impl AppSandboxEngine {
         storage_provider: Arc<dyn StorageProvider>,
         blob_provider: Arc<dyn BlobProvider>,
         messaging_broker: Arc<MqttBroker>,
+        endpoint_registry: EndpointRegistry,
     ) -> anyhow::Result<Self> {
         let component_dir = config.storage.blobs_dir.join("app_sandbox");
 
@@ -712,6 +763,23 @@ impl AppSandboxEngine {
 
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
 
+        let max_concurrent_streams_per_service =
+            config.streaming.max_concurrent_streams_per_service;
+
+        let stream_instance_budget =
+            max_instances.saturating_sub(STREAM_INSTANCE_POOL_HEADROOM).max(1);
+        if max_concurrent_streams_per_service > stream_instance_budget {
+            warn!(
+                max_concurrent_streams_per_service,
+                max_concurrent_instances = max_instances,
+                stream_instance_budget,
+                "a single service's stream cap alone can consume this engine's entire \
+                 cross-service stream-instance budget (max_concurrent_instances minus a \
+                 {STREAM_INSTANCE_POOL_HEADROOM}-slot reserve for ordinary calls); consider \
+                 raising max_concurrent_instances or lowering max_concurrent_streams_per_service"
+            );
+        }
+
         let app_engine = Self {
             blobs_dir: component_dir,
             engine,
@@ -726,6 +794,10 @@ impl AppSandboxEngine {
             messaging_broker,
             self_weak: OnceLock::new(),
             subscriptions: DashMap::new(),
+            endpoint_registry,
+            stream_registry: StreamRegistry::new(),
+            max_concurrent_streams_per_service,
+            stream_instance_permits: Arc::new(Semaphore::new(stream_instance_budget as usize)),
         };
 
         for (service_id, _interface_name, endpoint) in endpoints {
@@ -1035,7 +1107,7 @@ impl AppSandboxEngine {
         &self,
         service_id: &str,
         is_init_context: bool,
-    ) -> Result<(Store<HostState>, Instance)> {
+    ) -> Result<(Store<HostState>, Instance, Option<u64>)> {
         // Look up the pre-linked component instance
         let (instance_pre, quota) = {
             let entry = self
@@ -1071,6 +1143,10 @@ impl AppSandboxEngine {
             broker: self.messaging_broker.clone(),
             engine: self.self_weak.get().cloned().unwrap_or_default(),
         };
+        let streaming = StreamContext {
+            registry: self.endpoint_registry.clone(),
+            engine: self.self_weak.get().cloned().unwrap_or_default(),
+        };
         let host_state = HostState::new(
             service_id.to_string(),
             max_memory_bytes,
@@ -1080,6 +1156,7 @@ impl AppSandboxEngine {
             is_init_context,
             config_generation,
             messaging,
+            streaming,
         );
 
         debug!("created wasi ctx and host state");
@@ -1102,7 +1179,7 @@ impl AppSandboxEngine {
 
         debug!("instantiated store and instance");
 
-        Ok((store, instance))
+        Ok((store, instance, max_instructions))
     }
 
     /// Helper to prepare WASM execution context and extract function
@@ -1113,7 +1190,7 @@ impl AppSandboxEngine {
         method_name: &str,
     ) -> Result<(Store<HostState>, Func, usize, ComponentItem)> {
         let is_init_context = method_name == "init" || method_name == "migrate";
-        let (mut store, instance) =
+        let (mut store, instance, _max_instructions) =
             self.build_store_and_instantiate(service_id, is_init_context).await?;
 
         // Use the helper to extract the function
@@ -1132,7 +1209,8 @@ impl AppSandboxEngine {
     /// component) are left untouched -- this makes it safe to call
     /// unconditionally on every deploy.
     async fn invoke_lifecycle_hook(&self, service_id: &str, hook: &str) -> Result<()> {
-        let (mut store, instance) = self.build_store_and_instantiate(service_id, true).await?;
+        let (mut store, instance, _max_instructions) =
+            self.build_store_and_instantiate(service_id, true).await?;
 
         if instance.get_export(&mut store, None, hook).is_none() {
             debug!(service_id, hook, "component does not export lifecycle hook, skipping");
@@ -1195,6 +1273,14 @@ impl AppSandboxEngine {
         self.subscriptions.retain(|(sid, _topic), _handle| sid != service_id);
     }
 
+    /// Aborts every open M3B Slice 6B stream task for `service_id` (called
+    /// from `stop_wasm` and `ControlPlaneService::undeploy`, mirroring
+    /// `unsubscribe_all`). `StreamRegistry`'s own `Drop` is the backstop for
+    /// every other teardown path (ADR-0014).
+    pub fn abort_streams(&self, service_id: &str) {
+        self.stream_registry.abort_all(service_id);
+    }
+
     /// Invokes the deployed component's exported `guest-api::handle-message`
     /// with a freshly-instantiated `Store` (same reasoning as any other
     /// invocation -- see `build_store_and_instantiate`), if it declares
@@ -1202,18 +1288,18 @@ impl AppSandboxEngine {
     /// ADR-0010): this makes it safe to call for every subscription
     /// regardless of whether the target component implements messaging.
     async fn deliver_message(&self, service_id: &str, topic: &str, payload: Vec<u8>) {
-        let (mut store, instance) = match self.build_store_and_instantiate(service_id, false).await
-        {
-            Ok(pair) => pair,
-            Err(e) => {
-                debug!(
-                    service_id,
-                    error = %e,
-                    "messaging: failed to instantiate component for delivery"
-                );
-                return;
-            }
-        };
+        let (mut store, instance, _max_instructions) =
+            match self.build_store_and_instantiate(service_id, false).await {
+                Ok(triple) => triple,
+                Err(e) => {
+                    debug!(
+                        service_id,
+                        error = %e,
+                        "messaging: failed to instantiate component for delivery"
+                    );
+                    return;
+                }
+            };
 
         const GUEST_API_INTERFACE: &str = "syneroym:messaging/guest-api@0.1.0";
         let (func, results_len, _item) = match Self::get_wasm_func(
@@ -1266,6 +1352,7 @@ impl AppSandboxEngine {
         Self::validate_service_id(service_id)?;
         info!(service_id = %service_id, "AppSandboxEngine: stopping Wasm component");
         self.components.remove(service_id);
+        self.abort_streams(service_id);
         metrics::gauge!("substrate.wasm.component_cache_size").set(self.components.len() as f64);
         Ok(())
     }
@@ -1338,13 +1425,195 @@ impl AppSandboxEngine {
         info!("AppSandboxEngine: Deploying Podman container for {}", _service_id);
         Ok(())
     }
+
+    /// Opens a fresh, long-lived `Store`/`Instance` for one M3B Slice 6B
+    /// stream's lifetime (ADR-0014 "Instance Lifetime and Quota") --
+    /// distinct from `build_store_and_instantiate`'s per-*call* instances,
+    /// which don't outlive a single invocation. Also returns the resolved
+    /// fuel budget, re-applied before every chunk call by
+    /// `GuestStreamCursor`/`GuestStreamSink`.
+    async fn open_stream_instance(
+        &self,
+        service_id: &str,
+    ) -> Result<(Store<HostState>, Instance, Option<u64>)> {
+        self.build_store_and_instantiate(service_id, false).await
+    }
+
+    /// Entry point for a peer-initiated `raw://<protocol>|<service_id>`
+    /// stream (`crates/router/src/route_handler/io.rs`'s
+    /// `handle_raw_stream`, per ADR-0014). Spawns one dedicated Tokio task
+    /// per stream (owning the long-lived `Store`/`Instance`) *before*
+    /// reserving its slot in `StreamRegistry`, since the `AbortHandle` only
+    /// exists once the task has been spawned; the reservation itself is a
+    /// single atomic check-and-register (see `StreamRegistry::try_reserve`),
+    /// so concurrent requests can't all observe spare capacity and all get
+    /// admitted. If the reservation is refused, the just-spawned task is
+    /// aborted immediately (it can't have made meaningful progress yet) and
+    /// the caller sees a clean over-capacity error instead of the stream
+    /// briefly starting anyway.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn handle_stream_protocol_request(
+        &self,
+        service_id: &str,
+        protocol: &str,
+        peer_id: &str,
+        direction: StreamDirection,
+        initial_payload: Vec<u8>,
+        reader: Box<dyn AsyncRead + Unpin + Send>,
+        writer: Box<dyn AsyncWrite + Unpin + Send>,
+    ) -> Result<()> {
+        let engine = self
+            .self_weak
+            .get()
+            .and_then(Weak::upgrade)
+            .ok_or_else(|| anyhow!("sandbox engine unavailable for stream handling"))?;
+
+        let service_id_owned = service_id.to_string();
+        let protocol_owned = protocol.to_string();
+        let peer_id_owned = peer_id.to_string();
+        let tracked_service_id = service_id.to_string();
+
+        let join_handle = tokio::spawn(async move {
+            engine
+                .run_stream_protocol_request(
+                    &service_id_owned,
+                    &protocol_owned,
+                    &peer_id_owned,
+                    direction,
+                    initial_payload,
+                    reader,
+                    writer,
+                )
+                .await
+        });
+        let abort_handle = join_handle.abort_handle();
+        if let Err(e) = self.stream_registry.try_reserve(
+            &tracked_service_id,
+            self.max_concurrent_streams_per_service,
+            abort_handle.clone(),
+        ) {
+            abort_handle.abort();
+            return Err(e);
+        }
+
+        let result = join_handle.await;
+        self.stream_registry.untrack(&tracked_service_id, &abort_handle);
+
+        match result {
+            Ok(inner) => inner,
+            // Aborted by `stop_wasm`/`undeploy` -- not a real failure from
+            // the stream's own perspective, the router already closed (or
+            // is closing) the underlying QUIC stream in that case.
+            Err(join_err) if join_err.is_cancelled() => Ok(()),
+            Err(join_err) => Err(anyhow!("stream task failed: {join_err}")),
+        }
+    }
+
+    /// The actual per-stream work, run on its own dedicated Tokio task (see
+    /// `handle_stream_protocol_request`): resolves the guest's
+    /// `handle-stream-request`/`accept-stream-upload` export for `protocol`
+    /// and, if it accepts, drives the pull/push loop until the stream ends.
+    /// A guest that declines (`Err`) or doesn't export the relevant
+    /// function closes the stream cleanly (`Ok(())`) rather than erroring --
+    /// this is also the safety net for the `EndpointRegistry`-reuse caveat
+    /// in ADR-0014 (a `raw://` request against a non-stream interface name
+    /// simply finds no matching export).
+    ///
+    /// Acquires a `stream_instance_permits` permit *before* opening the
+    /// stream's pooled component instance, and holds it for this function's
+    /// whole lifetime (dropped on every exit path, including the early
+    /// `return`s below) -- see that field's doc comment for why this
+    /// engine-wide budget exists alongside the per-service
+    /// `StreamRegistry` cap.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_stream_protocol_request(
+        &self,
+        service_id: &str,
+        protocol: &str,
+        peer_id: &str,
+        direction: StreamDirection,
+        initial_payload: Vec<u8>,
+        reader: Box<dyn AsyncRead + Unpin + Send>,
+        writer: Box<dyn AsyncWrite + Unpin + Send>,
+    ) -> Result<()> {
+        let _stream_instance_permit = self
+            .stream_instance_permits
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|e| anyhow!("stream instance semaphore closed: {e}"))?;
+
+        let (mut store, instance, max_instructions) = self.open_stream_instance(service_id).await?;
+        let mut writer = writer;
+
+        let result = match direction {
+            StreamDirection::Download => {
+                let resource = match stream::call_handle_stream_request(
+                    &mut store,
+                    &instance,
+                    protocol,
+                    peer_id,
+                    initial_payload,
+                )
+                .await
+                {
+                    Ok(resource) => resource,
+                    Err(e) => {
+                        debug!(
+                            service_id,
+                            protocol,
+                            error = %e,
+                            "stream: guest declined handle-stream-request (or does not export it)"
+                        );
+                        let _ = writer.shutdown().await;
+                        return Ok(());
+                    }
+                };
+                let cursor = GuestStreamCursor::new(store, instance, resource, max_instructions);
+                chunk_transfer::pull_until_eof(cursor, &mut writer).await
+            }
+            StreamDirection::Upload => {
+                let resource = match stream::call_accept_stream_upload(
+                    &mut store,
+                    &instance,
+                    protocol,
+                    peer_id,
+                    initial_payload,
+                )
+                .await
+                {
+                    Ok(resource) => resource,
+                    Err(e) => {
+                        debug!(
+                            service_id,
+                            protocol,
+                            error = %e,
+                            "stream: guest declined accept-stream-upload (or does not export it)"
+                        );
+                        let _ = writer.shutdown().await;
+                        return Ok(());
+                    }
+                };
+                let sink: Box<dyn ChunkSink> =
+                    Box::new(GuestStreamSink::new(store, instance, resource, max_instructions));
+                chunk_transfer::push_until_eof(reader, sink).await
+            }
+        };
+
+        // Neither `pull_until_eof` nor `push_until_eof` shuts `writer` down
+        // (the latter doesn't touch it at all); without an explicit clean
+        // close here, a peer reading this stream's other QUIC direction to
+        // EOF has nothing to observe and hangs rather than completing.
+        let _ = writer.shutdown().await;
+        result
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::{env, fs};
 
-    use syneroym_core::test_constants;
+    use syneroym_core::{storage::MockStorage, test_constants};
     use syneroym_data_blob::ObjectStoreBlobProvider;
     use syneroym_data_db::SqliteStorageProvider;
     use syneroym_mqtt_broker::MqttBrokerConfig;
@@ -1368,6 +1637,16 @@ mod tests {
         }
     }
 
+    /// Test-only streaming context: a mock in-memory `EndpointRegistry` with
+    /// no engine backreference -- sufficient for tests that don't exercise
+    /// stream-protocol registration/routing.
+    fn test_streaming_context() -> StreamContext {
+        StreamContext {
+            registry: EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+            engine: Weak::new(),
+        }
+    }
+
     #[tokio::test]
     async fn test_list_interfaces() {
         let engine = AppSandboxEngine::build_wasm_engine(None, None).unwrap();
@@ -1386,6 +1665,7 @@ mod tests {
             false,
             0,
             test_messaging_context(),
+            test_streaming_context(),
         );
 
         let mut store = Store::new(&engine, host_state);
@@ -1487,6 +1767,10 @@ mod tests {
             messaging_broker: Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap()),
             self_weak: OnceLock::new(),
             subscriptions: DashMap::new(),
+            endpoint_registry: EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+            stream_registry: StreamRegistry::new(),
+            max_concurrent_streams_per_service: 8,
+            stream_instance_permits: Arc::new(Semaphore::new(8)),
         };
 
         // Cache the test component
@@ -1542,6 +1826,7 @@ mod tests {
             false,
             generation,
             test_messaging_context(),
+            test_streaming_context(),
         );
 
         use app_config::Host as ConfigHost;
@@ -1588,6 +1873,7 @@ mod tests {
             false,
             gen2_a,
             test_messaging_context(),
+            test_streaming_context(),
         );
         let mut host_b = HostState::new(
             "svc_b".to_string(),
@@ -1598,6 +1884,7 @@ mod tests {
             false,
             gen1_b,
             test_messaging_context(),
+            test_streaming_context(),
         );
 
         let val_a = ConfigHost::get(&mut host_a_gen2, "mode".to_string()).await.unwrap().unwrap();
@@ -1615,6 +1902,7 @@ mod tests {
             false,
             gen1_a,
             test_messaging_context(),
+            test_streaming_context(),
         );
         let val_a_old =
             ConfigHost::get(&mut host_a_gen1, "mode".to_string()).await.unwrap().unwrap();
@@ -1640,6 +1928,7 @@ mod tests {
             false,
             0,
             test_messaging_context(),
+            test_streaming_context(),
         );
 
         let result = vault::Host::reveal(&mut host_state, "does-not-exist".to_string()).await;

@@ -7,11 +7,13 @@ use anyhow::Result;
 use reqwest::Client;
 use syneroym_core::{
     dht_registry::{EndpointInfo, EndpointType},
+    local_registry::EndpointRegistry,
+    storage::MockStorage,
     test_constants,
 };
 use syneroym_identity::{Identity, substrate};
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
-use syneroym_sandbox_wasm::{AppSandboxEngine, HostState, MessagingContext};
+use syneroym_sandbox_wasm::{AppSandboxEngine, HostState, MessagingContext, StreamContext};
 use syneroym_sdk::SyneroymClient;
 use test_constants::GREETER_INTERFACE_NAME;
 use wasmtime::{
@@ -49,6 +51,10 @@ pub async fn run_scenario() -> Result<()> {
         broker: std::sync::Arc::new(MqttBroker::new(MqttBrokerConfig::default())?),
         engine: std::sync::Weak::new(),
     };
+    let streaming_context = StreamContext {
+        registry: EndpointRegistry::new_mock(std::sync::Arc::new(MockStorage::new())),
+        engine: std::sync::Weak::new(),
+    };
 
     // Warmup Baseline
     for _ in 0..10 {
@@ -61,6 +67,7 @@ pub async fn run_scenario() -> Result<()> {
             false,
             0,
             messaging_context.clone(),
+            streaming_context.clone(),
         );
         let mut store = Store::new(&engine, host_state);
         let instance = linker.instantiate_async(&mut store, &component).await?;
@@ -92,6 +99,7 @@ pub async fn run_scenario() -> Result<()> {
             false,
             0,
             messaging_context.clone(),
+            streaming_context.clone(),
         );
         let mut store = Store::new(&engine, host_state);
         let instance = linker.instantiate_async(&mut store, &component).await?;

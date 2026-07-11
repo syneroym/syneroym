@@ -6,13 +6,13 @@ use std::{
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use serde_json::Value;
-use syneroym_core::test_constants;
+use syneroym_core::{local_registry::EndpointRegistry, storage::MockStorage, test_constants};
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
 use syneroym_data_db::{SqliteStorageProvider, StorageProvider};
 use syneroym_data_keystore::KeyStore;
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
 use syneroym_sandbox_wasm::{
-    AppSandboxEngine, HostState, MessagingContext, conversions::json_to_wasm_params,
+    AppSandboxEngine, HostState, MessagingContext, StreamContext, conversions::json_to_wasm_params,
 };
 use test_constants::GREETER_INTERFACE_NAME;
 use tokio::runtime::Builder;
@@ -24,6 +24,13 @@ use wasmtime::{
 fn test_messaging_context() -> MessagingContext {
     MessagingContext {
         broker: Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap()),
+        engine: Weak::new(),
+    }
+}
+
+fn test_streaming_context() -> StreamContext {
+    StreamContext {
+        registry: EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
         engine: Weak::new(),
     }
 }
@@ -67,6 +74,7 @@ fn bench_wasm_engine(c: &mut Criterion) {
                 false,
                 0,
                 test_messaging_context(),
+                test_streaming_context(),
             );
             let _store = Store::new(&engine, host_state);
         });
@@ -84,6 +92,7 @@ fn bench_wasm_engine(c: &mut Criterion) {
                 false,
                 0,
                 test_messaging_context(),
+                test_streaming_context(),
             );
             let mut store: Store<HostState> = Store::new(&engine, host_state);
             store.set_fuel(1_000_000).unwrap();
@@ -103,6 +112,7 @@ fn bench_wasm_engine(c: &mut Criterion) {
         false,
         0,
         test_messaging_context(),
+        test_streaming_context(),
     );
     let mut store: Store<HostState> = Store::new(&engine, host_state);
 

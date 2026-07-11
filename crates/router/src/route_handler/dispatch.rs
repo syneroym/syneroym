@@ -167,6 +167,16 @@ impl RouteHandler {
                 AdaptationStage::JsonRpcToWasm,
                 ServiceStage::WasmComponent { service_id: service_id.clone() },
             ),
+            // M3B Slice 6B stream-protocol requests (ADR-0014): without
+            // this arm, `raw://<protocol>|<service_id>` against a
+            // `WasmChannel` endpoint falls through to `Unsupported` --
+            // `wrpc://` is the only other route that reaches
+            // `WasmComponent` under `Raw` transport, and it force-overrides
+            // transport separately below.
+            (RouteProtocol::Raw, SubstrateEndpoint::WasmChannel { service_id }) => (
+                AdaptationStage::None,
+                ServiceStage::WasmComponent { service_id: service_id.clone() },
+            ),
             (_, SubstrateEndpoint::TcpHostPort { host, port }) => {
                 (AdaptationStage::None, ServiceStage::TcpProxy { host: host.clone(), port: *port })
             }

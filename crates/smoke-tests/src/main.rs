@@ -15,7 +15,9 @@ use syneroym_core::{
         ServiceRegistryRole, SubstrateConfig,
     },
     dht_registry::{EndpointInfo, EndpointMechanism, EndpointType, RegistryClient},
+    local_registry::EndpointRegistry,
     retry,
+    storage::MockStorage,
 };
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
 use syneroym_data_db::SqliteStorageProvider;
@@ -302,6 +304,7 @@ async fn main() -> Result<()> {
         storage_provider,
         blob_provider,
         messaging_broker,
+        EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
     )
     .await
     .context("Failed to init app engine")?;

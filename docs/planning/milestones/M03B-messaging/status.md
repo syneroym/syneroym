@@ -221,6 +221,235 @@ messaging tests); 1 in `crates/substrate/tests/messaging_client_e2e.rs` (covers
 both basic-path delivery and close-as-unsubscribe, plus the native-subscriber
 performance budget).
 
-## Slice 6B: Bidirectional Streaming (Not Started)
+## Slice 6B: Bidirectional Streaming (Complete)
+
+**Implemented by:** Claude Code, Sonnet 5 (`claude-sonnet-5`).
+
+### What was built
+
+- **`docs/decisions/0014-quic-stream-protocol-routing.md`** — the required
+  design note (Dependency Gate 4), covering direction disambiguation,
+  guest-implemented resource mechanics, instance lifetime/quota, peer-kind
+  symmetry, and where the routing lives.
+- **`crates/chunk_transfer`** (package `syneroym-chunk-transfer`) — new crate:
+  `ChunkSource`/`ChunkSink` traits, `pull_until_eof`/`push_until_eof` shared
+  host-side loops, 5 unit tests including a `Box<dyn ChunkSink>` object-safety
+  proof. `crates/data_blob/src/chunk_transfer.rs` implements
+  `ChunkSource`/`ChunkSink` for `Box<dyn DownloadSession>`/`Box<dyn
+  UploadSession>`, sharing this core with `blob-store`'s own upload/download
+  sessions rather than maintaining a second chunking loop (task.md's
+  "Consolidate chunk-transfer core").
+- **`crates/wit_interfaces/wit/messaging/messaging.wit`** —
+  `register-stream-protocol` added to `host-api`; new `stream-types` interface
+  with `stream-cursor` (guest-as-source, `next-chunk`) and `stream-sink`
+  (guest-as-sink, `push-chunk`/`finalize`) resources, both **guest-exported**
+  (the reverse of every other resource in this codebase — see "Day-0 spike
+  finding" below); `handle-stream-request`/`accept-stream-upload` added to
+  `guest-api`, both taking a `protocol: string` first parameter (ADR
+  deviation 1). `host.wit` exports `stream-types`.
+- **`crates/sandbox_wasm/src/stream.rs`** (new) — `StreamContext`,
+  `StreamRegistry` (per-service concurrency cap, `AbortHandle` tracking, and a
+  `Drop` impl that aborts every tracked stream as the backstop for every other
+  teardown path), `GuestStreamCursor`/`GuestStreamSink` (dynamic
+  `Val::Resource`-based resource method calls, epoch/fuel re-arm per chunk
+  call), `call_handle_stream_request`/`call_accept_stream_upload`.
+- **`crates/sandbox_wasm/src/engine.rs`** — `HostState.streaming` field,
+  `register_stream_protocol` `host_api` impl (delegates to
+  `EndpointRegistry::register`, ADR deviation 2 — see below);
+  `AppSandboxEngine::{endpoint_registry, stream_registry,
+  max_concurrent_streams_per_service}`; `open_stream_instance`,
+  `handle_stream_protocol_request` (spawns a dedicated task per stream,
+  tracked in `StreamRegistry`, awaited synchronously by the caller),
+  `run_stream_protocol_request` (resolves the guest export, drives
+  `pull_until_eof`/`push_until_eof`, explicitly `writer.shutdown()`s on every
+  exit path — see "Bug found and fixed" below), `abort_streams` (wired into
+  `stop_wasm`). All `AppSandboxEngine::init`/`HostState::new` call sites
+  across the workspace updated for the new params.
+- **`crates/router`** — `RoutePreamble.dir: Option<StreamDirection>` parses
+  `?dir=upload|download` leniently (`crates/router/src/preamble.rs`; strict
+  validation happens at the use site per the ADR); `dispatch.rs` gained the
+  `(RouteProtocol::Raw, WasmChannel) -> WasmComponent` pipeline arm;
+  `route_handler/io.rs`'s `handle_raw_stream` validates `dir` strictly, reads
+  one framed initial payload, and calls
+  `AppSandboxEngine::handle_stream_protocol_request`.
+- **`test-components/stream-test`** (package `syneroym-test-stream`) — new
+  WASM fixture: guest-as-source (deterministic download payload derived from
+  `peer_id`+`request_data`, chunked 8 bytes at a time) and guest-as-sink
+  (accumulates pushed chunks, commits to `data-layer` as JSON on `finalize`).
+  Supports test sentinels: `request_data`/`metadata == "reject"` declines;
+  `metadata == "fail-after-first-chunk"` makes `push-chunk` fail from the 2nd
+  call onward (abort-without-finalize coverage).
+- **`crates/rpc/src/dispatch_registry.rs`** — new
+  `WeakNativeDispatchRegistry` type alias, and updated module docs explaining
+  the reference-cycle hazard `ControlPlaneService` must avoid (see "Bug found
+  and fixed" below).
+
+### Day-0 spike finding
+
+A throwaway spike (scratchpad-only, not committed) confirmed the one genuine
+unknown before the design note could be finalized: dynamic
+`Val::Resource(ResourceAny)` invocation **does** work for a guest-exported WIT
+resource in wasmtime 46.0.1. This ruled out needing typed `bindgen!` export
+bindings (uncertain toolchain support) in favor of the same
+`get_wasm_func`/`Val`-construction pattern `invoke_lifecycle_hook` already
+uses elsewhere, generalized to resource methods.
+
+### Two deliberate ADR deviations from `task.md`'s literal task list
+
+1. **`handle-stream-request`/`accept-stream-upload` gain a `protocol: string`
+   first parameter**, vs. task.md's literal `(peer-id, request-data)`. A
+   service can `register-stream-protocol` more than once, but there is only
+   one `handle-stream-request` export per component — without the protocol
+   name in the call, a guest registering two protocols can't tell them apart.
+   `preamble.interface` already carries the protocol name end-to-end, so
+   threading it into the guest call is a small, in-pattern addition (same
+   category as Slice 6A's `next-chunk` `result<>` fix).
+2. **No new `stream_protocol_registrations` table.** `register-stream-protocol`
+   reuses `EndpointRegistry` (already used for ordinary WIT interface
+   declarations), which already persists to `endpoints.db` and replays on
+   restart before the router starts accepting connections — restart-replay
+   and undeploy-cleanup are correct with zero new persistence code. Trade-off:
+   a stream-protocol registration isn't distinguishable from an ordinary
+   declared interface by registry inspection alone; the graceful-decline path
+   (a guest that doesn't export the stream handler) is the actual safety net,
+   not the registry's typing.
+
+### Known environment workaround (will bite the next slice's fixtures too)
+
+`cargo component build` is broken in this environment for any test component
+with a `wit/deps/` directory (fails with "package not found", reproducible
+even on pre-existing, untouched fixtures like `data-layer-test` — not caused
+by this work). Workaround used for `test-components/stream-test`: build the
+fixture directly with
+`CARGO_TARGET_DIR=<fixture>/target cargo build --manifest-path <fixture>/Cargo.toml --release --target wasm32-wasip2`
+(never `cd` into the fixture dir — the session's bookkeeping hook can drop a
+`.claude/.cc-writes` directory into a `wit/deps/` tree it's `cd`'d into,
+which breaks `wit-parser`). Rust's `wasm32-wasip2` target compiles straight
+to a valid component with no `cargo-component` post-processing needed —
+verified via `wasm-tools component wit`.
+
+### Bugs found and fixed
+
+- **Missing `writer.shutdown()` on the download path.** Neither
+  `pull_until_eof` nor `push_until_eof` shuts down the destination writer.
+  `run_stream_protocol_request` now explicitly calls `writer.shutdown().await`
+  on every exit path (guest decline, success, error) — without it, a real
+  QUIC peer reading the download direction to EOF hung forever since nothing
+  ever signalled FIN.
+- **`Arc` reference cycle hanging graceful shutdown indefinitely** — found
+  while root-causing a hang in `stream_client_e2e.rs`'s real-client test:
+  after a full, successful test run (both directions verified byte-exact) and
+  a clean-looking `syneroym_substrate::runtime` shutdown sequence (every
+  component logged its own shutdown, ending in `"shutdown complete"`), the
+  test process never exited — `cargo test` hung indefinitely post-teardown.
+  Root-caused via `sample`(1) (macOS's stack sampler; `lldb -p` attach is
+  blocked by this sandbox) plus a temporary `Weak`-based strong-count monitor:
+  `SqliteStorageProvider`'s `Arc` strong count sat stable at 4 forever, never
+  decreasing, which blocked `run_writer_loop`'s `spawn_blocking` thread inside
+  `blocking_recv()` (waiting for its channel's last `Sender` to drop), which
+  in turn is exactly what `tokio::runtime::Runtime`'s `Drop` impl blocks on
+  after every async task has already been torn down — so the leak could not
+  be an ordinary un-aborted task (tokio force-drops those before touching the
+  blocking pool). The actual cause: `ControlPlaneService` held a **strong**
+  `NativeDispatchRegistry` (`Arc<DashMap<String, Arc<dyn NativeService>>>`)
+  as a field, but `ControlPlaneService` itself is inserted into that same
+  `DashMap` (`RouteHandler::init`'s `register_native_service` call, keyed by
+  the substrate's own `service_id`) — a two-node `Arc` cycle
+  (`registry -> Arc<ControlPlaneService> -> registry`) that reference counting
+  can never collect, independent of how correctly every task/router/QUIC
+  layer shuts down (all of which were verified correct in the process of
+  ruling them out). **Fix:** `ControlPlaneService.native_dispatch` is now a
+  `Weak` (`syneroym_rpc::WeakNativeDispatchRegistry`), upgraded at each of its
+  two use sites (`insert` on deploy, `remove` on undeploy); `RouteHandlerInner`
+  keeps the one strong clone, matching this codebase's existing
+  `Weak`-backreference convention (`AppSandboxEngine::self_weak`,
+  `MessagingContext.engine`). This is a genuine production bug, not a
+  test-only artifact — the real `syneroym-substrate` binary would hang the
+  same way on any graceful shutdown after a data-layer-using service had ever
+  been deployed. Existing `control_plane` unit tests that constructed
+  `ControlPlaneService` with an inline, unretained
+  `NativeDispatchRegistry::default()` needed updating to keep their own
+  strong clone alive (mirroring `RouteHandlerInner`'s real ownership), for
+  the same reason the production code needs one.
+
+### Failure / security test outcomes (task.md's table, Slice 6B rows)
+
+| Test | Outcome |
+|---|---|
+| Peer opens a stream against an unregistered protocol namespace | Rejected cleanly, no panic/hang — `test_unregistered_stream_protocol_rejected_cleanly` (`crates/substrate`) |
+| Guest declines a `handle-stream-request` | Stream closed without invoking `next-chunk` — `test_download_declined_by_guest_closes_stream_without_bytes` (`crates/sandbox_wasm`) |
+| Guest declines an `accept-stream-upload` | Incoming stream closed, no `stream-sink` created, no bytes read — `test_upload_declined_by_guest_leaves_no_stored_content` (`crates/sandbox_wasm`) |
+| `push-chunk` returns `Err` mid-upload | Upload aborted, `finalize()` never called, no leaked state — `test_upload_push_chunk_failure_aborts_without_finalize` (`crates/sandbox_wasm`) + `push_until_eof_aborts_without_finalize_on_push_failure` (`crates/chunk_transfer`, shared-core level) |
+| `stream-cursor.next-chunk()` returns `Err` mid-download | Covered at the shared-core level only — `pull_until_eof_propagates_source_error` (`crates/chunk_transfer`) proves the generic pull loop stops and propagates on any `ChunkSource` error; **not separately exercised as a WASM-guest-returns-`Err`-mid-download integration test** — noted honestly rather than over-claimed |
+| Long-running stream exceeds the default epoch deadline while progressing | No spurious trap — `test_long_running_stream_does_not_trap_on_epoch_deadline` (`crates/sandbox_wasm`) |
+| Substrate restarts with active stream-protocol registrations | Replayed via `EndpointRegistry`, no manual re-registration — `test_stream_protocol_registration_survives_restart_replay` (`crates/sandbox_wasm`) |
+| Cross-service stream namespace isolation | A peer cannot address another service's registered protocol — `test_cross_service_stream_protocol_isolation` (`crates/sandbox_wasm`) |
+| `undeploy` cleans up a service's stream-protocol registrations | `test_stream_protocol_undeploy_removes_registration` (`crates/control_plane`) |
+
+### Reference scenario steps 16-18
+
+Not separately exercised as their own dedicated scenario test — the
+underlying mechanics are proven via other tests instead, the same way Slice
+6A's status.md handled an analogous gap. Step 16 (register) and step 17
+(download-direction pull to EOF) are covered by
+`test_download_direction_end_to_end`; step 18 (upload-direction push +
+`finalize` + read-back) is covered by
+`test_upload_direction_end_to_end_commits_content` (both in
+`crates/sandbox_wasm/tests/stream_integration.rs`). Neither test literally
+chains through a prior blob-store step's blob hash the way the scenario's
+prose describes — the streamed payloads are the fixture's own deterministic
+content, not a blob fetched from Slice 5's `blob-store`. Chaining the two
+mechanisms together was judged to add scenario-realism without proving new
+code paths (both `blob-store` and this slice's streaming are independently,
+thoroughly tested), so it wasn't added as a separate test.
+
+### Performance budgets (measured)
+
+| Metric | Budget | Measured (average, n=53 chunks) | Test |
+|---|---|---|---|
+| `stream-cursor.next-chunk()` round trip | < 5 ms p99 | **27.7 µs** | `test_next_chunk_and_push_chunk_latency_budget` (`crates/sandbox_wasm/tests/stream_integration.rs`; asserted in-test at a 15 ms average threshold — 3x the p99 budget — for CI-runner headroom, matching Slice 6A's own budget-test margin) |
+
+`push-chunk` round trip is not separately budget-tested — the upload-direction
+integration tests (`test_upload_direction_end_to_end_commits_content`) don't
+assert latency, only correctness; the shared `next-chunk`/`push-chunk` code
+path (`crates/chunk_transfer`) means the measured `next-chunk` number is
+representative of both directions' per-call host/guest round-trip cost, but
+this is noted rather than presented as if `push-chunk` had its own dedicated
+measurement.
+
+### Real-client end-to-end test: resolved, not a known issue
+
+`test_real_client_opens_direct_stream_both_directions`
+(`crates/substrate/tests/stream_client_e2e.rs`) initially exhibited the
+post-teardown hang described above during development. It is **not** a known
+issue left in the suite — the root cause (the `Arc` cycle) is fixed, and the
+test now passes cleanly alongside
+`test_unregistered_stream_protocol_rejected_cleanly` in ~21s total.
+
+### Verification
+
+All run from the `slice-6b-streaming` branch:
+
+```
+cargo +nightly fmt --all -- --check
+# zero diff
+
+cargo clippy --workspace --all-targets --all-features
+# zero warnings, zero errors (43 crates checked)
+
+cargo test --workspace
+# 43 test binaries, 298 tests passed, 0 failed
+# includes stream_client_e2e's 2 tests (both real-QUIC-client
+# directions + unregistered-protocol rejection), 20.18s, no hang
+
+mise run test:e2e
+# 4 passed (20.2s) — no regression
+```
+
+New tests added this slice (all passing): 5 in `crates/chunk_transfer/src/lib.rs`;
+10 in `crates/sandbox_wasm/tests/stream_integration.rs`; 1 in
+`crates/control_plane/src/service.rs`
+(`test_stream_protocol_undeploy_removes_registration`); 2 in
+`crates/substrate/tests/stream_client_e2e.rs`.
 
 ## Slice 7: HTTP Passthrough (Not Started)

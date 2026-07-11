@@ -13,7 +13,7 @@ mod native;
 mod types;
 
 pub use converter::JsonRpcConverter;
-pub use dispatch_registry::NativeDispatchRegistry;
+pub use dispatch_registry::{NativeDispatchRegistry, WeakNativeDispatchRegistry};
 pub use native::{NativeInvocation, NativeResponse, NativeService};
 use serde_json::Value;
 use thiserror::Error;

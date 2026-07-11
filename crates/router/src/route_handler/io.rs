@@ -2,16 +2,28 @@
 //!
 //! Handles bidirectional copy tasks and framing adapters for bridged streams.
 
+use std::time::Duration;
+
 use anyhow::{Result, anyhow};
 use hyper_util::rt::TokioIo;
 use iroh::{EndpointAddr, RelayUrl};
 use syneroym_core::dht_registry::EndpointMechanism;
+use syneroym_rpc::framing;
 use tokio::{
     io,
     io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader},
     net::TcpStream,
+    time,
 };
 use tracing::debug;
+
+/// Bound on how long an unauthenticated peer gets to finish sending the
+/// route preamble and (if the route calls for one) its initial framed
+/// payload -- both read before any capacity check or WASM instantiation, so
+/// without this a slow/idle peer could hold a stream open indefinitely
+/// (matches the 5s budget `HandshakeVerifier` already uses for its own
+/// pre-auth network round trip in `crates/router/src/handshake.rs`).
+const PRE_AUTH_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 use super::{super::SYNEROYM_ALPN, RouteHandler, dispatch, encryption::ReaderWriter};
 use crate::{
@@ -60,7 +72,9 @@ impl RouteHandler {
         let mut writer = write_half;
 
         debug!("[Router] Reading preamble from incoming stream");
-        let mut preamble = read_preamble(&mut reader).await?;
+        let mut preamble = time::timeout(PRE_AUTH_READ_TIMEOUT, read_preamble(&mut reader))
+            .await
+            .map_err(|_| anyhow!("timed out reading route preamble"))??;
         debug!(
             "[Router] Preamble received: transport={:?} protocol={:?} interface='{}' \
              service_id='{}' enc={:?} master_did={:?}",
@@ -168,7 +182,7 @@ impl RouteHandler {
 
         // 5. Dispatch by transport stage
         match pipeline.transport {
-            TransportStage::Raw => self.handle_raw_stream(stream, &pipeline).await,
+            TransportStage::Raw => self.handle_raw_stream(stream, &preamble, &pipeline).await,
             TransportStage::Http => {
                 let io = TokioIo::new(stream);
                 self.handle_http_stream(io, preamble, pipeline).await
@@ -182,7 +196,12 @@ impl RouteHandler {
     }
 
     /// Handles a raw bidirectional stream passthrough to a `ServiceStage`.
-    async fn handle_raw_stream(&self, stream: OwnedStream, pipeline: &RoutePipeline) -> Result<()> {
+    async fn handle_raw_stream(
+        &self,
+        stream: OwnedStream,
+        preamble: &RoutePreamble,
+        pipeline: &RoutePipeline,
+    ) -> Result<()> {
         match &pipeline.service {
             ServiceStage::TcpProxy { host, port } => {
                 debug!("[Router] TcpProxy: connecting to {}:{}", host, port);
@@ -201,19 +220,113 @@ impl RouteHandler {
                 }
                 Ok(())
             }
+            // M3B Slice 6B bidirectional stream protocols (ADR-0014):
+            // `preamble.interface` carries the registered protocol name
+            // (the WasmChannel endpoint was resolved via the same registry
+            // `register-stream-protocol` writes into -- see the ADR's
+            // "Where Registration Lives"). A guest that doesn't export the
+            // relevant handler, or declines, is handled inside
+            // `AppSandboxEngine::handle_stream_protocol_request` as a clean
+            // close, not an error here.
             ServiceStage::WasmComponent { service_id } => {
-                // TODO(wRPC): passthrough not yet implemented
-                debug!("Passthrough stream to Wasm channel: {}", service_id);
-                tracing::warn!(
-                    service_id = %service_id,
-                    "wRPC passthrough not yet implemented; dropping stream"
-                );
-                Ok(())
+                self.handle_stream_protocol_request(stream, preamble, service_id).await
             }
             _ => Err(anyhow!(
                 "ServiceStage {:?} is not supported for Raw transport",
                 pipeline.service
             )),
         }
+    }
+
+    /// `dir=` is validated strictly here, before any WASM instantiation
+    /// (ADR-0014 item 1) -- a missing or invalid direction is rejected
+    /// immediately rather than surfacing later as a confusing WASM-side
+    /// failure. The single framed initial payload (the download request
+    /// bytes, or the upload's metadata) is read here too, per the ADR's
+    /// "one framed frame, then truly raw bytes" contract; everything after
+    /// it flows unframed into
+    /// `AppSandboxEngine::handle_stream_protocol_request`.
+    async fn handle_stream_protocol_request(
+        &self,
+        stream: OwnedStream,
+        preamble: &RoutePreamble,
+        service_id: &str,
+    ) -> Result<()> {
+        const UNKNOWN_PEER_ID: &str = "unknown-peer";
+
+        let Some(dir) = preamble.dir else {
+            return Err(anyhow!(
+                "raw:// stream request to {service_id}/{} missing or invalid `dir` query \
+                 parameter (expected `dir=upload` or `dir=download`)",
+                preamble.interface
+            ));
+        };
+
+        let Some(app_sandbox_engine) = self.inner.app_sandbox_engine.clone() else {
+            return Err(anyhow!(
+                "app sandbox engine not available (coordinator mode) for stream request to \
+                 {service_id}"
+            ));
+        };
+
+        let peer_id = preamble
+            .delegation
+            .as_ref()
+            .map(|d| d.master_did.clone())
+            .unwrap_or_else(|| UNKNOWN_PEER_ID.to_string());
+
+        let ReaderWriter { mut reader, writer } = stream;
+        let initial_payload =
+            time::timeout(PRE_AUTH_READ_TIMEOUT, framing::read_frame(&mut reader))
+                .await
+                .map_err(|_| anyhow!("timed out reading stream request's initial payload"))??;
+
+        app_sandbox_engine
+            .handle_stream_protocol_request(
+                service_id,
+                &preamble.interface,
+                &peer_id,
+                dir,
+                initial_payload,
+                reader,
+                writer,
+            )
+            .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::io::duplex;
+
+    use super::*;
+
+    /// A peer that never sends anything must not hold `read_preamble` open
+    /// forever -- with tokio's paused virtual clock this fires effectively
+    /// instantly rather than costing real wall-clock time.
+    #[tokio::test(start_paused = true)]
+    async fn test_read_preamble_times_out_on_idle_stream() {
+        let (client, server) = duplex(64);
+        let mut reader = BufReader::new(server);
+
+        let result = time::timeout(PRE_AUTH_READ_TIMEOUT, read_preamble(&mut reader)).await;
+
+        assert!(result.is_err(), "expected a timeout since the peer never wrote a preamble");
+        drop(client);
+    }
+
+    /// A peer that promptly sends a valid preamble line must not be
+    /// penalized by the timeout wrapper.
+    #[tokio::test]
+    async fn test_read_preamble_succeeds_within_timeout() {
+        let (mut client, server) = duplex(64);
+        let mut reader = BufReader::new(server);
+
+        client.write_all(b"json-rpc://health|substrate-123\n").await.unwrap();
+
+        let result = time::timeout(PRE_AUTH_READ_TIMEOUT, read_preamble(&mut reader)).await;
+
+        let preamble = result.expect("must not time out on a promptly-sent preamble").unwrap();
+        assert_eq!(preamble.service_id, "substrate-123");
     }
 }

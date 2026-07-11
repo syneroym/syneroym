@@ -14,11 +14,12 @@ use std::{
     sync::{Arc, Weak},
 };
 
+use syneroym_core::{local_registry::EndpointRegistry, storage::MockStorage};
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
 use syneroym_data_db::{SqliteStorageProvider, StorageProvider};
 use syneroym_data_keystore::KeyStore;
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
-use syneroym_sandbox_wasm::{HostState, MessagingContext};
+use syneroym_sandbox_wasm::{HostState, MessagingContext, StreamContext};
 use syneroym_wit_interfaces::host::syneroym::blob_store::blob_store::{
     BlobError, Host as BlobStoreHost, HostBlobReader, HostBlobWriter,
 };
@@ -32,6 +33,10 @@ fn make_host_state(component_id: &str, storage_provider: Arc<dyn StorageProvider
         broker: Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap()),
         engine: Weak::new(),
     };
+    let streaming = StreamContext {
+        registry: EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+        engine: Weak::new(),
+    };
     HostState::new(
         component_id.to_string(),
         None,
@@ -41,6 +46,7 @@ fn make_host_state(component_id: &str, storage_provider: Arc<dyn StorageProvider
         false,
         0,
         messaging,
+        streaming,
     )
 }
 

@@ -537,10 +537,10 @@ The note must specify, at minimum:
 
 **Stream Protocol Registration:**
 
-- [ ] Add `register-stream-protocol(protocol: string) -> result<_, string>`
+- [x] Add `register-stream-protocol(protocol: string) -> result<_, string>`
   to `host-api`. Wire in `engine.rs`: records `(service_id, protocol)` in a
   host-side routing table.
-- [ ] Persist registrations the same way as Slice 6A's
+- [x] Persist registrations the same way as Slice 6A's
   `messaging_subscriptions` (Finding A1 applies identically here — a
   `stream_protocol_registrations` table, replayed on startup, cleaned up on
   undeploy). Decide and document whether duplicate registration for the
@@ -548,87 +548,87 @@ The note must specify, at minimum:
 
 **Inbound Stream Routing (new host infrastructure):**
 
-- [ ] Implement acceptance of peer-initiated QUIC streams against a
+- [x] Implement acceptance of peer-initiated QUIC streams against a
   registered protocol namespace per the design note.
-- [ ] Route an accepted download-request stream's initial request payload
+- [x] Route an accepted download-request stream's initial request payload
   to `guest-api::handle-stream-request(peer-id, request-data)`, and an
   accepted upload stream's initial metadata to
   `guest-api::accept-stream-upload(peer-id, metadata)`.
 
 **Guest-as-Source (Host Pull Loop):**
 
-- [ ] Add `stream-types` interface with
+- [x] Add `stream-types` interface with
   `resource stream-cursor { next-chunk: func() -> result<option<list<u8>>, string>; }`
   — note the `result<...>` wrapper (the original draft's
   `option<list<u8>>` had no way to signal guest-side failure distinct from
   clean EOF; fixed here since this WIT is being written fresh in this
   slice anyway, per "WIT Boundary Versioning").
-- [ ] Add `handle-stream-request(peer-id: string, request-data: list<u8>) ->
+- [x] Add `handle-stream-request(peer-id: string, request-data: list<u8>) ->
   result<stream-cursor, string>` to `guest-api`.
-- [ ] Implement the guest-side resource per the design note's mechanics
+- [x] Implement the guest-side resource per the design note's mechanics
   decision, and the host-side pull loop: a Tokio task that calls
   `next-chunk()` in a loop, transmits each chunk over the Iroh QUIC stream,
   and stops on `Ok(None)` (EOF) or `Err` (abort), closing the stream and
   dropping the resource handle either way.
-- [ ] Apply backpressure consistent with the QUIC transport's own flow
+- [x] Apply backpressure consistent with the QUIC transport's own flow
   control where available. This is a distinct, simpler interface from any
   future Arrow/DataFusion-style data streaming primitive — no record
   batches here.
 
 **Guest-as-Sink (Host Push Loop):**
 
-- [ ] Add `resource stream-sink { push-chunk: func(data: list<u8>) -> result<_, string>; finalize: func() -> result<_, string>; }`
+- [x] Add `resource stream-sink { push-chunk: func(data: list<u8>) -> result<_, string>; finalize: func() -> result<_, string>; }`
   to `stream-types`.
-- [ ] Add `accept-stream-upload(peer-id: string, metadata: string) ->
+- [x] Add `accept-stream-upload(peer-id: string, metadata: string) ->
   result<stream-sink, string>` to `guest-api`.
-- [ ] Implement the guest-side resource and the host-side push loop: a
+- [x] Implement the guest-side resource and the host-side push loop: a
   Tokio task reads chunks off the incoming Iroh QUIC stream and
   synchronously calls `push-chunk(data)` for each one; when the QUIC stream
   closes (peer signals EOF), the host calls `finalize()` so the guest can
   commit its write (e.g. flush a `data-layer`/`blob-store` write session)
   and release state.
-- [ ] `push-chunk` returning `Err` aborts the upload: the host stops
+- [x] `push-chunk` returning `Err` aborts the upload: the host stops
   reading from the QUIC stream, does **not** call `finalize`, and
   resets/closes the stream so the peer observes a clean failure rather than
   a hang.
-- [ ] A guest that declines the upload (`Err` from `accept-stream-upload`)
+- [x] A guest that declines the upload (`Err` from `accept-stream-upload`)
   causes the host to close the incoming QUIC stream immediately, without
   creating a `stream-sink` or reading any payload bytes.
-- [ ] **Consolidate chunk-transfer core:** Share the host-side push/pull loop
+- [x] **Consolidate chunk-transfer core:** Share the host-side push/pull loop
   implementation between these Slice 6B stream resources and `blob-store`'s
   `UploadSession`/`DownloadSession`. Do not maintain two parallel chunking
   loops for what is fundamentally the same "push `Vec<u8>` chunks until EOF" mechanism.
 
 ### Tests
 
-- [ ] Unit: `register-stream-protocol` records the namespace; duplicate
+- [x] Unit: `register-stream-protocol` records the namespace; duplicate
   registration behavior matches the design note's decision.
-- [ ] Unit: `stream-cursor.next-chunk()` returning `Ok(None)` closes the
+- [x] Unit: `stream-cursor.next-chunk()` returning `Ok(None)` closes the
   QUIC stream and drops host-side state (no leak); returning `Err` also
   closes the stream and drops state (aborts, doesn't hang).
-- [ ] Unit: `stream-sink.finalize()` is called exactly once, only after the
+- [x] Unit: `stream-sink.finalize()` is called exactly once, only after the
   QUIC stream closes cleanly (not on abort).
-- [ ] Unit: `push-chunk` returning `Err` aborts the upload without invoking
+- [x] Unit: `push-chunk` returning `Err` aborts the upload without invoking
   `finalize`; host-side state is dropped (no leak).
-- [ ] Unit: a long-lived stream instance's epoch deadline is re-armed
+- [x] Unit: a long-lived stream instance's epoch deadline is re-armed
   across chunk calls per the design note's quota policy (prove a
   multi-chunk transfer exceeding the default 5s single-invocation deadline
   does not spuriously trap).
-- [ ] Integration: substrate restart replays `stream_protocol_registrations`.
-- [ ] Integration: two WASM components in different services exchange a
+- [x] Integration: substrate restart replays `stream_protocol_registrations`.
+- [x] Integration: two WASM components in different services exchange a
   file-transfer-style byte stream end to end via `handle-stream-request`/
   `stream-cursor` (mirrors the design note's worked example).
-- [ ] Integration: two WASM components in different services exchange a
+- [x] Integration: two WASM components in different services exchange a
   file-transfer-style byte stream end to end via `accept-stream-upload`/
   `stream-sink` (upload direction).
-- [ ] Integration: a guest that does not export `handle-stream-request`
+- [x] Integration: a guest that does not export `handle-stream-request`
   causes the host to reject an inbound download request cleanly (no panic,
   no hang); a guest that does not export `accept-stream-upload` does the
   same for an inbound upload.
-- [ ] Integration: cross-service stream namespace isolation — a peer cannot
+- [x] Integration: cross-service stream namespace isolation — a peer cannot
   address another service's registered protocol without going through the
   substrate's routing.
-- [ ] Integration (real client, end-to-end, 1 test covering both
+- [x] Integration (real client, end-to-end, 1 test covering both
   directions): a `SyneroymClient`/`roymctl` peer (not a WASM-hosted
   service) opens a QUIC stream directly against a deployed WASM service's
   registered protocol, for download and upload — proving the stream
@@ -636,7 +636,7 @@ The note must specify, at minimum:
   plumbing needed, unlike Slice 6A's `subscribe` — a stream initiator just
   opens a raw bidirectional stream via `SyneroymClient::connection()`,
   already exposed today.
-- [ ] New test fixtures (Finding B5): guest-as-source and guest-as-sink
+- [x] New test fixtures (Finding B5): guest-as-source and guest-as-sink
   WASM test components under `test-components/` (may be one component
   exporting both, or two) exercising `handle-stream-request`/
   `accept-stream-upload`.

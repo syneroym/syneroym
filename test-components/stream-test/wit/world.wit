@@ -1,0 +1,30 @@
+package syneroym-test:stream-test@0.1.0;
+
+interface test-driver {
+    /// Registers `"file-transfer"` as this service's stream protocol via
+    /// the host's `syneroym:messaging/host-api::register-stream-protocol`.
+    /// Also called automatically from `init`/`migrate`; exposed here so a
+    /// test can assert on the call directly.
+    register-protocol: func() -> result<_, string>;
+
+    /// Returns the full content most recently committed via a
+    /// `stream-sink::finalize()` call (backed by `syneroym:data-layer/store`,
+    /// not in-guest memory -- each stream gets its own long-lived `Store`,
+    /// but a fresh JSON-RPC call like this one still gets an entirely
+    /// separate one). Empty string if nothing has been uploaded yet.
+    get-uploaded-content: func() -> result<string, string>;
+}
+
+world stream-test {
+    import syneroym:messaging/host-api@0.1.0;
+    import syneroym:data-layer/store@0.1.0;
+    export syneroym:messaging/stream-types@0.1.0;
+    export syneroym:messaging/guest-api@0.1.0;
+
+    /// Creates the `uploads` collection and registers the `"file-transfer"`
+    /// stream protocol.
+    export init: func() -> result<_, string>;
+    export migrate: func() -> result<_, string>;
+
+    export test-driver;
+}

@@ -5,8 +5,19 @@
 
 use std::io::ErrorKind;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+
+/// Upper bound on a frame's declared length, checked before allocating a
+/// buffer for it. `read_frame` is reachable pre-authentication (e.g. the
+/// M3B Slice 6B stream preamble's initial payload, read before any capacity
+/// check or WASM instantiation), so an attacker-controlled `u32` length
+/// prefix must never drive an unbounded allocation. Framed payloads here
+/// are always small control-plane/RPC messages or stream-open metadata --
+/// bulk data instead moves as raw unframed bytes through
+/// `syneroym_chunk_transfer` in fixed-size chunks -- so 16 MiB is generous
+/// headroom, not a tight fit.
+pub const MAX_FRAME_SIZE: u32 = 16 * 1024 * 1024;
 
 /// Writes a length-prefixed frame to the writer.
 /// The frame is prefixed with its length as a `u32` in big-endian format.
@@ -28,6 +39,9 @@ where
     R: AsyncRead + Unpin + Send,
 {
     match reader.read_u32().await {
+        Ok(len) if len > MAX_FRAME_SIZE => {
+            Err(anyhow!("frame length {len} exceeds MAX_FRAME_SIZE ({MAX_FRAME_SIZE})"))
+        }
         Ok(len) if len > 0 => {
             let mut frame = vec![0; len as usize];
             reader.read_exact(&mut frame).await?;
@@ -80,6 +94,25 @@ mod tests {
         let mut cursor = Cursor::new(buf);
         assert_eq!(read_frame(&mut cursor).await.unwrap(), b"first");
         assert_eq!(read_frame(&mut cursor).await.unwrap(), b"second");
+    }
+
+    #[tokio::test]
+    async fn test_oversized_length_prefix_rejected_without_allocating() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&(MAX_FRAME_SIZE + 1).to_be_bytes());
+        let mut cursor = Cursor::new(buf);
+        let err = read_frame(&mut cursor).await.unwrap_err();
+        assert!(err.to_string().contains("exceeds MAX_FRAME_SIZE"));
+    }
+
+    #[tokio::test]
+    async fn test_max_frame_size_boundary_accepted() {
+        let payload = vec![0u8; MAX_FRAME_SIZE as usize];
+        let mut buf = Vec::new();
+        write_frame(&mut buf, &payload).await.unwrap();
+        let mut cursor = Cursor::new(buf);
+        let out = read_frame(&mut cursor).await.unwrap();
+        assert_eq!(out.len(), payload.len());
     }
 
     #[tokio::test]

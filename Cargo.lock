@@ -7491,6 +7491,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "syneroym-chunk-transfer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "tokio",
+]
+
+[[package]]
 name = "syneroym-client-gateway"
 version = "0.1.0"
 dependencies = [
@@ -7908,6 +7917,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "syneroym-chunk-transfer",
  "syneroym-core",
  "syneroym-data-blob",
  "syneroym-data-db",

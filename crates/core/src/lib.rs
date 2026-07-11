@@ -7,6 +7,7 @@ pub mod local_registry;
 pub mod protocol_utils;
 pub mod retry;
 pub mod storage;
+pub mod streaming;
 pub mod test_constants;
 pub mod tls;
 pub mod util;
