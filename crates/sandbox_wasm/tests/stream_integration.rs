@@ -6,10 +6,15 @@
 //! `crates/substrate/tests/stream_client_e2e.rs`) so these tests focus on
 //! the Wasmtime/dynamic-invocation boundary.
 
-use std::{fs, path::Path, sync::Arc, time::Duration};
+use std::{
+    fs,
+    path::Path,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use syneroym_core::{
-    config::SubstrateConfig,
+    config::{AppSandboxRole, SubstrateConfig},
     local_registry::{EndpointRegistry, SubstrateEndpoint},
     storage::MockStorage,
     streaming::StreamDirection,
@@ -26,7 +31,10 @@ use syneroym_sandbox_wasm::AppSandboxEngine;
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, DeployManifest, ServiceConfig, ServiceType, WasmManifest,
 };
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    sync::Barrier,
+};
 
 const TEST_DRIVER_INTERFACE: &str = test_constants::STREAM_TEST_DRIVER_INTERFACE;
 const PROTOCOL: &str = "file-transfer";
@@ -37,6 +45,23 @@ async fn make_engine_with_registry(
     dir: &Path,
     registry: EndpointRegistry,
 ) -> Arc<AppSandboxEngine> {
+    make_engine_with_registry_and_max_streams(dir, registry, None).await
+}
+
+async fn make_engine_with_registry_and_max_streams(
+    dir: &Path,
+    registry: EndpointRegistry,
+    max_concurrent_streams_per_service: Option<u32>,
+) -> Arc<AppSandboxEngine> {
+    make_engine_with_limits(dir, registry, max_concurrent_streams_per_service, None).await
+}
+
+async fn make_engine_with_limits(
+    dir: &Path,
+    registry: EndpointRegistry,
+    max_concurrent_streams_per_service: Option<u32>,
+    max_concurrent_instances: Option<u32>,
+) -> Arc<AppSandboxEngine> {
     let mut config = SubstrateConfig {
         app_local_data_dir: dir.join("data"),
         app_data_dir: dir.join("user_data"),
@@ -46,6 +71,13 @@ async fn make_engine_with_registry(
         ..SubstrateConfig::default()
     };
     config.resolve_paths();
+    if let Some(max) = max_concurrent_streams_per_service {
+        config.streaming.max_concurrent_streams_per_service = max;
+    }
+    if let Some(max_instances) = max_concurrent_instances {
+        config.roles.app_sandbox =
+            Some(AppSandboxRole { max_concurrent_instances: max_instances, ..Default::default() });
+    }
 
     let key_store = Arc::new(KeyStore::new());
     let storage_provider: Arc<dyn StorageProvider> =
@@ -73,6 +105,15 @@ async fn make_engine_with_registry(
 
 async fn make_engine(dir: &Path) -> Arc<AppSandboxEngine> {
     make_engine_with_registry(dir, EndpointRegistry::new_mock(Arc::new(MockStorage::new()))).await
+}
+
+async fn make_engine_with_max_streams(dir: &Path, max: u32) -> Arc<AppSandboxEngine> {
+    make_engine_with_registry_and_max_streams(
+        dir,
+        EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+        Some(max),
+    )
+    .await
 }
 
 fn wasm_deploy_manifest(bytes: Vec<u8>) -> DeployManifest {
@@ -371,6 +412,65 @@ async fn test_upload_push_chunk_failure_aborts_without_finalize() {
     assert_eq!(stored, "", "an aborted upload must never call finalize / commit content");
 }
 
+/// Mirrors `test_upload_push_chunk_failure_aborts_without_finalize` for the
+/// download side: `GuestStreamCursor::next_chunk`'s terminal-cleanup branch
+/// (a real guest `next-chunk()` `Err` through the actual Wasmtime
+/// `Store`/fuel-rearm machinery, not just `chunk_transfer`'s synthetic
+/// `VecSource` unit tests) must drop the guest resource and surface the
+/// error cleanly instead of panicking or hanging -- the fixture's
+/// `FixedContentCursor` serves one chunk successfully, then fails every
+/// `next-chunk` call after that (see `FAIL_AFTER_FIRST_CHUNK_SENTINEL`).
+#[tokio::test]
+async fn test_download_next_chunk_failure_aborts_stream_cleanly() {
+    let wasm_bytes = skip_if_missing!("test_download_next_chunk_failure_aborts_stream_cleanly");
+    let dir = tempfile::tempdir().unwrap();
+    let engine = make_engine(dir.path()).await;
+    engine.deploy_wasm(SERVICE_A, &wasm_deploy_manifest(wasm_bytes)).await.unwrap();
+
+    let request_data = b"fail-after-first-chunk".to_vec();
+    let expected_full = expected_download_payload("peer-1", &request_data);
+    let expected_first_chunk = expected_full[..8].to_vec();
+
+    let (peer, host_side) = tokio::io::duplex(65536);
+    let (host_reader, host_writer) = tokio::io::split(host_side);
+
+    let engine_clone = engine.clone();
+    let handle = tokio::spawn(async move {
+        engine_clone
+            .handle_stream_protocol_request(
+                SERVICE_A,
+                PROTOCOL,
+                "peer-1",
+                StreamDirection::Download,
+                request_data,
+                Box::new(host_reader),
+                Box::new(host_writer),
+            )
+            .await
+    });
+
+    let mut received = Vec::new();
+    let (mut peer_read, _peer_write) = tokio::io::split(peer);
+    tokio::time::timeout(Duration::from_secs(10), peer_read.read_to_end(&mut received))
+        .await
+        .expect("peer read must not hang when the guest fails mid-download")
+        .unwrap();
+
+    let result = tokio::time::timeout(Duration::from_secs(10), handle)
+        .await
+        .expect("stream task must not hang on a guest next-chunk failure")
+        .unwrap();
+
+    assert!(
+        result.is_err(),
+        "a next-chunk failure mid-download must surface as an error, not a silent success"
+    );
+    assert_eq!(
+        received, expected_first_chunk,
+        "only the chunk served before the guest failure should have been written to the peer"
+    );
+}
+
 /// task.md's Slice 6B unit-test row: `stream-cursor.next-chunk()` round trip
 /// and `stream-sink.push-chunk()` round trip, both budgeted at < 5ms p99
 /// (same measurement style as Slice 6A's `messaging_client_e2e.rs`).
@@ -395,7 +495,7 @@ async fn test_next_chunk_and_push_chunk_latency_budget() {
 
     let engine_clone = engine.clone();
     let request_data_clone = request_data.clone();
-    let start = std::time::Instant::now();
+    let start = Instant::now();
     let handle = tokio::spawn(async move {
         engine_clone
             .handle_stream_protocol_request(
@@ -486,4 +586,163 @@ async fn test_long_running_stream_does_not_trap_on_epoch_deadline() {
         tokio::time::timeout(Duration::from_secs(15), handle).await.expect("handler hung").unwrap();
     result.expect("a long-running-but-progressing stream must not trap on epoch deadline");
     assert_eq!(received, expected);
+}
+
+/// Regression test for the `StreamRegistry` check-then-register TOCTOU race:
+/// with `max_concurrent` requests already at the cap, launching several more
+/// requests that all reach `handle_stream_protocol_request` at the same
+/// instant (via a `Barrier`, on a real multi-threaded runtime so they run on
+/// genuinely separate OS threads, not just interleaved on one) must still
+/// admit exactly `max_concurrent` of them -- a check-capacity-then-track
+/// pair with a gap between the two steps could let every racing request
+/// observe spare capacity and all get admitted, exceeding the cap. Uploads
+/// are used (rather than downloads) because the fixture's `stream-sink`
+/// blocks reading from an unwritten peer, holding admitted streams open for
+/// the whole race window instead of completing before it's over.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn test_concurrent_stream_requests_enforce_capacity_atomically() {
+    let wasm_bytes =
+        skip_if_missing!("test_concurrent_stream_requests_enforce_capacity_atomically");
+    let dir = tempfile::tempdir().unwrap();
+    let max_concurrent = 4u32;
+    let engine = make_engine_with_max_streams(dir.path(), max_concurrent).await;
+    engine.deploy_wasm(SERVICE_A, &wasm_deploy_manifest(wasm_bytes)).await.unwrap();
+
+    let attempts = 20usize;
+    let barrier = Arc::new(Barrier::new(attempts));
+
+    let mut request_handles = Vec::with_capacity(attempts);
+    let mut peers = Vec::with_capacity(attempts);
+
+    for i in 0..attempts {
+        let (peer, host_side) = tokio::io::duplex(65536);
+        let (host_reader, host_writer) = tokio::io::split(host_side);
+        peers.push(peer);
+
+        let engine_clone = engine.clone();
+        let barrier_clone = barrier.clone();
+        let peer_id = format!("peer-{i}");
+        request_handles.push(tokio::spawn(async move {
+            barrier_clone.wait().await;
+            engine_clone
+                .handle_stream_protocol_request(
+                    SERVICE_A,
+                    PROTOCOL,
+                    &peer_id,
+                    StreamDirection::Upload,
+                    b"upload-metadata".to_vec(),
+                    Box::new(host_reader),
+                    Box::new(host_writer),
+                )
+                .await
+        }));
+    }
+
+    // Let admitted streams reach their blocked-on-read state before tearing
+    // everything down; declined requests return long before this.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Close every peer so admitted (in-flight) streams see EOF and finish
+    // cleanly instead of hanging the test.
+    for mut peer in peers {
+        let _ = peer.shutdown().await;
+    }
+
+    let mut ok_count = 0usize;
+    let mut err_count = 0usize;
+    for handle in request_handles {
+        match handle.await.expect("stream task should not panic") {
+            Ok(()) => ok_count += 1,
+            Err(_) => err_count += 1,
+        }
+    }
+
+    assert_eq!(
+        ok_count, max_concurrent as usize,
+        "exactly max_concurrent streams should be admitted even when {attempts} requests race in \
+         at once"
+    );
+    assert_eq!(err_count, attempts - max_concurrent as usize);
+}
+
+/// Regression test for the cross-service stream-vs-instance-pool
+/// coordination gap: `StreamRegistry`'s per-service cap alone doesn't stop
+/// two *different* services from collectively opening more stream
+/// instances than the engine's pooled-component budget has room for.
+/// `max_concurrent_instances` is set to 4 here (leaving a 2-instance
+/// stream budget after `STREAM_INSTANCE_POOL_HEADROOM`), while
+/// `max_concurrent_streams_per_service` is set high enough (10) that the
+/// per-service cap never itself gates these two services -- so the third
+/// concurrent upload staying blocked below can only be explained by the
+/// new cross-service `stream_instance_permits` semaphore, not the
+/// pre-existing per-service check.
+#[tokio::test]
+async fn test_stream_instances_across_services_bounded_by_shared_pool_budget() {
+    let wasm_bytes =
+        skip_if_missing!("test_stream_instances_across_services_bounded_by_shared_pool_budget");
+    let dir = tempfile::tempdir().unwrap();
+    let engine = make_engine_with_limits(
+        dir.path(),
+        EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+        Some(10),
+        Some(4),
+    )
+    .await;
+    engine.deploy_wasm(SERVICE_A, &wasm_deploy_manifest(wasm_bytes.clone())).await.unwrap();
+    engine.deploy_wasm(SERVICE_B, &wasm_deploy_manifest(wasm_bytes)).await.unwrap();
+
+    let spawn_held_upload = |service_id: &'static str, peer_id: &'static str| {
+        let (peer, host_side) = tokio::io::duplex(65536);
+        let (host_reader, host_writer) = tokio::io::split(host_side);
+        let engine_clone = engine.clone();
+        let handle = tokio::spawn(async move {
+            engine_clone
+                .handle_stream_protocol_request(
+                    service_id,
+                    PROTOCOL,
+                    peer_id,
+                    StreamDirection::Upload,
+                    b"upload-metadata".to_vec(),
+                    Box::new(host_reader),
+                    Box::new(host_writer),
+                )
+                .await
+        });
+        (peer, handle)
+    };
+
+    // Consumes both stream-instance-pool permits: one via SERVICE_A, one via
+    // SERVICE_B -- proving the budget is shared *across* services, not
+    // per-service.
+    let (mut peer_a1, handle_a1) = spawn_held_upload(SERVICE_A, "peer-a1");
+    let (mut peer_b1, handle_b1) = spawn_held_upload(SERVICE_B, "peer-b1");
+
+    // Give both admitted streams time to actually acquire their permit and
+    // reach the blocked-on-read state.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // A third request -- back on SERVICE_A, well within its own per-service
+    // cap of 10 -- must still wait for a shared pool permit.
+    let (mut peer_a2, mut handle_a2) = spawn_held_upload(SERVICE_A, "peer-a2");
+    let blocked = tokio::time::timeout(Duration::from_millis(300), &mut handle_a2).await;
+    assert!(
+        blocked.is_err(),
+        "a third concurrent stream must block on the shared pool budget even though its own \
+         service is nowhere near its per-service cap"
+    );
+
+    // Free one permit; the third request should then be admitted and (once
+    // its own peer is closed too) complete.
+    peer_a1.shutdown().await.unwrap();
+    handle_a1.await.unwrap().expect("first stream should complete cleanly once closed");
+
+    peer_a2.shutdown().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), &mut handle_a2)
+        .await
+        .expect("third stream should be admitted once a permit frees up")
+        .unwrap()
+        .expect("third stream should complete cleanly once closed");
+
+    peer_b1.shutdown().await.unwrap();
+    handle_b1.await.unwrap().expect("second stream should complete cleanly once closed");
 }

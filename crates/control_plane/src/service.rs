@@ -514,6 +514,13 @@ impl OrchestratorInterface for ControlPlaneService {
                     self.messaging_broker.clone(),
                 )) as Arc<dyn NativeService>,
             );
+        } else {
+            tracing::error!(
+                "Native dispatch registry unavailable for service {}: registered its native \
+                 capability endpoints but could not insert a dispatch entry, so calls into them \
+                 will fail",
+                service_id
+            );
         }
 
         Ok(())
@@ -591,6 +598,12 @@ impl OrchestratorInterface for ControlPlaneService {
         // entry too.
         if let Some(native_dispatch) = self.native_dispatch.upgrade() {
             native_dispatch.remove(&service_id);
+        } else {
+            tracing::error!(
+                "Native dispatch registry unavailable while undeploying service {}: its in-memory \
+                 dispatch entry, if any, was left behind",
+                service_id
+            );
         }
 
         Ok(())
@@ -696,6 +709,7 @@ mod tests {
     use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
         ArtifactSource, PlannedService, ServiceConfig, TcpManifest, WasmManifest,
     };
+    use tokio::time::Instant;
     use wit_parser::Resolve;
 
     use super::*;
@@ -1426,7 +1440,7 @@ mod tests {
             .unwrap();
         assert_eq!(publish_resp.payload, Value::Null);
         let (delivered_topic, delivered_payload) =
-            tokio::time::timeout(std::time::Duration::from_secs(2), sub_rx.recv())
+            tokio::time::timeout(Duration::from_secs(2), sub_rx.recv())
                 .await
                 .expect("did not time out waiting for native publish to be delivered")
                 .expect("subscriber channel closed unexpectedly");
@@ -1929,9 +1943,9 @@ mod tests {
 
         broker2.publish(namespaced_topic.clone(), b"post-restart".to_vec()).await.unwrap();
 
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(5);
         let mut received = String::new();
-        while tokio::time::Instant::now() < deadline {
+        while Instant::now() < deadline {
             received = call_test_driver(
                 &engine2,
                 &service_id,

@@ -61,12 +61,21 @@ impl StreamRegistry {
         Self::default()
     }
 
-    /// Checked before opening a new stream instance (not while holding the
-    /// eventual `AbortHandle`, which only exists after `tokio::spawn` --
-    /// see `AppSandboxEngine::handle_stream_protocol_request`). Prunes
-    /// finished handles first so the cap isn't held hostage by streams that
-    /// already completed.
-    pub fn check_capacity(&self, service_id: &str, max_concurrent: u32) -> Result<()> {
+    /// Atomically checks capacity and registers `handle` under `service_id`
+    /// in one critical section -- `DashMap::entry` holds the shard's write
+    /// lock for the entry's whole lifetime, so two concurrent callers for
+    /// the same `service_id` can't both observe room and both push (the
+    /// TOCTOU race a separate `check_capacity` + `track` pair had). The
+    /// caller is expected to have already `tokio::spawn`ed the task `handle`
+    /// belongs to (see `AppSandboxEngine::handle_stream_protocol_request`)
+    /// and to abort it if this returns `Err`. Prunes finished handles first
+    /// so the cap isn't held hostage by streams that already completed.
+    pub fn try_reserve(
+        &self,
+        service_id: &str,
+        max_concurrent: u32,
+        handle: AbortHandle,
+    ) -> Result<()> {
         let mut entry = self.handles.entry(service_id.to_string()).or_default();
         entry.retain(|h| !h.is_finished());
         if entry.len() as u32 >= max_concurrent {
@@ -74,13 +83,8 @@ impl StreamRegistry {
                 "service '{service_id}' has reached its concurrent stream limit ({max_concurrent})"
             ));
         }
+        entry.push(handle);
         Ok(())
-    }
-
-    /// Registers `handle` under `service_id`, unconditionally -- call only
-    /// after `check_capacity` has already passed for this stream.
-    pub fn track(&self, service_id: &str, handle: AbortHandle) {
-        self.handles.entry(service_id.to_string()).or_default().push(handle);
     }
 
     /// Removes `handle` from tracking (called once its stream's task
@@ -137,8 +141,21 @@ fn val_list_to_bytes(val: &Val) -> Result<Vec<u8>> {
 /// `ok_extractor` on the boxed `Ok` payload (or treating a `None` payload as
 /// `Ok(_)` for `result<_, string>`'s unit-ok case, handled by callers that
 /// pass an extractor tolerating `None`). Every guest export in this slice's
-/// WIT returns this shape, so this is the one place that interprets it.
-fn extract_result<T>(val: &Val, ok_extractor: impl FnOnce(Option<&Val>) -> Result<T>) -> Result<T> {
+/// WIT returns exactly this one-value shape, so `results` is validated for
+/// that arity here rather than callers indexing `results[0]` directly -- a
+/// deployed component whose export declares a different arity (e.g. no
+/// results) must surface as a clean `Err`, not a host panic.
+fn extract_result<T>(
+    results: &[Val],
+    ok_extractor: impl FnOnce(Option<&Val>) -> Result<T>,
+) -> Result<T> {
+    let [val] = results else {
+        return Err(anyhow!(
+            "expected exactly 1 result<_, string> return value, got {} (component export arity \
+             mismatch)",
+            results.len()
+        ));
+    };
     match val {
         Val::Result(Ok(payload)) => ok_extractor(payload.as_deref()),
         Val::Result(Err(Some(boxed))) => match boxed.as_ref() {
@@ -218,7 +235,7 @@ pub(crate) async fn call_handle_stream_request(
     ];
     let mut results = vec![Val::Bool(false); results_len];
     func.call_async(&mut *store, &args, &mut results).await?;
-    extract_result(&results[0], |payload| match payload {
+    extract_result(&results, |payload| match payload {
         Some(Val::Resource(resource)) => Ok(*resource),
         other => Err(anyhow!("handle-stream-request: expected Val::Resource, got {other:?}")),
     })
@@ -250,7 +267,7 @@ pub(crate) async fn call_accept_stream_upload(
     ];
     let mut results = vec![Val::Bool(false); results_len];
     func.call_async(&mut *store, &args, &mut results).await?;
-    extract_result(&results[0], |payload| match payload {
+    extract_result(&results, |payload| match payload {
         Some(Val::Resource(resource)) => Ok(*resource),
         other => Err(anyhow!("accept-stream-upload: expected Val::Resource, got {other:?}")),
     })
@@ -311,7 +328,7 @@ impl ChunkSource for GuestStreamCursor {
             )
             .await?;
 
-            extract_result(&results[0], |payload| match payload {
+            extract_result(&results, |payload| match payload {
                 None => Err(anyhow!("next-chunk: expected option<list<u8>>, got no payload")),
                 Some(Val::Option(Some(inner))) => val_list_to_bytes(inner).map(Some),
                 Some(Val::Option(None)) => Ok(None),
@@ -372,7 +389,7 @@ impl ChunkSink for GuestStreamSink {
             &[bytes_to_val_list(data)],
         )
         .await?;
-        extract_result(&results[0], |_| Ok(()))
+        extract_result(&results, |_| Ok(()))
     }
 
     async fn finalize(self: Box<Self>) -> Result<()> {
@@ -386,7 +403,7 @@ impl ChunkSink for GuestStreamSink {
             &[],
         )
         .await?;
-        let result = extract_result(&results[0], |_| Ok(()));
+        let result = extract_result(&results, |_| Ok(()));
         drop_resource_ignore_errors(&mut this.store, this.resource).await;
         result
     }
@@ -394,5 +411,46 @@ impl ChunkSink for GuestStreamSink {
     async fn abort(self: Box<Self>) {
         let mut this = *self;
         drop_resource_ignore_errors(&mut this.store, this.resource).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A guest export declaring 0 results (or any arity other than 1) must
+    /// surface as a clean `Err`, not panic on an out-of-bounds index -- this
+    /// is the arity check every `call_resource_method`/`call_handle_stream_
+    /// request`/`call_accept_stream_upload` caller now relies on instead of
+    /// indexing `results[0]` directly.
+    #[test]
+    fn test_extract_result_rejects_zero_results() {
+        let err = extract_result::<()>(&[], |_| Ok(())).unwrap_err();
+        assert!(err.to_string().contains("expected exactly 1 result"));
+    }
+
+    #[test]
+    fn test_extract_result_rejects_extra_results() {
+        let results = [Val::Result(Ok(None)), Val::Bool(false)];
+        let err = extract_result::<()>(&results, |_| Ok(())).unwrap_err();
+        assert!(err.to_string().contains("expected exactly 1 result"));
+    }
+
+    #[test]
+    fn test_extract_result_ok_payload() {
+        let results = [Val::Result(Ok(Some(Box::new(Val::Bool(true)))))];
+        let extracted = extract_result(&results, |payload| match payload {
+            Some(Val::Bool(b)) => Ok(*b),
+            other => Err(anyhow!("unexpected payload: {other:?}")),
+        })
+        .unwrap();
+        assert!(extracted);
+    }
+
+    #[test]
+    fn test_extract_result_err_payload() {
+        let results = [Val::Result(Err(Some(Box::new(Val::String("declined".to_string())))))];
+        let err = extract_result::<()>(&results, |_| Ok(())).unwrap_err();
+        assert_eq!(err.to_string(), "declined");
     }
 }

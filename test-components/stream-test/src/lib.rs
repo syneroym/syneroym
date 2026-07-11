@@ -14,7 +14,10 @@ use bindings::{
     Guest,
     exports::syneroym::messaging::{
         guest_api::Guest as GuestApiGuest,
-        stream_types::{Guest as StreamTypesGuest, GuestStreamCursor, GuestStreamSink},
+        stream_types::{
+            Guest as StreamTypesGuest, GuestStreamCursor, GuestStreamSink, StreamCursor,
+            StreamSink,
+        },
     },
     exports::syneroym_test::stream_test::test_driver::Guest as TestDriverGuest,
     syneroym::{data_layer::store, messaging::host_api},
@@ -42,6 +45,9 @@ const LATEST_UPLOAD_ID: &str = "latest";
 /// fixture's guest-side decline/abort paths, since it otherwise always
 /// accepts -- see `handle_stream_request`/`accept_stream_upload`.
 const REJECT_SENTINEL: &str = "reject";
+/// As upload `metadata`, forces `UploadSink::push-chunk` to fail after the
+/// first chunk; as download `request-data`, forces
+/// `FixedContentCursor::next-chunk` to fail after the first chunk.
 const FAIL_AFTER_FIRST_CHUNK_SENTINEL: &str = "fail-after-first-chunk";
 /// Small on purpose: forces a multi-chunk transfer over a handful of
 /// `next-chunk`/`push-chunk` calls instead of one, so integration tests
@@ -61,10 +67,21 @@ fn build_download_payload(peer_id: &str, request_data: &[u8]) -> Vec<u8> {
 
 pub struct FixedContentCursor {
     remaining: RefCell<VecDeque<Vec<u8>>>,
+    /// When `true`, `next-chunk` returns `Err` once at least one chunk has
+    /// already been served successfully, simulating a mid-download guest
+    /// failure (mirrors `UploadSink::fail_after_first_chunk`; see
+    /// `FAIL_AFTER_FIRST_CHUNK_SENTINEL`).
+    fail_after_first_chunk: bool,
+    chunks_served: Cell<u32>,
 }
 
 impl GuestStreamCursor for FixedContentCursor {
     fn next_chunk(&self) -> Result<Option<Vec<u8>>, String> {
+        let n = self.chunks_served.get();
+        self.chunks_served.set(n + 1);
+        if self.fail_after_first_chunk && n >= 1 {
+            return Err("simulated next-chunk failure".to_string());
+        }
         Ok(self.remaining.borrow_mut().pop_front())
     }
 }
@@ -133,7 +150,7 @@ impl GuestApiGuest for StreamTestComponent {
         protocol: String,
         peer_id: String,
         request_data: Vec<u8>,
-    ) -> Result<bindings::exports::syneroym::messaging::stream_types::StreamCursor, String> {
+    ) -> Result<StreamCursor, String> {
         if protocol != PROTOCOL {
             return Err(format!("unknown stream protocol: {protocol}"));
         }
@@ -141,15 +158,19 @@ impl GuestApiGuest for StreamTestComponent {
             return Err("download request rejected (test sentinel)".to_string());
         }
         let payload = build_download_payload(&peer_id, &request_data);
-        let cursor = FixedContentCursor { remaining: RefCell::new(chunk_bytes(&payload, CHUNK_SIZE)) };
-        Ok(bindings::exports::syneroym::messaging::stream_types::StreamCursor::new(cursor))
+        let cursor = FixedContentCursor {
+            remaining: RefCell::new(chunk_bytes(&payload, CHUNK_SIZE)),
+            fail_after_first_chunk: request_data == FAIL_AFTER_FIRST_CHUNK_SENTINEL.as_bytes(),
+            chunks_served: Cell::new(0),
+        };
+        Ok(StreamCursor::new(cursor))
     }
 
     fn accept_stream_upload(
         protocol: String,
         _peer_id: String,
         metadata: String,
-    ) -> Result<bindings::exports::syneroym::messaging::stream_types::StreamSink, String> {
+    ) -> Result<StreamSink, String> {
         if protocol != PROTOCOL {
             return Err(format!("unknown stream protocol: {protocol}"));
         }
@@ -161,7 +182,7 @@ impl GuestApiGuest for StreamTestComponent {
             fail_after_first_chunk: metadata == FAIL_AFTER_FIRST_CHUNK_SENTINEL,
             chunks_pushed: Cell::new(0),
         };
-        Ok(bindings::exports::syneroym::messaging::stream_types::StreamSink::new(sink))
+        Ok(StreamSink::new(sink))
     }
 
     fn handle_message(_topic: String, _payload: Vec<u8>) -> Result<(), String> {

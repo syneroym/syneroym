@@ -2,6 +2,8 @@
 //!
 //! Handles bidirectional copy tasks and framing adapters for bridged streams.
 
+use std::time::Duration;
+
 use anyhow::{Result, anyhow};
 use hyper_util::rt::TokioIo;
 use iroh::{EndpointAddr, RelayUrl};
@@ -11,8 +13,17 @@ use tokio::{
     io,
     io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader},
     net::TcpStream,
+    time,
 };
 use tracing::debug;
+
+/// Bound on how long an unauthenticated peer gets to finish sending the
+/// route preamble and (if the route calls for one) its initial framed
+/// payload -- both read before any capacity check or WASM instantiation, so
+/// without this a slow/idle peer could hold a stream open indefinitely
+/// (matches the 5s budget `HandshakeVerifier` already uses for its own
+/// pre-auth network round trip in `crates/router/src/handshake.rs`).
+const PRE_AUTH_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 use super::{super::SYNEROYM_ALPN, RouteHandler, dispatch, encryption::ReaderWriter};
 use crate::{
@@ -61,7 +72,9 @@ impl RouteHandler {
         let mut writer = write_half;
 
         debug!("[Router] Reading preamble from incoming stream");
-        let mut preamble = read_preamble(&mut reader).await?;
+        let mut preamble = time::timeout(PRE_AUTH_READ_TIMEOUT, read_preamble(&mut reader))
+            .await
+            .map_err(|_| anyhow!("timed out reading route preamble"))??;
         debug!(
             "[Router] Preamble received: transport={:?} protocol={:?} interface='{}' \
              service_id='{}' enc={:?} master_did={:?}",
@@ -263,7 +276,10 @@ impl RouteHandler {
             .unwrap_or_else(|| UNKNOWN_PEER_ID.to_string());
 
         let ReaderWriter { mut reader, writer } = stream;
-        let initial_payload = framing::read_frame(&mut reader).await?;
+        let initial_payload =
+            time::timeout(PRE_AUTH_READ_TIMEOUT, framing::read_frame(&mut reader))
+                .await
+                .map_err(|_| anyhow!("timed out reading stream request's initial payload"))??;
 
         app_sandbox_engine
             .handle_stream_protocol_request(
@@ -276,5 +292,41 @@ impl RouteHandler {
                 writer,
             )
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::io::duplex;
+
+    use super::*;
+
+    /// A peer that never sends anything must not hold `read_preamble` open
+    /// forever -- with tokio's paused virtual clock this fires effectively
+    /// instantly rather than costing real wall-clock time.
+    #[tokio::test(start_paused = true)]
+    async fn test_read_preamble_times_out_on_idle_stream() {
+        let (client, server) = duplex(64);
+        let mut reader = BufReader::new(server);
+
+        let result = time::timeout(PRE_AUTH_READ_TIMEOUT, read_preamble(&mut reader)).await;
+
+        assert!(result.is_err(), "expected a timeout since the peer never wrote a preamble");
+        drop(client);
+    }
+
+    /// A peer that promptly sends a valid preamble line must not be
+    /// penalized by the timeout wrapper.
+    #[tokio::test]
+    async fn test_read_preamble_succeeds_within_timeout() {
+        let (mut client, server) = duplex(64);
+        let mut reader = BufReader::new(server);
+
+        client.write_all(b"json-rpc://health|substrate-123\n").await.unwrap();
+
+        let result = time::timeout(PRE_AUTH_READ_TIMEOUT, read_preamble(&mut reader)).await;
+
+        let preamble = result.expect("must not time out on a promptly-sent preamble").unwrap();
+        assert_eq!(preamble.service_id, "substrate-123");
     }
 }

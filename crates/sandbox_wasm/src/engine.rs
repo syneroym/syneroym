@@ -14,7 +14,7 @@ use anyhow::{Context, Result, anyhow};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use syneroym_chunk_transfer::{ChunkSink, pull_until_eof, push_until_eof};
+use syneroym_chunk_transfer::{self as chunk_transfer, ChunkSink};
 use syneroym_core::{
     config::SubstrateConfig,
     local_registry::{EndpointRegistry, SubstrateEndpoint},
@@ -51,7 +51,7 @@ use syneroym_wit_interfaces::{
 use tokio::{
     fs as tokio_fs,
     io::{AsyncRead, AsyncWrite, AsyncWriteExt},
-    sync::oneshot,
+    sync::{Semaphore, oneshot},
     time,
 };
 use tracing::{debug, error, info, warn};
@@ -677,7 +677,25 @@ pub struct AppSandboxEngine {
     /// Per-service open-stream-instance task tracking; see `StreamRegistry`.
     stream_registry: StreamRegistry,
     max_concurrent_streams_per_service: u32,
+    /// Bounds how many M3B Slice 6B stream instances may be open across
+    /// *all* services at once. Each open stream holds a pooled component
+    /// instance for its whole lifetime (`open_stream_instance`), competing
+    /// for the same engine-wide `total_component_instances` pool
+    /// (`build_wasm_engine`) as every short-lived RPC/message-delivery call
+    /// across every deployed service -- `max_concurrent_streams_per_service`
+    /// alone only bounds one service's contribution, not the aggregate
+    /// across services. Acquiring a permit here before opening a stream
+    /// instance (see `run_stream_protocol_request`) keeps
+    /// `STREAM_INSTANCE_POOL_HEADROOM` pool slots always available for
+    /// ordinary calls, instead of letting streams silently starve them.
+    stream_instance_permits: Arc<Semaphore>,
 }
+
+/// Pool slots reserved out of `max_concurrent_instances` for short-lived
+/// RPC/message-delivery calls; the remainder is the budget
+/// `stream_instance_permits` hands out to long-lived stream instances. See
+/// that field's doc comment for the cross-service DoS this prevents.
+const STREAM_INSTANCE_POOL_HEADROOM: u32 = 2;
 
 impl Debug for AppSandboxEngine {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
@@ -748,6 +766,20 @@ impl AppSandboxEngine {
         let max_concurrent_streams_per_service =
             config.streaming.max_concurrent_streams_per_service;
 
+        let stream_instance_budget =
+            max_instances.saturating_sub(STREAM_INSTANCE_POOL_HEADROOM).max(1);
+        if max_concurrent_streams_per_service > stream_instance_budget {
+            warn!(
+                max_concurrent_streams_per_service,
+                max_concurrent_instances = max_instances,
+                stream_instance_budget,
+                "a single service's stream cap alone can consume this engine's entire \
+                 cross-service stream-instance budget (max_concurrent_instances minus a \
+                 {STREAM_INSTANCE_POOL_HEADROOM}-slot reserve for ordinary calls); consider \
+                 raising max_concurrent_instances or lowering max_concurrent_streams_per_service"
+            );
+        }
+
         let app_engine = Self {
             blobs_dir: component_dir,
             engine,
@@ -765,6 +797,7 @@ impl AppSandboxEngine {
             endpoint_registry,
             stream_registry: StreamRegistry::new(),
             max_concurrent_streams_per_service,
+            stream_instance_permits: Arc::new(Semaphore::new(stream_instance_budget as usize)),
         };
 
         for (service_id, _interface_name, endpoint) in endpoints {
@@ -1409,9 +1442,15 @@ impl AppSandboxEngine {
     /// Entry point for a peer-initiated `raw://<protocol>|<service_id>`
     /// stream (`crates/router/src/route_handler/io.rs`'s
     /// `handle_raw_stream`, per ADR-0014). Spawns one dedicated Tokio task
-    /// per stream (owning the long-lived `Store`/`Instance`), tracked in
-    /// `StreamRegistry` so `stop_wasm`/`undeploy` can abort it explicitly
-    /// and the per-service concurrency cap is enforced, then awaits it.
+    /// per stream (owning the long-lived `Store`/`Instance`) *before*
+    /// reserving its slot in `StreamRegistry`, since the `AbortHandle` only
+    /// exists once the task has been spawned; the reservation itself is a
+    /// single atomic check-and-register (see `StreamRegistry::try_reserve`),
+    /// so concurrent requests can't all observe spare capacity and all get
+    /// admitted. If the reservation is refused, the just-spawned task is
+    /// aborted immediately (it can't have made meaningful progress yet) and
+    /// the caller sees a clean over-capacity error instead of the stream
+    /// briefly starting anyway.
     #[allow(clippy::too_many_arguments)]
     pub async fn handle_stream_protocol_request(
         &self,
@@ -1423,8 +1462,6 @@ impl AppSandboxEngine {
         reader: Box<dyn AsyncRead + Unpin + Send>,
         writer: Box<dyn AsyncWrite + Unpin + Send>,
     ) -> Result<()> {
-        self.stream_registry.check_capacity(service_id, self.max_concurrent_streams_per_service)?;
-
         let engine = self
             .self_weak
             .get()
@@ -1450,7 +1487,14 @@ impl AppSandboxEngine {
                 .await
         });
         let abort_handle = join_handle.abort_handle();
-        self.stream_registry.track(&tracked_service_id, abort_handle.clone());
+        if let Err(e) = self.stream_registry.try_reserve(
+            &tracked_service_id,
+            self.max_concurrent_streams_per_service,
+            abort_handle.clone(),
+        ) {
+            abort_handle.abort();
+            return Err(e);
+        }
 
         let result = join_handle.await;
         self.stream_registry.untrack(&tracked_service_id, &abort_handle);
@@ -1474,6 +1518,13 @@ impl AppSandboxEngine {
     /// this is also the safety net for the `EndpointRegistry`-reuse caveat
     /// in ADR-0014 (a `raw://` request against a non-stream interface name
     /// simply finds no matching export).
+    ///
+    /// Acquires a `stream_instance_permits` permit *before* opening the
+    /// stream's pooled component instance, and holds it for this function's
+    /// whole lifetime (dropped on every exit path, including the early
+    /// `return`s below) -- see that field's doc comment for why this
+    /// engine-wide budget exists alongside the per-service
+    /// `StreamRegistry` cap.
     #[allow(clippy::too_many_arguments)]
     async fn run_stream_protocol_request(
         &self,
@@ -1485,6 +1536,13 @@ impl AppSandboxEngine {
         reader: Box<dyn AsyncRead + Unpin + Send>,
         writer: Box<dyn AsyncWrite + Unpin + Send>,
     ) -> Result<()> {
+        let _stream_instance_permit = self
+            .stream_instance_permits
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|e| anyhow!("stream instance semaphore closed: {e}"))?;
+
         let (mut store, instance, max_instructions) = self.open_stream_instance(service_id).await?;
         let mut writer = writer;
 
@@ -1512,7 +1570,7 @@ impl AppSandboxEngine {
                     }
                 };
                 let cursor = GuestStreamCursor::new(store, instance, resource, max_instructions);
-                pull_until_eof(cursor, &mut writer).await
+                chunk_transfer::pull_until_eof(cursor, &mut writer).await
             }
             StreamDirection::Upload => {
                 let resource = match stream::call_accept_stream_upload(
@@ -1538,7 +1596,7 @@ impl AppSandboxEngine {
                 };
                 let sink: Box<dyn ChunkSink> =
                     Box::new(GuestStreamSink::new(store, instance, resource, max_instructions));
-                push_until_eof(reader, sink).await
+                chunk_transfer::push_until_eof(reader, sink).await
             }
         };
 
@@ -1712,6 +1770,7 @@ mod tests {
             endpoint_registry: EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
             stream_registry: StreamRegistry::new(),
             max_concurrent_streams_per_service: 8,
+            stream_instance_permits: Arc::new(Semaphore::new(8)),
         };
 
         // Cache the test component
