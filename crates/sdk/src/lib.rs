@@ -36,11 +36,19 @@ pub struct DeployedService {
     pub endpoint_type: String,
 }
 
+/// Default ceiling for establishing a connection to a single mechanism.
+/// Without a bound here, iroh's relay/hole-punch retries can churn
+/// indefinitely against an unreachable or overloaded peer, leaving the
+/// caller with no way to give up. Override via
+/// [`SyneroymClient::with_connect_timeout`].
+pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
 pub struct SyneroymClient {
     service_id: String,
     registry_url: String,
     provided_mechanisms: Option<Vec<EndpointMechanism>>,
     connection: Option<TransportConnection>,
+    connect_timeout: Duration,
 }
 
 impl Debug for SyneroymClient {
@@ -50,6 +58,7 @@ impl Debug for SyneroymClient {
             .field("registry_url", &self.registry_url)
             .field("provided_mechanisms", &self.provided_mechanisms)
             .field("connection", &self.connection)
+            .field("connect_timeout", &self.connect_timeout)
             .finish()
     }
 }
@@ -106,10 +115,31 @@ impl MessageStream {
     }
 }
 
+/// Closes an iroh endpoint without making the caller wait for it.
+///
+/// `Endpoint::close` is a graceful QUIC shutdown that, per its own docs, can
+/// take up to ~3s to resolve against a peer with bad connectivity — it
+/// notifies remaining peers and waits for their acknowledgment. That's fine
+/// for a connection that succeeded, but on a connect failure or timeout it
+/// would silently add ~3s on top of whatever deadline the caller configured.
+/// Closing is still worth doing for the peer's sake, just not on the
+/// caller's clock.
+fn close_in_background(endpoint: Endpoint) {
+    tokio::spawn(async move {
+        endpoint.close().await;
+    });
+}
+
 impl SyneroymClient {
     #[must_use]
     pub const fn new(service_id: String, registry_url: String) -> Self {
-        Self { service_id, registry_url, provided_mechanisms: None, connection: None }
+        Self {
+            service_id,
+            registry_url,
+            provided_mechanisms: None,
+            connection: None,
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
+        }
     }
 
     #[must_use]
@@ -122,7 +152,16 @@ impl SyneroymClient {
             registry_url: String::new(),
             provided_mechanisms: Some(mechanisms),
             connection: None,
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
         }
+    }
+
+    /// Overrides the default per-mechanism connect deadline (see
+    /// [`DEFAULT_CONNECT_TIMEOUT`]).
+    #[must_use]
+    pub const fn with_connect_timeout(mut self, connect_timeout: Duration) -> Self {
+        self.connect_timeout = connect_timeout;
+        self
     }
 
     pub async fn connect(&mut self) -> Result<()> {
@@ -169,14 +208,23 @@ impl SyneroymClient {
                     }
 
                     let endpoint = ep_bldr.bind().await?;
-                    match endpoint.connect(endpoint_addr, SYNEROYM_ALPN).await {
-                        Ok(conn) => {
+                    let dial = endpoint.connect(endpoint_addr, SYNEROYM_ALPN);
+                    match time::timeout(self.connect_timeout, dial).await {
+                        Ok(Ok(conn)) => {
                             self.connection = Some(TransportConnection::Iroh { endpoint, conn });
                             return Ok(());
                         }
-                        Err(e) => {
-                            endpoint.close().await;
+                        Ok(Err(e)) => {
+                            close_in_background(endpoint);
                             return Err(e.into());
+                        }
+                        Err(_) => {
+                            close_in_background(endpoint);
+                            return Err(anyhow::anyhow!(
+                                "connect to {} timed out after {:?}",
+                                self.service_id,
+                                self.connect_timeout
+                            ));
                         }
                     }
                 }
@@ -207,8 +255,13 @@ impl SyneroymClient {
     pub async fn wait_for_ready(&mut self, timeout: Duration) -> Result<()> {
         let start = Instant::now();
         while start.elapsed() < timeout {
-            match self.connect().await {
-                Ok(()) => {
+            // Bound this attempt's connect by whatever remains of the caller's
+            // budget, not just `connect_timeout`: otherwise a `connect_timeout`
+            // larger than the remaining budget would let this call overrun the
+            // deadline it was asked to honor.
+            let remaining = timeout.saturating_sub(start.elapsed());
+            match time::timeout(remaining, self.connect()).await {
+                Ok(Ok(())) => {
                     // Check if readyz is ok
                     match self.request("orchestrator", "readyz", serde_json::json!({})).await {
                         Ok(res) if res.result == serde_json::json!({"status": "ok"}) => {
@@ -218,8 +271,11 @@ impl SyneroymClient {
                         Err(e) => debug!("readyz request failed: {}", e),
                     }
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     debug!("Connect attempt failed, retrying: {}", e);
+                }
+                Err(_) => {
+                    debug!("Connect attempt exceeded remaining wait_for_ready budget");
                 }
             }
             time::sleep(Duration::from_millis(500)).await;
