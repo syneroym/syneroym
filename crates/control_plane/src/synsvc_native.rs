@@ -19,8 +19,9 @@ use serde_json::Value;
 use syneroym_data_blob::{
     BlobError, BlobProvider,
     native_types::{
-        FinishUploadResponse, OpenDownloadRequest, OpenDownloadResponse, OpenUploadResponse,
-        ReadChunkRequest, ReadChunkResponse, SessionIdRequest, WriteChunkRequest,
+        CloseDownloadRequest, FinishUploadResponse, OpenDownloadRequest, OpenDownloadResponse,
+        OpenUploadResponse, ReadChunkRequest, ReadChunkResponse, SessionIdRequest,
+        WriteChunkRequest,
     },
     traits::{DownloadSession, UploadSession},
 };
@@ -79,6 +80,34 @@ fn blob_error(e: BlobError) -> RpcError {
             RpcError::Custom(-32002, "blob quota exceeded".to_string(), None)
         }
         BlobError::Internal(msg) => internal(msg),
+    }
+}
+
+/// Maps `DataLayerError` the way `blob_error` does for `BlobError`, so a
+/// caller (in particular Slice 7's HTTP bridge, via
+/// `status_for_rpc_error_code` in `crates/router/src/route_handler/http.rs`)
+/// can distinguish "collection not found"/"schema violation"/"quota
+/// exceeded" from a generic internal failure instead of every case
+/// collapsing into `RpcError::InternalError`.
+///
+/// `PermissionDenied` is mapped for completeness, but note it is not
+/// reachable through any of Slice 7's own bridged `get`/`query`/`put`/
+/// `patch` routes -- the only real producer is `execute-ddl`, which is
+/// unconditionally denied to native callers (see the `execute-ddl` match
+/// arm below) and is not bridged by any Slice 7 route.
+fn data_layer_error(e: DataLayerError) -> RpcError {
+    match e {
+        DataLayerError::PermissionDenied => {
+            RpcError::Custom(-32010, "permission denied".to_string(), None)
+        }
+        DataLayerError::CollectionNotFound => {
+            RpcError::Custom(-32011, "collection not found".to_string(), None)
+        }
+        DataLayerError::SchemaViolation(msg) => RpcError::Custom(-32012, msg, None),
+        DataLayerError::QuotaExceeded => {
+            RpcError::Custom(-32013, "data-layer quota exceeded".to_string(), None)
+        }
+        DataLayerError::Internal(msg) => internal(msg),
     }
 }
 
@@ -180,7 +209,7 @@ impl SynSvcNativeService {
                 store
                     .put(&req.collection, &req.value, &self.service_id)
                     .await
-                    .map_err(|e| internal(e.to_string()))?;
+                    .map_err(data_layer_error)?;
                 to_payload(&())
             }
             "patch" => {
@@ -194,7 +223,7 @@ impl SynSvcNativeService {
                 store
                     .patch(&req.collection, &req.id, &req.patch_json)
                     .await
-                    .map_err(|e| internal(e.to_string()))?;
+                    .map_err(data_layer_error)?;
                 to_payload(&())
             }
             "get" => {
@@ -204,10 +233,7 @@ impl SynSvcNativeService {
                     id: String,
                 }
                 let req: Req = parse_params(&invocation)?;
-                let result = store
-                    .get(&req.collection, &req.id)
-                    .await
-                    .map_err(|e| internal(e.to_string()))?;
+                let result = store.get(&req.collection, &req.id).await.map_err(data_layer_error)?;
                 to_payload(&result)
             }
             "query" => {
@@ -217,10 +243,8 @@ impl SynSvcNativeService {
                     opts: QueryOptions,
                 }
                 let req: Req = parse_params(&invocation)?;
-                let result = store
-                    .query(&req.collection, &req.opts)
-                    .await
-                    .map_err(|e| internal(e.to_string()))?;
+                let result =
+                    store.query(&req.collection, &req.opts).await.map_err(data_layer_error)?;
                 to_payload(&result)
             }
             "delete" => {
@@ -376,7 +400,13 @@ impl SynSvcNativeService {
     // -- blob-store -----------------------------------------------------
 
     async fn dispatch_blob_store(&self, invocation: NativeInvocation) -> RpcResult<NativeResponse> {
-        let dek = self.resolve_blob_dek().await?;
+        // DEK resolution is a keystore/DB round trip -- only resolved for
+        // the methods that actually pass it to `blob_provider` below.
+        // `write-chunk`/`read-chunk`/`finish-upload`/`abort-upload`/
+        // `close-download` operate on an already-open session (the DEK was
+        // already used, once, at `open-upload`/`open-download` time) and
+        // must not re-resolve it on every chunk -- a per-chunk resolve
+        // here would mean one DB/keystore query per 64KB streamed.
         match invocation.method.as_str() {
             "put-blob" | "put_blob" => {
                 #[derive(serde::Deserialize)]
@@ -384,6 +414,7 @@ impl SynSvcNativeService {
                     data: Vec<u8>,
                 }
                 let req: Req = parse_params(&invocation)?;
+                let dek = self.resolve_blob_dek().await?;
                 let hash = self
                     .blob_provider
                     .put_blob(&self.service_id, req.data, dek)
@@ -397,6 +428,7 @@ impl SynSvcNativeService {
                     hash: String,
                 }
                 let req: Req = parse_params(&invocation)?;
+                let dek = self.resolve_blob_dek().await?;
                 let data = self
                     .blob_provider
                     .get_blob(&self.service_id, &req.hash, dek)
@@ -423,6 +455,7 @@ impl SynSvcNativeService {
                     ttl_secs: u32,
                 }
                 let req: Req = parse_params(&invocation)?;
+                let dek = self.resolve_blob_dek().await?;
                 let url = self
                     .blob_provider
                     .signed_url(&self.service_id, &req.hash, req.ttl_secs, dek)
@@ -431,6 +464,7 @@ impl SynSvcNativeService {
                 to_payload(&url)
             }
             "open-upload" | "open_upload" => {
+                let dek = self.resolve_blob_dek().await?;
                 let session = self
                     .blob_provider
                     .open_upload(&self.service_id, dek)
@@ -477,6 +511,7 @@ impl SynSvcNativeService {
             }
             "open-download" | "open_download" => {
                 let req: OpenDownloadRequest = parse_params(&invocation)?;
+                let dek = self.resolve_blob_dek().await?;
                 let session = self
                     .blob_provider
                     .open_download(&self.service_id, &req.hash, req.offset, dek)
@@ -509,6 +544,16 @@ impl SynSvcNativeService {
                     self.download_sessions.lock().await.insert(req.download_id, session);
                 }
                 to_payload(&ReadChunkResponse { chunk, eof })
+            }
+            "close-download" | "close_download" => {
+                // Best-effort session release for a download that never
+                // reaches EOF (e.g. an HTTP client disconnecting mid-
+                // stream) -- see `BlobDownloadState`'s `Drop` impl in
+                // `crates/router/src/route_handler/http.rs`. Removing an
+                // unknown/already-EOF'd `download_id` is not an error.
+                let req: CloseDownloadRequest = parse_params(&invocation)?;
+                self.download_sessions.lock().await.remove(&req.download_id);
+                to_payload(&())
             }
             other => Err(RpcError::MethodNotFound(format!("blob-store/{other}"))),
         }
@@ -549,5 +594,41 @@ impl NativeService for SynSvcNativeService {
             "messaging" => self.dispatch_messaging(invocation).await,
             other => Err(RpcError::MethodNotFound(format!("unknown interface: {other}"))),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `permission-denied`/`quota-exceeded` are not reachable end to end
+    /// through any of Slice 7's own bridged `get`/`query`/`put`/`patch`
+    /// HTTP routes (see the module doc on `data_layer_error`) -- unit-tested
+    /// directly here instead, matching the honesty precedent Slice 6B used
+    /// for its own untestable-end-to-end coverage gaps.
+    #[test]
+    fn data_layer_error_maps_every_variant_to_a_distinguishable_code() {
+        assert!(matches!(
+            data_layer_error(DataLayerError::PermissionDenied),
+            RpcError::Custom(-32010, _, _)
+        ));
+        assert!(matches!(
+            data_layer_error(DataLayerError::CollectionNotFound),
+            RpcError::Custom(-32011, _, _)
+        ));
+        let RpcError::Custom(-32012, msg, _) =
+            data_layer_error(DataLayerError::SchemaViolation("bad field".to_string()))
+        else {
+            panic!("schema-violation must map to Custom(-32012, ..)");
+        };
+        assert_eq!(msg, "bad field");
+        assert!(matches!(
+            data_layer_error(DataLayerError::QuotaExceeded),
+            RpcError::Custom(-32013, _, _)
+        ));
+        assert!(matches!(
+            data_layer_error(DataLayerError::Internal("boom".to_string())),
+            RpcError::InternalError(_)
+        ));
     }
 }
