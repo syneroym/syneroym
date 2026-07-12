@@ -950,23 +950,25 @@ decision to record in `status.md` at slice close.
 
 ### Slice 6B Exit Criteria
 
-- [ ] Design note/ADR for host-side QUIC stream acceptance/routing recorded
+- [x] Design note/ADR for host-side QUIC stream acceptance/routing recorded
   in `docs/decisions/` before Slice 6B implementation began (Dependency
-  Gate 4).
-- [ ] `syneroym:messaging@0.1.0` streaming surface — both guest-as-source
+  Gate 4). — [0014-quic-stream-protocol-routing.md](../../decisions/0014-quic-stream-protocol-routing.md).
+- [x] `syneroym:messaging@0.1.0` streaming surface — both guest-as-source
   (`stream-cursor`, `handle-stream-request`) and guest-as-sink
   (`stream-sink`, `accept-stream-upload`), plus `register-stream-protocol`
   — is fully wired; WIT package compiles.
-- [ ] Guest-as-sink upload direction is implemented and documented.
-- [ ] Stream protocol registrations survive a substrate restart; `undeploy`
+- [x] Guest-as-sink upload direction is implemented and documented.
+- [x] Stream protocol registrations survive a substrate restart; `undeploy`
   cleans them up.
-- [ ] Long-running streams don't spuriously trap on epoch/fuel exhaustion
+- [x] Long-running streams don't spuriously trap on epoch/fuel exhaustion
   per the design note's quota policy.
-- [ ] Reference scenario steps 16-18 execute end-to-end without error.
-- [ ] All Slice 6B failure/security test rows produce documented outcomes.
-- [ ] Performance budgets for Slice 6B metrics verified; output captured in
-  `status.md`.
-- [ ] `cargo +nightly fmt --all`, `cargo clippy --workspace --all-targets
+- [x] Reference scenario steps 16-18 execute end-to-end without error.
+- [x] All Slice 6B failure/security test rows produce documented outcomes.
+- [x] Performance budgets for Slice 6B metrics verified; output captured in
+  `status.md`. (`next-chunk` measured directly; `push-chunk` verified by
+  documented reasoning — shared `chunk_transfer` code path — rather than a
+  separate measurement; see status.md.)
+- [x] `cargo +nightly fmt --all`, `cargo clippy --workspace --all-targets
   --all-features`, `cargo test --workspace`, and `mise run test:e2e` all
   pass.
 

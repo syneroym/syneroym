@@ -5,6 +5,55 @@
 > `task.md`. No completed-slice history to carry over; this log starts
 > fresh.
 
+## Milestone Completion Audit (2026-07-12)
+
+Independent audit of all three slices against `task.md`'s task lists,
+Measurable Exit Criteria, and Failure/Security test tables; cross-checked
+against `docs/system-requirements-spec.md`, `docs/system-architecture.md`,
+and `docs/planning/traceability-matrix.md`.
+
+- **Validation commands, run clean from `slice-7-http-passthrough`:**
+  `cargo +nightly fmt --all -- --check` (zero diff), `cargo clippy
+  --workspace --all-targets --all-features` (zero warnings/errors), `cargo
+  test --workspace` (0 failures, 324 tests passed across 38 binaries — one
+  transient failure in `syneroym-coordinator-iroh`'s unrelated
+  `test_connection_limit`, a socket-bind permission error from this
+  environment's command sandbox, not a code regression; confirmed passing
+  outside the sandbox), `mise run test:e2e` (4 passed, no regression).
+- **Artifact spot-checks:** confirmed on disk / in source —
+  `docs/decisions/0014-quic-stream-protocol-routing.md`,
+  `crates/chunk_transfer` (`syneroym-chunk-transfer`), the full
+  `register-stream-protocol`/`stream-cursor`/`stream-sink`/
+  `handle-stream-request`/`accept-stream-upload` WIT surface in
+  `messaging.wit`, `NATIVE_CAPABILITY_INTERFACES` (6 entries, matching this
+  doc's Slice 7 section), and every named test function cited below and in
+  each slice's own section (`crates/chunk_transfer/src/lib.rs`,
+  `crates/sandbox_wasm/tests/stream_integration.rs`,
+  `crates/substrate/tests/stream_client_e2e.rs`,
+  `crates/substrate/tests/http_passthrough_e2e.rs`,
+  `crates/control_plane/src/service.rs`).
+- **Requirement/architecture cross-check:** `docs/system-requirements-spec.md`
+  §`[PLT-DAP-04]`/`[PLT-DAP-06]`/`[PLT-DAT]` and the M7 replication deferral
+  language are consistent with what shipped here; no drift found.
+  `docs/system-architecture.md`'s §2 messaging WIT snippet is illustrative
+  pseudocode predating this milestone's implementation (missing the
+  `protocol` parameter added by ADR-0014 deviation 1, the `messaging-error`
+  variant, and `unsubscribe`) — not a milestone exit criterion and not
+  blocking, but worth a documentation pass separately from this audit.
+- **Finding, fixed by this audit:** `task.md`'s Slice 6B "Measurable Exit
+  Criteria" checklist was entirely unchecked (`[ ]`) despite every
+  underlying task/test in Slice 6B's own body being marked done and this
+  status.md documenting Slice 6B as fully verified — a checkbox oversight
+  from the Slice 6B PR (the exit-criteria section predates Slice 6B and was
+  never touched by the commit that implemented it). Verified each criterion
+  against the evidence in this file and the checks above, then corrected
+  the checkboxes in `task.md` to `[x]`.
+- **Conclusion:** all three slices' Measurable Exit Criteria are satisfied
+  with evidence; no requirement, test, decision, or migration task is
+  unresolved. `docs/planning/traceability-matrix.md`'s `[PLT-DAP-04]` and
+  `[PLT-DAP-06]` rows already reflect this (updated during Slice 7). **M03B
+  is complete.**
+
 ## Slice 6A: Messaging WIT and Embedded Pub/Sub Broker (Complete)
 
 **Implemented by:** Claude Code, Sonnet 5 (`claude-sonnet-5`).
