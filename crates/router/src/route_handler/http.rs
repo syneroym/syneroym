@@ -239,6 +239,41 @@ fn parse_query(query: &str) -> HashMap<String, String> {
         .collect()
 }
 
+/// Maps a `GET`-with-query-string request onto `data-layer::query`'s
+/// `query-options` (`filter`/`limit`/`cursor`). `limit` and `cursor` are
+/// reserved keys mapped directly onto those fields; every other key becomes
+/// an equality clause in the MongoDB-style filter document (`?status=open`
+/// -> `{"status": "open"}`), matching `compile_filter`'s own `{field:
+/// value}` equality shorthand (`crates/data_db/src/filter.rs`) -- string
+/// values only, no operators (`$gt`, `$in`, ...) or type coercion. That
+/// covers the common case this bridge is for; a route needing richer
+/// filtering than plain-equality-AND can still be reached directly via the
+/// JSON-RPC bridge, which takes a filter document verbatim. An absent or
+/// empty query string maps to an unfiltered query (`filter: null`),
+/// unchanged from before this mapping existed. A non-numeric `limit`
+/// produces a `400`-worthy error message rather than being silently dropped.
+fn query_opts_from_query_string(query: &str) -> result::Result<Value, String> {
+    let mut params = parse_query(query);
+    let limit = match params.remove("limit") {
+        Some(raw) => {
+            let n = raw
+                .parse::<u32>()
+                .map_err(|_| format!("invalid `limit` query parameter: {raw:?}"))?;
+            Value::Number(n.into())
+        }
+        None => Value::Null,
+    };
+    let cursor = params.remove("cursor").map_or(Value::Null, Value::String);
+    let filter = if params.is_empty() {
+        Value::Null
+    } else {
+        let filter_doc: serde_json::Map<String, Value> =
+            params.into_iter().map(|(k, v)| (k, Value::String(v))).collect();
+        Value::String(serde_json::to_string(&filter_doc).map_err(|e| e.to_string())?)
+    };
+    Ok(serde_json::json!({"filter": filter, "limit": limit, "cursor": cursor}))
+}
+
 /// Formats one broker-delivered `(topic, payload)` message as an SSE frame.
 /// Payload is treated as UTF-8 text (lossy) -- every fixture in this repo
 /// only ever publishes UTF-8 text payloads (see `status.md`'s Slice 6A
@@ -532,7 +567,10 @@ impl HttpHandler {
                 .await
             }
             "query" => {
-                let opts = serde_json::json!({"filter": Value::Null, "limit": Value::Null, "cursor": Value::Null});
+                let opts = match query_opts_from_query_string(req.uri().query().unwrap_or("")) {
+                    Ok(opts) => opts,
+                    Err(message) => return Ok(http_error(StatusCode::BAD_REQUEST, message)),
+                };
                 self.dispatch_response(
                     "data-layer",
                     "query",
@@ -1018,6 +1056,26 @@ mod tests {
         assert_eq!(parsed.get("svc"), Some(&"abc".to_string()));
         assert_eq!(parsed.get("exp"), Some(&"123".to_string()));
         assert_eq!(parsed.get("sig"), Some(&"deadbeef".to_string()));
+    }
+
+    #[test]
+    fn query_opts_from_query_string_maps_reserved_and_filter_keys() {
+        let opts = query_opts_from_query_string("status=open&limit=5&cursor=abc").unwrap();
+        assert_eq!(opts["limit"], serde_json::json!(5));
+        assert_eq!(opts["cursor"], serde_json::json!("abc"));
+        let filter: Value = serde_json::from_str(opts["filter"].as_str().unwrap()).unwrap();
+        assert_eq!(filter, serde_json::json!({"status": "open"}));
+    }
+
+    #[test]
+    fn query_opts_from_query_string_empty_query_is_unfiltered() {
+        let opts = query_opts_from_query_string("").unwrap();
+        assert_eq!(opts, serde_json::json!({"filter": null, "limit": null, "cursor": null}));
+    }
+
+    #[test]
+    fn query_opts_from_query_string_rejects_non_numeric_limit() {
+        assert!(query_opts_from_query_string("limit=notanumber").is_err());
     }
 
     #[test]

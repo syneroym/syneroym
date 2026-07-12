@@ -28,16 +28,64 @@
 //! | `http-wrpc://`   | HTTP/1.1       | wRPC                 | NOTE: not yet implemented |
 //! | `binary-wrpc://` | Binary frames  | wRPC                 | NOTE: not yet implemented |
 //!
-//! ## Encryption Query Parameters
+//! ## Query Parameters
 //!
-//! Encryption is orthogonal to the scheme and applies to any transport:
-//! `raw://my-interface.my-service?enc=ecdh-p256&
-//! pubkey=<hex-encoded-client-pubkey>`
+//! All query parameters are orthogonal to the scheme and apply to any
+//! transport unless noted otherwise:
+//!
+//! | Param | Example | Meaning |
+//! |-------|---------|---------|
+//! | `enc`/`pubkey` | `?enc=ecdh-p256&pubkey=<hex>` | E2E ECDH-P256 + AES-GCM handshake (`handshake.rs`). Orthogonal to transport: `raw://my-interface.my-service?enc=ecdh-p256&pubkey=<hex-encoded-client-pubkey>`. |
+//! | `delegation` | `?delegation=<hex-encoded-json>` | Hex-encoded JSON `DelegationCertificate`. When present, `HandshakeVerifier::verify_preamble` checks it against `preamble.service_id` (see "Interface Names" below for what happens when it's absent). |
+//! | `dir` | `?dir=upload\|download` | M3B Slice 6B/ADR-0014 stream-protocol direction disambiguator; only meaningful on `raw://` streams routed to a registered `stream-types` protocol. Any other value is rejected at the router before WASM instantiation. |
 //!
 //! The `RoutePipeline`'s `EncryptionStage` and `AdaptationStage` are **not**
 //! encoded in the preamble itself; they are **derived** at planning time
 //! (`plan_pipeline`) from the combination of preamble fields and target
 //! registry capability entries.
+//!
+//! ## Interface Names
+//!
+//! `preamble.interface` (the `<interface>` segment) is looked up in the
+//! target service's `EndpointRegistry` to resolve a `SubstrateEndpoint`. Two
+//! disjoint sets of names share this same lookup, which is the source of the
+//! `http`/`http-native` naming collision below -- **tracked as a scope item
+//! for M4's UCAN/FDAE work to clean up** (see
+//! `docs/planning/meta-implementation-plan.md`, Milestone 4 item 7), not
+//! resolved here, since restructuring this now would likely need redoing
+//! once M4 adds capability-scoped routing:
+//!
+//! - **App-declared interfaces**: any WIT interface name (or, for TCP/container
+//!   services, a bare capability tag like `http`, e.g. `roymctl svc deploy
+//!   --interfaces http --tcp <host:port>`) a deployed component/service
+//!   registers for itself at deploy time
+//!   (`register_wasm_endpoints`/`ControlPlaneService::deploy`). Fully
+//!   app-owner-controlled; the substrate does not reserve or validate these
+//!   beyond uniqueness per `(service_id, interface)`.
+//! - **Reserved native-capability interfaces** (`NATIVE_CAPABILITY_INTERFACES`,
+//!   `crates/control_plane/src/service.rs`): `data-layer`, `vault`,
+//!   `app-config`, `blob-store`, `messaging`, `http-native`. Every deployed
+//!   service (regardless of `service-type`) automatically gets these registered
+//!   as `SubstrateEndpoint:: NativeHostChannel` entries pointing at
+//!   `SynSvcNativeService`'s `NativeService::dispatch` implementation -- no
+//!   WASM component or app-declared interface required. `http-native`
+//!   specifically is *not* a preamble scheme (compare the scheme table above);
+//!   it is the reserved interface name the M3C HTTP bridge
+//!   (`route_handler/http.rs`) dispatches through, deliberately hyphenated (not
+//!   the bare `http`) precisely to avoid colliding with the app-declared `http`
+//!   tag above -- see `NATIVE_CAPABILITY_INTERFACES`'s own doc comment for the
+//!   regression this collision caused once already.
+//!
+//! **Authentication status, as of M3B/M3C (interim, tracked for M4):**
+//! `HandshakeVerifier::verify_preamble` -- the only check of caller identity
+//! against `preamble.service_id` -- runs *only* when `preamble.delegation` is
+//! present, and none of the six reserved native-capability interfaces above
+//! require one. Any peer that can open a connection to the node and knows a
+//! target service's DID can address these interfaces (and the HTTP bridge,
+//! which routes through `http-native`) as if it were that service. See
+//! `docs/planning/milestones/M03B-messaging/status.md`'s "Interim HTTP-write
+//! security posture" section for the full accounting and
+//! `meta-implementation-plan.md`'s Milestone 4 item 7 for the tracked fix.
 
 use std::{convert::Infallible, fmt, result};
 

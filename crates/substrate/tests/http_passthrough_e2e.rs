@@ -483,6 +483,33 @@ async fn test_data_layer_http_routes_error_mapping_and_fallthrough() {
     let records = listed["records"].as_array().expect("query result must have a records array");
     assert!(records.iter().any(|r| r["id"] == id), "query must include the created record");
 
+    // GET /orders?item=widget -> query-string maps to an equality filter;
+    // the created record (item=widget) matches, a non-matching filter value
+    // excludes it.
+    let response =
+        http_request(&conn, &app_service_id, "GET", "/orders?item=widget", &[], &[]).await;
+    assert_eq!(response.status, 200);
+    let listed: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
+    let records = listed["records"].as_array().unwrap();
+    assert!(
+        records.iter().any(|r| r["id"] == id),
+        "filtered query must include the matching record"
+    );
+
+    let response = http_request(&conn, &app_service_id, "GET", "/orders?item=nope", &[], &[]).await;
+    assert_eq!(response.status, 200);
+    let listed: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
+    let records = listed["records"].as_array().unwrap();
+    assert!(
+        !records.iter().any(|r| r["id"] == id),
+        "non-matching filter value must exclude the record"
+    );
+
+    // GET /orders?limit=notanumber -> structured 400, not a panic.
+    let response =
+        http_request(&conn, &app_service_id, "GET", "/orders?limit=notanumber", &[], &[]).await;
+    assert_eq!(response.status, 400);
+
     // GET /orders/{unknown-id} -> record not found -> 404 (a missing
     // record is `Ok(None)` at the data-layer level, not a mapped error --
     // special-cased in http.rs, not part of the code-based error table).

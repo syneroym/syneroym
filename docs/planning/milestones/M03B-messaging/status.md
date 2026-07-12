@@ -896,3 +896,47 @@ full-substrate-instance setup within this file only (a
 `tokio::sync::Mutex` held for each test's whole lifetime) — not a fix to
 the DHT component itself (out of this slice's scope), and it doesn't
 affect parallelism with other `crates/substrate/tests/*.rs` files.
+
+### Post-merge PR review addendum: `GET` query-string → filter mapping
+
+PR #61 review caught a real, previously undocumented gap: the `query` route
+handler (`handle_data_layer_route`, `crates/router/src/route_handler/http.rs`)
+ignored the HTTP query string entirely — `GET /orders?status=pending` and
+plain `GET /orders` were indistinguishable, both always dispatching
+`data-layer::query` with `filter: null`. Not a deliberate Slice 7 scope cut
+(task.md's own route-table task item just says "DB access via REST-like
+conventions" with no explicit filter-mapping decision recorded either way);
+it simply wasn't built. Fixed as a follow-up, same PR:
+
+- New `query_opts_from_query_string` helper (`route_handler/http.rs`):
+  `limit`/`cursor` are reserved keys mapped directly onto `query-options`'
+  own fields (`limit` parsed as `u32`, invalid values rejected with a
+  structured `400` rather than silently dropped); every other key becomes
+  an equality clause in the MongoDB-style filter document handed to
+  `data-layer::query` (`?status=open` → `{"status": "open"}`), matching
+  `compile_filter`'s own `{field: value}` equality shorthand
+  (`crates/data_db/src/filter.rs`) — string values only, no operators
+  (`$gt`, `$in`, ...) and no type coercion. A route needing richer
+  filtering than plain-equality-AND remains reachable via the existing
+  JSON-RPC bridge, which takes a filter document verbatim.
+- 3 unit tests (`route_handler::http::tests`): reserved-key mapping,
+  empty-query-is-unfiltered, non-numeric-`limit`-is-rejected.
+- Extended `test_data_layer_http_routes_error_mapping_and_fallthrough`
+  (`crates/substrate/tests/http_passthrough_e2e.rs`) with three new
+  end-to-end assertions: a matching `?item=widget` filter includes the
+  created record, a non-matching filter value excludes it, and
+  `?limit=notanumber` produces a structured `400`.
+- `crates/router/src/preamble.rs`'s module doc comment also gained a
+  consolidated "Interface Names" reference table (schemes vs. reserved
+  `NATIVE_CAPABILITY_INTERFACES` names vs. query params), addressing a
+  separate PR #61 review comment about the `http`/`http-native` naming
+  being confusing with no single place documenting all the variations —
+  deliberately left as a doc-only addition rather than a renaming/cleanup
+  pass, since restructuring now would likely need redoing once M4's
+  UCAN/FDAE work adds capability-scoped routing (see
+  `meta-implementation-plan.md`'s Milestone 4 item 7).
+
+All four validation commands (`cargo +nightly fmt --all -- --check`,
+`cargo clippy --workspace --all-targets --all-features`,
+`cargo test --workspace`, `mise run test:e2e`) re-verified green after
+this addendum.
