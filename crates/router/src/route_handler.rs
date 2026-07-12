@@ -19,7 +19,7 @@ use iroh::{
     endpoint::Connection,
     protocol::{AcceptError, ProtocolHandler as IrohProtocolHandler},
 };
-use syneroym_control_plane::ControlPlaneService;
+use syneroym_control_plane::{ControlPlaneService, HttpRouteRegistry};
 use syneroym_core::{
     config::{BlobBackend, RetryPolicy, SubstrateConfig},
     dht_registry::RegistryClient,
@@ -91,6 +91,22 @@ pub struct RouteHandlerInner {
     /// `CancellationToken` governing its own subscription-forwarding
     /// tasks, mirroring `AppSandboxEngine`'s epoch-timer task lifecycle.
     pub messaging_broker: Arc<MqttBroker>,
+    /// Per-service HTTP route table (M3B Slice 7), populated by
+    /// `ControlPlaneService::deploy`/`undeploy` -- see
+    /// `syneroym_control_plane::http_routes`. Read by
+    /// `route_handler::http` to resolve `(service_id, method, path)` to a
+    /// bridged `data-layer`/`messaging`/stream-protocol route.
+    pub http_routes: HttpRouteRegistry,
+    /// `None` in coordinator mode (`new_coordinator`), `Some` for a real
+    /// substrate node (`init`) -- mirrors `app_sandbox_engine`'s own
+    /// coordinator-mode-is-absent pattern. Used only by the signed-URL blob
+    /// `GET` route (M3B Slice 7) to resolve a service's DEK the same way
+    /// `SynSvcNativeService::resolve_blob_dek` does, so
+    /// `crypto::verify_signed_url` can be checked before any bytes are
+    /// streamed -- the streaming itself still goes through the existing
+    /// `blob-store/open-download`+`read-chunk` native-dispatch methods.
+    pub key_store: Option<Arc<KeyStore>>,
+    pub storage_provider: Option<Arc<dyn StorageProvider>>,
 }
 
 impl Debug for RouteHandler {
@@ -240,6 +256,11 @@ impl RouteHandler {
         // native services (data-layer/vault/app-config/blob-store) into the
         // same registry `RouteHandler`'s own dispatch path reads from.
         let native_dispatch: NativeDispatchRegistry = Arc::new(DashMap::new());
+        // Constructed before `RouteHandlerInner` for the same reason
+        // `native_dispatch` is: the identical shared handle is also passed
+        // to `ControlPlaneService::init` below, which populates it on
+        // deploy/undeploy.
+        let http_routes: HttpRouteRegistry = Arc::new(DashMap::new());
 
         let inner = Arc::new(RouteHandlerInner {
             registry: registry.clone(),
@@ -253,6 +274,9 @@ impl RouteHandler {
             active_connections: Arc::new(AtomicUsize::new(0)),
             max_connections,
             messaging_broker: messaging_broker.clone(),
+            http_routes: http_routes.clone(),
+            key_store: Some(key_store.clone()),
+            storage_provider: Some(storage_provider.clone()),
         });
 
         let s = Self { inner };
@@ -268,6 +292,7 @@ impl RouteHandler {
             blob_provider,
             messaging_broker,
             native_dispatch,
+            http_routes,
         )
         .await?;
         s.register_native_service(service_id, Arc::new(substrate_service));
@@ -297,6 +322,9 @@ impl RouteHandler {
             messaging_broker: Arc::new(
                 MqttBroker::new(MqttBrokerConfig::default()).expect("coordinator mqtt broker"),
             ),
+            http_routes: Arc::new(DashMap::new()),
+            key_store: None,
+            storage_provider: None,
         });
         Self { inner }
     }

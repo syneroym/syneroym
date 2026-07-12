@@ -723,37 +723,39 @@ decision to record in `status.md` at slice close.
 
 ### HTTP Verb / Path Routing (target node, `crates/router/src/route_handler/http.rs`)
 
-- [ ] Extend `HttpHandler` to support **streaming response bodies**
+- [x] Extend `HttpHandler` to support **streaming response bodies**
   (replace or augment `Response<Full<Bytes>>` with a streaming body type
   hyper supports, e.g. `http_body_util::StreamBody`), the shared
-  prerequisite for SSE, large blob `GET`, and chunked upload below.
-- [ ] Define **where routes are declared** (open design question the
-  original plan left unaddressed — Finding B8): the simplest option
-  consistent with this codebase's existing `ServiceManifest`-driven
-  configuration is a new optional `[services.<id>.http]` route table in the
-  manifest (method + path pattern → target interface + operation), rather
-  than a global substrate-wide policy; decide and document at
-  implementation time, but it must be per-service, not global, since
-  different services expose different data-layer collections/messaging
-  topics.
-- [ ] Define the `data-layer-error`/`blob-error`/`messaging-error` → HTTP
-  status code mapping once, in one place (e.g.
-  `permission-denied` → 403, `collection-not-found`/`not-found` → 404,
-  `schema-violation` → 400, `quota-exceeded` → 429, `internal` → 500),
-  reused by every route below instead of each handler inventing its own.
-- [ ] `GET` → `data-layer::get`/`query` (DB access via REST-like
-  conventions) or `blob-store::get-blob`/streamed `blob-reader` (signed-URL
-  blob serving, static file access) depending on route configuration.
-- [ ] `POST`/`PUT` (small body) → `data-layer::put`/`patch` or
+  prerequisite for SSE, large blob `GET`, and chunked upload below. Built on
+  `http_body_util::combinators::UnsyncBoxBody<Bytes, Infallible>` (not the
+  plain `BoxBody` the plan assumed — see status.md's "Design deviations").
+- [x] Define **where routes are declared** (open design question the
+  original plan left unaddressed — Finding B8): resolved as a per-service
+  `http_routes` array inside the existing `ServiceConfig.custom_config`
+  JSON extension point (`crates/control_plane/src/http_routes.rs`), not a
+  new manifest section or a global policy — see status.md for the full
+  design rationale.
+- [x] Define the `data-layer-error`/`blob-error`/`messaging-error` → HTTP
+  status code mapping once, in one place (`status_for_rpc_error_code`,
+  `crates/router/src/route_handler/http.rs`): `permission-denied` → 403,
+  `collection-not-found` → 404, `schema-violation` → 400,
+  `quota-exceeded` → 429, `internal` → 500 (plus blob-store's existing
+  `not-found`/`quota-exceeded`/`internal` codes). No `messaging-error`
+  mapper was added — `MessagingError` has only one variant (`Internal`);
+  see status.md.
+- [x] `GET` → `data-layer::get`/`query` (DB access via REST-like
+  conventions) or `blob-store` (signed-URL blob serving) depending on route
+  configuration.
+- [x] `POST`/`PUT` (small body) → `data-layer::put`/`patch` or
   `messaging::publish`.
-- [ ] `PUT`/chunked upload (large body) → `messaging::accept-stream-upload`/
+- [x] `PUT`/chunked upload (large body) → `messaging::accept-stream-upload`/
   `stream-sink`: the router treats the HTTP body as an inbound stream,
-  translating chunked-transfer-encoding reads into `push-chunk` calls and
-  end-of-body into `finalize()`. Where the upload target is specifically a
-  blob (not a guest-defined sink), the router may instead call
-  `blob-store`'s existing `blob-writer` directly — decide per-route via the
-  same route configuration as above, not a global policy.
-- [ ] `GET /blobs/<hash>?svc=<service_id>&exp=<unix-ts>&sig=<hmac>` resolves
+  driving the existing `handle_stream_protocol_request`/`push_until_eof`
+  chunking loop (Slice 6B) rather than a separate blob-writer path — no
+  route configuration exists for a blob-typed upload target; that option
+  from the original plan was not built (not needed by any Slice 7 test row
+  and would have added a second, parallel upload path for no proven need).
+- [x] `GET /blobs/<hash>?svc=<service_id>&exp=<unix-ts>&sig=<hmac>` resolves
   the existing `signed_url`/`verify_signed_url` logic
   (`crates/data_blob/src/crypto.rs`) — note the query parameter set
   includes `svc` (the original draft's HTTP task description omitted it;
@@ -763,7 +765,7 @@ decision to record in `status.md` at slice close.
 
 ### SSE Bridge (target node, same `route_handler/http.rs`)
 
-- [ ] `GET` with `Accept: text/event-stream` on a route mapped to a
+- [x] `GET` with `Accept: text/event-stream` on a route mapped to a
   messaging topic: the handler calls `MqttBroker::subscribe` in-process
   (the same broker API Slice 6A's native push-delivery path uses,
   reused directly — no new subscription mechanism), and re-emits each
@@ -772,40 +774,51 @@ decision to record in `status.md` at slice close.
 
 ### Tests
 
-- [ ] Integration: `GET /blobs/<hash>?svc=...&exp=...&sig=...` resolves the
+- [x] Integration: `GET /blobs/<hash>?svc=...&exp=...&sig=...` resolves the
   signed-URL logic end to end over a live HTTP endpoint — closes the gap
   explicitly left open in M03-sss Slice 5's "HTTP Serving" deferral.
-- [ ] Integration: `GET` static file passthrough serves blob content with
-  correct `Content-Type`/`Content-Length`.
-- [ ] Integration: `POST` JSON body passthrough performs a `data-layer::put`
+- [x] Integration: `GET` blob passthrough serves blob content with the
+  correct `Content-Type` (`application/octet-stream`). No `Content-Length`
+  is set — `blob-store` has no size/stat method, so the response uses
+  chunked transfer-encoding instead (a documented, deliberate deviation
+  from this row's literal wording — see status.md).
+- [x] Integration: `POST` JSON body passthrough performs a `data-layer::put`
   and returns the resulting record.
-- [ ] Integration: SSE `GET` receives messages published via
+- [x] Integration: SSE `GET` receives messages published via
   `messaging::publish` from another connection.
-- [ ] Integration: chunked `PUT` upload round-trips through
+- [x] Integration: chunked `PUT` upload round-trips through
   `accept-stream-upload`/`stream-sink` with content integrity verified end
   to end (HTTP client → router → guest `finalize()`).
-- [ ] Integration: a guest that declines the upload (`Err` from
+- [x] Integration: a guest that declines the upload (`Err` from
   `accept-stream-upload`) surfaces as a structured `4xx`, not a hung
   connection or an unexplained `5xx`.
-- [ ] Integration: malformed or oversized request rejected with a
+- [x] Integration: malformed or oversized request rejected with a
   structured HTTP error, not a panic.
-- [ ] Integration: the error-mapping table above is exercised for at least
-  one case per source error type (`permission-denied`, `not-found`,
-  `schema-violation`, `quota-exceeded`, `internal`).
+- [x] Integration: the error-mapping table above is exercised for at least
+  one case per source error type where reachable through Slice 7's own
+  bridged routes (`not-found`/`collection-not-found`, `schema-violation`);
+  `permission-denied`, `quota-exceeded`, and `internal` are unit-tested
+  directly against the mapping functions instead, since none is reachable
+  end to end through this slice's own routes — see status.md for the
+  per-row rationale (mirrors the honesty precedent Slice 6B already used).
 
 ### Acceptance Criteria
 
-- Signed-URL blob serving and static file access work over plain HTTP
-  `GET`, closing the deferral from M03-sss Slice 5.
-- `data-layer` and `messaging` are reachable over HTTP using conventional
-  verbs, without requiring a JSON-RPC envelope.
-- Chunked HTTP upload is wired end-to-end onto `stream-sink`/
-  `accept-stream-upload` (or `blob-store`'s `blob-writer` for blob-typed
-  routes).
-- SSE subscription works end to end through the target node's hyper
+- [x] Signed-URL blob serving works over plain HTTP `GET`, closing the
+  deferral from M03-sss Slice 5. ("Static file access" beyond signed-URL
+  blob serving was not a separate mechanism to build — the same route
+  serves both.)
+- [x] `data-layer` and `messaging` are reachable over HTTP using
+  conventional verbs, without requiring a JSON-RPC envelope.
+- [x] Chunked HTTP upload is wired end-to-end onto `stream-sink`/
+  `accept-stream-upload`. (The blob-writer alternative for blob-typed
+  upload routes was not built — see the HTTP Verb/Path Routing section
+  above.)
+- [x] SSE subscription works end to end through the target node's hyper
   server, reusing `client_gateway`'s existing byte-tunnel unchanged.
-- No regression to the existing JSON-RPC-over-POST native-dispatch path.
-- The interim HTTP-write security posture is recorded in `status.md`.
+- [x] No regression to the existing JSON-RPC-over-POST native-dispatch
+  path.
+- [x] The interim HTTP-write security posture is recorded in `status.md`.
 
 ---
 
@@ -959,25 +972,25 @@ decision to record in `status.md` at slice close.
 
 ### Slice 7 Exit Criteria
 
-- [ ] `crates/router/src/route_handler/http.rs` serves `GET`/`POST`/streaming
+- [x] `crates/router/src/route_handler/http.rs` serves `GET`/`POST`/streaming
   `PUT` against `data-layer`, `blob-store`, and `messaging` without a
   JSON-RPC envelope, alongside the existing JSON-RPC-over-POST path
   (no regression).
-- [ ] SSE subscription is served from the target node's hyper server (not
+- [x] SSE subscription is served from the target node's hyper server (not
   `client_gateway`), reusing `client_gateway`'s byte tunnel unchanged.
-- [ ] Signed-URL blob GET works over a live HTTP endpoint, closing the
+- [x] Signed-URL blob GET works over a live HTTP endpoint, closing the
   M03-sss Slice 5 deferral.
-- [ ] Chunked upload is wired end-to-end onto `stream-sink`/
+- [x] Chunked upload is wired end-to-end onto `stream-sink`/
   `accept-stream-upload` or `blob-store`'s `blob-writer`.
-- [ ] Interim HTTP-write security posture recorded in `status.md`.
-- [ ] Reference scenario step 19 executes end-to-end without error.
-- [ ] All Slice 7 failure/security test rows produce documented outcomes.
-- [ ] Performance budgets for Slice 7 metrics verified; output captured in
+- [x] Interim HTTP-write security posture recorded in `status.md`.
+- [x] Reference scenario step 19 executes end-to-end without error.
+- [x] All Slice 7 failure/security test rows produce documented outcomes.
+- [x] Performance budgets for Slice 7 metrics verified; output captured in
   `status.md`.
-- [ ] `cargo +nightly fmt --all`, `cargo clippy --workspace --all-targets
+- [x] `cargo +nightly fmt --all`, `cargo clippy --workspace --all-targets
   --all-features`, `cargo test --workspace`, and `mise run test:e2e` all
   pass.
-- [ ] Traceability matrix updated with evidence for `[PLT-DAP-06]`
+- [x] Traceability matrix updated with evidence for `[PLT-DAP-06]`
   (bidirectional streaming) and the HTTP-facing sub-requirements of
   `[PLT-DAT]`/`[PLT-DAP-04]`.
 

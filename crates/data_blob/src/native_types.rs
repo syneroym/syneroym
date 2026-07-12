@@ -57,3 +57,11 @@ pub struct ReadChunkResponse {
     pub chunk: Vec<u8>,
     pub eof: bool,
 }
+
+/// Releases a download session before it reaches EOF -- e.g. an HTTP `GET`
+/// client disconnecting mid-stream. Idempotent: closing an unknown or
+/// already-closed `download_id` is not an error.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CloseDownloadRequest {
+    pub download_id: String,
+}

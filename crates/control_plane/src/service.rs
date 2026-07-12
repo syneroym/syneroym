@@ -44,13 +44,22 @@ use tracing::info;
 use crate::{
     config_utils,
     dummy_sandbox::{AppSandboxEngine, ContainerEngine},
+    http_routes::{self, HttpRouteRegistry},
     synsvc_native::SynSvcNativeService,
 };
 
 const ORCHESTRATOR_INTERFACE: &str = "orchestrator";
 const SECURITY_INTERFACE: &str = "security";
-const NATIVE_CAPABILITY_INTERFACES: [&str; 5] =
-    ["data-layer", "vault", "app-config", "blob-store", "messaging"];
+// "http-native", not the bare "http": `roymctl svc deploy --interfaces http
+// --tcp ...` is an existing, real convention for declaring a TCP/container
+// service's own plain HTTP-serving interface (see
+// `crates/substrate/tests/e2e/global-setup.ts`) -- reserving the bare
+// "http" name here collided with it (registering this native-capability
+// endpoint under the same interface name silently overwrote the app's own
+// `TcpHostPort` registration, discovered via `mise run test:e2e` breaking
+// end to end during Slice 7's own verification).
+const NATIVE_CAPABILITY_INTERFACES: [&str; 6] =
+    ["data-layer", "vault", "app-config", "blob-store", "messaging", "http-native"];
 
 /// The Substrate Service (The Control Plane Orchestrator)
 /// This service handles the deployment and lifecycle of applications
@@ -70,6 +79,11 @@ pub struct ControlPlaneService {
     // `syneroym_rpc::dispatch_registry`'s module docs. `RouteHandlerInner`
     // owns the strong clone for as long as the router itself is alive.
     native_dispatch: WeakNativeDispatchRegistry,
+    // Strong, unlike `native_dispatch`: `ControlPlaneService` is never
+    // itself keyed into this map, so there is no reference-cycle hazard
+    // (see `crate::http_routes`'s module docs). `RouteHandlerInner` holds
+    // the same `Arc` for lookup from `crates/router/src/route_handler/http.rs`.
+    http_routes: HttpRouteRegistry,
 }
 
 impl Debug for ControlPlaneService {
@@ -93,6 +107,7 @@ impl ControlPlaneService {
         blob_provider: Arc<dyn BlobProvider>,
         messaging_broker: Arc<MqttBroker>,
         native_dispatch: NativeDispatchRegistry,
+        http_routes: HttpRouteRegistry,
     ) -> Result<Self> {
         info!("Initializing ControlPlaneService (Orchestrator)...");
 
@@ -111,6 +126,7 @@ impl ControlPlaneService {
             blob_provider,
             messaging_broker,
             native_dispatch: Arc::downgrade(&native_dispatch),
+            http_routes,
         })
     }
 }
@@ -409,9 +425,17 @@ impl OrchestratorInterface for ControlPlaneService {
 
         // Configuration Generation & Validation
         let mut flat_config = BTreeMap::new();
+        // M3B Slice 7: `http_routes` is a reserved top-level key inside
+        // `custom_config`'s JSON (see `crate::http_routes`) -- parsed here,
+        // alongside the existing flatten step, since this is already the
+        // one place `custom_config` gets interpreted rather than treated as
+        // opaque. A malformed `http_routes` value fails deploy the same way
+        // a schema violation does, rather than silently discarding routes.
+        let mut http_routes = Vec::new();
         if let Some(custom_config_str) = &manifest.config.custom_config {
             let custom_json: Value = serde_json::from_str(custom_config_str)
                 .map_err(|e| format!("custom_config is not valid JSON: {}", e))?;
+            http_routes = http_routes::parse_http_routes(&custom_json)?;
 
             if let Some(schema_path_str) = &manifest.config.schema_path {
                 let schema_path = PathBuf::from(schema_path_str);
@@ -522,6 +546,11 @@ impl OrchestratorInterface for ControlPlaneService {
                 service_id
             );
         }
+        if http_routes.is_empty() {
+            self.http_routes.remove(&service_id);
+        } else {
+            self.http_routes.insert(service_id.clone(), http_routes);
+        }
 
         Ok(())
     }
@@ -592,7 +621,7 @@ impl OrchestratorInterface for ControlPlaneService {
             self.app_sandbox_engine.unsubscribe_all(&service_id);
         }
 
-        // The endpoint-registry loop above already removed the 5 native
+        // The endpoint-registry loop above already removed the 6 native
         // capability interfaces generically (it iterates every registered
         // interface for this service_id); just drop the in-memory dispatch
         // entry too.
@@ -605,6 +634,7 @@ impl OrchestratorInterface for ControlPlaneService {
                 service_id
             );
         }
+        self.http_routes.remove(&service_id);
 
         Ok(())
     }
@@ -615,8 +645,8 @@ impl OrchestratorInterface for ControlPlaneService {
 
         for (service_id, interface, endpoint) in endpoints {
             // The native-capability interfaces (data-layer/vault/app-config/
-            // blob-store/messaging) are host-provided plumbing registered on
-            // every deployed service regardless of type -- they must not be
+            // blob-store/messaging/http) are host-provided plumbing registered
+            // on every deployed service regardless of type -- they must not be
             // mistaken for the service's own declared interfaces, nor
             // influence `endpoint_type` (every deployed service also always
             // has its real wasm/container/tcp endpoint registered).
@@ -701,6 +731,7 @@ fn ready_response() -> NativeResponse {
 mod tests {
     use std::{path::Path, time::Duration};
 
+    use dashmap::DashMap;
     use syneroym_core::{config::SubstrateConfig, storage::MockStorage, test_constants};
     use syneroym_data_blob::ObjectStoreBlobProvider;
     use syneroym_data_db::SqliteStorageProvider;
@@ -809,6 +840,7 @@ mod tests {
             blob_provider.clone(),
             messaging_broker.clone(),
             native_dispatch.clone(),
+            Arc::new(DashMap::new()),
         )
         .await
         .unwrap();
@@ -873,6 +905,7 @@ mod tests {
             blob_provider.clone(),
             messaging_broker.clone(),
             native_dispatch.clone(),
+            Arc::new(DashMap::new()),
         )
         .await
         .unwrap();
@@ -948,6 +981,7 @@ mod tests {
             blob_provider.clone(),
             messaging_broker.clone(),
             native_dispatch.clone(),
+            Arc::new(DashMap::new()),
         )
         .await
         .unwrap();
@@ -1026,6 +1060,7 @@ mod tests {
             blob_provider.clone(),
             messaging_broker.clone(),
             native_dispatch.clone(),
+            Arc::new(DashMap::new()),
         )
         .await
         .unwrap();
@@ -1106,6 +1141,7 @@ mod tests {
             blob_provider.clone(),
             messaging_broker.clone(),
             native_dispatch.clone(),
+            Arc::new(DashMap::new()),
         )
         .await
         .unwrap();
@@ -1179,6 +1215,7 @@ mod tests {
             blob_provider.clone(),
             messaging_broker.clone(),
             native_dispatch.clone(),
+            Arc::new(DashMap::new()),
         )
         .await
         .unwrap();
@@ -1208,6 +1245,159 @@ mod tests {
         let latest =
             storage_provider.get_latest_config_generation("rollback_service").await.unwrap();
         assert!(latest.is_none());
+    }
+
+    /// M3B Slice 7: `deploy()` parses `http_routes` out of `custom_config`
+    /// and populates the shared `HttpRouteRegistry` (the same `Arc` handed
+    /// to `RouteHandlerInner` in production); `undeploy()` clears it. A TCP
+    /// manifest is enough -- `http_routes` parsing/storage is independent
+    /// of `service_type`.
+    #[tokio::test]
+    async fn test_http_routes_populated_on_deploy_and_cleared_on_undeploy() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+            )
+            .await
+            .unwrap(),
+        );
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+
+        let native_dispatch = NativeDispatchRegistry::default();
+        let http_routes: HttpRouteRegistry = Arc::new(DashMap::new());
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider,
+            blob_provider,
+            messaging_broker,
+            native_dispatch,
+            http_routes.clone(),
+        )
+        .await
+        .unwrap();
+
+        let service_id = "http-routes-svc".to_string();
+        let custom_config = serde_json::json!({
+            "http_routes": [
+                {"method": "GET", "path": "/orders/{id}", "target": "data-layer",
+                 "operation": "get", "collection": "orders"},
+                {"method": "POST", "path": "/orders", "target": "data-layer",
+                 "operation": "put", "collection": "orders"},
+            ]
+        })
+        .to_string();
+        let manifest = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: Some(custom_config),
+                quota: None,
+                schema_path: None,
+                rotation_policy: None,
+            },
+            service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+            registry_certificate: None,
+        };
+        service.deploy(service_id.clone(), manifest).await.unwrap();
+
+        let routes = http_routes.get(&service_id).expect("http_routes populated on deploy");
+        assert_eq!(routes.len(), 2);
+        assert_eq!(routes[0].collection.as_deref(), Some("orders"));
+        drop(routes);
+
+        service.undeploy(service_id.clone()).await.unwrap();
+        assert!(
+            http_routes.get(&service_id).is_none(),
+            "http_routes entry must be removed on undeploy"
+        );
+    }
+
+    /// M3B Slice 7: a service deployed with no `http_routes` key gets no
+    /// entry in the shared registry at all (not an empty-`Vec` entry) --
+    /// keeps the registry from growing with a no-op entry per ordinary
+    /// deployed service.
+    #[tokio::test]
+    async fn test_no_http_routes_entry_when_custom_config_has_none() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+            )
+            .await
+            .unwrap(),
+        );
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+
+        let native_dispatch = NativeDispatchRegistry::default();
+        let http_routes: HttpRouteRegistry = Arc::new(DashMap::new());
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider,
+            blob_provider,
+            messaging_broker,
+            native_dispatch,
+            http_routes.clone(),
+        )
+        .await
+        .unwrap();
+
+        let service_id = "no-http-routes-svc".to_string();
+        let manifest = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema_path: None,
+                rotation_policy: None,
+            },
+            service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+            registry_certificate: None,
+        };
+        service.deploy(service_id.clone(), manifest).await.unwrap();
+
+        assert!(http_routes.get(&service_id).is_none());
     }
 
     /// Slice 5: deploy a service (TCP type -- no WASM component needed),
@@ -1253,6 +1443,7 @@ mod tests {
             blob_provider,
             messaging_broker.clone(),
             native_dispatch.clone(),
+            Arc::new(DashMap::new()),
         )
         .await
         .unwrap();
@@ -1498,6 +1689,7 @@ mod tests {
             blob_provider,
             messaging_broker.clone(),
             native_dispatch.clone(),
+            Arc::new(DashMap::new()),
         )
         .await
         .unwrap();
@@ -1624,6 +1816,7 @@ mod tests {
             blob_provider,
             messaging_broker.clone(),
             native_dispatch.clone(),
+            Arc::new(DashMap::new()),
         )
         .await
         .unwrap();
@@ -1724,6 +1917,7 @@ mod tests {
             blob_provider,
             messaging_broker.clone(),
             native_dispatch.clone(),
+            Arc::new(DashMap::new()),
         )
         .await
         .unwrap();
@@ -1805,6 +1999,7 @@ mod tests {
             blob_provider,
             messaging_broker,
             native_dispatch.clone(),
+            Arc::new(DashMap::new()),
         )
         .await
         .unwrap();
@@ -2039,6 +2234,7 @@ mod tests {
             blob_provider,
             messaging_broker,
             native_dispatch.clone(),
+            Arc::new(DashMap::new()),
         )
         .await
         .unwrap();

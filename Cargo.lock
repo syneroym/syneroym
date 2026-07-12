@@ -7540,6 +7540,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "dashmap",
  "hex",
  "jsonschema",
  "serde",
@@ -7866,6 +7867,7 @@ dependencies = [
  "syneroym-sandbox-wasm",
  "tokio",
  "tokio-tungstenite",
+ "tokio-util",
  "tracing",
  "uuid",
  "webrtc",
@@ -7995,6 +7997,7 @@ dependencies = [
  "futures",
  "futures-util",
  "hex",
+ "httparse",
  "iroh",
  "libc",
  "miniapp-demo1-web",

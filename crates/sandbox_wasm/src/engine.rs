@@ -77,6 +77,28 @@ pub struct WasmResourceQuota {
     pub max_memory_bytes: Option<u64>,
 }
 
+/// Distinguishes a stream request the guest cleanly declined (`Err` from
+/// `handle-stream-request`/`accept-stream-upload`, or no matching export)
+/// from one that ran to completion -- both of which were previously
+/// collapsed into the same `Ok(())` (M3B Slice 7). Callers that need to
+/// surface a decline as a structured error (e.g. the HTTP chunked-upload
+/// bridge in `crates/router/src/route_handler/http.rs`, which maps
+/// `Declined` to HTTP 403) can now do so; the raw-QUIC-stream caller
+/// (`crates/router/src/route_handler/io.rs`) doesn't need the
+/// distinction and ignores it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamRequestOutcome {
+    /// The guest accepted the request and the stream ran to completion
+    /// (or was aborted mid-transfer, in which case this function returns
+    /// `Err` instead -- see `run_stream_protocol_request`).
+    Completed,
+    /// The guest declined the request (`Err` from
+    /// `handle-stream-request`/`accept-stream-upload`) or doesn't export
+    /// a handler for this protocol at all; the stream was closed cleanly
+    /// with no bytes transferred.
+    Declined,
+}
+
 /// Bundles the messaging-specific pieces of `HostState`: the broker every
 /// service shares, and a weak handle back to the owning `AppSandboxEngine`
 /// so a live `subscribe()` call can register a delivery task that outlives
@@ -1461,7 +1483,7 @@ impl AppSandboxEngine {
         initial_payload: Vec<u8>,
         reader: Box<dyn AsyncRead + Unpin + Send>,
         writer: Box<dyn AsyncWrite + Unpin + Send>,
-    ) -> Result<()> {
+    ) -> Result<StreamRequestOutcome> {
         let engine = self
             .self_weak
             .get()
@@ -1504,7 +1526,7 @@ impl AppSandboxEngine {
             // Aborted by `stop_wasm`/`undeploy` -- not a real failure from
             // the stream's own perspective, the router already closed (or
             // is closing) the underlying QUIC stream in that case.
-            Err(join_err) if join_err.is_cancelled() => Ok(()),
+            Err(join_err) if join_err.is_cancelled() => Ok(StreamRequestOutcome::Completed),
             Err(join_err) => Err(anyhow!("stream task failed: {join_err}")),
         }
     }
@@ -1535,7 +1557,7 @@ impl AppSandboxEngine {
         initial_payload: Vec<u8>,
         reader: Box<dyn AsyncRead + Unpin + Send>,
         writer: Box<dyn AsyncWrite + Unpin + Send>,
-    ) -> Result<()> {
+    ) -> Result<StreamRequestOutcome> {
         let _stream_instance_permit = self
             .stream_instance_permits
             .clone()
@@ -1566,7 +1588,7 @@ impl AppSandboxEngine {
                             "stream: guest declined handle-stream-request (or does not export it)"
                         );
                         let _ = writer.shutdown().await;
-                        return Ok(());
+                        return Ok(StreamRequestOutcome::Declined);
                     }
                 };
                 let cursor = GuestStreamCursor::new(store, instance, resource, max_instructions);
@@ -1591,7 +1613,7 @@ impl AppSandboxEngine {
                             "stream: guest declined accept-stream-upload (or does not export it)"
                         );
                         let _ = writer.shutdown().await;
-                        return Ok(());
+                        return Ok(StreamRequestOutcome::Declined);
                     }
                 };
                 let sink: Box<dyn ChunkSink> =
@@ -1605,7 +1627,7 @@ impl AppSandboxEngine {
         // close here, a peer reading this stream's other QUIC direction to
         // EOF has nothing to observe and hangs rather than completing.
         let _ = writer.shutdown().await;
-        result
+        result.map(|()| StreamRequestOutcome::Completed)
     }
 }
 

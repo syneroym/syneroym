@@ -281,7 +281,7 @@ impl RouteHandler {
                 .await
                 .map_err(|_| anyhow!("timed out reading stream request's initial payload"))??;
 
-        app_sandbox_engine
+        let outcome = app_sandbox_engine
             .handle_stream_protocol_request(
                 service_id,
                 &preamble.interface,
@@ -291,7 +291,15 @@ impl RouteHandler {
                 reader,
                 writer,
             )
-            .await
+            .await?;
+        // The raw-QUIC-stream path has no HTTP-style status code to map a
+        // decline onto -- `run_stream_protocol_request` already closes the
+        // stream cleanly either way, so the caller here doesn't need to
+        // distinguish `Declined` from `Completed` (unlike Slice 7's HTTP
+        // chunked-upload bridge, `crates/router/src/route_handler/http.rs`,
+        // which maps `Declined` to HTTP 403).
+        let _ = outcome;
+        Ok(())
     }
 }
 

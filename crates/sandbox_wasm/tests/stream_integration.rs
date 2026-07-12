@@ -27,7 +27,7 @@ use syneroym_data_db::{
 use syneroym_data_keystore::KeyStore;
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
 use syneroym_rpc::JsonRpcRequest;
-use syneroym_sandbox_wasm::AppSandboxEngine;
+use syneroym_sandbox_wasm::{AppSandboxEngine, StreamRequestOutcome};
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, DeployManifest, ServiceConfig, ServiceType, WasmManifest,
 };
@@ -258,7 +258,8 @@ async fn test_download_direction_end_to_end() {
     let (mut peer_read, _peer_write) = tokio::io::split(peer);
     peer_read.read_to_end(&mut received).await.unwrap();
 
-    handle.await.unwrap().expect("download stream should complete cleanly");
+    let outcome = handle.await.unwrap().expect("download stream should complete cleanly");
+    assert_eq!(outcome, StreamRequestOutcome::Completed);
     assert_eq!(received, expected);
 }
 
@@ -292,7 +293,8 @@ async fn test_download_declined_by_guest_closes_stream_without_bytes() {
     let (mut peer_read, _peer_write) = tokio::io::split(peer);
     peer_read.read_to_end(&mut received).await.unwrap();
 
-    handle.await.unwrap().expect("a clean decline is not an error");
+    let outcome = handle.await.unwrap().expect("a clean decline is not an error");
+    assert_eq!(outcome, StreamRequestOutcome::Declined);
     assert!(received.is_empty(), "a declined download must not write any bytes");
 }
 
@@ -326,7 +328,8 @@ async fn test_upload_direction_end_to_end_commits_content() {
     peer.write_all(&upload_content).await.unwrap();
     peer.shutdown().await.unwrap();
 
-    handle.await.unwrap().expect("upload stream should complete cleanly");
+    let outcome = handle.await.unwrap().expect("upload stream should complete cleanly");
+    assert_eq!(outcome, StreamRequestOutcome::Completed);
 
     let stored = call(&engine, SERVICE_A, "get-uploaded-content", serde_json::json!([])).await;
     assert_eq!(stored, String::from_utf8(upload_content).unwrap());
@@ -363,7 +366,8 @@ async fn test_upload_declined_by_guest_leaves_no_stored_content() {
     peer.write_all(b"should never be read").await.unwrap();
     peer.shutdown().await.unwrap();
 
-    handle.await.unwrap().expect("a clean decline is not an error");
+    let outcome = handle.await.unwrap().expect("a clean decline is not an error");
+    assert_eq!(outcome, StreamRequestOutcome::Declined);
 
     let stored = call(&engine, SERVICE_A, "get-uploaded-content", serde_json::json!([])).await;
     assert_eq!(stored, "", "a declined upload must not commit any content");
@@ -652,7 +656,7 @@ async fn test_concurrent_stream_requests_enforce_capacity_atomically() {
     let mut err_count = 0usize;
     for handle in request_handles {
         match handle.await.expect("stream task should not panic") {
-            Ok(()) => ok_count += 1,
+            Ok(_) => ok_count += 1,
             Err(_) => err_count += 1,
         }
     }
