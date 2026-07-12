@@ -14,6 +14,7 @@ podman_sandbox = ["dep:syneroym-sandbox-podman"]
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
+dashmap.workspace = true
 syneroym-core.workspace = true
 syneroym-rpc.workspace = true
 syneroym-sandbox-wasm = { workspace = true, optional = true }
