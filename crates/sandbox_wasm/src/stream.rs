@@ -26,7 +26,7 @@ use wasmtime::{
     component::{Instance, ResourceAny, Val},
 };
 
-use crate::engine::{AppSandboxEngine, HostState};
+use crate::{engine::AppSandboxEngine, host_capabilities::HostState};
 
 /// WIT-package-qualified name of the `stream-types` interface, matching how
 /// `AppSandboxEngine::deliver_message` names `guest-api` (the short interface
