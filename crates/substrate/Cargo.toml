@@ -20,31 +20,37 @@ dirs.workspace = true
 toml.workspace = true
 syneroym-core.workspace = true
 syneroym-data-db.workspace = true
+syneroym-data-keystore.workspace = true
+syneroym-data-blob.workspace = true
+syneroym-mqtt-broker.workspace = true
+syneroym-sandbox-podman.workspace = true
+syneroym-control-plane.workspace = true
 syneroym-router.workspace = true
+syneroym-rpc.workspace = true
 syneroym-observability.workspace = true
 syneroym-community-registry = { workspace = true, optional = true }
 syneroym-coordinator = { workspace = true, optional = true, default-features = false }
 syneroym-client-gateway = { workspace = true, optional = true }
-syneroym-sandbox-wasm = { workspace = true, optional = true }
+syneroym-sandbox-wasm.workspace = true
 tracing.workspace = true
 reqwest.workspace = true
 z32.workspace = true
 rustls.workspace = true
 iroh.workspace = true
 axum.workspace = true
+dashmap.workspace = true
+futures.workspace = true
 
 
 [features]
 default = [
     "community_registry",
-    "app_sandbox",
     "coordinator_all",
     "client_gateway",
 ]
 minimal = ["client_gateway"]
 community_registry = ["dep:syneroym-community-registry"]
 client_gateway = ["dep:syneroym-client-gateway"]
-app_sandbox = ["dep:syneroym-sandbox-wasm"]
 coordinator = ["dep:syneroym-coordinator"]
 coordinator_iroh = ["coordinator", "syneroym-coordinator/iroh"]
 coordinator_webrtc = ["coordinator", "syneroym-coordinator/webrtc"]
@@ -53,6 +59,9 @@ coordinator_all = [
     "syneroym-coordinator/iroh",
     "syneroym-coordinator/webrtc",
 ]
+# Forwards to syneroym-data-blob's own `aws` feature (off by default --
+# see the object_store/digest version-pin comment in the root Cargo.toml).
+aws = ["syneroym-data-blob/aws"]
 
 [dev-dependencies]
 assert_cmd.workspace = true
@@ -62,13 +71,11 @@ predicates.workspace = true
 tempfile.workspace = true
 iroh.workspace = true
 tracing-subscriber.workspace = true
-syneroym-rpc.workspace = true
 syneroym-wit-interfaces.workspace = true
 syneroym-sdk.workspace = true
 miniapp-demo1-web.workspace = true
 tokio-tungstenite.workspace = true
 futures-util.workspace = true
-futures.workspace = true
 webrtc.workspace = true
 syneroym-coordinator-webrtc.workspace = true
 chromiumoxide.workspace = true

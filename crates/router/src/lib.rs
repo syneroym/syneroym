@@ -16,5 +16,5 @@ mod stop_signal;
 pub use connection_router::{ConnectionRouter, SYNEROYM_ALPN};
 pub use handshake::{HandshakeVerifier, MasterAnchorResolver, VerifiedIdentity};
 pub use preamble::{RoutePreamble, RouteProtocol, RouteTransport};
-pub use route_handler::RouteHandler;
+pub use route_handler::{RouteHandler, RouteHandlerDeps};
 pub use routing::{AdaptationStage, EncryptionStage, RoutePipeline, ServiceStage, TransportStage};

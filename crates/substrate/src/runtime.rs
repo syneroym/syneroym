@@ -10,26 +10,36 @@ use std::{
     future::Future,
     path::PathBuf,
     pin,
+    sync::Arc,
     time::Duration,
 };
 
 use axum::{Json, Router, routing};
+use dashmap::DashMap;
 use iroh::EndpointAddr;
 use syneroym_client_gateway::ClientGateway;
 use syneroym_community_registry::EcosystemRegistry;
+use syneroym_control_plane::ControlPlaneService;
 use syneroym_coordinator::EcosystemCoordinator;
 use syneroym_core::{
-    config::SubstrateConfig,
+    config::{BlobBackend, SubstrateConfig},
     dht_registry::{
         EndpointInfo, EndpointMechanism, EndpointType, HEARTBEAT_INTERVAL_SECS, RegistryClient,
         SignedEndpointInfo,
     },
+    http_routes::HttpRouteRegistry,
     local_registry::{EndpointRegistry, SubstrateEndpoint},
 };
-use syneroym_data_db::registry_store;
+use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
+use syneroym_data_db::{SqliteStorageProvider, registry_store, traits::StorageProvider};
+use syneroym_data_keystore::KeyStore;
 use syneroym_identity::Identity;
+use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
 use syneroym_observability::{MemoryRecorder, MetricsSnapshot, ObservabilityEngine};
-use syneroym_router::ConnectionRouter;
+use syneroym_router::{ConnectionRouter, RouteHandlerDeps};
+use syneroym_rpc::NativeDispatchRegistry;
+use syneroym_sandbox_podman::ContainerEngine;
+use syneroym_sandbox_wasm::AppSandboxEngine;
 use tokio::{fs, net::TcpListener, signal, time};
 use tracing::{debug, error, info, warn};
 
@@ -372,8 +382,175 @@ async fn setup_router(
         .register(service_id.to_string(), "security".to_string(), security_endpoint)
         .await?;
 
-    ConnectionRouter::init(endpoint_registry, config.clone(), secret_key, service_id.to_string())
-        .await
+    let route_handler_deps =
+        build_route_handler_deps(config, service_id, &endpoint_registry).await?;
+
+    ConnectionRouter::init(
+        endpoint_registry,
+        config.clone(),
+        secret_key,
+        service_id.to_string(),
+        route_handler_deps,
+    )
+    .await
+}
+
+/// Constructs every capability the connection router holds and dispatches
+/// through but does not itself build: storage, blob, and messaging
+/// backends, the WASM and container sandboxes, and the control-plane
+/// native service. This is the substrate's composition root -- `router`
+/// only needs the finished handles, not the knowledge of how to build them.
+async fn build_route_handler_deps(
+    config: &SubstrateConfig,
+    service_id: &str,
+    registry: &EndpointRegistry,
+) -> anyhow::Result<RouteHandlerDeps> {
+    let key_store = Arc::new(KeyStore::new());
+    let storage_provider: Arc<dyn StorageProvider> =
+        Arc::new(SqliteStorageProvider::new(&config.storage.db_dir, config.storage.encryption)?);
+    let blob_provider = build_blob_provider(config)?;
+
+    let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig {
+        channel_capacity: config.mqtt.channel_capacity as usize,
+    })?);
+
+    let app_sandbox_engine = Arc::new(
+        AppSandboxEngine::init(
+            config,
+            registry.get_all_endpoints(),
+            key_store.clone(),
+            storage_provider.clone(),
+            blob_provider.clone(),
+            messaging_broker.clone(),
+            registry.clone(),
+        )
+        .await?,
+    );
+    app_sandbox_engine
+        .self_weak
+        .set(Arc::downgrade(&app_sandbox_engine))
+        .map_err(|_| anyhow::anyhow!("AppSandboxEngine::self_weak set more than once"))?;
+
+    replay_persisted_subscriptions(&storage_provider, &app_sandbox_engine).await?;
+
+    let podman_path = config
+        .roles
+        .podman_sandbox
+        .as_ref()
+        .map(|cfg| cfg.podman_path.clone())
+        .unwrap_or_else(|| "podman".to_string());
+    let podman_sandbox_engine = Arc::new(ContainerEngine::new(
+        podman_path,
+        &config.app_local_data_dir,
+        Some(storage_provider.clone()),
+    ));
+
+    // Shared with `ControlPlaneService`, which registers/deregisters
+    // per-deployment native services (data-layer/vault/app-config/
+    // blob-store) and HTTP routes into these same tables on deploy/undeploy
+    // -- `RouteHandler`'s own dispatch path reads through the identical
+    // handles.
+    let native_dispatch: NativeDispatchRegistry = Arc::new(DashMap::new());
+    let http_routes: HttpRouteRegistry = Arc::new(DashMap::new());
+
+    let control_plane_service = ControlPlaneService::init(
+        service_id.to_string(),
+        app_sandbox_engine.clone(),
+        podman_sandbox_engine,
+        registry.clone(),
+        config.hosted_apps_dir(),
+        key_store.clone(),
+        storage_provider.clone(),
+        blob_provider,
+        messaging_broker.clone(),
+        native_dispatch.clone(),
+        http_routes.clone(),
+    )
+    .await?;
+
+    Ok(RouteHandlerDeps {
+        key_store,
+        storage_provider,
+        app_sandbox_engine,
+        messaging_broker,
+        native_dispatch,
+        http_routes,
+        control_plane_service: Arc::new(control_plane_service),
+    })
+}
+
+/// Guest subscriptions survive a restart (ADR-0010 Finding A1): replay
+/// every persisted row into the broker before the router starts accepting
+/// connections. Best-effort per row -- one bad topic shouldn't block
+/// substrate startup. Replayed concurrently (independent rows, no shared
+/// state) to keep this bounded by the slowest single subscribe rather than
+/// their sum.
+async fn replay_persisted_subscriptions(
+    storage_provider: &Arc<dyn StorageProvider>,
+    app_sandbox_engine: &AppSandboxEngine,
+) -> anyhow::Result<()> {
+    let persisted_subscriptions = storage_provider.list_all_messaging_subscriptions().await?;
+    let replay_results = futures::future::join_all(persisted_subscriptions.iter().map(
+        |(subscribed_service_id, topic)| {
+            app_sandbox_engine.register_internal_subscription(subscribed_service_id, topic)
+        },
+    ))
+    .await;
+    for ((subscribed_service_id, topic), result) in
+        persisted_subscriptions.iter().zip(replay_results)
+    {
+        if let Err(e) = result {
+            warn!(
+                service_id = %subscribed_service_id,
+                topic = %topic,
+                error = %e,
+                "Failed to replay messaging subscription on startup"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Constructs the configured blob backend (`Local` or `S3`). `S3` requires
+/// building with the `aws` cargo feature (off by default -- see the
+/// `object_store`/`digest` version-pin comment in the root `Cargo.toml`);
+/// selecting it otherwise fails fast here with an actionable message rather
+/// than silently falling back to `Local`.
+fn build_blob_provider(config: &SubstrateConfig) -> anyhow::Result<Arc<dyn BlobProvider>> {
+    let bs = &config.storage.blob_store;
+    match bs.backend {
+        BlobBackend::Local => Ok(Arc::new(ObjectStoreBlobProvider::new_local(
+            bs.local_root.clone(),
+            bs.max_blob_bytes,
+            bs.max_service_total_bytes,
+        )?)),
+        BlobBackend::S3 => {
+            #[cfg(feature = "aws")]
+            {
+                let s3 = bs.s3.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "storage.blob_store.backend = \"s3\" requires [storage.blob_store.s3] to \
+                         be configured"
+                    )
+                })?;
+                Ok(Arc::new(ObjectStoreBlobProvider::new_s3(
+                    &s3.endpoint,
+                    &s3.bucket,
+                    &s3.region,
+                    bs.max_blob_bytes,
+                    bs.max_service_total_bytes,
+                )?))
+            }
+            #[cfg(not(feature = "aws"))]
+            {
+                Err(anyhow::anyhow!(
+                    "storage.blob_store.backend = \"s3\" requires building syneroym-substrate \
+                     with the `aws` feature (off by default -- see the object_store/digest \
+                     version-pin comment in the root Cargo.toml)"
+                ))
+            }
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
