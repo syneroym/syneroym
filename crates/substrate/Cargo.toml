@@ -45,19 +45,12 @@ futures.workspace = true
 [features]
 default = [
     "community_registry",
-    "app_sandbox",
     "coordinator_all",
     "client_gateway",
 ]
 minimal = ["client_gateway"]
 community_registry = ["dep:syneroym-community-registry"]
 client_gateway = ["dep:syneroym-client-gateway"]
-# `syneroym-sandbox-wasm` is an unconditional dependency (the connection
-# router's composition root always builds an `AppSandboxEngine` -- see
-# `runtime::build_route_handler_deps`), so this no longer toggles a
-# dependency. Kept as a no-op so existing `--features`/`#[cfg(...)]` usage
-# (e.g. `substrate/tests/basic_lifecycle.rs`) keeps compiling unchanged.
-app_sandbox = []
 coordinator = ["dep:syneroym-coordinator"]
 coordinator_iroh = ["coordinator", "syneroym-coordinator/iroh"]
 coordinator_webrtc = ["coordinator", "syneroym-coordinator/webrtc"]

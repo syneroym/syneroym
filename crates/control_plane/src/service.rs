@@ -82,8 +82,11 @@ pub struct ControlPlaneService {
     native_dispatch: WeakNativeDispatchRegistry,
     // Strong, unlike `native_dispatch`: `ControlPlaneService` is never
     // itself keyed into this map, so there is no reference-cycle hazard
-    // (see `crate::http_routes`'s module docs). `RouteHandlerInner` holds
-    // the same `Arc` for lookup from `crates/router/src/route_handler/http.rs`.
+    // (contrast `syneroym_rpc::dispatch_registry`'s module docs, which
+    // explain why `native_dispatch` above can't use the same plain-`Arc`
+    // approach). `RouteHandlerInner` holds the same `Arc` (the type lives in
+    // `syneroym_core::http_routes`) for lookup from
+    // `crates/router/src/route_handler/http.rs`.
     http_routes: HttpRouteRegistry,
 }
 
@@ -2049,8 +2052,9 @@ mod tests {
     /// M3B Slice 6A (ADR-0010 Finding A1): a guest subscription's
     /// `messaging_subscriptions` row survives a substrate restart, and
     /// replaying it into a freshly-constructed broker/engine (the same
-    /// steps `RouteHandler::init` performs on real startup) restores
-    /// delivery without the guest calling `subscribe` again.
+    /// steps `syneroym_substrate::runtime::build_route_handler_deps`
+    /// performs on real startup) restores delivery without the guest
+    /// calling `subscribe` again.
     #[tokio::test]
     async fn test_messaging_subscriptions_survive_restart_replay() {
         let Ok(wasm_bytes) = std::fs::read(test_constants::messaging_pubsub_test_wasm_path())
@@ -2112,8 +2116,9 @@ mod tests {
         // "Second boot": fresh broker + engine, re-deploy the same wasm
         // bytes (mirrors AppSandboxEngine::init's own endpoint-driven
         // warmup, which isn't exercised directly here), then replay every
-        // persisted row -- exactly what `RouteHandler::init` does before
-        // accepting connections.
+        // persisted row -- exactly what
+        // `syneroym_substrate::runtime::build_route_handler_deps` does
+        // before the router starts accepting connections.
         let broker2 = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
         let engine2 = Arc::new(
             AppSandboxEngine::init(

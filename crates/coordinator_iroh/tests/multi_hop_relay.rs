@@ -39,10 +39,14 @@ use tokio::time;
 
 /// Mirrors `syneroym_substrate::runtime::build_route_handler_deps`: this
 /// test simulates a full substrate node via `RouteHandler::init` directly
-/// (bypassing `syneroym-substrate`, which would create a dependency cycle
-/// back to `coordinator_iroh`), so it must build the same dependency bundle
-/// substrate's composition root builds in production. Simplified to the
-/// local blob backend only -- these tests never configure S3.
+/// (bypassing `syneroym-substrate`, whose `runtime` module -- and
+/// `build_route_handler_deps` itself -- is private, and which is the
+/// top-level composition-root binary crate that already depends on
+/// `coordinator_iroh` transitively via `syneroym-coordinator`; depending on
+/// it back from here, even as a dev-dependency, would invert that
+/// layering), so it must build the same dependency bundle substrate's
+/// composition root builds in production. Simplified to the local blob
+/// backend only -- these tests never configure S3.
 async fn build_test_route_handler_deps(
     config: &SubstrateConfig,
     service_id: &str,
@@ -78,6 +82,25 @@ async fn build_test_route_handler_deps(
         .self_weak
         .set(Arc::downgrade(&app_sandbox_engine))
         .map_err(|_| anyhow::anyhow!("AppSandboxEngine::self_weak set more than once"))?;
+
+    // Mirrors `replay_persisted_subscriptions` in
+    // `syneroym_substrate::runtime` (ADR-0010 Finding A1) -- omitting this
+    // would silently break any future test in this file that simulates a
+    // restart to check a guest's persisted MQTT subscription survives it.
+    for (subscribed_service_id, topic) in
+        storage_provider.list_all_messaging_subscriptions().await?
+    {
+        if let Err(e) =
+            app_sandbox_engine.register_internal_subscription(&subscribed_service_id, &topic).await
+        {
+            tracing::warn!(
+                service_id = %subscribed_service_id,
+                topic = %topic,
+                error = %e,
+                "Failed to replay messaging subscription on startup"
+            );
+        }
+    }
 
     let podman_path = config
         .roles

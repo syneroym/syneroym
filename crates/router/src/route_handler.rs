@@ -89,8 +89,9 @@ pub struct RouteHandlerInner {
     /// `CancellationToken` governing its own subscription-forwarding
     /// tasks, mirroring `AppSandboxEngine`'s epoch-timer task lifecycle.
     pub messaging_broker: Arc<MqttBroker>,
-    /// Per-service HTTP route table (M3B Slice 7), populated by
-    /// `ControlPlaneService::deploy`/`undeploy` -- see
+    /// Per-service HTTP route table (M3B Slice 7); the `HttpRoute`/
+    /// `HttpRouteRegistry` types live in `syneroym_core::http_routes`,
+    /// populated by `ControlPlaneService::deploy`/`undeploy` -- see
     /// `syneroym_control_plane::http_routes`. Read by
     /// `route_handler::http` to resolve `(service_id, method, path)` to a
     /// bridged `data-layer`/`messaging`/stream-protocol route.

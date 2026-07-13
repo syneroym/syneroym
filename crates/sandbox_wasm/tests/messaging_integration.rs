@@ -26,10 +26,10 @@ const SERVICE_A: &str = "messaging-svc-a";
 const SERVICE_B: &str = "messaging-svc-b";
 
 /// Builds an `AppSandboxEngine` wrapped in `Arc` with `self_weak` set, the
-/// same recipe `RouteHandler::init` uses in production (see Step 9 of the
-/// Slice 6A plan) -- required for a live `subscribe-to` call's forwarding
-/// task to be able to reach back into the engine and invoke
-/// `deliver_message` once the originating `Store` is gone.
+/// same recipe `syneroym_substrate::runtime::build_route_handler_deps` uses
+/// in production (see Step 9 of the Slice 6A plan) -- required for a live
+/// `subscribe-to` call's forwarding task to be able to reach back into the
+/// engine and invoke `deliver_message` once the originating `Store` is gone.
 async fn make_engine(dir: &Path) -> Arc<AppSandboxEngine> {
     let mut config = SubstrateConfig {
         app_local_data_dir: dir.join("data"),

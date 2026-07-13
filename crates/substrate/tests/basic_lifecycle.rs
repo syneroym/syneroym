@@ -261,7 +261,6 @@ impl SubstrateTestContext {
 }
 
 #[tokio::test]
-#[cfg(feature = "app_sandbox")]
 async fn test_substrate_lifecycle_scenarios() {
     let _ = ring::default_provider().install_default();
 
@@ -278,7 +277,6 @@ async fn test_substrate_lifecycle_scenarios() {
     ctx.teardown().await;
 }
 
-#[cfg(feature = "app_sandbox")]
 async fn test_wasm_app_scenario(ctx: &SubstrateTestContext) {
     // Deploy a test WASM application
     debug!(">>> Starting WASM Scenario: Deploy");
