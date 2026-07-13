@@ -157,22 +157,61 @@ This was **Milestone 3B Slice 6 / "Deferred: HTTP Passthrough"** in earlier plan
 > milestone docs (M0–M3B) below and above are left as-is by design.
 
 ## Milestone 4: Typed Communication and Authorization
-**Goal:** Bridge isolated services securely by introducing the Universal Proxy and layering the FDAE (Access Control) on top of the established Data Layer.
+
+> **Planning-doc split (2026-07-13):** M4 is planned and implemented as two
+> sub-milestones, mirroring the M3A/M3B/M3C precedent —
+> **M4A** (`docs/planning/milestones/M04A-proxy-and-auth-foundation/task.md`) and
+> **M4B** (`docs/planning/milestones/M04B-fdae-policy/task.md`) — split along the
+> **capability-plumbing vs. data-aware-policy-engine** boundary. During planning,
+> three simplifications were adopted (full reasoning in each task.md's Decision
+> Register): **(a) wRPC deferred** to a later milestone — the Universal Proxy
+> ships over **JSON-RPC**, since the QUIC transport wRPC would ride on already
+> exists (M3C) and both wires need the same host-side `Val`⇄JSON conversion, so
+> wRPC is a wire-efficiency optimization, not a prerequisite; **(b) protocol
+> negotiation deferred** — fail-fast unsupported-protocol errors instead, since
+> there is only one protocol; **(c) credit-based backpressure dropped** in favour
+> of QUIC-native flow control. `[PLT-DAP-05]` data-pipeline streams ship as a
+> spike / M5 candidate only.
+
+**Goal:** Bridge isolated services securely by introducing the typed Universal
+Proxy (over JSON-RPC) and layering the FDAE (Access Control) on top of the
+established Data Layer.
+
+### Milestone 4A: Universal Proxy & Auth Foundation
+**Goal:** Typed cross-node calls plus the authentication / capability-admission
+foundation. Independently closes the tracked M3 native-dispatch security gap
+(gate item below).
 
 **Feature Grouping:**
-- Universal Proxy / wRPC
-- `[PLT-DAP-05]` Data Pipeline Streams (`syneroym:data/stream`)
-- `[LFC-VER]` Protocol Negotiation
-- `[FND-IAM]` Access Control (FDAE, UCAN context, RLS/CLS)
+- Universal Proxy over **JSON-RPC** (wRPC deferred)
+- Full WIT⇄JSON value conversion (typed dispatch)
+- `[FND-IAM]` foundation — UCAN context, verified caller-identity threading, Admin UCAN capability
+- `[FND-SEC]` — per-SynApp-Instance KEK narrowing
+- `[PLT-DAP-05]` Data Pipeline Streams — spike-first / M5 candidate
+- *(deferred: `[LFC-VER]` protocol negotiation; wRPC binary wire)*
 
 **Implementation Approach:**
-1. **Universal Proxy & Streams:** Implement wRPC over Iroh QUIC for typed calls, and the `syneroym:data/stream` WIT interface for backpressured data pipelines.
-2. **UCAN Context:** Extract and normalize UCAN scopes/claims upon request ingress.
-3. **Local FDAE:** Implement the SQL Pushdown Sieve, compiling declarative policies into the SQLite engine (handling data-centric RLS/CLS).
-4. **Federated FDAE:** Expand the pipeline to support cross-service parameter fetching via the Universal Proxy.
-5. **`AggregationPipeline`** (gate item deferred from M3A, [ADR-0007](../decisions/0007-data-layer-wit-interface.md)): add `$group`/`$having`/projections to the data-layer `query` WIT surface, translating MongoDB aggregation-pipeline stages onto SQLite constructs (`GROUP BY`, `HAVING`, views) rather than inventing parallel syntax.
-6. **Privileged raw-SQL escape hatch** (gate item deferred from M3A, [ADR-0011](../decisions/0011-privileged-raw-sql-query.md)): add the `query-raw` host function for trusted contexts needing SQL expressivity beyond the JSON filter DSL, gated by the Admin UCAN capability introduced in this milestone (replacing the M3 `is_init_context` scaffold).
-7. **Close the M3B/M3C native-dispatch authentication gap (gate item, not optional hardening):** `RouteHandler::handle_stream` (`crates/router/src/route_handler/io.rs`) only runs `HandshakeVerifier::verify_preamble` — the sole point that checks caller identity against `preamble.service_id` — when `preamble.delegation` is present, and the native-capability interfaces added across M3A/M3B/M3C (`data-layer`, `vault`, `app-config`, `blob-store`, `messaging`, `http-native`) never require one. Concretely: any peer that can open an Iroh connection to a node (the QUIC listener binds `0.0.0.0` by default — this is *not* bounded by `client_gateway`'s `127.0.0.1`-only convenience proxy) and knows a target service's DID can act "as" that service on every native-capability interface and the M3C HTTP bridge, with no cryptographic proof of being it — `data-layer` writes, `messaging::publish`, SSE eavesdrop, blob access. Recorded as an explicit, tracked interim posture at M3C close (see `docs/planning/milestones/M03B-messaging/status.md`, "Interim HTTP-write security posture," and [ADR-0010](../decisions/0010-mqtt-broker-rumqttd.md) Finding B9) rather than silently absorbed — M4's UCAN/FDAE work must wire delegation/capability verification into this exact dispatch path (native-dispatch **and** the HTTP-bridge routes that share it) before M4 can be considered closed, not just into new call sites this milestone adds.
+1. **Full WIT⇄JSON conversion** (startable immediately, no ADR): replace the `conversions.rs` stub with a full component-model ↔ JSON converter — the enabler for genuinely typed calls over a JSON wire.
+2. **Native-dispatch auth-gap closure** (highest priority — closes the gate item below): make `verify_preamble` mandatory, thread a verified caller identity through `NativeInvocation`/`dispatch` and the HTTP bridge, and replace `is_init_context` with the Admin UCAN capability.
+3. **Universal Proxy** over JSON-RPC / Iroh QUIC, kept transport-agnostic behind the `AdaptationStage` seam so a later wRPC wire slots in additively.
+4. **UCAN Context:** verify and normalize UCAN scopes/claims into a SessionContext at request ingress.
+5. **`AggregationPipeline`** (gate item deferred from M3A, [ADR-0007](../decisions/0007-data-layer-wit-interface.md)): `$group`/`$having`/projections onto SQLite `GROUP BY`/`HAVING`/views.
+6. **Privileged `query-raw`** (gate item deferred from M3A, [ADR-0011](../decisions/0011-privileged-raw-sql-query.md)), gated by the Admin UCAN capability.
+7. **Per-SynApp-Instance KEK narrowing** (D-03-01 follow-on).
+
+### Milestone 4B: FDAE Data-Aware Authorization
+**Goal:** The FDAE policy engine, layered on M4A's identity/capability
+foundation. Carries no M3 debt — it is purely the new engine.
+
+**Feature Grouping:**
+- `[FND-IAM]` Access Control — FDAE, data-centric RLS/CLS, the 4-stage hybrid pipeline
+
+**Implementation Approach:**
+1. **Local FDAE:** the SQL Pushdown Sieve — compile declarative ReBAC policies into SQLite `WHERE EXISTS`/`WITH RECURSIVE`, with Mode A (point-in-time evaluation) and Mode B (relational data filtering), RLS + CLS.
+2. **Federated FDAE:** cross-service parameter fetch (pipeline stage 2) via the M4A Universal Proxy.
+3. **Stage-4 ABAC:** an optional pure-predicate WASM after-step on candidate rows (restrict-only by default).
+
+**Native-dispatch authentication gap (gate item — closed by M4A, item 2 above).** `RouteHandler::handle_stream` (`crates/router/src/route_handler/io.rs`) only runs `HandshakeVerifier::verify_preamble` — the sole point that checks caller identity against `preamble.service_id` — when `preamble.delegation` is present, and the native-capability interfaces added across M3A/M3B/M3C (`data-layer`, `vault`, `app-config`, `blob-store`, `messaging`; plus the HTTP-bridge call path) never require one. Concretely: any peer that can open an Iroh connection to a node (the QUIC listener binds `0.0.0.0` by default — *not* bounded by `client_gateway`'s `127.0.0.1`-only convenience proxy) and knows a target service's DID can act "as" that service on every native-capability interface and the M3C HTTP bridge, with no cryptographic proof of being it — `data-layer` writes, `messaging::publish`, SSE eavesdrop, blob access. Recorded as an explicit, tracked interim posture at M3C close (see `docs/planning/milestones/M03B-messaging/status.md`, "Interim HTTP-write security posture," and [ADR-0010](../decisions/0010-mqtt-broker-rumqttd.md) Finding B9). M4A's B0 slice wires delegation/capability verification into this exact dispatch path (native-dispatch **and** the shared HTTP-bridge routes) before M4A can be considered closed.
 
 ---
 
