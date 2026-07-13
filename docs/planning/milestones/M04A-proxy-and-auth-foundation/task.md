@@ -1,0 +1,430 @@
+# Milestone 4A: Universal Proxy & Auth Foundation (M04A-proxy-and-auth-foundation)
+
+> **Provenance.** Split on 2026-07-13 from a combined M4 planning draft along
+> the **capability-plumbing vs. data-aware-policy-engine** boundary. The FDAE
+> policy engine (the pushdown sieve, RLS/CLS, the 4-stage pipeline, stage-4
+> ABAC) is the sibling milestone
+> [M04B-fdae-policy](../M04B-fdae-policy/task.md). All code anchors below were
+> re-verified against `main` @ `6c6e859` (after the #64 file-split cleanup).
+>
+> **Why this milestone exists as its own slice-set.** It is the ADR-light,
+> buildable-now half of M4 *and* it independently closes the tracked M3
+> security debt: by the end of M04A every native-capability call and the HTTP
+> bridge require a verified caller identity, DDL/raw-SQL are admin-gated, and
+> cross-node calls have a typed Universal Proxy. FDAE (M04B) then layers
+> data-centric row/column filtering on top of the identity/capability
+> foundation this milestone lays.
+
+## Goal
+
+Give cross-node component/service calls a typed **Universal Proxy over JSON-RPC
+/ Iroh QUIC** — with full WIT⇄JSON value conversion so calls are genuinely
+typed at the dispatch boundary (not string-wrapped JSON) — and establish the
+**authentication + capability-admission foundation**: a verified, unspoofable
+caller identity threaded through every native-capability dispatch, UCAN context
+extraction at ingress, and an Admin-UCAN capability replacing today's
+`is_init_context` scaffold.
+
+JSON-RPC is the **uniform inter-service wire** for M4 (WASM↔WASM, WASM↔native,
+WASM↔Podman/TCP); wRPC as a binary wire-efficiency + type-fidelity optimization
+is deferred (Decision Register A.5), as is protocol negotiation (A.7).
+
+This milestone does **not** implement the FDAE relational policy engine — that
+is M04B. M04A delivers Tier 0–2 enforcement (context init, service admission,
+method/argument + admin admission); M04B adds Tier 3 (data-plane RLS/CLS).
+
+---
+
+## Requirement IDs (Traceability)
+
+| Requirement ID | Sub-scope in M04A | Current matrix status |
+|---|---|---|
+| `[PLT-DAT]` (Universal Proxy) | Full WIT⇄JSON value conversion (typed dispatch), transport-agnostic proxy routing over JSON-RPC via the existing `AdaptationStage` seam, retry/backoff hook points. **wRPC binary wire deferred — A.5** | No Universal-Proxy row exists yet |
+| `[PLT-DAT]` (data-layer extensions) | `AggregationPipeline` (`$group`/`$having`/projections, ADR-0007) and privileged `query-raw` (ADR-0011) | M3A `[PLT-DAT]` rows cover CRUD/query only |
+| `[FND-IAM]` (foundation) | UCAN context init at ingress, verified caller-identity threading through native dispatch, Admin-UCAN capability. **Not** the FDAE pushdown sieve (M04B) | No matrix row exists |
+| `[FND-SEC]` (per-app KEK) | Per-SynApp-Instance KEK narrowing (`system-architecture.md:1808`) | M2/M3A `[FND-SEC]` Complete; this is the D-03-01 follow-on |
+| `[PLT-DAP-05]` | Data-pipeline streams — **spike-first / M5 candidate** only (A.4/A.6) | No matrix row exists |
+| `[LFC-VER]` (protocol negotiation) | **Deferred out of M4 — A.7.** Minimal kept: typed *unsupported-protocol* error + reserved version tag | Matrix's only `[LFC-VER]` row is M1 (manifest semver) |
+
+---
+
+## Relationship to M04B (split boundary & co-design seams)
+
+**M04A implementation runs in parallel with M04B *design* (ADR D-04-02).**
+M04B's *implementation* follows M04A — hard deps: B0's `NativeInvocation`
+identity field and A1 (Universal Proxy) for M04B's federated fetch (B3).
+
+Two interfaces are **built here but consumed in M04B**; design them jointly with
+an M04B sketch in view, or they will need rework:
+
+1. **SessionContext / capability representation** (Slice B1 + ADR D-04-01) →
+   M04B's SQL compiler binds normalized scopes/claims as `?` parameters
+   (`system-architecture.md:978`). Shape B1's output against M04B's needs.
+2. **Universal Proxy request shape** (Slice A1) → M04B's stage-2 federated
+   relationship-proof fetch rides it. Ensure A1 can carry a proof-fetch, not
+   only an ordinary call.
+
+Design **D-04-01 (here) and D-04-02 (M04B) as a pair** — SessionContext is the
+shared contract.
+
+---
+
+## Decision Register
+
+### A. Documentation drift / scope resolved (no ADR needed)
+
+1. **`[PRD-SAF]` is out of scope for all of M4.** `traceability-matrix.md:17`
+   targets it at M4, but its acceptance evidence (report/dispute/deletion) is
+   product/UX-level consent flow, not substrate plumbing. FDAE provides the
+   *mechanism* consent would run on; the authoring/dispute UX belongs to a
+   consumer surface (Chat/Hub, M6+). Retarget `[PRD-SAF]` → `TBD` at M04B
+   closeout.
+2. **`[FND-FDA]` = `[FND-IAM]`** (two IDs, one requirement). `[FND-IAM]` is
+   canonical (matches the spec body and the matrix). Correct the spec Appendix
+   and the M6 citation as a doc pass.
+3. **"`http-native`" is not a literal interface.** No `"http-native"` arm exists
+   in `SynSvcNativeService::dispatch` — the real arms are `data-layer`, `vault`,
+   `app-config`, `blob-store`, `messaging` only
+   (`crates/control_plane/src/synsvc_native.rs:588`). The HTTP passthrough bridge
+   (`crates/router/src/route_handler/http.rs`) is a *call path* onto those five,
+   not a sixth interface. Slice B0 closes the gap for that call path, not a
+   nonexistent registry entry.
+4. **`[PLT-DAP-05]` ships transport-only / spike-first.** Its only consumer
+   (DataFusion `TableProvider` / Substrait) is M5. Slice A3 is a framing spike
+   relying on QUIC-native flow control, or moves wholesale to M5 — no
+   DataFusion coupling here.
+5. **wRPC deferred; JSON-RPC is the uniform inter-service transport for M4.**
+   The Universal Proxy's value is transparent routing + retry/backoff + identity
+   threading, none of which depends on the wire encoding; the QUIC transport
+   wRPC would ride on is already built (M3C,
+   [ADR-0014](../../../decisions/0014-quic-stream-protocol-routing.md)); and in
+   this codebase host-held guest values are wasmtime `Val`, so *both* wires
+   require a `Val ↔ wire` conversion (`conversions.rs`) — wRPC is **not** "zero
+   serialization," just a more efficient/faithful wire. The real trade is
+   "wRPC-wire design" for "full WIT⇄JSON conversion" (Slice A0′). Drops former
+   ADR D-04-03 and former Slice A0; the `wrpc://` scheme
+   (`preamble.rs:140,153`) and `AdaptationStage` seam
+   (`dispatch.rs:122-123`) stay reserved. JSON fidelity gaps (`u64 > 2^53`,
+   `char` vs `string`, nested `option<option<T>>`) are documented as known
+   limitations, not hacked around (Slice A0′).
+6. **No bespoke credit-based backpressure; rely on QUIC-native flow control.**
+   Iroh QUIC already provides per-stream/connection flow control. Application
+   credits add value only for logical-unit or processing-completion
+   backpressure, which M4 has no consumer to justify. Former ADR D-04-04 is
+   withdrawn; Slice A3 uses QUIC's window.
+7. **Protocol negotiation deferred (fail-fast instead).** With one protocol,
+   negotiation is machinery for a one-member set. The preamble already carries
+   the scheme; the callee returns a typed *unsupported-protocol/version* error.
+   A future wRPC is added via negotiation-by-trial (try → typed error → fall
+   back) without breaking older nodes. Former Slice A2 deferred. Kept: the typed
+   error + a reserved `json-rpc/v1` version tag.
+
+### B. Blocking ADRs — ✅ resolved
+
+Both written 2026-07-13; resolve as designed before the dependent slice starts.
+
+- **D-04-01 — UCAN Capability & Verification Model** →
+  [ADR-0015](../../../decisions/0015-ucan-capability-model.md). Decides: the
+  UCAN semantic model over existing ed25519/`did:key` primitives in a new
+  `syneroym-ucan` crate (no `rs-ucan`/JWT for M4); `Capability { with, can,
+  caveats }` with the `data-layer/admin` **Admin capability**; a
+  `CapabilityToken` chain verified into a normalized `SessionContext`.
+  **Co-designed with M04B's D-04-02** (co-design seam #1). **Blocks:** B0, B1.
+- **D-04-05 — Native-Dispatch Identity Threading** →
+  [ADR-0016](../../../decisions/0016-native-dispatch-identity-threading.md).
+  Decides: add a `caller: CallerContext` **field** to `NativeInvocation`
+  (`crates/rpc/src/native.rs:15-18`); make `verify_preamble` mandatory;
+  `creator_id` becomes the caller (not `self.service_id`); the Admin-capability
+  gate replaces `is_init_context`; cross-node hops carry signed proofs
+  re-verified at the data-owning node. **Blocks:** B0 — the highest-priority
+  slice.
+
+---
+
+## Items Carried Forward from M3 Planning (all land in M04A)
+
+All five M3→M4 gate items are capability-plumbing, so they close here (M04B
+carries **no** M3 debt — it is purely the new FDAE engine):
+
+1. **Native-dispatch / HTTP-bridge authentication gap.** `RouteHandler::handle_stream`
+   (`crates/router/src/route_handler/io.rs:61`) only calls
+   `HandshakeVerifier::verify_preamble` inside `if preamble.delegation.is_some()`
+   (line 90-92) — when `delegation` is `None`, **no identity check runs**.
+   Separately, the verified identity is **not threaded downstream**:
+   `NativeInvocation` (`crates/rpc/src/native.rs:15-18`) carries no identity, so
+   `SynSvcNativeService::dispatch` (`synsvc_native.rs:588`) — fanning out to
+   `data-layer`/`vault`/`app-config`/`blob-store`/`messaging` — never receives a
+   caller. Confirmed by code read: today `do_put(..., &self.service_id)` sets
+   `creator_id` to the **service being called**, not the caller — there is no
+   distinct caller identity yet. **Two bugs:** the conditional skip, and no
+   downstream plumbing. Slice B0 fixes both. (M2 Slice 2 status flagged this as a
+   deliberate "handshake authorization opt-in for now" deviation to close "when
+   RBAC is introduced" — that is now.)
+2. **`AggregationPipeline`** (ADR-0007): Slice B4.
+3. **Privileged `query-raw`** (ADR-0011): Slice B5.
+4. **`is_init_context` → Admin UCAN capability.** Two `TODO(M4)` sites:
+   `crates/sandbox_wasm/src/host_capabilities.rs:452-463` (guest-side
+   `execute-ddl` gate; `is_init_context` field/compute in
+   `crates/sandbox_wasm/src/engine.rs:547,594,630`) and
+   `crates/control_plane/src/synsvc_native.rs:309-316` (native-side, TODO at
+   313). Both replaced by Slice B0.
+5. **Per-SynApp-Instance KEK narrowing** (D-03-01 follow-on;
+   `system-architecture.md:1808`): `KeyStore::inject_kek(&self, kek_bytes,
+   _scope)` (`crates/data_keystore/src/key_store.rs:46`) accepts a scope that is
+   underscore-prefixed (unused); the KEK stays substrate-global. Slice B6.
+
+---
+
+## Explicit Non-Goals
+
+- **The FDAE relational policy engine** — pushdown sieve, RLS/CLS, ReBAC-to-SQL
+  compilation, the 4-stage pipeline, stage-4 ABAC. That is **M04B**. M04A stops
+  at capability admission (Tier 0–2), not data-plane row/column filtering.
+- **wRPC binary wire** and the `syneroym-wrpc` crate (A.5) — scheme/seam stay
+  reserved.
+- **Handshake protocol negotiation** (A.7) — fail-fast errors instead.
+- **Application-level credit-based backpressure** (A.6) — QUIC-native only.
+- **Full-fidelity JSON numeric/char/nested-option encoding** — documented as a
+  known limitation (Slice A0′).
+- Full DataFusion/Substrait orchestration (M5); Slice A3 is spike/transport only.
+- Outbox/DLQ/saga (M5) — retry/backoff *hook points* only; failed-after-retries
+  fails directly, does not queue.
+- `[PRD-SAF]` consent/dispute UX (A.1); attestation/supply-chain (M7); distributed
+  cron (M5).
+- Per-service KEK scoping — M04A narrows substrate-global → per-app-instance only.
+
+---
+
+## Dependency Gates
+
+M04A may begin implementation **only when**:
+
+1. **M3B/M3C fully closed.** ✅ (`M03B-messaging/status.md`, 2026-07-12).
+2. **ADRs D-04-01 and D-04-05 resolved** — ✅
+   [ADR-0015](../../../decisions/0015-ucan-capability-model.md),
+   [ADR-0016](../../../decisions/0016-native-dispatch-identity-threading.md)
+   (2026-07-13). **Slice A0′ needs neither** — it is startable immediately.
+3. `cargo test --workspace` clean, zero clippy warnings on the branch M04A
+   starts from.
+
+**Slice-level order (recommended):**
+
+- **A0′ first / immediately** — no ADR, no dependency.
+- **B0 next** — the security-gap closure + `NativeInvocation` identity type
+  (needs D-04-05). B0 defines the type shape A1 and B1/B5/B6 build on.
+- **A1** after A0′ and B0's type change (A1 shares the `NativeInvocation`/dispatch
+  edit surface with B0 — do B0's type change first to avoid re-threading).
+- **B1** after B0 (needs D-04-01).
+- **B4, B5, B6** after B0 (B5/B6 need B0's Admin-UCAN/identity types; B4 is
+  independent data-layer work).
+- **A3** spike whenever convenient, or deferred to M5.
+
+---
+
+## Current State Inventory (anchors re-verified on `main` @ `6c6e859`)
+
+| Crate / File | What Exists |
+|---|---|
+| `crates/sandbox_wasm/src/conversions.rs:9,38,48` | `json_to_wasm_params` handles only `String`/`U32`/`Bool` (else "Unsupported parameter type… Add conversion logic"); `wasm_results_to_json_string` is string-or-debug. Slice A0′'s target |
+| `crates/rpc/src/native.rs:15-18` | `NativeInvocation { interface, method, params }` — no identity field; Slice B0's primary edit target |
+| `crates/control_plane/src/synsvc_native.rs:588` | `SynSvcNativeService::dispatch` fans out to `data-layer`/`vault`/`app-config`/`blob-store`/`messaging` |
+| `crates/router/src/route_handler/io.rs:61,90-92` | `handle_stream`; delegation check gated on `preamble.delegation.is_some()` (the conditional-skip bug) |
+| `crates/router/src/handshake.rs` | `HandshakeVerifier::verify_preamble` — validates delegation cert vs. master DID + DHT revocation; no capability scoping |
+| `crates/sandbox_wasm/src/host_capabilities.rs:452-463` | guest-side `execute_ddl`, gated by `is_init_context`; `TODO(M4)` at 453 |
+| `crates/sandbox_wasm/src/engine.rs:547,594,630` | `is_init_context` field/compute (`method_name == "init" \|\| "migrate"`) |
+| `crates/control_plane/src/synsvc_native.rs:309-316` | native-side `execute-ddl`, unconditionally denied; `TODO(M4)` at 313 |
+| `crates/data_keystore/src/key_store.rs:46` | `inject_kek`'s unused `_scope: Option<&str>` — per-app KEK point, never wired (all call sites pass `None`) |
+| `crates/router/src/route_handler/http.rs` | M3C HTTP passthrough bridge — the call path Slice B0 must also cover (A.3) |
+| `crates/router/src/preamble.rs:140,153`, `crates/router/src/route_handler/dispatch.rs:122-123` | `RouteProtocol::Wrpc` + `AdaptationStage::JsonRpcToWrpc` stub ("not implemented yet") — reserved seam, left in place (A.5) |
+
+---
+
+## Migration Strategy
+
+### `NativeInvocation` Type Change (Slice B0)
+Gains an identity/capability field (shape per D-04-05). Every `NativeService`
+impl (`SynSvcNativeService`, `ControlPlaneService`'s `security` interface)
+updates together — internal type, not WIT surface, so no compat shim; the
+workspace recompiles as one.
+
+### `SubstrateConfig` Extension
+```toml
+[iam]                                    # M4A
+admin_ucan_root = "did:key:..."          # root DID authorized to issue Admin UCANs
+```
+No `[proxy]` negotiation config (A.7); a reserved `json-rpc/v1` tag lives in the
+wire, not config.
+
+### WIT Boundary Versioning
+`syneroym:iam@0.1.0` (or equivalent from D-04-01) added. `syneroym:data-layer`
+gains additive `query-raw` (ADR-0011) + aggregation (ADR-0007) — minor bump, not
+breaking. No new wRPC package (A.5). If Slice A3 is not moved to M5,
+`syneroym:data-stream@0.1.0` is added. `wasm32-wasip2` must stay unbroken after
+every slice.
+
+### Per-app KEK DEK Re-wrap (Slice B6)
+No stored-data schema change; the `dek_store` schema is unchanged, only the
+`scope` passed to `inject_kek` changes from always-`None` to an instance ID.
+Because DEKs are wrapped by the KEK, changing the effective KEK requires
+**re-wrapping** existing DEKs — B6 must specify and test that re-wrap path
+(rotate under old global KEK → per-instance KEK), not assume it is free.
+
+---
+
+## Ordered Implementation Slices
+
+#### Slice A0′: Full WIT⇄JSON Value Conversion — *startable immediately, no ADR*
+**Requirement:** `[PLT-DAT]`. *(A short design note pins the lossy-edge JSON
+encoding conventions — A.5.)*
+Replace the `conversions.rs` stub (`crates/sandbox_wasm/src/conversions.rs:9-48`)
+with a full component-model ↔ JSON converter covering the entire WIT type
+system: records↔objects, variants/enums↔tagged, lists↔arrays, tuples,
+`option`↔null, `result`, flags, `char`, all integer/float widths. This makes
+calls *typed* over a JSON wire — dispatch validates against the real WIT
+signature. Document known JSON fidelity gaps (`u64 > 2^53`, `char` vs `string`,
+nested `option<option<T>>`) as limitations, not worked around now. Also switch
+positional → named params (the `conversions.rs` TODO) while here.
+
+#### Slice B0: Native-Dispatch Authentication Gap Closure — *highest priority*
+**Blocked on:** ADR D-04-05. **Requirement:** `[FND-IAM]` foundation; closes gate
+items #1 and #4.
+Make `verify_preamble` mandatory (not conditional on `delegation.is_some()`) for
+every native-capability interface and the HTTP bridge call path (`http.rs`). Add
+the caller-identity field to `NativeInvocation` and thread it through every
+`NativeService::dispatch` site — replacing the `creator_id = self.service_id`
+stopgap with the real caller identity. Replace both `is_init_context` `TODO(M4)`
+sites (`host_capabilities.rs:452-463`, `synsvc_native.rs:309-316`) with the Admin
+UCAN check. Define how identity threads across a cross-node proxy hop (A1 seam).
+
+#### Slice A1: Universal Proxy Dispatch (JSON-RPC transport)
+**Depends on:** A0′, B0's `NativeInvocation` shape. **Requirement:** `[PLT-DAT]`.
+Component↔component and native↔native typed calls over JSON-RPC / Iroh QUIC,
+same-node and cross-node (`system-architecture.md:1930-1937`). Build the proxy
+interface **transport-agnostic** behind the `AdaptationStage` seam (replacing the
+`dispatch.rs:122-123` stub) so a future wRPC wire (A.5) slots in additively.
+Establish retry/backoff hook points; failed-after-retries fails directly (DLQ is
+M5). Callee returns a typed *unsupported-protocol* error for an unknown scheme
+(the minimal `[LFC-VER]` behavior kept from deferred A2). **Co-design the request
+shape with M04B's B3 federated fetch** (co-design seam #2).
+
+#### Slice A2: Protocol Negotiation — DEFERRED (A.7)
+Not implemented. The fail-fast error + reserved `json-rpc/v1` tag are handled in
+A1. Full negotiation revisited with wRPC later.
+
+#### Slice A3: `[PLT-DAP-05]` Data Pipeline Streams — SPIKE-FIRST / M5 CANDIDATE
+**Requirement:** `[PLT-DAP-05]`. *(No bespoke-credit ADR — A.6.)*
+`syneroym:data-stream` WIT interface; point-to-point QUIC streams, Arrow
+`RecordBatch`-shaped framing, **relying on QUIC-native flow control**. Standalone
+(A.4) — no DataFusion coupling. Run as a framing spike; if it cannot be validated
+without its M5 consumer, **move wholesale to M5**.
+
+#### Slice B1: UCAN Context Extraction and Normalization
+**Blocked on:** ADR D-04-01. **Depends on:** B0. **Requirement:** `[FND-IAM]`.
+Gateway verifies the UCAN chain at ingress (`system-requirements-spec.md:977`),
+normalizes external auth (OIDC/DIDs/WebAuthn) into internal DIDs, extracts
+claims/capabilities/scopes into the **SessionContext**. **Shape the SessionContext
+against M04B's SQL-binding needs** (co-design seam #1) — it is consumed by M04B's
+pushdown compiler as bound `?` parameters.
+
+#### Slice B4: `AggregationPipeline`
+**Requirement:** `[PLT-DAT]`; closes gate item #2. *(Independent — no auth
+dependency; may start any time.)*
+`$group`/`$having`/projections on `syneroym:data-layer/store`'s `query`,
+translating to SQLite `GROUP BY`/`HAVING`/views per ADR-0007; can target physical
+collections and init-defined logical views.
+
+#### Slice B5: Privileged `query-raw` Escape Hatch
+**Depends on:** B0 (Admin UCAN capability type). **Requirement:** `[PLT-DAT]`;
+closes gate item #3.
+Implement `query-raw`/`sql-value` per
+[ADR-0011](../../../decisions/0011-privileged-raw-sql-query.md), gated by the
+Admin UCAN capability from B0 instead of `is_init_context`.
+
+#### Slice B6: Per-SynApp-Instance KEK Narrowing
+**Depends on:** B0. **Requirement:** `[FND-SEC]`; closes gate item #5.
+Wire `inject_kek`'s `_scope` param (`key_store.rs:46`) to derive per-app-instance
+KEKs, gated on the caller's verified app-instance identity. Specify + test the DEK
+re-wrap path (Migration Strategy).
+
+---
+
+## Reference Scenario (M04A subset)
+
+Continues the "Professional Services Guild" walking skeleton from M03B (step 19):
+
+20. Two services on different physical nodes exchange a typed call through the
+    Universal Proxy (A1) — JSON-RPC transport with full WIT⇄JSON conversion (A0′)
+    — routed transparently to the remote instance.
+21. A client presents a UCAN; the gateway verifies the chain and normalizes
+    claims/capabilities into a SessionContext (B1).
+24. An admin-scoped caller runs `query-raw` for a report needing a join beyond
+    the JSON filter DSL (B5).
+25. A peer with no valid delegation attempts a `data-layer` write over a raw Iroh
+    connection; now rejected at the router (B0) — the interim gap is closed.
+
+*(Steps 22–23 — FDAE row filtering and federated fetch — belong to
+[M04B](../M04B-fdae-policy/task.md).)*
+
+---
+
+## Failure and Security Tests
+
+| Test | Expected Outcome |
+|---|---|
+| Peer opens Iroh connection with no `preamble.delegation`, attempts `data-layer::put` | Rejected at `handle_stream` before native dispatch |
+| Same via the HTTP bridge (`http.rs`) with no verified identity | Rejected on the same call path (A.3) |
+| Peer presents a delegation cert for a *different* service's DID | Rejected by `verify_preamble` (existing check, unchanged) |
+| `query-raw` without Admin UCAN capability | `data-layer-error::permission-denied`, same shape as `execute-ddl` today |
+| `query-raw` with SQL injection via `params` | Bound as a parameterized value; no injection |
+| Caller declares a protocol scheme the callee does not support | Typed *unsupported-protocol/version* error (A.7) |
+| WIT⇄JSON round-trip of a `u64 > 2^53` / `char` / nested `option` value | Documented lossy-edge behavior (A0′) — no silent corruption |
+| Per-app-instance KEK requested by a caller without that app-instance's identity | `permission-denied`; another instance's KEK never returned |
+
+---
+
+## Performance Budgets
+
+| Metric | Budget | Method |
+|---|---|---|
+| UCAN chain verification (cache-cold) | < 5 ms p99 | `criterion` micro-bench |
+| Universal Proxy call (JSON-RPC, same-node) | < 5 ms p99 round-trip incl. WIT⇄JSON both ways | `criterion` micro-bench |
+| WIT⇄JSON conversion (typical record, round-trip) | Document measured; must not dominate same-node call latency | `criterion` micro-bench |
+| Service DB open with per-app KEK | Establish budget on Raspberry Pi 4 (per `M03-sss/task.md` deferred item) | Integration test |
+| `[PLT-DAP-05]` stream throughput (local, 1 MB batches, QUIC-native flow control) | Document measured *(skip if A3 moves to M5)* | Integration test |
+
+---
+
+## Tests Summary
+
+- **Unit:** WIT⇄JSON conversion round-trip across the full WIT type set incl.
+  documented lossy edges (A0′); UCAN verification + claim/capability
+  normalization (B1); `AggregationPipeline` stage translation (B4).
+- **Integration:** **Native-dispatch identity threading end-to-end** —
+  unauthenticated caller rejected; authenticated caller's identity reaches
+  `dispatch_data_layer` (B0) — *the single most important test in this
+  milestone*; `query-raw` permission-denied + injection-resistance (B5);
+  per-app-instance KEK isolation + DEK re-wrap (B6).
+- **Benchmarks (`criterion`):** UCAN verification, Universal Proxy same-node call,
+  WIT⇄JSON conversion.
+- **E2E (`mise run test:e2e`):** reference scenario steps 20, 21, 24, 25 in a live
+  substrate, ≥2 substrates for the cross-node proxy case.
+
+---
+
+## Measurable Exit Criteria
+
+- [ ] `cargo +nightly fmt --all` clean; `cargo clippy --workspace --all-targets --all-features` zero warnings; `cargo test --workspace` green; `mise run test:e2e` green (no M0–M3C regression); `wasm32-wasip2` unbroken after every slice.
+- [ ] ADRs D-04-01, D-04-05 exist in `docs/decisions/`.
+- [ ] Full WIT⇄JSON conversion replaces the `conversions.rs` stub; round-trip tested across the full WIT type set; JSON fidelity limitations documented.
+- [ ] **Gate item #1 verified with a real test** (not code inspection): an unauthenticated peer's `data-layer`/`messaging`/`blob-store`/`vault`/`app-config` call and HTTP-bridge request are all rejected.
+- [ ] `AggregationPipeline` implemented and tested.
+- [ ] `query-raw` implemented, gated by Admin UCAN capability (not `is_init_context`).
+- [ ] Both `TODO(M4)` sites (`host_capabilities.rs:452-463`, `synsvc_native.rs:309-316`) removed.
+- [ ] Per-app-instance KEK narrowing implemented; `_scope` actually used; DEK re-wrap path tested.
+- [ ] Universal Proxy handles ≥1 real cross-node typed call over JSON-RPC (full WIT⇄JSON conversion) in an e2e test; the transport-agnostic seam for later wRPC is in place.
+- [ ] A caller declaring an unsupported protocol receives a typed error (negotiation deferred, A.7).
+- [ ] `[PLT-DAP-05]` either ships as a QUIC-flow-control-backed framing spike or is explicitly deferred to M5 with rationale in `status.md`.
+- [ ] Reference scenario steps 20, 21, 24, 25 execute end-to-end.
+- [ ] Performance budgets verified; `criterion` output in `status.md`.
+- [ ] `traceability-matrix.md` updated with M04A evidence for `[PLT-DAT]` (Universal Proxy + conversion + aggregation + `query-raw`), `[FND-IAM]` (foundation: identity threading + UCAN context + Admin capability), `[FND-SEC]` (per-app KEK); `[PLT-DAP-05]` marked spike/M5; `[LFC-VER]` protocol-negotiation retargeted out; `[FND-FDA]`→`[FND-IAM]` citation fixed (A.2).
+- [ ] `system-architecture.md:1892` interim-security-posture note updated to record the native-dispatch gap as closed.
