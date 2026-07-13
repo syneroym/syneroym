@@ -19,20 +19,18 @@ use iroh::{
     endpoint::Connection,
     protocol::{AcceptError, ProtocolHandler as IrohProtocolHandler},
 };
-use syneroym_control_plane::{ControlPlaneService, HttpRouteRegistry};
+use syneroym_control_plane::HttpRouteRegistry;
 use syneroym_core::{
-    config::{BlobBackend, RetryPolicy, SubstrateConfig},
+    config::{RetryPolicy, SubstrateConfig},
     dht_registry::RegistryClient,
     local_registry::EndpointRegistry,
     storage::MockStorage,
 };
-use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
-use syneroym_data_db::{SqliteStorageProvider, traits::StorageProvider};
+use syneroym_data_db::traits::StorageProvider;
 use syneroym_data_keystore::KeyStore;
 use syneroym_identity::Identity;
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
 use syneroym_rpc::{NativeDispatchRegistry, NativeService};
-use syneroym_sandbox_podman::ContainerEngine;
 use syneroym_sandbox_wasm::AppSandboxEngine;
 use tokio::io::AsyncWriteExt;
 use tracing::{debug, error};
@@ -118,45 +116,29 @@ impl Debug for RouteHandler {
     }
 }
 
-/// Constructs the configured blob backend (`Local` or `S3`). `S3` requires
-/// building with the `aws` cargo feature (off by default -- see the
-/// `object_store`/`digest` version-pin comment in the root `Cargo.toml`);
-/// selecting it otherwise fails fast here with an actionable message rather
-/// than silently falling back to `Local`.
-fn build_blob_provider(config: &SubstrateConfig) -> Result<Arc<dyn BlobProvider>> {
-    let bs = &config.storage.blob_store;
-    match bs.backend {
-        BlobBackend::Local => Ok(Arc::new(ObjectStoreBlobProvider::new_local(
-            bs.local_root.clone(),
-            bs.max_blob_bytes,
-            bs.max_service_total_bytes,
-        )?)),
-        BlobBackend::S3 => {
-            #[cfg(feature = "aws")]
-            {
-                let s3 = bs.s3.as_ref().ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "storage.blob_store.backend = \"s3\" requires [storage.blob_store.s3] to \
-                         be configured"
-                    )
-                })?;
-                Ok(Arc::new(ObjectStoreBlobProvider::new_s3(
-                    &s3.endpoint,
-                    &s3.bucket,
-                    &s3.region,
-                    bs.max_blob_bytes,
-                    bs.max_service_total_bytes,
-                )?))
-            }
-            #[cfg(not(feature = "aws"))]
-            {
-                Err(anyhow::anyhow!(
-                    "storage.blob_store.backend = \"s3\" requires building syneroym-router with \
-                     the `aws` feature (off by default -- see the object_store/digest version-pin \
-                     comment in the root Cargo.toml)"
-                ))
-            }
-        }
+/// Capabilities `RouteHandler` holds and dispatches through, but does not
+/// itself construct. Building these (storage, blob, messaging, the WASM/
+/// container sandboxes, and the control-plane native service) is the
+/// substrate's composition-root responsibility (see
+/// `syneroym_substrate::runtime`) -- `router`'s job is routing, not wiring
+/// up the node's capabilities.
+pub struct RouteHandlerDeps {
+    pub key_store: Arc<KeyStore>,
+    pub storage_provider: Arc<dyn StorageProvider>,
+    pub app_sandbox_engine: Arc<AppSandboxEngine>,
+    pub messaging_broker: Arc<MqttBroker>,
+    pub native_dispatch: NativeDispatchRegistry,
+    pub http_routes: HttpRouteRegistry,
+    /// The node's control-plane service (deploy/undeploy/list, security
+    /// ops), already registered against `native_dispatch`/`http_routes` by
+    /// the caller during construction -- `RouteHandler::init` only needs to
+    /// register it into its own dispatch table under `service_id`.
+    pub control_plane_service: Arc<dyn NativeService>,
+}
+
+impl Debug for RouteHandlerDeps {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RouteHandlerDeps").finish_non_exhaustive()
     }
 }
 
@@ -166,73 +148,8 @@ impl RouteHandler {
         config: &SubstrateConfig,
         registry: EndpointRegistry,
         secret_key: [u8; 32],
+        deps: RouteHandlerDeps,
     ) -> Result<Self> {
-        let key_store = Arc::new(KeyStore::new());
-        let storage_provider: Arc<dyn StorageProvider> = Arc::new(SqliteStorageProvider::new(
-            &config.storage.db_dir,
-            config.storage.encryption,
-        )?);
-        let blob_provider = build_blob_provider(config)?;
-
-        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig {
-            channel_capacity: config.mqtt.channel_capacity as usize,
-        })?);
-
-        let app_sandbox_engine = Arc::new(
-            AppSandboxEngine::init(
-                config,
-                registry.get_all_endpoints(),
-                key_store.clone(),
-                storage_provider.clone(),
-                blob_provider.clone(),
-                messaging_broker.clone(),
-                registry.clone(),
-            )
-            .await?,
-        );
-        app_sandbox_engine
-            .self_weak
-            .set(Arc::downgrade(&app_sandbox_engine))
-            .map_err(|_| anyhow::anyhow!("AppSandboxEngine::self_weak set more than once"))?;
-
-        // Guest subscriptions survive a restart (ADR-0010 Finding A1):
-        // replay every persisted row into the broker before the router
-        // starts accepting connections. Best-effort per row -- one bad
-        // topic shouldn't block substrate startup. Replayed concurrently
-        // (independent rows, no shared state) to keep this bounded by the
-        // slowest single subscribe rather than their sum.
-        let persisted_subscriptions = storage_provider.list_all_messaging_subscriptions().await?;
-        let replay_results = futures::future::join_all(persisted_subscriptions.iter().map(
-            |(subscribed_service_id, topic)| {
-                app_sandbox_engine.register_internal_subscription(subscribed_service_id, topic)
-            },
-        ))
-        .await;
-        for ((subscribed_service_id, topic), result) in
-            persisted_subscriptions.iter().zip(replay_results)
-        {
-            if let Err(e) = result {
-                tracing::warn!(
-                    service_id = %subscribed_service_id,
-                    topic = %topic,
-                    error = %e,
-                    "Failed to replay messaging subscription on startup"
-                );
-            }
-        }
-
-        let podman_path = config
-            .roles
-            .podman_sandbox
-            .as_ref()
-            .map(|cfg| cfg.podman_path.clone())
-            .unwrap_or_else(|| "podman".to_string());
-        let podman_sandbox_engine = Arc::new(ContainerEngine::new(
-            podman_path,
-            &config.app_local_data_dir,
-            Some(storage_provider.clone()),
-        ));
-
         let identity = Identity::from_bytes(&secret_key);
 
         let parent_coordinator_url =
@@ -250,22 +167,10 @@ impl RouteHandler {
             .and_then(|c| c.iroh.as_ref())
             .and_then(|i| i.max_connections);
 
-        // Constructed before `RouteHandlerInner` so the identical shared
-        // handle can also be passed to `ControlPlaneService::init` below --
-        // `ControlPlaneService` needs to register/deregister per-deployment
-        // native services (data-layer/vault/app-config/blob-store) into the
-        // same registry `RouteHandler`'s own dispatch path reads from.
-        let native_dispatch: NativeDispatchRegistry = Arc::new(DashMap::new());
-        // Constructed before `RouteHandlerInner` for the same reason
-        // `native_dispatch` is: the identical shared handle is also passed
-        // to `ControlPlaneService::init` below, which populates it on
-        // deploy/undeploy.
-        let http_routes: HttpRouteRegistry = Arc::new(DashMap::new());
-
         let inner = Arc::new(RouteHandlerInner {
-            registry: registry.clone(),
-            native_dispatch: native_dispatch.clone(),
-            app_sandbox_engine: Some(app_sandbox_engine.clone()),
+            registry,
+            native_dispatch: deps.native_dispatch,
+            app_sandbox_engine: Some(deps.app_sandbox_engine),
             identity,
             iroh_endpoint: None,
             registry_client,
@@ -273,29 +178,14 @@ impl RouteHandler {
             retry_policy: config.retry.clone(),
             active_connections: Arc::new(AtomicUsize::new(0)),
             max_connections,
-            messaging_broker: messaging_broker.clone(),
-            http_routes: http_routes.clone(),
-            key_store: Some(key_store.clone()),
-            storage_provider: Some(storage_provider.clone()),
+            messaging_broker: deps.messaging_broker,
+            http_routes: deps.http_routes,
+            key_store: Some(deps.key_store),
+            storage_provider: Some(deps.storage_provider),
         });
 
         let s = Self { inner };
-
-        let substrate_service = ControlPlaneService::init(
-            service_id.clone(),
-            app_sandbox_engine,
-            podman_sandbox_engine,
-            registry,
-            config.hosted_apps_dir(),
-            key_store,
-            storage_provider,
-            blob_provider,
-            messaging_broker,
-            native_dispatch,
-            http_routes,
-        )
-        .await?;
-        s.register_native_service(service_id, Arc::new(substrate_service));
+        s.register_native_service(service_id, deps.control_plane_service);
         Ok(s)
     }
 

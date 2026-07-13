@@ -38,7 +38,11 @@ use webrtc::{
     },
 };
 
-use crate::{net_iroh, net_webrtc::WebRTCStream, route_handler::RouteHandler};
+use crate::{
+    net_iroh,
+    net_webrtc::WebRTCStream,
+    route_handler::{RouteHandler, RouteHandlerDeps},
+};
 
 pub const SYNEROYM_ALPN: &[u8] = b"syneroym/0.1";
 
@@ -56,11 +60,17 @@ impl ConnectionRouter {
         config: SubstrateConfig,
         iroh_secret_key: [u8; 32],
         service_id: String,
+        route_handler_deps: RouteHandlerDeps,
     ) -> Result<Self> {
         let mut router = Self { iroh_router: None };
-        let route_handler =
-            RouteHandler::init(service_id.clone(), &config, registry.clone(), iroh_secret_key)
-                .await?;
+        let route_handler = RouteHandler::init(
+            service_id.clone(),
+            &config,
+            registry.clone(),
+            iroh_secret_key,
+            route_handler_deps,
+        )
+        .await?;
 
         for comm in &config.substrate.communication_interfaces {
             match comm.as_str() {

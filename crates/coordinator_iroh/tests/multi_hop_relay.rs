@@ -5,12 +5,14 @@
 //! a hierarchy and tests bidirectional e2e connectivity between clients and
 //! substrates across networks.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use anyhow::Result;
+use dashmap::DashMap;
 use iroh::{Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl, SecretKey, protocol::Router};
 use reqwest::Client;
 use syneroym_community_registry::EcosystemRegistry;
+use syneroym_control_plane::{ControlPlaneService, HttpRouteRegistry};
 use syneroym_coordinator_iroh::{CoordinatorInfo, CoordinatorIroh};
 use syneroym_core::{
     config::{
@@ -22,11 +24,100 @@ use syneroym_core::{
     },
     local_registry::{EndpointRegistry, SubstrateEndpoint},
 };
-use syneroym_data_db::registry_store;
+use syneroym_data_blob::ObjectStoreBlobProvider;
+use syneroym_data_db::{SqliteStorageProvider, registry_store, traits::StorageProvider};
+use syneroym_data_keystore::KeyStore;
 use syneroym_identity::{Identity, substrate::derive_did_key};
-use syneroym_router::{RouteHandler, SYNEROYM_ALPN};
+use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
+use syneroym_router::{RouteHandler, RouteHandlerDeps, SYNEROYM_ALPN};
+use syneroym_rpc::NativeDispatchRegistry;
+use syneroym_sandbox_podman::ContainerEngine;
+use syneroym_sandbox_wasm::AppSandboxEngine;
 use syneroym_sdk::SyneroymClient;
 use tokio::time;
+
+/// Mirrors `syneroym_substrate::runtime::build_route_handler_deps`: this
+/// test simulates a full substrate node via `RouteHandler::init` directly
+/// (bypassing `syneroym-substrate`, which would create a dependency cycle
+/// back to `coordinator_iroh`), so it must build the same dependency bundle
+/// substrate's composition root builds in production. Simplified to the
+/// local blob backend only -- these tests never configure S3.
+async fn build_test_route_handler_deps(
+    config: &SubstrateConfig,
+    service_id: &str,
+    registry: &EndpointRegistry,
+) -> Result<RouteHandlerDeps> {
+    let key_store = Arc::new(KeyStore::new());
+    let storage_provider: Arc<dyn StorageProvider> =
+        Arc::new(SqliteStorageProvider::new(&config.storage.db_dir, config.storage.encryption)?);
+    let bs = &config.storage.blob_store;
+    let blob_provider = Arc::new(ObjectStoreBlobProvider::new_local(
+        bs.local_root.clone(),
+        bs.max_blob_bytes,
+        bs.max_service_total_bytes,
+    )?);
+
+    let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig {
+        channel_capacity: config.mqtt.channel_capacity as usize,
+    })?);
+
+    let app_sandbox_engine = Arc::new(
+        AppSandboxEngine::init(
+            config,
+            registry.get_all_endpoints(),
+            key_store.clone(),
+            storage_provider.clone(),
+            blob_provider.clone(),
+            messaging_broker.clone(),
+            registry.clone(),
+        )
+        .await?,
+    );
+    app_sandbox_engine
+        .self_weak
+        .set(Arc::downgrade(&app_sandbox_engine))
+        .map_err(|_| anyhow::anyhow!("AppSandboxEngine::self_weak set more than once"))?;
+
+    let podman_path = config
+        .roles
+        .podman_sandbox
+        .as_ref()
+        .map(|cfg| cfg.podman_path.clone())
+        .unwrap_or_else(|| "podman".to_string());
+    let podman_sandbox_engine = Arc::new(ContainerEngine::new(
+        podman_path,
+        &config.app_local_data_dir,
+        Some(storage_provider.clone()),
+    ));
+
+    let native_dispatch: NativeDispatchRegistry = Arc::new(DashMap::new());
+    let http_routes: HttpRouteRegistry = Arc::new(DashMap::new());
+
+    let control_plane_service = ControlPlaneService::init(
+        service_id.to_string(),
+        app_sandbox_engine.clone(),
+        podman_sandbox_engine,
+        registry.clone(),
+        config.hosted_apps_dir(),
+        key_store.clone(),
+        storage_provider.clone(),
+        blob_provider,
+        messaging_broker.clone(),
+        native_dispatch.clone(),
+        http_routes.clone(),
+    )
+    .await?;
+
+    Ok(RouteHandlerDeps {
+        key_store,
+        storage_provider,
+        app_sandbox_engine,
+        messaging_broker,
+        native_dispatch,
+        http_routes,
+        control_plane_service: Arc::new(control_plane_service),
+    })
+}
 
 fn create_signed_info(
     identity: &Identity,
@@ -212,8 +303,10 @@ async fn test_inbound_relay() -> Result<()> {
     let endpoint_z = SubstrateEndpoint::NativeHostChannel { service_id: did_z.clone() };
     endpoint_registry_z.register(did_z.clone(), "orchestrator".to_string(), endpoint_z).await?;
 
+    let deps_z = build_test_route_handler_deps(&config_z, &did_z, &endpoint_registry_z).await?;
     let route_handler_z =
-        RouteHandler::init(did_z.clone(), &config_z, endpoint_registry_z, secret_z_bytes).await?;
+        RouteHandler::init(did_z.clone(), &config_z, endpoint_registry_z, secret_z_bytes, deps_z)
+            .await?;
 
     // Bind Sz to Iroh so Cp can connect to it (Sz uses Cp's relay url)
     let mut ep_z_bldr = Endpoint::empty_builder();
@@ -350,8 +443,10 @@ async fn test_outbound_relay() -> Result<()> {
     let endpoint_x = SubstrateEndpoint::NativeHostChannel { service_id: did_x.clone() };
     endpoint_registry_x.register(did_x.clone(), "orchestrator".to_string(), endpoint_x).await?;
 
+    let deps_x = build_test_route_handler_deps(&config_x, &did_x, &endpoint_registry_x).await?;
     let route_handler_x =
-        RouteHandler::init(did_x.clone(), &config_x, endpoint_registry_x, secret_x_bytes).await?;
+        RouteHandler::init(did_x.clone(), &config_x, endpoint_registry_x, secret_x_bytes, deps_x)
+            .await?;
 
     // Bind Sx to Iroh so C can connect to it (Sx uses C's relay url)
     let mut ep_x_bldr = Endpoint::empty_builder();
