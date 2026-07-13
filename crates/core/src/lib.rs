@@ -3,6 +3,7 @@
 
 pub mod config;
 pub mod dht_registry;
+pub mod http_routes;
 pub mod local_registry;
 pub mod protocol_utils;
 pub mod retry;

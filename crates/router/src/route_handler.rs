@@ -19,10 +19,10 @@ use iroh::{
     endpoint::Connection,
     protocol::{AcceptError, ProtocolHandler as IrohProtocolHandler},
 };
-use syneroym_control_plane::HttpRouteRegistry;
 use syneroym_core::{
     config::{RetryPolicy, SubstrateConfig},
     dht_registry::RegistryClient,
+    http_routes::HttpRouteRegistry,
     local_registry::EndpointRegistry,
     storage::MockStorage,
 };

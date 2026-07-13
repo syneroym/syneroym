@@ -19,7 +19,7 @@ use dashmap::DashMap;
 use iroh::EndpointAddr;
 use syneroym_client_gateway::ClientGateway;
 use syneroym_community_registry::EcosystemRegistry;
-use syneroym_control_plane::{ControlPlaneService, HttpRouteRegistry};
+use syneroym_control_plane::ControlPlaneService;
 use syneroym_coordinator::EcosystemCoordinator;
 use syneroym_core::{
     config::{BlobBackend, SubstrateConfig},
@@ -27,6 +27,7 @@ use syneroym_core::{
         EndpointInfo, EndpointMechanism, EndpointType, HEARTBEAT_INTERVAL_SECS, RegistryClient,
         SignedEndpointInfo,
     },
+    http_routes::HttpRouteRegistry,
     local_registry::{EndpointRegistry, SubstrateEndpoint},
 };
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};

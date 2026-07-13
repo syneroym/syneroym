@@ -1,7 +1,10 @@
-//! Per-service HTTP route table (M3B Slice 7), parsed from the
-//! `http_routes` key of a deployed service's `custom_config` JSON
+//! Parses a deployed service's declared HTTP routes (M3B Slice 7) out of the
+//! `http_routes` key of its `custom_config` JSON
 //! (`ServiceConfig.custom_config`, already a free-form per-service deploy-time
-//! extension point -- see `ControlPlaneService::deploy`).
+//! extension point -- see `ControlPlaneService::deploy`). The
+//! `HttpRoute`/`HttpRouteRegistry` types this module produces live in
+//! `syneroym_core::http_routes`, shared with `syneroym-router` (see that
+//! module's doc comment for why).
 //!
 //! `task.md` (`§B8`) requires HTTP routes to be per-service, not a global
 //! substrate-wide policy, since different services expose different
@@ -10,36 +13,9 @@
 //! http.rs` looks routes up by `service_id` at request time to decide how a
 //! given HTTP verb+path bridges onto `data-layer`/`messaging`/a registered
 //! stream protocol.
-//!
-//! Shares `NativeDispatchRegistry`'s `Arc<DashMap<...>>`-keyed-by-`service_id`
-//! shape (`crates/rpc/src/dispatch_registry.rs`) so both `ControlPlaneService`
-//! (writer, on deploy/undeploy) and `RouteHandlerInner` (reader, per HTTP
-//! request) can share one table -- but unlike that registry, there is no
-//! reference-cycle hazard here (`ControlPlaneService` is never itself keyed
-//! into this map), so a plain strong `Arc` clone is held on both sides.
 
-use std::sync::Arc;
-
-use dashmap::DashMap;
 use serde::Deserialize;
-
-/// One `http_routes` entry. `target` selects which native capability the
-/// route bridges onto; the optional fields are only meaningful for the
-/// matching target (`collection` for `data-layer`, `topic` for `messaging`,
-/// `protocol` for `stream`) and are ignored otherwise.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct HttpRoute {
-    pub method: String,
-    pub path: String,
-    pub target: String,
-    pub operation: String,
-    #[serde(default)]
-    pub collection: Option<String>,
-    #[serde(default)]
-    pub topic: Option<String>,
-    #[serde(default)]
-    pub protocol: Option<String>,
-}
+use syneroym_core::http_routes::HttpRoute;
 
 #[derive(Debug, Default, Deserialize)]
 struct HttpRoutesConfig {
@@ -124,12 +100,6 @@ fn reject_duplicate_routes(routes: &[HttpRoute]) -> Result<(), String> {
     }
     Ok(())
 }
-
-/// Shared, keyed-by-`service_id` HTTP route table. `ControlPlaneService`
-/// populates it on `deploy()`/clears it on `undeploy()`;
-/// `RouteHandlerInner` holds the same `Arc` for lookup from
-/// `crates/router/src/route_handler/http.rs`.
-pub type HttpRouteRegistry = Arc<DashMap<String, Vec<HttpRoute>>>;
 
 #[cfg(test)]
 mod tests {

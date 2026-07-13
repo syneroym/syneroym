@@ -27,6 +27,7 @@ pub trait OrchestratorInterface {
     async fn deploy_plan(&self, plan: DeploymentPlan) -> Result<(), String>;
 }
 use syneroym_core::{
+    http_routes::HttpRouteRegistry,
     local_registry::{EndpointRegistry, SubstrateEndpoint},
     util,
 };
@@ -44,7 +45,7 @@ use tracing::info;
 use crate::{
     config_utils,
     dummy_sandbox::{AppSandboxEngine, ContainerEngine},
-    http_routes::{self, HttpRouteRegistry},
+    http_routes,
     synsvc_native::SynSvcNativeService,
 };
 

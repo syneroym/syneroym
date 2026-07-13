@@ -12,7 +12,7 @@ use dashmap::DashMap;
 use iroh::{Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl, SecretKey, protocol::Router};
 use reqwest::Client;
 use syneroym_community_registry::EcosystemRegistry;
-use syneroym_control_plane::{ControlPlaneService, HttpRouteRegistry};
+use syneroym_control_plane::ControlPlaneService;
 use syneroym_coordinator_iroh::{CoordinatorInfo, CoordinatorIroh};
 use syneroym_core::{
     config::{
@@ -22,6 +22,7 @@ use syneroym_core::{
     dht_registry::{
         EndpointInfo, EndpointMechanism, EndpointType, RegistryClient, SignedEndpointInfo,
     },
+    http_routes::HttpRouteRegistry,
     local_registry::{EndpointRegistry, SubstrateEndpoint},
 };
 use syneroym_data_blob::ObjectStoreBlobProvider;

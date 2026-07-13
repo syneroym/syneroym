@@ -3,8 +3,9 @@
 //! Handles incoming HTTP traffic: the original JSON-RPC-over-`POST` bridge
 //! (unchanged), plus M3B Slice 7's HTTP verb/path passthrough onto
 //! `data-layer`/`blob-store`/`messaging` -- see `task.md`'s "Slice 7: HTTP
-//! Passthrough" section and the per-service `http_routes` design in
-//! `syneroym_control_plane::http_routes`.
+//! Passthrough" section. `HttpRoute`/`HttpRouteRegistry` live in
+//! `syneroym_core::http_routes`; entries are parsed and populated by
+//! `syneroym_control_plane::http_routes` on deploy/undeploy.
 //!
 //! Route resolution order, per request:
 //! 1. `GET /blobs/{hash}` -- always intercepted (fixed, self-authorizing via
@@ -40,8 +41,7 @@ use hyper_util::{
     server::conn::auto::Builder as AutoBuilder,
 };
 use serde_json::Value;
-use syneroym_control_plane::HttpRoute;
-use syneroym_core::streaming::StreamDirection;
+use syneroym_core::{http_routes::HttpRoute, streaming::StreamDirection};
 use syneroym_data_blob::{
     crypto,
     native_types::{OpenDownloadResponse, ReadChunkResponse},
