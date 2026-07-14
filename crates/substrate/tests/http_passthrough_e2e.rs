@@ -93,19 +93,26 @@ struct HttpResponse {
 /// `http://http-native|<service_id>` route preamble -- one HTTP/1.1
 /// connection per call, the simplest way to avoid keep-alive framing
 /// ambiguity in a test harness.
+///
+/// Sets a self-asserted pubkey (a fresh ephemeral identity per stream, no
+/// delegation) so this hand-built preamble is not anonymous (M04A Slice B0,
+/// ADR-0016 §0.5) -- mirroring what `SyneroymClient::open_request_stream`
+/// now does internally. Without this, every bridged native route in this
+/// file would 401.
 async fn open_http_stream(
     conn: &TransportConnection,
     service_id: &str,
 ) -> (SendStream, RecvStream) {
     let TransportConnection::Iroh { conn, .. } = conn;
     let (mut send, recv) = conn.open_bi().await.expect("open_bi failed");
+    let identity = Identity::generate().expect("failed to generate test identity");
     let preamble = RoutePreamble {
         transport: RouteTransport::Http,
         protocol: RouteProtocol::JsonRpc,
         interface: "http-native".to_string(),
         service_id: service_id.to_string(),
         enc: None,
-        pubkey: None,
+        pubkey: Some(hex::encode(identity.public_key().to_bytes())),
         delegation: None,
         dir: None,
     };

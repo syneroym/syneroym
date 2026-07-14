@@ -47,7 +47,9 @@ quinn = "0.11.11"
 
 [dev-dependencies]
 syneroym-core = { workspace = true, features = ["test-utils"] }
+syneroym-control-plane.workspace = true
 criterion.workspace = true
+tempfile.workspace = true
 
 [[bench]]
 name = "preamble"

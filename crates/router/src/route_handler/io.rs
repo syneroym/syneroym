@@ -2,13 +2,13 @@
 //!
 //! Handles bidirectional copy tasks and framing adapters for bridged streams.
 
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Result, anyhow};
 use hyper_util::rt::TokioIo;
 use iroh::{EndpointAddr, RelayUrl};
 use syneroym_core::dht_registry::EndpointMechanism;
-use syneroym_rpc::framing;
+use syneroym_rpc::{Ability, CallerContext, Capability, ResourceUri, SessionContext, framing};
 use tokio::{
     io,
     io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader},
@@ -27,13 +27,45 @@ const PRE_AUTH_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 use super::{super::SYNEROYM_ALPN, RouteHandler, dispatch, encryption::ReaderWriter};
 use crate::{
-    handshake::HandshakeVerifier,
+    handshake::{HandshakeVerifier, VerifiedIdentity},
     net_iroh::{IrohStream, connect_with_retry},
     preamble::RoutePreamble,
     route_handler::encryption::{OwnedStream, apply_encryption_stage},
     routing::{RoutePipeline, ServiceStage, TransportStage},
     stop_signal::StopSignal,
 };
+
+/// Builds the `CallerContext` for a verified handshake identity (ADR-0016
+/// §4.2). A caller whose master DID equals the configured
+/// `[iam].admin_ucan_root` is granted `substrate/admin` on this node --
+/// interim path until Slice B1 wires full UCAN chain verification.
+///
+/// TODO(M04B/FDAE): B0 gate only proves *an* identity is present. Which
+/// callers may actually reach a given native service (service-owner /
+/// substrate-owner) and with what row/column scope is enforced by the FDAE
+/// policy engine (M04B), evaluated against `caller.session`. Until then any
+/// verified identity passes.
+fn build_caller(id: &VerifiedIdentity, admin_root: Option<&str>) -> CallerContext {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let mut session = SessionContext {
+        subject_did: id.master_did.clone(),
+        verified_at_secs: now,
+        ..Default::default()
+    };
+    if admin_root == Some(id.master_did.as_str()) {
+        session.capabilities.push(Capability {
+            with: ResourceUri::substrate(&id.master_did),
+            can: Ability(Ability::SUBSTRATE_ADMIN.to_string()),
+            caveats: None,
+        });
+    }
+    CallerContext {
+        caller_did: id.master_did.clone(),
+        app_instance: None,
+        session,
+        auth: syneroym_rpc::AuthLevel::Delegated,
+    }
+}
 
 /// Reads a single line from the reader and parses it as a `RoutePreamble`.
 pub async fn read_preamble<R>(reader: &mut BufReader<R>) -> Result<RoutePreamble>
@@ -86,16 +118,34 @@ impl RouteHandler {
             preamble.delegation.as_ref().map(|d| &d.master_did)
         );
 
-        // Handshake verification
-        if preamble.delegation.is_some()
-            && let Err(e) =
-                HandshakeVerifier::verify_preamble(&preamble, &self.inner.registry_client).await
+        // Handshake verification -- now mandatory for native-capability
+        // dispatch. Always attempt; `None` means "no verifiable identity",
+        // tolerated only by passthrough/relay paths (which never reach
+        // native dispatch) -- the native dispatch arm (dispatch.rs) rejects
+        // `None` (ADR-0016 §3).
+        let caller = match HandshakeVerifier::verify_preamble(
+            &preamble,
+            &self.inner.registry_client,
+        )
+        .await
         {
-            tracing::warn!("Handshake verification failed: {e}");
-            let _ = writer.write_all(b"Unauthorized\n").await;
-            let _ = writer.flush().await;
-            return Err(e);
-        }
+            Ok(id) => Some(build_caller(&id, self.inner.admin_ucan_root.as_deref())),
+            Err(e) => {
+                // A *malformed* delegation (cert for a different DID,
+                // revoked, expired) is still a hard reject here, matching
+                // the existing failure test "delegation cert for a
+                // different service's DID -> rejected".
+                if preamble.delegation.is_some() {
+                    tracing::warn!("Handshake verification failed: {e}");
+                    let _ = writer.write_all(b"Unauthorized\n").await;
+                    let _ = writer.flush().await;
+                    return Err(e);
+                }
+                // No delegation + unverifiable (e.g. missing pubkey) ->
+                // anonymous.
+                None
+            }
+        };
 
         // 2. Registry lookup & normalization
         let lookup_result = self.inner.registry.lookup(&preamble.service_id, &preamble.interface);
@@ -185,12 +235,19 @@ impl RouteHandler {
             TransportStage::Raw => self.handle_raw_stream(stream, &preamble, &pipeline).await,
             TransportStage::Http => {
                 let io = TokioIo::new(stream);
-                self.handle_http_stream(io, preamble, pipeline).await
+                self.handle_http_stream(io, preamble, pipeline, caller).await
             }
             TransportStage::Binary => {
                 let (r, w) = (stream.reader, stream.writer);
-                self.handle_binary_stream(BufReader::new(r), w, &preamble, &pipeline, stop_signal)
-                    .await
+                self.handle_binary_stream(
+                    BufReader::new(r),
+                    w,
+                    &preamble,
+                    &pipeline,
+                    caller,
+                    stop_signal,
+                )
+                .await
             }
         }
     }

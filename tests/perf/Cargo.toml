@@ -27,6 +27,7 @@ reqwest.workspace = true
 # Substrate path
 syneroym-sdk.workspace = true
 syneroym-sandbox-wasm.workspace = true
+syneroym-rpc.workspace = true
 syneroym-core.workspace = true
 syneroym-wit-interfaces.workspace = true
 syneroym-identity.workspace = true

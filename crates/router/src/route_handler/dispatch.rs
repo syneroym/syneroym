@@ -10,7 +10,7 @@ use serde_json::Value;
 use syneroym_core::local_registry::SubstrateEndpoint;
 use syneroym_mqtt_broker::namespace_topic;
 use syneroym_rpc::{
-    JsonRpcConverter, JsonRpcRequest, JsonRpcResponse, MESSAGING_MESSAGE_METHOD,
+    CallerContext, JsonRpcConverter, JsonRpcRequest, JsonRpcResponse, MESSAGING_MESSAGE_METHOD,
     MessagingNotification, NativeService, framing,
 };
 use tokio::{
@@ -60,10 +60,16 @@ impl RouteHandler {
     /// pipeline.
     ///
     /// This handles Native, Wasm, and Adapted execution modes.
+    ///
+    /// `caller` is `None` for a connection with no verifiable identity
+    /// (ADR-0016 §3). The Native-service arm below rejects it before
+    /// dispatch -- every other arm here never reaches a native capability,
+    /// so it's unused there.
     pub async fn dispatch_json_rpc_once(
         &self,
         pipeline: &RoutePipeline,
         preamble: &RoutePreamble,
+        caller: Option<&CallerContext>,
         body: &[u8],
     ) -> Result<Vec<u8>> {
         let start = Instant::now();
@@ -75,8 +81,18 @@ impl RouteHandler {
                     .native_service(service_id)
                     .ok_or_else(|| anyhow!("Native service not found for {service_id}"))?;
 
+                // TODO(M04B/FDAE): B0 gate only proves *an* identity is
+                // present. Which callers may actually reach this native
+                // service (service-owner / substrate-owner) and with what
+                // row/column scope is enforced by the FDAE policy engine
+                // (M04B), evaluated against `caller.session`. Until then any
+                // verified identity passes.
+                let caller = caller.cloned().ok_or_else(|| {
+                    anyhow!("unauthenticated caller for native interface '{}'", preamble.interface)
+                })?;
+
                 let (request, invocation) =
-                    JsonRpcConverter::json_to_native(&preamble.interface, body)
+                    JsonRpcConverter::json_to_native(&preamble.interface, caller, body)
                         .map_err(|e| anyhow!("JSON parse error: {e}"))?;
 
                 match service.dispatch(invocation).await {
@@ -215,12 +231,13 @@ impl RouteHandler {
         writer: &mut W,
         pipeline: &RoutePipeline,
         preamble: &RoutePreamble,
+        caller: Option<&CallerContext>,
         frame: &[u8],
     ) -> Result<()>
     where
         W: AsyncWrite + Unpin + Send,
     {
-        match self.dispatch_json_rpc_once(pipeline, preamble, frame).await {
+        match self.dispatch_json_rpc_once(pipeline, preamble, caller, frame).await {
             Ok(payload) => framing::write_frame(writer, &payload).await?,
             Err(e) => {
                 error!("JSON-RPC dispatch error: {}", e);
@@ -242,6 +259,7 @@ impl RouteHandler {
         writer: &mut W,
         preamble: &RoutePreamble,
         pipeline: &RoutePipeline,
+        caller: Option<&CallerContext>,
     ) -> Result<()>
     where
         R: AsyncRead + Unpin + Send + 'static,
@@ -252,7 +270,7 @@ impl RouteHandler {
             if frame.is_empty() {
                 break;
             }
-            self.dispatch_and_write_frame(writer, pipeline, preamble, &frame).await?;
+            self.dispatch_and_write_frame(writer, pipeline, preamble, caller, &frame).await?;
         }
         Ok(())
     }
@@ -272,6 +290,7 @@ impl RouteHandler {
         mut writer: W,
         preamble: &RoutePreamble,
         pipeline: &RoutePipeline,
+        caller: Option<CallerContext>,
         stop_signal: Pin<Box<dyn Future<Output = ()> + Send>>,
     ) -> Result<()>
     where
@@ -290,6 +309,20 @@ impl RouteHandler {
         {
             return match method {
                 LongLivedStreamMethod::MessagingSubscribe => {
+                    // `messaging/subscribe` is a native-capability call
+                    // reached outside `dispatch_json_rpc_once` (it never
+                    // returns a single response), so it needs its own
+                    // `None`-caller gate to close the enforcement gap
+                    // uniformly (ADR-0016 §3).
+                    if caller.is_none() {
+                        let error_payload = JsonRpcConverter::json_error(
+                            request.id.clone(),
+                            -32603,
+                            "unauthenticated caller for native interface 'messaging'",
+                        )?;
+                        framing::write_frame(&mut writer, &error_payload).await?;
+                        return Ok(());
+                    }
                     #[derive(serde::Deserialize)]
                     struct SubscribeParams {
                         topic: String,
@@ -309,8 +342,9 @@ impl RouteHandler {
             };
         }
 
-        self.dispatch_and_write_frame(&mut writer, pipeline, preamble, &frame).await?;
-        self.handle_json_rpc_loop(reader, &mut writer, preamble, pipeline).await
+        self.dispatch_and_write_frame(&mut writer, pipeline, preamble, caller.as_ref(), &frame)
+            .await?;
+        self.handle_json_rpc_loop(reader, &mut writer, preamble, pipeline, caller.as_ref()).await
     }
 
     /// Holds `writer` open across the connection's lifetime, forwarding

@@ -413,18 +413,18 @@ Continues the "Professional Services Guild" walking skeleton from M03B (step 19)
 
 ## Measurable Exit Criteria
 
-- [ ] `cargo +nightly fmt --all` clean; `cargo clippy --workspace --all-targets --all-features` zero warnings; `cargo test --workspace` green; `mise run test:e2e` green (no M0–M3C regression); `wasm32-wasip2` unbroken after every slice.
+- [x] `cargo +nightly fmt --all` clean; `cargo clippy --workspace --all-targets --all-features` zero warnings; `cargo test --workspace` green; `mise run test:e2e` green (no M0–M3C regression); `wasm32-wasip2` unbroken after every slice. *(True as of A0′+B0; re-verify after each subsequent slice.)*
 - [ ] ADRs D-04-01, D-04-05 exist in `docs/decisions/`.
 - [ ] Full WIT⇄JSON conversion replaces the `conversions.rs` stub; round-trip tested across the full WIT type set; JSON fidelity limitations documented.
-- [ ] **Gate item #1 verified with a real test** (not code inspection): an unauthenticated peer's `data-layer`/`messaging`/`blob-store`/`vault`/`app-config` call and HTTP-bridge request are all rejected.
+- [x] **Gate item #1 verified with a real test** (not code inspection): an unauthenticated peer's `data-layer`/`messaging`/`blob-store`/`vault`/`app-config` call and HTTP-bridge request are all rejected. *(B0 — see `crates/router/tests/native_dispatch_identity.rs`.)*
 - [ ] `AggregationPipeline` implemented and tested.
 - [ ] `query-raw` implemented, gated by Admin UCAN capability (not `is_init_context`).
-- [ ] Both `TODO(M4)` sites (`host_capabilities.rs:452-463`, `synsvc_native.rs:309-316`) removed.
+- [x] Both `TODO(M4)` sites (`host_capabilities.rs:452-463`, `synsvc_native.rs:309-316`) removed. *(B0 — both replaced by the `data-layer/admin` capability gate.)*
 - [ ] Per-app-instance KEK narrowing implemented; `_scope` actually used; DEK re-wrap path tested.
 - [ ] Universal Proxy handles ≥1 real cross-node typed call over JSON-RPC (full WIT⇄JSON conversion) in an e2e test; the transport-agnostic seam for later wRPC is in place.
 - [ ] A caller declaring an unsupported protocol receives a typed error (negotiation deferred, A.7).
 - [ ] `[PLT-DAP-05]` either ships as a QUIC-flow-control-backed framing spike or is explicitly deferred to M5 with rationale in `status.md`.
-- [ ] Reference scenario steps 20, 21, 24, 25 execute end-to-end.
+- [ ] Reference scenario steps 20, 21, 24, 25 execute end-to-end. *(B0 closes step 25's substrate-side enforcement — proven at the router-dispatch level by `native_dispatch_identity.rs`; steps 20/21/24 belong to A1/B1/B5.)*
 - [ ] Performance budgets verified; `criterion` output in `status.md`.
 - [ ] `traceability-matrix.md` updated with M04A evidence for `[PLT-DAT]` (Universal Proxy + conversion + aggregation + `query-raw`), `[FND-IAM]` (foundation: identity threading + UCAN context + Admin capability), `[FND-SEC]` (per-app KEK); `[PLT-DAP-05]` marked spike/M5; `[LFC-VER]` protocol-negotiation retargeted out; `[FND-FDA]`→`[FND-IAM]` citation fixed (A.2).
-- [ ] `system-architecture.md:1892` interim-security-posture note updated to record the native-dispatch gap as closed.
+- [x] `system-architecture.md:1892` interim-security-posture note updated to record the native-dispatch gap as closed. *(B0 — see the "Gap closed (M04A Slice B0)" note at that anchor.)*

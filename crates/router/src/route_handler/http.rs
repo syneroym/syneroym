@@ -47,7 +47,7 @@ use syneroym_data_blob::{
     native_types::{OpenDownloadResponse, ReadChunkResponse},
 };
 use syneroym_mqtt_broker::namespace_topic;
-use syneroym_rpc::{JsonRpcError, JsonRpcErrorResponse, JsonRpcRequest};
+use syneroym_rpc::{CallerContext, JsonRpcError, JsonRpcErrorResponse, JsonRpcRequest};
 use syneroym_sandbox_wasm::StreamRequestOutcome;
 use tokio::io::{self as tokio_io, AsyncRead, AsyncWrite};
 use tokio_util::io::StreamReader;
@@ -81,6 +81,7 @@ pub struct HttpHandler {
     pub route_handler: RouteHandler,
     pub preamble: RoutePreamble,
     pub pipeline: RoutePipeline,
+    pub caller: Option<CallerContext>,
 }
 
 impl RouteHandler {
@@ -92,11 +93,12 @@ impl RouteHandler {
         io: TokioIo<I>,
         preamble: RoutePreamble,
         pipeline: RoutePipeline,
+        caller: Option<CallerContext>,
     ) -> Result<()>
     where
         I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        let handler = Arc::new(HttpHandler { route_handler: self, preamble, pipeline });
+        let handler = Arc::new(HttpHandler { route_handler: self, preamble, pipeline, caller });
 
         let mut builder = AutoBuilder::new(TokioExecutor::new());
         // Many real HTTP/1.1 clients (and every client this slice's own
@@ -147,10 +149,24 @@ async fn dispatch_native(
     route_handler: &RouteHandler,
     pipeline: &RoutePipeline,
     preamble: &RoutePreamble,
+    caller: Option<&CallerContext>,
     interface: &str,
     method: &str,
     params: Value,
 ) -> Result<DispatchOutcome> {
+    // Every bridged data-layer/messaging route reaches native dispatch
+    // through this shared fn, so one guard here covers them all and maps to
+    // a clean 401 (ADR-0016 §3, ADR-0016 §4.4) -- rather than the 500 a raw
+    // `dispatch_json_rpc_once` rejection would surface. Callers that are
+    // already self-authorizing by another mechanism (the signed-URL blob
+    // GET, see `handle_blob_get`) pass an explicit `service_system` caller,
+    // never `None`, so they never hit this guard.
+    if caller.is_none() {
+        return Ok(DispatchOutcome::Error {
+            code: UNAUTHENTICATED_RPC_CODE,
+            message: format!("unauthenticated caller for native interface '{interface}'"),
+        });
+    }
     let request = JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
         method: method.to_string(),
@@ -159,7 +175,8 @@ async fn dispatch_native(
     };
     let body = serde_json::to_vec(&request)?;
     let synthetic = RoutePreamble { interface: interface.to_string(), ..preamble.clone() };
-    let response_bytes = route_handler.dispatch_json_rpc_once(pipeline, &synthetic, &body).await?;
+    let response_bytes =
+        route_handler.dispatch_json_rpc_once(pipeline, &synthetic, caller, &body).await?;
     let response: Value = serde_json::from_slice(&response_bytes)
         .map_err(|e| anyhow!("malformed native-dispatch response: {e}"))?;
     if let Some(error) = response.get("error") {
@@ -171,6 +188,12 @@ async fn dispatch_native(
         Ok(DispatchOutcome::Success(response.get("result").cloned().unwrap_or(Value::Null)))
     }
 }
+
+/// Reserved JSON-RPC error code for "no verifiable caller identity" on a
+/// bridged native-capability request (M04A Slice B0) -- never emitted by a
+/// native service itself, only by the `dispatch_native` guard above, and
+/// mapped to HTTP 401 below rather than the default 500.
+const UNAUTHENTICATED_RPC_CODE: i32 = -32090;
 
 /// The `data-layer`/`blob-store`/JSON-RPC error -> HTTP status mapping
 /// table, defined once and reused by every bridged route (task.md's Slice 7
@@ -184,7 +207,8 @@ fn status_for_rpc_error_code(code: i32) -> StatusCode {
         -32011 => StatusCode::NOT_FOUND,         // data-layer collection not found
         -32012 => StatusCode::BAD_REQUEST,       // data-layer schema violation
         -32013 => StatusCode::TOO_MANY_REQUESTS, // data-layer quota exceeded
-        -32602 => StatusCode::BAD_REQUEST,       // JSON-RPC invalid params
+        UNAUTHENTICATED_RPC_CODE => StatusCode::UNAUTHORIZED,
+        -32602 => StatusCode::BAD_REQUEST, // JSON-RPC invalid params
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
@@ -388,7 +412,12 @@ impl HttpHandler {
 
         match self
             .route_handler
-            .dispatch_json_rpc_once(&self.pipeline, &self.preamble, &body_bytes)
+            .dispatch_json_rpc_once(
+                &self.pipeline,
+                &self.preamble,
+                self.caller.as_ref(),
+                &body_bytes,
+            )
             .await
         {
             Ok(payload) => {
@@ -412,6 +441,7 @@ impl HttpHandler {
             &self.route_handler,
             &self.pipeline,
             &self.preamble,
+            self.caller.as_ref(),
             interface,
             method,
             params,
@@ -871,8 +901,28 @@ impl HttpHandler {
             ));
         }
 
+        // TODO(M04B/FDAE): the signed-URL HMAC is the B0 authorization for
+        // blob GET. Final policy (who may fetch which blob) is enforced by
+        // FDAE (M04B) against the resolved caller; `service_system` is an
+        // interim system identity.
+        //
+        // This bypasses `self.dispatch()` (bound to `self.caller`, which may
+        // be `None` for an anonymous signed-URL request) deliberately -- the
+        // HMAC verified above is this route's authorization, not the
+        // connection's delegation.
+        let system_caller = CallerContext::service_system(&self.preamble.service_id);
         let open_params = serde_json::json!({"hash": hash, "offset": 0});
-        let download_id = match self.dispatch("blob-store", "open-download", open_params).await? {
+        let download_id = match dispatch_native(
+            &self.route_handler,
+            &self.pipeline,
+            &self.preamble,
+            Some(&system_caller),
+            "blob-store",
+            "open-download",
+            open_params,
+        )
+        .await?
+        {
             DispatchOutcome::Success(value) => {
                 let resp: OpenDownloadResponse = serde_json::from_value(value)
                     .map_err(|e| anyhow!("malformed open-download response: {e}"))?;
@@ -890,6 +940,7 @@ impl HttpHandler {
                 interface: "blob-store".to_string(),
                 ..self.preamble.clone()
             },
+            caller: system_caller,
             download_id,
             closed: false,
         };
@@ -913,6 +964,11 @@ struct BlobDownloadState {
     route_handler: RouteHandler,
     pipeline: RoutePipeline,
     preamble: RoutePreamble,
+    /// The `service_system` caller established in `handle_blob_get` -- reused
+    /// here rather than `None`/`self.caller` so the per-chunk and cleanup
+    /// dispatches stay self-authorizing regardless of the original
+    /// connection's delegation.
+    caller: CallerContext,
     download_id: String,
     /// Set once the server side is known to have already released
     /// `download_id` on its own (the EOF path in `dispatch_blob_store`'s
@@ -938,12 +994,14 @@ impl Drop for BlobDownloadState {
         let route_handler = self.route_handler.clone();
         let pipeline = self.pipeline.clone();
         let preamble = self.preamble.clone();
+        let caller = self.caller.clone();
         let download_id = self.download_id.clone();
         tokio::spawn(async move {
             let _ = dispatch_native(
                 &route_handler,
                 &pipeline,
                 &preamble,
+                Some(&caller),
                 "blob-store",
                 "close-download",
                 serde_json::json!({"download_id": download_id}),
@@ -968,6 +1026,7 @@ async fn blob_download_step(
         &state.route_handler,
         &state.pipeline,
         &state.preamble,
+        Some(&state.caller),
         "blob-store",
         "read-chunk",
         params,

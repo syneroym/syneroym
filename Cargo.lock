@@ -7508,6 +7508,7 @@ dependencies = [
  "httparse",
  "serde_json",
  "syneroym-core",
+ "syneroym-identity",
  "syneroym-rpc",
  "syneroym-sdk",
  "tokio",
@@ -7826,6 +7827,7 @@ dependencies = [
  "syneroym-data-keystore",
  "syneroym-identity",
  "syneroym-mqtt-broker",
+ "syneroym-rpc",
  "syneroym-sandbox-wasm",
  "syneroym-sdk",
  "syneroym-wit-interfaces",
@@ -7862,6 +7864,7 @@ dependencies = [
  "rand 0.9.4",
  "serde",
  "serde_json",
+ "syneroym-control-plane",
  "syneroym-core",
  "syneroym-data-blob",
  "syneroym-data-db",
@@ -7870,6 +7873,7 @@ dependencies = [
  "syneroym-mqtt-broker",
  "syneroym-rpc",
  "syneroym-sandbox-wasm",
+ "tempfile",
  "tokio",
  "tokio-tungstenite",
  "tokio-util",
@@ -7888,6 +7892,7 @@ dependencies = [
  "dashmap",
  "serde",
  "serde_json",
+ "syneroym-ucan",
  "thiserror 2.0.18",
  "tokio",
 ]
@@ -7946,6 +7951,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "hex",
  "iroh",
  "rand 0.9.4",
  "reqwest 0.13.4",
@@ -8041,6 +8047,15 @@ dependencies = [
  "tracing-subscriber",
  "webrtc",
  "z32",
+]
+
+[[package]]
+name = "syneroym-ucan"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "syneroym-identity",
 ]
 
 [[package]]

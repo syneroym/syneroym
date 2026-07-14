@@ -17,6 +17,7 @@ use iroh::{
 pub mod mapper;
 use serde_json::Value;
 use syneroym_core::dht_registry::{EndpointMechanism, RegistryClient, SignedEndpointInfo};
+use syneroym_identity::Identity;
 use syneroym_router::{RoutePreamble, RouteProtocol, RouteTransport, SYNEROYM_ALPN};
 use syneroym_rpc::{
     JsonRpcRequest, JsonRpcResponse, MESSAGING_MESSAGE_METHOD, MessagingNotification, framing,
@@ -49,6 +50,17 @@ pub struct SyneroymClient {
     provided_mechanisms: Option<Vec<EndpointMechanism>>,
     connection: Option<TransportConnection>,
     connect_timeout: Duration,
+    /// A self-asserted caller identity (pubkey only, no delegation) sent on
+    /// every outbound preamble (M04A Slice B0, ADR-0016 §4.2/§0.5). Without
+    /// it, every SDK-driven call resolves to the anonymous bucket once the
+    /// router makes verify_preamble mandatory for native-capability
+    /// dispatch.
+    ///
+    /// TODO(M04B/FDAE): a self-asserted pubkey is an assertion, not proof-
+    /// of-possession (the no-delegation handshake path does not challenge
+    /// it). B1/M04B tighten this to verified UCAN chains; B0 only needs
+    /// "not anonymous."
+    identity: Identity,
 }
 
 impl Debug for SyneroymClient {
@@ -59,6 +71,7 @@ impl Debug for SyneroymClient {
             .field("provided_mechanisms", &self.provided_mechanisms)
             .field("connection", &self.connection)
             .field("connect_timeout", &self.connect_timeout)
+            .field("identity", &self.identity)
             .finish()
     }
 }
@@ -130,29 +143,58 @@ fn close_in_background(endpoint: Endpoint) {
     });
 }
 
+/// Only fails if the system's random number generator is unavailable (e.g.
+/// certain sandboxed environments) -- see `Identity::generate`. Kept as an
+/// `expect` (mirroring `RouteHandler::new_coordinator`'s own ephemeral-
+/// identity fallback) so `SyneroymClient::new`/`new_with_mechanisms` stay
+/// infallible for their many existing callers.
+#[allow(clippy::expect_used)]
+fn generate_ephemeral_identity() -> Identity {
+    Identity::generate().expect("failed to generate ephemeral SDK client identity")
+}
+
 impl SyneroymClient {
     #[must_use]
-    pub const fn new(service_id: String, registry_url: String) -> Self {
+    pub fn new(service_id: String, registry_url: String) -> Self {
         Self {
             service_id,
             registry_url,
             provided_mechanisms: None,
             connection: None,
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
+            identity: generate_ephemeral_identity(),
         }
     }
 
     #[must_use]
-    pub const fn new_with_mechanisms(
-        service_id: String,
-        mechanisms: Vec<EndpointMechanism>,
-    ) -> Self {
+    pub fn new_with_mechanisms(service_id: String, mechanisms: Vec<EndpointMechanism>) -> Self {
         Self {
             service_id,
             registry_url: String::new(),
             provided_mechanisms: Some(mechanisms),
             connection: None,
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
+            identity: generate_ephemeral_identity(),
+        }
+    }
+
+    /// Like [`Self::new`], but with a caller-supplied, stable identity
+    /// (rather than a freshly generated ephemeral one) -- for callers that
+    /// need a *known* DID across restarts (e.g. `roymctl`, the client
+    /// gateway using the node's own identity).
+    #[must_use]
+    pub const fn new_with_identity(
+        service_id: String,
+        registry_url: String,
+        identity: Identity,
+    ) -> Self {
+        Self {
+            service_id,
+            registry_url,
+            provided_mechanisms: None,
+            connection: None,
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
+            identity,
         }
     }
 
@@ -331,7 +373,11 @@ impl SyneroymClient {
                 let (mut send, recv) = conn.open_bi().await?;
 
                 // Every stream must start with a RoutePreamble identifying the target service.
-                let preamble = RoutePreamble::binary_json_rpc(&self.service_id, interface_name);
+                // A self-asserted pubkey (no delegation) is set so this
+                // connection is not anonymous (M04A Slice B0, ADR-0016 §0.5)
+                // -- see `SyneroymClient::identity`'s doc comment.
+                let mut preamble = RoutePreamble::binary_json_rpc(&self.service_id, interface_name);
+                preamble.pubkey = Some(hex::encode(self.identity.public_key().to_bytes()));
                 send.write_all(preamble.to_preamble_line().as_bytes()).await?;
 
                 let req_bytes = serde_json::to_vec(request)?;
@@ -561,6 +607,7 @@ impl SyneroymClient {
             interface_name,
             initial_bytes,
             tcp_stream,
+            &self.identity,
         )
         .await
     }
@@ -571,19 +618,22 @@ impl SyneroymClient {
         interface_name: &str,
         initial_bytes: &[u8],
         tcp_stream: &mut TcpStream,
+        identity: &Identity,
     ) -> Result<()> {
         match conn_wrapper {
             TransportConnection::Iroh { conn, .. } => {
                 let (mut send, recv) = conn.open_bi().await?;
 
-                // Use HTTP transport for passthrough of raw requests.
+                // Use HTTP transport for passthrough of raw requests. A
+                // self-asserted pubkey (no delegation) is set so this
+                // connection is not anonymous (M04A Slice B0, ADR-0016 §0.5).
                 let preamble = RoutePreamble {
                     transport: RouteTransport::Http,
                     protocol: RouteProtocol::JsonRpc,
                     interface: interface_name.to_string(),
                     service_id: service_id.to_string(),
                     enc: None,
-                    pubkey: None,
+                    pubkey: Some(hex::encode(identity.public_key().to_bytes())),
                     delegation: None,
                     dir: None,
                 }

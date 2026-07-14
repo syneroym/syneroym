@@ -106,6 +106,11 @@ pub struct RouteHandlerInner {
     /// `blob-store/open-download`+`read-chunk` native-dispatch methods.
     pub key_store: Option<Arc<KeyStore>>,
     pub storage_provider: Option<Arc<dyn StorageProvider>>,
+    /// Interim Admin-capability allowlist root (M04A Slice B0, ADR-0015/0016
+    /// `[iam].admin_ucan_root`): a caller whose verified master DID equals
+    /// this is granted `substrate/admin`. `None` in coordinator mode
+    /// (coordinators don't host native capabilities).
+    pub admin_ucan_root: Option<String>,
 }
 
 impl Debug for RouteHandler {
@@ -183,6 +188,7 @@ impl RouteHandler {
             http_routes: deps.http_routes,
             key_store: Some(deps.key_store),
             storage_provider: Some(deps.storage_provider),
+            admin_ucan_root: config.iam.admin_ucan_root.clone(),
         });
 
         let s = Self { inner };
@@ -216,6 +222,7 @@ impl RouteHandler {
             http_routes: Arc::new(DashMap::new()),
             key_store: None,
             storage_provider: None,
+            admin_ucan_root: None,
         });
         Self { inner }
     }

@@ -69,6 +69,8 @@ pub struct SubstrateConfig {
     /// Bidirectional stream protocols (M3B Slice 6B, ADR-0014). A core,
     /// always-on capability, mirroring `mqtt`'s placement above.
     pub streaming: StreamingConfig,
+    /// Identity/capability admission (M04A Slice B0, ADR-0015/0016).
+    pub iam: IamConfig,
 }
 
 /// Useful helper functions
@@ -148,6 +150,7 @@ impl Default for SubstrateConfig {
             tls: None,
             mqtt: Default::default(),
             streaming: Default::default(),
+            iam: Default::default(),
         }
     }
 }
@@ -777,6 +780,17 @@ impl Default for StreamingConfig {
     fn default() -> Self {
         Self { max_concurrent_streams_per_service: default_max_concurrent_streams_per_service() }
     }
+}
+
+/// Identity/capability admission (M04A Slice B0). Interim: a caller whose
+/// verified DID equals `admin_ucan_root` is granted `substrate/admin`. B1
+/// replaces the direct-equality check with real UCAN chain verification
+/// rooted here.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct IamConfig {
+    /// Root DID authorized to issue Admin UCANs.
+    pub admin_ucan_root: Option<String>,
 }
 
 #[cfg(test)]

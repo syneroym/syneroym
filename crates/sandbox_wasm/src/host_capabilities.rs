@@ -23,6 +23,7 @@ use syneroym_mqtt_broker::{
     MessagingError as BrokerMessagingError, MqttBroker, namespace_topic,
     namespace_topic_for_publish,
 };
+use syneroym_rpc::{Ability, CallerContext, ResourceUri};
 use syneroym_wit_interfaces::host::syneroym::{
     app_config::app_config::{self, ConfigError},
     blob_store::blob_store::{
@@ -71,7 +72,7 @@ pub struct HostState {
     pub key_store: Arc<KeyStore>,
     pub storage_provider: Arc<dyn StorageProvider>,
     pub blob_provider: Arc<dyn BlobProvider>,
-    pub is_init_context: bool,
+    pub caller: CallerContext,
     pub config_generation: u64,
     pub messaging: MessagingContext,
     pub streaming: StreamContext,
@@ -96,7 +97,7 @@ impl HostState {
         key_store: Arc<KeyStore>,
         storage_provider: Arc<dyn StorageProvider>,
         blob_provider: Arc<dyn BlobProvider>,
-        is_init_context: bool,
+        caller: CallerContext,
         config_generation: u64,
         messaging: MessagingContext,
         streaming: StreamContext,
@@ -118,7 +119,7 @@ impl HostState {
             key_store,
             storage_provider,
             blob_provider,
-            is_init_context,
+            caller,
             config_generation,
             messaging,
             streaming,
@@ -450,8 +451,13 @@ impl store::Host for HostState {
     }
 
     async fn execute_ddl(&mut self, sql: String) -> Result<(), DataLayerError> {
-        // TODO(M4): replace is_init_context with Admin UCAN check
-        if !self.is_init_context {
+        // Admin-capability gate (ADR-0015/0016, replaces the former
+        // `is_init_context` scaffold): only a caller holding
+        // `data-layer/admin` on this component's own resource may run DDL.
+        // Lifecycle init/migrate runs as `AuthLevel::LocalElevated`
+        // (`CallerContext::local_elevated`), which carries it.
+        let resource = ResourceUri::service(&self.component_id, &self.component_id);
+        if !self.caller.has_capability(&resource, &Ability(Ability::DATA_LAYER_ADMIN.to_string())) {
             return Err(DataLayerError::PermissionDenied);
         }
         let store = open_store(
@@ -661,7 +667,7 @@ pub(crate) mod tests {
             Arc::new(KeyStore::new()),
             storage,
             test_blob_provider(),
-            false,
+            CallerContext::service_system("test-caller"),
             generation,
             test_messaging_context(),
             test_streaming_context(),
@@ -708,7 +714,7 @@ pub(crate) mod tests {
             Arc::new(KeyStore::new()),
             storage.clone(),
             test_blob_provider(),
-            false,
+            CallerContext::service_system("test-caller"),
             gen2_a,
             test_messaging_context(),
             test_streaming_context(),
@@ -719,7 +725,7 @@ pub(crate) mod tests {
             Arc::new(KeyStore::new()),
             storage.clone(),
             test_blob_provider(),
-            false,
+            CallerContext::service_system("test-caller"),
             gen1_b,
             test_messaging_context(),
             test_streaming_context(),
@@ -737,7 +743,7 @@ pub(crate) mod tests {
             Arc::new(KeyStore::new()),
             storage.clone(),
             test_blob_provider(),
-            false,
+            CallerContext::service_system("test-caller"),
             gen1_a,
             test_messaging_context(),
             test_streaming_context(),
@@ -763,7 +769,7 @@ pub(crate) mod tests {
             key_store,
             storage_provider,
             test_blob_provider(),
-            false,
+            CallerContext::service_system("test-caller"),
             0,
             test_messaging_context(),
             test_streaming_context(),

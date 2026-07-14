@@ -28,7 +28,9 @@ use syneroym_data_blob::{
 use syneroym_data_db::traits::{ServiceStore, StorageProvider};
 use syneroym_data_keystore::KeyStore;
 use syneroym_mqtt_broker::{MqttBroker, namespace_topic_for_publish};
-use syneroym_rpc::{NativeInvocation, NativeResponse, NativeService, RpcError, RpcResult};
+use syneroym_rpc::{
+    Ability, NativeInvocation, NativeResponse, NativeService, ResourceUri, RpcError, RpcResult,
+};
 use syneroym_wit_interfaces::host::syneroym::{
     app_config::app_config::ConfigError,
     data_layer::store::{
@@ -206,10 +208,12 @@ impl SynSvcNativeService {
                     value: RecordWriteValue,
                 }
                 let req: Req = parse_params(&invocation)?;
-                store
-                    .put(&req.collection, &req.value, &self.service_id)
-                    .await
-                    .map_err(data_layer_error)?;
+                let creator = invocation
+                    .caller
+                    .app_instance
+                    .as_deref()
+                    .unwrap_or(&invocation.caller.caller_did);
+                store.put(&req.collection, &req.value, creator).await.map_err(data_layer_error)?;
                 to_payload(&())
             }
             "patch" => {
@@ -300,19 +304,41 @@ impl SynSvcNativeService {
                         MutationDto::Delete(v) => Mutation::Delete(v),
                     })
                     .collect();
+                let creator = invocation
+                    .caller
+                    .app_instance
+                    .as_deref()
+                    .unwrap_or(&invocation.caller.caller_did);
                 store
-                    .batch_mutate(&req.collection, &mutations, &self.service_id)
+                    .batch_mutate(&req.collection, &mutations, creator)
                     .await
                     .map_err(|e| internal(e.to_string()))?;
                 to_payload(&())
             }
             "execute-ddl" | "execute_ddl" => {
-                // Native callers are never in a WASM init()/migrate()
-                // lifecycle context, so this is always denied -- matches
-                // the WASM host's own `is_init_context` gate.
-                // TODO(M4): replace with an Admin UCAN capability check,
-                // same as the WASM path's TODO in engine.rs.
-                Err(internal(DataLayerError::PermissionDenied.to_string()))
+                // Admin-capability gate (ADR-0015/0016, replaces the former
+                // `is_init_context` scaffold): only a caller holding
+                // `data-layer/admin` on this service's resource may run DDL.
+                // Lifecycle init/migrate runs as `AuthLevel::LocalElevated`
+                // (`CallerContext::local_elevated`), which carries it; an
+                // ordinary caller does not.
+                let resource = ResourceUri::service(
+                    invocation.caller.app_instance.as_deref().unwrap_or(&self.service_id),
+                    &self.service_id,
+                );
+                if !invocation
+                    .caller
+                    .has_capability(&resource, &Ability(Ability::DATA_LAYER_ADMIN.to_string()))
+                {
+                    return Err(data_layer_error(DataLayerError::PermissionDenied));
+                }
+                #[derive(serde::Deserialize)]
+                struct Req {
+                    sql: String,
+                }
+                let req: Req = parse_params(&invocation)?;
+                store.execute_ddl(&req.sql).await.map_err(data_layer_error)?;
+                to_payload(&())
             }
             other => Err(RpcError::MethodNotFound(format!("data-layer/{other}"))),
         }

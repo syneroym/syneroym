@@ -5,14 +5,15 @@
 
 use std::{
     fmt::{self, Debug, Formatter},
-    str,
+    fs, str,
     sync::Arc,
 };
 
 use anyhow::Result;
 use dashmap::DashMap;
 use httparse::{EMPTY_HEADER, Request, Status};
-use syneroym_core::config::SubstrateConfig;
+use syneroym_core::config::{DEFAULT_SUBSTRATE_KEY_FILE, SubstrateConfig};
+use syneroym_identity::Identity;
 use syneroym_sdk::SyneroymClient;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -21,10 +22,49 @@ use tokio::{
 };
 use tracing::{debug, error, info};
 
+/// Loads the node's own substrate identity, the same key file
+/// `syneroym_substrate::identity::setup_substrate_identity` loads (by the
+/// same path-resolution rule) -- generating and persisting it if this is
+/// the first component to run (init order between the client gateway and
+/// the connection router's own identity setup is not guaranteed, see
+/// `RuntimeServices::init` vs. `setup_connection_router` in
+/// `crates/substrate/src/runtime.rs`), so whichever runs first creates the
+/// on-disk key and the other loads the same one back.
+///
+/// TODO(post-B0): present the substrate-owner (controller) DID as caller by
+/// carrying an owner->node DelegationCertificate here (verify_preamble
+/// already resolves master_did from it). Requires provisioning that
+/// owner-signed delegation (none exists yet -- only ControllerAgreement).
+/// B0 uses node DID.
+fn load_or_generate_node_identity(config: &SubstrateConfig) -> Result<Identity> {
+    let key_path = config
+        .identity
+        .key
+        .clone()
+        .unwrap_or_else(|| config.app_data_dir.join(DEFAULT_SUBSTRATE_KEY_FILE));
+
+    if let Some(parent) = key_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    if key_path.exists() {
+        Identity::load_from_path(&key_path)
+    } else {
+        let id = Identity::generate()?;
+        id.save_to_path(&key_path)?;
+        Ok(id)
+    }
+}
+
 #[derive(Debug)]
 struct GatewayState {
     registry_url: String,
     clients: DashMap<String, Arc<Mutex<SyneroymClient>>>,
+    /// The node's own identity (M04A Slice B0, ADR-0016 §0.5) -- presented
+    /// as the caller DID for every proxied request. Reconstructed per
+    /// downstream `SyneroymClient` from the same key bytes (`Identity` is
+    /// deliberately not `Clone`), rather than shared as a single instance.
+    identity: Identity,
 }
 
 /// `ClientGateway`: Acts as an entry point for local HTTP/WebSocket clients to
@@ -54,8 +94,9 @@ impl ClientGateway {
 
         let port = config.roles.client_gateway.as_ref().map_or(7000, |g| g.http_port);
         let registry_url = config.substrate.registry_url.clone().unwrap_or_default();
+        let identity = load_or_generate_node_identity(config)?;
 
-        let state = Arc::new(GatewayState { registry_url, clients: DashMap::new() });
+        let state = Arc::new(GatewayState { registry_url, clients: DashMap::new(), identity });
 
         Ok(Self { port, state, shutdown_tx: None })
     }
@@ -150,9 +191,15 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> R
                     .clients
                     .entry(service_id.clone())
                     .or_insert_with(|| {
-                        Arc::new(Mutex::new(SyneroymClient::new(
+                        // Reconstructed from the same key bytes rather than
+                        // shared, since `Identity` is deliberately not
+                        // `Clone` -- every downstream client presents the
+                        // same node DID.
+                        let identity = Identity::from_bytes(&state.identity.to_bytes());
+                        Arc::new(Mutex::new(SyneroymClient::new_with_identity(
                             service_id.clone(),
                             state.registry_url.clone(),
+                            identity,
                         )))
                     })
                     .clone();
@@ -169,12 +216,14 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> R
                     )
                 };
 
+                let passthrough_identity = Identity::from_bytes(&state.identity.to_bytes());
                 SyneroymClient::passthrough_with_conn(
                     conn,
                     &service_id,
                     &interface,
                     &buf[..bytes_read],
                     &mut stream,
+                    &passthrough_identity,
                 )
                 .await?;
                 return Ok(());

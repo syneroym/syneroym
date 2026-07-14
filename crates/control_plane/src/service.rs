@@ -115,9 +115,11 @@ impl NativeService for ControlPlaneService {
         info!("Orchestrator received dispatch: {}.{}", invocation.interface, invocation.method);
 
         if invocation.interface.as_str() == SECURITY_INTERFACE {
-            // Slice 2A keeps KEK and secret mutations on the substrate native
-            // management interface. Full remote authorization with UCAN/FDAE is
-            // deferred to M4.
+            // TODO(M04B/FDAE): security ops (KEK/secret) are node-owner
+            // operations; final authorization is FDAE against
+            // caller.session (substrate/admin). B0 threads the caller
+            // (`invocation.caller`, available to every arm below) but does
+            // not yet gate -- roymctl carries only a self-asserted identity.
             match invocation.method.as_str() {
                 "inject-kek" => {
                     let (kek_hex,): (String,) =
@@ -269,7 +271,7 @@ mod tests {
     use syneroym_data_blob::ObjectStoreBlobProvider;
     use syneroym_data_db::SqliteStorageProvider;
     use syneroym_mqtt_broker::MqttBrokerConfig;
-    use syneroym_rpc::JsonRpcRequest;
+    use syneroym_rpc::{CallerContext, JsonRpcRequest};
     use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
         ArtifactSource, ServiceConfig, ServiceType as WitServiceType, TcpManifest, WasmManifest,
     };
@@ -384,6 +386,7 @@ mod tests {
             let method_name = name.strip_prefix('%').unwrap_or(name);
 
             let invocation = NativeInvocation {
+                caller: CallerContext::service_system("test-caller"),
                 interface: "orchestrator".to_string(),
                 method: method_name.to_string(),
                 params: Value::Null,
@@ -446,6 +449,7 @@ mod tests {
         let kek = hex::encode([1u8; 32]);
         let inject_res = service
             .dispatch(NativeInvocation {
+                caller: CallerContext::service_system("test-caller"),
                 interface: "security".to_string(),
                 method: "inject-kek".to_string(),
                 params: serde_json::to_value((kek,)).unwrap(),
@@ -457,6 +461,7 @@ mod tests {
         let new_kek = hex::encode([2u8; 32]);
         let rotate_res = service
             .dispatch(NativeInvocation {
+                caller: CallerContext::service_system("test-caller"),
                 interface: "security".to_string(),
                 method: "rotate-kek".to_string(),
                 params: serde_json::to_value((new_kek,)).unwrap(),
@@ -467,6 +472,7 @@ mod tests {
 
         let secret_res = service
             .dispatch(NativeInvocation {
+                caller: CallerContext::service_system("test-caller"),
                 interface: "security".to_string(),
                 method: "set-secret".to_string(),
                 params: serde_json::to_value((
@@ -554,6 +560,7 @@ mod tests {
         // data-layer: create-collection, put, get
         native
             .dispatch(NativeInvocation {
+                caller: CallerContext::service_system("test-caller"),
                 interface: "data-layer".to_string(),
                 method: "create-collection".to_string(),
                 params: serde_json::json!({"name": "items", "indexes": []}),
@@ -562,6 +569,7 @@ mod tests {
             .unwrap();
         native
             .dispatch(NativeInvocation {
+                caller: CallerContext::service_system("test-caller"),
                 interface: "data-layer".to_string(),
                 method: "put".to_string(),
                 params: serde_json::json!({
@@ -573,6 +581,7 @@ mod tests {
             .unwrap();
         let get_resp = native
             .dispatch(NativeInvocation {
+                caller: CallerContext::service_system("test-caller"),
                 interface: "data-layer".to_string(),
                 method: "get".to_string(),
                 params: serde_json::json!({"collection": "items", "id": "1"}),
@@ -584,6 +593,7 @@ mod tests {
         // blob-store one-shot: put-blob / get-blob
         let put_resp = native
             .dispatch(NativeInvocation {
+                caller: CallerContext::service_system("test-caller"),
                 interface: "blob-store".to_string(),
                 method: "put-blob".to_string(),
                 params: serde_json::json!({"data": b"hello native world".to_vec()}),
@@ -593,6 +603,7 @@ mod tests {
         let hash: String = serde_json::from_value(put_resp.payload).unwrap();
         let get_blob_resp = native
             .dispatch(NativeInvocation {
+                caller: CallerContext::service_system("test-caller"),
                 interface: "blob-store".to_string(),
                 method: "get-blob".to_string(),
                 params: serde_json::json!({"hash": hash}),
@@ -606,6 +617,7 @@ mod tests {
         // open-upload/write-chunk/finish-upload/open-download/read-chunk
         let open_upload_resp = native
             .dispatch(NativeInvocation {
+                caller: CallerContext::service_system("test-caller"),
                 interface: "blob-store".to_string(),
                 method: "open-upload".to_string(),
                 params: serde_json::json!({}),
@@ -615,6 +627,7 @@ mod tests {
         let upload_id = open_upload_resp.payload["upload_id"].as_str().unwrap().to_string();
         native
             .dispatch(NativeInvocation {
+                caller: CallerContext::service_system("test-caller"),
                 interface: "blob-store".to_string(),
                 method: "write-chunk".to_string(),
                 params: serde_json::json!({"upload_id": upload_id, "chunk": b"streamed ".to_vec()}),
@@ -623,6 +636,7 @@ mod tests {
             .unwrap();
         native
             .dispatch(NativeInvocation {
+                caller: CallerContext::service_system("test-caller"),
                 interface: "blob-store".to_string(),
                 method: "write-chunk".to_string(),
                 params: serde_json::json!({"upload_id": upload_id, "chunk": b"content".to_vec()}),
@@ -631,6 +645,7 @@ mod tests {
             .unwrap();
         let finish_resp = native
             .dispatch(NativeInvocation {
+                caller: CallerContext::service_system("test-caller"),
                 interface: "blob-store".to_string(),
                 method: "finish-upload".to_string(),
                 params: serde_json::json!({"upload_id": upload_id}),
@@ -641,6 +656,7 @@ mod tests {
 
         let open_download_resp = native
             .dispatch(NativeInvocation {
+                caller: CallerContext::service_system("test-caller"),
                 interface: "blob-store".to_string(),
                 method: "open-download".to_string(),
                 params: serde_json::json!({"hash": streamed_hash, "offset": 0}),
@@ -650,6 +666,7 @@ mod tests {
         let download_id = open_download_resp.payload["download_id"].as_str().unwrap().to_string();
         let read_resp = native
             .dispatch(NativeInvocation {
+                caller: CallerContext::service_system("test-caller"),
                 interface: "blob-store".to_string(),
                 method: "read-chunk".to_string(),
                 params: serde_json::json!({"download_id": download_id, "max_bytes": 1024}),
@@ -667,6 +684,7 @@ mod tests {
         store.write_secret("db-password", b"s3cr3t").await.unwrap();
         let reveal_resp = native
             .dispatch(NativeInvocation {
+                caller: CallerContext::service_system("test-caller"),
                 interface: "vault".to_string(),
                 method: "reveal".to_string(),
                 params: serde_json::json!({"key": "db-password"}),
@@ -685,6 +703,7 @@ mod tests {
             .unwrap();
         let config_resp = native
             .dispatch(NativeInvocation {
+                caller: CallerContext::service_system("test-caller"),
                 interface: "app-config".to_string(),
                 method: "get".to_string(),
                 params: serde_json::json!({"key": "greeting"}),
@@ -703,6 +722,7 @@ mod tests {
             messaging_broker.subscribe(format!("svc/{service_id}/orders/new")).await.unwrap();
         let publish_resp = native
             .dispatch(NativeInvocation {
+                caller: CallerContext::service_system("test-caller"),
                 interface: "messaging".to_string(),
                 method: "publish".to_string(),
                 params: serde_json::json!({"topic": "orders/new", "payload": b"order-1".to_vec()}),
@@ -802,6 +822,7 @@ mod tests {
         // field must accept plain `"type"` over the wire).
         native
             .dispatch(NativeInvocation {
+                caller: CallerContext::service_system("test-caller"),
                 interface: "data-layer".to_string(),
                 method: "create-collection".to_string(),
                 params: serde_json::json!({
@@ -818,6 +839,7 @@ mod tests {
         // snake_case `{"type": "put", "value": {...}}` this API expects).
         native
             .dispatch(NativeInvocation {
+                caller: CallerContext::service_system("test-caller"),
                 interface: "data-layer".to_string(),
                 method: "batch-mutate".to_string(),
                 params: serde_json::json!({
@@ -835,6 +857,7 @@ mod tests {
 
         let get_a = native
             .dispatch(NativeInvocation {
+                caller: CallerContext::service_system("test-caller"),
                 interface: "data-layer".to_string(),
                 method: "get".to_string(),
                 params: serde_json::json!({"collection": "scored_items", "id": "a"}),
@@ -846,6 +869,7 @@ mod tests {
 
         let get_b = native
             .dispatch(NativeInvocation {
+                caller: CallerContext::service_system("test-caller"),
                 interface: "data-layer".to_string(),
                 method: "get".to_string(),
                 params: serde_json::json!({"collection": "scored_items", "id": "b"}),
@@ -923,6 +947,7 @@ mod tests {
         // internal failure.
         let not_found_err = native
             .dispatch(NativeInvocation {
+                caller: CallerContext::service_system("test-caller"),
                 interface: "blob-store".to_string(),
                 method: "get-blob".to_string(),
                 params: serde_json::json!({"hash": "0".repeat(64)}),
@@ -934,6 +959,7 @@ mod tests {
         // Quota-exceeded must likewise surface distinctly.
         let quota_err = native
             .dispatch(NativeInvocation {
+                caller: CallerContext::service_system("test-caller"),
                 interface: "blob-store".to_string(),
                 method: "put-blob".to_string(),
                 params: serde_json::json!({"data": vec![0u8; 100]}),
