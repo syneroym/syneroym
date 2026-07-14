@@ -50,8 +50,17 @@
 //!   `none` — a documented collapse, not silent corruption. Single-level
 //!   `option<T>` is fully lossless.
 //! - **non-finite floats.** `NaN`/`±Infinity` cannot be a JSON number; encoding
-//!   one is a hard error, and decoding a finite-but-out-of-`f32`-range number
-//!   into `f32` (which would cast to `±inf`) is likewise an error.
+//!   one is a hard error. Decoding is guarded symmetrically: a finite JSON
+//!   number that would *overflow* `f32` (cast to `±inf`) or *underflow* it (a
+//!   nonzero value that casts to `0.0`) is likewise a hard error, never a
+//!   silent value change.
+//!
+//! `map<K,V>` requires wasmtime's unstable `wasm_component_model_map` engine
+//! feature, which `AppSandboxEngine::build_wasm_engine` does not enable — so
+//! `Type::Map`/`Val::Map` cannot occur for any component this substrate can
+//! actually load today. The encode/decode arms exist for component-model
+//! completeness (and are unit-tested on the encode side), but are not
+//! reachable in practice.
 
 use std::fmt;
 
@@ -140,9 +149,13 @@ pub fn json_to_val(json: &Value, ty: &Type) -> Result<Val> {
         Type::S64 => Val::S64(json.as_i64().ok_or_else(|| type_error("s64", json))?),
         Type::U64 => Val::U64(json.as_u64().ok_or_else(|| type_error("u64", json))?),
         Type::Float32 => {
-            let f = json.as_f64().ok_or_else(|| type_error("float32", json))? as f32;
-            if !f.is_finite() {
-                return Err(anyhow::anyhow!("float32 value is out of range or non-finite: {json}"));
+            let original = json.as_f64().ok_or_else(|| type_error("float32", json))?;
+            let f = original as f32;
+            // Reject both overflow (finite f64 casts to ±inf) and underflow
+            // (nonzero finite f64 casts to 0.0) — either silently changes the
+            // value's meaning rather than losing only unrepresentable precision.
+            if !f.is_finite() || (f == 0.0 && original != 0.0) {
+                return Err(anyhow::anyhow!("float32 value is out of range: {json}"));
             }
             Val::Float32(f)
         }
@@ -356,7 +369,22 @@ pub fn wasm_results_to_json_string(wasm_results: &[Val]) -> Result<String> {
         [] => Ok(String::new()),
         [single] => single_result_to_string(single),
         many => {
-            let arr = many.iter().map(val_to_json).collect::<Result<Vec<_>>>()?;
+            // A WIT function can only ever declare a single top-level result
+            // (a tuple for "multiple values" is one `Val::Tuple`), so this arm
+            // is unreachable for any WIT-derived component today. Handled for
+            // component-model completeness, with the same err-propagation
+            // semantics as the single-result case for consistency.
+            let mut arr = Vec::with_capacity(many.len());
+            for val in many {
+                if let Val::Result(Err(payload)) = val {
+                    let detail = match payload {
+                        Some(err) => val_to_json(err)?,
+                        None => Value::Null,
+                    };
+                    return Err(anyhow::anyhow!("component returned error: {detail}"));
+                }
+                arr.push(val_to_json(val)?);
+            }
             Ok(serde_json::to_string(&Value::Array(arr))?)
         }
     }
@@ -419,7 +447,10 @@ fn map_to_json(entries: &[(Val, Val)]) -> Result<Value> {
 fn decode_result_arm(json: &Value, payload_ty: Option<Type>) -> Result<Option<Box<Val>>> {
     match payload_ty {
         Some(ty) => Ok(Some(Box::new(json_to_val(json, &ty)?))),
-        None => Ok(None),
+        None if json.is_null() => Ok(None),
+        None => Err(anyhow::anyhow!(
+            "result arm has no payload type but a non-null value was provided: {json}"
+        )),
     }
 }
 
@@ -593,13 +624,21 @@ mod tests {
   (func (export "take-f64")  (param "x" f64)  (result bool) (canon lift (core func $i "f_f64")))
   (func (export "take-char") (param "x" char) (result bool) (canon lift (core func $i "f_i32")))
   (func (export "take-bool") (param "x" bool) (result bool) (canon lift (core func $i "f_i32")))
-  ;; Structural (anonymous) composites are exportable at top level; nominal
-  ;; types (record/variant/enum/flags) are covered via the real data-layer-test
-  ;; component instead (the component model requires them to be named types on
-  ;; an exported function, which is awkward to express in hand-written WAT).
+  ;; Nominal types (record/variant/enum/flags) referenced by an exported
+  ;; function must themselves be exported *by name*; a plain `(type $t ...)`
+  ;; used inline is rejected ("func not valid to be used as export"). The fix
+  ;; is a named export alias: `(export $alias "name" (type $t))`, then
+  ;; reference `$alias` (not `$t`) in the function signature. `record`/
+  ;; `variant`/`enum` are covered via the real data-layer-test component
+  ;; instead (already has all three); `flags` isn't used by any real WIT
+  ;; interface in the repo, so it is covered here via this technique.
+  (type $flags-t (flags "read" "write" "exec"))
+  (export $flags-alias "perm-flags" (type $flags-t))
+  (func (export "take-flags") (param "x" $flags-alias) (result bool) (canon lift (core func $i "f_i32")))
   (func (export "take-tuple") (param "x" (tuple u32 s32)) (result bool) (canon lift (core func $i "f2")))
   (func (export "take-option") (param "x" (option u32)) (result bool) (canon lift (core func $i "f2")))
   (func (export "take-result") (param "x" (result u32 (error u32))) (result bool) (canon lift (core func $i "f2")))
+  (func (export "take-result-unit-ok") (param "x" (result (error u32))) (result bool) (canon lift (core func $i "f2")))
   (func (export "take-nested-option") (param "x" (option (option u32))) (result bool) (canon lift (core func $i "f3")))
   (func (export "take-two") (param "a" u32) (param "b" u32) (result bool) (canon lift (core func $i "f2")))
   (func (export "take-req-opt") (param "a" u32) (param "b" (option u32)) (result bool) (canon lift (core func $i "f3")))
@@ -661,6 +700,42 @@ mod tests {
         assert_roundtrip(Val::Option(None), &ty("take-option"));
         assert_roundtrip(Val::Result(Ok(Some(Box::new(Val::U32(1))))), &ty("take-result"));
         assert_roundtrip(Val::Result(Err(Some(Box::new(Val::U32(9))))), &ty("take-result"));
+        assert_roundtrip(Val::Flags(vec!["read".into(), "exec".into()]), &ty("take-flags"));
+        assert_roundtrip(Val::Flags(vec![]), &ty("take-flags"));
+    }
+
+    #[test]
+    fn json_to_val_result_unit_arm_rejects_stray_payload() {
+        let engine = sync_engine();
+        let component = Component::new(&engine, FIXTURE_WAT).unwrap();
+        let ct = component.component_type();
+        let ty = param_type(&engine, &ct, "take-result-unit-ok", 0);
+
+        // Correct shape: the unit `ok` arm carries `null`.
+        assert_eq!(json_to_val(&json!({"ok": null}), &ty).unwrap(), Val::Result(Ok(None)));
+        // A payload on a unit arm must be rejected, not silently dropped.
+        assert!(json_to_val(&json!({"ok": 5}), &ty).is_err());
+        // The `err` arm still carries its declared u32 payload.
+        assert_eq!(
+            json_to_val(&json!({"err": 9}), &ty).unwrap(),
+            Val::Result(Err(Some(Box::new(Val::U32(9)))))
+        );
+    }
+
+    #[test]
+    fn json_to_val_flags_rejects_unknown_and_dedups() {
+        let engine = sync_engine();
+        let component = Component::new(&engine, FIXTURE_WAT).unwrap();
+        let ct = component.component_type();
+        let ty = param_type(&engine, &ct, "take-flags", 0);
+
+        assert!(json_to_val(&json!(["bogus"]), &ty).is_err());
+        assert!(json_to_val(&json!([1]), &ty).is_err());
+        // Duplicate entries collapse (set semantics).
+        assert_eq!(
+            json_to_val(&json!(["read", "read"]), &ty).unwrap(),
+            Val::Flags(vec!["read".into()])
+        );
     }
 
     #[test]
@@ -689,8 +764,13 @@ mod tests {
         let component = Component::new(&engine, FIXTURE_WAT).unwrap();
         let ct = component.component_type();
         let ty = param_type(&engine, &ct, "take-f32", 0);
-        // A finite f64 outside f32 range would cast to inf; must error.
+        // A finite f64 outside f32 range would cast to inf (overflow); must error.
         assert!(json_to_val(&json!(1e40), &ty).is_err());
+        // A finite, nonzero f64 smaller than f32's min subnormal would cast to
+        // 0.0 (underflow) -- must error, not silently become zero.
+        assert!(json_to_val(&json!(1e-50), &ty).is_err());
+        // A genuine zero is not underflow and must succeed.
+        assert_eq!(json_to_val(&json!(0.0), &ty).unwrap(), Val::Float32(0.0));
         // Range-checked integers.
         let ty_u8 = param_type(&engine, &ct, "take-u8", 0);
         assert!(json_to_val(&json!(256), &ty_u8).is_err());
@@ -796,6 +876,17 @@ mod tests {
             wasm_results_to_json_string(&[Val::Record(vec![("a".into(), Val::U32(1))])]).unwrap(),
             r#"{"a":1}"#
         );
+        // A `result::err` in the (structurally unreachable for WIT-derived
+        // components, but handled for completeness) multi-result arm still
+        // propagates as a transport error, matching the single-result case.
+        assert!(
+            wasm_results_to_json_string(&[
+                Val::U32(1),
+                Val::Result(Err(Some(Box::new(Val::String("boom".into()))))),
+            ])
+            .is_err()
+        );
+        assert_eq!(wasm_results_to_json_string(&[Val::U32(1), Val::U32(2)]).unwrap(), "[1,2]");
     }
 
     // ------------------------------------------------------------------
