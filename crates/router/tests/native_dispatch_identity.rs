@@ -37,8 +37,8 @@ use syneroym_router::{
     RouteProtocol, RouteTransport, ServiceStage, TransportStage,
 };
 use syneroym_rpc::{
-    AuthLevel, CallerContext, NativeDispatchRegistry, NativeInvocation, NativeResponse,
-    NativeService, RpcResult, SessionContext,
+    Ability, AuthLevel, CallerContext, Capability, NativeDispatchRegistry, NativeInvocation,
+    NativeResponse, NativeService, ResourceUri, RpcResult, SessionContext,
 };
 use syneroym_sandbox_wasm::AppSandboxEngine;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
@@ -70,6 +70,27 @@ fn test_caller(did: &str) -> CallerContext {
         caller_did: did.to_string(),
         app_instance: None,
         session: SessionContext::default(),
+        auth: AuthLevel::Delegated,
+    }
+}
+
+/// The same `[iam].admin_ucan_root` grant `build_caller`
+/// (`crates/router/src/route_handler/io.rs`) constructs for a caller whose
+/// master DID matches the configured admin root: `substrate/admin` on
+/// `substrate:<did>`.
+fn admin_caller(did: &str) -> CallerContext {
+    CallerContext {
+        caller_did: did.to_string(),
+        app_instance: None,
+        session: SessionContext {
+            subject_did: did.to_string(),
+            capabilities: vec![Capability {
+                with: ResourceUri::substrate(did),
+                can: Ability(Ability::SUBSTRATE_ADMIN.to_string()),
+                caveats: None,
+            }],
+            ..Default::default()
+        },
         auth: AuthLevel::Delegated,
     }
 }
@@ -243,6 +264,80 @@ async fn authenticated_caller_identity_becomes_creator_id_not_service_id() {
     assert_ne!(result["creator_id"], service_id);
 }
 
+/// `execute-ddl` (native) is gated on `data-layer/admin` on the service's
+/// own resource (ADR-0015/0016) -- an ordinary caller must be denied.
+#[tokio::test]
+async fn execute_ddl_denied_for_ordinary_native_caller() {
+    let (route_handler, _http_routes) = test_route_handler().await;
+
+    let service_id = "ddl-deny-svc".to_string();
+    let key_store = Arc::new(KeyStore::new());
+    let temp_dir = tempfile::tempdir().unwrap();
+    let storage_provider = Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+    let blob_provider: Arc<dyn BlobProvider> =
+        Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+    let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+    let data_service = Arc::new(SynSvcNativeService::new(
+        service_id.clone(),
+        key_store,
+        storage_provider,
+        blob_provider,
+        messaging_broker,
+    ));
+    route_handler.register_native_service(service_id.clone(), data_service);
+
+    let pipeline = raw_pipeline(&service_id);
+    let preamble = preamble_for(&service_id, "data-layer");
+    let caller = test_caller("did:key:z6MkOrdinaryCaller");
+
+    let body = json_rpc_body("execute-ddl", json!({"sql": "CREATE TABLE x (id TEXT)"}));
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&caller), &body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert_eq!(
+        resp["error"]["code"], -32010,
+        "an ordinary caller must be denied execute-ddl: {resp:?}"
+    );
+}
+
+/// A caller matching `[iam].admin_ucan_root` -- represented by the
+/// `substrate/admin` grant `build_caller` constructs for it -- must be
+/// admitted to native `execute-ddl` (B0.md §11.2).
+#[tokio::test]
+async fn execute_ddl_allowed_for_admin_ucan_root_native_caller() {
+    let (route_handler, _http_routes) = test_route_handler().await;
+
+    let service_id = "ddl-admin-svc".to_string();
+    let key_store = Arc::new(KeyStore::new());
+    let temp_dir = tempfile::tempdir().unwrap();
+    let storage_provider = Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+    let blob_provider: Arc<dyn BlobProvider> =
+        Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+    let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+    let data_service = Arc::new(SynSvcNativeService::new(
+        service_id.clone(),
+        key_store,
+        storage_provider,
+        blob_provider,
+        messaging_broker,
+    ));
+    route_handler.register_native_service(service_id.clone(), data_service);
+
+    let pipeline = raw_pipeline(&service_id);
+    let preamble = preamble_for(&service_id, "data-layer");
+    let caller = admin_caller("did:key:z6MkAdminRoot");
+
+    let body = json_rpc_body("execute-ddl", json!({"sql": "CREATE TABLE x (id TEXT)"}));
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&caller), &body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert!(resp.get("error").is_none(), "admin_ucan_root caller must be admitted: {resp:?}");
+}
+
 #[tokio::test]
 async fn http_bridge_rejects_anonymous_caller_with_401() {
     let (route_handler, http_routes) = test_route_handler().await;
@@ -300,6 +395,52 @@ async fn http_bridge_rejects_anonymous_caller_with_401() {
     assert!(
         !service.was_invoked(),
         "native service must not be invoked for an anonymous HTTP request"
+    );
+}
+
+/// The original `POST`+`application/json` JSON-RPC bridge fallthrough
+/// (`handle_json_rpc_bridge`, reached when no `http_routes` entry matches)
+/// must also reject an anonymous caller targeting a native service, and with
+/// 401 -- not the 500 a raw `dispatch_json_rpc_once` rejection would surface.
+#[tokio::test]
+async fn json_rpc_bridge_rejects_anonymous_caller_with_401() {
+    let (route_handler, _http_routes) = test_route_handler().await;
+    let service = Arc::new(RecordingNativeService::default());
+    let service_id = "json-rpc-bridge-test-svc".to_string();
+    route_handler.register_native_service(service_id.clone(), service.clone());
+
+    let pipeline = RoutePipeline {
+        encryption: EncryptionStage::None,
+        transport: TransportStage::Http,
+        adaptation: AdaptationStage::None,
+        service: ServiceStage::NativeService { service_id: service_id.clone() },
+    };
+    let preamble = preamble_for(&service_id, "data-layer");
+
+    let (mut client, server) = duplex(4096);
+    let io = TokioIo::new(server);
+    let handle =
+        tokio::spawn(route_handler.clone().handle_http_stream(io, preamble, pipeline, None));
+
+    let body = json_rpc_body("get", json!({}));
+    let request = format!(
+        "POST / HTTP/1.1\r\nHost: test\r\nContent-Type: application/json\r\nContent-Length: \
+         {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    client.write_all(request.as_bytes()).await.unwrap();
+    client.write_all(&body).await.unwrap();
+    client.shutdown().await.unwrap();
+
+    let mut response = Vec::new();
+    client.read_to_end(&mut response).await.unwrap();
+    let response = String::from_utf8_lossy(&response);
+    assert!(response.starts_with("HTTP/1.1 401"), "expected 401, got: {response}");
+
+    handle.await.unwrap().unwrap();
+    assert!(
+        !service.was_invoked(),
+        "native service must not be invoked for an anonymous JSON-RPC bridge request"
     );
 }
 

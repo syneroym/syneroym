@@ -55,7 +55,10 @@ use tracing::error;
 use uuid::Uuid;
 
 use super::RouteHandler;
-use crate::{preamble::RoutePreamble, routing::RoutePipeline};
+use crate::{
+    preamble::RoutePreamble,
+    routing::{RoutePipeline, ServiceStage},
+};
 
 /// Unified response body type for `HttpHandler`: the pre-Slice-7 JSON-RPC
 /// bridge responses are wrapped in it unchanged (`Full<Bytes>` boxed), and
@@ -386,9 +389,10 @@ impl HttpHandler {
         self.handle_json_rpc_bridge(req).await
     }
 
-    /// The original `POST`+`application/json` JSON-RPC bridge -- byte-for-
-    /// byte the same behavior as before Slice 7, just wrapped in the new
-    /// unified `HttpBody` type.
+    /// The original `POST`+`application/json` JSON-RPC bridge, wrapped in the
+    /// unified `HttpBody` type. An anonymous caller targeting a native
+    /// service is rejected with 401 before dispatch (§5.3); a WASM-component
+    /// target is unaffected, matching pre-Slice-7 behavior.
     async fn handle_json_rpc_bridge(&self, req: Request<Incoming>) -> Result<Response<HttpBody>> {
         if req.method() != Method::POST {
             return Ok(http_error(StatusCode::METHOD_NOT_ALLOWED, "Only POST is supported".into()));
@@ -408,6 +412,23 @@ impl HttpHandler {
 
         if body_bytes.is_empty() {
             return Ok(http_error(StatusCode::BAD_REQUEST, "Empty request body".into()));
+        }
+
+        // Mirrors `dispatch_native`'s guard (§5.3): only the native-service
+        // arm of `dispatch_json_rpc_once` requires a caller, so only gate
+        // here when the resolved pipeline targets one -- an anonymous
+        // WASM-component call over this same fallthrough is unaffected.
+        if matches!(self.pipeline.service, ServiceStage::NativeService { .. })
+            && self.caller.is_none()
+        {
+            return Ok(structured_rpc_error(
+                StatusCode::UNAUTHORIZED,
+                UNAUTHENTICATED_RPC_CODE,
+                format!(
+                    "unauthenticated caller for native interface '{}'",
+                    self.preamble.interface
+                ),
+            ));
         }
 
         match self

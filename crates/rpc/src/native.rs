@@ -38,9 +38,13 @@ pub enum AuthLevel {
     Delegated,
     /// Full verified UCAN capability chain (B1).
     Ucan,
-    /// Substrate-injected lifecycle/system context (init/migrate, or a
-    /// service acting as itself), not derived from a wire handshake.
+    /// Substrate-injected lifecycle context (init/migrate), carrying
+    /// `data-layer/admin` on the service's own resource.
     LocalElevated,
+    /// Substrate-injected system context (a service acting as itself, or an
+    /// already-authorized internal dispatch), not derived from a wire
+    /// handshake. Carries no elevated capabilities, unlike `LocalElevated`.
+    System,
 }
 
 impl CallerContext {
@@ -85,7 +89,7 @@ impl CallerContext {
                 subject_did: format!("system:{service_id}"),
                 ..Default::default()
             },
-            auth: AuthLevel::LocalElevated,
+            auth: AuthLevel::System,
         }
     }
 }

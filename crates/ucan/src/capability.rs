@@ -19,6 +19,13 @@ impl ResourceUri {
     pub fn substrate(node_did: &str) -> Self {
         Self(format!("substrate:{node_did}"))
     }
+
+    /// Whether this is a `substrate:<node_did>` node-scoped resource, as
+    /// opposed to a `synapp:...:svc:...` service resource.
+    #[must_use]
+    pub fn is_substrate_scope(&self) -> bool {
+        self.0.starts_with("substrate:")
+    }
 }
 
 /// A `/`-delimited ability hierarchy string, e.g. `"data-layer/admin"`.
@@ -82,10 +89,16 @@ pub struct Capability {
 }
 
 impl Capability {
-    /// Whether this capability grants `(resource, ability)`: the resource
-    /// must match exactly and `self.can` must entail `ability`.
+    /// Whether this capability grants `(resource, ability)`. A node-scoped
+    /// (`substrate:<node_did>`) grant authorizes any resource on this node,
+    /// per ADR-0015 §1 ("`substrate/admin` ⊇ everything on that node");
+    /// otherwise the resource must match exactly. Either way `self.can` must
+    /// entail `ability`.
     #[must_use]
     pub fn grants(&self, resource: &ResourceUri, ability: &Ability) -> bool {
+        if self.with.is_substrate_scope() {
+            return self.can.entails(ability);
+        }
         self.with == *resource && self.can.entails(ability)
     }
 }
@@ -154,6 +167,24 @@ mod tests {
                 &ResourceUri::service("app-1", "svc-b"),
                 &ability(Ability::DATA_LAYER_READ)
             )
+        );
+    }
+
+    #[test]
+    fn substrate_scoped_capability_grants_any_resource_on_the_node() {
+        let cap = Capability {
+            with: ResourceUri::substrate("did:key:z6MkAdminRoot"),
+            can: ability(Ability::SUBSTRATE_ADMIN),
+            caveats: None,
+        };
+        assert!(
+            cap.grants(
+                &ResourceUri::service("app-1", "svc-a"),
+                &ability(Ability::DATA_LAYER_ADMIN)
+            )
+        );
+        assert!(
+            cap.grants(&ResourceUri::service("app-2", "svc-b"), &ability(Ability::VAULT_REVEAL))
         );
     }
 
