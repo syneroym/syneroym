@@ -31,7 +31,7 @@
 //! | `result<T,E>` | `{"ok": …}` \| `{"err": …}` |
 //! | `flags` | array of enabled flag names |
 //! | `map<K,V>` | object if `K = string`, else array of `[k, v]` pairs |
-//! | resource / future / stream / error-context | **unsupported** ⇒ error |
+//! | resource / future / stream / error-context | **unsupported** ⇒ error (see note below) |
 //!
 //! Known, *documented and deterministic* fidelity limitations (not worked
 //! around — see the M04A A0′ task section):
@@ -60,7 +60,26 @@
 //! `Type::Map`/`Val::Map` cannot occur for any component this substrate can
 //! actually load today. The encode/decode arms exist for component-model
 //! completeness (and are unit-tested on the encode side), but are not
-//! reachable in practice.
+//! reachable in practice. **This is not a capability gap**: a generic
+//! string-keyed map is already fully expressible as `list<tuple<string, V>>`
+//! (the standard, stable WIT idiom for "map", precisely because `map<K,V>`
+//! itself is a newer, less-supported spec addition) — `list`/`tuple` are both
+//! fully supported and encode to the same `[[k,v],...]` JSON shape as this
+//! converter's own non-string-key `map` fallback. Separately, the JSON-RPC
+//! wire is already a generic string→value map at the object level: named
+//! parameter binding (`json_to_wasm_params`) and any WIT `record` both treat
+//! a JSON object as exactly that.
+//!
+//! `resource`/`future`/`stream`/`error-context` values never actually reach
+//! this converter. WIT `resource` is used in this codebase (the guest-side
+//! streaming protocol in `syneroym:messaging/stream-types`, ADR-0014), but
+//! its `stream-cursor`/`stream-sink` method calls go through a dedicated
+//! native call path (`crates/sandbox_wasm/src/stream.rs`) that builds and
+//! reads `Val::Resource` directly in Rust — never through the JSON-RPC
+//! `execute_wasm` path this module serves. The native async component-model
+//! `future<T>`/`stream<T>`/`error-context` primitives (distinct from the
+//! `stream-cursor` *resource*, despite the name) aren't used by any `.wit`
+//! file in the repo. These arms exist purely so the `match` is exhaustive.
 
 use std::fmt;
 
