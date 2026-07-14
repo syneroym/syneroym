@@ -1,0 +1,220 @@
+//! Capability types: resources, abilities, and grants (ADR-0015 §1).
+
+use serde::{Deserialize, Serialize};
+
+/// A resource a capability may authorize access to.
+///
+/// `synapp:<app_instance_id>:svc:<service_id>` for a service resource,
+/// `substrate:<node_did>` for node-scoped authority.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourceUri(pub String);
+
+impl ResourceUri {
+    #[must_use]
+    pub fn service(app_instance_id: &str, service_id: &str) -> Self {
+        Self(format!("synapp:{app_instance_id}:svc:{service_id}"))
+    }
+
+    #[must_use]
+    pub fn substrate(node_did: &str) -> Self {
+        Self(format!("substrate:{node_did}"))
+    }
+
+    /// Whether this is a `substrate:<node_did>` node-scoped resource, as
+    /// opposed to a `synapp:...:svc:...` service resource.
+    #[must_use]
+    pub fn is_substrate_scope(&self) -> bool {
+        self.0.starts_with("substrate:")
+    }
+}
+
+/// A `/`-delimited ability hierarchy string, e.g. `"data-layer/admin"`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ability(pub String);
+
+impl Ability {
+    pub const APP_CONFIG_READ: &'static str = "app-config/read";
+    pub const BLOB_READ: &'static str = "blob/read";
+    pub const BLOB_SIGN_URL: &'static str = "blob/sign-url";
+    pub const BLOB_WRITE: &'static str = "blob/write";
+    pub const DATA_LAYER_ADMIN: &'static str = "data-layer/admin";
+    pub const DATA_LAYER_READ: &'static str = "data-layer/read";
+    pub const DATA_LAYER_WRITE: &'static str = "data-layer/write";
+    pub const MESSAGING_PUBLISH: &'static str = "messaging/publish";
+    pub const MESSAGING_SUBSCRIBE: &'static str = "messaging/subscribe";
+    pub const SUBSTRATE_ADMIN: &'static str = "substrate/admin";
+    pub const VAULT_REVEAL: &'static str = "vault/reveal";
+
+    /// Whether `self` entails `other`: a parent ability grants everything a
+    /// child ability grants. `substrate/admin` entails everything on the
+    /// node. Within the `data-layer` namespace there is an explicit tiered
+    /// hierarchy (`admin` ⊇ `write` ⊇ `read`); every other ability is flat
+    /// (entails only itself) — escalation attempts (a lower tier, or an
+    /// unrelated/sibling ability, claiming to entail a higher or different
+    /// one) fail closed.
+    #[must_use]
+    pub fn entails(&self, other: &Self) -> bool {
+        if self.0 == Self::SUBSTRATE_ADMIN {
+            return true;
+        }
+        if self.0 == other.0 {
+            return true;
+        }
+        match (Self::tier(&self.0), Self::tier(&other.0)) {
+            (Some((ns1, rank1)), Some((ns2, rank2))) => ns1 == ns2 && rank1 > rank2,
+            _ => false,
+        }
+    }
+
+    /// Returns `(namespace, rank)` for abilities with an explicit tiered
+    /// hierarchy; higher rank is more privileged. Abilities outside this
+    /// table are flat (see `entails`).
+    fn tier(ability: &str) -> Option<(&'static str, u8)> {
+        match ability {
+            Self::DATA_LAYER_READ => Some(("data-layer", 1)),
+            Self::DATA_LAYER_WRITE => Some(("data-layer", 2)),
+            Self::DATA_LAYER_ADMIN => Some(("data-layer", 3)),
+            _ => None,
+        }
+    }
+}
+
+/// A single granted capability: `with` a resource, `can` an ability, subject
+/// to optional passthrough `caveats` (rich caveat evaluation is FDAE/M04B).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Capability {
+    pub with: ResourceUri,
+    pub can: Ability,
+    pub caveats: Option<serde_json::Value>,
+}
+
+impl Capability {
+    /// Whether this capability grants `(resource, ability)`. A node-scoped
+    /// (`substrate:<node_did>`) grant authorizes any resource on this node,
+    /// per ADR-0015 §1 ("`substrate/admin` ⊇ everything on that node");
+    /// otherwise the resource must match exactly. Either way `self.can` must
+    /// entail `ability`.
+    #[must_use]
+    pub fn grants(&self, resource: &ResourceUri, ability: &Ability) -> bool {
+        if self.with.is_substrate_scope() {
+            return self.can.entails(ability);
+        }
+        self.with == *resource && self.can.entails(ability)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ability(s: &str) -> Ability {
+        Ability(s.to_string())
+    }
+
+    #[test]
+    fn data_layer_admin_entails_write_and_read() {
+        let admin = ability(Ability::DATA_LAYER_ADMIN);
+        assert!(admin.entails(&ability(Ability::DATA_LAYER_WRITE)));
+        assert!(admin.entails(&ability(Ability::DATA_LAYER_READ)));
+        assert!(admin.entails(&admin));
+    }
+
+    #[test]
+    fn data_layer_write_does_not_entail_admin() {
+        let write = ability(Ability::DATA_LAYER_WRITE);
+        assert!(!write.entails(&ability(Ability::DATA_LAYER_ADMIN)));
+    }
+
+    #[test]
+    fn read_does_not_entail_write() {
+        let read = ability(Ability::DATA_LAYER_READ);
+        assert!(!read.entails(&ability(Ability::DATA_LAYER_WRITE)));
+    }
+
+    #[test]
+    fn sibling_abilities_do_not_entail() {
+        let blob_read = ability(Ability::BLOB_READ);
+        assert!(!blob_read.entails(&ability(Ability::DATA_LAYER_READ)));
+        assert!(
+            !ability(Ability::MESSAGING_PUBLISH).entails(&ability(Ability::MESSAGING_SUBSCRIBE))
+        );
+    }
+
+    #[test]
+    fn substrate_admin_entails_everything() {
+        let root = ability(Ability::SUBSTRATE_ADMIN);
+        assert!(root.entails(&ability(Ability::DATA_LAYER_ADMIN)));
+        assert!(root.entails(&ability(Ability::VAULT_REVEAL)));
+        assert!(root.entails(&ability(Ability::BLOB_SIGN_URL)));
+        assert!(root.entails(&root));
+    }
+
+    #[test]
+    fn nothing_entails_substrate_admin_except_itself() {
+        let root = ability(Ability::SUBSTRATE_ADMIN);
+        assert!(!ability(Ability::DATA_LAYER_ADMIN).entails(&root));
+    }
+
+    #[test]
+    fn capability_denies_on_resource_mismatch() {
+        let cap = Capability {
+            with: ResourceUri::service("app-1", "svc-a"),
+            can: ability(Ability::DATA_LAYER_ADMIN),
+            caveats: None,
+        };
+        assert!(
+            !cap.grants(
+                &ResourceUri::service("app-1", "svc-b"),
+                &ability(Ability::DATA_LAYER_READ)
+            )
+        );
+    }
+
+    #[test]
+    fn substrate_scoped_capability_grants_any_resource_on_the_node() {
+        let cap = Capability {
+            with: ResourceUri::substrate("did:key:z6MkAdminRoot"),
+            can: ability(Ability::SUBSTRATE_ADMIN),
+            caveats: None,
+        };
+        assert!(
+            cap.grants(
+                &ResourceUri::service("app-1", "svc-a"),
+                &ability(Ability::DATA_LAYER_ADMIN)
+            )
+        );
+        assert!(
+            cap.grants(&ResourceUri::service("app-2", "svc-b"), &ability(Ability::VAULT_REVEAL))
+        );
+    }
+
+    #[test]
+    fn capability_grants_entailed_ability_on_matching_resource() {
+        let resource = ResourceUri::service("app-1", "svc-a");
+        let cap = Capability {
+            with: resource.clone(),
+            can: ability(Ability::DATA_LAYER_ADMIN),
+            caveats: None,
+        };
+        assert!(cap.grants(&resource, &ability(Ability::DATA_LAYER_WRITE)));
+        assert!(cap.grants(&resource, &ability(Ability::DATA_LAYER_READ)));
+    }
+
+    #[test]
+    fn capability_denies_escalation_beyond_its_ability() {
+        let resource = ResourceUri::service("app-1", "svc-a");
+        let cap = Capability {
+            with: resource.clone(),
+            can: ability(Ability::DATA_LAYER_READ),
+            caveats: None,
+        };
+        assert!(!cap.grants(&resource, &ability(Ability::DATA_LAYER_WRITE)));
+        assert!(!cap.grants(&resource, &ability(Ability::DATA_LAYER_ADMIN)));
+    }
+
+    #[test]
+    fn resource_uri_helpers_format_as_expected() {
+        assert_eq!(ResourceUri::service("app-1", "svc-a").0, "synapp:app-1:svc:svc-a");
+        assert_eq!(ResourceUri::substrate("did:key:z6Mk").0, "substrate:did:key:z6Mk");
+    }
+}

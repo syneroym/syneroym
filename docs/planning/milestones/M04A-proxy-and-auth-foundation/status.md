@@ -165,3 +165,200 @@ Only Slice A0′ was touched: `conversions.rs`, its two call sites
 slice (B0 identity threading, A1 proxy, etc.), no WIT file, and no reserved
 `wrpc`/`AdaptationStage` seam were modified. `mise run test:e2e` (reference
 scenario steps) belongs to A1/B0 and was not run for A0′.
+
+## Slice B0 — Native-Dispatch Authentication Gap Closure ✅ (2026-07-14)
+
+Branch: `feat/m04a-b0`. Requirement `[FND-IAM]` foundation; closes M3→M4 gate
+items **#1** (native-dispatch/HTTP-bridge auth gap) and **#4**
+(`is_init_context` → Admin UCAN). Blocked on ADRs
+[D-04-01](../../../decisions/0015-ucan-capability-model.md) and
+[D-04-05](../../../decisions/0016-native-dispatch-identity-threading.md)
+(both Accepted). Plan: [plans/B0.md](plans/B0.md).
+
+### What was delivered
+
+1. **New crate `syneroym-ucan`** (`crates/ucan`) — `ResourceUri`, `Ability`
+   (with a `data-layer` `admin ⊇ write ⊇ read` tier and `substrate/admin`
+   entailing everything, fail-closed for every other ability/pair),
+   `Capability`, `SessionContext`. `CapabilityToken`/`issue`/`verify_chain`
+   are deferred to B1 per the plan.
+2. **`syneroym-rpc`** gains `CallerContext { caller_did, app_instance,
+   session, auth }`, `AuthLevel { Delegated, Ucan, LocalElevated }`, and a
+   `caller: CallerContext` field on `NativeInvocation`.
+   `CallerContext::local_elevated`/`service_system` construct the two
+   substrate-injected identities (lifecycle-admin vs. component-acting-as-
+   itself). `JsonRpcConverter::json_to_native` takes the caller explicitly.
+3. **Router (`crates/router`)**: `HandshakeVerifier::verify_preamble` is now
+   *always* attempted in `handle_stream` (`io.rs`) — the old
+   `if preamble.delegation.is_some()` gate is gone. A verified handshake (or
+   an unverifiable/no-pubkey connection) yields `Option<CallerContext>` via
+   the new `build_caller`, threaded through `handle_binary_stream`/
+   `handle_http_stream`. `dispatch_json_rpc_once`'s Native-service arm
+   rejects `caller: None` *before* looking up/invoking the service; the
+   `messaging/subscribe` long-lived-stream arm (which bypasses
+   `dispatch_json_rpc_once` entirely) has its own matching `None` guard.
+   `RouteHandlerInner` gained `admin_ucan_root: Option<String>` from
+   `[iam].admin_ucan_root`; a caller whose DID matches it is granted
+   `substrate/admin`.
+4. **HTTP bridge (`route_handler/http.rs`)**: `HttpHandler` carries
+   `caller: Option<CallerContext>`; the shared `dispatch_native` free
+   function rejects `None` and maps it to HTTP 401 via a new reserved
+   `-32090` JSON-RPC code in `status_for_rpc_error_code`. The signed-URL
+   blob `GET` route (`handle_blob_get`, `blob_download_step`, and
+   `BlobDownloadState`'s `Drop`) bypasses `self.dispatch()`/`self.caller`
+   entirely and uses an explicit `CallerContext::service_system(..)` for its
+   internal `open-download`/`read-chunk`/`close-download` calls, so the HMAC
+   signature remains the real authorization for that path regardless of the
+   connection's own delegation.
+5. **`crates/control_plane`**: `SynSvcNativeService::dispatch_data_layer`'s
+   `put`/`batch-mutate` arms now attribute `creator_id` to
+   `invocation.caller.app_instance.unwrap_or(caller_did)`, not
+   `self.service_id`. `execute-ddl`'s former unconditional deny is replaced
+   by a `data-layer/admin` capability check on the caller (returns the same
+   `-32010 permission-denied` shape on failure). `ControlPlaneService`'s
+   `security` interface threads `invocation.caller` but is deliberately
+   **not** gated at B0 (§8.1 of the plan — roymctl holds no admin key);
+   `TODO(M04B/FDAE)` marks the deferred gate.
+6. **`crates/sandbox_wasm`**: `HostState.is_init_context: bool` replaced by
+   `caller: CallerContext`; the guest `execute_ddl` gate now checks
+   `data-layer/admin` the same way the native path does. `engine.rs`'s four
+   `build_store_and_instantiate` call sites: `prepare_wasm_execution`
+   (`init`/`migrate` → `local_elevated`, everything else →
+   `service_system`), `invoke_lifecycle_hook` (→ `local_elevated`), and —
+   security-critical — `deliver_message`/`open_stream_instance` (→
+   `service_system`, **never** elevated, so an inbound broker message or a
+   raw-stream instantiation can never pass the Admin gate).
+7. **Client-side identity (§0.5 of the plan, added scope)**: mandatory
+   verify would otherwise reject every existing internal client (they send
+   no pubkey). `SyneroymClient` (`crates/sdk`) gains an `identity:
+   syneroym_identity::Identity` field — `new`/`new_with_mechanisms` generate
+   an ephemeral one, `new_with_identity` accepts a stable one — and sets a
+   self-asserted `pubkey` on every outbound preamble
+   (`open_request_stream`, `passthrough`/`passthrough_with_conn`).
+   `client_gateway` loads (or generates+persists, whichever component boots
+   first) the node's own identity from `config.identity.key` (same path
+   `syneroym_substrate::identity::setup_substrate_identity` uses) and
+   presents it as every downstream `SyneroymClient`'s identity — the
+   owner→node delegation needed to present the *substrate-owner* DID instead
+   is deferred (`TODO(post-B0)` at the gateway's client-construction site,
+   per the plan's §0.5.1). `roymctl` needed no changes: it already
+   constructs plain `SyneroymClient::new(..)`, which now self-asserts.
+8. **Cross-node proxy-hop seam (§9.5 of the plan, design-only)**:
+   `CallerContext`'s doc comment states it is always locally constructed and
+   never wire-serialized; a future cross-node hop (A1) carries the caller's
+   DID and signed proofs in the envelope, re-verified at the destination.
+
+### Tests
+
+New `crates/router/tests/native_dispatch_identity.rs` (5 tests) — "the
+single most important test in this milestone" (task.md Tests Summary):
+- `anonymous_caller_rejected_before_native_dispatch_for_every_interface` —
+  drives `dispatch_json_rpc_once` with `caller: None` against each of the 5
+  native-capability interfaces (`data-layer`/`vault`/`app-config`/
+  `blob-store`/`messaging`) and asserts both an `Err` *and* that a recording
+  `NativeService` double was never invoked (rejection happens before
+  dispatch, not just an error envelope after).
+- `authenticated_caller_reaches_native_dispatch` — the positive control:
+  the same double *is* invoked for a `Some(caller)` request.
+- `authenticated_caller_identity_becomes_creator_id_not_service_id` — a real
+  `SynSvcNativeService`, `create-collection` → `put` → `get`, asserts the
+  stored `creator_id` equals the caller's DID, not the service's own id.
+- `http_bridge_rejects_anonymous_caller_with_401` — a real `hyper` request
+  over an in-memory `tokio::io::duplex` into `handle_http_stream` with
+  `caller: None`, asserting the raw HTTP response starts `HTTP/1.1 401`.
+- `messaging_subscribe_rejected_for_anonymous_caller` — the long-lived
+  `handle_binary_stream` special-case gets its own gate check, verified via
+  a framed JSON-RPC error response (not a `"subscribed"` ack).
+
+Plus: 12 new unit tests in `syneroym-ucan` (entailment fail-closed in both
+directions, `Capability::grants`, `SessionContext::has_capability`); a new
+positive DDL test (`test_execute_ddl_allowed_for_local_elevated_lifecycle_context`,
+`crates/sandbox_wasm/tests/lifecycle_hooks.rs`) alongside the existing
+denial test (updated from the `is_init_context` bool to a `service_system`
+caller). `test_security_dispatch_returns_sdk_statuses`
+(`crates/control_plane/src/service.rs`) still passes unmodified with a
+non-admin test caller, proving §8.1's "threaded but not gated" claim.
+
+### Regression found and fixed
+
+`crates/substrate/tests/http_passthrough_e2e.rs`'s `open_http_stream` helper
+hand-built its own `RoutePreamble` with `pubkey: None` (bypassing the SDK's
+`open_request_stream`, which the fix in item 7 above doesn't touch). Once
+`verify_preamble` became mandatory, every bridged native route in that file
+started 401ing. Fixed by generating a fresh ephemeral `Identity` per stream
+and setting `pubkey` on the hand-built preamble, mirroring what the SDK now
+does — found via the full `cargo test --workspace` regression pass, not
+code inspection.
+
+### Gate
+
+- `cargo +nightly fmt --all` — clean.
+- `cargo clippy --workspace --all-targets --all-features` — zero warnings.
+- `cargo test --workspace` — **376 passed, 0 failed** across 71 test
+  binaries (full run, sandbox disabled — see environment note below).
+- `mise run test:e2e` — **12 passed, 0 failed** (8 + 4 across the two
+  Playwright configs); confirms zero regression in the browser-driven
+  WebRTC/blind-tunnel flows now that the gateway/SDK identity changes are in
+  place.
+- `wasm32-wasip2` — `test-components/data-layer-test` builds; B0 adds no WIT
+  types, so the guest surface is unchanged (only `sandbox_wasm` host code
+  and `syneroym-rpc`/`syneroym-ucan` changed, neither wasip2-compiled).
+- `system-architecture.md:1892`'s interim-security-posture note updated to
+  record the gap as closed.
+
+**Environment notes:**
+- Under the agent command sandbox, `syneroym-coordinator-iroh`'s
+  `connection_limit` test fails to bind a loopback socket ("Operation not
+  permitted") — the same pre-existing, unrelated limitation A0′ documented.
+  The 376/0 figure above is from the full suite run with the sandbox
+  disabled.
+- One latency-budget test (`sandbox_wasm`'s
+  `test_guest_delivery_latency_budget`, p99 < some ms) failed once under
+  heavy parallel-build CPU contention (multiple `cargo` invocations
+  overlapping) and passed cleanly in isolation immediately after — a system-
+  load flake, not a regression; not caused by any B0 change (its own hot
+  path, `deliver_message`, only gained a `CallerContext::service_system`
+  construction, a couple of cheap `String` allocations).
+- The host's disk filled to ~100% mid-session (`target/debug/incremental`
+  alone was 82G, accumulated across the wider session's builds, not solely
+  this task's); the user cleared space before the final gate run. Unrelated
+  to this slice's code changes, noted here only because it interrupted the
+  first `cargo build --workspace --all-targets --all-features` attempt.
+
+### Scope discipline
+
+Every change maps to a plan section (§0.5 client identity, §1–§9.5). No B1
+(`CapabilityToken`/`issue`/`verify_chain`), A1 (Universal Proxy/cross-node
+envelope), B4/B5/B6, or FDAE (M04B) work was started. No WIT file changed.
+`query-raw`/full `AggregationPipeline` remain out of scope (B4/B5). The
+owner→node delegation for presenting the substrate-owner DID at the gateway
+is explicitly deferred (`TODO(post-B0)`), per the plan's §0.5.1.
+
+### Post-commit addendum (2026-07-14) — `admin_ucan_root` unified with `ControllerAgreement`
+
+Design discussion surfaced that B0's `[iam].admin_ucan_root` (a plain config
+string) and the pre-existing, cryptographically two-way-signed
+`ControllerAgreement`/`SubstrateIdentityState` mechanism
+(`crates/identity/src/substrate.rs`, wired at boot in
+`crates/substrate/src/identity.rs`) were two independent, disconnected
+notions of "who owns this substrate" — the latter was computed at boot and
+then discarded (only `.did` was kept; `.controller`/`.status` went unused).
+
+Fixed in `crates/substrate/src/runtime.rs`
+(`setup_identity_and_storage`/`setup_connection_router`): a verified
+(`SubstrateIdentityStatus::Verified`, i.e. both the substrate and the
+controller signed) `ControllerAgreement` controller now overrides
+`admin_ucan_root` before it reaches `RouteHandler::init`. `Unverified`/`None`
+never grant `substrate/admin`. The raw config value remains only as a
+fallback for deployments with no agreement configured at all — doc comment
+updated on `IamConfig` (`crates/core/src/config.rs`).
+
+Verified: `cargo build`/`clippy` clean on `syneroym-substrate`/`syneroym-core`;
+`native_dispatch_identity` (8/8), `lifecycle_hooks` (4/4), and
+`basic_lifecycle` (3/3, sandbox disabled) all pass unchanged — the tests that
+set `admin_ucan_root` directly bypass this boot path entirely, so the
+fallback behavior they exercise is untouched.
+
+**Explicitly out of scope for this addendum** (see new Slice B7 below):
+service-level ownership (deploy/undeploy/status-check permission grants),
+app-catalog owner attribution, and registry-publish-on-behalf-of-owner.

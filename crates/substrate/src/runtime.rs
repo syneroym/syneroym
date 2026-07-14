@@ -33,7 +33,7 @@ use syneroym_core::{
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
 use syneroym_data_db::{SqliteStorageProvider, registry_store, traits::StorageProvider};
 use syneroym_data_keystore::KeyStore;
-use syneroym_identity::Identity;
+use syneroym_identity::{Identity, substrate::SubstrateIdentityStatus};
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
 use syneroym_observability::{MemoryRecorder, MetricsSnapshot, ObservabilityEngine};
 use syneroym_router::{ConnectionRouter, RouteHandlerDeps};
@@ -331,7 +331,20 @@ fn log_component_exit(component: &str, result: anyhow::Result<()>) {
 /// including the substrate identity, data store, endpoint registry, and the
 /// native service.
 async fn setup_connection_router(config: &SubstrateConfig) -> anyhow::Result<ConnectionRouter> {
-    let (service_id, secret_key) = setup_identity_and_storage(config).await?;
+    let (service_id, secret_key, verified_controller) = setup_identity_and_storage(config).await?;
+
+    // A verified `ControllerAgreement` (mutually signed by the substrate and
+    // its controller, see `identity::setup_substrate_identity`) is the
+    // authoritative substrate owner and takes precedence over the plain
+    // `[iam].admin_ucan_root` config string -- a controller cannot claim
+    // ownership unilaterally, only a two-way-signed agreement counts. The
+    // config value remains a fallback for deployments with no agreement
+    // configured at all.
+    let mut effective_config = config.clone();
+    if let Some(controller) = verified_controller {
+        effective_config.iam.admin_ucan_root = Some(controller);
+    }
+    let config = &effective_config;
 
     let router = setup_router(config, &service_id, secret_key).await?;
 
@@ -356,11 +369,17 @@ async fn setup_connection_router(config: &SubstrateConfig) -> anyhow::Result<Con
 
 async fn setup_identity_and_storage(
     config: &SubstrateConfig,
-) -> anyhow::Result<(String, [u8; 32])> {
+) -> anyhow::Result<(String, [u8; 32], Option<String>)> {
     let substrate_identity_state =
         identity::setup_substrate_identity(&config.identity, &config.app_data_dir)?;
     let substrate_secret_key = identity::get_secret(&config.identity, &config.app_data_dir)?;
-    Ok((substrate_identity_state.did, substrate_secret_key))
+    // Only a *verified* (mutually signed) controller agreement establishes
+    // substrate ownership -- `Unverified`/`None` never grant `substrate/admin`.
+    let verified_controller = (substrate_identity_state.status
+        == SubstrateIdentityStatus::Verified)
+        .then_some(substrate_identity_state.controller)
+        .flatten();
+    Ok((substrate_identity_state.did, substrate_secret_key, verified_controller))
 }
 
 async fn setup_router(

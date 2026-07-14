@@ -11,6 +11,7 @@ use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
 use syneroym_data_db::{SqliteStorageProvider, StorageProvider};
 use syneroym_data_keystore::KeyStore;
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
+use syneroym_rpc::CallerContext;
 use syneroym_sandbox_wasm::{
     AppSandboxEngine, HostState, MessagingContext, StreamContext,
     conversions::{json_to_wasm_params, val_to_json},
@@ -72,7 +73,7 @@ fn bench_wasm_engine(c: &mut Criterion) {
                 key_store.clone(),
                 storage_provider.clone(),
                 blob_provider.clone(),
-                false,
+                CallerContext::service_system("test_component"),
                 0,
                 test_messaging_context(),
                 test_streaming_context(),
@@ -90,7 +91,7 @@ fn bench_wasm_engine(c: &mut Criterion) {
                 key_store.clone(),
                 storage_provider.clone(),
                 blob_provider.clone(),
-                false,
+                CallerContext::service_system("test_component"),
                 0,
                 test_messaging_context(),
                 test_streaming_context(),
@@ -110,7 +111,7 @@ fn bench_wasm_engine(c: &mut Criterion) {
         key_store.clone(),
         storage_provider.clone(),
         blob_provider.clone(),
-        false,
+        CallerContext::service_system("test_component"),
         0,
         test_messaging_context(),
         test_streaming_context(),

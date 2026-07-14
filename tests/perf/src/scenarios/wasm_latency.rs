@@ -13,6 +13,7 @@ use syneroym_core::{
 };
 use syneroym_identity::{Identity, substrate};
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
+use syneroym_rpc::CallerContext;
 use syneroym_sandbox_wasm::{AppSandboxEngine, HostState, MessagingContext, StreamContext};
 use syneroym_sdk::SyneroymClient;
 use test_constants::GREETER_INTERFACE_NAME;
@@ -64,7 +65,7 @@ pub async fn run_scenario() -> Result<()> {
             key_store.clone(),
             storage_provider.clone(),
             blob_provider.clone(),
-            false,
+            CallerContext::service_system("test_component"),
             0,
             messaging_context.clone(),
             streaming_context.clone(),
@@ -96,7 +97,7 @@ pub async fn run_scenario() -> Result<()> {
             key_store.clone(),
             storage_provider.clone(),
             blob_provider.clone(),
-            false,
+            CallerContext::service_system("test_component"),
             0,
             messaging_context.clone(),
             streaming_context.clone(),

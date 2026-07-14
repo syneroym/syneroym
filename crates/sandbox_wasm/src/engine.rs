@@ -24,7 +24,7 @@ use syneroym_data_blob::traits::BlobProvider;
 use syneroym_data_db::traits::StorageProvider;
 use syneroym_data_keystore::KeyStore;
 use syneroym_mqtt_broker::{MqttBroker, SubscriptionHandle};
-use syneroym_rpc::JsonRpcRequest;
+use syneroym_rpc::{CallerContext, JsonRpcRequest};
 use syneroym_wit_interfaces::{
     control_plane::exports::syneroym::control_plane::orchestrator::{
         ArtifactSource, DeployManifest, ServiceType,
@@ -539,7 +539,7 @@ impl AppSandboxEngine {
     async fn build_store_and_instantiate(
         &self,
         service_id: &str,
-        is_init_context: bool,
+        caller: CallerContext,
     ) -> Result<(Store<HostState>, Instance, Option<u64>)> {
         // Look up the pre-linked component instance
         let (instance_pre, quota) = {
@@ -586,7 +586,7 @@ impl AppSandboxEngine {
             self.key_store.clone(),
             self.storage_provider.clone(),
             self.blob_provider.clone(),
-            is_init_context,
+            caller,
             config_generation,
             messaging,
             streaming,
@@ -622,9 +622,16 @@ impl AppSandboxEngine {
         interface_name: &str,
         method_name: &str,
     ) -> Result<(Store<HostState>, Func, usize, ComponentItem)> {
-        let is_init_context = method_name == "init" || method_name == "migrate";
+        // Lifecycle hooks run substrate-elevated (carrying `data-layer/admin`
+        // for `execute-ddl`); an ordinary invocation is the component acting
+        // as itself, with no elevated capability (ADR-0015/0016).
+        let caller = if method_name == "init" || method_name == "migrate" {
+            CallerContext::local_elevated(service_id)
+        } else {
+            CallerContext::service_system(service_id)
+        };
         let (mut store, instance, _max_instructions) =
-            self.build_store_and_instantiate(service_id, is_init_context).await?;
+            self.build_store_and_instantiate(service_id, caller).await?;
 
         // Use the helper to extract the function
         let (func, results_len, item) =
@@ -642,8 +649,9 @@ impl AppSandboxEngine {
     /// component) are left untouched -- this makes it safe to call
     /// unconditionally on every deploy.
     async fn invoke_lifecycle_hook(&self, service_id: &str, hook: &str) -> Result<()> {
-        let (mut store, instance, _max_instructions) =
-            self.build_store_and_instantiate(service_id, true).await?;
+        let (mut store, instance, _max_instructions) = self
+            .build_store_and_instantiate(service_id, CallerContext::local_elevated(service_id))
+            .await?;
 
         if instance.get_export(&mut store, None, hook).is_none() {
             debug!(service_id, hook, "component does not export lifecycle hook, skipping");
@@ -721,18 +729,24 @@ impl AppSandboxEngine {
     /// ADR-0010): this makes it safe to call for every subscription
     /// regardless of whether the target component implements messaging.
     async fn deliver_message(&self, service_id: &str, topic: &str, payload: Vec<u8>) {
-        let (mut store, instance, _max_instructions) =
-            match self.build_store_and_instantiate(service_id, false).await {
-                Ok(triple) => triple,
-                Err(e) => {
-                    debug!(
-                        service_id,
-                        error = %e,
-                        "messaging: failed to instantiate component for delivery"
-                    );
-                    return;
-                }
-            };
+        // `service_system`, never `local_elevated`: this is the inbound
+        // broker-delivery hot path -- an accidentally elevated caller here
+        // would let every delivered message pass the `execute-ddl` Admin
+        // gate. The component receiving a message acts as itself.
+        let (mut store, instance, _max_instructions) = match self
+            .build_store_and_instantiate(service_id, CallerContext::service_system(service_id))
+            .await
+        {
+            Ok(triple) => triple,
+            Err(e) => {
+                debug!(
+                    service_id,
+                    error = %e,
+                    "messaging: failed to instantiate component for delivery"
+                );
+                return;
+            }
+        };
 
         const GUEST_API_INTERFACE: &str = "syneroym:messaging/guest-api@0.1.0";
         let (func, results_len, _item) = match Self::get_wasm_func(
@@ -872,7 +886,10 @@ impl AppSandboxEngine {
         &self,
         service_id: &str,
     ) -> Result<(Store<HostState>, Instance, Option<u64>)> {
-        self.build_store_and_instantiate(service_id, false).await
+        // `service_system`, never `local_elevated` -- same reasoning as
+        // `deliver_message`: the component acts as itself, not as an admin.
+        self.build_store_and_instantiate(service_id, CallerContext::service_system(service_id))
+            .await
     }
 
     /// Entry point for a peer-initiated `raw://<protocol>|<service_id>`
@@ -1074,7 +1091,7 @@ mod tests {
             key_store,
             storage_provider,
             test_blob_provider(),
-            false,
+            CallerContext::service_system("test_component"),
             0,
             test_messaging_context(),
             test_streaming_context(),

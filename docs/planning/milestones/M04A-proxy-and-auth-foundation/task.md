@@ -346,6 +346,59 @@ Wire `inject_kek`'s `_scope` param (`key_store.rs:46`) to derive per-app-instanc
 KEKs, gated on the caller's verified app-instance identity. Specify + test the DEK
 re-wrap path (Migration Strategy).
 
+#### Slice B7: Substrate & Service Ownership (Deploy Authorization + Ownership Attribution) — *scope recorded, design not yet started*
+**Depends on:** B0 (done — substrate-owner resolution now sources from
+`ControllerAgreement`, see status.md addendum). **Interacts with:** B1 (a
+real capability-delegation chain is the likely mechanism for item 1 below).
+**Requirement:** `[FND-IAM]`.
+
+Surfaced via design discussion (2026-07-14), prompted by a concrete gap: today
+`crates/app_orchestration/src/catalog.rs` records no owner/creator for a
+deployed app at all, and `orchestrator`'s `list` method
+(`crates/control_plane/src/service.rs:250`) returns every deployed app to any
+caller — there is no "list only my apps" or "substrate owner sees everything"
+enforcement, and no data to enforce it against even if there were.
+
+Agreed shape (not yet designed in code):
+1. **Service-owner permission is a grant, not a mutual agreement** — unlike
+   substrate ownership (`ControllerAgreement`, two-way signed), the substrate
+   owner unilaterally hands specific DIDs permission to deploy/undeploy/
+   status-check on this substrate (a pre-negotiated, ongoing, **revocable**
+   grant — not a one-time setup step; substrates may eventually be offered in
+   a marketplace to arbitrary grantees). Likely realized as a UCAN capability
+   once B1's real chain-verification exists; B0's `admin_ucan_root`-style
+   allowlist is not expressive enough (no revocation, no per-grantee scoping).
+2. **App catalog needs an owner field.** `catalog.rs` must record which DID's
+   deploy call created each app.
+3. **Attribution must resolve through one hop of delegation to the real
+   owner**, not the immediate signing key — covers both key rotation and a
+   distinct team-member's own key equally (same mechanism, `master_did`
+   resolution already used by `build_caller`, see `io.rs:63`). **Multi-hop
+   delegation (a delegate re-delegating further) is not resolvable with
+   today's one-hop `DelegationCertificate` format and is explicitly deferred**
+   until real UCAN proof chains (B1) exist — flag, don't silently misattribute.
+4. **The substrate publishes registry/DHT entries on behalf of the owner**,
+   not the owner itself — avoids a gap between "owner believes it's deployed"
+   and "it's actually discoverable." Must attribute to the resolved owner
+   (item 3), which today's `publish_to_community_registry`
+   (`crates/substrate/src/runtime.rs`) does not yet do.
+5. **`list` gates on caller identity**: substrate owner (resolved
+   `ControllerAgreement` controller) sees every app; a service owner sees only
+   apps whose recorded owner (item 2) matches their resolved identity (item
+   3). Multiple recognized substrate owners (multiple independent
+   `ControllerAgreement`s, or a rotated owner key) are all equally privileged
+   — no partial/limited owner tier.
+
+**Open questions to resolve before implementation** (recorded, not decided):
+- Exact shape of the deploy/undeploy/status-check grant — a new `Ability`
+  vocabulary entry (e.g. `orchestrator/deploy`) issued as a UCAN capability,
+  or a separate simpler mechanism for the interim (pre-B1) period?
+- Does this belong entirely in M04A, or does "list apps filtered by owner"
+  eventually generalize into an FDAE (M04B) row-filter over the catalog once
+  the catalog is real data-layer-backed data, rather than bespoke control-
+  plane logic? Not decided; noted so the two milestones don't duplicate the
+  mechanism independently.
+
 ---
 
 ## Reference Scenario (M04A subset)
@@ -413,18 +466,18 @@ Continues the "Professional Services Guild" walking skeleton from M03B (step 19)
 
 ## Measurable Exit Criteria
 
-- [ ] `cargo +nightly fmt --all` clean; `cargo clippy --workspace --all-targets --all-features` zero warnings; `cargo test --workspace` green; `mise run test:e2e` green (no M0–M3C regression); `wasm32-wasip2` unbroken after every slice.
+- [x] `cargo +nightly fmt --all` clean; `cargo clippy --workspace --all-targets --all-features` zero warnings; `cargo test --workspace` green; `mise run test:e2e` green (no M0–M3C regression); `wasm32-wasip2` unbroken after every slice. *(True as of A0′+B0; re-verify after each subsequent slice.)*
 - [ ] ADRs D-04-01, D-04-05 exist in `docs/decisions/`.
 - [ ] Full WIT⇄JSON conversion replaces the `conversions.rs` stub; round-trip tested across the full WIT type set; JSON fidelity limitations documented.
-- [ ] **Gate item #1 verified with a real test** (not code inspection): an unauthenticated peer's `data-layer`/`messaging`/`blob-store`/`vault`/`app-config` call and HTTP-bridge request are all rejected.
+- [x] **Gate item #1 verified with a real test** (not code inspection): an unauthenticated peer's `data-layer`/`messaging`/`blob-store`/`vault`/`app-config` call and HTTP-bridge request are all rejected. *(B0 — see `crates/router/tests/native_dispatch_identity.rs`.)*
 - [ ] `AggregationPipeline` implemented and tested.
 - [ ] `query-raw` implemented, gated by Admin UCAN capability (not `is_init_context`).
-- [ ] Both `TODO(M4)` sites (`host_capabilities.rs:452-463`, `synsvc_native.rs:309-316`) removed.
+- [x] Both `TODO(M4)` sites (`host_capabilities.rs:452-463`, `synsvc_native.rs:309-316`) removed. *(B0 — both replaced by the `data-layer/admin` capability gate.)*
 - [ ] Per-app-instance KEK narrowing implemented; `_scope` actually used; DEK re-wrap path tested.
 - [ ] Universal Proxy handles ≥1 real cross-node typed call over JSON-RPC (full WIT⇄JSON conversion) in an e2e test; the transport-agnostic seam for later wRPC is in place.
 - [ ] A caller declaring an unsupported protocol receives a typed error (negotiation deferred, A.7).
 - [ ] `[PLT-DAP-05]` either ships as a QUIC-flow-control-backed framing spike or is explicitly deferred to M5 with rationale in `status.md`.
-- [ ] Reference scenario steps 20, 21, 24, 25 execute end-to-end.
+- [ ] Reference scenario steps 20, 21, 24, 25 execute end-to-end. *(B0 closes step 25's substrate-side enforcement — proven at the router-dispatch level by `native_dispatch_identity.rs`; steps 20/21/24 belong to A1/B1/B5.)*
 - [ ] Performance budgets verified; `criterion` output in `status.md`.
 - [ ] `traceability-matrix.md` updated with M04A evidence for `[PLT-DAT]` (Universal Proxy + conversion + aggregation + `query-raw`), `[FND-IAM]` (foundation: identity threading + UCAN context + Admin capability), `[FND-SEC]` (per-app KEK); `[PLT-DAP-05]` marked spike/M5; `[LFC-VER]` protocol-negotiation retargeted out; `[FND-FDA]`→`[FND-IAM]` citation fixed (A.2).
-- [ ] `system-architecture.md:1892` interim-security-posture note updated to record the native-dispatch gap as closed.
+- [x] `system-architecture.md:1892` interim-security-posture note updated to record the native-dispatch gap as closed. *(B0 — see the "Gap closed (M04A Slice B0)" note at that anchor.)*

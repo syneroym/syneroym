@@ -7,8 +7,8 @@ use anyhow::{Result, anyhow};
 use serde_json::Value;
 
 use crate::{
-    JsonRpcError, JsonRpcErrorResponse, JsonRpcRequest, JsonRpcResponse, NativeInvocation,
-    NativeResponse,
+    CallerContext, JsonRpcError, JsonRpcErrorResponse, JsonRpcRequest, JsonRpcResponse,
+    NativeInvocation, NativeResponse,
 };
 
 #[derive(Debug)]
@@ -17,6 +17,7 @@ pub struct JsonRpcConverter;
 impl JsonRpcConverter {
     pub fn json_to_native(
         interface: &str,
+        caller: CallerContext,
         frame: &[u8],
     ) -> Result<(JsonRpcRequest, NativeInvocation)> {
         let request: JsonRpcRequest =
@@ -26,6 +27,7 @@ impl JsonRpcConverter {
             interface: interface.to_string(),
             method: request.method.clone(),
             params: request.params.clone(),
+            caller,
         };
 
         Ok((request, invocation))
@@ -67,7 +69,12 @@ mod tests {
     fn test_json_to_native_roundtrip() {
         let req = make_request("greet", serde_json::json!(["world"]));
         let frame = serde_json::to_vec(&req).unwrap();
-        let (parsed_req, invocation) = JsonRpcConverter::json_to_native("health", &frame).unwrap();
+        let (parsed_req, invocation) = JsonRpcConverter::json_to_native(
+            "health",
+            CallerContext::service_system("health"),
+            &frame,
+        )
+        .unwrap();
         assert_eq!(parsed_req.method, "greet");
         assert_eq!(invocation.interface, "health");
         assert_eq!(invocation.method, "greet");
@@ -101,7 +108,11 @@ mod tests {
 
     #[test]
     fn test_json_to_native_invalid_json() {
-        let result = JsonRpcConverter::json_to_native("iface", b"not json");
+        let result = JsonRpcConverter::json_to_native(
+            "iface",
+            CallerContext::service_system("iface"),
+            b"not json",
+        );
         assert!(result.is_err());
     }
 }

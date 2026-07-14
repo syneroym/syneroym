@@ -14,8 +14,9 @@ mod types;
 
 pub use converter::JsonRpcConverter;
 pub use dispatch_registry::{NativeDispatchRegistry, WeakNativeDispatchRegistry};
-pub use native::{NativeInvocation, NativeResponse, NativeService};
+pub use native::{AuthLevel, CallerContext, NativeInvocation, NativeResponse, NativeService};
 use serde_json::Value;
+pub use syneroym_ucan::{Ability, Capability, ResourceUri, SessionContext};
 use thiserror::Error;
 pub use types::{
     JsonRpcError, JsonRpcErrorResponse, JsonRpcRequest, JsonRpcResponse, MESSAGING_MESSAGE_METHOD,

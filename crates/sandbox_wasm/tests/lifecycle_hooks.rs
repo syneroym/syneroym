@@ -16,6 +16,7 @@ use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
 use syneroym_data_db::{SqliteStorageProvider, StorageProvider};
 use syneroym_data_keystore::KeyStore;
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
+use syneroym_rpc::{Ability, AuthLevel, CallerContext, Capability, ResourceUri, SessionContext};
 use syneroym_sandbox_wasm::{AppSandboxEngine, HostState, MessagingContext, StreamContext};
 use syneroym_wit_interfaces::{
     control_plane::exports::syneroym::control_plane::orchestrator::{
@@ -94,17 +95,18 @@ async fn test_execute_ddl_denied_outside_lifecycle_context() {
     let storage_provider: Arc<dyn StorageProvider> =
         Arc::new(SqliteStorageProvider::new(dir.path(), false).unwrap());
 
-    let blob_provider: Arc<dyn syneroym_data_blob::BlobProvider> =
-        Arc::new(syneroym_data_blob::ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+    let blob_provider: Arc<dyn BlobProvider> =
+        Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
 
-    // is_init_context = false: a normal (non-lifecycle) invocation context.
+    // `service_system`: a normal (non-lifecycle, non-admin) invocation
+    // context -- carries no `data-layer/admin` capability.
     let mut host_state = HostState::new(
         "ddl-test-svc".to_string(),
         None,
         key_store,
         storage_provider,
         blob_provider,
-        false,
+        CallerContext::service_system("ddl-test-svc"),
         0,
         test_messaging_context(),
         test_streaming_context(),
@@ -114,6 +116,83 @@ async fn test_execute_ddl_denied_outside_lifecycle_context() {
         .await
         .unwrap_err();
     assert!(matches!(err, DataLayerError::PermissionDenied));
+}
+
+#[tokio::test]
+async fn test_execute_ddl_allowed_for_local_elevated_lifecycle_context() {
+    let dir = tempfile::tempdir().unwrap();
+    let key_store = Arc::new(KeyStore::new());
+    let storage_provider: Arc<dyn StorageProvider> =
+        Arc::new(SqliteStorageProvider::new(dir.path(), false).unwrap());
+
+    let blob_provider: Arc<dyn BlobProvider> =
+        Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+
+    // `local_elevated`: the substrate-injected init/migrate lifecycle
+    // context, which carries `data-layer/admin` on this component's own
+    // resource (ADR-0015/0016) -- the Admin gate must let it through.
+    let mut host_state = HostState::new(
+        "ddl-admin-svc".to_string(),
+        None,
+        key_store,
+        storage_provider,
+        blob_provider,
+        CallerContext::local_elevated("ddl-admin-svc"),
+        0,
+        test_messaging_context(),
+        test_streaming_context(),
+    );
+
+    DataLayerHost::execute_ddl(&mut host_state, "CREATE TABLE x (id TEXT)".to_string())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn test_execute_ddl_allowed_for_admin_ucan_root_caller() {
+    let dir = tempfile::tempdir().unwrap();
+    let key_store = Arc::new(KeyStore::new());
+    let storage_provider: Arc<dyn StorageProvider> =
+        Arc::new(SqliteStorageProvider::new(dir.path(), false).unwrap());
+
+    let blob_provider: Arc<dyn BlobProvider> =
+        Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+
+    // A caller matching `[iam].admin_ucan_root` -- represented by the
+    // `substrate/admin` grant `build_caller`
+    // (`crates/router/src/route_handler/io.rs`) constructs for it -- must be
+    // admitted to guest `execute-ddl` too (ADR-0015/0016, B0.md §11.2).
+    let admin_did = "did:key:z6MkAdminRoot";
+    let admin_caller = CallerContext {
+        caller_did: admin_did.to_string(),
+        app_instance: None,
+        session: SessionContext {
+            subject_did: admin_did.to_string(),
+            capabilities: vec![Capability {
+                with: ResourceUri::substrate(admin_did),
+                can: Ability(Ability::SUBSTRATE_ADMIN.to_string()),
+                caveats: None,
+            }],
+            ..Default::default()
+        },
+        auth: AuthLevel::Delegated,
+    };
+
+    let mut host_state = HostState::new(
+        "ddl-admin-root-svc".to_string(),
+        None,
+        key_store,
+        storage_provider,
+        blob_provider,
+        admin_caller,
+        0,
+        test_messaging_context(),
+        test_streaming_context(),
+    );
+
+    DataLayerHost::execute_ddl(&mut host_state, "CREATE TABLE x (id TEXT)".to_string())
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
