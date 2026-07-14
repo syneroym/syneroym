@@ -499,13 +499,8 @@ impl AppSandboxEngine {
 
         debug!("extracted the function and parameter iter");
 
-        // Dynamic parameter resolution
-        let json_params = match &request.params {
-            Value::Array(arr) => arr.clone(),
-            other => vec![other.clone()],
-        };
-
-        let wasm_params = json_to_wasm_params(params_iter, json_params)?;
+        // Bind JSON-RPC params to the typed signature (named or positional).
+        let wasm_params = json_to_wasm_params(params_iter, &request.params)?;
 
         debug!("created input types");
 
