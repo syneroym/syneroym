@@ -12,13 +12,14 @@ use syneroym_data_db::{SqliteStorageProvider, StorageProvider};
 use syneroym_data_keystore::KeyStore;
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
 use syneroym_sandbox_wasm::{
-    AppSandboxEngine, HostState, MessagingContext, StreamContext, conversions::json_to_wasm_params,
+    AppSandboxEngine, HostState, MessagingContext, StreamContext,
+    conversions::{json_to_wasm_params, val_to_json},
 };
 use test_constants::GREETER_INTERFACE_NAME;
 use tokio::runtime::Builder;
 use wasmtime::{
     Store,
-    component::{Component, Linker, types::ComponentItem},
+    component::{Component, Linker, Val, types::ComponentItem},
 };
 
 fn test_messaging_context() -> MessagingContext {
@@ -127,8 +128,8 @@ fn bench_wasm_engine(c: &mut Criterion) {
         AppSandboxEngine::get_wasm_func(&mut store, &instance, Some(interface_name), method_name)
             .unwrap();
 
-    // Benchmark 3: json_to_wasm_params conversion
-    let json_params = vec![Value::String("BenchmarkUser".to_string())];
+    // Benchmark 3: json_to_wasm_params conversion (named/positional binding)
+    let json_params = Value::Array(vec![Value::String("BenchmarkUser".to_string())]);
 
     c.bench_function("json_to_wasm_params", |b| {
         b.iter(|| {
@@ -136,7 +137,24 @@ fn bench_wasm_engine(c: &mut Criterion) {
                 ComponentItem::ComponentFunc(f) => f.params(),
                 _ => panic!("Expected a function item"),
             };
-            let _ = json_to_wasm_params(params_iter, black_box(json_params.clone())).unwrap();
+            let _ = json_to_wasm_params(params_iter, black_box(&json_params)).unwrap();
+        });
+    });
+
+    // Benchmark 4: WIT -> JSON conversion of a representative record (the
+    // typical result hot path -- a `record-read-value`-shaped value with a
+    // ~256-byte `list<u8>` payload). Documents the WIT⇄JSON conversion budget.
+    let record_val = Val::Record(vec![
+        ("id".to_string(), Val::String("user-1234".to_string())),
+        ("payload".to_string(), Val::List((0..256u32).map(|i| Val::U8(i as u8)).collect())),
+        ("creator-id".to_string(), Val::String("did:key:z6MkExampleCallerIdentity".to_string())),
+        ("created-at".to_string(), Val::U64(1_720_000_000_000)),
+        ("updated-at".to_string(), Val::U64(1_720_000_000_500)),
+    ]);
+
+    c.bench_function("wit_json_roundtrip", |b| {
+        b.iter(|| {
+            let _ = val_to_json(black_box(&record_val)).unwrap();
         });
     });
 }

@@ -499,13 +499,8 @@ impl AppSandboxEngine {
 
         debug!("extracted the function and parameter iter");
 
-        // Dynamic parameter resolution
-        let json_params = match &request.params {
-            Value::Array(arr) => arr.clone(),
-            other => vec![other.clone()],
-        };
-
-        let wasm_params = json_to_wasm_params(params_iter, json_params)?;
+        // Bind JSON-RPC params to the typed signature (named or positional).
+        let wasm_params = json_to_wasm_params(params_iter, &request.params)?;
 
         debug!("created input types");
 
@@ -769,17 +764,20 @@ impl AppSandboxEngine {
         }
     }
 
-    /// Simple test function to invoke test context
+    /// Simple test function to invoke test context. `run` (`wit/host/host.wit`
+    /// `app::run`) is zero-arg, so `request_ctx` is not threaded through as a
+    /// JSON-RPC param (it never was: the pre-A0′ converter also dropped it,
+    /// silently, for any zero-arg target).
     pub async fn invoke_test_context(
         &self,
         service_id: &str,
         component_id: &str,
-        request_ctx: &str,
+        _request_ctx: &str,
     ) -> Result<String> {
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             method: "run".to_string(), // Default method for test
-            params: Value::String(request_ctx.to_string()),
+            params: Value::Null,
             id: None,
         };
         self.execute_wasm(service_id, component_id, &request).await
