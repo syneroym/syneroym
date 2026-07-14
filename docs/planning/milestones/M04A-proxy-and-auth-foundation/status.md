@@ -333,3 +333,32 @@ envelope), B4/B5/B6, or FDAE (M04B) work was started. No WIT file changed.
 `query-raw`/full `AggregationPipeline` remain out of scope (B4/B5). The
 owner→node delegation for presenting the substrate-owner DID at the gateway
 is explicitly deferred (`TODO(post-B0)`), per the plan's §0.5.1.
+
+### Post-commit addendum (2026-07-14) — `admin_ucan_root` unified with `ControllerAgreement`
+
+Design discussion surfaced that B0's `[iam].admin_ucan_root` (a plain config
+string) and the pre-existing, cryptographically two-way-signed
+`ControllerAgreement`/`SubstrateIdentityState` mechanism
+(`crates/identity/src/substrate.rs`, wired at boot in
+`crates/substrate/src/identity.rs`) were two independent, disconnected
+notions of "who owns this substrate" — the latter was computed at boot and
+then discarded (only `.did` was kept; `.controller`/`.status` went unused).
+
+Fixed in `crates/substrate/src/runtime.rs`
+(`setup_identity_and_storage`/`setup_connection_router`): a verified
+(`SubstrateIdentityStatus::Verified`, i.e. both the substrate and the
+controller signed) `ControllerAgreement` controller now overrides
+`admin_ucan_root` before it reaches `RouteHandler::init`. `Unverified`/`None`
+never grant `substrate/admin`. The raw config value remains only as a
+fallback for deployments with no agreement configured at all — doc comment
+updated on `IamConfig` (`crates/core/src/config.rs`).
+
+Verified: `cargo build`/`clippy` clean on `syneroym-substrate`/`syneroym-core`;
+`native_dispatch_identity` (8/8), `lifecycle_hooks` (4/4), and
+`basic_lifecycle` (3/3, sandbox disabled) all pass unchanged — the tests that
+set `admin_ucan_root` directly bypass this boot path entirely, so the
+fallback behavior they exercise is untouched.
+
+**Explicitly out of scope for this addendum** (see new Slice B7 below):
+service-level ownership (deploy/undeploy/status-check permission grants),
+app-catalog owner attribution, and registry-publish-on-behalf-of-owner.

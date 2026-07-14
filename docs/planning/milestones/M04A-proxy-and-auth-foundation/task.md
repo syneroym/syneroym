@@ -346,6 +346,59 @@ Wire `inject_kek`'s `_scope` param (`key_store.rs:46`) to derive per-app-instanc
 KEKs, gated on the caller's verified app-instance identity. Specify + test the DEK
 re-wrap path (Migration Strategy).
 
+#### Slice B7: Substrate & Service Ownership (Deploy Authorization + Ownership Attribution) — *scope recorded, design not yet started*
+**Depends on:** B0 (done — substrate-owner resolution now sources from
+`ControllerAgreement`, see status.md addendum). **Interacts with:** B1 (a
+real capability-delegation chain is the likely mechanism for item 1 below).
+**Requirement:** `[FND-IAM]`.
+
+Surfaced via design discussion (2026-07-14), prompted by a concrete gap: today
+`crates/app_orchestration/src/catalog.rs` records no owner/creator for a
+deployed app at all, and `orchestrator`'s `list` method
+(`crates/control_plane/src/service.rs:250`) returns every deployed app to any
+caller — there is no "list only my apps" or "substrate owner sees everything"
+enforcement, and no data to enforce it against even if there were.
+
+Agreed shape (not yet designed in code):
+1. **Service-owner permission is a grant, not a mutual agreement** — unlike
+   substrate ownership (`ControllerAgreement`, two-way signed), the substrate
+   owner unilaterally hands specific DIDs permission to deploy/undeploy/
+   status-check on this substrate (a pre-negotiated, ongoing, **revocable**
+   grant — not a one-time setup step; substrates may eventually be offered in
+   a marketplace to arbitrary grantees). Likely realized as a UCAN capability
+   once B1's real chain-verification exists; B0's `admin_ucan_root`-style
+   allowlist is not expressive enough (no revocation, no per-grantee scoping).
+2. **App catalog needs an owner field.** `catalog.rs` must record which DID's
+   deploy call created each app.
+3. **Attribution must resolve through one hop of delegation to the real
+   owner**, not the immediate signing key — covers both key rotation and a
+   distinct team-member's own key equally (same mechanism, `master_did`
+   resolution already used by `build_caller`, see `io.rs:63`). **Multi-hop
+   delegation (a delegate re-delegating further) is not resolvable with
+   today's one-hop `DelegationCertificate` format and is explicitly deferred**
+   until real UCAN proof chains (B1) exist — flag, don't silently misattribute.
+4. **The substrate publishes registry/DHT entries on behalf of the owner**,
+   not the owner itself — avoids a gap between "owner believes it's deployed"
+   and "it's actually discoverable." Must attribute to the resolved owner
+   (item 3), which today's `publish_to_community_registry`
+   (`crates/substrate/src/runtime.rs`) does not yet do.
+5. **`list` gates on caller identity**: substrate owner (resolved
+   `ControllerAgreement` controller) sees every app; a service owner sees only
+   apps whose recorded owner (item 2) matches their resolved identity (item
+   3). Multiple recognized substrate owners (multiple independent
+   `ControllerAgreement`s, or a rotated owner key) are all equally privileged
+   — no partial/limited owner tier.
+
+**Open questions to resolve before implementation** (recorded, not decided):
+- Exact shape of the deploy/undeploy/status-check grant — a new `Ability`
+  vocabulary entry (e.g. `orchestrator/deploy`) issued as a UCAN capability,
+  or a separate simpler mechanism for the interim (pre-B1) period?
+- Does this belong entirely in M04A, or does "list apps filtered by owner"
+  eventually generalize into an FDAE (M04B) row-filter over the catalog once
+  the catalog is real data-layer-backed data, rather than bespoke control-
+  plane logic? Not decided; noted so the two milestones don't duplicate the
+  mechanism independently.
+
 ---
 
 ## Reference Scenario (M04A subset)

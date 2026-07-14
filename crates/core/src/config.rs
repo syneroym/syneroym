@@ -789,7 +789,11 @@ impl Default for StreamingConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct IamConfig {
-    /// Root DID authorized to issue Admin UCANs.
+    /// Root DID authorized to issue Admin UCANs. At runtime
+    /// (`substrate::runtime::setup_connection_router`) this is overridden by
+    /// the substrate's verified `ControllerAgreement` controller when one is
+    /// mutually signed (see `syneroym_identity::substrate`) -- this config
+    /// value is only the fallback for deployments with no such agreement.
     pub admin_ucan_root: Option<String>,
 }
 
