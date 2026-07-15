@@ -114,6 +114,7 @@ async fn open_http_stream(
         enc: None,
         pubkey: Some(hex::encode(identity.public_key().to_bytes())),
         delegation: None,
+        ucan: None,
         dir: None,
     };
     send.write_all(preamble.to_preamble_line().as_bytes()).await.expect("write preamble failed");

@@ -119,6 +119,22 @@ pub fn canonicalize_json_value(value: &Value) -> Value {
     }
 }
 
+/// Verify a z-base-32 Ed25519 signature (as produced by `Identity::sign_json`)
+/// over the RFC-8785 canonicalization of `value`, against the pubkey resolved
+/// from `signer_did`. Mirrors `DelegationCertificate::verify`'s crypto steps,
+/// exposed as a free function so `syneroym-ucan` can verify UCAN token
+/// signatures without depending on `ed25519-dalek`/`z32` directly.
+pub fn verify_json_signature(signer_did: &str, value: &Value, sig_z32: &str) -> Result<()> {
+    let pubkey = resolve_did_key(signer_did).context("failed to resolve signer DID")?;
+    let canonical = canonicalize_json_value(value);
+    let payload =
+        serde_json::to_string(&canonical).context("failed to serialize canonical payload")?;
+    let sig_bytes = z32::decode(sig_z32.as_bytes())
+        .map_err(|_| anyhow!("invalid z-base-32 signature encoding"))?;
+    let signature = Signature::from_slice(&sig_bytes).context("invalid Ed25519 signature bytes")?;
+    pubkey.verify(payload.as_bytes(), &signature).map_err(Into::into)
+}
+
 /// Validate a signature against the agreement's canonicalized form using RFC
 /// 8785 (JSON Canonicalization Scheme). This ensures deterministic,
 /// spec-compliant signature verification compatible with external systems.
@@ -316,5 +332,38 @@ mod tests {
         let invalid_did = "did:web:example.com";
         let result = resolve_did_z32(invalid_did);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_verify_json_signature_round_trip() {
+        let signer = Identity::generate().unwrap();
+        let signer_did = derive_did_key(&signer.public_key());
+        let value = serde_json::json!({"b": 2, "a": 1});
+
+        let sig = signer.sign_json(&value).unwrap();
+
+        verify_json_signature(&signer_did, &value, &sig).unwrap();
+    }
+
+    #[test]
+    fn test_verify_json_signature_rejects_tampered_value() {
+        let signer = Identity::generate().unwrap();
+        let signer_did = derive_did_key(&signer.public_key());
+        let value = serde_json::json!({"a": 1});
+        let sig = signer.sign_json(&value).unwrap();
+
+        let tampered = serde_json::json!({"a": 2});
+        assert!(verify_json_signature(&signer_did, &tampered, &sig).is_err());
+    }
+
+    #[test]
+    fn test_verify_json_signature_rejects_wrong_signer() {
+        let signer = Identity::generate().unwrap();
+        let other = Identity::generate().unwrap();
+        let other_did = derive_did_key(&other.public_key());
+        let value = serde_json::json!({"a": 1});
+        let sig = signer.sign_json(&value).unwrap();
+
+        assert!(verify_json_signature(&other_did, &value, &sig).is_err());
     }
 }

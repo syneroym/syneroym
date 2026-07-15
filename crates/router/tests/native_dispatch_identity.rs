@@ -165,6 +165,7 @@ fn preamble_for(service_id: &str, interface: &str) -> RoutePreamble {
         enc: None,
         pubkey: None,
         delegation: None,
+        ucan: None,
         dir: None,
     }
 }
@@ -377,6 +378,7 @@ async fn http_bridge_rejects_anonymous_caller_with_401() {
         enc: None,
         pubkey: None,
         delegation: None,
+        ucan: None,
         dir: None,
     };
 

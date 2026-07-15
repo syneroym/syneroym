@@ -1,8 +1,12 @@
 //! The verified, in-memory result of capability resolution (ADR-0015 §3).
 
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::capability::{Ability, Capability, ResourceUri};
+use crate::{
+    capability::{Ability, Capability, ResourceUri},
+    token::{CapabilityToken, ChainVerifyOpts, verify_chain},
+};
 
 /// The *verified, in-memory* result of resolving a caller's capabilities —
 /// never deserialized-and-trusted from the wire. At B0 `capabilities` is
@@ -20,6 +24,18 @@ impl SessionContext {
     #[must_use]
     pub fn has_capability(&self, resource: &ResourceUri, ability: &Ability) -> bool {
         self.capabilities.iter().any(|c| c.grants(resource, ability))
+    }
+
+    /// Verify a presented UCAN chain and normalize it into a `SessionContext`
+    /// (ADR-0015 §3, Slice B1). The leaf's `facts` become `claims`.
+    pub fn from_verified_chain(leaf: &CapabilityToken, opts: &ChainVerifyOpts<'_>) -> Result<Self> {
+        let capabilities = verify_chain(leaf, opts)?;
+        Ok(Self {
+            subject_did: leaf.audience_did.clone(),
+            capabilities,
+            claims: leaf.facts.clone(),
+            verified_at_secs: opts.now_secs,
+        })
     }
 }
 

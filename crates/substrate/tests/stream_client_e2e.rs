@@ -50,6 +50,7 @@ async fn open_stream(
         enc: None,
         pubkey: None,
         delegation: None,
+        ucan: None,
         dir: dir.parse().ok(),
     };
     eprintln!("[open_stream] writing preamble: {}", preamble.to_preamble_line().trim());

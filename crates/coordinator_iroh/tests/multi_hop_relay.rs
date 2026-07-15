@@ -775,6 +775,7 @@ async fn test_cross_node_proxy_call() -> Result<()> {
         enc: None,
         pubkey: None,
         delegation: None,
+        ucan: None,
         dir: None,
     };
     let body = serde_json::to_vec(&serde_json::json!({

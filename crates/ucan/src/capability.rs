@@ -101,6 +101,16 @@ impl Capability {
         }
         self.with == *resource && self.can.entails(ability)
     }
+
+    /// Whether `self` (a held/parent capability) authorizes everything
+    /// `other` (a requested/child capability) asks for. A `substrate:`-scoped
+    /// `self` covers any resource; otherwise resources must match exactly.
+    /// This is the same resource-scope rule `grants` inlines, factored out so
+    /// UCAN chain attenuation (B1) can reuse it directly.
+    #[must_use]
+    pub fn covers(&self, other: &Capability) -> bool {
+        (self.with.is_substrate_scope() || self.with == other.with) && self.can.entails(&other.can)
+    }
 }
 
 #[cfg(test)]
@@ -210,6 +220,61 @@ mod tests {
         };
         assert!(!cap.grants(&resource, &ability(Ability::DATA_LAYER_WRITE)));
         assert!(!cap.grants(&resource, &ability(Ability::DATA_LAYER_ADMIN)));
+    }
+
+    #[test]
+    fn covers_holds_for_matching_resource_and_entailed_ability() {
+        let resource = ResourceUri::service("app-1", "svc-a");
+        let parent = Capability {
+            with: resource.clone(),
+            can: ability(Ability::DATA_LAYER_ADMIN),
+            caveats: None,
+        };
+        let child =
+            Capability { with: resource, can: ability(Ability::DATA_LAYER_WRITE), caveats: None };
+        assert!(parent.covers(&child));
+    }
+
+    #[test]
+    fn covers_denies_escalation_and_resource_mismatch() {
+        let parent = Capability {
+            with: ResourceUri::service("app-1", "svc-a"),
+            can: ability(Ability::DATA_LAYER_READ),
+            caveats: None,
+        };
+        let escalated = Capability {
+            with: ResourceUri::service("app-1", "svc-a"),
+            can: ability(Ability::DATA_LAYER_WRITE),
+            caveats: None,
+        };
+        assert!(!parent.covers(&escalated));
+
+        let admin_wrong_resource = Capability {
+            with: ResourceUri::service("app-1", "svc-a"),
+            can: ability(Ability::DATA_LAYER_ADMIN),
+            caveats: None,
+        };
+        let other_resource = Capability {
+            with: ResourceUri::service("app-1", "svc-b"),
+            can: ability(Ability::DATA_LAYER_READ),
+            caveats: None,
+        };
+        assert!(!admin_wrong_resource.covers(&other_resource));
+    }
+
+    #[test]
+    fn covers_substrate_scope_covers_any_resource() {
+        let parent = Capability {
+            with: ResourceUri::substrate("did:key:z6MkAdminRoot"),
+            can: ability(Ability::SUBSTRATE_ADMIN),
+            caveats: None,
+        };
+        let child = Capability {
+            with: ResourceUri::service("app-1", "svc-a"),
+            can: ability(Ability::DATA_LAYER_ADMIN),
+            caveats: None,
+        };
+        assert!(parent.covers(&child));
     }
 
     #[test]

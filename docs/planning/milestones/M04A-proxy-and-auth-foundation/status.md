@@ -643,3 +643,168 @@ carries only the delegation half per the plan's own TODO), no B4/B5/B6. The
 `AdaptationStage::JsonRpcToWrpc` variant and `wrpc://`/`RouteProtocol::Wrpc`
 scheme stay reserved, unimplemented (A.5) — only the *unsupported-protocol
 error path* for them was added, not a wire.
+
+## Slice B1 — UCAN Context Extraction and Normalization ✅ (2026-07-15)
+
+Branch: `feat/m04a-b1`. Requirement `[FND-IAM]`. Blocked on ADR
+[D-04-01](../../../decisions/0015-ucan-capability-model.md) (Accepted).
+Depends on B0 (done). Plan: [plans/B1.md](plans/B1.md).
+
+### What was delivered
+
+1. **`syneroym-identity`**: `substrate::verify_json_signature(signer_did,
+   value, sig_z32)` — the inverse of `Identity::sign_json`, exposed as a free
+   function so `syneroym-ucan` verifies signatures without depending on
+   `ed25519-dalek`/`z32` directly. Unit-tested (round-trip, tampered value,
+   wrong signer).
+2. **`syneroym-ucan`**: `Capability::covers` (parent-covers-child attenuation
+   rule, factored out of `grants`); a new `token.rs` module with
+   `CapabilityToken` (signed delegation token: `issuer_did`, `audience_did`,
+   `capabilities`, `facts`, validity window, `proofs`, `signature`),
+   `CapabilityToken::issue`/`chain_edges`, `ChainVerifyOpts`, `verify_chain`
+   (fail-closed at capability granularity — an unbacked leaf yields an empty
+   set, not an error; a structural failure — bad signature, expiry, audience
+   mismatch — is the only `Err` path), and `SessionContext::from_verified_chain`;
+   a new `normalize.rs` module with the `AuthNormalizer` trait and the
+   `DidKeyNormalizer` no-op implementation (ADR-0015 §5 seam, unit-tested,
+   not integration-wired — Flag F4, no consumer at B1). The former "deferred
+   to B1" module doc-comment is gone.
+3. **`syneroym-rpc`**: re-exports `CapabilityToken`, `ChainVerifyOpts`,
+   `verify_chain` alongside the existing `Ability`/`Capability`/`ResourceUri`/
+   `SessionContext` re-exports.
+4. **`syneroym-router`**: `syneroym-ucan` added as a direct dependency.
+   `RoutePreamble` gains a `ucan: Option<CapabilityToken>` field (hex-encoded
+   JSON in a `ucan=` query param, mirroring `delegation`) — parsed
+   permissively (unparseable → `None`), round-tripped in `Display`, and swept
+   into the 11 full `RoutePreamble { .. }` / `Self { .. }` struct literals
+   across `router`, `sdk`, `substrate`, and `coordinator_iroh`'s test suites
+   (the functional-update literal at `route_handler/http.rs:183` needed no
+   change). `build_caller` (`route_handler/io.rs`) is now `async` and, beyond
+   B0's kept direct-equality `admin_ucan_root` grant, verifies a presented
+   `preamble.ucan` chain rooted at that same admin root, addressed to the
+   verified connection identity; on success it merges the verified
+   capabilities/claims and upgrades `auth` to `AuthLevel::Ucan`. A bad/absent
+   UCAN fails open to `Delegated` (deliberate — a bad *authorization* token
+   does not sink an otherwise-verified *transport* identity); a malformed
+   *delegation* cert is still a hard reject in `handle_stream`, unchanged.
+   New `ucan_chain_not_revoked` generalizes the existing delegation-cert
+   revocation check (`handshake.rs`) to a UCAN chain: for each
+   `(issuer_did, audience_did)` edge (`CapabilityToken::chain_edges`),
+   resolve the issuer's master anchor and reject if the audience DID is in
+   its `revoked_keys`; an unresolvable anchor is treated as not-revoked,
+   matching the delegation path's own behavior. `build_caller`'s only caller
+   (`handle_stream`) now `.await`s it and passes `self.inner.registry_client`
+   as the resolver.
+5. **`syneroym-sdk`** (optional, per plan §6): `SyneroymClient` gains a
+   `caller_ucan: Option<CapabilityToken>` field (`None` by default) and a
+   `with_ucan` builder; `open_request_stream` sets `preamble.ucan =
+   self.caller_ucan.clone()`. No existing `SyneroymClient { .. }` struct
+   literal exists outside the crate's own constructors (verified by grep), so
+   no further call-site sweep was needed.
+6. **`syneroym-core`**: `IamConfig`'s doc-comment updated to record that B1
+   additionally roots UCAN chain verification at `admin_ucan_root`, not only
+   the B0 direct-equality check — no new config field (B1 reuses
+   `[iam].admin_ucan_root`, already overridden at boot by a verified
+   `ControllerAgreement` controller per B0's addendum).
+
+### Trust model (plan.md §0, Flag F1)
+
+The node's admin root (`admin_ucan_root`, or the verified
+`ControllerAgreement` controller that overrides it at boot) is the **sole**
+trusted root issuer at B1. Every capability in a presented chain must
+attenuate back to a token issued by that root; per-service **owner**-rooted
+chains (owner ≠ node admin) are not verifiable at B1 — the app catalog
+records no owner DID yet (Slice B7). This is a strict generalization of B0's
+direct-equality admin path.
+
+### Tests
+
+- **`syneroym-identity`** (+3): `verify_json_signature` round-trip, tampered
+  value, wrong signer.
+- **`syneroym-ucan`** (30 total, +16 over B0's 14): `covers` (3 new,
+  including the substrate-scope-covers-any-resource case exercised via
+  `SessionContext::has_capability`); `token::tests` (11) — happy path direct
+  root, happy path one-hop attenuation, escalation blocked, untrusted root
+  dropped, audience mismatch (`Err`), expired leaf (`Err`), expired proof
+  (`Err`), tampered signature (`Err`), tampered capability post-signing
+  (`Err`), continuity break (capability silently dropped, not an error),
+  `from_verified_chain` field population; `normalize::tests` (2) — accepts a
+  real did:key, rejects a `did:web:...`.
+- **`syneroym-router`**:
+  - `preamble.rs`: `ucan_round_trips_through_display_and_parse` — issue a
+    token, set it on a preamble, `to_string()` → `parse()` → assert equal.
+  - `route_handler/io.rs` (+4, in-crate — `build_caller` is a private
+    function, not reachable from an external `tests/` crate):
+    `build_caller_admits_a_ucan_chain_rooted_at_admin_root`,
+    `build_caller_rejects_audience_mismatch`,
+    `build_caller_drops_capabilities_from_an_untrusted_root`,
+    `build_caller_rejects_a_revoked_chain` (via a `MockResolver` double,
+    mirroring `handshake.rs`'s own test double).
+  - New `tests/ucan_context.rs` (2) — reference-scenario **step 21**: a
+    `CapabilityToken` verified through the real `syneroym_ucan::verify_chain`/
+    `SessionContext::from_verified_chain` (the same functions `build_caller`
+    calls) is fed into `dispatch_json_rpc_once` against a real
+    `SynSvcNativeService`, proving the verified `data-layer/admin` capability
+    admits `execute-ddl` (`verified_ucan_capability_reaches_native_dispatch`)
+    and that a chain rooted at a non-admin issuer is denied the same call
+    (`ucan_capability_from_untrusted_root_does_not_reach_native_dispatch`).
+
+### Deviation from the plan (recorded, not silent)
+
+Plan §7 suggested a single `tests/ucan_context.rs` driving `build_caller`
+through `handle_stream`/`dispatch_json_rpc_once`. `build_caller` is a private
+function in `route_handler/io.rs`, and `handle_stream`'s generic bound
+(`S: … + StopSignal + 'static`) requires a transport-specific `StopSignal`
+impl that an external test crate cannot supply for a foreign type
+(`tokio::io::DuplexStream`) under Rust's orphan rules — the same constraint
+`native_dispatch_identity.rs` already works around by calling
+`dispatch_json_rpc_once`/`handle_binary_stream`/`handle_http_stream` directly
+with a hand-built `CallerContext`, never `handle_stream` itself. B1 splits
+the step-21 proof accordingly: the router-specific wiring (chain verify +
+revocation + auth-level upgrade, i.e. `build_caller` itself) is unit-tested
+in-crate in `route_handler/io.rs`; the "verified capability reaches native
+dispatch" claim is proven in the external `tests/ucan_context.rs` by driving
+`dispatch_json_rpc_once` with a `CallerContext` built from the same public
+`syneroym_ucan` verification functions `build_caller` calls internally.
+
+### Performance
+
+`criterion` micro-bench (`crates/ucan/benches/chain_verify.rs`,
+`cargo bench -p syneroym-ucan --bench chain_verify`), a 2-link chain (`owner`
+→ `alice` → `bob`, one attenuation hop):
+
+| Bench | Measured | Budget |
+|---|---|---|
+| `verify_chain_two_link` | ~64.8 µs | < 5 ms p99 (cache-cold) |
+
+Three orders of magnitude under budget.
+
+### Gate
+
+- `cargo +nightly fmt --all` — clean.
+- `cargo clippy --workspace --all-targets --all-features` — zero warnings.
+- `cargo test --workspace` — **432 passed, 0 failed** across 73 test binaries
+  plus doctests (full run, sandbox disabled — see environment note below).
+- `mise run test:e2e` — **12 passed, 0 failed** (8 + 4 across the two
+  Playwright configs) — matches the A0′/B0/A1 baseline exactly; the `ucan=`
+  preamble field is additive/opt, so no existing flow regresses.
+- `wasm32-wasip2` — `test-components/greeter` builds clean; B1 adds no WIT
+  types (verification is host-side only per ADR-0015's Implementation
+  Notes), so the guest surface is unchanged.
+
+**Environment note:** as with A0′/B0/A1, network-binding integration tests
+(`syneroym-coordinator-iroh`'s `connection_limit`,
+`test_cross_node_proxy_call`'s local HTTP registry listener) need the agent
+command sandbox disabled to bind loopback sockets; the 432/0 figure above is
+from the full suite run with the sandbox disabled.
+
+### Scope discipline
+
+Every change maps to a plan section (§1 identity helper, §2 ucan crate, §3
+rpc re-exports, §4 preamble + `build_caller` + revocation, §6 SDK field
+(optional, included), §9 bench). No B4/B5/B6, no M04B (FDAE) work, no WIT
+file changed. `AuthNormalizer`/`DidKeyNormalizer` are exported by the ucan
+crate but deliberately not re-exported through `syneroym-rpc` or wired into
+the router (Flag F4 — no consumer at B1, per the plan). Cross-node UCAN
+forwarding (`CallerProof.ucan_json`, Flag F5) is explicitly out of scope,
+noted as a small additive B3 follow-on per the plan.
