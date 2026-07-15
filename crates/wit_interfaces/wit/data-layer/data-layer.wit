@@ -41,6 +41,25 @@ interface store {
         next-cursor: option<string>,
     }
 
+    /// A single bound parameter for `query-raw`. Values are always bound via
+    /// `?` placeholders -- never interpolated into the SQL text.
+    variant sql-value {
+        text(string),
+        integer(s64),
+        real(f64),
+        boolean(bool),
+        null,
+    }
+
+    /// Result of `query-raw`. Unlike `query-result`, this carries an
+    /// arbitrary projection (any columns a SELECT/CTE/aggregation produces),
+    /// not the fixed record shape. `rows` cells are positionally aligned
+    /// with `columns`.
+    record raw-query-result {
+        columns: list<string>,
+        rows: list<list<sql-value>>,
+    }
+
     record patch-mutation {
         id: string,
         patch-json: list<u8>,
@@ -93,6 +112,13 @@ interface store {
     /// migration context (e.g., HostState.is_init_context == true) and reject execution
     /// in standard runtime contexts.
     execute-ddl: func(sql: string) -> result<_, data-layer-error>;
+
+    /// Privileged raw-SQL escape hatch (ADR-0011). Gated by the
+    /// `data-layer/admin` capability (same trust boundary as `execute-ddl`);
+    /// returns `permission-denied` otherwise. Read-only: a statement that
+    /// would mutate the DB is rejected. `params` are bound via `?`
+    /// placeholders in order.
+    query-raw: func(sql: string, params: list<sql-value>) -> result<raw-query-result, data-layer-error>;
 }
 
 world data-layer-guest {

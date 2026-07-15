@@ -943,3 +943,163 @@ Gate re-verified after all fixes: `cargo +nightly fmt --all` clean,
 `cargo clippy --workspace --all-targets --all-features` zero warnings,
 `cargo test --workspace` green, `mise run test:e2e` green (see the updated
 Gate section above for exact figures).
+
+## Slice B5 — Privileged `query-raw` Escape Hatch ✅ (2026-07-15)
+
+Branch: `feat/m04a-b5`. Requirement `[PLT-DAT]`; closes M04A gate item **#3**
+(privileged `query-raw`, ADR-0011). Depends on B0's `data-layer/admin` Admin
+UCAN gate (done). Plan: [plans/B5.md](plans/B5.md).
+
+### What was delivered
+
+1. **WIT** (`crates/wit_interfaces/wit/data-layer/data-layer.wit` — the
+   `host/deps/data-layer` copy is a symlink to this file, so both generators
+   picked up the change from one edit): a `sql-value` variant (`text`/
+   `integer`/`real`/`boolean`/`null`), a `raw-query-result` record
+   (`columns: list<string>`, `rows: list<list<sql-value>>` — inlined per the
+   plan's own risk-avoidance default rather than a `type raw-row` alias), and
+   `query-raw: func(sql: string, params: list<sql-value>) ->
+   result<raw-query-result, data-layer-error>` on the `store` interface.
+   Additive/minor — `wasm32-wasip2` guest builds (`data-layer-test`,
+   `greeter`, `proxy-test`, `stream-test`, `messaging-pubsub-test`) all still
+   build clean.
+2. **`syneroym-data-db`**: `ServiceStore::query_raw` trait method
+   (`traits.rs`); `do_query_raw` (`sqlite.rs`, next to `do_query`) — binds
+   `params` positionally via `rusqlite::params_from_iter`, never
+   interpolating into `sql`; rejects any statement where
+   `Statement::readonly()` is `false` (checked post-`prepare`, pre-`query`,
+   so the read-write-capable reader-pool connection can never actually
+   mutate) with `PermissionDenied`; a BLOB column is a typed
+   `SchemaViolation` (`sql-value` has no `blob` arm, per the ADR); non-UTF-8
+   text likewise. **F5 resolved as the plan's own recommendation (b)**: a
+   result exceeding `MAX_QUERY_PAGE_SIZE` (1000 rows) fails with
+   `QuotaExceeded` rather than silently truncating — raw SQL has no cursor to
+   offer a next page against, so a caller must add its own `LIMIT`. Wired
+   into both `ServiceStore` impls (`SqliteServiceStore`, `Arc<...>`),
+   mirroring `query`'s reader-pool pattern.
+3. **`syneroym-sandbox-wasm`**: guest-side `store::Host::query_raw`
+   (`host_capabilities.rs`) — a near-verbatim copy of `execute_ddl`'s
+   `data-layer/admin` capability gate (`ResourceUri::service` +
+   `Ability::DATA_LAYER_ADMIN`), denying before ever opening the store.
+4. **`syneroym-control-plane`**: a `"query-raw" | "query_raw"` arm in
+   `dispatch_data_layer` (`synsvc_native.rs`), gated identically. A
+   hand-rolled `SqlValueDto` (`#[serde(tag = "type", content = "value",
+   rename_all = "snake_case")]`) is needed because the bindgen `SqlValue`
+   variant serializes with serde's default PascalCase externally-tagged form
+   (`{"Integer": 30}`), not this API's snake-case-tagged JSON convention —
+   same reason `MutationDto`/`IndexDefinitionDto` exist. `data_layer_error`
+   needed no change: `PermissionDenied`/`SchemaViolation`/`QuotaExceeded`
+   already map to `-32010`/`-32012`/`-32013`.
+5. **ADR-0011 amended in place** (`docs/decisions/0011-privileged-raw-sql-query.md`,
+   Flag F0): status moved *Proposed* → *Accepted*; the signature's return
+   type changed from the fixed `query-result` to the new `raw-query-result`
+   (D1 — the original signature could not represent the arbitrary
+   projections/aggregations the ADR's own motivation requires); the gate
+   changed from `HostState.is_init_context` to the `data-layer/admin` Admin
+   UCAN capability (D-04-05/B0, which shipped before `query-raw` itself); a
+   "Read-Only Enforced" subsection records the read-only narrowing (D2) that
+   the original "arbitrary DML/query SQL" wording never specified. A new
+   "Amendments" section at the end of the ADR records all three changes
+   against the original text, per the plan's §0.1 requirement not to leave
+   the ADR self-contradictory against the shipped code.
+
+### Flags resolved (plan.md §7)
+
+- **F0** — ADR-0011 amended (item 5 above), not left contradicting the code.
+- **F1** — the `SqlValueDto::Null` unit variant under `#[serde(tag="type",
+  content="value")]` deserializes correctly from `{"type": "null"}` (no
+  `value` key) with no tagging change needed; pinned by
+  `query_raw_null_param_round_trips` (`native_dispatch_identity.rs`), which
+  exercises the actual wire path end-to-end (the DTO is scoped inside the
+  match arm, not reachable for an isolated unit test).
+- **F2** — BLOB columns: a typed `SchemaViolation`, per the plan's chosen
+  behavior; `test_query_raw_blob_column_is_schema_violation`.
+- **F3** — boolean is input-only (binds 0/1 via `SqlValue::Integer`, results
+  surface as `Integer`); inherent to SQLite, documented in the WIT
+  doc-comment (`sql-value`'s doc-comment) and the ADR; not separately
+  regression-tested beyond `test_query_raw_binds_params_no_injection`'s
+  general parameter-binding coverage, matching the plan's own framing of F3
+  as a documented characteristic, not a gate.
+- **F4** — result encoding across a future A1 proxy re-typing: confirmed
+  inert for B5 (native/guest same-node calls only use the PascalCase
+  externally-tagged output directly via `to_payload`/the WIT `Serialize`
+  derive); flagged in this section per the plan for A1-adjacent work to
+  check if `query-raw` results are ever proxied guest→guest and re-typed.
+- **F5** — resolved as (b): `QuotaExceeded` on a raw result exceeding the
+  page cap (item 2 above); `test_query_raw_exceeding_page_cap_is_quota_exceeded`.
+- **F6** — task.md's Failure/Security table row was already accurate; no
+  change needed.
+
+### Tests
+
+- **Unit** — `crates/data_db/src/tests_crud.rs` (+7, 62 total in that
+  module): `test_query_raw_projects_arbitrary_columns` (D1 — arbitrary
+  projection/aliasing via `json_extract`), `test_query_raw_aggregation`
+  (`count(*)`, the reference-scenario step-24 shape),
+  `test_query_raw_binds_params_no_injection` (an injection-shaped string
+  bound as a literal value, table survives),
+  `test_query_raw_rejects_write_statements` (D2 — each of
+  INSERT/UPDATE/DELETE/DROP TABLE/CREATE TABLE denied with
+  `PermissionDenied`, row count unchanged),
+  `test_query_raw_blob_column_is_schema_violation`,
+  `test_query_raw_malformed_sql_is_schema_violation`, and
+  `test_query_raw_exceeding_page_cap_is_quota_exceeded` (F5). `SqlValue`
+  carries no `PartialEq` from the bindgen `additional_derives` (only
+  `Clone`/`Debug`/serde), so row-value assertions compare via
+  `serde_json::to_value` rather than a manual per-arm `match` — same
+  technique `data_layer.rs`'s own serde round-trip test already relies on.
+- **Guest gate** — `crates/sandbox_wasm/tests/lifecycle_hooks.rs` (+2, 6
+  total): `test_query_raw_denied_for_ordinary_caller`
+  (`CallerContext::service_system` → `PermissionDenied`),
+  `test_query_raw_allowed_for_local_elevated_lifecycle_context`
+  (`CallerContext::local_elevated` → succeeds, asserts the `columns` shape
+  of a real `SELECT 1 AS one`).
+- **Native gate + injection** — `crates/router/tests/native_dispatch_identity.rs`
+  (+4, 12 total): `ordinary_caller_denied_query_raw` (`-32010`),
+  `admin_caller_admitted_query_raw` (admits, asserts the response carries
+  `columns`/`rows`, not the fixed `query-result` shape),
+  `query_raw_binds_params_no_injection` (end-to-end via
+  `dispatch_json_rpc_once`: seed via `create-collection`/`put`, an
+  injection-string `query-raw` param matches nothing, the table survives and
+  is still queryable), `query_raw_null_param_round_trips` (F1, above).
+
+### Gate
+
+- `cargo +nightly fmt --all` — clean.
+- `cargo clippy --workspace --all-targets --all-features` — zero warnings.
+- `cargo test --workspace` — **453 passed, 0 failed** (plus 2 doctests)
+  across 50 test binaries (full run, sandbox disabled — see environment note
+  below).
+- `mise run test:e2e` — **12 passed, 0 failed** (8 + 4 across the two
+  Playwright configs) — matches the A0′/B0/A1/B1 baseline exactly; B5 adds
+  no e2e-visible behavior (no new HTTP route, no new Playwright-driven flow),
+  so this run is a pure regression check.
+- `wasm32-wasip2` — `test-components/data-layer-test` (the component that
+  actually imports `data-layer`), plus `greeter`/`proxy-test`/`stream-test`/
+  `messaging-pubsub-test`, all build clean against the additive WIT change.
+  `miniapp-demo1-web` fails to build under `wasm32-wasip2` with a pre-existing,
+  unrelated `aws-lc-sys`/clang toolchain error (confirmed by code read: this
+  component does not import `data-layer` at all, so the WIT change cannot be
+  the cause) — not investigated further as out of scope for this slice.
+
+**Environment note:** as with every prior M04A slice, the agent command
+sandbox blocks loopback socket binds needed by `syneroym-coordinator-iroh`'s
+`connection_limit` test and by `wasm32-wasip2` component builds writing to
+the shared cargo registry cache; the figures above are from runs with the
+sandbox disabled, consistent with A0′/B0/A1/B1's own gate methodology.
+
+### Scope discipline
+
+Only Slice B5 was touched: the `data-layer` WIT surface (both copies, one
+edit via the symlink), `syneroym-data-db`'s `query_raw` trait
+method/reader-pool helper/two impls, `syneroym-sandbox-wasm`'s guest gate,
+`syneroym-control-plane`'s native dispatch arm, the three test files above,
+and ADR-0011 (amended, not superseded, per the plan). No B4
+(`AggregationPipeline` — independent, `$group`/`$having` on `query`, not
+touched), no B6 (KEK), no M04B (FDAE) work, no other WIT interface. The
+live-substrate e2e assertion for reference-scenario step 24 remains a
+milestone-close activity per the plan's §9, not pulled into this slice.
+`traceability-matrix.md` is left unchanged, consistent with A0′/B0/A1/B1's
+own precedent of deferring that update to milestone close (task.md's
+`traceability-matrix.md` exit criterion has stayed unchecked across every
+prior slice for the same reason).

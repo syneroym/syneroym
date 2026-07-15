@@ -35,7 +35,7 @@ use syneroym_wit_interfaces::host::syneroym::{
     },
     data_layer::store::{
         self, CollectionSchema, DataLayerError, Mutation, QueryOptions, QueryResult,
-        RecordReadValue, RecordWriteValue,
+        RawQueryResult, RecordReadValue, RecordWriteValue, SqlValue,
     },
     host::context::Host,
     messaging::host_api::{self, MessagingError},
@@ -499,6 +499,28 @@ impl store::Host for HostState {
         )
         .await?;
         store.execute_ddl(&sql).await
+    }
+
+    async fn query_raw(
+        &mut self,
+        sql: String,
+        params: Vec<SqlValue>,
+    ) -> Result<RawQueryResult, DataLayerError> {
+        // Admin-capability gate (ADR-0015/0016), identical to execute_ddl: only
+        // a caller holding `data-layer/admin` on this component's own resource
+        // may run raw SQL. Lifecycle init/migrate runs as
+        // `AuthLevel::LocalElevated`, which carries it.
+        let resource = ResourceUri::service(&self.component_id, &self.component_id);
+        if !self.caller.has_capability(&resource, &Ability(Ability::DATA_LAYER_ADMIN.to_string())) {
+            return Err(DataLayerError::PermissionDenied);
+        }
+        let store = open_store(
+            self.component_id.clone(),
+            self.key_store.clone(),
+            self.storage_provider.clone(),
+        )
+        .await?;
+        store.query_raw(&sql, &params).await
     }
 }
 

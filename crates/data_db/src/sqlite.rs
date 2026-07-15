@@ -371,6 +371,86 @@ fn do_query(
     Ok(host_store::QueryResult { records, next_cursor })
 }
 
+fn wit_to_rusqlite_value(v: &host_store::SqlValue) -> SqlValue {
+    match v {
+        host_store::SqlValue::Text(s) => SqlValue::Text(s.clone()),
+        host_store::SqlValue::Integer(i) => SqlValue::Integer(*i),
+        host_store::SqlValue::Real(f) => SqlValue::Real(*f),
+        host_store::SqlValue::Boolean(b) => SqlValue::Integer(i64::from(*b)),
+        host_store::SqlValue::Null => SqlValue::Null,
+    }
+}
+
+fn rusqlite_to_wit_value(
+    v: rusqlite::types::ValueRef<'_>,
+) -> Result<host_store::SqlValue, host_store::DataLayerError> {
+    use rusqlite::types::ValueRef;
+    Ok(match v {
+        ValueRef::Null => host_store::SqlValue::Null,
+        ValueRef::Integer(i) => host_store::SqlValue::Integer(i),
+        ValueRef::Real(f) => host_store::SqlValue::Real(f),
+        ValueRef::Text(bytes) => {
+            host_store::SqlValue::Text(String::from_utf8(bytes.to_vec()).map_err(|_| {
+                host_store::DataLayerError::SchemaViolation(
+                    "query-raw returned non-UTF-8 text".to_string(),
+                )
+            })?)
+        }
+        // WIT `sql-value` has no blob arm (ADR-0011): surface, don't corrupt.
+        ValueRef::Blob(_) => {
+            return Err(host_store::DataLayerError::SchemaViolation(
+                "query-raw: BLOB columns are not representable in sql-value; project them via \
+                 hex()/base64 instead"
+                    .to_string(),
+            ));
+        }
+    })
+}
+
+/// Executes a privileged read-only raw-SQL query (ADR-0011) on the reader
+/// pool. Read-only enforcement (D2 of B5.md): SQLite classifies the compiled
+/// statement via `Statement::readonly()`, which is `false` for
+/// INSERT/UPDATE/DELETE/DDL/PRAGMA-write statements -- checked *before*
+/// stepping, so the read-write-capable reader connection can never actually
+/// mutate the database.
+fn do_query_raw(
+    conn: &Connection,
+    sql: &str,
+    params: &[host_store::SqlValue],
+) -> Result<host_store::RawQueryResult, host_store::DataLayerError> {
+    let bound: Vec<SqlValue> = params.iter().map(wit_to_rusqlite_value).collect();
+
+    let mut stmt = conn.prepare(sql).map_err(|e| {
+        host_store::DataLayerError::SchemaViolation(format!("query-raw prepare failed: {e}"))
+    })?;
+
+    if !stmt.readonly() {
+        return Err(host_store::DataLayerError::PermissionDenied);
+    }
+
+    let column_count = stmt.column_count();
+    let columns: Vec<String> = stmt.column_names().into_iter().map(str::to_string).collect();
+
+    // Unlike `query`, there is no cursor for arbitrary raw SQL, so a result
+    // exceeding the page cap fails loudly rather than being silently
+    // truncated -- the caller must add its own `LIMIT`.
+    let mut rows_out: Vec<Vec<host_store::SqlValue>> = Vec::new();
+    let mut rows =
+        stmt.query(rusqlite::params_from_iter(bound.iter())).map_err(map_rusqlite_error)?;
+    while let Some(row) = rows.next().map_err(map_rusqlite_error)? {
+        if rows_out.len() as u32 >= MAX_QUERY_PAGE_SIZE {
+            return Err(host_store::DataLayerError::QuotaExceeded);
+        }
+        let mut cells = Vec::with_capacity(column_count);
+        for i in 0..column_count {
+            cells.push(rusqlite_to_wit_value(row.get_ref(i).map_err(map_rusqlite_error)?)?);
+        }
+        rows_out.push(cells);
+    }
+
+    Ok(host_store::RawQueryResult { columns, rows: rows_out })
+}
+
 /// SqliteStorageProvider manages the substrate.db (metadata) and per-service
 /// encrypted databases.
 pub struct SqliteStorageProvider {
@@ -1174,6 +1254,23 @@ impl ServiceStore for SqliteServiceStore {
         })
         .await
     }
+
+    async fn query_raw(
+        &self,
+        sql: &str,
+        params: &[host_store::SqlValue],
+    ) -> Result<host_store::RawQueryResult, host_store::DataLayerError> {
+        let sql = sql.to_string();
+        let params = params.to_vec();
+        let conn = self
+            .reader_pool
+            .get()
+            .await
+            .map_err(|e| host_store::DataLayerError::Internal(format!("reader pool: {e}")))?;
+        conn.interact(move |conn| do_query_raw(conn, &sql, &params)).await.map_err(|e| {
+            host_store::DataLayerError::Internal(format!("reader pool interact: {e}"))
+        })?
+    }
 }
 
 #[async_trait]
@@ -1254,6 +1351,14 @@ impl ServiceStore for Arc<SqliteServiceStore> {
         creator_id: &str,
     ) -> Result<(), host_store::DataLayerError> {
         self.as_ref().batch_mutate(collection, mutations, creator_id).await
+    }
+
+    async fn query_raw(
+        &self,
+        sql: &str,
+        params: &[host_store::SqlValue],
+    ) -> Result<host_store::RawQueryResult, host_store::DataLayerError> {
+        self.as_ref().query_raw(sql, params).await
     }
 }
 

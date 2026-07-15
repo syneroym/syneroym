@@ -13,9 +13,9 @@ use crate::{
     ServiceStore, SqliteStorageProvider, StorageProvider,
     host_store::{
         CollectionSchema, DataLayerError, IndexDefinition, IndexType, Mutation, PatchMutation,
-        QueryOptions, RecordWriteValue,
+        QueryOptions, RecordWriteValue, SqlValue,
     },
-    sqlite::MAX_BATCH_SIZE,
+    sqlite::{MAX_BATCH_SIZE, MAX_QUERY_PAGE_SIZE},
 };
 
 async fn setup_store() -> Box<dyn ServiceStore> {
@@ -326,4 +326,116 @@ async fn test_query_missing_collection_is_an_error_not_empty_list() {
     let opts = QueryOptions { filter: None, limit: None, cursor: None };
     let err = store.query("never_created", &opts).await.unwrap_err();
     assert!(matches!(err, DataLayerError::CollectionNotFound));
+}
+
+// -- query-raw (Slice B5, ADR-0011) --------------------------------------
+
+async fn seeded_people_store() -> Box<dyn ServiceStore> {
+    let store = setup_store().await;
+    store.create_collection(&schema("people")).await.unwrap();
+    store.put("people", &write_value("p1", r#"{"name": "alice", "age": 30}"#), "c").await.unwrap();
+    store.put("people", &write_value("p2", r#"{"name": "bob", "age": 17}"#), "c").await.unwrap();
+    store.put("people", &write_value("p3", r#"{"name": "carol", "age": 45}"#), "c").await.unwrap();
+    store
+}
+
+/// `SqlValue` doesn't derive `PartialEq` (only `Clone`/`Debug`/serde); compare
+/// via its already-derived `Serialize` impl instead of matching every arm by
+/// hand.
+fn rows_as_json(rows: &[Vec<SqlValue>]) -> Value {
+    serde_json::to_value(rows).unwrap()
+}
+
+#[tokio::test]
+async fn test_query_raw_projects_arbitrary_columns() {
+    let store = seeded_people_store().await;
+    let result = store
+        .query_raw(
+            "SELECT json_extract(payload,'$.name') AS name, json_extract(payload,'$.age') AS age \
+             FROM people ORDER BY name",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.columns, vec!["name".to_string(), "age".to_string()]);
+    assert_eq!(
+        rows_as_json(&result.rows),
+        rows_as_json(&[
+            vec![SqlValue::Text("alice".to_string()), SqlValue::Integer(30)],
+            vec![SqlValue::Text("bob".to_string()), SqlValue::Integer(17)],
+            vec![SqlValue::Text("carol".to_string()), SqlValue::Integer(45)],
+        ])
+    );
+}
+
+#[tokio::test]
+async fn test_query_raw_aggregation() {
+    let store = seeded_people_store().await;
+    let result = store.query_raw("SELECT count(*) AS n FROM people", &[]).await.unwrap();
+    assert_eq!(result.columns, vec!["n".to_string()]);
+    assert_eq!(rows_as_json(&result.rows), rows_as_json(&[vec![SqlValue::Integer(3)]]));
+}
+
+#[tokio::test]
+async fn test_query_raw_binds_params_no_injection() {
+    let store = seeded_people_store().await;
+    let result = store
+        .query_raw(
+            "SELECT id FROM people WHERE json_extract(payload,'$.name') = ?",
+            &[SqlValue::Text("x'; DROP TABLE people; --".to_string())],
+        )
+        .await
+        .unwrap();
+    assert!(result.rows.is_empty());
+
+    // The table must still exist and be fully queryable afterwards.
+    let count = store.query_raw("SELECT count(*) AS n FROM people", &[]).await.unwrap();
+    assert_eq!(rows_as_json(&count.rows), rows_as_json(&[vec![SqlValue::Integer(3)]]));
+}
+
+#[tokio::test]
+async fn test_query_raw_rejects_write_statements() {
+    let store = seeded_people_store().await;
+    for sql in [
+        r#"INSERT INTO people (id, payload, creator_id, created_at, updated_at) VALUES ('x', '{}', 'c', 0, 0)"#,
+        "UPDATE people SET payload = '{}' WHERE id = 'p1'",
+        "DELETE FROM people",
+        "DROP TABLE people",
+        "CREATE TABLE t (id TEXT)",
+    ] {
+        let err = store.query_raw(sql, &[]).await.unwrap_err();
+        assert!(
+            matches!(err, DataLayerError::PermissionDenied),
+            "expected permission-denied for {sql:?}, got {err:?}"
+        );
+    }
+
+    // None of the rejected statements executed.
+    let count = store.query_raw("SELECT count(*) AS n FROM people", &[]).await.unwrap();
+    assert_eq!(rows_as_json(&count.rows), rows_as_json(&[vec![SqlValue::Integer(3)]]));
+}
+
+#[tokio::test]
+async fn test_query_raw_blob_column_is_schema_violation() {
+    let store = seeded_people_store().await;
+    let err = store.query_raw("SELECT x'00'", &[]).await.unwrap_err();
+    assert!(matches!(err, DataLayerError::SchemaViolation(_)));
+}
+
+#[tokio::test]
+async fn test_query_raw_malformed_sql_is_schema_violation() {
+    let store = seeded_people_store().await;
+    let err = store.query_raw("SELECT nope FROM", &[]).await.unwrap_err();
+    assert!(matches!(err, DataLayerError::SchemaViolation(_)));
+}
+
+#[tokio::test]
+async fn test_query_raw_exceeding_page_cap_is_quota_exceeded() {
+    let store = setup_store().await;
+    store.create_collection(&schema("people")).await.unwrap();
+    for i in 0..(MAX_QUERY_PAGE_SIZE + 1) {
+        store.put("people", &write_value(&format!("p{i:05}"), "{}"), "c").await.unwrap();
+    }
+    let err = store.query_raw("SELECT id FROM people", &[]).await.unwrap_err();
+    assert!(matches!(err, DataLayerError::QuotaExceeded));
 }
