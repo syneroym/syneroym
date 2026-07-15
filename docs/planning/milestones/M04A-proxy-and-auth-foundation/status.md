@@ -362,3 +362,284 @@ fallback behavior they exercise is untouched.
 **Explicitly out of scope for this addendum** (see new Slice B7 below):
 service-level ownership (deploy/undeploy/status-check permission grants),
 app-catalog owner attribution, and registry-publish-on-behalf-of-owner.
+
+## Slice A1 — Universal Proxy Dispatch (JSON-RPC transport) ✅ (2026-07-15)
+
+Branch: `feat/m04a-a1`. Requirement `[PLT-DAT]` (Universal Proxy) + the minimal
+`[LFC-VER]` typed-unsupported-protocol error kept from the deferred A2.
+Depends on A0′ (done) and B0's `NativeInvocation.caller`/`CallerContext`
+(done). Plan: [plans/A1.md](plans/A1.md).
+
+### What was delivered
+
+1. **`syneroym-rpc` proxy contract** (`crates/rpc/src/proxy.rs`, new): the
+   transport-agnostic `ServiceProxy` trait (`async fn invoke(ProxyRequest) ->
+   Result<Value, ProxyError>`), `ProxyProtocol` (reserved single-variant enum,
+   `JsonRpcV1`), `CallOrigin` (`Guest{service_id}` / `Native`), `ProxyRequest`,
+   and `ProxyError` with reserved JSON-RPC codes (`-32091` unsupported
+   protocol, `-32092` transport, `-32093` unsupported target). `CallerContext`
+   gains `proof: Option<CallerProof>` (hex pubkey + optional delegation JSON)
+   — the mechanism a cross-node hop uses to forward the caller's signed
+   identity without ever putting capabilities on the wire (ADR-0016 §6).
+2. **Typed WASM results** (`crates/sandbox_wasm/src/conversions.rs`,
+   `engine.rs`): `wasm_results_to_json` (Slice A1's typed counterpart to
+   A0′'s `wasm_results_to_json_string`), and `AppSandboxEngine::execute_wasm_vals`
+   factored out so both `execute_wasm` (string, unchanged) and the new
+   `execute_wasm_json` share the call/quota/trap-mapping logic. The inbound
+   `(JsonRpcToWasm, WasmComponent)` route (`route_handler/dispatch.rs`) now
+   returns real typed JSON instead of double-encoding non-string results —
+   confirmed inert for every existing test component (all return plain
+   strings) by the full test-suite pass below.
+3. **Typed unsupported-protocol error** (`routing.rs`, `dispatch.rs`,
+   `http.rs`): new `ServiceStage::UnsupportedProtocol`; `plan_pipeline`
+   routes `RouteProtocol::Wrpc`/`Other(_)` there instead of into the
+   ADR-0014 raw-stream path (which produced a confusing "missing dir="
+   error — Flag F2); `dispatch_json_rpc_once` answers with `-32091` and the
+   node's actual spoken protocol (`json-rpc/v1`); `http.rs` maps `-32091`/
+   `-32093` to HTTP 501 and `-32092` to 502. Dead `(RouteProtocol::Wrpc,
+   WasmChannel)` `plan_pipeline` arm and its matching transport-override
+   block removed (F1/F2) — the `AdaptationStage::JsonRpcToWrpc` variant and
+   its `dispatch_json_rpc_once` guard arm stay reserved for A.5.
+4. **Outbound Iroh endpoint** (`connection_router.rs`, `route_handler.rs`,
+   fixes Flag F7): `ConnectionRouter::init` now builds the Iroh `Endpoint`
+   *before* `RouteHandler::init` (previously built inside `init_iroh`, after)
+   so `RouteHandler::init` can hand it to the `ProxyRouter`'s `IrohHop`. Side
+   effect (intended, per F7): the registry-miss relay-forwarding path in
+   `io.rs` — which reads `self.inner.iroh_endpoint` — now has a real endpoint
+   on a substrate node for the first time (`RouteHandlerInner.iroh_endpoint`
+   was hardcoded `None` pre-A1). `net_iroh::resolve_iroh_addr` factors the
+   registry/DHT address-resolution block out of `io.rs` so `ProxyRouter`'s
+   remote hop shares the exact same lookup logic.
+5. **`NATIVE_CAPABILITY_INTERFACES` consolidated** into
+   `syneroym_core::local_registry` (was three independently-maintained
+   copies — `control_plane`'s deploy-time registration list, `router`'s own
+   test copy, and now needed by the new guest proxy gate too).
+6. **`ProxyRouter`** (`crates/router/src/proxy.rs`, new) — the only
+   `ServiceProxy` implementation: `invoke` gates on protocol (reserved, F8
+   no-op today) then the guest native-capability gate, then dispatches
+   local-first (`registry.lookup` hit → native `NativeService::dispatch` or
+   WASM `execute_wasm_json`) or falls to `invoke_remote` (resolve via
+   `net_iroh::resolve_iroh_addr` → `RemoteHop::call`, retrying only
+   *transport* failures and only when `idempotent`, backoff via
+   `syneroym_core::retry::calculate_jittered_backoff`, never retrying a
+   definitive `Callee` error). `RemoteHop`/`IrohHop` is the transport-
+   agnostic seam a future wRPC wire slots into (A.5) — `IrohHop::new` forces
+   its internal `connect_with_retry` to a single attempt so the outer
+   call-level retry loop is the only source of backoff (documented
+   `max_attempts²` risk this avoids). The guest native-capability gate
+   (`check_native_capability_gate`) is scoped to `CallOrigin::Guest` only —
+   `CallOrigin::Native` (M04B's B3 relationship-proof fetch) is explicitly
+   exempted, with a regression test pinning that shape as allowed.
+   `RouteHandlerInner.identity`/`.registry_client` are now `Arc`-wrapped (a
+   deviation the plan didn't call out explicitly) so the `ProxyRouter` can
+   share the exact same `Identity`/`RegistryClient` instances rather than
+   constructing second ones — re-constructing a second `RegistryClient`
+   would spin up a second DHT client (background bootstrap tasks + sockets)
+   when DHT is enabled.
+7. **`syneroym:proxy@0.1.0` WIT package** (`crates/wit_interfaces/wit/proxy/`):
+   `call(service, %interface, method, params, options) ->
+   result<string, proxy-error>` (the WIT keyword `interface` needed the `%`
+   escape). Wired into `host-environment`'s imports and
+   `AppSandboxEngine::build_wasm_linker`.
+8. **Guest host function** (`sandbox_wasm/src/host_capabilities.rs`):
+   `impl proxy::Host for HostState` parses `params` as JSON, maps
+   `call-options` to a `ProxyRequest` with `caller:
+   CallerContext::service_system(component_id)` and **always**
+   `origin: CallOrigin::Guest{..}` (the only construction site reachable from
+   guest code, so the capability gate cannot be bypassed), and maps
+   `syneroym_rpc::ProxyError` onto the WIT `proxy-error` variant.
+   `AppSandboxEngine` gains `service_proxy: OnceLock<Weak<dyn ServiceProxy>>`
+   (mirrors `self_weak`); `HostState` gains a `service_proxy: Weak<dyn
+   ServiceProxy>` field threaded through all 16 `HostState::new` call sites
+   (14 in `sandbox_wasm`'s own tests/benches, 2 more found in `tests/perf`
+   that the plan's own call-site count had missed). `Weak<dyn ServiceProxy>`
+   cannot use the inherent `Weak::new()` (that's `T: Sized`-only), so a
+   small always-empty helper (`syneroym_sandbox_wasm::empty_service_proxy`,
+   via unsized coercion from a never-instantiated marker type) replaces
+   13 bare call-site constructions.
+9. **Composition-root wiring** (`route_handler.rs`): `ProxyRouter` is built
+   inside `RouteHandler::init`, after `iroh_endpoint` exists, using `Weak`
+   downgrades of `deps.native_dispatch`/`deps.app_sandbox_engine` (still
+   owned by `deps` at that point); its `Weak<dyn ServiceProxy>` is published
+   into `AppSandboxEngine::service_proxy` before `deps.app_sandbox_engine` is
+   moved into `RouteHandlerInner`. `RouteHandlerInner` gains `_proxy:
+   Option<Arc<ProxyRouter>>` — the strong owner (underscore-prefixed per this
+   struct's existing `_parent_relay_url` convention: not read anywhere yet,
+   A1 only wires the *outbound* call surface, so the field's job is solely to
+   keep the router alive). `None` in coordinator mode.
+
+### Flags resolved (plan.md §1)
+
+- **F1/F2** — the `dispatch.rs:122-123` "stub" anchor was a mis-anchor; the
+  real dead arm was `plan_pipeline`'s `(Wrpc, WasmChannel)` combination,
+  deleted along with its transport-override block. Fixed via item 3 above.
+- **F3** — confirmed by code read: `HandshakeVerifier::verify_preamble` never
+  compares the cert against `preamble.service_id`; the failure-tests row in
+  `task.md` describing that is inaccurate. Not "fixed" (A1 doesn't add a
+  callee-binding check — that's a B1/UCAN concern) but flagged in this
+  status entry per the plan's recommendation; `task.md`'s row is corrected
+  below.
+- **F4** — `TcpHostPort`/`PodmanSocket` proxy targets return
+  `ProxyError::UnsupportedTarget` (`-32093`) rather than being silently
+  unreachable; `task.md`'s Goal wording is corrected below to note
+  TCP/Podman JSON-RPC proxy targets are deferred.
+- **F5** — `syneroym:proxy@0.1.0` added (item 7); `task.md`'s Migration
+  Strategy WIT list is corrected below.
+- **F6** — this slice delivers the *routing/identity/retry* substance of the
+  Universal Proxy via an explicit `syneroym:proxy/proxy::call` import, not
+  WIT-import interception/late binding (`system-architecture.md:1930`'s
+  vision). Recorded explicitly there (doc update below); late binding is
+  unstarted, not silently "done".
+- **F7** — fixed via item 4 above.
+- **F8** — interpreted as in-process local dispatch, per the plan's own
+  recommendation; benchmarked as such (see Performance below).
+- **F9** — stale anchors in `task.md`'s Current State Inventory refreshed as
+  part of the exit-criteria edits below.
+- **F10** — confirmed: `coordinator_iroh/tests/multi_hop_relay.rs` already
+  runs two full substrate nodes in one process with
+  `enable_bep0044_dht = false`; the cross-node proxy test
+  (`test_cross_node_proxy_call`) was added there rather than via Playwright.
+  It needed **no coordinator/relay infrastructure at all** — a discovery
+  made while implementing it, one step simpler than the plan's own
+  characterization: two direct-address-only Iroh endpoints (no relay) plus a
+  lightweight HTTP `EcosystemRegistry` (no DHT) are sufficient for the
+  `ProxyRouter`'s remote hop to resolve and connect. Two non-obvious fixes
+  were needed along the way, recorded here since they're easy to
+  rediscover-the-hard-way: (a) `Endpoint::online()` waits for *both* a relay
+  connection *and* a local address — with no relay configured it never
+  resolves, so the test polls `Endpoint::addr()` directly instead
+  (`wait_for_local_addr`); (b) the existing `create_signed_info` helper in
+  that file deliberately prunes an `EndpointAddr` down to a bare
+  `EndpointId` (fine for its own tests, which reconnect via a relay URL
+  alongside the pruned id) — a relay-less direct-connect test needs the real
+  addresses preserved, so a second helper
+  (`create_signed_info_with_full_addr`) was added rather than changing the
+  first one's behavior for its existing callers.
+- **F11** — the guest gate is scoped to `CallOrigin::Guest`; a
+  `CallOrigin::Native` case is pinned as allowed by a dedicated regression
+  test (`native_origin_cross_service_data_layer_call_is_allowed_by_the_gate`,
+  `crates/router/src/proxy.rs`).
+
+### Deviations from the plan (recorded, not silent)
+
+- **`RouteHandlerInner.identity`/`.registry_client` became `Arc`-wrapped.**
+  The plan's §10 pseudocode passed owned `Identity`/`RegistryClient` values
+  into `ProxyRouter::new`, but neither type implements `Clone` (`Identity`
+  wraps a zeroizing secret key — deliberately not `Clone`-derived), and
+  `RouteHandlerInner` already owns exactly one of each. Re-constructing a
+  second `RegistryClient` from the same config would spin up a second DHT
+  `mainline::Client` (background bootstrap/routing-table tasks and sockets)
+  when DHT is enabled — wasteful and not something either type's
+  constructor should be called twice for. `Arc`-wrapping both fields lets
+  `RouteHandlerInner` and `ProxyRouter` share the exact same instances;
+  every existing by-reference call site (`&self.inner.identity`,
+  `&self.inner.registry_client`) still compiles unchanged via deref
+  coercion, with one exception (`HandshakeVerifier::verify_preamble`'s
+  trait-object parameter) that needed an explicit `.as_ref()`.
+- **B0 plan §9.5's "A1 does not modify `CallerContext`"** — `proof` is added
+  anyway, per A1's own plan.md §3.1, which explicitly reconciles this: the
+  §9.5 sentence's intent was "don't put capabilities on the wire," and
+  `proof` is the mechanism that sentence itself mandates for forwarding
+  identity across a hop.
+- **Identity threading through a proxied WASM call is "the callee acts as
+  itself,"** not the original caller's identity — `execute_wasm_json` /
+  `prepare_wasm_execution` builds the callee's `CallerContext` internally
+  (`service_system`/`local_elevated`), so a WASM callee never sees the
+  proxy caller's identity. This is B0's existing shape, unchanged by A1, and
+  explicitly not a caller-scoped identity gap to fix here — that's an
+  FDAE/M04B concern. (Native callees *do* receive the exact forwarded
+  `req.caller`, unchanged from before.)
+
+### Tests
+
+- **Unit** — `crates/rpc/src/proxy.rs` (3): `ProxyProtocol::parse`
+  none/reserved-tag/unknown-tag, `ProxyError::code()` mapping table.
+  `crates/sandbox_wasm/src/conversions.rs` (+1, 19 total in that module):
+  `wasm_results_to_json_contract` (empty/`Result::Ok`/`Result::Err`/scalar/
+  string/multi-value, contrasted against the unchanged `_to_json_string`
+  raw-string boundary).
+  `crates/router/src/proxy.rs` (12, new module): local-native dispatch with
+  caller-identity threading; unknown-service → `ServiceNotFound` with the
+  hop never called; the guest capability gate's four cases (cross-service
+  denied + never dispatched, same-service allowed — the regression case a
+  `caller_did`-based check would have wrongly rejected — non-native
+  interface allowed, `CallOrigin::Native` allowed); idempotent-retries-up-
+  to-max / non-idempotent-never-retries / callee-error-never-retries /
+  retry-then-succeeds; proof-forwarded-verbatim / no-proof-uses-node-identity.
+- **Integration** — `crates/router/tests/proxy_dispatch.rs` (2, new):
+  guest-to-guest same-node proxy call returns the callee's typed result;
+  guest reaching another service's `data-layer` through the proxy is denied
+  as a WIT `proxy-error` (the A0′ `result::err` → transport-error boundary
+  contract means this surfaces as a JSON-RPC `error.message`, not a
+  `result` string — asserted accordingly).
+  `crates/router/tests/unsupported_protocol.rs` (2, new): `wrpc://` and an
+  arbitrary custom scheme both yield the reserved `-32091` code with a
+  message naming `json-rpc/v1`.
+- **E2E / cross-node** —
+  `crates/coordinator_iroh/tests/multi_hop_relay.rs::test_cross_node_proxy_call`
+  (new): two full substrate nodes, no coordinator/relay, a `proxy-test`
+  guest component on Sx calls `greeter` deployed on Sz across a real Iroh
+  QUIC connection resolved via a live HTTP community registry — asserts the
+  correct typed greeting comes back. Exercises §6's endpoint fix, §5.5's
+  `IrohHop`, and proof/identity forwarding together; the guest-originated
+  call can only reach Sz's WASM component (not a native capability, by the
+  gate's own design), so router-level caller-verification for a *native*-
+  origin cross-node hop is not separately asserted here — B3 (M04B) will
+  get dedicated coverage for that when it lands.
+- **New test component** — `test-components/proxy-test/` (mirrors
+  `test-components/stream-test/`): imports `syneroym:proxy/proxy@0.1.0`,
+  exports a `test-driver::call-peer` that forwards to `proxy::call`. Builds
+  clean for `wasm32-wasip2`.
+
+### Performance (criterion, `--bench proxy`, `--quick`)
+
+| Bench | Measured | Budget |
+|---|---|---|
+| `proxy_local_native` (`ProxyRouter::invoke` → in-memory `NativeService`) | ~619 ns | < 5 ms p99 (F8: same-node = in-process) |
+| `proxy_local_wasm` (→ cached `greeter` component, full WIT⇄JSON both ways) | ~34.6 µs | < 5 ms p99 |
+
+Both several orders of magnitude under budget. Remote-hop latency needs two
+live nodes and is not benched (per plan.md §12) — the cross-node e2e test
+above is the evidence that the remote path works, not a latency number.
+
+### Gate
+
+- `cargo +nightly fmt --all` — clean.
+- `cargo clippy --workspace --all-targets --all-features` — zero warnings.
+- `cargo test --workspace` — **402 passed, 0 failed** across 73 test binaries
+  (full run, sandbox disabled — see environment note below). Includes all of
+  this slice's new tests: `syneroym-rpc`'s `proxy` unit tests (3),
+  `sandbox_wasm`'s `wasm_results_to_json_contract` (1),
+  `syneroym-router`'s `proxy` module (12), `proxy_dispatch.rs` (2),
+  `unsupported_protocol.rs` (2), and `coordinator_iroh`'s
+  `test_cross_node_proxy_call`.
+- `wasm32-wasip2` — `test-components/proxy-test` builds clean (validates the
+  new `syneroym:proxy` WIT package end to end on the guest side);
+  `test-components/data-layer-test`/`greeter` unaffected.
+- `mise run test:e2e` — **12 passed, 0 failed** (8 + 4 across the two
+  Playwright configs) — matches B0's own baseline exactly; zero regression
+  from the typed-inbound-WASM-result switch (`execute_wasm_json`) or the new
+  `syneroym:proxy` linker import.
+
+**Environment notes:**
+- Under the agent command sandbox, the same pre-existing network-binding
+  limitations A0′/B0 documented recur here for new tests that bind real
+  sockets (`test_cross_node_proxy_call`'s local `EcosystemRegistry` HTTP
+  listener, `wasm32-wasip2` component builds writing to the shared cargo
+  registry cache) — all runs reported in this section used the sandbox
+  disabled, consistent with A0′/B0's own gate methodology.
+- `Endpoint::online()` hanging without a configured relay (see F10) cost one
+  full debugging cycle before the root cause was found via the iroh docs;
+  recorded above so a future relay-less Iroh test doesn't rediscover it.
+
+### Scope discipline
+
+Only Slice A1 was touched, per plan.md's execution order (§14): `syneroym-rpc`
+proxy contract, `sandbox_wasm` typed results + guest host function,
+`router`'s `ProxyRouter`/endpoint plumbing/typed-protocol-error, the new
+`syneroym:proxy` WIT package, and the new/extended test files listed above.
+No M04B (FDAE) work, no B1 (`CapabilityToken`/UCAN chains — `CallerProof`
+carries only the delegation half per the plan's own TODO), no B4/B5/B6. The
+`AdaptationStage::JsonRpcToWrpc` variant and `wrpc://`/`RouteProtocol::Wrpc`
+scheme stay reserved, unimplemented (A.5) — only the *unsupported-protocol
+error path* for them was added, not a wire.

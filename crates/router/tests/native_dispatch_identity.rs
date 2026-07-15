@@ -25,7 +25,7 @@ use syneroym_control_plane::SynSvcNativeService;
 use syneroym_core::{
     config::SubstrateConfig,
     http_routes::{HttpRoute, HttpRouteRegistry},
-    local_registry::EndpointRegistry,
+    local_registry::{EndpointRegistry, NATIVE_CAPABILITY_INTERFACES},
     storage::MockStorage,
 };
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
@@ -71,6 +71,7 @@ fn test_caller(did: &str) -> CallerContext {
         app_instance: None,
         session: SessionContext::default(),
         auth: AuthLevel::Delegated,
+        proof: None,
     }
 }
 
@@ -92,6 +93,7 @@ fn admin_caller(did: &str) -> CallerContext {
             ..Default::default()
         },
         auth: AuthLevel::Delegated,
+        proof: None,
     }
 }
 
@@ -131,10 +133,16 @@ async fn test_route_handler() -> (RouteHandler, HttpRouteRegistry) {
         control_plane_service: Arc::new(RecordingNativeService::default()),
     };
 
-    let route_handler =
-        RouteHandler::init("test-orchestrator".to_string(), &config, registry, [7u8; 32], deps)
-            .await
-            .unwrap();
+    let route_handler = RouteHandler::init(
+        "test-orchestrator".to_string(),
+        &config,
+        registry,
+        [7u8; 32],
+        None,
+        deps,
+    )
+    .await
+    .unwrap();
 
     (route_handler, http_routes)
 }
@@ -165,9 +173,6 @@ fn json_rpc_body(method: &str, params: Value) -> Vec<u8> {
     serde_json::to_vec(&json!({"jsonrpc": "2.0", "method": method, "params": params, "id": 1}))
         .unwrap()
 }
-
-const NATIVE_CAPABILITY_INTERFACES: &[&str] =
-    &["data-layer", "vault", "app-config", "blob-store", "messaging"];
 
 #[tokio::test]
 async fn anonymous_caller_rejected_before_native_dispatch_for_every_interface() {

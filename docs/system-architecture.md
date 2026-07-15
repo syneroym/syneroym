@@ -1930,6 +1930,27 @@ To provide decoupled event routing and generic point-to-point streaming without 
 #### 3. Universal Proxy (Inter-Component RPC)
 The Substrate provides strictly typed networking between services. Static composition can be zero-overhead; dynamic proxying adds host and transport overhead by design.
 
+> **Implementation status (M04A Slice A1, 2026-07-15).** What's below this note is
+> still the target vision; A1 implemented its *routing/identity/retry substance*
+> without the WIT-import-interception/late-binding mechanism described in
+> "Protocol Translation Architecture." Concretely: a component calls another
+> service (local or remote) through an **explicit** guest-facing WIT interface,
+> `syneroym:proxy/proxy::call(service, interface, method, params, options)`
+> (`crates/wit_interfaces/wit/proxy/proxy.wit`), not by declaring an arbitrary
+> generic import (`import acme:booking/service;`) that the host silently
+> intercepts and rebinds — that dynamic-linker-style interception is unbuilt.
+> Routing is over **JSON-RPC**, not wRPC (deferred, Decision Register A.5 — see
+> `M04A-proxy-and-auth-foundation/task.md`); connection-establishment retries
+> and idempotent-call retries with exponential backoff exist
+> (`ProxyRouter::invoke_remote`, `crates/router/src/proxy.rs`), but the DLQ
+> described under "Resilient RPC & Dead Letter Queues" below does not — a
+> failed-after-retries call fails directly (M5). A caller's signed identity
+> proof forwards across a cross-node hop and is re-verified at the destination
+> (ADR-0016 §6); capabilities themselves never cross the wire. "Static
+> Composition Bypass" (`wasm-tools compose`) is unbuilt and unrelated to A1 — it
+> would remain a zero-overhead path if implemented, since it never touches the
+> proxy at all.
+
 *   **Protocol Translation Architecture:**
     *   **WIT Interception and Late Binding:** Dependencies are declared as generic WIT imports (e.g., `import acme:booking/service;`). At instantiation, the Substrate satisfies these imports by injecting dynamically generated proxy host functions. When the WASM component invokes the import, execution traps to the host proxy. 
     *   **Instance Routing:** The proxy relies on the application manifest and the Orchestrator's App Registry to resolve the generic WIT import to a specific deployed instance's `service_id`. It bakes this route into the proxy, meaning the developer codes against generic contracts, but the Substrate handles disambiguated instance routing automatically.

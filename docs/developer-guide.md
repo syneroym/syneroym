@@ -256,6 +256,24 @@ curl -X POST http://localhost:7960/ \
   }'
 ```
 
+#### Calling Another Service from a WASM Component (Universal Proxy)
+A deployed WASM component reaches another service — local or on another node —
+through the `syneroym:proxy/proxy` WIT import (M04A Slice A1), without knowing
+where the target actually lives:
+```wit
+import syneroym:proxy/proxy@0.1.0;
+// call(service, interface, method, params, options) -> result<string, proxy-error>
+```
+`service` is the target's DID (or a registry alias), `interface` is a WIT
+interface name the target registered at deploy time, and `params`/the success
+value are JSON text — the callee binds them against its real WIT signature, so
+the call is typed at the dispatch boundary even though the wire is JSON-RPC.
+Set `options.idempotent = true` only for calls safe to retry on transport
+failure; a callee-returned error is never retried. A component cannot use this
+import to reach *another* service's native capabilities (`data-layer`, `vault`,
+`app-config`, `blob-store`, `messaging`) — that's refused with
+`permission-denied` — only its own, via its regular host imports.
+
 #### Deploy a TCP Service (Passthrough)
 ```bash
 curl -X POST http://localhost:7960/ \

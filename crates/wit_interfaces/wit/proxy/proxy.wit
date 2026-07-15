@@ -1,0 +1,54 @@
+package syneroym:proxy@0.1.0;
+
+/// The Universal Proxy (M04A Slice A1). A component calls another service --
+/// local or on another node -- without knowing where it lives. `params` and
+/// the success value are JSON text; the **callee** binds them against its
+/// real WIT signature (records/variants/lists/options -- see
+/// `conversions.rs`), so the call is typed at the dispatch boundary even
+/// though the wire is JSON-RPC. A binary wRPC wire is deferred (M04A
+/// Decision Register A.5); when it lands, `call-options.protocol` selects it
+/// and this interface does not change.
+interface proxy {
+    record callee-error {
+        code: s32,
+        message: string,
+        data: option<string>,
+    }
+
+    variant proxy-error {
+        service-not-found(string),
+        unsupported-protocol(string),
+        unsupported-target(string),
+        permission-denied(string),
+        transport(string),
+        timed-out,
+        callee(callee-error),
+        internal(string),
+    }
+
+    record call-options {
+        /// Reserved wire tag. `none` or "json-rpc/v1" today; any other
+        /// value returns `unsupported-protocol` (negotiation is deferred --
+        /// A.7).
+        protocol: option<string>,
+        /// Retry transport failures with exponential backoff. Only set this
+        /// for calls that are safe to repeat; a callee-returned error is
+        /// never retried. Defaults to false.
+        idempotent: bool,
+        /// Per-call deadline; defaults to the host's 30s budget.
+        timeout-ms: option<u32>,
+    }
+
+    /// `service` is the target's DID (or a registry alias). `interface` is a
+    /// WIT interface name the target registered at deploy time. Native
+    /// capabilities (`data-layer`, `vault`, ...) of *another* service are
+    /// refused with `permission-denied` -- a component reaches its own
+    /// through its host imports.
+    call: func(
+        service: string,
+        %interface: string,
+        method: string,
+        params: string,
+        options: option<call-options>,
+    ) -> result<string, proxy-error>;
+}

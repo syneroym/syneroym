@@ -6,7 +6,7 @@
 use std::{
     fmt,
     sync::{
-        Arc,
+        Arc, Weak,
         atomic::{AtomicUsize, Ordering},
     },
 };
@@ -30,12 +30,15 @@ use syneroym_data_db::traits::StorageProvider;
 use syneroym_data_keystore::KeyStore;
 use syneroym_identity::Identity;
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
-use syneroym_rpc::{NativeDispatchRegistry, NativeService};
+use syneroym_rpc::{NativeDispatchRegistry, NativeService, ServiceProxy};
 use syneroym_sandbox_wasm::AppSandboxEngine;
 use tokio::io::AsyncWriteExt;
 use tracing::{debug, error};
 
-use crate::net_iroh::IrohStream;
+use crate::{
+    net_iroh::IrohStream,
+    proxy::{IrohHop, ProxyRouter},
+};
 
 pub mod dispatch;
 pub mod encryption;
@@ -77,9 +80,16 @@ pub struct RouteHandlerInner {
     pub registry: EndpointRegistry,
     pub native_dispatch: NativeDispatchRegistry,
     pub app_sandbox_engine: Option<Arc<AppSandboxEngine>>,
-    pub identity: Identity,
+    /// `Arc`-wrapped (M04A Slice A1) so the `ProxyRouter`'s outbound remote
+    /// hop can share this exact node identity rather than constructing (and
+    /// signing with) a second one.
+    pub identity: Arc<Identity>,
     pub iroh_endpoint: Option<Endpoint>,
-    pub registry_client: RegistryClient,
+    /// `Arc`-wrapped (M04A Slice A1) so the `ProxyRouter` can share this
+    /// exact client -- re-constructing a second `RegistryClient` would spin
+    /// up a second DHT client (background bootstrap/routing-table tasks and
+    /// sockets) when DHT is enabled.
+    pub registry_client: Arc<RegistryClient>,
     pub _parent_relay_url: Option<String>,
     pub retry_policy: RetryPolicy,
     pub active_connections: Arc<AtomicUsize>,
@@ -111,6 +121,18 @@ pub struct RouteHandlerInner {
     /// this is granted `substrate/admin`. `None` in coordinator mode
     /// (coordinators don't host native capabilities).
     pub admin_ucan_root: Option<String>,
+    /// The Universal Proxy (M04A Slice A1). `RouteHandlerInner` is its
+    /// strong owner -- `AppSandboxEngine::service_proxy` only ever holds the
+    /// `Weak` published from here, to avoid the `RouteHandlerInner ->
+    /// ProxyRouter -> AppSandboxEngine -> ProxyRouter` reference cycle that
+    /// hung graceful shutdown in Slice 6B. `None` in coordinator mode
+    /// (coordinators have no native capabilities or sandbox to proxy to).
+    /// Not read anywhere yet -- A1 only wires the *outbound* call surface
+    /// (reachable via the guest WIT import and `AppSandboxEngine`'s `Weak`
+    /// handle); this field's job is solely to keep the `ProxyRouter` alive
+    /// for as long as this `RouteHandler` is (mirrors `_parent_relay_url`'s
+    /// established underscore convention for a stored-but-unread field).
+    pub _proxy: Option<Arc<ProxyRouter>>,
 }
 
 impl Debug for RouteHandler {
@@ -154,17 +176,18 @@ impl RouteHandler {
         config: &SubstrateConfig,
         registry: EndpointRegistry,
         secret_key: [u8; 32],
+        iroh_endpoint: Option<Endpoint>,
         deps: RouteHandlerDeps,
     ) -> Result<Self> {
-        let identity = Identity::from_bytes(&secret_key);
+        let identity = Arc::new(Identity::from_bytes(&secret_key));
 
         let parent_coordinator_url =
             config.parent_coordinator.iroh.as_ref().map(|cfg| cfg.url.clone());
 
-        let registry_client = RegistryClient::new(
+        let registry_client = Arc::new(RegistryClient::new(
             config.substrate.enable_bep0044_dht,
             config.substrate.registry_url.clone(),
-        );
+        ));
 
         let max_connections = config
             .roles
@@ -173,12 +196,32 @@ impl RouteHandler {
             .and_then(|c| c.iroh.as_ref())
             .and_then(|i| i.max_connections);
 
+        // The Universal Proxy (M04A Slice A1). Built here, before `inner`,
+        // so its `Weak` handles can be downgraded from the still-owned
+        // `deps.native_dispatch`/`deps.app_sandbox_engine` Arcs -- `Weak`,
+        // never a second strong ref, matching the `RouteHandlerInner ->
+        // ProxyRouter -> AppSandboxEngine -> ProxyRouter` cycle avoidance
+        // documented on `RouteHandlerInner::proxy`.
+        let proxy = Arc::new(ProxyRouter::new(
+            registry.clone(),
+            registry_client.clone(),
+            Arc::downgrade(&deps.native_dispatch),
+            Arc::downgrade(&deps.app_sandbox_engine),
+            Arc::new(IrohHop::new(iroh_endpoint.clone(), config.retry.clone())),
+            identity.clone(),
+            config.retry.clone(),
+        ));
+        deps.app_sandbox_engine
+            .service_proxy
+            .set(Arc::downgrade(&proxy) as Weak<dyn ServiceProxy>)
+            .map_err(|_| anyhow::anyhow!("AppSandboxEngine::service_proxy set more than once"))?;
+
         let inner = Arc::new(RouteHandlerInner {
             registry,
             native_dispatch: deps.native_dispatch,
             app_sandbox_engine: Some(deps.app_sandbox_engine),
             identity,
-            iroh_endpoint: None,
+            iroh_endpoint,
             registry_client,
             _parent_relay_url: parent_coordinator_url,
             retry_policy: config.retry.clone(),
@@ -189,6 +232,7 @@ impl RouteHandler {
             key_store: Some(deps.key_store),
             storage_provider: Some(deps.storage_provider),
             admin_ucan_root: config.iam.admin_ucan_root.clone(),
+            _proxy: Some(proxy),
         });
 
         let s = Self { inner };
@@ -209,9 +253,9 @@ impl RouteHandler {
             registry: EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
             native_dispatch: Arc::new(DashMap::new()),
             app_sandbox_engine: None,
-            identity: Identity::generate().expect("coordinator identity"),
+            identity: Arc::new(Identity::generate().expect("coordinator identity")),
             iroh_endpoint: Some(iroh_endpoint),
-            registry_client,
+            registry_client: Arc::new(registry_client),
             _parent_relay_url: parent_relay_url,
             retry_policy,
             active_connections: Arc::new(AtomicUsize::new(0)),
@@ -223,6 +267,9 @@ impl RouteHandler {
             key_store: None,
             storage_provider: None,
             admin_ucan_root: None,
+            // Coordinators have no native capabilities or sandbox to proxy
+            // to.
+            _proxy: None,
         });
         Self { inner }
     }

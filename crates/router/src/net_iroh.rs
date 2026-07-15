@@ -13,10 +13,14 @@ use std::{
 };
 
 use iroh::{
-    Endpoint, RelayMap, RelayMode, RelayUrl, SecretKey,
+    Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl, SecretKey,
     endpoint::{Connection, QuicTransportConfig, RecvStream, SendStream, presets::N0},
 };
-use syneroym_core::{config::RetryPolicy, retry::retry_with_backoff};
+use syneroym_core::{
+    config::RetryPolicy,
+    dht_registry::{EndpointMechanism, RegistryClient},
+    retry::retry_with_backoff,
+};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::stop_signal::StopSignal;
@@ -116,6 +120,29 @@ pub async fn build_iroh_endpoint(
 
     let endpoint = builder.bind().await?;
     Ok(endpoint)
+}
+
+/// Resolves a service's Iroh `EndpointAddr` via the community registry / DHT
+/// (M04A Slice A1, factored out of `route_handler/io.rs`'s registry-miss
+/// relay path so `ProxyRouter::invoke_remote`'s outbound hop can share the
+/// exact same resolution logic instead of re-implementing it).
+pub async fn resolve_iroh_addr(
+    registry_client: &RegistryClient,
+    service_id: &str,
+) -> anyhow::Result<EndpointAddr> {
+    let info = registry_client.lookup(service_id, true).await?;
+    for mech in info.info.mechanisms {
+        if let EndpointMechanism::Iroh { endpoint_addr_bytes, relay_url } = mech {
+            let mut addr: EndpointAddr = serde_json::from_slice(&endpoint_addr_bytes)?;
+            if let Some(r_url_str) = relay_url
+                && let Ok(relay_url) = r_url_str.parse::<RelayUrl>()
+            {
+                addr = addr.with_relay_url(relay_url);
+            }
+            return Ok(addr);
+        }
+    }
+    Err(anyhow::anyhow!("No valid Iroh mechanism found for service '{service_id}' in registry"))
 }
 
 /// Connects to an Iroh endpoint with exponential backoff retries.

@@ -17,7 +17,9 @@ use syneroym_data_db::{SqliteStorageProvider, StorageProvider};
 use syneroym_data_keystore::KeyStore;
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
 use syneroym_rpc::{Ability, AuthLevel, CallerContext, Capability, ResourceUri, SessionContext};
-use syneroym_sandbox_wasm::{AppSandboxEngine, HostState, MessagingContext, StreamContext};
+use syneroym_sandbox_wasm::{
+    AppSandboxEngine, HostState, MessagingContext, StreamContext, empty_service_proxy,
+};
 use syneroym_wit_interfaces::{
     control_plane::exports::syneroym::control_plane::orchestrator::{
         ArtifactSource, DeployManifest, ServiceConfig, ServiceType, WasmManifest,
@@ -110,6 +112,7 @@ async fn test_execute_ddl_denied_outside_lifecycle_context() {
         0,
         test_messaging_context(),
         test_streaming_context(),
+        empty_service_proxy(),
     );
 
     let err = DataLayerHost::execute_ddl(&mut host_state, "CREATE TABLE x (id TEXT)".to_string())
@@ -141,6 +144,7 @@ async fn test_execute_ddl_allowed_for_local_elevated_lifecycle_context() {
         0,
         test_messaging_context(),
         test_streaming_context(),
+        empty_service_proxy(),
     );
 
     DataLayerHost::execute_ddl(&mut host_state, "CREATE TABLE x (id TEXT)".to_string())
@@ -176,6 +180,7 @@ async fn test_execute_ddl_allowed_for_admin_ucan_root_caller() {
             ..Default::default()
         },
         auth: AuthLevel::Delegated,
+        proof: None,
     };
 
     let mut host_state = HostState::new(
@@ -188,6 +193,7 @@ async fn test_execute_ddl_allowed_for_admin_ucan_root_caller() {
         0,
         test_messaging_context(),
         test_streaming_context(),
+        empty_service_proxy(),
     );
 
     DataLayerHost::execute_ddl(&mut host_state, "CREATE TABLE x (id TEXT)".to_string())

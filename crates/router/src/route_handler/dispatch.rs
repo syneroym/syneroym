@@ -11,7 +11,7 @@ use syneroym_core::local_registry::SubstrateEndpoint;
 use syneroym_mqtt_broker::namespace_topic;
 use syneroym_rpc::{
     CallerContext, JsonRpcConverter, JsonRpcRequest, JsonRpcResponse, MESSAGING_MESSAGE_METHOD,
-    MessagingNotification, NativeService, framing,
+    MessagingNotification, NativeService, UNSUPPORTED_PROTOCOL_RPC_CODE, framing,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite, BufReader},
@@ -112,13 +112,13 @@ impl RouteHandler {
 
                 if let Some(app_sandbox_engine) = &self.inner.app_sandbox_engine {
                     match app_sandbox_engine
-                        .execute_wasm(service_id, &preamble.interface, &request)
+                        .execute_wasm_json(service_id, &preamble.interface, &request)
                         .await
                     {
                         Ok(wasm_result) => {
                             let json_response = JsonRpcResponse {
                                 jsonrpc: "2.0".to_string(),
-                                result: Value::String(wasm_result),
+                                result: wasm_result,
                                 id: request.id.clone(),
                             };
                             serde_json::to_vec(&json_response).map_err(Into::into)
@@ -135,10 +135,25 @@ impl RouteHandler {
                     JsonRpcConverter::json_error(request.id.clone(), -32603, message.to_string())
                 }
             }
+            // Reserved (A.5): `plan_pipeline` no longer produces this
+            // combination (see `ServiceStage::UnsupportedProtocol` below for
+            // the real inbound-protocol-mismatch path), but the variant
+            // itself stays reserved for a future wRPC wire, so this arm
+            // stays as a typed guard rather than falling into the generic
+            // `_` diagnostic below.
             (AdaptationStage::JsonRpcToWrpc, ServiceStage::WasmComponent { .. }) => {
                 let message = "JSON-RPC to wRPC component bridging is not implemented yet";
                 metrics::counter!("substrate.request.errors").increment(1);
                 JsonRpcConverter::json_error(None, -32601, message.to_string())
+            }
+            (_, ServiceStage::UnsupportedProtocol) => {
+                metrics::counter!("substrate.request.errors").increment(1);
+                let id = serde_json::from_slice::<JsonRpcRequest>(body).ok().and_then(|r| r.id);
+                let message = format!(
+                    "unsupported protocol '{}'; this node speaks json-rpc/v1",
+                    preamble.protocol
+                );
+                JsonRpcConverter::json_error(id, UNSUPPORTED_PROTOCOL_RPC_CODE, message)
             }
             _ => {
                 metrics::counter!("substrate.request.errors").increment(1);
@@ -175,10 +190,6 @@ impl RouteHandler {
                 AdaptationStage::None,
                 ServiceStage::NativeService { service_id: service_id.clone() },
             ),
-            (RouteProtocol::Wrpc, SubstrateEndpoint::WasmChannel { service_id }) => (
-                AdaptationStage::None, // NOTE: wRPC not yet implemented, might need adaptation
-                ServiceStage::WasmComponent { service_id: service_id.clone() },
-            ),
             (RouteProtocol::JsonRpc, SubstrateEndpoint::WasmChannel { service_id }) => (
                 AdaptationStage::JsonRpcToWasm,
                 ServiceStage::WasmComponent { service_id: service_id.clone() },
@@ -196,6 +207,14 @@ impl RouteHandler {
             (_, SubstrateEndpoint::TcpHostPort { host, port }) => {
                 (AdaptationStage::None, ServiceStage::TcpProxy { host: host.clone(), port: *port })
             }
+            // Reserved but unimplemented (A.5): fail fast with a typed
+            // error instead of falling into the ADR-0014 raw-stream path
+            // (which would report a nonsense "missing dir=" error) --
+            // protocol negotiation is deferred (A.7); the callee simply
+            // says "I don't speak that".
+            (RouteProtocol::Wrpc | RouteProtocol::Other(_), _) => {
+                (AdaptationStage::None, ServiceStage::UnsupportedProtocol)
+            }
             _ => (AdaptationStage::None, ServiceStage::Unsupported),
         };
 
@@ -205,17 +224,10 @@ impl RouteHandler {
             RouteTransport::Raw => TransportStage::Raw,
         };
 
-        // Passthrough services (like TcpProxy or direct WasmComponent passthrough (wRPC
-        // — TODO: not yet implemented)) do not perform substrate-level wire
-        // framing; they bypass transport decoding and stream raw bytes
+        // Passthrough services (TcpProxy) do not perform substrate-level
+        // wire framing; they bypass transport decoding and stream raw bytes
         // directly.
         if let ServiceStage::TcpProxy { .. } = &service {
-            transport = TransportStage::Raw;
-        } else if let (RouteProtocol::Wrpc, ServiceStage::WasmComponent { .. }) =
-            (&preamble.protocol, &service)
-        {
-            // NOTE: wRPC is not yet implemented, so this block is more of a placeholder for
-            // future logic.
             transport = TransportStage::Raw;
         }
 

@@ -63,10 +63,10 @@
 //!   app-owner-controlled; the substrate does not reserve or validate these
 //!   beyond uniqueness per `(service_id, interface)`.
 //! - **Reserved native-capability interfaces** (`NATIVE_CAPABILITY_INTERFACES`,
-//!   `crates/control_plane/src/service.rs`): `data-layer`, `vault`,
-//!   `app-config`, `blob-store`, `messaging`, `http-native`. Every deployed
-//!   service (regardless of `service-type`) automatically gets these registered
-//!   as `SubstrateEndpoint:: NativeHostChannel` entries pointing at
+//!   `syneroym_core::local_registry`): `data-layer`, `vault`, `app-config`,
+//!   `blob-store`, `messaging`, `http-native`. Every deployed service
+//!   (regardless of `service-type`) automatically gets these registered as
+//!   `SubstrateEndpoint:: NativeHostChannel` entries pointing at
 //!   `SynSvcNativeService`'s `NativeService::dispatch` implementation -- no
 //!   WASM component or app-declared interface required. `http-native`
 //!   specifically is *not* a preamble scheme (compare the scheme table above);

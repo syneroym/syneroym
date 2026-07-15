@@ -24,14 +24,14 @@ use syneroym_data_blob::traits::BlobProvider;
 use syneroym_data_db::traits::StorageProvider;
 use syneroym_data_keystore::KeyStore;
 use syneroym_mqtt_broker::{MqttBroker, SubscriptionHandle};
-use syneroym_rpc::{CallerContext, JsonRpcRequest};
+use syneroym_rpc::{CallerContext, JsonRpcRequest, ServiceProxy};
 use syneroym_wit_interfaces::{
     control_plane::exports::syneroym::control_plane::orchestrator::{
         ArtifactSource, DeployManifest, ServiceType,
     },
     host::syneroym::{
         app_config::app_config, blob_store::blob_store, data_layer::store, host::context,
-        messaging::host_api, vault::vault,
+        messaging::host_api, proxy::proxy, vault::vault,
     },
 };
 use tokio::{
@@ -104,6 +104,13 @@ pub struct AppSandboxEngine {
     /// invoke `deliver_message` long after the `Store` that made the call
     /// is gone.
     pub self_weak: OnceLock<Weak<AppSandboxEngine>>,
+    /// Set once at the composition root, immediately after the engine and
+    /// the `ProxyRouter` (M04A Slice A1, `syneroym-router`) are both
+    /// constructed. `Weak`, not `Arc`: the proxy holds a
+    /// `Weak<AppSandboxEngine>` back (its local-WASM-target dispatch path),
+    /// and two strong refs would be an uncollectable cycle (the same class
+    /// that hung graceful shutdown in Slice 6B).
+    pub service_proxy: OnceLock<Weak<dyn ServiceProxy>>,
     /// Live guest-delivery subscriptions, keyed `(service_id,
     /// namespaced_topic)`. Dropping an entry unsubscribes from the broker
     /// (see `SubscriptionHandle::drop`).
@@ -231,6 +238,7 @@ impl AppSandboxEngine {
             blob_provider,
             messaging_broker,
             self_weak: OnceLock::new(),
+            service_proxy: OnceLock::new(),
             subscriptions: DashMap::new(),
             endpoint_registry,
             stream_registry: StreamRegistry::new(),
@@ -302,6 +310,7 @@ impl AppSandboxEngine {
         app_config::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
         blob_store::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
         host_api::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
+        proxy::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
         Ok(linker)
     }
 
@@ -462,13 +471,43 @@ impl AppSandboxEngine {
         Ok(())
     }
 
-    /// Execute a WASM component for a given service
+    /// Execute a WASM component for a given service, returning the guest's
+    /// results as the string-shaped boundary contract every existing caller
+    /// relies on (see [`crate::conversions::wasm_results_to_json_string`]).
     pub async fn execute_wasm(
         &self,
         service_id: &str,
         interface_name: &str,
         request: &JsonRpcRequest,
     ) -> Result<String> {
+        let wasm_results = self.execute_wasm_vals(service_id, interface_name, request).await?;
+        wasm_results_to_json_string(&wasm_results)
+    }
+
+    /// Typed entry point (M04A Slice A1): the guest's results as a real JSON
+    /// [`Value`], with no string special-case. Used by the Universal Proxy
+    /// (`ProxyRouter::invoke_local`) and the inbound `JsonRpcToWasm` route.
+    pub async fn execute_wasm_json(
+        &self,
+        service_id: &str,
+        interface_name: &str,
+        request: &JsonRpcRequest,
+    ) -> Result<Value> {
+        let wasm_results = self.execute_wasm_vals(service_id, interface_name, request).await?;
+        crate::conversions::wasm_results_to_json(&wasm_results)
+    }
+
+    /// Everything shared by [`Self::execute_wasm`]/[`Self::execute_wasm_json`]:
+    /// resolves and instantiates the target component, binds JSON-RPC params
+    /// to its typed signature, calls it, and maps quota/memory traps -- up to
+    /// but not including result serialization, which the two typed/string
+    /// entry points above handle differently.
+    async fn execute_wasm_vals(
+        &self,
+        service_id: &str,
+        interface_name: &str,
+        request: &JsonRpcRequest,
+    ) -> Result<Vec<Val>> {
         Self::validate_service_id(service_id)?;
         struct ActiveInstanceGuard;
         impl ActiveInstanceGuard {
@@ -530,7 +569,7 @@ impl AppSandboxEngine {
             return Err(e.into());
         }
 
-        wasm_results_to_json_string(&wasm_results)
+        Ok(wasm_results)
     }
 
     /// Helper shared by `prepare_wasm_execution` and `invoke_lifecycle_hook`:
@@ -580,6 +619,11 @@ impl AppSandboxEngine {
             registry: self.endpoint_registry.clone(),
             engine: self.self_weak.get().cloned().unwrap_or_default(),
         };
+        let service_proxy = self
+            .service_proxy
+            .get()
+            .cloned()
+            .unwrap_or_else(crate::host_capabilities::empty_service_proxy);
         let host_state = HostState::new(
             service_id.to_string(),
             max_memory_bytes,
@@ -590,6 +634,7 @@ impl AppSandboxEngine {
             config_generation,
             messaging,
             streaming,
+            service_proxy,
         );
 
         debug!("created wasi ctx and host state");
@@ -1073,7 +1118,7 @@ mod tests {
 
     use super::*;
     use crate::host_capabilities::tests::{
-        test_blob_provider, test_messaging_context, test_streaming_context,
+        test_blob_provider, test_messaging_context, test_service_proxy, test_streaming_context,
     };
 
     #[tokio::test]
@@ -1095,6 +1140,7 @@ mod tests {
             0,
             test_messaging_context(),
             test_streaming_context(),
+            test_service_proxy(),
         );
 
         let mut store = Store::new(&engine, host_state);
@@ -1195,6 +1241,7 @@ mod tests {
             blob_provider: test_blob_provider(),
             messaging_broker: Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap()),
             self_weak: OnceLock::new(),
+            service_proxy: OnceLock::new(),
             subscriptions: DashMap::new(),
             endpoint_registry: EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
             stream_registry: StreamRegistry::new(),

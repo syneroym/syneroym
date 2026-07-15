@@ -6,8 +6,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Result, anyhow};
 use hyper_util::rt::TokioIo;
-use iroh::{EndpointAddr, RelayUrl};
-use syneroym_core::dht_registry::EndpointMechanism;
 use syneroym_rpc::{Ability, CallerContext, Capability, ResourceUri, SessionContext, framing};
 use tokio::{
     io,
@@ -28,6 +26,7 @@ const PRE_AUTH_READ_TIMEOUT: Duration = Duration::from_secs(5);
 use super::{super::SYNEROYM_ALPN, RouteHandler, dispatch, encryption::ReaderWriter};
 use crate::{
     handshake::{HandshakeVerifier, VerifiedIdentity},
+    net_iroh,
     net_iroh::{IrohStream, connect_with_retry},
     preamble::RoutePreamble,
     route_handler::encryption::{OwnedStream, apply_encryption_stage},
@@ -45,7 +44,11 @@ use crate::{
 /// substrate-owner) and with what row/column scope is enforced by the FDAE
 /// policy engine (M04B), evaluated against `caller.session`. Until then any
 /// verified identity passes.
-fn build_caller(id: &VerifiedIdentity, admin_root: Option<&str>) -> CallerContext {
+fn build_caller(
+    preamble: &RoutePreamble,
+    id: &VerifiedIdentity,
+    admin_root: Option<&str>,
+) -> CallerContext {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let mut session = SessionContext {
         subject_did: id.master_did.clone(),
@@ -64,6 +67,10 @@ fn build_caller(id: &VerifiedIdentity, admin_root: Option<&str>) -> CallerContex
         app_instance: None,
         session,
         auth: syneroym_rpc::AuthLevel::Delegated,
+        proof: Some(syneroym_rpc::CallerProof {
+            pubkey_hex: preamble.pubkey.clone().unwrap_or_default(),
+            delegation_json: preamble.delegation.as_ref().and_then(|cert| cert.to_json().ok()),
+        }),
     }
 }
 
@@ -125,11 +132,11 @@ impl RouteHandler {
         // `None` (ADR-0016 §3).
         let caller = match HandshakeVerifier::verify_preamble(
             &preamble,
-            &self.inner.registry_client,
+            self.inner.registry_client.as_ref(),
         )
         .await
         {
-            Ok(id) => Some(build_caller(&id, self.inner.admin_ucan_root.as_deref())),
+            Ok(id) => Some(build_caller(&preamble, &id, self.inner.admin_ucan_root.as_deref())),
             Err(e) => {
                 // A *malformed* delegation (cert for a different DID,
                 // revoked, expired) is still a hard reject here, matching
@@ -159,25 +166,9 @@ impl RouteHandler {
                 preamble.service_id
             );
 
-            let info = self.inner.registry_client.lookup(&preamble.service_id, true).await?;
-
-            // 2. Extract Iroh EndpointAddr from mechanisms
-            let mut iroh_addr = None;
-            for mech in info.info.mechanisms {
-                if let EndpointMechanism::Iroh { endpoint_addr_bytes, relay_url } = mech {
-                    let mut addr: EndpointAddr = serde_json::from_slice(&endpoint_addr_bytes)?;
-                    if let Some(r_url_str) = relay_url
-                        && let Ok(relay_url) = r_url_str.parse::<RelayUrl>()
-                    {
-                        addr = addr.with_relay_url(relay_url);
-                    }
-                    iroh_addr = Some(addr);
-                    break;
-                }
-            }
-
-            let next_hop_addr = iroh_addr
-                .ok_or_else(|| anyhow!("No valid Iroh mechanism found for next hop in registry"))?;
+            let next_hop_addr =
+                net_iroh::resolve_iroh_addr(&self.inner.registry_client, &preamble.service_id)
+                    .await?;
 
             // 3. Connect outbound to next hop
             let ep = self

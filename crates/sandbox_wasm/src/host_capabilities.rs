@@ -10,6 +10,7 @@
 use std::{
     fmt::{self, Debug, Formatter},
     sync::{Arc, Weak},
+    time::Duration,
 };
 
 use serde_json::Value;
@@ -23,7 +24,10 @@ use syneroym_mqtt_broker::{
     MessagingError as BrokerMessagingError, MqttBroker, namespace_topic,
     namespace_topic_for_publish,
 };
-use syneroym_rpc::{Ability, CallerContext, ResourceUri};
+use syneroym_rpc::{
+    Ability, CallOrigin, CallerContext, ProxyError as RpcProxyError, ProxyProtocol, ProxyRequest,
+    ResourceUri, ServiceProxy,
+};
 use syneroym_wit_interfaces::host::syneroym::{
     app_config::app_config::{self, ConfigError},
     blob_store::blob_store::{
@@ -35,6 +39,7 @@ use syneroym_wit_interfaces::host::syneroym::{
     },
     host::context::Host,
     messaging::host_api::{self, MessagingError},
+    proxy::proxy,
     vault::vault::{self, VaultError},
 };
 use tracing::error;
@@ -61,6 +66,24 @@ fn map_broker_error(e: BrokerMessagingError) -> MessagingError {
     }
 }
 
+/// An always-empty `Weak<dyn ServiceProxy>` (`.upgrade()` always returns
+/// `None`) -- used before `AppSandboxEngine::service_proxy` has been set
+/// (coordinator mode, or a test that never configures a proxy). The
+/// inherent `Weak::new()` only exists for `T: Sized`, so an unsized `Weak<dyn
+/// ServiceProxy>` has to be produced via Rust's unsized coercion from a
+/// concrete, never-instantiated marker type instead.
+pub fn empty_service_proxy() -> Weak<dyn ServiceProxy> {
+    #[derive(Debug)]
+    struct NeverConstructed;
+    #[async_trait::async_trait]
+    impl ServiceProxy for NeverConstructed {
+        async fn invoke(&self, _request: ProxyRequest) -> Result<Value, RpcProxyError> {
+            unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+        }
+    }
+    Weak::<NeverConstructed>::new()
+}
+
 /// Host state instantiated per-request for WASM components
 pub struct HostState {
     pub wasi: WasiCtx,
@@ -76,6 +99,13 @@ pub struct HostState {
     pub config_generation: u64,
     pub messaging: MessagingContext,
     pub streaming: StreamContext,
+    /// Weak handle to the Universal Proxy (M04A Slice A1), letting a guest
+    /// originate a cross-service call via `syneroym:proxy/proxy::call`.
+    /// `Weak`, not `Arc`: `ProxyRouter` (the only implementation) itself
+    /// holds a `Weak<AppSandboxEngine>` back for local WASM targets, so two
+    /// strong refs would form the same class of uncollectable cycle that
+    /// hung graceful shutdown in Slice 6B.
+    pub service_proxy: Weak<dyn ServiceProxy>,
 }
 
 impl Debug for HostState {
@@ -101,6 +131,7 @@ impl HostState {
         config_generation: u64,
         messaging: MessagingContext,
         streaming: StreamContext,
+        service_proxy: Weak<dyn ServiceProxy>,
     ) -> Self {
         let wasi = WasiCtx::builder().build();
         let table = ResourceTable::new();
@@ -123,6 +154,7 @@ impl HostState {
             config_generation,
             messaging,
             streaming,
+            service_proxy,
         }
     }
 }
@@ -470,6 +502,87 @@ impl store::Host for HostState {
     }
 }
 
+/// Maps the proxy's transport-agnostic `syneroym_rpc::ProxyError` onto the
+/// guest-facing `syneroym:proxy/proxy::proxy-error` WIT variant.
+fn map_proxy_error(e: RpcProxyError) -> proxy::ProxyError {
+    match e {
+        RpcProxyError::ServiceNotFound(s) => proxy::ProxyError::ServiceNotFound(s),
+        RpcProxyError::UnsupportedProtocol(s) => proxy::ProxyError::UnsupportedProtocol(s),
+        RpcProxyError::UnsupportedTarget(s) => proxy::ProxyError::UnsupportedTarget(s),
+        RpcProxyError::PermissionDenied(s) => proxy::ProxyError::PermissionDenied(s),
+        RpcProxyError::Transport(s) => proxy::ProxyError::Transport(s),
+        RpcProxyError::Timeout(_) => proxy::ProxyError::TimedOut,
+        RpcProxyError::Callee { code, message, data } => {
+            proxy::ProxyError::Callee(proxy::CalleeError {
+                code,
+                message,
+                data: data.map(|v| v.to_string()),
+            })
+        }
+        RpcProxyError::Internal(s) => proxy::ProxyError::Internal(s),
+    }
+}
+
+impl proxy::Host for HostState {
+    /// Originates a cross-service call through the Universal Proxy (M04A
+    /// Slice A1). Always constructs `CallOrigin::Guest` -- this is the only
+    /// construction site a component can reach, so the proxy's guest
+    /// native-capability gate (`ProxyRouter::check_native_capability_gate`)
+    /// cannot be bypassed from guest code.
+    async fn call(
+        &mut self,
+        service: String,
+        interface: String,
+        method: String,
+        params: String,
+        options: Option<proxy::CallOptions>,
+    ) -> Result<String, proxy::ProxyError> {
+        let service_proxy = self
+            .service_proxy
+            .upgrade()
+            .ok_or_else(|| proxy::ProxyError::Internal("proxy unavailable".to_string()))?;
+
+        let params: Value = if params.trim().is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_str(&params)
+                .map_err(|e| proxy::ProxyError::Internal(format!("params must be JSON: {e}")))?
+        };
+
+        let (protocol_tag, idempotent, timeout_ms) = match &options {
+            Some(o) => (o.protocol.as_deref(), o.idempotent, o.timeout_ms),
+            None => (None, false, None),
+        };
+        let protocol =
+            ProxyProtocol::parse(protocol_tag).map_err(proxy::ProxyError::UnsupportedProtocol)?;
+
+        let req = ProxyRequest {
+            target_service: service,
+            interface,
+            method,
+            params,
+            // The component acts as itself. It does NOT inherit the
+            // identity of whoever invoked it (no U->X delegation exists in
+            // B0's model), so a proxied call cannot be used to escalate to
+            // the original caller's rights. Real caller-delegation is
+            // B1/UCAN.
+            caller: CallerContext::service_system(&self.component_id),
+            origin: CallOrigin::Guest { service_id: self.component_id.clone() },
+            protocol,
+            idempotent,
+            timeout: timeout_ms.map(|ms| Duration::from_millis(ms.into())),
+        };
+
+        let value = service_proxy.invoke(req).await.map_err(map_proxy_error)?;
+        // Mirrors A0's boundary convention (a string result comes back raw,
+        // not JSON-quoted) so guest code doesn't have to strip quotes.
+        Ok(match value {
+            Value::String(s) => s,
+            other => other.to_string(),
+        })
+    }
+}
+
 fn map_blob_error(e: BlobStoreError) -> BlobError {
     match e {
         BlobStoreError::NotFound => BlobError::NotFound,
@@ -652,6 +765,12 @@ pub(crate) mod tests {
         }
     }
 
+    /// Test-only proxy handle: always-unavailable -- sufficient for tests
+    /// that don't exercise `syneroym:proxy/proxy::call`.
+    pub(crate) fn test_service_proxy() -> Weak<dyn ServiceProxy> {
+        super::empty_service_proxy()
+    }
+
     #[tokio::test]
     async fn test_config_get_and_get_section() {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -671,6 +790,7 @@ pub(crate) mod tests {
             generation,
             test_messaging_context(),
             test_streaming_context(),
+            test_service_proxy(),
         );
 
         use app_config::Host as ConfigHost;
@@ -718,6 +838,7 @@ pub(crate) mod tests {
             gen2_a,
             test_messaging_context(),
             test_streaming_context(),
+            test_service_proxy(),
         );
         let mut host_b = HostState::new(
             "svc_b".to_string(),
@@ -729,6 +850,7 @@ pub(crate) mod tests {
             gen1_b,
             test_messaging_context(),
             test_streaming_context(),
+            test_service_proxy(),
         );
 
         let val_a = ConfigHost::get(&mut host_a_gen2, "mode".to_string()).await.unwrap().unwrap();
@@ -747,6 +869,7 @@ pub(crate) mod tests {
             gen1_a,
             test_messaging_context(),
             test_streaming_context(),
+            test_service_proxy(),
         );
         let val_a_old =
             ConfigHost::get(&mut host_a_gen1, "mode".to_string()).await.unwrap().unwrap();
@@ -773,6 +896,7 @@ pub(crate) mod tests {
             0,
             test_messaging_context(),
             test_streaming_context(),
+            test_service_proxy(),
         );
 
         let result = vault::Host::reveal(&mut host_state, "does-not-exist".to_string()).await;

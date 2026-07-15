@@ -51,3 +51,17 @@ pub fn stream_test_wasm_path() -> PathBuf {
         "../../test-components/stream-test/target/wasm32-wasip2/release/syneroym_test_stream.wasm",
     )
 }
+
+/// The `test-driver` interface name for the M04A Slice A1 proxy-test
+/// component.
+pub const PROXY_TEST_DRIVER_INTERFACE: &str = "syneroym-test:proxy-test/test-driver@0.1.0";
+
+/// Returns the workspace-relative path to the proxy-test component WASM
+/// module (imports `syneroym:proxy/proxy`, exports a `test-driver` interface
+/// with a single `call-peer` method that originates a Universal Proxy call --
+/// see `test-components/proxy-test`).
+pub fn proxy_test_wasm_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+        "../../test-components/proxy-test/target/wasm32-wasip2/release/syneroym_test_proxy.wasm",
+    )
+}

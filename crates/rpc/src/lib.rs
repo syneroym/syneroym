@@ -10,11 +10,18 @@ mod converter;
 mod dispatch_registry;
 pub mod framing;
 mod native;
+mod proxy;
 mod types;
 
 pub use converter::JsonRpcConverter;
 pub use dispatch_registry::{NativeDispatchRegistry, WeakNativeDispatchRegistry};
-pub use native::{AuthLevel, CallerContext, NativeInvocation, NativeResponse, NativeService};
+pub use native::{
+    AuthLevel, CallerContext, CallerProof, NativeInvocation, NativeResponse, NativeService,
+};
+pub use proxy::{
+    CallOrigin, DEFAULT_PROXY_CALL_TIMEOUT, PROXY_TRANSPORT_RPC_CODE, ProxyError, ProxyProtocol,
+    ProxyRequest, ServiceProxy, UNSUPPORTED_PROTOCOL_RPC_CODE, UNSUPPORTED_TARGET_RPC_CODE,
+};
 use serde_json::Value;
 pub use syneroym_ucan::{Ability, Capability, ResourceUri, SessionContext};
 use thiserror::Error;

@@ -47,7 +47,10 @@ use syneroym_data_blob::{
     native_types::{OpenDownloadResponse, ReadChunkResponse},
 };
 use syneroym_mqtt_broker::namespace_topic;
-use syneroym_rpc::{CallerContext, JsonRpcError, JsonRpcErrorResponse, JsonRpcRequest};
+use syneroym_rpc::{
+    CallerContext, JsonRpcError, JsonRpcErrorResponse, JsonRpcRequest, PROXY_TRANSPORT_RPC_CODE,
+    UNSUPPORTED_PROTOCOL_RPC_CODE, UNSUPPORTED_TARGET_RPC_CODE,
+};
 use syneroym_sandbox_wasm::StreamRequestOutcome;
 use tokio::io::{self as tokio_io, AsyncRead, AsyncWrite};
 use tokio_util::io::StreamReader;
@@ -212,6 +215,8 @@ fn status_for_rpc_error_code(code: i32) -> StatusCode {
         -32013 => StatusCode::TOO_MANY_REQUESTS, // data-layer quota exceeded
         UNAUTHENTICATED_RPC_CODE => StatusCode::UNAUTHORIZED,
         -32602 => StatusCode::BAD_REQUEST, // JSON-RPC invalid params
+        UNSUPPORTED_PROTOCOL_RPC_CODE | UNSUPPORTED_TARGET_RPC_CODE => StatusCode::NOT_IMPLEMENTED,
+        PROXY_TRANSPORT_RPC_CODE => StatusCode::BAD_GATEWAY,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
@@ -1127,6 +1132,15 @@ mod tests {
         assert_eq!(status_for_rpc_error_code(-32013), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(status_for_rpc_error_code(-32602), StatusCode::BAD_REQUEST);
         assert_eq!(status_for_rpc_error_code(-32603), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            status_for_rpc_error_code(UNSUPPORTED_PROTOCOL_RPC_CODE),
+            StatusCode::NOT_IMPLEMENTED
+        );
+        assert_eq!(status_for_rpc_error_code(PROXY_TRANSPORT_RPC_CODE), StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            status_for_rpc_error_code(UNSUPPORTED_TARGET_RPC_CODE),
+            StatusCode::NOT_IMPLEMENTED
+        );
         assert_eq!(status_for_rpc_error_code(-1), StatusCode::INTERNAL_SERVER_ERROR);
     }
 

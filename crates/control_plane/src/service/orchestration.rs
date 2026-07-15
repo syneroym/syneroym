@@ -15,7 +15,10 @@ use std::{
 
 use anyhow::Result;
 use serde_json::Value;
-use syneroym_core::{local_registry::SubstrateEndpoint, util};
+use syneroym_core::{
+    local_registry::{NATIVE_CAPABILITY_INTERFACES, SubstrateEndpoint},
+    util,
+};
 use syneroym_rpc::NativeService;
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, ContainerManifest, DeployManifest, DeployedService, DeploymentPlan,
@@ -35,17 +38,6 @@ pub trait OrchestratorInterface {
     async fn list(&self) -> Result<Vec<DeployedService>, String>;
     async fn deploy_plan(&self, plan: DeploymentPlan) -> Result<(), String>;
 }
-
-// "http-native", not the bare "http": `roymctl svc deploy --interfaces http
-// --tcp ...` is an existing, real convention for declaring a TCP/container
-// service's own plain HTTP-serving interface (see
-// `crates/substrate/tests/e2e/global-setup.ts`) -- reserving the bare
-// "http" name here collided with it (registering this native-capability
-// endpoint under the same interface name silently overwrote the app's own
-// `TcpHostPort` registration, discovered via `mise run test:e2e` breaking
-// end to end during Slice 7's own verification).
-const NATIVE_CAPABILITY_INTERFACES: [&str; 6] =
-    ["data-layer", "vault", "app-config", "blob-store", "messaging", "http-native"];
 
 impl ControlPlaneService {
     async fn register_wasm_endpoints(
