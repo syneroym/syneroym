@@ -838,6 +838,11 @@ reviewer's own assessment).
   `facts_from_a_self_issued_leaf_are_dropped_even_with_a_backed_capability`
   (`crates/ucan/src/token.rs`) constructs exactly the attack scenario above
   and asserts the capability still attenuates while the facts are dropped.
+  A second review pass (2026-07-15) noted the synthetic-probe design quietly
+  depends on `is_trusted_root` staying resource-agnostic — flagged with a
+  `TODO(B7)` at the call site (`session.rs`) so a future resource-scoped root
+  predicate (owner-rooted trust, Slice B7) doesn't silently inherit the wrong
+  scope through this probe.
 - **Fixed (H2) — `AuthLevel::Ucan` no longer implies "holds a verified
   capability."** `build_caller` upgraded `auth` to `Ucan` whenever
   `verify_chain` returned `Ok` (structurally valid + not revoked), even when
@@ -868,8 +873,12 @@ reviewer's own assessment).
   *amplification* vector was the per-node crypto/network cost, which the cap
   closes). Fixing the general preamble-size gap belongs to a dedicated
   hardening pass across the whole preamble surface, not folded into this
-  slice. Parallelizing anchor resolution was judged unnecessary once bounded
-  to 64 sequential lookups worst-case (matching the existing single-lookup
+  slice — flagged with a `TODO` at `read_preamble` (`io.rs`) and tracked as a
+  standalone follow-up task (spawned via the session's task tool, title
+  "Bound pre-auth preamble line length") per a second review pass
+  (2026-07-15) that asked for it to be tracked rather than silently dropped.
+  Parallelizing anchor resolution was judged unnecessary once bounded to 64
+  sequential lookups worst-case (matching the existing single-lookup
   delegation-cert revocation path's own sequential precedent) — recorded as
   a possible future optimization, not a correctness gap.
 - **Fixed (M4) — quadratic signing-body serialization.** `signing_value`

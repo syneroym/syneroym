@@ -154,6 +154,15 @@ async fn build_caller(
 }
 
 /// Reads a single line from the reader and parses it as a `RoutePreamble`.
+///
+/// TODO(hardening, pre-existing/tracked): `read_line` has no length bound, so
+/// an unauthenticated peer can make this allocate arbitrarily before
+/// `RoutePreamble::parse` ever runs -- true for every query param on this
+/// line (`delegation=`, `ucan=`, `pubkey=`), not something Slice B1
+/// introduced. `MAX_CHAIN_NODES` (`syneroym-ucan`) bounds the *verification*
+/// cost of an oversized `ucan=` chain after parsing, but not the allocation
+/// itself. Bounding this line's byte length belongs to a dedicated
+/// preamble-hardening pass across all params, not a UCAN-specific fix.
 pub async fn read_preamble<R>(reader: &mut BufReader<R>) -> Result<RoutePreamble>
 where
     R: AsyncRead + Unpin,

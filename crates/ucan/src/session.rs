@@ -51,6 +51,15 @@ impl SessionContext {
         // ignores it, since node-admin trust isn't resource-scoped. It
         // exists so this check can reuse `ChainVerifyOpts`'s existing
         // signature rather than adding a second, resource-free variant.
+        //
+        // TODO(B7): this quietly depends on `is_trusted_root` staying
+        // resource-agnostic. If B7 introduces a resource-scoped root
+        // predicate (owner-rooted trust per service), evaluating that
+        // predicate against a made-up `substrate(leaf.issuer_did)` resource
+        // could read the wrong scope for that predicate. Revisit this call
+        // when a resource-scoped `is_trusted_root` is introduced -- either
+        // pass the real resource(s) the leaf's capabilities target, or add
+        // a resource-free `is_trusted_issuer` alongside `is_trusted_root`.
         let leaf_issuer_is_trusted_root =
             (opts.is_trusted_root)(&leaf.issuer_did, &ResourceUri::substrate(&leaf.issuer_did));
         let claims =
