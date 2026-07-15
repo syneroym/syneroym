@@ -2,7 +2,10 @@
 //!
 //! Handles bidirectional copy tasks and framing adapters for bridged streams.
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{
+    collections::HashSet,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use anyhow::{Result, anyhow};
 use hyper_util::rt::TokioIo;
@@ -47,12 +50,20 @@ fn now_secs() -> u64 {
 /// reject if the *audience* DID is in its `revoked_keys`. An unresolvable
 /// anchor is treated as not-revoked, matching the delegation path (which
 /// only hard-fails on *timeout*, not on a missing anchor for a key that
-/// isn't revoked).
+/// isn't revoked). Identical `(issuer, audience)` edges (a diamond-shaped
+/// chain reusing the same proof, or a chain that simply repeats an issuer)
+/// are resolved at most once -- `verify_chain`'s `MAX_CHAIN_NODES` cap
+/// already bounds the total edge count, but de-duplicating avoids paying for
+/// the same network round trip redundantly within that bound.
 async fn ucan_chain_not_revoked(
     token: &CapabilityToken,
     resolver: &dyn MasterAnchorResolver,
 ) -> bool {
-    for (issuer, audience) in token.chain_edges() {
+    let mut checked = HashSet::new();
+    for edge @ (issuer, audience) in token.chain_edges() {
+        if !checked.insert(edge) {
+            continue;
+        }
         if let Ok(anchor) = resolver.resolve_master_anchor(issuer).await
             && anchor.revoked_keys.iter().any(|k| k == audience)
         {
@@ -66,8 +77,12 @@ async fn ucan_chain_not_revoked(
 /// §4.2, Slice B1). A caller whose master DID equals the configured
 /// `[iam].admin_ucan_root` is granted `substrate/admin` on this node (the B0
 /// direct-equality path, kept). A presented `preamble.ucan` chain rooted at
-/// that same admin root is additionally verified and merged in, upgrading
-/// `auth` to `AuthLevel::Ucan`.
+/// that same admin root is additionally verified and merged in; `auth` is
+/// upgraded to `AuthLevel::Ucan` only when the chain actually admitted at
+/// least one capability -- a structurally valid but entirely untrusted chain
+/// (e.g. self-issued, rooted nowhere) must not read as "holds a verified UCAN
+/// capability" to any future code that checks `auth == Ucan` as a privilege
+/// signal.
 ///
 /// TODO(M04B/FDAE): B0 gate only proves *an* identity is present. Which
 /// callers may actually reach a given native service (service-owner /
@@ -108,11 +123,13 @@ async fn build_caller(
         };
         match SessionContext::from_verified_chain(token, &opts) {
             Ok(verified) if ucan_chain_not_revoked(token, resolver).await => {
+                if !verified.capabilities.is_empty() {
+                    auth = AuthLevel::Ucan;
+                }
                 session.capabilities.extend(verified.capabilities);
                 for (k, v) in verified.claims {
                     session.claims.insert(k, v);
                 }
-                auth = AuthLevel::Ucan;
             }
             Ok(_) => tracing::warn!("UCAN chain rejected: a chain DID is revoked"),
             Err(e) => tracing::warn!("UCAN chain verification failed: {e}"),
@@ -423,7 +440,10 @@ impl RouteHandler {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::{
+        collections::HashMap,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
 
     use syneroym_core::dht_registry::MasterAnchorPayload;
     use syneroym_identity::{Identity, substrate::derive_did_key};
@@ -448,6 +468,25 @@ mod tests {
                 anchor.revoked_keys = revoked.clone();
             }
             Ok(anchor)
+        }
+    }
+
+    /// A `MasterAnchorResolver` double that counts calls, used to verify
+    /// `ucan_chain_not_revoked` de-duplicates identical `(issuer, audience)`
+    /// edges rather than resolving each occurrence independently.
+    #[derive(Default)]
+    struct CountingResolver {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl MasterAnchorResolver for CountingResolver {
+        async fn resolve_master_anchor(
+            &self,
+            _master_id: &str,
+        ) -> Result<MasterAnchorPayload, anyhow::Error> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(MasterAnchorPayload::default())
         }
     }
 
@@ -491,6 +530,61 @@ mod tests {
 
         assert_eq!(caller.auth, AuthLevel::Ucan);
         assert_eq!(caller.caller_did, id.master_did);
+        assert!(
+            caller
+                .session
+                .has_capability(&resource, &Ability(Ability::DATA_LAYER_READ.to_string()))
+        );
+    }
+
+    /// The same claim as
+    /// `build_caller_admits_a_ucan_chain_rooted_at_admin_root`, but driven
+    /// end to end from wire bytes rather than a hand-built `RoutePreamble`/
+    /// `VerifiedIdentity`: the preamble is serialized then re-`parse`d
+    /// (exercising the `ucan=`/`pubkey=` hex decode a real peer's
+    /// bytes would go through), and the `VerifiedIdentity` comes from
+    /// `HandshakeVerifier::verify_preamble` (the same call `handle_stream`
+    /// makes) rather than being constructed directly.
+    #[tokio::test]
+    async fn parsed_wire_preamble_with_ucan_reaches_build_caller() {
+        let owner = Identity::generate().unwrap();
+        let client = Identity::generate().unwrap();
+        let admin_root = derive_did_key(&owner.public_key());
+        let client_did = derive_did_key(&client.public_key());
+        let resource = ResourceUri::service("app1", "svc1");
+
+        let token = CapabilityToken::issue(
+            &owner,
+            &client_did,
+            vec![Capability {
+                with: resource.clone(),
+                can: Ability(Ability::DATA_LAYER_READ.to_string()),
+                caveats: None,
+            }],
+            serde_json::Map::new(),
+            3600,
+            vec![],
+        )
+        .unwrap();
+
+        let mut preamble = RoutePreamble::binary_json_rpc("svc", "data-layer");
+        preamble.pubkey = Some(hex::encode(client.public_key().to_bytes()));
+        preamble.ucan = Some(token);
+
+        // Round-trip through the actual wire format, not the struct directly.
+        let wire_line = preamble.to_preamble_line();
+        let parsed = RoutePreamble::parse(&wire_line).unwrap();
+        assert!(parsed.ucan.is_some(), "ucan= must survive the hex-encode/decode round trip");
+
+        let resolver = MockResolver { revoked: HashMap::new() };
+        let verified_id = HandshakeVerifier::verify_preamble(&parsed, &resolver)
+            .await
+            .expect("a self-asserted pubkey with no delegation cert must verify");
+        assert_eq!(verified_id.master_did, client_did);
+
+        let caller = build_caller(&parsed, &verified_id, Some(&admin_root), &resolver).await;
+
+        assert_eq!(caller.auth, AuthLevel::Ucan);
         assert!(
             caller
                 .session
@@ -543,7 +637,9 @@ mod tests {
 
     /// A chain rooted at an issuer that is not the node's admin root grants
     /// nothing -- B1 has no other trust root (owner-rooted service chains
-    /// are Slice B7).
+    /// are Slice B7). `auth` must not upgrade to `Ucan` either: the chain
+    /// verified structurally but admitted zero capabilities, so it holds no
+    /// more privilege than the pre-UCAN `Delegated` level.
     #[tokio::test]
     async fn build_caller_drops_capabilities_from_an_untrusted_root() {
         let owner = Identity::generate().unwrap();
@@ -574,6 +670,7 @@ mod tests {
 
         let caller = build_caller(&preamble, &id, Some(&admin_root), &resolver).await;
 
+        assert_eq!(caller.auth, AuthLevel::Delegated);
         assert!(
             !caller
                 .session
@@ -619,6 +716,56 @@ mod tests {
             !caller
                 .session
                 .has_capability(&resource, &Ability(Ability::DATA_LAYER_READ.to_string()))
+        );
+    }
+
+    /// A chain that reuses the same proof twice (a diamond shape) must
+    /// resolve each distinct `(issuer, audience)` edge only once, not once
+    /// per occurrence.
+    #[tokio::test]
+    async fn ucan_chain_not_revoked_dedupes_repeated_edges() {
+        let owner = Identity::generate().unwrap();
+        let alice = Identity::generate().unwrap();
+        let bob = Identity::generate().unwrap();
+        let alice_did = derive_did_key(&alice.public_key());
+        let bob_did = derive_did_key(&bob.public_key());
+        let resource = ResourceUri::service("app1", "svc1");
+
+        let owner_to_alice = CapabilityToken::issue(
+            &owner,
+            &alice_did,
+            vec![Capability {
+                with: resource.clone(),
+                can: Ability(Ability::DATA_LAYER_ADMIN.to_string()),
+                caveats: None,
+            }],
+            serde_json::Map::new(),
+            3600,
+            vec![],
+        )
+        .unwrap();
+        // The same proof embedded twice.
+        let alice_to_bob = CapabilityToken::issue(
+            &alice,
+            &bob_did,
+            vec![Capability {
+                with: resource,
+                can: Ability(Ability::DATA_LAYER_WRITE.to_string()),
+                caveats: None,
+            }],
+            serde_json::Map::new(),
+            3600,
+            vec![owner_to_alice.clone(), owner_to_alice],
+        )
+        .unwrap();
+
+        let resolver = CountingResolver::default();
+        assert!(ucan_chain_not_revoked(&alice_to_bob, &resolver).await);
+        assert_eq!(
+            resolver.calls.load(Ordering::SeqCst),
+            2,
+            "expected exactly one resolution each for the (alice, bob) and (owner, alice) edges, \
+             despite (owner, alice) appearing twice"
         );
     }
 

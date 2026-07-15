@@ -775,16 +775,20 @@ dispatch" claim is proven in the external `tests/ucan_context.rs` by driving
 
 | Bench | Measured | Budget |
 |---|---|---|
-| `verify_chain_two_link` | ~64.8 µs | < 5 ms p99 (cache-cold) |
+| `verify_chain_two_link` | ~58 µs (post-review; ~64.8 µs pre-review) | < 5 ms p99 (cache-cold) |
 
-Three orders of magnitude under budget.
+Three orders of magnitude under budget. The post-review figure reflects the
+quadratic-serialization fix below (M4) — roughly a 10% improvement on a
+2-node chain, growing with chain length.
 
 ### Gate
 
 - `cargo +nightly fmt --all` — clean.
 - `cargo clippy --workspace --all-targets --all-features` — zero warnings.
-- `cargo test --workspace` — **432 passed, 0 failed** across 73 test binaries
+- `cargo test --workspace` — **438 passed, 0 failed** across 73 test binaries
   plus doctests (full run, sandbox disabled — see environment note below).
+  432/0 pre-review-fixes; +6 from the post-commit review's new regression
+  tests (H1, H3, L5, M6, L7, L8 — see below).
 - `mise run test:e2e` — **12 passed, 0 failed** (8 + 4 across the two
   Playwright configs) — matches the A0′/B0/A1 baseline exactly; the `ucan=`
   preamble field is additive/opt, so no existing flow regresses.
@@ -795,7 +799,7 @@ Three orders of magnitude under budget.
 **Environment note:** as with A0′/B0/A1, network-binding integration tests
 (`syneroym-coordinator-iroh`'s `connection_limit`,
 `test_cross_node_proxy_call`'s local HTTP registry listener) need the agent
-command sandbox disabled to bind loopback sockets; the 432/0 figure above is
+command sandbox disabled to bind loopback sockets; the 438/0 figure above is
 from the full suite run with the sandbox disabled.
 
 ### Scope discipline
@@ -808,3 +812,125 @@ crate but deliberately not re-exported through `syneroym-rpc` or wired into
 the router (Flag F4 — no consumer at B1, per the plan). Cross-node UCAN
 forwarding (`CallerProof.ucan_json`, Flag F5) is explicitly out of scope,
 noted as a small additive B3 follow-on per the plan.
+
+### Post-commit code review (2026-07-15) — findings incorporated
+
+A follow-up review of commit `8dfa609` found eight items. Verified each
+against the actual code before acting; six were fixed, two were pinned with a
+test rather than changed (both explicitly deferred to Slice B7 by the
+reviewer's own assessment).
+
+- **Fixed (H1) — unverified `facts` were trusted as `claims`
+  unconditionally.** `SessionContext::from_verified_chain` copied
+  `leaf.facts` into `claims` regardless of whether the *leaf's own issuer*
+  was trusted. Since any caller can self-author the leaf it presents (only
+  its *proofs* need to chain back to a trusted root for a capability to
+  attenuate — the leaf's issuer field itself is unconstrained), a caller
+  holding a legitimate root-issued proof could wrap it in a self-issued leaf
+  carrying fabricated `facts` and have them merged into `CallerContext`
+  verbatim — a claims-injection path with no attenuation check, on the exact
+  field M04B binds as SQL `?` parameters. Fixed: `claims` are now only
+  populated when the leaf's issuer is *itself* a trusted root (checked via
+  the same `is_trusted_root` predicate capabilities use, with a synthetic
+  `ResourceUri::substrate(&leaf.issuer_did)` probe — B1's only concrete
+  predicate ignores the resource argument, so this correctly reduces to "is
+  the leaf issuer the admin root"). New regression test
+  `facts_from_a_self_issued_leaf_are_dropped_even_with_a_backed_capability`
+  (`crates/ucan/src/token.rs`) constructs exactly the attack scenario above
+  and asserts the capability still attenuates while the facts are dropped.
+- **Fixed (H2) — `AuthLevel::Ucan` no longer implies "holds a verified
+  capability."** `build_caller` upgraded `auth` to `Ucan` whenever
+  `verify_chain` returned `Ok` (structurally valid + not revoked), even when
+  the granted-capabilities set was empty (an untrusted-root chain). Fixed:
+  `auth` now only upgrades when `!verified.capabilities.is_empty()`. No
+  existing code gated on `auth == Ucan` as a privilege signal, so this is a
+  behavior-only tightening with no functional callers to update;
+  `build_caller_drops_capabilities_from_an_untrusted_root` now additionally
+  asserts `auth == Delegated`.
+- **Fixed (H3) — unbounded chain breadth.** Neither `verify_chain` nor the
+  router's revocation walk bounded the total number of tokens in a
+  presented chain; a wide `proofs` fan-out (breadth, not nesting depth — not
+  covered by `serde_json`'s recursion-depth guard) could force a
+  proportionally large number of Ed25519 verifies and, in the router,
+  sequential `resolve_master_anchor` network calls before ultimately being
+  rejected for granting nothing. Fixed: a `MAX_CHAIN_NODES = 64` cap in
+  `syneroym-ucan`, checked via a cheap linear count-and-bail
+  (`total_chain_nodes`) *before* any signature verification — this also
+  transitively bounds the router's revocation walk, since it only runs after
+  `verify_chain` succeeds. New test `chain_exceeding_max_nodes_is_rejected`
+  builds a 65-node linear chain and asserts rejection.
+  **Not done:** bounding the raw `ucan=` preamble-line byte length, or
+  parallelizing anchor resolution. The byte-length gap is pre-existing and
+  general (every preamble query param — `delegation=`, `pubkey=` — already
+  shares the same unbounded `read_line`, `io.rs`), not something B1
+  introduced or uniquely amplifies once node count is capped (a huge byte
+  blob that decodes to few structurally valid nodes is cheap to reject; the
+  *amplification* vector was the per-node crypto/network cost, which the cap
+  closes). Fixing the general preamble-size gap belongs to a dedicated
+  hardening pass across the whole preamble surface, not folded into this
+  slice. Parallelizing anchor resolution was judged unnecessary once bounded
+  to 64 sequential lookups worst-case (matching the existing single-lookup
+  delegation-cert revocation path's own sequential precedent) — recorded as
+  a possible future optimization, not a correctness gap.
+- **Fixed (M4) — quadratic signing-body serialization.** `signing_value`
+  used `serde_json::to_value(self)` (serializing the entire nested `proofs`
+  subtree) and then discarded the `proofs` key, making per-node
+  verification cost `O(subtree size)` — quadratic in chain length. Fixed:
+  build the signing value from the token's own scalar fields via
+  `serde_json::json!` directly, never touching `proofs`. Confirmed
+  behavior-preserving (same field set, same values) by the full existing
+  sign/verify test suite passing unchanged; measured ~10% faster on the
+  2-link bench chain (see Performance above), with the gain growing with
+  chain length.
+- **Fixed (L5) — duplicate anchor resolutions.** `ucan_chain_not_revoked`
+  resolved every `(issuer, audience)` edge with no de-duplication, so a
+  chain reusing the same proof at multiple points (a diamond shape) paid for
+  the same network round trip repeatedly. Fixed: edges are de-duplicated via
+  a `HashSet` before resolving. New test
+  `ucan_chain_not_revoked_dedupes_repeated_edges` uses a call-counting
+  resolver double to assert a proof embedded twice is resolved once.
+- **Fixed (M6) — the dispatch-level test never exercised a parsed `ucan=`
+  wire preamble.** `tests/ucan_context.rs`'s two tests build a
+  `CallerContext` from real `syneroym_ucan` verification but pass it to
+  `dispatch_json_rpc_once` directly, with a `RoutePreamble` that never
+  actually carries a `ucan=` token — so the hex-encode/decode wire path and
+  `build_caller`'s own gluing were only separately unit-tested, never in one
+  continuous flow. Added `parsed_wire_preamble_with_ucan_reaches_build_caller`
+  (`route_handler/io.rs`, in-crate — the only place with access to both
+  `build_caller` and `read_preamble`/`RoutePreamble::parse`): serializes a
+  preamble with a real token to its wire line, re-`parse`s it (exercising the
+  actual hex decode), derives a `VerifiedIdentity` via
+  `HandshakeVerifier::verify_preamble` (the same call `handle_stream` makes,
+  not a hand-built struct), and *then* calls `build_caller`, asserting the
+  capability lands. This closes the gap as far as Rust's visibility rules
+  allow without changing `build_caller`'s/`read_preamble`'s privacy (see the
+  existing "Deviation from the plan" note above for why a true
+  `handle_stream`-driven test isn't possible from an external test crate).
+  Full `parse → verify_preamble → build_caller → dispatch_json_rpc_once` in
+  one literal call chain remains split across two tests (this one, plus
+  `tests/ucan_context.rs`'s dispatch-level proof) for the same visibility
+  reason.
+- **Pinned, not changed (L7) — `caveats` passthrough.** `covers`/`grants`
+  never consult `caveats`; a caveat-restricted capability behaves identically
+  to an unrestricted one today. This is the documented, deliberate FDAE/M04B
+  deferral, not a bug — added `caveats_passthrough_is_not_yet_enforced`
+  (`crates/ucan/src/capability.rs`) plus a doc-comment on `Capability` making
+  the passthrough explicit, so the gap isn't silently rediscovered once
+  caveats gain real meaning.
+- **Pinned, not changed (L8) — `is_substrate_scope` doesn't check which
+  node's DID a `substrate:` resource names.** `covers`/`grants` treat *any*
+  `substrate:<node_did>` capability as a wildcard, including one naming a
+  different node. Inert at B1 (the only issuer of a substrate-scoped
+  capability is this node's own admin root, always naming its own DID) —
+  changing this would require threading "which node is evaluating this
+  capability" into `Capability`/`ResourceUri`, which don't model that today,
+  and would touch the already-shipped B0 substrate-admin path for no live
+  benefit. Added `substrate_scope_does_not_check_which_node_it_names`
+  (`crates/ucan/src/capability.rs`) plus a doc-comment flagging it as a
+  Slice B7 follow-on (multi-node/owner-rooted trust), matching the
+  reviewer's own "not exploitable at B1" assessment.
+
+Gate re-verified after all fixes: `cargo +nightly fmt --all` clean,
+`cargo clippy --workspace --all-targets --all-features` zero warnings,
+`cargo test --workspace` green, `mise run test:e2e` green (see the updated
+Gate section above for exact figures).
