@@ -29,6 +29,25 @@ pub struct CallerContext {
     /// path (B0) or a real UCAN chain (B1) populated it.
     pub session: SessionContext,
     pub auth: AuthLevel,
+    /// Signed, forwardable proof of this caller's identity (M04A Slice A1,
+    /// ADR-0016 §6) -- verbatim what the inbound preamble carried. A
+    /// cross-node proxy hop (`syneroym-router`'s `ProxyRouter`) re-presents
+    /// it on the outbound preamble; the destination re-verifies it with
+    /// `HandshakeVerifier::verify_preamble` and builds a **fresh**
+    /// `CallerContext` -- capabilities themselves never cross the wire, only
+    /// this proof does. `None` for substrate-injected callers
+    /// (`local_elevated`/`service_system`), which therefore cannot be
+    /// impersonated across a hop.
+    pub proof: Option<CallerProof>,
+}
+
+/// See [`CallerContext::proof`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallerProof {
+    /// Hex-encoded ed25519 public key (the preamble's `pubkey=`).
+    pub pubkey_hex: String,
+    /// JSON `DelegationCertificate` (the preamble's `delegation=`, pre-hex).
+    pub delegation_json: Option<String>,
 }
 
 /// How a `CallerContext` was established.
@@ -74,6 +93,7 @@ impl CallerContext {
                 ..Default::default()
             },
             auth: AuthLevel::LocalElevated,
+            proof: None,
         }
     }
 
@@ -90,6 +110,7 @@ impl CallerContext {
                 ..Default::default()
             },
             auth: AuthLevel::System,
+            proof: None,
         }
     }
 }

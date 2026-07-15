@@ -47,5 +47,6 @@ syneroym-mqtt-broker.workspace = true
 syneroym-sandbox-podman.workspace = true
 syneroym-sandbox-wasm.workspace = true
 syneroym-control-plane.workspace = true
+syneroym-wit-interfaces.workspace = true
 dashmap.workspace = true
 libc.workspace = true

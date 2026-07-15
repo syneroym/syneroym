@@ -15,6 +15,7 @@ use syneroym_rpc::CallerContext;
 use syneroym_sandbox_wasm::{
     AppSandboxEngine, HostState, MessagingContext, StreamContext,
     conversions::{json_to_wasm_params, val_to_json},
+    empty_service_proxy,
 };
 use test_constants::GREETER_INTERFACE_NAME;
 use tokio::runtime::Builder;
@@ -77,6 +78,7 @@ fn bench_wasm_engine(c: &mut Criterion) {
                 0,
                 test_messaging_context(),
                 test_streaming_context(),
+                empty_service_proxy(),
             );
             let _store = Store::new(&engine, host_state);
         });
@@ -95,6 +97,7 @@ fn bench_wasm_engine(c: &mut Criterion) {
                 0,
                 test_messaging_context(),
                 test_streaming_context(),
+                empty_service_proxy(),
             );
             let mut store: Store<HostState> = Store::new(&engine, host_state);
             store.set_fuel(1_000_000).unwrap();
@@ -115,6 +118,7 @@ fn bench_wasm_engine(c: &mut Criterion) {
         0,
         test_messaging_context(),
         test_streaming_context(),
+        empty_service_proxy(),
     );
     let mut store: Store<HostState> = Store::new(&engine, host_state);
 

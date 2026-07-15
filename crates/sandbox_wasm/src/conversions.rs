@@ -409,6 +409,46 @@ pub fn wasm_results_to_json_string(wasm_results: &[Val]) -> Result<String> {
     }
 }
 
+/// Typed counterpart of [`wasm_results_to_json_string`] (Slice A1): the
+/// guest's results as a JSON [`Value`], with no string special-case. Used by
+/// the Universal Proxy (`ProxyRouter::invoke_local`) and the inbound
+/// `JsonRpcToWasm` route, which A0′ deliberately left on the string-boundary
+/// path (see that function's doc comment).
+///
+///   `[]`                       -> `Value::Null`
+///   `[Result(Ok(None))]`       -> `Value::Null`
+///   `[Result(Ok(Some(v)))]`    -> `val_to_json(v)`
+///   `[Result(Err(payload))]`   -> `Err` (component returned an error)
+///   `[other]`                  -> `val_to_json(other)`
+///   many (structurally unreachable for WIT-derived components, handled for
+///   completeness) -> `Value::Array`, err-propagating like the single case
+pub fn wasm_results_to_json(wasm_results: &[Val]) -> Result<Value> {
+    match wasm_results {
+        [] => Ok(Value::Null),
+        [Val::Result(Ok(None))] => Ok(Value::Null),
+        [Val::Result(Ok(Some(inner)))] => val_to_json(inner),
+        [Val::Result(Err(Some(err)))] => {
+            Err(anyhow::anyhow!("component returned error: {}", val_to_json(err)?))
+        }
+        [Val::Result(Err(None))] => Err(anyhow::anyhow!("component returned an empty error")),
+        [single] => val_to_json(single),
+        many => {
+            let mut arr = Vec::with_capacity(many.len());
+            for val in many {
+                if let Val::Result(Err(payload)) = val {
+                    let detail = match payload {
+                        Some(err) => val_to_json(err)?,
+                        None => Value::Null,
+                    };
+                    return Err(anyhow::anyhow!("component returned error: {detail}"));
+                }
+                arr.push(val_to_json(val)?);
+            }
+            Ok(Value::Array(arr))
+        }
+    }
+}
+
 fn single_result_to_string(val: &Val) -> Result<String> {
     match val {
         Val::Result(Ok(None)) => Ok(String::new()),
@@ -906,6 +946,33 @@ mod tests {
             .is_err()
         );
         assert_eq!(wasm_results_to_json_string(&[Val::U32(1), Val::U32(2)]).unwrap(), "[1,2]");
+    }
+
+    // ------------------------------------------------------------------
+    // wasm_results_to_json (Slice A1 typed counterpart).
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn wasm_results_to_json_contract() {
+        assert_eq!(wasm_results_to_json(&[]).unwrap(), Value::Null);
+        assert_eq!(wasm_results_to_json(&[Val::Result(Ok(None))]).unwrap(), Value::Null);
+        assert_eq!(
+            wasm_results_to_json(&[Val::Result(Ok(Some(Box::new(Val::Record(vec![(
+                "a".into(),
+                Val::U32(1)
+            )])))))])
+            .unwrap(),
+            json!({"a": 1})
+        );
+        assert!(
+            wasm_results_to_json(&[Val::Result(Err(Some(Box::new(Val::String("denied".into())))))])
+                .is_err()
+        );
+        assert_eq!(wasm_results_to_json(&[Val::U32(42)]).unwrap(), json!(42));
+        // A plain string result is a real JSON string here (unlike the raw
+        // boundary contract of `wasm_results_to_json_string`).
+        assert_eq!(wasm_results_to_json(&[Val::String("hello".into())]).unwrap(), json!("hello"));
+        assert_eq!(wasm_results_to_json(&[Val::U32(1), Val::U32(2)]).unwrap(), json!([1, 2]));
     }
 
     // ------------------------------------------------------------------

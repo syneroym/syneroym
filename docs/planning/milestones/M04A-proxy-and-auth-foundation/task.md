@@ -25,9 +25,14 @@ caller identity threaded through every native-capability dispatch, UCAN context
 extraction at ingress, and an Admin-UCAN capability replacing today's
 `is_init_context` scaffold.
 
-JSON-RPC is the **uniform inter-service wire** for M4 (WASM↔WASM, WASM↔native,
-WASM↔Podman/TCP); wRPC as a binary wire-efficiency + type-fidelity optimization
-is deferred (Decision Register A.5), as is protocol negotiation (A.7).
+JSON-RPC is the **uniform inter-service wire** for M4 (WASM↔WASM, WASM↔native);
+wRPC as a binary wire-efficiency + type-fidelity optimization is deferred
+(Decision Register A.5), as is protocol negotiation (A.7). WASM↔Podman/TCP
+proxy targets are **not** on this wire yet — Slice A1 returns a typed
+`unsupported-target` error for them (Flag F4); there is no framing/JSON-RPC
+contract for a `SubstrateEndpoint::TcpHostPort` service today (TCP endpoints
+are byte-passthrough proxies only). Adding it later is one match arm in
+`ProxyRouter::invoke_local`.
 
 This milestone does **not** implement the FDAE relational policy engine — that
 is M04B. M04A delivers Tier 0–2 enforcement (context init, service admission,
@@ -256,11 +261,13 @@ No `[proxy]` negotiation config (A.7); a reserved `json-rpc/v1` tag lives in the
 wire, not config.
 
 ### WIT Boundary Versioning
-`syneroym:iam@0.1.0` (or equivalent from D-04-01) added. `syneroym:data-layer`
-gains additive `query-raw` (ADR-0011) + aggregation (ADR-0007) — minor bump, not
-breaking. No new wRPC package (A.5). If Slice A3 is not moved to M5,
-`syneroym:data-stream@0.1.0` is added. `wasm32-wasip2` must stay unbroken after
-every slice.
+`syneroym:iam@0.1.0` (or equivalent from D-04-01) added. `syneroym:proxy@0.1.0`
+added (Slice A1, `crates/wit_interfaces/wit/proxy/proxy.wit`) — the guest-facing
+Universal Proxy `call` import, wired into `host-environment`'s imports.
+`syneroym:data-layer` gains additive `query-raw` (ADR-0011) + aggregation
+(ADR-0007) — minor bump, not breaking. No new wRPC package (A.5). If Slice A3
+is not moved to M5, `syneroym:data-stream@0.1.0` is added. `wasm32-wasip2` must
+stay unbroken after every slice.
 
 ### Per-app KEK DEK Re-wrap (Slice B6)
 No stored-data schema change; the `dek_store` schema is unchanged, only the
@@ -405,9 +412,10 @@ Agreed shape (not yet designed in code):
 
 Continues the "Professional Services Guild" walking skeleton from M03B (step 19):
 
-20. Two services on different physical nodes exchange a typed call through the
+20. ✅ Two services on different physical nodes exchange a typed call through the
     Universal Proxy (A1) — JSON-RPC transport with full WIT⇄JSON conversion (A0′)
-    — routed transparently to the remote instance.
+    — routed transparently to the remote instance. Proven by
+    `crates/coordinator_iroh/tests/multi_hop_relay.rs::test_cross_node_proxy_call`.
 21. A client presents a UCAN; the gateway verifies the chain and normalizes
     claims/capabilities into a SessionContext (B1).
 24. An admin-scoped caller runs `query-raw` for a report needing a join beyond
@@ -426,7 +434,7 @@ Continues the "Professional Services Guild" walking skeleton from M03B (step 19)
 |---|---|
 | Peer opens Iroh connection with no `preamble.delegation`, attempts `data-layer::put` | Rejected at `handle_stream` before native dispatch |
 | Same via the HTTP bridge (`http.rs`) with no verified identity | Rejected on the same call path (A.3) |
-| Peer presents a delegation cert for a *different* service's DID | Rejected by `verify_preamble` (existing check, unchanged) |
+| Peer presents a delegation cert whose `temporary_did` does not match the preamble pubkey | Rejected by `verify_preamble` (existing check, unchanged) |
 | `query-raw` without Admin UCAN capability | `data-layer-error::permission-denied`, same shape as `execute-ddl` today |
 | `query-raw` with SQL injection via `params` | Bound as a parameterized value; no injection |
 | Caller declares a protocol scheme the callee does not support | Typed *unsupported-protocol/version* error (A.7) |
@@ -450,34 +458,41 @@ Continues the "Professional Services Guild" walking skeleton from M03B (step 19)
 ## Tests Summary
 
 - **Unit:** WIT⇄JSON conversion round-trip across the full WIT type set incl.
-  documented lossy edges (A0′); UCAN verification + claim/capability
-  normalization (B1); `AggregationPipeline` stage translation (B4).
+  documented lossy edges (A0′); typed result serialization (`wasm_results_to_json`,
+  A1); `ProxyRouter` local dispatch, guest native-capability gate, retry, and
+  proof forwarding (A1); UCAN verification + claim/capability normalization
+  (B1); `AggregationPipeline` stage translation (B4).
 - **Integration:** **Native-dispatch identity threading end-to-end** —
   unauthenticated caller rejected; authenticated caller's identity reaches
   `dispatch_data_layer` (B0) — *the single most important test in this
-  milestone*; `query-raw` permission-denied + injection-resistance (B5);
-  per-app-instance KEK isolation + DEK re-wrap (B6).
-- **Benchmarks (`criterion`):** UCAN verification, Universal Proxy same-node call,
-  WIT⇄JSON conversion.
+  milestone*; guest-to-guest same-node proxy call + cross-service
+  native-capability denial through the proxy, and the typed
+  unsupported-protocol error (A1); `query-raw` permission-denied +
+  injection-resistance (B5); per-app-instance KEK isolation + DEK re-wrap
+  (B6).
+- **Benchmarks (`criterion`):** UCAN verification, Universal Proxy same-node call
+  (A1 — `proxy_local_native`/`proxy_local_wasm`), WIT⇄JSON conversion.
 - **E2E (`mise run test:e2e`):** reference scenario steps 20, 21, 24, 25 in a live
-  substrate, ≥2 substrates for the cross-node proxy case.
+  substrate, ≥2 substrates for the cross-node proxy case (A1 —
+  `test_cross_node_proxy_call`, in-process via `coordinator_iroh`'s own test
+  harness rather than Playwright; see plan.md Flag F10).
 
 ---
 
 ## Measurable Exit Criteria
 
-- [x] `cargo +nightly fmt --all` clean; `cargo clippy --workspace --all-targets --all-features` zero warnings; `cargo test --workspace` green; `mise run test:e2e` green (no M0–M3C regression); `wasm32-wasip2` unbroken after every slice. *(True as of A0′+B0; re-verify after each subsequent slice.)*
+- [x] `cargo +nightly fmt --all` clean; `cargo clippy --workspace --all-targets --all-features` zero warnings; `cargo test --workspace` green; `mise run test:e2e` green (no M0–M3C regression); `wasm32-wasip2` unbroken after every slice. *(True as of A0′+B0+A1; re-verify after each subsequent slice.)*
 - [ ] ADRs D-04-01, D-04-05 exist in `docs/decisions/`.
-- [ ] Full WIT⇄JSON conversion replaces the `conversions.rs` stub; round-trip tested across the full WIT type set; JSON fidelity limitations documented.
+- [x] Full WIT⇄JSON conversion replaces the `conversions.rs` stub; round-trip tested across the full WIT type set; JSON fidelity limitations documented. *(A0′ delivered the encode/decode primitives; A1 closes the deferred half — typing the JSON-RPC `result` field itself via `wasm_results_to_json`/`execute_wasm_json` — see `status.md`'s A1 section.)*
 - [x] **Gate item #1 verified with a real test** (not code inspection): an unauthenticated peer's `data-layer`/`messaging`/`blob-store`/`vault`/`app-config` call and HTTP-bridge request are all rejected. *(B0 — see `crates/router/tests/native_dispatch_identity.rs`.)*
 - [ ] `AggregationPipeline` implemented and tested.
 - [ ] `query-raw` implemented, gated by Admin UCAN capability (not `is_init_context`).
 - [x] Both `TODO(M4)` sites (`host_capabilities.rs:452-463`, `synsvc_native.rs:309-316`) removed. *(B0 — both replaced by the `data-layer/admin` capability gate.)*
 - [ ] Per-app-instance KEK narrowing implemented; `_scope` actually used; DEK re-wrap path tested.
-- [ ] Universal Proxy handles ≥1 real cross-node typed call over JSON-RPC (full WIT⇄JSON conversion) in an e2e test; the transport-agnostic seam for later wRPC is in place.
-- [ ] A caller declaring an unsupported protocol receives a typed error (negotiation deferred, A.7).
+- [x] Universal Proxy handles ≥1 real cross-node typed call over JSON-RPC (full WIT⇄JSON conversion) in an e2e test; the transport-agnostic seam for later wRPC is in place. *(A1 — `crates/router/src/proxy.rs`'s `ProxyRouter`/`RemoteHop`/`IrohHop`; cross-node proof in `crates/coordinator_iroh/tests/multi_hop_relay.rs::test_cross_node_proxy_call`.)*
+- [x] A caller declaring an unsupported protocol receives a typed error (negotiation deferred, A.7). *(A1 — `ServiceStage::UnsupportedProtocol`, `-32091`; see `crates/router/tests/unsupported_protocol.rs`.)*
 - [ ] `[PLT-DAP-05]` either ships as a QUIC-flow-control-backed framing spike or is explicitly deferred to M5 with rationale in `status.md`.
-- [ ] Reference scenario steps 20, 21, 24, 25 execute end-to-end. *(B0 closes step 25's substrate-side enforcement — proven at the router-dispatch level by `native_dispatch_identity.rs`; steps 20/21/24 belong to A1/B1/B5.)*
-- [ ] Performance budgets verified; `criterion` output in `status.md`.
+- [ ] Reference scenario steps 20, 21, 24, 25 execute end-to-end. *(A1 closes step 20 — proven by `test_cross_node_proxy_call`. B0 closes step 25's substrate-side enforcement — proven at the router-dispatch level by `native_dispatch_identity.rs`. Steps 21/24 belong to B1/B5.)*
+- [ ] Performance budgets verified; `criterion` output in `status.md`. *(A1 delivers the "Universal Proxy call (JSON-RPC, same-node)" row — see `status.md`'s A1 section; the remaining rows belong to B1/B6/A3.)*
 - [ ] `traceability-matrix.md` updated with M04A evidence for `[PLT-DAT]` (Universal Proxy + conversion + aggregation + `query-raw`), `[FND-IAM]` (foundation: identity threading + UCAN context + Admin capability), `[FND-SEC]` (per-app KEK); `[PLT-DAP-05]` marked spike/M5; `[LFC-VER]` protocol-negotiation retargeted out; `[FND-FDA]`→`[FND-IAM]` citation fixed (A.2).
 - [x] `system-architecture.md:1892` interim-security-posture note updated to record the native-dispatch gap as closed. *(B0 — see the "Gap closed (M04A Slice B0)" note at that anchor.)*

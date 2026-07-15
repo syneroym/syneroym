@@ -14,7 +14,9 @@ use syneroym_core::{
 use syneroym_identity::{Identity, substrate};
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
 use syneroym_rpc::CallerContext;
-use syneroym_sandbox_wasm::{AppSandboxEngine, HostState, MessagingContext, StreamContext};
+use syneroym_sandbox_wasm::{
+    AppSandboxEngine, HostState, MessagingContext, StreamContext, empty_service_proxy,
+};
 use syneroym_sdk::SyneroymClient;
 use test_constants::GREETER_INTERFACE_NAME;
 use wasmtime::{
@@ -69,6 +71,7 @@ pub async fn run_scenario() -> Result<()> {
             0,
             messaging_context.clone(),
             streaming_context.clone(),
+            empty_service_proxy(),
         );
         let mut store = Store::new(&engine, host_state);
         let instance = linker.instantiate_async(&mut store, &component).await?;
@@ -101,6 +104,7 @@ pub async fn run_scenario() -> Result<()> {
             0,
             messaging_context.clone(),
             streaming_context.clone(),
+            empty_service_proxy(),
         );
         let mut store = Store::new(&engine, host_state);
         let instance = linker.instantiate_async(&mut store, &component).await?;

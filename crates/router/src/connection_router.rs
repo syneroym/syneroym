@@ -13,11 +13,11 @@ use std::{
 use anyhow::Result;
 use futures::{SinkExt, StreamExt};
 use iroh::{
-    EndpointAddr, SecretKey,
+    Endpoint, EndpointAddr, SecretKey,
     protocol::{Router, Router as IrohRouter},
 };
 use syneroym_core::{
-    config::{IrohParentConfig, SubstrateConfig, WebRtcParentConfig},
+    config::{SubstrateConfig, WebRtcParentConfig},
     local_registry::EndpointRegistry,
 };
 use tokio::time;
@@ -63,11 +63,41 @@ impl ConnectionRouter {
         route_handler_deps: RouteHandlerDeps,
     ) -> Result<Self> {
         let mut router = Self { iroh_router: None };
+
+        // Built *before* `RouteHandler::init` (M04A Slice A1, fixes F7): the
+        // Universal Proxy's outbound remote hop needs a live Iroh endpoint,
+        // and `RouteHandler::init` wires it into its `ProxyRouter`. Iroh is
+        // enabled iff both "iroh" is a configured communication interface
+        // *and* a parent-coordinator Iroh config exists -- mirrors the
+        // pre-existing per-interface check the loop below used to make
+        // inline.
+        let iroh_endpoint = if config.substrate.communication_interfaces.iter().any(|c| c == "iroh")
+            && let Some(iroh_config) = config.parent_coordinator.iroh.as_ref()
+        {
+            let idle_timeout = config
+                .roles
+                .coordinator
+                .as_ref()
+                .and_then(|c| c.iroh.as_ref())
+                .and_then(|i| i.idle_timeout_secs);
+            Some(
+                net_iroh::build_iroh_endpoint(
+                    Some(iroh_config.url.clone()),
+                    Some(SecretKey::from_bytes(&iroh_secret_key)),
+                    idle_timeout,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+
         let route_handler = RouteHandler::init(
             service_id.clone(),
             &config,
             registry.clone(),
             iroh_secret_key,
+            iroh_endpoint.clone(),
             route_handler_deps,
         )
         .await?;
@@ -75,17 +105,10 @@ impl ConnectionRouter {
         for comm in &config.substrate.communication_interfaces {
             match comm.as_str() {
                 "iroh" => {
-                    if let Some(iroh_config) = config.parent_coordinator.iroh.as_ref() {
+                    if let Some(ep) = iroh_endpoint.clone() {
                         info!("Initializing Iroh interface for Router...");
-                        let iroh_router = router
-                            .init_iroh(
-                                iroh_config,
-                                SecretKey::from_bytes(&iroh_secret_key),
-                                route_handler.clone(),
-                                &config,
-                            )
-                            .await?;
-                        router.iroh_router = Some(iroh_router);
+                        router.iroh_router =
+                            Some(Self::spawn_iroh_router(ep, route_handler.clone()).await?);
                     }
                 }
                 "webrtc" => {
@@ -105,31 +128,18 @@ impl ConnectionRouter {
         Ok(router)
     }
 
-    async fn init_iroh(
-        &self,
-        config: &IrohParentConfig,
-        secret_key: SecretKey,
-        route_handler: RouteHandler,
-        substrate_config: &SubstrateConfig,
-    ) -> Result<IrohRouter> {
+    /// Spawns the Iroh protocol handler on an already-built, already-bound
+    /// endpoint (see `init`'s `iroh_endpoint` construction above -- split
+    /// out so that endpoint construction can happen before
+    /// `RouteHandler::init`, which needs it for the Universal Proxy's
+    /// outbound remote hop).
+    async fn spawn_iroh_router(ep: Endpoint, route_handler: RouteHandler) -> Result<IrohRouter> {
         debug!("Initializing Iroh communication...");
-
-        let idle_timeout = substrate_config
-            .roles
-            .coordinator
-            .as_ref()
-            .and_then(|c| c.iroh.as_ref())
-            .and_then(|i| i.idle_timeout_secs);
-
-        let ep =
-            net_iroh::build_iroh_endpoint(Some(config.url.clone()), Some(secret_key), idle_timeout)
-                .await?;
 
         let iroh_router: IrohRouter =
             IrohRouter::builder(ep.clone()).accept(SYNEROYM_ALPN, route_handler).spawn();
 
-        let ep_clone = ep.clone();
-        match time::timeout(Duration::from_secs(30), ep_clone.online()).await {
+        match time::timeout(Duration::from_secs(30), ep.online()).await {
             Ok(_) => {
                 debug!("Iroh endpoint is online");
             }

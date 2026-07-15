@@ -6,6 +6,7 @@ exclude = [
     "test-components/data-layer-test",
     "test-components/messaging-pubsub-test",
     "test-components/stream-test",
+    "test-components/proxy-test",
 ]
 
 [profile.dev]

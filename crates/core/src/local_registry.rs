@@ -17,6 +17,28 @@ use crate::{
     util,
 };
 
+/// The reserved native-capability interface names every deployed service
+/// (regardless of `service-type`) automatically gets registered as
+/// `SubstrateEndpoint::NativeHostChannel` entries, pointing at
+/// `SynSvcNativeService::dispatch` -- no WASM component or app-declared
+/// interface required (`crates/control_plane/src/service/orchestration.rs`'s
+/// `deploy`). Shared here (M04A Slice A1) so `control_plane`'s registration
+/// logic, `router`'s guest native-capability proxy gate
+/// (`ProxyRouter::check_native_capability_gate`), and their tests all read
+/// from one list rather than three independently-maintained copies that can
+/// drift.
+///
+/// "http-native", not the bare "http": `roymctl svc deploy --interfaces http
+/// --tcp ...` is an existing, real convention for declaring a TCP/container
+/// service's own plain HTTP-serving interface (see
+/// `crates/substrate/tests/e2e/global-setup.ts`) -- reserving the bare
+/// "http" name here collided with it (registering this native-capability
+/// endpoint under the same interface name silently overwrote the app's own
+/// `TcpHostPort` registration, discovered via `mise run test:e2e` breaking
+/// end to end during M3B Slice 7's own verification).
+pub const NATIVE_CAPABILITY_INTERFACES: [&str; 6] =
+    ["data-layer", "vault", "app-config", "blob-store", "messaging", "http-native"];
+
 /// A deployable entity within the Substrate.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum SubstrateEndpoint {

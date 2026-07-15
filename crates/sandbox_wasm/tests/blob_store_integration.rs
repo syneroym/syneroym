@@ -20,7 +20,7 @@ use syneroym_data_db::{SqliteStorageProvider, StorageProvider};
 use syneroym_data_keystore::KeyStore;
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
 use syneroym_rpc::CallerContext;
-use syneroym_sandbox_wasm::{HostState, MessagingContext, StreamContext};
+use syneroym_sandbox_wasm::{HostState, MessagingContext, StreamContext, empty_service_proxy};
 use syneroym_wit_interfaces::host::syneroym::blob_store::blob_store::{
     BlobError, Host as BlobStoreHost, HostBlobReader, HostBlobWriter,
 };
@@ -48,6 +48,7 @@ fn make_host_state(component_id: &str, storage_provider: Arc<dyn StorageProvider
         0,
         messaging,
         streaming,
+        empty_service_proxy(),
     )
 }
 

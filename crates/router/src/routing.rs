@@ -73,6 +73,14 @@ pub enum ServiceStage {
     /// No viable service was found or the combination is unsupported.
     /// The stream will be rejected with a diagnostic error.
     Unsupported,
+    /// The preamble declared a protocol scheme this node does not speak
+    /// (`wrpc://`, any `Other(_)` scheme) against a service that otherwise
+    /// exists (M04A Slice A1, the minimal `[LFC-VER]` behavior kept from the
+    /// deferred protocol-negotiation slice, A.7). Distinct from
+    /// `Unsupported`: this is "I understood the target but not the
+    /// protocol", answered with a typed *unsupported-protocol* error rather
+    /// than a generic diagnostic.
+    UnsupportedProtocol,
 }
 
 /// The fully planned execution pipeline for an incoming stream.

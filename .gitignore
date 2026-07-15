@@ -33,6 +33,8 @@ data/
 # SubstrateConfig::default() (relative "blobs" dir) straight through, so
 # this lands under the crate root instead of a tempdir.
 crates/control_plane/blobs/
+# Same pattern, router's own proxy_dispatch.rs tests (M04A Slice A1).
+crates/router/blobs/
 
 # AI
 .gemini
