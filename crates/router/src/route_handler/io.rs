@@ -409,6 +409,29 @@ mod tests {
         );
     }
 
+    /// `Take`'s capped view into the reader's buffered data must not cause
+    /// bytes **after** the newline to be consumed/discarded -- only
+    /// `read_line`'s own delimiter scan drives how much of the underlying
+    /// buffer is actually consumed, so a pipelined payload following the
+    /// preamble line in the same write (e.g. the initial framed request)
+    /// must remain intact and correctly positioned for the next read.
+    #[tokio::test]
+    async fn test_read_preamble_preserves_bytes_after_the_line() {
+        let (mut client, server) = duplex(4096);
+        let mut reader = BufReader::new(server);
+
+        let mut sent = b"json-rpc://health|substrate-123\n".to_vec();
+        sent.extend_from_slice(b"TRAILING-PAYLOAD");
+        client.write_all(&sent).await.unwrap();
+
+        let preamble = read_preamble(&mut reader).await.unwrap();
+        assert_eq!(preamble.service_id, "substrate-123");
+
+        let mut trailing = vec![0u8; b"TRAILING-PAYLOAD".len()];
+        reader.read_exact(&mut trailing).await.unwrap();
+        assert_eq!(&trailing, b"TRAILING-PAYLOAD");
+    }
+
     /// A peer that promptly sends a valid preamble line must not be
     /// penalized by the timeout wrapper.
     #[tokio::test]
