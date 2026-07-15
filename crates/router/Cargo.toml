@@ -13,6 +13,7 @@ syneroym-core.workspace = true
 syneroym-sandbox-wasm.workspace = true
 syneroym-rpc.workspace = true
 syneroym-identity.workspace = true
+syneroym-ucan.workspace = true
 syneroym-data-keystore.workspace = true
 syneroym-data-db.workspace = true
 syneroym-data-blob.workspace = true

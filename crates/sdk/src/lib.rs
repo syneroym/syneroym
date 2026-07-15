@@ -20,7 +20,8 @@ use syneroym_core::dht_registry::{EndpointMechanism, RegistryClient, SignedEndpo
 use syneroym_identity::Identity;
 use syneroym_router::{RoutePreamble, RouteProtocol, RouteTransport, SYNEROYM_ALPN};
 use syneroym_rpc::{
-    JsonRpcRequest, JsonRpcResponse, MESSAGING_MESSAGE_METHOD, MessagingNotification, framing,
+    CapabilityToken, JsonRpcRequest, JsonRpcResponse, MESSAGING_MESSAGE_METHOD,
+    MessagingNotification, framing,
 };
 pub use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, ContainerManifest, ContainerPortMapping, ContainerVolumeMapping,
@@ -61,6 +62,11 @@ pub struct SyneroymClient {
     /// it). B1/M04B tighten this to verified UCAN chains; B0 only needs
     /// "not anonymous."
     identity: Identity,
+    /// A verified UCAN capability chain to present on every outbound
+    /// preamble (M04A Slice B1), set via [`Self::with_ucan`]. `None` by
+    /// default -- callers that don't hold one still get the B0 self-
+    /// asserted-identity admission.
+    caller_ucan: Option<CapabilityToken>,
 }
 
 impl Debug for SyneroymClient {
@@ -72,6 +78,7 @@ impl Debug for SyneroymClient {
             .field("connection", &self.connection)
             .field("connect_timeout", &self.connect_timeout)
             .field("identity", &self.identity)
+            .field("caller_ucan", &self.caller_ucan)
             .finish()
     }
 }
@@ -163,6 +170,7 @@ impl SyneroymClient {
             connection: None,
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             identity: generate_ephemeral_identity(),
+            caller_ucan: None,
         }
     }
 
@@ -175,6 +183,7 @@ impl SyneroymClient {
             connection: None,
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             identity: generate_ephemeral_identity(),
+            caller_ucan: None,
         }
     }
 
@@ -195,6 +204,7 @@ impl SyneroymClient {
             connection: None,
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             identity,
+            caller_ucan: None,
         }
     }
 
@@ -203,6 +213,14 @@ impl SyneroymClient {
     #[must_use]
     pub const fn with_connect_timeout(mut self, connect_timeout: Duration) -> Self {
         self.connect_timeout = connect_timeout;
+        self
+    }
+
+    /// Attaches a verified UCAN capability chain (M04A Slice B1) to present
+    /// on every outbound preamble opened by this client.
+    #[must_use]
+    pub fn with_ucan(mut self, caller_ucan: CapabilityToken) -> Self {
+        self.caller_ucan = Some(caller_ucan);
         self
     }
 
@@ -378,6 +396,7 @@ impl SyneroymClient {
                 // -- see `SyneroymClient::identity`'s doc comment.
                 let mut preamble = RoutePreamble::binary_json_rpc(&self.service_id, interface_name);
                 preamble.pubkey = Some(hex::encode(self.identity.public_key().to_bytes()));
+                preamble.ucan = self.caller_ucan.clone();
                 send.write_all(preamble.to_preamble_line().as_bytes()).await?;
 
                 let req_bytes = serde_json::to_vec(request)?;
@@ -635,6 +654,7 @@ impl SyneroymClient {
                     enc: None,
                     pubkey: Some(hex::encode(identity.public_key().to_bytes())),
                     delegation: None,
+                    ucan: None,
                     dir: None,
                 }
                 .to_preamble_line();

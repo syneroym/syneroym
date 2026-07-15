@@ -10,5 +10,13 @@ workspace = true
 
 [dependencies]
 syneroym-identity.workspace = true
+anyhow.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "chain_verify"
+harness = false

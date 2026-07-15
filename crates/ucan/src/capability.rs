@@ -22,6 +22,16 @@ impl ResourceUri {
 
     /// Whether this is a `substrate:<node_did>` node-scoped resource, as
     /// opposed to a `synapp:...:svc:...` service resource.
+    ///
+    /// Note: this checks the `substrate:` *prefix* only, not which node's
+    /// DID follows it -- `covers`/`grants` therefore treat *any*
+    /// `substrate:<node_did>` capability as a wildcard over all resources,
+    /// including a `substrate:<other-node>` one. Inert at B1 (the only
+    /// issuer of a substrate-scoped capability is this node's own admin
+    /// root, naming this node's own DID -- see `covers`'s tests), but once
+    /// multi-node/owner-rooted trust exists (Slice B7) this should also
+    /// verify the named node DID matches the node actually evaluating the
+    /// capability.
     #[must_use]
     pub fn is_substrate_scope(&self) -> bool {
         self.0.starts_with("substrate:")
@@ -80,7 +90,12 @@ impl Ability {
 }
 
 /// A single granted capability: `with` a resource, `can` an ability, subject
-/// to optional passthrough `caveats` (rich caveat evaluation is FDAE/M04B).
+/// to optional passthrough `caveats`. **`caveats` are not evaluated by
+/// `grants`/`covers` today** -- they pass through unread; a caveat-restricted
+/// capability is currently treated identically to an unrestricted one.
+/// Rich caveat evaluation is FDAE/M04B; until it lands, do not rely on
+/// `caveats` to actually narrow a grant (see
+/// `caveats_passthrough_is_not_yet_enforced`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Capability {
     pub with: ResourceUri,
@@ -100,6 +115,16 @@ impl Capability {
             return self.can.entails(ability);
         }
         self.with == *resource && self.can.entails(ability)
+    }
+
+    /// Whether `self` (a held/parent capability) authorizes everything
+    /// `other` (a requested/child capability) asks for. A `substrate:`-scoped
+    /// `self` covers any resource; otherwise resources must match exactly.
+    /// This is the same resource-scope rule `grants` inlines, factored out so
+    /// UCAN chain attenuation (B1) can reuse it directly.
+    #[must_use]
+    pub fn covers(&self, other: &Capability) -> bool {
+        (self.with.is_substrate_scope() || self.with == other.with) && self.can.entails(&other.can)
     }
 }
 
@@ -213,8 +238,121 @@ mod tests {
     }
 
     #[test]
+    fn covers_holds_for_matching_resource_and_entailed_ability() {
+        let resource = ResourceUri::service("app-1", "svc-a");
+        let parent = Capability {
+            with: resource.clone(),
+            can: ability(Ability::DATA_LAYER_ADMIN),
+            caveats: None,
+        };
+        let child =
+            Capability { with: resource, can: ability(Ability::DATA_LAYER_WRITE), caveats: None };
+        assert!(parent.covers(&child));
+    }
+
+    #[test]
+    fn covers_denies_escalation_and_resource_mismatch() {
+        let parent = Capability {
+            with: ResourceUri::service("app-1", "svc-a"),
+            can: ability(Ability::DATA_LAYER_READ),
+            caveats: None,
+        };
+        let escalated = Capability {
+            with: ResourceUri::service("app-1", "svc-a"),
+            can: ability(Ability::DATA_LAYER_WRITE),
+            caveats: None,
+        };
+        assert!(!parent.covers(&escalated));
+
+        let admin_wrong_resource = Capability {
+            with: ResourceUri::service("app-1", "svc-a"),
+            can: ability(Ability::DATA_LAYER_ADMIN),
+            caveats: None,
+        };
+        let other_resource = Capability {
+            with: ResourceUri::service("app-1", "svc-b"),
+            can: ability(Ability::DATA_LAYER_READ),
+            caveats: None,
+        };
+        assert!(!admin_wrong_resource.covers(&other_resource));
+    }
+
+    #[test]
+    fn covers_substrate_scope_covers_any_resource() {
+        let parent = Capability {
+            with: ResourceUri::substrate("did:key:z6MkAdminRoot"),
+            can: ability(Ability::SUBSTRATE_ADMIN),
+            caveats: None,
+        };
+        let child = Capability {
+            with: ResourceUri::service("app-1", "svc-a"),
+            can: ability(Ability::DATA_LAYER_ADMIN),
+            caveats: None,
+        };
+        assert!(parent.covers(&child));
+    }
+
+    #[test]
     fn resource_uri_helpers_format_as_expected() {
         assert_eq!(ResourceUri::service("app-1", "svc-a").0, "synapp:app-1:svc:svc-a");
         assert_eq!(ResourceUri::substrate("did:key:z6Mk").0, "substrate:did:key:z6Mk");
+    }
+
+    /// Pins the current (documented, not yet implemented) passthrough
+    /// behavior: a caveat on either side of `grants`/`covers` is completely
+    /// ignored -- a caveat-restricted capability behaves exactly like an
+    /// unrestricted one. Rich caveat evaluation belongs to FDAE/M04B; this
+    /// test exists so that gap isn't silently forgotten once caveats gain
+    /// real meaning.
+    #[test]
+    fn caveats_passthrough_is_not_yet_enforced() {
+        let resource = ResourceUri::service("app-1", "svc-a");
+        let restricted = Capability {
+            with: resource.clone(),
+            can: ability(Ability::DATA_LAYER_ADMIN),
+            caveats: Some(serde_json::json!({"rows": "id = 1"})),
+        };
+        let unrestricted_child = Capability {
+            with: resource.clone(),
+            can: ability(Ability::DATA_LAYER_READ),
+            caveats: None,
+        };
+        // A caveat on the *parent* does not narrow what it covers today.
+        assert!(restricted.covers(&unrestricted_child));
+        assert!(restricted.grants(&resource, &ability(Ability::DATA_LAYER_READ)));
+
+        // A caveat on the *child*/*request* side is equally inert: same
+        // resource and ability as `unrestricted_child`, only `caveats`
+        // differs, and `covers` still holds.
+        let restricted_request = Capability {
+            with: resource,
+            can: ability(Ability::DATA_LAYER_READ),
+            caveats: Some(serde_json::json!({"rows": "id = 1"})),
+        };
+        assert!(unrestricted_child.covers(&restricted_request));
+    }
+
+    /// Pins the current, deliberately permissive `is_substrate_scope`
+    /// behavior: it does not check *which* node's DID the `substrate:`
+    /// resource names, so a capability scoped to a *different* node's
+    /// substrate resource still covers/grants everything, exactly like one
+    /// scoped to this node's own DID. At B1 this is inert (the only issuer
+    /// of a substrate-scoped capability is this node's own admin root,
+    /// naming its own DID), but once multi-node/owner-rooted trust exists
+    /// (Slice B7) `covers`/`grants` should also verify the resource's node
+    /// DID matches the node evaluating the capability.
+    #[test]
+    fn substrate_scope_does_not_check_which_node_it_names() {
+        let other_nodes_admin = Capability {
+            with: ResourceUri::substrate("did:key:z6MkSomeOtherNode"),
+            can: ability(Ability::SUBSTRATE_ADMIN),
+            caveats: None,
+        };
+        assert!(
+            other_nodes_admin.grants(
+                &ResourceUri::service("app-1", "svc-a"),
+                &ability(Ability::DATA_LAYER_ADMIN)
+            )
+        );
     }
 }

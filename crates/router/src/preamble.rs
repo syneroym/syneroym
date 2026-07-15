@@ -76,16 +76,16 @@
 //!   tag above -- see `NATIVE_CAPABILITY_INTERFACES`'s own doc comment for the
 //!   regression this collision caused once already.
 //!
-//! **Authentication status, as of M3B/M3C (interim, tracked for M4):**
-//! `HandshakeVerifier::verify_preamble` -- the only check of caller identity
-//! against `preamble.service_id` -- runs *only* when `preamble.delegation` is
-//! present, and none of the six reserved native-capability interfaces above
-//! require one. Any peer that can open a connection to the node and knows a
-//! target service's DID can address these interfaces (and the HTTP bridge,
-//! which routes through `http-native`) as if it were that service. See
-//! `docs/planning/milestones/M03B-messaging/status.md`'s "Interim HTTP-write
-//! security posture" section for the full accounting and
-//! `meta-implementation-plan.md`'s Milestone 4 item 7 for the tracked fix.
+//! **Authentication status, as of M04A Slice B1 (supersedes the M3B/M3C
+//! interim note this replaced):** `HandshakeVerifier::verify_preamble` is
+//! *always* attempted (Slice B0 closed the former "only when
+//! `preamble.delegation` is present" gap); every native-capability interface
+//! and the HTTP bridge reject a caller with no verified identity. Beyond
+//! transport identity, `preamble.ucan` (this module's `ucan` field) carries
+//! an optional signed `CapabilityToken` chain, verified into
+//! `SessionContext` capabilities by the router's `build_caller`
+//! (`route_handler/io.rs`, Slice B1) -- see that module's doc comment for
+//! the chain-verification/revocation details.
 
 use std::{convert::Infallible, fmt, result};
 
@@ -93,6 +93,7 @@ use anyhow::{Result, anyhow};
 use fmt::{Display, Formatter};
 use syneroym_core::streaming::StreamDirection;
 use syneroym_identity::DelegationCertificate;
+use syneroym_ucan::CapabilityToken;
 
 /// Separator used in the routing preamble between the interface name and
 /// service ID.
@@ -185,6 +186,10 @@ pub struct RoutePreamble {
     /// Client delegation certificate (optional, hex encoded JSON in query
     /// param)
     pub delegation: Option<DelegationCertificate>,
+    /// Client UCAN capability token (optional, hex-encoded JSON in the
+    /// `ucan=` query param). Verified into `SessionContext` capabilities at
+    /// ingress (Slice B1). Mirrors `delegation` in transport shape.
+    pub ucan: Option<CapabilityToken>,
     /// Stream direction for a `raw://` stream-protocol request (M3B Slice
     /// 6B, ADR-0014's `?dir=upload|download`). `None` for every other
     /// preamble shape; strictly validated (not defaulted) by the router
@@ -240,6 +245,7 @@ impl RoutePreamble {
         let mut enc = None;
         let mut pubkey = None;
         let mut delegation = None;
+        let mut ucan = None;
         let mut dir = None;
         if let Some(q) = query {
             for part in q.split('&') {
@@ -254,6 +260,15 @@ impl RoutePreamble {
                         && let Ok(cert) = DelegationCertificate::from_json(&json_str)
                     {
                         delegation = Some(cert);
+                    } else if k == "ucan"
+                        && let Ok(bytes) = hex::decode(v)
+                        && let Ok(json_str) = String::from_utf8(bytes)
+                        && let Ok(token) = serde_json::from_str::<CapabilityToken>(&json_str)
+                    {
+                        // Unparseable → left `None`, permissive like
+                        // `delegation`; the router fails closed at dispatch,
+                        // it does not trust a malformed token.
+                        ucan = Some(token);
                     } else if k == "dir" {
                         // Left as `None` on an unparseable value, matching
                         // this loop's existing permissive style for the
@@ -282,6 +297,7 @@ impl RoutePreamble {
             enc,
             pubkey,
             delegation,
+            ucan,
             dir,
         })
     }
@@ -300,6 +316,7 @@ impl RoutePreamble {
             enc: None,
             pubkey: None,
             delegation: None,
+            ucan: None,
             dir: None,
         }
     }
@@ -331,6 +348,7 @@ impl RoutePreamble {
             enc: None,
             pubkey: None,
             delegation: None,
+            ucan: None,
             dir: None,
         })
     }
@@ -375,6 +393,11 @@ impl Display for RoutePreamble {
             && let Ok(json_str) = delegation.to_json()
         {
             params.push(format!("delegation={}", hex::encode(json_str)));
+        }
+        if let Some(ucan) = &self.ucan
+            && let Ok(json) = serde_json::to_string(ucan)
+        {
+            params.push(format!("ucan={}", hex::encode(json)));
         }
         if let Some(dir) = &self.dir {
             params.push(format!("dir={dir}"));
@@ -481,6 +504,29 @@ mod tests {
     fn missing_dir_is_none() {
         let parsed = RoutePreamble::parse("raw://file-transfer|svc-1\n").unwrap();
         assert_eq!(parsed.dir, None);
+    }
+
+    #[test]
+    fn ucan_round_trips_through_display_and_parse() {
+        use syneroym_identity::Identity;
+        use syneroym_ucan::CapabilityToken;
+
+        let issuer = Identity::generate().unwrap();
+        let token = CapabilityToken::issue(
+            &issuer,
+            "did:key:hybndrfg8ejkmcpqx",
+            vec![],
+            serde_json::Map::new(),
+            3600,
+            vec![],
+        )
+        .unwrap();
+
+        let mut preamble = RoutePreamble::parse("json-rpc://health|substrate-123").unwrap();
+        preamble.ucan = Some(token.clone());
+
+        let round_tripped = RoutePreamble::parse(&preamble.to_string()).unwrap();
+        assert_eq!(round_tripped.ucan, Some(token));
     }
 
     #[test]

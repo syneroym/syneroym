@@ -1,14 +1,14 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
-//! UCAN capability model (ADR-0015): resource/ability/capability types and
-//! the verified `SessionContext` they resolve into.
-//!
-//! `CapabilityToken`, `issue`, and `verify_chain` — the signed delegation
-//! chain and its verification — are deferred to Slice B1; this crate ships
-//! only the capability type model and pure entailment/attenuation logic for
-//! B0.
+//! UCAN capability model (ADR-0015): resource/ability/capability types, the
+//! signed `CapabilityToken` delegation chain and its verification, and the
+//! verified `SessionContext` a chain resolves into.
 
 mod capability;
+mod normalize;
 mod session;
+mod token;
 
 pub use capability::{Ability, Capability, ResourceUri};
+pub use normalize::{AuthNormalizer, DidKeyNormalizer};
 pub use session::SessionContext;
+pub use token::{CapabilityToken, ChainVerifyOpts, verify_chain};

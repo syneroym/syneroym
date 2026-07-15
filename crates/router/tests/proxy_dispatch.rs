@@ -173,6 +173,7 @@ fn call_peer_preamble() -> RoutePreamble {
         enc: None,
         pubkey: None,
         delegation: None,
+        ucan: None,
         dir: None,
     }
 }

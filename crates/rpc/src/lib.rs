@@ -23,7 +23,10 @@ pub use proxy::{
     ProxyRequest, ServiceProxy, UNSUPPORTED_PROTOCOL_RPC_CODE, UNSUPPORTED_TARGET_RPC_CODE,
 };
 use serde_json::Value;
-pub use syneroym_ucan::{Ability, Capability, ResourceUri, SessionContext};
+pub use syneroym_ucan::{
+    Ability, Capability, CapabilityToken, ChainVerifyOpts, ResourceUri, SessionContext,
+    verify_chain,
+};
 use thiserror::Error;
 pub use types::{
     JsonRpcError, JsonRpcErrorResponse, JsonRpcRequest, JsonRpcResponse, MESSAGING_MESSAGE_METHOD,

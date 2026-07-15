@@ -782,10 +782,14 @@ impl Default for StreamingConfig {
     }
 }
 
-/// Identity/capability admission (M04A Slice B0). Interim: a caller whose
-/// verified DID equals `admin_ucan_root` is granted `substrate/admin`. B1
-/// replaces the direct-equality check with real UCAN chain verification
-/// rooted here.
+/// Identity/capability admission (M04A Slices B0 + B1). A caller whose
+/// verified DID equals `admin_ucan_root` is granted `substrate/admin`
+/// directly (B0). B1 additionally roots UCAN chain verification here: any
+/// `CapabilityToken` chain presented at ingress must attenuate back to a
+/// token issued by this same DID to be admitted (`build_caller`,
+/// `crates/router/src/route_handler/io.rs`) -- owner-rooted *service*
+/// capability chains (owner != node admin) are not yet verifiable (Slice
+/// B7).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct IamConfig {
