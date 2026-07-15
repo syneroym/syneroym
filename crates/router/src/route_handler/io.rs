@@ -9,7 +9,7 @@ use hyper_util::rt::TokioIo;
 use syneroym_rpc::{Ability, CallerContext, Capability, ResourceUri, SessionContext, framing};
 use tokio::{
     io,
-    io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
     net::TcpStream,
     time,
 };
@@ -22,6 +22,16 @@ use tracing::debug;
 /// (matches the 5s budget `HandshakeVerifier` already uses for its own
 /// pre-auth network round trip in `crates/router/src/handshake.rs`).
 const PRE_AUTH_READ_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Upper bound on the route preamble line's byte length -- read before any
+/// peer authentication happens, so without this an unauthenticated peer
+/// could force arbitrarily large allocation via an oversized `delegation=`/
+/// `ucan=`/etc. query param before `RoutePreamble::parse` ever runs. Sized
+/// with headroom over the largest realistic legitimate preamble: a
+/// `syneroym-ucan` chain at its own `MAX_CHAIN_NODES` cap (64 tokens),
+/// hex-encoded, comes to roughly 100 KiB in the worst case; a `delegation=`
+/// cert is a few hundred bytes.
+const MAX_PREAMBLE_LINE_BYTES: u64 = 256 * 1024;
 
 use super::{super::SYNEROYM_ALPN, RouteHandler, dispatch, encryption::ReaderWriter};
 use crate::{
@@ -75,14 +85,22 @@ fn build_caller(
 }
 
 /// Reads a single line from the reader and parses it as a `RoutePreamble`.
+/// Bounded to `MAX_PREAMBLE_LINE_BYTES`: the read happens before any peer
+/// authentication, so leaving it unbounded would let an anonymous peer force
+/// arbitrary allocation.
 pub async fn read_preamble<R>(reader: &mut BufReader<R>) -> Result<RoutePreamble>
 where
     R: AsyncRead + Unpin,
 {
     let mut raw_preamble = String::new();
-    let read = reader.read_line(&mut raw_preamble).await?;
+    let read = reader.take(MAX_PREAMBLE_LINE_BYTES).read_line(&mut raw_preamble).await?;
     if read == 0 {
         return Err(anyhow!("Stream closed before reading preamble"));
+    }
+    if !raw_preamble.ends_with('\n') {
+        return Err(anyhow!(
+            "preamble line exceeds the maximum length of {MAX_PREAMBLE_LINE_BYTES} bytes"
+        ));
     }
 
     RoutePreamble::parse(&raw_preamble)
@@ -369,6 +387,26 @@ mod tests {
 
         assert!(result.is_err(), "expected a timeout since the peer never wrote a preamble");
         drop(client);
+    }
+
+    /// An unauthenticated peer sending a line with no newline anywhere
+    /// within `MAX_PREAMBLE_LINE_BYTES` must be rejected, not read into
+    /// memory without bound.
+    #[tokio::test]
+    async fn test_read_preamble_rejects_oversized_line() {
+        let oversized_len = MAX_PREAMBLE_LINE_BYTES as usize + 1024;
+        // Large enough that `write_all` completes without needing a
+        // concurrent reader to drain it.
+        let (mut client, server) = duplex(oversized_len + 1024);
+        let mut reader = BufReader::new(server);
+
+        client.write_all(&vec![b'a'; oversized_len]).await.unwrap();
+
+        let err = read_preamble(&mut reader).await.unwrap_err();
+        assert!(
+            err.to_string().contains("exceeds the maximum length"),
+            "expected the oversized-line error, got: {err}"
+        );
     }
 
     /// A peer that promptly sends a valid preamble line must not be
