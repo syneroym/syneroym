@@ -17,7 +17,7 @@ use syneroym_core::{
     config::RetryPolicy,
     dht_registry::RegistryClient,
     local_registry::{EndpointRegistry, NATIVE_CAPABILITY_INTERFACES, SubstrateEndpoint},
-    retry,
+    retry, util,
 };
 use syneroym_identity::{DelegationCertificate, Identity};
 use syneroym_rpc::{
@@ -90,26 +90,34 @@ impl RemoteHop for IrohHop {
             .as_ref()
             .ok_or_else(|| ProxyError::Transport("no Iroh endpoint configured".to_string()))?;
 
-        let conn = net_iroh::connect_with_retry(
-            endpoint,
-            addr.clone(),
-            crate::SYNEROYM_ALPN,
-            &self.connect_retry_policy,
-        )
-        .await
-        .map_err(transport_err)?;
-
-        let (mut send, mut recv) = conn.open_bi().await.map_err(transport_err)?;
-        send.write_all(preamble.to_preamble_line().as_bytes()).await.map_err(transport_err)?;
         let body = serde_json::to_vec(request)
             .map_err(|e| ProxyError::Internal(format!("failed to serialize request: {e}")))?;
-        framing::write_frame(&mut send, &body).await.map_err(transport_err)?;
-        send.finish().map_err(transport_err)?;
 
-        let frame = time::timeout(timeout, framing::read_frame(&mut recv))
+        // The whole attempt -- connect, open the bi-stream, write the
+        // preamble and request, and read the response -- sits under one
+        // deadline, not just the final read: a peer that accepts the QUIC
+        // connection but stalls before accepting the stream (or stops
+        // reading so send-side flow control blocks) must not hang past
+        // `timeout`.
+        let frame = time::timeout(timeout, async {
+            let conn = net_iroh::connect_with_retry(
+                endpoint,
+                addr.clone(),
+                crate::SYNEROYM_ALPN,
+                &self.connect_retry_policy,
+            )
             .await
-            .map_err(|_| ProxyError::Timeout(timeout))?
             .map_err(transport_err)?;
+
+            let (mut send, mut recv) = conn.open_bi().await.map_err(transport_err)?;
+            send.write_all(preamble.to_preamble_line().as_bytes()).await.map_err(transport_err)?;
+            framing::write_frame(&mut send, &body).await.map_err(transport_err)?;
+            send.finish().map_err(transport_err)?;
+
+            framing::read_frame(&mut recv).await.map_err(transport_err)
+        })
+        .await
+        .map_err(|_| ProxyError::Timeout(timeout))??;
         if frame.is_empty() {
             return Err(ProxyError::Transport("empty response frame".to_string()));
         }
@@ -200,7 +208,16 @@ impl ProxyRouter {
     fn check_native_capability_gate(&self, req: &ProxyRequest) -> Result<(), ProxyError> {
         let CallOrigin::Guest { service_id } = &req.origin else { return Ok(()) };
 
-        if !NATIVE_CAPABILITY_INTERFACES.contains(&req.interface.as_str()) {
+        // `req.interface` may be the literal name or `EndpointRegistry`'s
+        // short-hash of it (`local_registry::short_hash` is an unsalted
+        // SHA-256 prefix -- guest-computable, and `lookup` canonicalizes it
+        // right back to the literal name for dispatch). Matching only the
+        // literal string here let a guest bypass this gate entirely by
+        // passing the hash instead of the name.
+        let is_native_capability = NATIVE_CAPABILITY_INTERFACES
+            .iter()
+            .any(|name| *name == req.interface || util::short_hash(name) == req.interface);
+        if !is_native_capability {
             return Ok(());
         }
 
@@ -262,6 +279,14 @@ impl ProxyRouter {
             // shape) -- the proxy caller's own identity does not currently
             // reach a WASM callee's host state. Not an oversight: a
             // caller-scoped guest identity is an FDAE/M04B concern.
+            //
+            // Known limitation, same boundary: any error from
+            // `execute_wasm_json` -- including a callee's own typed
+            // `result::err` -- collapses to `Callee{ code: -32603 }` below.
+            // The structured `E` doesn't survive the WIT<->JSON boundary
+            // here, so a caller can't distinguish a business rejection from
+            // a host crash. Acceptable for A1; a component-to-component
+            // error channel that can carry typed errors is a follow-up.
             SubstrateEndpoint::WasmChannel { service_id } => {
                 let engine = self.app_sandbox_engine.upgrade().ok_or_else(|| {
                     ProxyError::Internal("sandbox engine unavailable".to_string())
@@ -311,7 +336,16 @@ impl ProxyRouter {
         // Identity: forward the caller's *signed proof* verbatim when it has
         // one (ADR-0016 §6 -- the destination re-verifies with
         // `verify_preamble` and builds a fresh `CallerContext`); otherwise
-        // present this node's own identity. Capabilities never cross.
+        // present this node's own identity -- but only for a genuine
+        // substrate-internal (`CallOrigin::Native`) call. A guest never
+        // carries a proof (`CallerContext::service_system`'s `proof` is
+        // always `None`; B1/UCAN delegation is what will give it one), so
+        // presenting the node's own key on its behalf would launder the
+        // guest's call as this node's real, potentially privileged DID at
+        // the destination. Leaving `pubkey` unset instead makes the
+        // destination treat it as anonymous, which the native-dispatch arm
+        // already rejects and non-native paths already tolerate. Capabilities
+        // never cross either way.
         let mut preamble = RoutePreamble::binary_json_rpc(&req.target_service, &req.interface);
         match &req.caller.proof {
             Some(proof) => {
@@ -321,9 +355,10 @@ impl ProxyRouter {
                     .as_deref()
                     .and_then(|json| DelegationCertificate::from_json(json).ok());
             }
-            None => {
+            None if matches!(req.origin, CallOrigin::Native) => {
                 preamble.pubkey = Some(hex::encode(self.node_identity.public_key().to_bytes()));
             }
+            None => {}
         }
 
         let json_rpc_request = JsonRpcRequest {
@@ -620,6 +655,43 @@ mod tests {
         assert_eq!(service.invoked.load(Ordering::SeqCst), 0);
     }
 
+    /// A guest that requests the interface by its `short_hash` (what
+    /// `EndpointRegistry::lookup` also accepts and canonicalizes back to the
+    /// literal name) must be denied exactly like the literal-name request
+    /// above -- `short_hash` is an unsalted SHA-256 prefix, so it's
+    /// guest-computable and must not bypass the gate.
+    #[tokio::test]
+    async fn guest_cross_service_native_capability_is_denied_via_short_hash_too() {
+        let registry = empty_registry();
+        registry
+            .register(
+                "svc-b".to_string(),
+                "data-layer".to_string(),
+                SubstrateEndpoint::NativeHostChannel { service_id: "svc-b".to_string() },
+            )
+            .await
+            .unwrap();
+        let native_dispatch: NativeDispatchRegistry = Arc::new(DashMap::new());
+        let service = Arc::new(RecordingNativeService::default());
+        native_dispatch.insert("svc-b".to_string(), service.clone() as Arc<dyn NativeService>);
+
+        let router = ProxyRouter::new(
+            registry,
+            empty_registry_client(),
+            Arc::downgrade(&native_dispatch),
+            Weak::new(),
+            Arc::new(MockHop::default()),
+            Arc::new(Identity::generate().unwrap()),
+            RetryPolicy::default(),
+        );
+
+        let mut req = base_request("svc-b", &util::short_hash("data-layer"));
+        req.origin = CallOrigin::Guest { service_id: "svc-a".to_string() };
+        let result = router.invoke(req).await;
+        assert!(matches!(result, Err(ProxyError::PermissionDenied(_))));
+        assert_eq!(service.invoked.load(Ordering::SeqCst), 0);
+    }
+
     /// The case that would fail against a `caller_did`-based comparison
     /// instead of the guest's raw `component_id` -- `service_system` puts
     /// `"system:svc-a"` in `caller_did`, which would never equal a plain
@@ -801,5 +873,34 @@ mod tests {
 
         let preamble = hop.last_preamble.lock().unwrap().clone().unwrap();
         assert_eq!(preamble.pubkey.as_deref(), Some(expected_pubkey.as_str()));
+    }
+
+    /// A guest never carries a proof (`CallerContext::service_system`), so
+    /// unlike the `CallOrigin::Native` case above, a cross-node guest call
+    /// must not launder itself as the node's own identity -- that would let
+    /// the destination attribute the call to a real, potentially privileged
+    /// DID (e.g. its `admin_ucan_root`) with no marker that a guest
+    /// originated it.
+    #[tokio::test]
+    async fn guest_without_proof_forwards_as_anonymous_not_node_identity() {
+        let hop = Arc::new(MockHop::with_outcomes(vec![MockOutcome::Success(Value::Null)]));
+        let identity = Arc::new(Identity::generate().unwrap());
+        let native_dispatch: NativeDispatchRegistry = Arc::new(DashMap::new());
+        let router = ProxyRouter::new(
+            empty_registry(),
+            empty_registry_client(),
+            Arc::downgrade(&native_dispatch),
+            Weak::new(),
+            hop.clone(),
+            identity,
+            RetryPolicy::default(),
+        );
+
+        let mut req = base_request("remote-svc", "greet"); // caller.proof: None
+        req.origin = CallOrigin::Guest { service_id: "guest-component".to_string() };
+        router.invoke_remote_at(&synthetic_addr(), &req).await.unwrap();
+
+        let preamble = hop.last_preamble.lock().unwrap().clone().unwrap();
+        assert_eq!(preamble.pubkey, None);
     }
 }
