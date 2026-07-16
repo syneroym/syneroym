@@ -1481,3 +1481,91 @@ superseded). No B5 changes beyond reuse (`run_query_raw`,
 (KEK), no M04B (FDAE) work, no other WIT interface.
 `traceability-matrix.md` is left unchanged, consistent with every prior
 M04A slice's precedent of deferring that update to milestone close.
+
+### Post-commit code review (2026-07-16) — two independent reviews, both incorporated
+
+Two independent reviews of commit `93138c2` raised four actionable findings
+plus four test-coverage gaps; one finding (the compute bound) was raised
+independently by both reviewers, converging evidence it was real. All were
+agreed with — no pushback — and fixed:
+
+- **Fixed (Medium, both reviewers independently) — `aggregate` had no
+  compute bound, unlike `query-raw`.** `do_aggregate` deliberately omitted
+  `do_query_raw`'s `QUERY_RAW_MAX_VM_OPS` progress handler, reasoning that
+  the compiled SQL is host-generated and therefore safe. That reasoning
+  covers the *injection* defense (the authorizer, which genuinely is
+  unneeded — the compiler can never emit `ATTACH`/`DETACH`/pragma-set) but
+  not the *compute* one: `aggregate` carries no capability gate (open to any
+  caller, unlike `query-raw`'s Admin-gated raw SQL), and a `GROUP BY`/
+  `ORDER BY` does its scanning/hashing/sorting work over the *whole*
+  collection before `$limit`/`$skip` ever apply — unlike `query`, where SQL
+  `LIMIT` lets SQLite stop early. The row-count page cap alone does not
+  bound that scan cost. Fixed: `do_aggregate` (`crates/data_db/src/sqlite.rs`)
+  now installs the same `QUERY_RAW_MAX_VM_OPS` progress handler (still no
+  authorizer — that half of the original reasoning holds), cleaned up via
+  the existing `QueryRawGuard`. No new "hang" test was added: constructing
+  one would need seeding a genuinely large dataset (the JSON aggregation DSL
+  can't express `query-raw`'s pathological constructs like an unterminated
+  recursive CTE — its worst case is a bounded full-collection scan+group),
+  and the interrupt mechanism itself is already exercised by B5's own
+  `test_query_raw_bounds_compute_independent_of_row_count` against the same
+  shared `run_query_raw`/progress-handler wiring this change reuses
+  verbatim.
+- **Fixed (Low, docs) — WIT doc-comment omitted `$skip`.** The `aggregate`
+  doc-comment listed `$match`/`$group`/`$having`/`$project`/`$sort`/`$limit`
+  but not `$skip` — the only way to page a grouped result past the 1000-row
+  cap (R2.2), fully implemented but undiscoverable from the WIT contract
+  alone. Fixed: `$skip` added to the doc-comment's stage-key list, with a
+  one-line pagination example.
+- **Fixed (Low, UX) — prepare-error text misattributed itself to
+  `query-raw`.** `do_aggregate` shared `run_query_raw`'s
+  `map_query_raw_prepare_error`, so e.g. an `aggregate` over a nonexistent
+  collection surfaced `SchemaViolation("query-raw prepare failed: no such
+  table: X")` to an `aggregate` caller. Fixed: the mapper is now
+  `map_sql_prepare_error(op, e)`, taking a caller-facing operation label;
+  `run_query_raw` takes that label as a parameter, and both call sites
+  (`do_query_raw`, `do_aggregate`) pass their own name.
+- **Fixed (Low, correctness edge) — `$having: {"alias": null}` compiled to
+  `alias = ?` bound to `NULL`, which SQL never matches.** Silent-wrong, not
+  an error: a caller expecting an `IS NULL` semantics on a `$having` alias
+  got zero rows instead. `filter.rs`'s own `compile_equality` already
+  special-cases a null filter value as `IS NULL`; `compile_having_value`'s
+  scalar branch did not. Fixed: a null scalar now compiles to
+  `{alias} IS NULL` (no bound param — `alias` is a bare validated
+  identifier, not a `json_extract` path). New test
+  `test_having_null_scalar_compiles_to_is_null`.
+
+Test-coverage gaps, all added:
+
+- `test_match_group_field_accumulator_and_having_param_order`
+  (`aggregate.rs`) — the highest-risk correctness area (binding order) is
+  now exercised with all three param-bearing stages at once (a field
+  accumulator, a valued `$match`, a valued `$having`), pinning the full
+  textual order; the prior match+group and group+having tests each covered
+  only two of the three in isolation.
+- `test_aggregate_avg_min_max_end_to_end` (`tests_crud.rs`) — `$avg`/`$min`/
+  `$max` were previously asserted only at the SQL-text level;
+  now executed against real seeded data, including `$avg`'s `Real` return
+  type.
+- `aggregate_malformed_pipeline_is_schema_violation`
+  (`native_dispatch_identity.rs`) — a `$group`-less pipeline through the
+  full native-dispatch path now asserts the JSON-RPC error code (`-32012`),
+  not just `aggregate::compile`'s own unit-level `SchemaViolation`.
+- `test_aggregate_default_order_is_ascending_by_id` (`tests_crud.rs`) — F5's
+  default `ORDER BY _id ASC` was previously unexercised (every store test
+  passed an explicit `$sort`); seeds categories in reverse-alphabetical
+  insertion order so a passing assertion can only be explained by the
+  enforced default, not coincidental scan order.
+
+The FDAE forward-seam finding (both reviews) was confirmed already recorded
+correctly in ADR-0007 and this status.md's B4 section (F9) — no code action,
+consistent with the plan's own framing that closing it is M04B's job.
+
+Gate re-verified after all fixes: `cargo +nightly fmt --all` clean,
+`cargo clippy --workspace --all-targets --all-features` zero warnings,
+`cargo test --workspace` — **490 passed, 0 failed** (was 485, +5: the four
+fix-pinning/coverage tests above plus the null-`$having` test), full run
+with the sandbox disabled per the established methodology; `mise run
+test:e2e` — **12 passed, 0 failed** (8 + 4), unchanged, a pure regression
+check; `wasm32-wasip2` — `test-components/data-layer-test` still builds
+clean (no WIT type/signature change, doc-comment only).

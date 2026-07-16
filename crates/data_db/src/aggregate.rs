@@ -313,6 +313,13 @@ fn compile_having_value(
         Json::Object(_) | Json::Array(_) => {
             Err(schema(format!("unsupported $having value type for '{alias}'")))
         }
+        // SQL `= NULL` is never true (SQLite included) -- unlike
+        // `filter.rs`'s `compile_equality`, which binds `IS NULL` for a null
+        // filter value, this branch previously emitted `alias = ?` bound to
+        // `NULL`, silently returning zero rows instead of matching. `alias`
+        // is a bare validated identifier here, not a bound value, so no
+        // param is pushed.
+        Json::Null => Ok(format!("{alias} IS NULL")),
         scalar => {
             params.push(json_scalar_to_value(scalar)?);
             Ok(format!("{alias} = ?"))
@@ -510,10 +517,47 @@ mod tests {
     }
 
     #[test]
+    fn test_match_group_field_accumulator_and_having_param_order() {
+        // Exercises all three param-bearing stages together: a $group field
+        // accumulator (adds a select-path param), a $match with a bound
+        // value, and a $having with a bound value. Pins the full textual
+        // binding order -- group params, then match params, then having
+        // params -- so a reordering regression in the assembly in `compile`
+        // fails loudly instead of only being caught by stages tested in
+        // isolation.
+        let c = compile_ok(
+            r#"{"$match":{"active":true},
+                "$group":{"_id":"category","total":{"$sum":"amount"}},
+                "$having":{"total":{"$gt":100}}}"#,
+        );
+        assert_eq!(
+            c.params,
+            vec![
+                Value::Text("$.category".into()), // group: _id path
+                Value::Text("$.amount".into()),   // group: total accumulator path
+                Value::Text("$.active".into()),   // match: field path
+                Value::Integer(1),                // match: bound value (true)
+                Value::Integer(100),              // having: bound value
+            ]
+        );
+    }
+
+    #[test]
     fn test_having_on_alias() {
         let c = compile_ok(r#"{"$group":{"_id":"cat","n":{"$sum":1}},"$having":{"n":{"$gt":5}}}"#);
         assert!(c.sql.contains("HAVING n > ?"));
         assert_eq!(c.params.last(), Some(&Value::Integer(5)));
+    }
+
+    #[test]
+    fn test_having_null_scalar_compiles_to_is_null() {
+        let c = compile_ok(
+            r#"{"$group":{"_id":"cat","total":{"$sum":"amount"}},"$having":{"total":null}}"#,
+        );
+        assert!(c.sql.contains("HAVING total IS NULL"));
+        // `IS NULL` binds no param -- only the `_id`/`total` select-path
+        // params from `$group` are present.
+        assert_eq!(c.params, vec![Value::Text("$.cat".into()), Value::Text("$.amount".into())]);
     }
 
     #[test]

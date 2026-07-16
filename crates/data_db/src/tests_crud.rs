@@ -613,6 +613,76 @@ async fn test_aggregate_project_subset() {
 }
 
 #[tokio::test]
+async fn test_aggregate_avg_min_max_end_to_end() {
+    let store = seeded_categorized_people_store().await;
+    let result = store
+        .aggregate(
+            "people",
+            r#"{"$group":{"_id":"category","avg_amount":{"$avg":"amount"},
+               "min_amount":{"$min":"amount"},"max_amount":{"$max":"amount"}},
+               "$sort":{"_id":1}}"#,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        result.columns,
+        vec![
+            "_id".to_string(),
+            "avg_amount".to_string(),
+            "max_amount".to_string(),
+            "min_amount".to_string()
+        ]
+    );
+    // category "a": amounts 10/20/30 -> avg 20, min 10, max 30.
+    // category "b": amounts 5/7 -> avg 6, min 5, max 7.
+    assert_eq!(
+        rows_as_json(&result.rows),
+        rows_as_json(&[
+            vec![
+                SqlValue::Text("a".to_string()),
+                SqlValue::Real(20.0),
+                SqlValue::Integer(30),
+                SqlValue::Integer(10)
+            ],
+            vec![
+                SqlValue::Text("b".to_string()),
+                SqlValue::Real(6.0),
+                SqlValue::Integer(7),
+                SqlValue::Integer(5)
+            ],
+        ])
+    );
+}
+
+#[tokio::test]
+async fn test_aggregate_default_order_is_ascending_by_id() {
+    // F5: absent an explicit `$sort`, a grouped result gets a deterministic
+    // default `ORDER BY _id ASC`. Seed categories in reverse-alphabetical
+    // insertion order so a passing result can only be explained by the
+    // enforced default order, not by coincidental insertion/scan order.
+    let store = setup_store().await;
+    store.create_collection(&schema("people")).await.unwrap();
+    for (id, category) in [("p1", "z"), ("p2", "m"), ("p3", "a"), ("p4", "m"), ("p5", "z")] {
+        store
+            .put("people", &write_value(id, &format!(r#"{{"category": "{category}"}}"#)), "c")
+            .await
+            .unwrap();
+    }
+
+    let result =
+        store.aggregate("people", r#"{"$group":{"_id":"category","n":{"$sum":1}}}"#).await.unwrap();
+    let ids: Vec<String> = result
+        .rows
+        .iter()
+        .map(|row| match &row[0] {
+            SqlValue::Text(s) => s.clone(),
+            other => panic!("expected text _id, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(ids, vec!["a".to_string(), "m".to_string(), "z".to_string()]);
+}
+
+#[tokio::test]
 async fn test_aggregate_over_page_cap_quota_exceeded() {
     let store = setup_store().await;
     store.create_collection(&schema("people")).await.unwrap();

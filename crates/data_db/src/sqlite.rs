@@ -374,9 +374,15 @@ fn do_query(
 
 /// Runs an `aggregate` call (ADR-0007, Slice B4) on the reader pool. The
 /// compiled SQL is entirely host-generated (bound params + validated
-/// identifiers only), so it is `readonly()` by construction and needs
-/// neither `do_query_raw`'s authorizer nor its progress handler -- those
-/// defend against *arbitrary caller SQL*, which `aggregate` never accepts.
+/// identifiers only), so it is `readonly()` by construction and needs none
+/// of `do_query_raw`'s authorizer (`deny_query_raw_escapes` defends against
+/// *arbitrary caller SQL* containing `ATTACH`/`DETACH`/pragma-set, which the
+/// compiler can never emit). It **does** install the same progress-handler
+/// compute backstop (`QUERY_RAW_MAX_VM_OPS`): `aggregate` carries no
+/// capability gate (open to any caller, like `query`), and unlike `query`'s
+/// `LIMIT`, a `GROUP BY`/`ORDER BY` does its scanning/hashing/sorting work
+/// over the *whole* collection before `$limit`/`$skip` ever apply, so the
+/// row-count page cap alone does not bound compute here either.
 fn do_aggregate(
     conn: &Connection,
     collection: &str,
@@ -384,7 +390,9 @@ fn do_aggregate(
 ) -> Result<host_store::RawQueryResult, host_store::DataLayerError> {
     validate_identifier(collection)?;
     let compiled = aggregate::compile(collection, pipeline_json)?;
-    run_query_raw(conn, &compiled.sql, &compiled.params)
+    conn.progress_handler(QUERY_RAW_MAX_VM_OPS, Some(|| true)).map_err(map_rusqlite_error)?;
+    let _guard = QueryRawGuard { conn };
+    run_query_raw(conn, "aggregate", &compiled.sql, &compiled.params)
 }
 
 fn wit_to_rusqlite_value(v: &host_store::SqlValue) -> SqlValue {
@@ -446,13 +454,17 @@ fn deny_query_raw_escapes(ctx: rusqlite::hooks::AuthContext<'_>) -> rusqlite::ho
     }
 }
 
-fn map_query_raw_prepare_error(e: rusqlite::Error) -> host_store::DataLayerError {
+/// `op` names the caller-facing operation (`"query-raw"` or `"aggregate"`)
+/// so a prepare failure -- e.g. "no such table" for an `aggregate` over a
+/// missing collection -- doesn't misattribute itself to the other, shared
+/// `run_query_raw` caller.
+fn map_sql_prepare_error(op: &str, e: rusqlite::Error) -> host_store::DataLayerError {
     if let rusqlite::Error::SqliteFailure(ffi_err, _) = &e
         && ffi_err.code == rusqlite::ErrorCode::AuthorizationForStatementDenied
     {
         return host_store::DataLayerError::PermissionDenied;
     }
-    host_store::DataLayerError::SchemaViolation(format!("query-raw prepare failed: {e}"))
+    host_store::DataLayerError::SchemaViolation(format!("{op} prepare failed: {e}"))
 }
 
 fn map_query_raw_step_error(e: rusqlite::Error) -> host_store::DataLayerError {
@@ -518,15 +530,16 @@ fn do_query_raw(
     conn.authorizer(Some(deny_query_raw_escapes)).map_err(map_rusqlite_error)?;
     conn.progress_handler(QUERY_RAW_MAX_VM_OPS, Some(|| true)).map_err(map_rusqlite_error)?;
     let _guard = QueryRawGuard { conn };
-    run_query_raw(conn, sql, &bound)
+    run_query_raw(conn, "query-raw", sql, &bound)
 }
 
 fn run_query_raw(
     conn: &Connection,
+    op: &str,
     sql: &str,
     bound: &[SqlValue],
 ) -> Result<host_store::RawQueryResult, host_store::DataLayerError> {
-    let mut stmt = conn.prepare(sql).map_err(map_query_raw_prepare_error)?;
+    let mut stmt = conn.prepare(sql).map_err(|e| map_sql_prepare_error(op, e))?;
 
     if !stmt.readonly() {
         return Err(host_store::DataLayerError::PermissionDenied);

@@ -98,15 +98,17 @@ interface store {
 
     /// Runs an aggregation over a collection (ADR-0007). `pipeline` is a
     /// JSON *aggregation document* -- a single object with optional keys
-    /// `$match`, `$group`, `$having`, `$project`, `$sort`, `$limit` -- compiled
-    /// to a parameterized SQLite `GROUP BY`/`HAVING` query. Like `query`'s
-    /// filter DSL it is safe-by-construction (whitelisted operators, all values
-    /// bound as `?`) and requires no capability gate. Unlike `query` it returns
-    /// an arbitrary projection (`raw-query-result`, not the fixed record shape),
-    /// because grouped/projected columns cannot fit `record-read-value`.
-    /// Targets physical collections only; aggregating over init-defined views
-    /// is deferred. `raw-query-result.rows` are capped at the same per-page
-    /// ceiling as `query`; exceeding it returns `quota-exceeded`.
+    /// `$match`, `$group`, `$having`, `$project`, `$sort`, `$limit`, `$skip`
+    /// -- compiled to a parameterized SQLite `GROUP BY`/`HAVING` query. Like
+    /// `query`'s filter DSL it is safe-by-construction (whitelisted
+    /// operators, all values bound as `?`) and requires no capability gate.
+    /// Unlike `query` it returns an arbitrary projection (`raw-query-result`,
+    /// not the fixed record shape), because grouped/projected columns cannot
+    /// fit `record-read-value`. Targets physical collections only;
+    /// aggregating over init-defined views is deferred. `raw-query-result.rows`
+    /// are capped at the same per-page ceiling as `query`; exceeding it
+    /// returns `quota-exceeded`. `$skip` pages a grouped result past that
+    /// cap: page *k* is `{"$skip": k*pagesize, "$limit": pagesize}`.
     aggregate: func(collection: string, pipeline: string) -> result<raw-query-result, data-layer-error>;
 
     delete: func(collection: string, id: string) -> result<_, data-layer-error>;
