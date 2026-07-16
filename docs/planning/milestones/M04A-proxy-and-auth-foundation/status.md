@@ -1233,6 +1233,31 @@ test), `syneroym-control-plane` (25/25), and
 `crates/router/tests/native_dispatch_identity.rs` (13/13) all green in
 isolation.
 
+### Third follow-up (2026-07-16) — RAII-guard the authorizer/progress-handler cleanup
+
+The `do_query_raw` cleanup (clearing the authorizer and progress handler
+after the call) was best-effort — a bare `let _ = conn.authorizer(None)`/
+`conn.progress_handler(0, None)` pair after `run_query_raw` returned. If
+`run_query_raw` panicked mid-statement, that cleanup would never run,
+leaving both callbacks installed on the pooled connection. Not reachable in
+practice: `deadpool_sqlite`'s `interact` discards a connection whose closure
+panics rather than returning it to the pool, so no other caller could ever
+observe the leaked callbacks. Made airtight anyway, independent of that pool
+behavior: a `QueryRawGuard` struct holding `&Connection` clears both
+callbacks in its `Drop` impl, constructed right after both `Some(...)`
+installs succeed and held for the rest of `do_query_raw`'s scope — Rust runs
+`Drop` impls during an unwinding panic same as a normal return, so the
+cleanup now fires on both paths. No behavior change on the non-panicking
+path (same two calls, same order); no test added, since the property being
+fixed (cleanup on panic) is deliberately not exercised — panicking a
+production code path to test unwind behavior is not a pattern this codebase
+uses elsewhere.
+
+Gate re-verified: `cargo +nightly fmt --all` clean, `cargo clippy
+--workspace --all-targets --all-features` zero warnings, `crates/data_db`'s
+`tests_crud` module 29/29 unchanged, full `cargo test --workspace` green
+(see below).
+
 ### Consolidated final gate (both review rounds)
 
 - `cargo +nightly fmt --all` — clean.

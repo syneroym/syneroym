@@ -459,6 +459,29 @@ fn map_query_raw_step_error(e: rusqlite::Error) -> host_store::DataLayerError {
 /// pathological/runaway statements, not a query-cost optimizer.
 const QUERY_RAW_MAX_VM_OPS: i32 = 50_000_000;
 
+/// Clears the authorizer and progress handler on drop -- including on
+/// unwind, if `run_query_raw` panics mid-statement -- so this pooled
+/// connection's next borrower (`get`/`query`/a future `query-raw` call)
+/// never inherits this call's callbacks. `deadpool_sqlite` already discards
+/// a connection whose `interact` closure panics rather than returning it to
+/// the pool, so the panic path is not reachable in practice today; this
+/// guard makes the cleanup correct regardless of that pool behavior, not
+/// dependent on it.
+struct QueryRawGuard<'c> {
+    conn: &'c Connection,
+}
+
+impl Drop for QueryRawGuard<'_> {
+    fn drop(&mut self) {
+        let _ = self
+            .conn
+            .authorizer::<fn(rusqlite::hooks::AuthContext<'_>) -> rusqlite::hooks::Authorization>(
+                None,
+            );
+        let _ = self.conn.progress_handler(0, None::<fn() -> bool>);
+    }
+}
+
 /// Executes a privileged read-only raw-SQL query (ADR-0011) on the reader
 /// pool. Read-only enforcement (D2 of B5.md) is two-layered: `Statement::
 /// readonly()` rejects statements that write the database's content
@@ -478,15 +501,8 @@ fn do_query_raw(
 
     conn.authorizer(Some(deny_query_raw_escapes)).map_err(map_rusqlite_error)?;
     conn.progress_handler(QUERY_RAW_MAX_VM_OPS, Some(|| true)).map_err(map_rusqlite_error)?;
-    let result = run_query_raw(conn, sql, &bound);
-    // Always clear the authorizer/progress handler -- this is a pooled
-    // connection shared with other `query`/`get`/future `query-raw`
-    // callers, so leaving either callback installed would leak this call's
-    // policy onto the next borrower's unrelated statements.
-    let _ = conn
-        .authorizer::<fn(rusqlite::hooks::AuthContext<'_>) -> rusqlite::hooks::Authorization>(None);
-    let _ = conn.progress_handler(0, None::<fn() -> bool>);
-    result
+    let _guard = QueryRawGuard { conn };
+    run_query_raw(conn, sql, &bound)
 }
 
 fn run_query_raw(
