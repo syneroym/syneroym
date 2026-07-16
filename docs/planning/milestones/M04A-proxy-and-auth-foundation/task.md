@@ -333,12 +333,15 @@ claims/capabilities/scopes into the **SessionContext**. **Shape the SessionConte
 against M04B's SQL-binding needs** (co-design seam #1) — it is consumed by M04B's
 pushdown compiler as bound `?` parameters.
 
-#### Slice B4: `AggregationPipeline`
+#### Slice B4: `AggregationPipeline` ✅ (2026-07-16)
 **Requirement:** `[PLT-DAT]`; closes gate item #2. *(Independent — no auth
 dependency; may start any time.)*
-`$group`/`$having`/projections on `syneroym:data-layer/store`'s `query`,
-translating to SQLite `GROUP BY`/`HAVING`/views per ADR-0007; can target physical
-collections and init-defined logical views.
+`$group`/`$having`/projections, translating to SQLite `GROUP BY`/`HAVING`
+per ADR-0007. *("On `query`" above was realized as a separate `aggregate`
+function returning `raw-query-result` (D1, ADR-0007 amendment) — `query`'s
+fixed record shape cannot represent a grouped/projected result. Targets
+physical collections only; aggregating over init-defined logical views is
+deferred (D3) — see `status.md`'s B4 section.)*
 
 #### Slice B5: Privileged `query-raw` Escape Hatch
 **Depends on:** B0 (Admin UCAN capability type). **Requirement:** `[PLT-DAT]`;
@@ -481,11 +484,11 @@ Continues the "Professional Services Guild" walking skeleton from M03B (step 19)
 
 ## Measurable Exit Criteria
 
-- [x] `cargo +nightly fmt --all` clean; `cargo clippy --workspace --all-targets --all-features` zero warnings; `cargo test --workspace` green; `mise run test:e2e` green (no M0–M3C regression); `wasm32-wasip2` unbroken after every slice. *(True as of A0′+B0+A1+B1+B5; re-verify after each subsequent slice.)*
+- [x] `cargo +nightly fmt --all` clean; `cargo clippy --workspace --all-targets --all-features` zero warnings; `cargo test --workspace` green; `mise run test:e2e` green (no M0–M3C regression); `wasm32-wasip2` unbroken after every slice. *(True as of A0′+B0+A1+B1+B5+B4; re-verify after each subsequent slice.)*
 - [ ] ADRs D-04-01, D-04-05 exist in `docs/decisions/`.
 - [x] Full WIT⇄JSON conversion replaces the `conversions.rs` stub; round-trip tested across the full WIT type set; JSON fidelity limitations documented. *(A0′ delivered the encode/decode primitives; A1 closes the deferred half — typing the JSON-RPC `result` field itself via `wasm_results_to_json`/`execute_wasm_json` — see `status.md`'s A1 section.)*
 - [x] **Gate item #1 verified with a real test** (not code inspection): an unauthenticated peer's `data-layer`/`messaging`/`blob-store`/`vault`/`app-config` call and HTTP-bridge request are all rejected. *(B0 — see `crates/router/tests/native_dispatch_identity.rs`.)*
-- [ ] `AggregationPipeline` implemented and tested.
+- [x] `AggregationPipeline` implemented and tested. *(B4 — `crates/data_db/src/aggregate.rs`'s `compile` (whitelisted `$match`/`$group`/`$having`/`$project`/`$sort`/`$limit`/`$skip` document compiler, all field paths/values bound as `?`); `do_aggregate` in `crates/data_db/src/sqlite.rs` reuses B5's `run_query_raw`; guest impl in `crates/sandbox_wasm/src/host_capabilities.rs` (no capability gate, same trust level as `query`); native arm in `crates/control_plane/src/synsvc_native.rs`'s `dispatch_data_layer`; ADR-0007 amended in place — see `status.md`'s B4 section.)*
 - [x] `query-raw` implemented, gated by Admin UCAN capability (not `is_init_context`). *(B5 — `crates/data_db/src/sqlite.rs`'s `do_query_raw` (read-only enforced two-layer: `Statement::readonly()` plus an authorizer denying `ATTACH`/`DETACH`/`BEGIN`/pragma-set, post-commit review S1; compute additionally bounded by a `progress_handler`, S1); guest gate in `crates/sandbox_wasm/src/host_capabilities.rs`; native gate in `crates/control_plane/src/synsvc_native.rs`'s `dispatch_data_layer` (request/response `sql-value` JSON encoding made symmetric, post-commit review C1); ADR-0011 amended in place — see `status.md`'s B5 section.)*
 - [x] Both `TODO(M4)` sites (`host_capabilities.rs:452-463`, `synsvc_native.rs:309-316`) removed. *(B0 — both replaced by the `data-layer/admin` capability gate.)*
 - [ ] Per-app-instance KEK narrowing implemented; `_scope` actually used; DEK re-wrap path tested.

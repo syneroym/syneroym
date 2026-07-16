@@ -150,6 +150,17 @@ pub trait ServiceStore: Send + Sync {
         opts: &host_store::QueryOptions,
     ) -> Result<host_store::QueryResult, host_store::DataLayerError>;
 
+    /// Runs an aggregation (ADR-0007, Slice B4) over a collection: compiles
+    /// the MongoDB-style aggregation document `pipeline` to a parameterized
+    /// `GROUP BY`/`HAVING` query and returns the projected columns/rows.
+    /// Safe by construction (whitelisted operators, all values bound) -- no
+    /// capability gate, same trust level as `query`.
+    async fn aggregate(
+        &self,
+        collection: &str,
+        pipeline: &str,
+    ) -> Result<host_store::RawQueryResult, host_store::DataLayerError>;
+
     /// Deletes a record by id. Idempotent: deleting a non-existent id is not
     /// an error.
     async fn delete(&self, collection: &str, id: &str) -> Result<(), host_store::DataLayerError>;

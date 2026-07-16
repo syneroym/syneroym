@@ -23,6 +23,7 @@ use tokio::{
 use zeroize::Zeroizing;
 
 use crate::{
+    aggregate,
     errors::map_rusqlite_error,
     filter, host_store,
     traits::{ServiceStore, StorageProvider},
@@ -55,7 +56,7 @@ pub const MAX_BATCH_SIZE: usize = 200;
 /// field name) before it is formatted into SQL text. Table and column names
 /// cannot be bound as SQL parameters, so this allow-list is what stands in
 /// for parameterization at the DDL boundary.
-fn validate_identifier(name: &str) -> Result<(), host_store::DataLayerError> {
+pub(crate) fn validate_identifier(name: &str) -> Result<(), host_store::DataLayerError> {
     if IDENTIFIER_REGEX.is_match(name) {
         Ok(())
     } else {
@@ -369,6 +370,21 @@ fn do_query(
         None
     };
     Ok(host_store::QueryResult { records, next_cursor })
+}
+
+/// Runs an `aggregate` call (ADR-0007, Slice B4) on the reader pool. The
+/// compiled SQL is entirely host-generated (bound params + validated
+/// identifiers only), so it is `readonly()` by construction and needs
+/// neither `do_query_raw`'s authorizer nor its progress handler -- those
+/// defend against *arbitrary caller SQL*, which `aggregate` never accepts.
+fn do_aggregate(
+    conn: &Connection,
+    collection: &str,
+    pipeline_json: &str,
+) -> Result<host_store::RawQueryResult, host_store::DataLayerError> {
+    validate_identifier(collection)?;
+    let compiled = aggregate::compile(collection, pipeline_json)?;
+    run_query_raw(conn, &compiled.sql, &compiled.params)
 }
 
 fn wit_to_rusqlite_value(v: &host_store::SqlValue) -> SqlValue {
@@ -1304,6 +1320,23 @@ impl ServiceStore for SqliteServiceStore {
         })?
     }
 
+    async fn aggregate(
+        &self,
+        collection: &str,
+        pipeline: &str,
+    ) -> Result<host_store::RawQueryResult, host_store::DataLayerError> {
+        let collection = collection.to_string();
+        let pipeline = pipeline.to_string();
+        let conn = self
+            .reader_pool
+            .get()
+            .await
+            .map_err(|e| host_store::DataLayerError::Internal(format!("reader pool: {e}")))?;
+        conn.interact(move |conn| do_aggregate(conn, &collection, &pipeline)).await.map_err(
+            |e| host_store::DataLayerError::Internal(format!("reader pool interact: {e}")),
+        )?
+    }
+
     async fn delete(&self, collection: &str, id: &str) -> Result<(), host_store::DataLayerError> {
         let collection = collection.to_string();
         let id = id.to_string();
@@ -1418,6 +1451,14 @@ impl ServiceStore for Arc<SqliteServiceStore> {
         opts: &host_store::QueryOptions,
     ) -> Result<host_store::QueryResult, host_store::DataLayerError> {
         self.as_ref().query(collection, opts).await
+    }
+
+    async fn aggregate(
+        &self,
+        collection: &str,
+        pipeline: &str,
+    ) -> Result<host_store::RawQueryResult, host_store::DataLayerError> {
+        self.as_ref().aggregate(collection, pipeline).await
     }
 
     async fn delete(&self, collection: &str, id: &str) -> Result<(), host_store::DataLayerError> {

@@ -443,6 +443,20 @@ impl store::Host for HostState {
         store.query(&collection, &opts).await
     }
 
+    async fn aggregate(
+        &mut self,
+        collection: String,
+        pipeline: String,
+    ) -> Result<RawQueryResult, DataLayerError> {
+        let store = open_store(
+            self.component_id.clone(),
+            self.key_store.clone(),
+            self.storage_provider.clone(),
+        )
+        .await?;
+        store.aggregate(&collection, &pipeline).await
+    }
+
     async fn delete(&mut self, collection: String, id: String) -> Result<(), DataLayerError> {
         let store = open_store(
             self.component_id.clone(),

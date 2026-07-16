@@ -544,3 +544,145 @@ async fn test_query_raw_rejects_a_real_second_statement_but_allows_a_harmless_ta
         );
     }
 }
+
+async fn seeded_categorized_people_store() -> Box<dyn ServiceStore> {
+    let store = setup_store().await;
+    store.create_collection(&schema("people")).await.unwrap();
+    let rows = [("p1", "a", 10), ("p2", "a", 20), ("p3", "a", 30), ("p4", "b", 5), ("p5", "b", 7)];
+    for (id, category, amount) in rows {
+        let payload = format!(r#"{{"category": "{category}", "amount": {amount}}}"#);
+        store.put("people", &write_value(id, &payload), "c").await.unwrap();
+    }
+    store
+}
+
+#[tokio::test]
+async fn test_aggregate_group_count() {
+    let store = seeded_categorized_people_store().await;
+    let result = store
+        .aggregate("people", r#"{"$group":{"_id":"category","n":{"$sum":1}},"$sort":{"_id":1}}"#)
+        .await
+        .unwrap();
+    assert_eq!(result.columns, vec!["_id".to_string(), "n".to_string()]);
+    assert_eq!(
+        rows_as_json(&result.rows),
+        rows_as_json(&[
+            vec![SqlValue::Text("a".to_string()), SqlValue::Integer(3)],
+            vec![SqlValue::Text("b".to_string()), SqlValue::Integer(2)],
+        ])
+    );
+}
+
+#[tokio::test]
+async fn test_aggregate_sum_and_having() {
+    let store = seeded_categorized_people_store().await;
+    let result = store
+        .aggregate(
+            "people",
+            r#"{"$group":{"_id":"category","total":{"$sum":"amount"}},
+               "$having":{"total":{"$gt":20}},"$sort":{"_id":1}}"#,
+        )
+        .await
+        .unwrap();
+    // category "a" totals 60 (> 20); category "b" totals 12 (not > 20).
+    assert_eq!(
+        rows_as_json(&result.rows),
+        rows_as_json(&[vec![SqlValue::Text("a".to_string()), SqlValue::Integer(60)]])
+    );
+}
+
+#[tokio::test]
+async fn test_aggregate_project_subset() {
+    let store = seeded_categorized_people_store().await;
+    let result = store
+        .aggregate(
+            "people",
+            r#"{"$group":{"_id":"category","n":{"$sum":1},"total":{"$sum":"amount"}},
+               "$project":["total","_id"],"$sort":{"_id":1}}"#,
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.columns, vec!["total".to_string(), "_id".to_string()]);
+    assert_eq!(
+        rows_as_json(&result.rows),
+        rows_as_json(&[
+            vec![SqlValue::Integer(60), SqlValue::Text("a".to_string())],
+            vec![SqlValue::Integer(12), SqlValue::Text("b".to_string())],
+        ])
+    );
+}
+
+#[tokio::test]
+async fn test_aggregate_over_page_cap_quota_exceeded() {
+    let store = setup_store().await;
+    store.create_collection(&schema("people")).await.unwrap();
+    for i in 0..(MAX_QUERY_PAGE_SIZE + 1) {
+        store
+            .put("people", &write_value(&format!("p{i:05}"), &format!(r#"{{"k": {i}}}"#)), "c")
+            .await
+            .unwrap();
+    }
+    let err =
+        store.aggregate("people", r#"{"$group":{"_id":"k","n":{"$sum":1}}}"#).await.unwrap_err();
+    assert!(matches!(err, DataLayerError::QuotaExceeded));
+}
+
+#[tokio::test]
+async fn test_aggregate_skip_limit_pages_groups() {
+    let store = setup_store().await;
+    store.create_collection(&schema("people")).await.unwrap();
+    for i in 0..10 {
+        store
+            .put("people", &write_value(&format!("p{i}"), &format!(r#"{{"k": {i}}}"#)), "c")
+            .await
+            .unwrap();
+    }
+
+    let page0 = store
+        .aggregate(
+            "people",
+            r#"{"$group":{"_id":"k","n":{"$sum":1}},"$sort":{"_id":1},"$limit":6}"#,
+        )
+        .await
+        .unwrap();
+    let page1 = store
+        .aggregate(
+            "people",
+            r#"{"$group":{"_id":"k","n":{"$sum":1}},"$sort":{"_id":1},"$skip":6,"$limit":6}"#,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(page0.rows.len(), 6);
+    assert_eq!(page1.rows.len(), 4);
+
+    let ids_from = |result: &SqlValue| match result {
+        SqlValue::Integer(i) => *i,
+        other => panic!("expected integer _id, got {other:?}"),
+    };
+    let mut all_ids: Vec<i64> =
+        page0.rows.iter().chain(page1.rows.iter()).map(|row| ids_from(&row[0])).collect();
+    all_ids.sort_unstable();
+    assert_eq!(all_ids, (0..10).collect::<Vec<_>>());
+}
+
+#[tokio::test]
+async fn test_aggregate_malformed_pipeline_is_schema_violation() {
+    let store = seeded_categorized_people_store().await;
+    let err = store.aggregate("people", "not json").await.unwrap_err();
+    assert!(matches!(err, DataLayerError::SchemaViolation(_)));
+}
+
+#[tokio::test]
+async fn test_aggregate_injection_bound_not_interpolated() {
+    let store = seeded_categorized_people_store().await;
+    let pipeline = r#"{"$match":{"category":"'; DROP TABLE people; --"},
+        "$group":{"_id":"category","n":{"$sum":1}}}"#;
+    let result = store.aggregate("people", pipeline).await.unwrap();
+    assert!(result.rows.is_empty());
+
+    // The table must still exist and be fully queryable afterwards.
+    let count =
+        store.aggregate("people", r#"{"$group":{"_id":null,"n":{"$sum":1}}}"#).await.unwrap();
+    assert_eq!(rows_as_json(&count.rows), rows_as_json(&[vec![SqlValue::Integer(5)]]));
+}
