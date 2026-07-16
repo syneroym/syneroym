@@ -35,7 +35,7 @@ use syneroym_wit_interfaces::host::syneroym::{
     app_config::app_config::ConfigError,
     data_layer::store::{
         CollectionSchema, DataLayerError, IndexDefinition, IndexType, Mutation, PatchMutation,
-        QueryOptions, RecordWriteValue,
+        QueryOptions, RecordWriteValue, SqlValue,
     },
     vault::vault::VaultError,
 };
@@ -339,6 +339,79 @@ impl SynSvcNativeService {
                 let req: Req = parse_params(&invocation)?;
                 store.execute_ddl(&req.sql).await.map_err(data_layer_error)?;
                 to_payload(&())
+            }
+            "query-raw" | "query_raw" => {
+                // Admin-capability gate -- identical to `execute-ddl` above.
+                let resource = ResourceUri::service(
+                    invocation.caller.app_instance.as_deref().unwrap_or(&self.service_id),
+                    &self.service_id,
+                );
+                if !invocation
+                    .caller
+                    .has_capability(&resource, &Ability(Ability::DATA_LAYER_ADMIN.to_string()))
+                {
+                    return Err(data_layer_error(DataLayerError::PermissionDenied));
+                }
+
+                // Hand-rolled DTO: the bindgen `SqlValue` variant derives
+                // serde's default PascalCase externally-tagged form; this API
+                // is snake_case tagged JSON. Used symmetrically for both the
+                // request `params` and the response `rows` -- a caller must
+                // be able to feed a returned cell straight back into a
+                // subsequent `query-raw` call's `params` without
+                // re-encoding it.
+                #[derive(serde::Serialize, serde::Deserialize)]
+                #[serde(tag = "type", content = "value", rename_all = "snake_case")]
+                enum SqlValueDto {
+                    Text(String),
+                    Integer(i64),
+                    Real(f64),
+                    Boolean(bool),
+                    Null,
+                }
+                #[derive(serde::Deserialize)]
+                struct Req {
+                    sql: String,
+                    #[serde(default)]
+                    params: Vec<SqlValueDto>,
+                }
+                #[derive(serde::Serialize)]
+                struct RawQueryResultDto {
+                    columns: Vec<String>,
+                    rows: Vec<Vec<SqlValueDto>>,
+                }
+                let req: Req = parse_params(&invocation)?;
+                let params: Vec<SqlValue> = req
+                    .params
+                    .into_iter()
+                    .map(|p| match p {
+                        SqlValueDto::Text(s) => SqlValue::Text(s),
+                        SqlValueDto::Integer(i) => SqlValue::Integer(i),
+                        SqlValueDto::Real(f) => SqlValue::Real(f),
+                        SqlValueDto::Boolean(b) => SqlValue::Boolean(b),
+                        SqlValueDto::Null => SqlValue::Null,
+                    })
+                    .collect();
+                let result = store.query_raw(&req.sql, &params).await.map_err(data_layer_error)?;
+                let result_dto = RawQueryResultDto {
+                    columns: result.columns,
+                    rows: result
+                        .rows
+                        .into_iter()
+                        .map(|row| {
+                            row.into_iter()
+                                .map(|v| match v {
+                                    SqlValue::Text(s) => SqlValueDto::Text(s),
+                                    SqlValue::Integer(i) => SqlValueDto::Integer(i),
+                                    SqlValue::Real(f) => SqlValueDto::Real(f),
+                                    SqlValue::Boolean(b) => SqlValueDto::Boolean(b),
+                                    SqlValue::Null => SqlValueDto::Null,
+                                })
+                                .collect()
+                        })
+                        .collect(),
+                };
+                to_payload(&result_dto)
             }
             other => Err(RpcError::MethodNotFound(format!("data-layer/{other}"))),
         }

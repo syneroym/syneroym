@@ -24,7 +24,7 @@ use syneroym_wit_interfaces::{
     control_plane::exports::syneroym::control_plane::orchestrator::{
         ArtifactSource, DeployManifest, ServiceConfig, ServiceType, WasmManifest,
     },
-    host::syneroym::data_layer::store::{DataLayerError, Host as DataLayerHost},
+    host::syneroym::data_layer::store::{DataLayerError, Host as DataLayerHost, SqlValue},
 };
 
 fn test_messaging_context() -> MessagingContext {
@@ -199,6 +199,70 @@ async fn test_execute_ddl_allowed_for_admin_ucan_root_caller() {
     DataLayerHost::execute_ddl(&mut host_state, "CREATE TABLE x (id TEXT)".to_string())
         .await
         .unwrap();
+}
+
+/// `query-raw` (Slice B5, ADR-0011) is gated identically to `execute-ddl`:
+/// an ordinary (non-lifecycle, non-admin) caller must be denied.
+#[tokio::test]
+async fn test_query_raw_denied_for_ordinary_caller() {
+    let dir = tempfile::tempdir().unwrap();
+    let key_store = Arc::new(KeyStore::new());
+    let storage_provider: Arc<dyn StorageProvider> =
+        Arc::new(SqliteStorageProvider::new(dir.path(), false).unwrap());
+    let blob_provider: Arc<dyn BlobProvider> =
+        Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+
+    let mut host_state = HostState::new(
+        "query-raw-deny-svc".to_string(),
+        None,
+        key_store,
+        storage_provider,
+        blob_provider,
+        CallerContext::service_system("query-raw-deny-svc"),
+        0,
+        test_messaging_context(),
+        test_streaming_context(),
+        empty_service_proxy(),
+    );
+
+    let err = DataLayerHost::query_raw(&mut host_state, "SELECT 1".to_string(), vec![])
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataLayerError::PermissionDenied));
+}
+
+/// A lifecycle-elevated caller (`init`/`migrate`) is admitted to `query-raw`,
+/// same as `execute-ddl`.
+#[tokio::test]
+async fn test_query_raw_allowed_for_local_elevated_lifecycle_context() {
+    let dir = tempfile::tempdir().unwrap();
+    let key_store = Arc::new(KeyStore::new());
+    let storage_provider: Arc<dyn StorageProvider> =
+        Arc::new(SqliteStorageProvider::new(dir.path(), false).unwrap());
+    let blob_provider: Arc<dyn BlobProvider> =
+        Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+
+    let mut host_state = HostState::new(
+        "query-raw-admin-svc".to_string(),
+        None,
+        key_store,
+        storage_provider,
+        blob_provider,
+        CallerContext::local_elevated("query-raw-admin-svc"),
+        0,
+        test_messaging_context(),
+        test_streaming_context(),
+        empty_service_proxy(),
+    );
+
+    let result = DataLayerHost::query_raw(
+        &mut host_state,
+        "SELECT 1 AS one".to_string(),
+        Vec::<SqlValue>::new(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.columns, vec!["one".to_string()]);
 }
 
 #[tokio::test]

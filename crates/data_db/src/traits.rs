@@ -170,4 +170,16 @@ pub trait ServiceStore: Send + Sync {
         mutations: &[host_store::Mutation],
         creator_id: &str,
     ) -> Result<(), host_store::DataLayerError>;
+
+    /// Executes a privileged read-only raw-SQL query (ADR-0011). Callers must
+    /// have already verified the `data-layer/admin` capability -- this method
+    /// trusts its caller for authorization but enforces two invariants
+    /// itself: (1) `params` are bound via `?` placeholders, never
+    /// interpolated; (2) the statement is read-only (a mutating statement
+    /// returns `permission-denied`).
+    async fn query_raw(
+        &self,
+        sql: &str,
+        params: &[host_store::SqlValue],
+    ) -> Result<host_store::RawQueryResult, host_store::DataLayerError>;
 }
