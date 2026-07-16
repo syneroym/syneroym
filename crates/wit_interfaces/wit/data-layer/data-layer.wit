@@ -108,9 +108,9 @@ interface store {
 
     /// Executes arbitrary DDL statements.
     ///
-    /// SECURITY: The host must strictly validate that the caller is in an init or
-    /// migration context (e.g., HostState.is_init_context == true) and reject execution
-    /// in standard runtime contexts.
+    /// SECURITY: The host must strictly validate that the caller holds the
+    /// `data-layer/admin` capability (ADR-0015/0016) on this service's own
+    /// resource and reject execution otherwise.
     execute-ddl: func(sql: string) -> result<_, data-layer-error>;
 
     /// Privileged raw-SQL escape hatch (ADR-0011). Gated by the

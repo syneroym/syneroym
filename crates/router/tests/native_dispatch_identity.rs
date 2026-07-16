@@ -491,7 +491,7 @@ async fn query_raw_binds_params_no_injection() {
     let resp: Value = serde_json::from_slice(&resp).unwrap();
     assert_eq!(
         resp["result"]["rows"],
-        json!([[{"Integer": 1}]]),
+        json!([[{"type": "integer", "value": 1}]]),
         "items table must survive intact"
     );
 }
@@ -533,7 +533,69 @@ async fn query_raw_null_param_round_trips() {
         .unwrap();
     let resp: Value = serde_json::from_slice(&resp).unwrap();
     assert!(resp.get("error").is_none(), "null param must deserialize and bind: {resp:?}");
-    assert_eq!(resp["result"]["rows"], json!([["Null"]]));
+    let returned_cell = resp["result"]["rows"][0][0].clone();
+    assert_eq!(returned_cell, json!({"type": "null"}));
+
+    // The output encoding must match the input DTO convention exactly, so a
+    // returned cell can be fed straight back into a subsequent `params`
+    // array without re-encoding (correctness finding C1).
+    let round_trip_body =
+        json_rpc_body("query-raw", json!({"sql": "SELECT ? AS v", "params": [returned_cell]}));
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&caller), &round_trip_body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert!(resp.get("error").is_none(), "round-tripped cell must deserialize: {resp:?}");
+    assert_eq!(resp["result"]["rows"], json!([[{"type": "null"}]]));
+}
+
+/// Correctness finding C1: an `Integer` cell returned from `query-raw` must
+/// be directly resubmittable as a `params` entry in a later call, proving
+/// the output encoding is the same snake-case tag+content convention the
+/// input DTO uses (not the bindgen default PascalCase external tag).
+#[tokio::test]
+async fn query_raw_result_cells_are_round_trippable_as_params() {
+    let (route_handler, _http_routes) = test_route_handler().await;
+
+    let service_id = "query-raw-roundtrip-svc".to_string();
+    let key_store = Arc::new(KeyStore::new());
+    let temp_dir = tempfile::tempdir().unwrap();
+    let storage_provider = Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+    let blob_provider: Arc<dyn BlobProvider> =
+        Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+    let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+    let data_service = Arc::new(SynSvcNativeService::new(
+        service_id.clone(),
+        key_store,
+        storage_provider,
+        blob_provider,
+        messaging_broker,
+    ));
+    route_handler.register_native_service(service_id.clone(), data_service);
+
+    let pipeline = raw_pipeline(&service_id);
+    let preamble = preamble_for(&service_id, "data-layer");
+    let caller = admin_caller("did:key:z6MkQueryRawRoundtripAdmin");
+
+    let first_body = json_rpc_body("query-raw", json!({"sql": "SELECT 42 AS v", "params": []}));
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&caller), &first_body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    let returned_cell = resp["result"]["rows"][0][0].clone();
+    assert_eq!(returned_cell, json!({"type": "integer", "value": 42}));
+
+    let second_body =
+        json_rpc_body("query-raw", json!({"sql": "SELECT ? AS echoed", "params": [returned_cell]}));
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&caller), &second_body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert!(resp.get("error").is_none(), "round-tripped cell must be a valid param: {resp:?}");
+    assert_eq!(resp["result"]["rows"], json!([[{"type": "integer", "value": 42}]]));
 }
 
 #[tokio::test]

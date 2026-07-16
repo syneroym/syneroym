@@ -1103,3 +1103,152 @@ milestone-close activity per the plan's §9, not pulled into this slice.
 own precedent of deferring that update to milestone close (task.md's
 `traceability-matrix.md` exit criterion has stayed unchecked across every
 prior slice for the same reason).
+
+### Post-commit code review (2026-07-16) — findings incorporated
+
+A follow-up review of commit `0352c39` found seven items. Verified each
+empirically against the actual code (not just plausible from reading it)
+before acting; five were fixed, two were pinned with a test as documented
+characteristics rather than changed.
+
+- **Fixed (S1, High) — `Statement::readonly()` does not cover `ATTACH`/
+  `DETACH`, and the reader pool opens read-write.** Confirmed empirically: a
+  bare `ATTACH DATABASE '<host path>' AS x` through `query_raw` reported
+  `readonly() == true` *and* created a zero-byte file at `<host path>` on the
+  host filesystem as a side effect of the `ATTACH` alone (no subsequent
+  table access needed) — directly contradicting the "reader connection can
+  never actually mutate the database" claim the original doc comment made,
+  and defeating ADR-0011's "Database Isolation Unaffected" guarantee (an
+  admin caller could `ATTACH` another service's DB file, or any
+  process-readable host path, and read it via `SELECT` against the attached
+  handle). Fixed: `do_query_raw` now installs an SQLite authorizer
+  (`deny_query_raw_escapes`, `crates/data_db/src/sqlite.rs`) that denies
+  `Attach`/`Detach`/`Transaction`/a value-setting `Pragma` — all four report
+  `readonly() == true` but change connection configuration or (for `ATTACH`)
+  the host filesystem, not the database's content, which is exactly the gap
+  `sqlite3_stmt_readonly()`'s own documentation calls out. The authorizer is
+  always cleared after the call (success or error), since the connection is
+  pooled and shared with `get`/`query`/future `query-raw` callers. Required
+  adding rusqlite's `hooks` feature to the workspace `Cargo.toml` (`[]` —
+  no new dependency, purely gates an already-compiled-in FFI surface).
+  New test `test_query_raw_rejects_connection_configuration_escapes`
+  (`crates/data_db/src/tests_crud.rs`) asserts `permission-denied` for all
+  four and — the load-bearing assertion — that a denied `ATTACH` creates no
+  file on disk. ADR-0011 amended further (§"Read-Only Enforced") to record
+  the two-layer enforcement.
+- **Fixed (S2, Medium) — no compute bound independent of the row-count page
+  cap.** `MAX_QUERY_PAGE_SIZE` bounds emitted rows, not work done — a
+  recursive CTE or unconstrained cross join can compute unboundedly while
+  returning a single row, pinning a reader-pool connection indefinitely (the
+  safe JSON filter DSL can't express either construct, so this is new
+  surface `query-raw` introduces, not a pre-existing `query` gap). Fixed: a
+  `Connection::progress_handler` (`QUERY_RAW_MAX_VM_OPS = 50_000_000`,
+  intentionally generous — a backstop, not a cost optimizer) interrupts
+  execution independent of row count; `OperationInterrupted` maps to
+  `quota-exceeded`. New test
+  `test_query_raw_bounds_compute_independent_of_row_count` runs an
+  unterminated-by-`LIMIT` recursive counting CTE (`x < 2000000000`) and
+  asserts it's interrupted in well under a second, not left to run
+  (near-)indefinitely.
+- **Fixed (C1, Medium) — request/response `sql-value` JSON encodings were
+  asymmetric.** `query-raw`'s `params` require the snake-case
+  adjacently-tagged `{"type":"text","value":...}` shape (`SqlValueDto`), but
+  the response serialized the bindgen `SqlValue` directly, which derives
+  serde's default PascalCase externally-tagged form (`{"Integer":30}`,
+  `"Null"`) — a cell taken from a `query-raw` response could not be
+  resubmitted as a later call's `params` entry without hand re-encoding it,
+  contradicting the exact convention `SqlValueDto` exists to uphold. Fixed:
+  `SqlValueDto` now also derives `Serialize` and a `RawQueryResultDto`
+  wraps the response's `rows` through it, so response and request share one
+  encoding. New test `query_raw_result_cells_are_round_trippable_as_params`
+  (`crates/router/tests/native_dispatch_identity.rs`) feeds a returned
+  `Integer` cell straight into a second call's `params` and asserts it
+  binds; `query_raw_null_param_round_trips` extended similarly for `Null`.
+- **Fixed (T1, Medium) — the write-statement regression test didn't cover
+  the S1 escape category.** `test_query_raw_rejects_write_statements`
+  covered INSERT/UPDATE/DELETE/DROP/CREATE, all `readonly() == false`; none
+  of those would have caught S1, since `ATTACH`/`DETACH`/`BEGIN`/pragma-set
+  all report `readonly() == true`. Closed by the new test in the S1 item
+  above, kept as a separate test (not folded into the existing one) since it
+  asserts a materially different property (no host file created, not just
+  "rejected").
+- **Fixed (T2, Low) — no test for F3's documented boolean asymmetry.** New
+  `test_query_raw_boolean_param_binds_as_integer` asserts
+  `SqlValue::Boolean(true)` binds and round-trips out as `SqlValue::Integer(1)`
+  (SQLite has no boolean storage class — inherent, not a bug, per the
+  existing F3 doc note).
+- **Pinned via the fixes above (D1, Low) — the `do_query_raw` doc comment
+  overstated the guarantee.** No longer overstated: the comment now
+  describes the two-layer read-only enforcement (readonly() + authorizer)
+  and the separate compute bound, matching what the code actually does
+  post-fix.
+- **Fixed (D2, Low) — stale `is_init_context` reference in `execute-ddl`'s
+  WIT doc comment.** Pre-existing (not introduced by B5), but sits directly
+  above the new `query-raw` doc and was easy to leave silently
+  contradicting B0's actual gate. Updated to reference the
+  `data-layer/admin` capability, matching `query-raw`'s own doc wording.
+
+Gate re-verified after all fixes: `cargo +nightly fmt --all` clean,
+`cargo clippy --workspace --all-targets --all-features` zero warnings,
+`cargo test --workspace` green, 0 failed (see the consolidated final count
+below, after the second review pass's one additional test).
+
+### Second post-commit review pass (2026-07-16) — one duplicate, one refuted
+
+A second, independent review of the same uncommitted diff raised four
+points; two were praise (requirement alignment, the page-cap-off-by-one
+behavior — both confirmed accurate by re-reading the code, no action), one
+was a duplicate of the C1 finding above (already fixed in this same pass,
+before this second review ran — the reviewer's cited line numbers match the
+pre-fix commit `0352c39`, not the working tree), and one was empirically
+checked and found incorrect:
+
+- **Refuted, but pinned with a regression test — "Silent Multi-Statement
+  Truncation."** The claim: `rusqlite::Connection::prepare` "intrinsically
+  prepares only the first SQL statement" and silently ignores a trailing
+  one (e.g. `SELECT 1; UPDATE ...`). Checked against the actual rusqlite
+  0.38 source (`prepare_with_flags`,
+  `~/.cargo/registry/.../rusqlite-0.38.0/src/lib.rs:774`) rather than
+  assumed: the public `Connection::prepare` wrapper recompiles its own
+  unconsumed tail and returns `Err(Error::MultipleStatement)` if that tail
+  itself contains a real statement — this is rusqlite's own safety net
+  against exactly the scenario described, not something this crate had to
+  add. Confirmed empirically (not just by reading the source) via a
+  throwaway probe before writing the permanent test: `"SELECT 1; SELECT 2"`
+  and `"SELECT 1; UPDATE people SET ..."` both return
+  `SchemaViolation("... Multiple statements provided")` through the real
+  `query_raw` path today, while a harmless tail (`"SELECT 1;"`, a trailing
+  `--` comment, trailing whitespace) is accepted, matching ordinary SQL
+  client ergonomics. No code change was needed. Since this protection lives
+  in a dependency rather than this crate's own code, it is exactly the kind
+  of thing a future rusqlite upgrade or a switch to a lower-level FFI call
+  could silently regress without anyone noticing — pinned with
+  `test_query_raw_rejects_a_real_second_statement_but_allows_a_harmless_tail`
+  (`crates/data_db/src/tests_crud.rs`) so a regression fails loudly instead.
+
+Gate re-verified again: `cargo +nightly fmt --all` clean, `cargo clippy
+--workspace --all-targets --all-features` zero warnings,
+`crates/data_db`'s `tests_crud` module (29/29, +1 for the new pinning
+test), `syneroym-control-plane` (25/25), and
+`crates/router/tests/native_dispatch_identity.rs` (13/13) all green in
+isolation.
+
+### Consolidated final gate (both review rounds)
+
+- `cargo +nightly fmt --all` — clean.
+- `cargo clippy --workspace --all-targets --all-features` — zero warnings.
+- `cargo test --workspace` — **456 passed, 0 failed** across 50 test
+  binaries (full run, sandbox disabled; re-verified twice for consistency).
+  458 tests declared minus 2 pre-existing `#[ignore]`d tests (unrelated to
+  B5, present before this slice) accounts for the 456 figure exactly — no
+  unaccounted gap. `syneroym-data-db`'s lib tests: 66 (was 62 pre-review,
+  +4: the S1 escape/T1, S2 compute-bound, T2 boolean, and the
+  multi-statement pinning test). `crates/router/tests/
+  native_dispatch_identity.rs`: 13 (was 12 pre-review, +1: the C1
+  round-trippability test).
+- `mise run test:e2e` — **12 passed, 0 failed** (8 + 4 across the two
+  Playwright configs) — matches the established baseline exactly; a pure
+  regression check, B5 adds no e2e-visible behavior.
+- `wasm32-wasip2` — unaffected by the review-fix round (no WIT change since
+  the original commit); `test-components/data-layer-test` still builds
+  clean.

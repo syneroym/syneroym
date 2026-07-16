@@ -99,16 +99,35 @@ projection, positionally aligned — replaces it in this ADR's signature.
 
 ### Read-Only Enforced
 
-`query-raw` accepts **read-only statements only**, enforced via
-`rusqlite::Statement::readonly()` (SQLite classifies the compiled statement —
-no SQL parser needed on the host side), executed on the concurrent reader
-pool. Writes keep using `put`/`patch`/`batch-mutate`; schema changes keep
-using `execute-ddl` (the single-writer loop). A non-read statement returns
+`query-raw` accepts **read-only statements only**, enforced via two layers on
+the concurrent reader pool:
+
+1. `rusqlite::Statement::readonly()` (SQLite classifies the compiled
+   statement — no SQL parser needed on the host side) rejects any statement
+   that writes the database's *content*.
+2. An authorizer callback additionally denies `ATTACH`/`DETACH`/`BEGIN`/a
+   value-setting `PRAGMA`. `Statement::readonly()` reports `true` for all
+   four — SQLite's own docs for `sqlite3_stmt_readonly()` note this gap,
+   since none of them write the main database file's *content*, only the
+   connection's configuration. `ATTACH DATABASE '<path>' AS x` in particular
+   creates `<path>` on the host filesystem as a side effect (confirmed
+   empirically) and would let an admin caller read or write outside its own
+   per-service database, defeating the "Database Isolation Unaffected"
+   guarantee above without layer 2.
+
+Writes keep using `put`/`patch`/`batch-mutate`; schema changes keep using
+`execute-ddl` (the single-writer loop). A rejected statement returns
 `permission-denied`. This is a deliberate narrowing from this ADR's original
 "arbitrary DML/query SQL" framing: `query-raw` is a *query* escape hatch, not
 a raw-write path — the existing mutation surface already covers writes with
 its own validation (creator-id attribution, batch-size limits), which a raw
 write path would silently bypass.
+
+A third mechanism bounds *compute* independent of the above: a
+`Connection::progress_handler` interrupts a statement after a large but
+finite number of virtual-machine instructions, since the row-count page cap
+alone does not stop a recursive CTE or unconstrained cross join that does
+unbounded work while returning few or no rows.
 
 ## Consequences
 
@@ -126,8 +145,13 @@ write path would silently bypass.
 - Tests must cover: `query-raw` rejected with `permission-denied` outside a
   trusted context; parameter binding never interpolates guest values into SQL
   text (same injection test shape as ADR-0007's filter compiler); a mutating
-  statement rejected with `permission-denied` (read-only enforcement); a BLOB
-  column rejected with `schema-violation` (`sql-value` has no `blob` arm);
+  statement rejected with `permission-denied` (read-only enforcement); an
+  `ATTACH`/`DETACH`/`BEGIN`/value-setting-`PRAGMA` statement rejected with
+  `permission-denied` and confirmed to create no file on the host filesystem
+  (the `Statement::readonly()`-reports-true gap, layer 2 above); a BLOB
+  column rejected with `schema-violation` (`sql-value` has no `blob` arm); a
+  statement doing unbounded compute (e.g. an unterminated recursive CTE)
+  interrupted with `quota-exceeded` rather than hanging the connection;
   `query-raw` cannot reference another service's database or files (isolation
   holds).
 - Must appear as an explicit gate item in the M4 (or M3B, whichever ships it)

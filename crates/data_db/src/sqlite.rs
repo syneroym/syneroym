@@ -407,12 +407,68 @@ fn rusqlite_to_wit_value(
     })
 }
 
+/// Denies connection-configuration/state changes that `Statement::readonly()`
+/// does not classify as a write to the database's *content* (SQLite's own
+/// docs for `sqlite3_stmt_readonly()` note this gap): `ATTACH`/`DETACH`
+/// change which files this connection can read/write -- confirmed
+/// empirically, a bare `ATTACH DATABASE '<host path>' AS x` reports
+/// `readonly() == true` and creates `<host path>` on the host filesystem as a
+/// side effect, which would otherwise let an admin caller escape per-service
+/// DB isolation (read another service's file, or write an arbitrary host
+/// path). `BEGIN`/a value-setting `PRAGMA` would mutate connection state that
+/// leaks onto whichever caller borrows this pooled connection next. None of
+/// these has a legitimate use in `query-raw`, a read-only escape hatch
+/// scoped to this service's own database (ADR-0011).
+fn deny_query_raw_escapes(ctx: rusqlite::hooks::AuthContext<'_>) -> rusqlite::hooks::Authorization {
+    use rusqlite::hooks::{AuthAction, Authorization};
+    match ctx.action {
+        AuthAction::Attach { .. } | AuthAction::Detach { .. } | AuthAction::Transaction { .. } => {
+            Authorization::Deny
+        }
+        AuthAction::Pragma { pragma_value: Some(_), .. } => Authorization::Deny,
+        _ => Authorization::Allow,
+    }
+}
+
+fn map_query_raw_prepare_error(e: rusqlite::Error) -> host_store::DataLayerError {
+    if let rusqlite::Error::SqliteFailure(ffi_err, _) = &e
+        && ffi_err.code == rusqlite::ErrorCode::AuthorizationForStatementDenied
+    {
+        return host_store::DataLayerError::PermissionDenied;
+    }
+    host_store::DataLayerError::SchemaViolation(format!("query-raw prepare failed: {e}"))
+}
+
+fn map_query_raw_step_error(e: rusqlite::Error) -> host_store::DataLayerError {
+    if let rusqlite::Error::SqliteFailure(ffi_err, _) = &e
+        && ffi_err.code == rusqlite::ErrorCode::OperationInterrupted
+    {
+        return host_store::DataLayerError::QuotaExceeded;
+    }
+    map_rusqlite_error(e)
+}
+
+/// Coarse compute bound (Flag S2, B5 post-commit review): the page cap
+/// (`MAX_QUERY_PAGE_SIZE`) only bounds *emitted rows* -- a recursive CTE or
+/// an unconstrained cross join can do effectively unbounded work while
+/// producing few or no output rows, pinning a reader-pool connection
+/// indefinitely. `Connection::progress_handler` interrupts execution after
+/// this many virtual-machine instructions regardless of row count. The
+/// budget is intentionally generous (legitimate small-per-service-DB
+/// queries should never approach it) -- this is a backstop against
+/// pathological/runaway statements, not a query-cost optimizer.
+const QUERY_RAW_MAX_VM_OPS: i32 = 50_000_000;
+
 /// Executes a privileged read-only raw-SQL query (ADR-0011) on the reader
-/// pool. Read-only enforcement (D2 of B5.md): SQLite classifies the compiled
-/// statement via `Statement::readonly()`, which is `false` for
-/// INSERT/UPDATE/DELETE/DDL/PRAGMA-write statements -- checked *before*
-/// stepping, so the read-write-capable reader connection can never actually
-/// mutate the database.
+/// pool. Read-only enforcement (D2 of B5.md) is two-layered: `Statement::
+/// readonly()` rejects statements that write the database's content
+/// (INSERT/UPDATE/DELETE/DDL/PRAGMA-write), and the authorizer installed
+/// below (`deny_query_raw_escapes`) rejects the connection-configuration
+/// escapes `readonly()` alone does not cover. Together they ensure the
+/// read-write-capable reader connection can never mutate the database or
+/// step outside this service's own file. A progress handler
+/// (`QUERY_RAW_MAX_VM_OPS`) additionally bounds total compute, independent
+/// of the row-count page cap.
 fn do_query_raw(
     conn: &Connection,
     sql: &str,
@@ -420,9 +476,25 @@ fn do_query_raw(
 ) -> Result<host_store::RawQueryResult, host_store::DataLayerError> {
     let bound: Vec<SqlValue> = params.iter().map(wit_to_rusqlite_value).collect();
 
-    let mut stmt = conn.prepare(sql).map_err(|e| {
-        host_store::DataLayerError::SchemaViolation(format!("query-raw prepare failed: {e}"))
-    })?;
+    conn.authorizer(Some(deny_query_raw_escapes)).map_err(map_rusqlite_error)?;
+    conn.progress_handler(QUERY_RAW_MAX_VM_OPS, Some(|| true)).map_err(map_rusqlite_error)?;
+    let result = run_query_raw(conn, sql, &bound);
+    // Always clear the authorizer/progress handler -- this is a pooled
+    // connection shared with other `query`/`get`/future `query-raw`
+    // callers, so leaving either callback installed would leak this call's
+    // policy onto the next borrower's unrelated statements.
+    let _ = conn
+        .authorizer::<fn(rusqlite::hooks::AuthContext<'_>) -> rusqlite::hooks::Authorization>(None);
+    let _ = conn.progress_handler(0, None::<fn() -> bool>);
+    result
+}
+
+fn run_query_raw(
+    conn: &Connection,
+    sql: &str,
+    bound: &[SqlValue],
+) -> Result<host_store::RawQueryResult, host_store::DataLayerError> {
+    let mut stmt = conn.prepare(sql).map_err(map_query_raw_prepare_error)?;
 
     if !stmt.readonly() {
         return Err(host_store::DataLayerError::PermissionDenied);
@@ -436,8 +508,8 @@ fn do_query_raw(
     // truncated -- the caller must add its own `LIMIT`.
     let mut rows_out: Vec<Vec<host_store::SqlValue>> = Vec::new();
     let mut rows =
-        stmt.query(rusqlite::params_from_iter(bound.iter())).map_err(map_rusqlite_error)?;
-    while let Some(row) = rows.next().map_err(map_rusqlite_error)? {
+        stmt.query(rusqlite::params_from_iter(bound.iter())).map_err(map_query_raw_step_error)?;
+    while let Some(row) = rows.next().map_err(map_query_raw_step_error)? {
         if rows_out.len() as u32 >= MAX_QUERY_PAGE_SIZE {
             return Err(host_store::DataLayerError::QuotaExceeded);
         }

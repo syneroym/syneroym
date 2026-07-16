@@ -415,6 +415,72 @@ async fn test_query_raw_rejects_write_statements() {
     assert_eq!(rows_as_json(&count.rows), rows_as_json(&[vec![SqlValue::Integer(3)]]));
 }
 
+/// `Statement::readonly()` classifies `ATTACH`/`DETACH`/`BEGIN`/a
+/// value-setting `PRAGMA` as read-only (they don't modify the *content* of
+/// the main database file), so the D2 gate alone would admit them --
+/// `ATTACH DATABASE '<host path>' AS x` in particular creates `<host path>`
+/// on the host filesystem as a side effect and would let a caller escape
+/// per-service DB isolation. The authorizer installed in `do_query_raw`
+/// closes this gap; assert it does, and that no file is created on disk.
+#[tokio::test]
+async fn test_query_raw_rejects_connection_configuration_escapes() {
+    let store = seeded_people_store().await;
+    let attach_target = tempdir().unwrap();
+    let attach_path = attach_target.path().join("escaped.db");
+    let attach_sql = format!("ATTACH DATABASE '{}' AS x", attach_path.display());
+
+    for sql in [attach_sql.as_str(), "DETACH DATABASE main", "BEGIN", "PRAGMA busy_timeout = 1000"]
+    {
+        let err = store.query_raw(sql, &[]).await.unwrap_err();
+        assert!(
+            matches!(err, DataLayerError::PermissionDenied),
+            "expected permission-denied for {sql:?}, got {err:?}"
+        );
+    }
+
+    assert!(
+        !attach_path.exists(),
+        "a denied ATTACH must not create the target file on the host filesystem"
+    );
+    // The connection must remain fully usable afterwards -- the authorizer
+    // was cleared, not left installed against a poisoned connection.
+    let count = store.query_raw("SELECT count(*) AS n FROM people", &[]).await.unwrap();
+    assert_eq!(rows_as_json(&count.rows), rows_as_json(&[vec![SqlValue::Integer(3)]]));
+}
+
+/// Flag S2 (B5 post-commit review): the row-count page cap alone does not
+/// bound *compute* -- a recursive CTE can do effectively unbounded work
+/// while producing very few output rows (here: a single `count(*)` row).
+/// `do_query_raw`'s progress handler must interrupt it, surfacing
+/// `quota-exceeded` rather than hanging the reader-pool connection.
+#[tokio::test]
+async fn test_query_raw_bounds_compute_independent_of_row_count() {
+    let store = seeded_people_store().await;
+    let err = store
+        .query_raw(
+            "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM cnt WHERE x < \
+             2000000000) SELECT count(*) AS n FROM cnt",
+            &[],
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataLayerError::QuotaExceeded), "expected quota-exceeded, got {err:?}");
+
+    // The connection must remain fully usable afterwards.
+    let count = store.query_raw("SELECT count(*) AS n FROM people", &[]).await.unwrap();
+    assert_eq!(rows_as_json(&count.rows), rows_as_json(&[vec![SqlValue::Integer(3)]]));
+}
+
+/// F3: `boolean` binds as SQLite `INTEGER` 0/1 (SQLite has no boolean
+/// storage class); documented as input-only, since results surface as
+/// `Integer`, never `Boolean`.
+#[tokio::test]
+async fn test_query_raw_boolean_param_binds_as_integer() {
+    let store = seeded_people_store().await;
+    let result = store.query_raw("SELECT ? AS v", &[SqlValue::Boolean(true)]).await.unwrap();
+    assert_eq!(rows_as_json(&result.rows), rows_as_json(&[vec![SqlValue::Integer(1)]]));
+}
+
 #[tokio::test]
 async fn test_query_raw_blob_column_is_schema_violation() {
     let store = seeded_people_store().await;
@@ -438,4 +504,43 @@ async fn test_query_raw_exceeding_page_cap_is_quota_exceeded() {
     }
     let err = store.query_raw("SELECT id FROM people", &[]).await.unwrap_err();
     assert!(matches!(err, DataLayerError::QuotaExceeded));
+}
+
+/// A trailing SQL statement is never silently dropped: `rusqlite::Connection
+/// ::prepare` (which `do_query_raw` calls, not a raw `sqlite3_prepare_v2`)
+/// already recompiles its own tail and rejects a real second statement with
+/// `Error::MultipleStatement`, mapped here to `SchemaViolation` (a caller
+/// error, distinct from `PermissionDenied`). A harmless tail -- a trailing
+/// `;`, whitespace, or a `--` comment, none of which compile to a second
+/// statement -- is accepted, matching ordinary SQL client ergonomics.
+/// Pinned as a regression test: this is rusqlite's own safety net, not code
+/// this crate wrote, so a rusqlite upgrade or a switch to a lower-level FFI
+/// call could silently drop the protection.
+#[tokio::test]
+async fn test_query_raw_rejects_a_real_second_statement_but_allows_a_harmless_tail() {
+    let store = seeded_people_store().await;
+
+    for sql in [
+        "SELECT 1; SELECT 2",
+        "SELECT 1; UPDATE people SET payload = '{}' WHERE id = 'p1'",
+        "SELECT 1; DROP TABLE people",
+    ] {
+        let err = store.query_raw(sql, &[]).await.unwrap_err();
+        assert!(
+            matches!(err, DataLayerError::SchemaViolation(_)),
+            "expected schema-violation for {sql:?}, got {err:?}"
+        );
+    }
+    // The rejected `DROP TABLE` never ran.
+    let count = store.query_raw("SELECT count(*) AS n FROM people", &[]).await.unwrap();
+    assert_eq!(rows_as_json(&count.rows), rows_as_json(&[vec![SqlValue::Integer(3)]]));
+
+    for sql in ["SELECT 1;", "SELECT 1; -- trailing comment", "SELECT 1 ;  "] {
+        let result = store.query_raw(sql, &[]).await.unwrap();
+        assert_eq!(
+            rows_as_json(&result.rows),
+            rows_as_json(&[vec![SqlValue::Integer(1)]]),
+            "a harmless tail on {sql:?} must not be rejected"
+        );
+    }
 }
