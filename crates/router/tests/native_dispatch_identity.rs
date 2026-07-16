@@ -757,3 +757,125 @@ async fn messaging_subscribe_rejected_for_anonymous_caller() {
     drop(client);
     let _ = handle.await;
 }
+
+/// `aggregate` (Slice B4, ADR-0007) is deliberately unprivileged, like
+/// `query` -- the deliberate contrast with B5's `ordinary_caller_denied_
+/// query_raw`: an ordinary (non-admin) caller must be admitted, and the
+/// payload carries the `columns`/`rows` `raw-query-result` shape.
+#[tokio::test]
+async fn ordinary_caller_admitted_aggregate() {
+    let (route_handler, _http_routes) = test_route_handler().await;
+
+    let service_id = "aggregate-ordinary-svc".to_string();
+    let key_store = Arc::new(KeyStore::new());
+    let temp_dir = tempfile::tempdir().unwrap();
+    let storage_provider = Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+    let blob_provider: Arc<dyn BlobProvider> =
+        Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+    let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+    let data_service = Arc::new(SynSvcNativeService::new(
+        service_id.clone(),
+        key_store,
+        storage_provider,
+        blob_provider,
+        messaging_broker,
+    ));
+    route_handler.register_native_service(service_id.clone(), data_service);
+
+    let pipeline = raw_pipeline(&service_id);
+    let preamble = preamble_for(&service_id, "data-layer");
+    let caller = test_caller("did:key:z6MkOrdinaryAggregateCaller");
+
+    let create_body = json_rpc_body("create-collection", json!({"name": "people", "indexes": []}));
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&caller), &create_body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert!(resp.get("error").is_none(), "create-collection failed: {resp:?}");
+
+    let put_body = json_rpc_body(
+        "put",
+        json!({"collection": "people", "value": {"id": "p1", "payload": br#"{"category": "a"}"#.to_vec()}}),
+    );
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&caller), &put_body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert!(resp.get("error").is_none(), "put failed: {resp:?}");
+
+    let aggregate_body = json_rpc_body(
+        "aggregate",
+        json!({
+            "collection": "people",
+            "pipeline": r#"{"$group":{"_id":"category","n":{"$sum":1}}}"#,
+        }),
+    );
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&caller), &aggregate_body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert!(
+        resp.get("error").is_none(),
+        "an ordinary caller must be admitted to aggregate: {resp:?}"
+    );
+    let result = resp.get("result").expect("aggregate must return a result");
+    assert_eq!(result["columns"], json!(["_id", "n"]));
+    assert!(result.get("rows").is_some(), "result must carry a rows field: {result:?}");
+}
+
+/// A malformed `aggregate` pipeline (missing the required `$group` stage)
+/// must map to a JSON-RPC `data-layer` schema-violation error (`-32012`)
+/// through the native dispatch arm, the same error family `query-raw`'s own
+/// malformed-SQL path already maps to (`data_layer_error`'s
+/// `DataLayerError::SchemaViolation` arm) -- not just verified at the
+/// `aggregate::compile` unit level.
+#[tokio::test]
+async fn aggregate_malformed_pipeline_is_schema_violation() {
+    let (route_handler, _http_routes) = test_route_handler().await;
+
+    let service_id = "aggregate-malformed-svc".to_string();
+    let key_store = Arc::new(KeyStore::new());
+    let temp_dir = tempfile::tempdir().unwrap();
+    let storage_provider = Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+    let blob_provider: Arc<dyn BlobProvider> =
+        Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+    let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+    let data_service = Arc::new(SynSvcNativeService::new(
+        service_id.clone(),
+        key_store,
+        storage_provider,
+        blob_provider,
+        messaging_broker,
+    ));
+    route_handler.register_native_service(service_id.clone(), data_service);
+
+    let pipeline = raw_pipeline(&service_id);
+    let preamble = preamble_for(&service_id, "data-layer");
+    let caller = test_caller("did:key:z6MkAggregateMalformedCaller");
+
+    let create_body = json_rpc_body("create-collection", json!({"name": "people", "indexes": []}));
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&caller), &create_body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert!(resp.get("error").is_none(), "create-collection failed: {resp:?}");
+
+    let aggregate_body = json_rpc_body(
+        "aggregate",
+        json!({"collection": "people", "pipeline": r#"{"$match":{"active":true}}"#}),
+    );
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&caller), &aggregate_body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert_eq!(
+        resp["error"]["code"],
+        json!(-32012),
+        "a $group-less pipeline must surface a schema-violation error: {resp:?}"
+    );
+}

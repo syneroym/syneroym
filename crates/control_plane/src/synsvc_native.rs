@@ -35,7 +35,7 @@ use syneroym_wit_interfaces::host::syneroym::{
     app_config::app_config::ConfigError,
     data_layer::store::{
         CollectionSchema, DataLayerError, IndexDefinition, IndexType, Mutation, PatchMutation,
-        QueryOptions, RecordWriteValue, SqlValue,
+        QueryOptions, RawQueryResult, RecordWriteValue, SqlValue,
     },
     vault::vault::VaultError,
 };
@@ -116,6 +116,50 @@ fn data_layer_error(e: DataLayerError) -> RpcError {
 fn parse_params<T: serde::de::DeserializeOwned>(invocation: &NativeInvocation) -> RpcResult<T> {
     serde_json::from_value(invocation.params.clone())
         .map_err(|e| invalid_params(format!("invalid params for {}: {e}", invocation.method)))
+}
+
+/// Hand-rolled DTO: the bindgen `SqlValue` variant derives serde's default
+/// PascalCase externally-tagged form; this API is snake_case tagged JSON.
+/// Used symmetrically for both `query-raw`'s request `params` and both
+/// `query-raw`'s and `aggregate`'s response `rows` -- a caller must be able
+/// to feed a returned cell straight back into a subsequent `query-raw`
+/// call's `params` without re-encoding it.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", content = "value", rename_all = "snake_case")]
+enum SqlValueDto {
+    Text(String),
+    Integer(i64),
+    Real(f64),
+    Boolean(bool),
+    Null,
+}
+
+#[derive(serde::Serialize)]
+struct RawQueryResultDto {
+    columns: Vec<String>,
+    rows: Vec<Vec<SqlValueDto>>,
+}
+
+fn raw_query_result_payload(result: RawQueryResult) -> RpcResult<NativeResponse> {
+    let dto = RawQueryResultDto {
+        columns: result.columns,
+        rows: result
+            .rows
+            .into_iter()
+            .map(|row| {
+                row.into_iter()
+                    .map(|v| match v {
+                        SqlValue::Text(s) => SqlValueDto::Text(s),
+                        SqlValue::Integer(i) => SqlValueDto::Integer(i),
+                        SqlValue::Real(f) => SqlValueDto::Real(f),
+                        SqlValue::Boolean(b) => SqlValueDto::Boolean(b),
+                        SqlValue::Null => SqlValueDto::Null,
+                    })
+                    .collect()
+            })
+            .collect(),
+    };
+    to_payload(&dto)
 }
 
 fn to_payload<T: serde::Serialize>(value: &T) -> RpcResult<NativeResponse> {
@@ -353,32 +397,11 @@ impl SynSvcNativeService {
                     return Err(data_layer_error(DataLayerError::PermissionDenied));
                 }
 
-                // Hand-rolled DTO: the bindgen `SqlValue` variant derives
-                // serde's default PascalCase externally-tagged form; this API
-                // is snake_case tagged JSON. Used symmetrically for both the
-                // request `params` and the response `rows` -- a caller must
-                // be able to feed a returned cell straight back into a
-                // subsequent `query-raw` call's `params` without
-                // re-encoding it.
-                #[derive(serde::Serialize, serde::Deserialize)]
-                #[serde(tag = "type", content = "value", rename_all = "snake_case")]
-                enum SqlValueDto {
-                    Text(String),
-                    Integer(i64),
-                    Real(f64),
-                    Boolean(bool),
-                    Null,
-                }
                 #[derive(serde::Deserialize)]
                 struct Req {
                     sql: String,
                     #[serde(default)]
                     params: Vec<SqlValueDto>,
-                }
-                #[derive(serde::Serialize)]
-                struct RawQueryResultDto {
-                    columns: Vec<String>,
-                    rows: Vec<Vec<SqlValueDto>>,
                 }
                 let req: Req = parse_params(&invocation)?;
                 let params: Vec<SqlValue> = req
@@ -393,25 +416,23 @@ impl SynSvcNativeService {
                     })
                     .collect();
                 let result = store.query_raw(&req.sql, &params).await.map_err(data_layer_error)?;
-                let result_dto = RawQueryResultDto {
-                    columns: result.columns,
-                    rows: result
-                        .rows
-                        .into_iter()
-                        .map(|row| {
-                            row.into_iter()
-                                .map(|v| match v {
-                                    SqlValue::Text(s) => SqlValueDto::Text(s),
-                                    SqlValue::Integer(i) => SqlValueDto::Integer(i),
-                                    SqlValue::Real(f) => SqlValueDto::Real(f),
-                                    SqlValue::Boolean(b) => SqlValueDto::Boolean(b),
-                                    SqlValue::Null => SqlValueDto::Null,
-                                })
-                                .collect()
-                        })
-                        .collect(),
-                };
-                to_payload(&result_dto)
+                raw_query_result_payload(result)
+            }
+            "aggregate" => {
+                // No capability gate -- unlike `execute-ddl`/`query-raw`,
+                // `aggregate` compiles a whitelisted operator document, the
+                // same trust level as `query`.
+                #[derive(serde::Deserialize)]
+                struct Req {
+                    collection: String,
+                    pipeline: String,
+                }
+                let req: Req = parse_params(&invocation)?;
+                let result = store
+                    .aggregate(&req.collection, &req.pipeline)
+                    .await
+                    .map_err(data_layer_error)?;
+                raw_query_result_payload(result)
             }
             other => Err(RpcError::MethodNotFound(format!("data-layer/{other}"))),
         }

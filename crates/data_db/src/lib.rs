@@ -1,3 +1,4 @@
+pub mod aggregate;
 pub mod errors;
 pub mod filter;
 pub mod registry_store;

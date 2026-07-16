@@ -81,7 +81,7 @@ Supported operators in M3A scope:
 The M3 `query` function returns raw records only. When designed, it should
 translate MongoDB aggregation-pipeline stages to SQLite constructs (`GROUP BY`,
 `HAVING`, views) rather than invent independent syntax — see the rationale
-above.
+above. Implemented in M04A Slice B4; see "Amendments" below.
 
 ### Full-Power Escape Hatch (Trusted Contexts)
 
@@ -163,3 +163,61 @@ cannot be overridden by the WASM guest:
   ships no earlier than M3B/M4.
 - The `migrate()` WIT export must be added to the `data-layer-guest` world and
   the `host.wit` world in Slice 3A.
+
+## Amendments
+
+**2026-07-16 (M04A Slice B4).** `AggregationPipeline` was deferred above and
+in `task.md` as "on the `query` function"; implementation (plan:
+`docs/planning/milestones/M04A-proxy-and-auth-foundation/plans/B4.md`) recorded
+three shape decisions before coding, following B5's precedent of confirming
+return-shape/DSL choices with the requester rather than guessing:
+
+- **Separate `aggregate` function, not an extension of `query`.** `query`
+  returns `query-result` = `list<record-read-value>`, a fixed
+  `{id, payload, creator-id, created-at, updated-at}` shape that cannot
+  represent a grouped/projected result (`SELECT category, count(*) …`) — the
+  same mismatch B5 hit and resolved with `raw-query-result` (see ADR-0011).
+  `aggregate: func(collection: string, pipeline: string) ->
+  result<raw-query-result, data-layer-error>` reuses that same record rather
+  than inventing a second one. "On the `query` function" (task.md, and the
+  original wording above) is read as "on the `query` capability/DSL family",
+  not literally the `query` WIT function.
+- **The DSL is a single JSON object, not an ordered pipeline array.** The
+  document has optional keys `$match`/`$group`(required)/`$having`/`$project`/
+  `$sort`/`$limit`/`$skip`, compiled in one deterministic pass. Narrower than
+  MongoDB's ordered `[{…},{…}]` pipeline, but covers exactly the operators
+  this milestone names (`$group`/`$having`/projections) and is far simpler to
+  compile and validate than a general multi-stage pipeline.
+- **Physical collections only; init-defined logical views are deferred.**
+  Field access (`_id`, accumulator arguments, `$match`) assumes the physical
+  `{id, payload}` row shape (`json_extract(payload, '$.field')`), which does
+  not hold for an arbitrary `CREATE VIEW`. Aggregating over init-defined
+  logical views, named in `task.md`'s original scope, is deferred to a
+  follow-on (would need `PRAGMA table_info` introspection to distinguish bare
+  columns from `json_extract`-backed ones).
+
+Two further notes carried into `status.md`'s B4 section rather than repeated
+here in full:
+
+- **Payload-only field access is deliberate consistency with `query`, not a
+  narrowing of it** — `filter.rs`'s existing filter DSL (reused verbatim for
+  `aggregate`'s `$match`) has zero physical-column awareness either; neither
+  DSL can currently filter/group by `creator_id` or the other host-injected
+  columns. If host-column access is wanted later, it should be added to both
+  `filter.rs` and the aggregation compiler together, to keep the two DSLs
+  symmetric.
+- **Forward seam for M04B FDAE.** `aggregate` is a second, independent read
+  path into `payload` that does not flow through `query`'s compiler. M04B's
+  FDAE RLS/CLS pushdown sieve (`docs/planning/milestones/M04B-fdae-policy/task.md`)
+  is currently scoped only to `data-layer::query`; unless M04B also wraps
+  `aggregate`, a caller row-restricted on `query` could read the same rows in
+  aggregate form via this path. `aggregate`'s `$match` stage already compiles
+  through `filter::compile_filter`, the same seam M04B's sieve hooks for
+  `query`, so wiring an injected RLS predicate into `aggregate` when M04B
+  lands is a matter of remembering to do it, not a structural blocker. This
+  slice records the gap; it does not close it.
+
+No signature or gate change to any function this ADR already covers
+(`query`, `execute-ddl`, `query-raw`) — `aggregate` is additive WIT surface,
+requires no capability gate (same trust level as `query`), and ships no
+earlier than M4A.

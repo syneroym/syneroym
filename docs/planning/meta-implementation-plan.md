@@ -215,7 +215,65 @@ foundation. Carries no M3 debt — it is purely the new engine.
 
 ---
 
+## Build-Order Amendment: M5–M7 Resequencing (2026-07-16)
+
+> **Optimization target:** the end-state at M7 close, not the wall-clock
+> timing of any individual milestone. The milestone **numbers and labels
+> below are unchanged** — this is a build-order note, exactly like the
+> M3B/M3C course corrections above, not a renumbering. It re-slices *when*
+> the work inside M5–M7 is done, driven by two observations: (1) the two
+> highest-uncertainty pieces in the whole plan — the DataFusion/Substrait
+> federated-query orchestrator (M5, item 2) and SQLite WAL replication
+> (M7, item 2) — both carry explicit "Design TBD" flags and are the things
+> most likely to surprise us; (2) M6 (the product/chat milestone, our best
+> signal the foundation actually works) depends only on M5's **async
+> primitives**, not on the orchestrator, versioning, or dev tooling.
+
+**Resequenced build order:**
+
+1. **M4A → M4B first, unchanged.** Identity/capability foundation → FDAE is
+   a genuine, security-critical dependency chain; no reason to reshuffle it.
+2. **Split M5; front-load only the half M6 needs.** Do the async primitives
+   (Outbox, DLQ, cron leases, long-running-task restart, sagas — M5 item 1)
+   immediately after M4B. **Defer** the federated-query orchestrator (M5
+   item 2), state versioning/rollback (item 3), and developer tooling
+   (item 4) — nothing downstream blocks on them.
+3. **Pull M6 (product/chat) forward**, right after the async-primitives
+   slice, so integration bugs surface early against real identity + FDAE +
+   async infra rather than after two more heavy subsystems are stacked on
+   top.
+4. **Start the two high-uncertainty spikes early and in parallel**, decoupled
+   from the rest: the **M7 SQLite-WAL-replication feasibility prototype**
+   (M7 item 1 — already scoped as a bounded prototype with correctness /
+   crash-recovery / performance exit criteria) and the **orchestrator's
+   shard-discovery / data-routing design question** (the M5 item 2 "Design
+   TBD"). Neither depends on FDAE, the async primitives, or the chat app —
+   both are pure systems-design problems, so running them early de-risks the
+   plan without blocking the product path.
+5. **Finish the deferred M5 half + all of M7 as the final phase**, informed by
+   the spikes. The orchestrator (query planning) and M7 storage/transport
+   replication (WAL, pub/sub log, blob) are largely independent of each
+   other and can overlap.
+
+**Tradeoff, stated plainly:** this runs two work streams concurrently
+(coordination overhead) and gives up the clean "one milestone, one
+checkpoint" story. Accepted deliberately: it moves the two riskiest,
+least-defined pieces to cheap early spikes instead of leaving them as
+mid-plan blocking dependencies, and lands the product-validation milestone
+earlier. Per-milestone `task.md` documents are still authored per the
+Standard Milestone Documentation Format above; this amendment only governs
+the order in which their slices are picked up.
+
+---
+
 ## Milestone 5: Async Lifecycle and Developer Experience
+
+> **Build order:** see the *M5–M7 Resequencing* amendment above — item 1
+> (async primitives) is front-loaded ahead of M6; items 2–4 (orchestrator,
+> versioning, dev tooling) are deferred to the final phase, with the
+> orchestrator's shard-discovery/routing design pulled forward as an early
+> parallel spike.
+
 **Goal:** Handle background jobs, offline semantics, and continuous reconciliation, while finalizing developer toolchains.
 
 **Feature Grouping:**
@@ -253,6 +311,12 @@ foundation. Carries no M3 debt — it is purely the new engine.
 ---
 
 ## Milestone 6: Initial Integrated Experience
+
+> **Build order:** see the *M5–M7 Resequencing* amendment above — M6 is
+> pulled forward to directly after M5's async-primitives slice (it depends
+> only on those, plus M4 FDAE and the M3B broker), so it validates the
+> foundation early rather than landing last.
+
 **Goal:** Deliver the first cohesive product experience using the completed foundations, proving the value of the reference application.
 
 **Feature Grouping:**
@@ -269,6 +333,12 @@ foundation. Carries no M3 debt — it is purely the new engine.
 ---
 
 ## Milestone 7: Resilience and Operability
+
+> **Build order:** see the *M5–M7 Resequencing* amendment above — item 1
+> (the SQLite-WAL-replication feasibility prototype) is pulled forward as an
+> early parallel spike; the remaining items run in the final phase alongside
+> the deferred M5 orchestrator/versioning work.
+
 **Goal:** Harden the system for production by adding high-availability replication (database, pub/sub, and blob), redundancy, and deep observability.
 
 **Feature Grouping:**

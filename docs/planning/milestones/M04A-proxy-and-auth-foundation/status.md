@@ -1277,3 +1277,295 @@ Gate re-verified: `cargo +nightly fmt --all` clean, `cargo clippy
 - `wasm32-wasip2` — unaffected by the review-fix round (no WIT change since
   the original commit); `test-components/data-layer-test` still builds
   clean.
+
+## Slice B4 — `AggregationPipeline` ✅ (2026-07-16)
+
+Branch: `feat/m04a-b4-aggregation-pipeline`. Requirement `[PLT-DAT]`; closes
+M04A gate item **#2**. Independent — no auth dependency. Reuses B5's
+already-shipped `sql-value`/`raw-query-result`/`run_query_raw` machinery.
+Plan: [plans/B4.md](plans/B4.md).
+
+### What was delivered
+
+1. **WIT** (`crates/wit_interfaces/wit/data-layer/data-layer.wit` — the
+   `host/deps/data-layer` copy is a symlink to this file, one edit feeds both
+   generators): `aggregate: func(collection: string, pipeline: string) ->
+   result<raw-query-result, data-layer-error>` on the `store` interface,
+   immediately after `query`. No new types — reuses B5's `raw-query-result`/
+   `sql-value`. Additive/minor; `wasm32-wasip2` guest builds unaffected.
+2. **`syneroym-data-db`**: a new `aggregate` module
+   ([aggregate.rs](../../../../crates/data_db/src/aggregate.rs)) — a pure,
+   DB-free compiler translating a single-object MongoDB-style aggregation
+   document (`$match`/`$group`(required)/`$having`/`$project`/`$sort`/
+   `$limit`/`$skip`) into a parameterized SQLite
+   `SELECT ... GROUP BY ... HAVING ...` statement plus its bound params, in
+   binding order. `$match` reuses `filter::compile_filter` verbatim (via a
+   `serde_json::to_string` round-trip); `$having` is a second, independent
+   recursive compiler (bare output-alias comparisons, never
+   `json_extract`), with its own depth guard (`MAX_HAVING_DEPTH = 10`,
+   mirroring `filter.rs`'s `MAX_FILTER_DEPTH` rather than importing it, to
+   avoid widening that module's surface). `validate_identifier` bumped to
+   `pub(crate)` (`sqlite.rs`) so the compiler can validate accumulator
+   aliases before interpolating them as `AS <alias>`/bare `HAVING`
+   references — the only caller-derived text ever interpolated into SQL;
+   every field path and literal value is bound as `?`. `do_aggregate`
+   (`sqlite.rs`, next to `do_query_raw`) compiles then hands off to B5's
+   `run_query_raw` verbatim — the compiled SQL is entirely host-generated
+   (bound params + validated identifiers only), so it is `readonly()` by
+   construction and needs neither `do_query_raw`'s authorizer nor its
+   progress handler, which defend against *arbitrary caller SQL* that
+   `aggregate` never accepts. `ServiceStore::aggregate` trait method
+   (`traits.rs`) plus both impls (`SqliteServiceStore`, `Arc<...>`),
+   mirroring `query`'s reader-pool pattern.
+3. **`syneroym-sandbox-wasm`**: guest-side `store::Host::aggregate`
+   (`host_capabilities.rs`) — a direct mirror of `query`, deliberately with
+   **no** capability gate (unlike `execute_ddl`/`query_raw`).
+4. **`syneroym-control-plane`**: an `"aggregate"` arm in `dispatch_data_layer`
+   (`synsvc_native.rs`), also ungated. `SqlValueDto`/`RawQueryResultDto` and
+   the row-mapping logic were lifted from the `query-raw` arm to module
+   scope (a `raw_query_result_payload` helper) so both `query-raw` and
+   `aggregate` share one response encoder instead of duplicating the
+   15-line row map; `query-raw`'s own request-side `SqlValueDto` decode
+   (for `params`) is unchanged, since that decode is `query-raw`-specific.
+5. **ADR-0007 amended in place** (`docs/decisions/0007-data-layer-wit-interface.md`,
+   new "Amendments" section, mirroring ADR-0011's B5 amendment pattern):
+   records the three shape decisions below and the two forward-looking notes
+   (payload-only access, FDAE seam).
+
+### Design decisions confirmed before coding (plan.md §0.1)
+
+- **D1 — separate `aggregate` function, not an extension of `query`.**
+  `query` returns the fixed `record-read-value` shape, which cannot
+  represent a grouped/projected result — the same mismatch B5 hit and
+  resolved with `raw-query-result`. task.md's "on the `query` function" is
+  read as "on the `query` capability/DSL family."
+- **D2 — single JSON object DSL, not an ordered pipeline array.** Narrower
+  than MongoDB's `[{…},{…}]` pipeline, but covers exactly the operators
+  task.md names and is far simpler to compile/validate in one deterministic
+  pass.
+- **D3 — physical collections only; init-defined logical views deferred.**
+  Field access hard-assumes the `{id, payload}` row shape
+  (`json_extract(payload, '$.field')`), which does not hold for an arbitrary
+  `CREATE VIEW`. A follow-on would need `PRAGMA table_info` introspection to
+  add view support.
+
+### Flags resolved / recorded (plan.md §7)
+
+- **F0** — task.md/ADR-0007's "on the `query` function" wording predates B5's
+  `raw-query-result` decision; resolved by D1, noted in the ADR amendment.
+- **F1** — init-defined logical views deferred (D3); recorded in the ADR and
+  here.
+- **F2** — composite `$group._id` (an object) is rejected with a typed
+  `schema-violation`, not silently mis-grouped; `test_composite_id_rejected`.
+- **F3** — `$sum` accepts only the literal `1` (→ `COUNT(*)`); any other
+  numeric literal is rejected to avoid ambiguous `SUM(constant)` semantics;
+  `test_sum_non_one_literal_rejected`.
+- **F4** — output column order absent `$project` is alphabetical
+  (`serde_json::Map` is `BTreeMap`-backed; this workspace does not enable
+  `preserve_order`), not pipeline-insertion order; `_id` always emitted
+  first regardless. Documented in the WIT doc-comment and the compiler's
+  own doc comment; pinned by `test_group_sum_avg_min_max`.
+- **F5** — kept, per the plan's own recommendation: absent an explicit
+  `$sort`, a grouped result gets a default `ORDER BY _id ASC` for stable
+  ordering, rather than depending on SQLite's unspecified `GROUP BY` row
+  order.
+- **F6** — the page-cap `QuotaExceeded` test seeds `MAX_QUERY_PAGE_SIZE + 1`
+  distinct group keys directly (not the lighter "lean on B5's own
+  `run_query_raw` test" fallback the plan allowed) — same cost profile as
+  B5's own equivalent test in the same file, which already runs acceptably
+  fast; `test_aggregate_over_page_cap_quota_exceeded`.
+- **F7** — `$having` without a `$group._id` grouping key (`_id: null`, whole
+  table as one group) works unmodified: SQLite treats the single implicit
+  group as any other for `HAVING` purposes; not separately pinned with a
+  dedicated test beyond the existing `$having` coverage, since the compiler
+  applies no special-casing between the two paths.
+- **F8 — payload-only field access is deliberate consistency with `query`,
+  not a narrowing of it.** `_id`, accumulator arguments, and `$match` fields
+  all resolve as `json_extract(payload, '$.field')`; the physical columns
+  (`id`, `creator_id`, `created_at`, `updated_at`) are unreachable from
+  either DSL today (`filter.rs` has zero physical-column awareness either —
+  verified by reading it, not assumed). Recorded in the ADR amendment: if
+  host-column access is wanted later, add a bounded four-column allowlist to
+  `filter.rs` **and** `aggregate.rs` together, to keep the two DSLs
+  symmetric.
+- **F9 — forward seam for M04B FDAE, not closed here.** `aggregate` is a
+  second, independent read path into `payload` that does not flow through
+  `query`'s compiler. M04B's FDAE RLS/CLS pushdown sieve
+  (`docs/planning/milestones/M04B-fdae-policy/task.md:266`) is currently
+  scoped only to `data-layer::query`; unless M04B also wraps `aggregate`, a
+  caller row-restricted on `query` could read the same rows in aggregate
+  form via this path. `aggregate`'s `$match` stage already compiles through
+  `filter::compile_filter`, the same seam M04B's sieve hooks for `query`, so
+  wiring an injected RLS predicate into `aggregate` when M04B lands is a
+  matter of remembering to do it, not a structural blocker. Recorded in the
+  ADR-0007 amendment; M04A task.md's Relationship-to-M04B section update
+  (naming `aggregate` alongside `query`) is deferred to milestone close, per
+  A1/B5's own precedent for that section.
+
+### Tests
+
+- **Compiler unit** — `crates/data_db/src/aggregate.rs` (+19, DB-free,
+  mirrors `filter.rs`'s own test style): grouping/counting, all four
+  accumulators (`$sum`/`$avg`/`$min`/`$max`) with alphabetical output order,
+  `_id: null` (no `GROUP BY`), `$match` → `WHERE`, `$having` on an alias
+  (bare identifier, no `json_extract`) and its unknown-alias rejection,
+  `$project` reordering, `$sort`+`$limit`, `$skip`→`OFFSET` (both with and
+  without `$limit`), the empty-`$group` guard (R2.3), `$having` depth
+  guard (R1.3, >10 levels), SQL-injection-shaped field paths bound not
+  interpolated, SQL-injection-shaped aliases rejected by
+  `validate_identifier`, composite `$group._id` rejected (F2), unsupported
+  accumulator/stage-key rejected, missing `$group` rejected, invalid JSON
+  rejected, non-`1` `$sum` literal rejected (F3).
+- **End-to-end store** — `crates/data_db/src/tests_crud.rs` (+7, 92 total
+  in `syneroym-data-db`'s lib tests): `test_aggregate_group_count` (the
+  reference-scenario "report" shape — count per category),
+  `test_aggregate_sum_and_having` (`$sum` + `$having` threshold filtering
+  groups), `test_aggregate_project_subset` (column
+  restriction/reordering), `test_aggregate_over_page_cap_quota_exceeded`
+  (`MAX_QUERY_PAGE_SIZE + 1` distinct groups → `QuotaExceeded`, proving the
+  reused `run_query_raw` cap fires), `test_aggregate_skip_limit_pages_groups`
+  (R2.2 — two `$skip`/`$limit` pages are disjoint and together cover all
+  group keys), `test_aggregate_malformed_pipeline_is_schema_violation`,
+  `test_aggregate_injection_bound_not_interpolated` (an injection-shaped
+  `$match` value matches nothing, table survives and remains queryable).
+- **Native-dispatch** — `crates/router/tests/native_dispatch_identity.rs`
+  (+1, 14 total): `ordinary_caller_admitted_aggregate` — an ordinary
+  (non-admin) caller runs `aggregate` end-to-end via
+  `dispatch_json_rpc_once` (`create-collection` → `put` → `aggregate`) and
+  is admitted, with the response carrying the `columns`/`rows`
+  `raw-query-result` shape — the deliberate contrast with B5's
+  `ordinary_caller_denied_query_raw`, proving `aggregate` needs no gate.
+
+### Gate
+
+- `cargo +nightly fmt --all` — clean.
+- `cargo clippy --workspace --all-targets --all-features` — zero warnings.
+- `cargo test --workspace` — **485 passed, 0 failed** across 74 test
+  result blocks (unit + integration binaries + doctest crates; full run,
+  sandbox disabled per the established environment note below).
+  `syneroym-data-db`'s lib tests: 92 (was 66 after B5, +26: 19 compiler unit
+  + 7 end-to-end). `crates/router/tests/native_dispatch_identity.rs`: 14
+  (was 13 after B5, +1).
+- `mise run test:e2e` — **12 passed, 0 failed** (8 + 4 across the two
+  Playwright configs) — matches the established baseline exactly; B4 adds
+  no e2e-visible behavior (no new HTTP route, no new Playwright-driven
+  flow), so this run is a pure regression check.
+- `wasm32-wasip2` — `test-components/data-layer-test` (the component that
+  imports `data-layer`), plus `greeter`/`proxy-test`/`stream-test`/
+  `messaging-pubsub-test`, all build clean against the additive WIT change.
+
+**Environment note:** as with every prior M04A slice, the agent command
+sandbox blocks loopback socket binds needed by `syneroym-coordinator-iroh`'s
+`connection_limit` test, by `wasm32-wasip2` component builds, and by the
+Playwright E2E harness; the figures above are from runs with the sandbox
+disabled, consistent with A0′/B0/A1/B1/B5's own gate methodology. One
+`cargo test --workspace` run under the default sandbox showed a single,
+pre-existing, unrelated flake in `native_dispatch_identity.rs`
+(`ordinary_caller_denied_query_raw`, a `mainline` DHT actor-thread race
+under parallel test execution, not reproducible under `--test-threads=1`
+or with the sandbox disabled) — not a B4 regression; confirmed by isolating
+the test and by reading the panic (`mainline-6.2.0/src/dht.rs:143`, unrelated
+to any code this slice touched).
+
+### Scope discipline
+
+Only Slice B4 was touched: the `data-layer` WIT surface (both copies, one
+edit via the symlink), `syneroym-data-db`'s new `aggregate` module plus its
+trait method/reader-pool helper/two impls and the `validate_identifier`
+visibility bump, `syneroym-sandbox-wasm`'s guest impl,
+`syneroym-control-plane`'s native dispatch arm (plus the `query-raw`
+response-encoder lift, scoped narrowly to avoid duplicating the row-mapping
+logic a second time), the three test files above, and ADR-0007 (amended, not
+superseded). No B5 changes beyond reuse (`run_query_raw`,
+`sql-value`/`raw-query-result` are consumed as-is, not modified), no B6
+(KEK), no M04B (FDAE) work, no other WIT interface.
+`traceability-matrix.md` is left unchanged, consistent with every prior
+M04A slice's precedent of deferring that update to milestone close.
+
+### Post-commit code review (2026-07-16) — two independent reviews, both incorporated
+
+Two independent reviews of commit `93138c2` raised four actionable findings
+plus four test-coverage gaps; one finding (the compute bound) was raised
+independently by both reviewers, converging evidence it was real. All were
+agreed with — no pushback — and fixed:
+
+- **Fixed (Medium, both reviewers independently) — `aggregate` had no
+  compute bound, unlike `query-raw`.** `do_aggregate` deliberately omitted
+  `do_query_raw`'s `QUERY_RAW_MAX_VM_OPS` progress handler, reasoning that
+  the compiled SQL is host-generated and therefore safe. That reasoning
+  covers the *injection* defense (the authorizer, which genuinely is
+  unneeded — the compiler can never emit `ATTACH`/`DETACH`/pragma-set) but
+  not the *compute* one: `aggregate` carries no capability gate (open to any
+  caller, unlike `query-raw`'s Admin-gated raw SQL), and a `GROUP BY`/
+  `ORDER BY` does its scanning/hashing/sorting work over the *whole*
+  collection before `$limit`/`$skip` ever apply — unlike `query`, where SQL
+  `LIMIT` lets SQLite stop early. The row-count page cap alone does not
+  bound that scan cost. Fixed: `do_aggregate` (`crates/data_db/src/sqlite.rs`)
+  now installs the same `QUERY_RAW_MAX_VM_OPS` progress handler (still no
+  authorizer — that half of the original reasoning holds), cleaned up via
+  the existing `QueryRawGuard`. No new "hang" test was added: constructing
+  one would need seeding a genuinely large dataset (the JSON aggregation DSL
+  can't express `query-raw`'s pathological constructs like an unterminated
+  recursive CTE — its worst case is a bounded full-collection scan+group),
+  and the interrupt mechanism itself is already exercised by B5's own
+  `test_query_raw_bounds_compute_independent_of_row_count` against the same
+  shared `run_query_raw`/progress-handler wiring this change reuses
+  verbatim.
+- **Fixed (Low, docs) — WIT doc-comment omitted `$skip`.** The `aggregate`
+  doc-comment listed `$match`/`$group`/`$having`/`$project`/`$sort`/`$limit`
+  but not `$skip` — the only way to page a grouped result past the 1000-row
+  cap (R2.2), fully implemented but undiscoverable from the WIT contract
+  alone. Fixed: `$skip` added to the doc-comment's stage-key list, with a
+  one-line pagination example.
+- **Fixed (Low, UX) — prepare-error text misattributed itself to
+  `query-raw`.** `do_aggregate` shared `run_query_raw`'s
+  `map_query_raw_prepare_error`, so e.g. an `aggregate` over a nonexistent
+  collection surfaced `SchemaViolation("query-raw prepare failed: no such
+  table: X")` to an `aggregate` caller. Fixed: the mapper is now
+  `map_sql_prepare_error(op, e)`, taking a caller-facing operation label;
+  `run_query_raw` takes that label as a parameter, and both call sites
+  (`do_query_raw`, `do_aggregate`) pass their own name.
+- **Fixed (Low, correctness edge) — `$having: {"alias": null}` compiled to
+  `alias = ?` bound to `NULL`, which SQL never matches.** Silent-wrong, not
+  an error: a caller expecting an `IS NULL` semantics on a `$having` alias
+  got zero rows instead. `filter.rs`'s own `compile_equality` already
+  special-cases a null filter value as `IS NULL`; `compile_having_value`'s
+  scalar branch did not. Fixed: a null scalar now compiles to
+  `{alias} IS NULL` (no bound param — `alias` is a bare validated
+  identifier, not a `json_extract` path). New test
+  `test_having_null_scalar_compiles_to_is_null`.
+
+Test-coverage gaps, all added:
+
+- `test_match_group_field_accumulator_and_having_param_order`
+  (`aggregate.rs`) — the highest-risk correctness area (binding order) is
+  now exercised with all three param-bearing stages at once (a field
+  accumulator, a valued `$match`, a valued `$having`), pinning the full
+  textual order; the prior match+group and group+having tests each covered
+  only two of the three in isolation.
+- `test_aggregate_avg_min_max_end_to_end` (`tests_crud.rs`) — `$avg`/`$min`/
+  `$max` were previously asserted only at the SQL-text level;
+  now executed against real seeded data, including `$avg`'s `Real` return
+  type.
+- `aggregate_malformed_pipeline_is_schema_violation`
+  (`native_dispatch_identity.rs`) — a `$group`-less pipeline through the
+  full native-dispatch path now asserts the JSON-RPC error code (`-32012`),
+  not just `aggregate::compile`'s own unit-level `SchemaViolation`.
+- `test_aggregate_default_order_is_ascending_by_id` (`tests_crud.rs`) — F5's
+  default `ORDER BY _id ASC` was previously unexercised (every store test
+  passed an explicit `$sort`); seeds categories in reverse-alphabetical
+  insertion order so a passing assertion can only be explained by the
+  enforced default, not coincidental scan order.
+
+The FDAE forward-seam finding (both reviews) was confirmed already recorded
+correctly in ADR-0007 and this status.md's B4 section (F9) — no code action,
+consistent with the plan's own framing that closing it is M04B's job.
+
+Gate re-verified after all fixes: `cargo +nightly fmt --all` clean,
+`cargo clippy --workspace --all-targets --all-features` zero warnings,
+`cargo test --workspace` — **490 passed, 0 failed** (was 485, +5: the four
+fix-pinning/coverage tests above plus the null-`$having` test), full run
+with the sandbox disabled per the established methodology; `mise run
+test:e2e` — **12 passed, 0 failed** (8 + 4), unchanged, a pure regression
+check; `wasm32-wasip2` — `test-components/data-layer-test` still builds
+clean (no WIT type/signature change, doc-comment only).
