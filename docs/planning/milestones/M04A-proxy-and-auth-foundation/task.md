@@ -356,7 +356,7 @@ Wire `inject_kek`'s `_scope` param (`key_store.rs:46`) to derive per-app-instanc
 KEKs, gated on the caller's verified app-instance identity. Specify + test the DEK
 re-wrap path (Migration Strategy).
 
-#### Slice B7: Substrate & Service Ownership (Deploy Authorization + Ownership Attribution) — *scope recorded, design not yet started*
+#### Slice B7: Substrate & Service Ownership (Deploy Authorization + Ownership Attribution) — *planned, not started ([plans/B7.md](plans/B7.md))*
 **Depends on:** B0 (done — substrate-owner resolution now sources from
 `ControllerAgreement`, see status.md addendum). **Interacts with:** B1 (a
 real capability-delegation chain is the likely mechanism for item 1 below).
@@ -399,15 +399,79 @@ Agreed shape (not yet designed in code):
    `ControllerAgreement`s, or a rotated owner key) are all equally privileged
    — no partial/limited owner tier.
 
-**Open questions to resolve before implementation** (recorded, not decided):
-- Exact shape of the deploy/undeploy/status-check grant — a new `Ability`
-  vocabulary entry (e.g. `orchestrator/deploy`) issued as a UCAN capability,
-  or a separate simpler mechanism for the interim (pre-B1) period?
-- Does this belong entirely in M04A, or does "list apps filtered by owner"
-  eventually generalize into an FDAE (M04B) row-filter over the catalog once
-  the catalog is real data-layer-backed data, rather than bespoke control-
-  plane logic? Not decided; noted so the two milestones don't duplicate the
-  mechanism independently.
+> **Planned 2026-07-17 — see [plans/B7.md](plans/B7.md), which supersedes the
+> anchors below where they conflict.** The plan recommends splitting B7 into
+> **B7a** (attribution: items 2–5) and **B7b** (the deploy grant: item 1), and
+> flags three things this section gets wrong or predates:
+> - **Item 2 names the wrong file.** `app_orchestration/src/catalog.rs` is a
+>   client-side (`roymctl`) blueprint→manifest *resolver* with no deployed-app
+>   records; `control_plane` never calls it. The substrate's deployed-service
+>   record is `EndpointRegistry` (`crates/core/src/local_registry.rs`,
+>   persisted via `endpoints.db`) — that is what `list` reads and where the
+>   owner field belongs (plan F1).
+> - **Item 3 is already satisfied** by B0's `build_caller`
+>   (`caller_did = DelegationCertificate.master_did`); only the multi-hop
+>   *flagging* is outstanding (plan F11, §2.6).
+> - **Item 4 is not implementable as written, and its premise is unsound.** The
+>   community registry verifies every record against its own `service_id`'s key
+>   (`SignedEndpointInfo::verify`), so the substrate *cannot* sign a `Service`
+>   record for an app — by design, since that is what stops a hostile substrate
+>   publishing for services it doesn't host. The owner attribution item 4 wants
+>   already exists and is unused (`EndpointInfo.delegation`). Item 4's
+>   justification — closing a gap between "owner believes it's deployed" and
+>   "it's actually discoverable" — also does not hold as stated: a client *can*
+>   reach an unpublished service if given the substrate address out of band
+>   (`SyneroymClient::new_with_mechanisms` bypasses registry lookup), and the
+>   `Service` record only maps service → substrate anyway. Item 4 is **dropped
+>   from B7** (plan F9). What the situation actually needs is the opposite of
+>   item 4 — **declared service visibility** (below), not more substrate-side
+>   publishing.
+> - **New scope from `f95206b`:** ADR-0017's Open list assigns the
+>   mis-addressed Tier-1 `TODO(M04B/FDAE)` (`route_handler/dispatch.rs`) to B7
+>   — "today any verified identity reaches any native service" (plan F3). B7b
+>   closes it for `orchestrator` only; the `security` interface and the five
+>   data native-capability interfaces stay open (plan F3.1).
+>
+> **Decided 2026-07-17:** ship as **B7a** (attribution) then **B7b** (the deploy
+> grant). An **unowned substrate** — no verified `ControllerAgreement` and no
+> `[iam].admin_ucan_root`, i.e. every deployment today — issues every verified
+> caller `orchestrator/{deploy,undeploy,status}` on the node, logged loudly at
+> boot; deliberately *not* `substrate/admin`, which entails `data-layer/admin`
+> and would open `execute-ddl`/`query-raw` to everyone.
+
+**Open questions — all resolved 2026-07-17** (plan §6 records them in full):
+- *Exact shape of the deploy/undeploy/status-check grant?* →
+  `orchestrator/{deploy,undeploy,status}` as UCAN capabilities, **flat** (no
+  entailment tier), scoped by an `app/<name>` selector. B1 has shipped, so no
+  interim pre-UCAN mechanism is needed.
+- *Posture of a substrate with no owner?* → it **issues every verified caller
+  the three orchestrator abilities**, logged loudly at boot — never
+  `substrate/admin`, which entails `data-layer/admin` and would open
+  `execute-ddl`/`query-raw` to everyone. Consequence: **B7b's gate is inert
+  until something can create a `ControllerAgreement`** (the natural next slice);
+  B7 must not be reported as "deploy is authorized".
+- *Does "list apps filtered by owner" belong here or in FDAE (M04B)?* → **here.**
+  The catalog is `EndpointRegistry`/`endpoints.db` — substrate plumbing, not a
+  service's data-layer DB — so FDAE has no policy document to attach to it and
+  no service resource to name; ADR-0017 §2.1's default-*absent* rule agrees
+  (a resource with no `definitions:` entry is grant-only). The two milestones do
+  not duplicate the mechanism.
+
+**Spun out of B7** (plan §6.2, which has the detail):
+- **Declared service visibility** — designed in
+  [ADR-0018](../../../decisions/0018-service-record-visibility.md) (*Proposed*,
+  awaiting agreement). Publication is currently *incidental* (a service is
+  published iff a pre-signed certificate happened to be supplied). ADR-0018 adds
+  a three-valued `visibility` to the manifest + WIT `service-config` (default
+  `private`), makes `SignedEndpointInfo` the export/import artifact for private
+  records, adds a verified local known-records store so a private service stays
+  reachable cross-node, and keeps `EndpointInfo.is_private` as the `internal`
+  tier's wire encoding.
+- `roymctl svc deploy` validating `--identity` against `--svc-id` (today a
+  mismatch silently builds a certificate the registry rejects forever).
+- A registry-trust-model ADR (item 4 as literally written — needs a real
+  consumer first), a `ControllerAgreement` creation tool, multiple substrate
+  owners, and Tier 1 for the five data native-capability interfaces.
 
 ---
 
