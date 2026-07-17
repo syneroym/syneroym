@@ -1,12 +1,14 @@
 # Access Control Design (Grants + Policy)
 
-> **Status: Reviewed, one question open (§9.1).** A standalone design doc.
-> Reviewed 2026-07-16; §10's Fork B is decided and §9's questions are settled
-> except whether app abilities and policy permissions unify. It supersedes
-> nothing yet — it splits into an amendment to
-> [ADR-0015](../decisions/0015-ucan-capability-model.md) (the grant layer) and
-> D-04-02 (the policy layer, [M04B](milestones/M04B-fdae-policy/task.md)), per
-> §11.
+> **Status: Settled; split into ADRs.** A standalone design doc. Reviewed
+> 2026-07-16; §10's Fork B is decided and every §9 question is resolved. The
+> decisions now live in
+> [ADR-0015](../decisions/0015-ucan-capability-model.md)'s 2026-07-16 amendment
+> (the grant layer) and
+> [ADR-0017](../decisions/0017-fdae-policy-schema-and-compilation.md) (the
+> policy layer, D-04-02, [M04B](milestones/M04B-fdae-policy/task.md)) — those are
+> authoritative. **This doc is kept as the reasoning record**: the pros/cons,
+> the prior art, and what was rejected and why. See §11.
 >
 > **Provenance.** Synthesized 2026-07-16 from three sources that were each
 > partially right: the FDAE material in
@@ -173,23 +175,66 @@ Matching is segment-wise prefix covering; a trailing `/` or `*` is a prefix
 wildcard. **`with` is the *what*, `can` is the *verb*** — keeping selectors out
 of `can` keeps entailment a pure string-hierarchy question.
 
-### 5.2 Two ability namespaces
+**With an app permission (§5.2), the selector is a *further* narrowing, not the
+primary one.** `app/document.view` already knows its table from the policy's
+`definitions:` block, so `with: synapp:acme:svc:docs` (the service alone) is the
+normal form — the permission's `paths:` decide which rows. Adding a selector
+(`.../collection/documents/42`) conjoins an absolute constraint on top: *this
+permission, and only on row 42*. The rule and the selector both narrow; neither
+replaces the other.
 
-- **Platform abilities** — closed, host-defined vocabulary with fixed
-  entailment (`data-layer/*`, `blob/*`, `messaging/*`, `vault/*`,
-  `app-config/*`, `substrate/admin`, and B7's `orchestrator/*`). Users never
-  edit these; the host enforces them.
-- **App abilities** — `app/<name>`, declared by the service owner **in the
-  policy document**, entailment declared alongside. This delivers the
-  `document/manage ⇒ document/move` flexibility `fdae-scratch.md` asked for.
+### 5.2 Two ability namespaces — a value and a reference
 
-**Hard rule:** an app ability can never entail a platform ability. Unknown
-ability strings entail only themselves. Fail closed.
+`can` accepts exactly two kinds of thing, and **the difference between them is
+semantic, not cosmetic** — users must know which they hold:
+
+- **Platform abilities — a *value*.** `data-layer/read`, `blob/*`,
+  `messaging/*`, `vault/*`, `app-config/*`, `substrate/admin`, B7's
+  `orchestrator/*`. A closed, host-defined vocabulary with fixed entailment.
+  Self-describing and **immutable**: `data-layer/read` means the same thing
+  forever. Users never edit these; the host enforces them.
+- **App permissions — a *reference*.** `app/<type>.<permission>`, e.g.
+  `app/document.view`, **defined in the service's policy document** (§6.1,
+  §9.1). Names a permission the resource owner authored; the policy declares
+  both which operations it covers and which rows it reaches. **Late-bound and
+  owner-mutable** — see §5.2.1.
+
+**Hard rules, all failing closed:**
+
+- An app permission can never entail a platform ability.
+- `can: app/X` where the policy does not define `X` — or where the service has
+  no policy at all — is **denied**, never ignored.
+- Unknown platform ability strings entail only themselves.
 
 *(Today `Ability::tier` in `crates/ucan/src/capability.rs` hardcodes the
-`data-layer` tiers and treats everything else as flat — that is the correct
-platform behavior and stays; app abilities are an additional, policy-sourced
-table consulted only within the `app/` namespace.)*
+`data-layer` tiers and treats everything else as flat — correct platform
+behavior, and it stays. App permissions are resolved against the policy, not
+this table.)*
+
+### 5.2.1 Late binding is correct, and the delegator's defense is caveats
+
+`can: app/document.view` names a permission whose **meaning the resource owner
+can change afterward.** A delegator hands over a reference, not a value: redefine
+`view` tomorrow and every outstanding grant naming it changes meaning silently.
+On its face that is the policy widening a grant — the thing intersection exists
+to prevent (§2).
+
+**It is still the right default, because pinning would be worse.** If grants
+pinned a policy version, *tightening* a policy would not reach outstanding
+grants — a hole could never be closed for already-issued capabilities, which is
+a strictly worse failure than the one pinning avoids. Policy tightening **must**
+take effect immediately.
+
+So the asymmetry is inherent: tightening-is-immediate is the feature; widening-
+is-silent is its shadow. Two things make it liveable:
+
+1. **The delegator's defense already exists** — a `where` caveat (§5.3)
+   conjoins regardless of what the policy later says, and cannot be widened by
+   it. A cautious delegator adds one.
+2. **The choice is visible in the grant.** `can: data-layer/read` + caveats is a
+   value: self-describing, immutable, means exactly what it says. `can:
+   app/document.view` is a reference: shorter, owner-maintained, and moves when
+   the owner moves it. Pick deliberately.
 
 ### 5.3 Caveats: the static/dynamic line
 
@@ -226,14 +271,18 @@ Accordingly, the caveat forms:
 | `where` | An **ADR-0007 MongoDB-style JSON filter document**. Not a new language — reuses `crates/data_db/src/filter.rs`, already written, already parameterized. | Conjunction (`AND`) |
 | `fields` | `{allow: [...]}` / `{deny: [...]}` — this is CLS. | Allows intersect, denies union |
 | `can_delegate` | Bool. Absent ⇒ `true` (today's behavior). | Logical AND; once false, terminal |
-| `policy` | A **reference into the policy document's permission vocabulary** (e.g. `document.view`). The seam to Layer 2. | Set intersection |
 
-**`policy:` is the resolution of the scratch's custom-function instinct, not a
-rejection of it.** The instinct — a pointer to a rule a generic engine
-evaluates — was right. The refinement is *whose* rule: the token does not carry
-an expression to run, it names a role the resource owner authored. The token
-stays statically verifiable; the data-dependent part evaluates where the data
-is. Same architecture, evaluation lifted out of the token.
+**Three forms, not four.** An earlier draft added a `policy:` caveat pointing
+into the policy's permission vocabulary. §9.1 removed it: `can: app/document.view`
+already names the permission, so the caveat named it a second time. The seam to
+Layer 2 is `can` itself.
+
+**That resolution honors `fdae-scratch.md`'s custom-function instinct rather
+than rejecting it.** The instinct — a pointer to a rule a generic engine
+evaluates — was right. The refinement is *whose* rule and *where* it runs: the
+token does not carry an expression, it names a permission the resource owner
+authored. The token stays statically verifiable; the data-dependent part
+evaluates where the data is.
 
 ### 5.4 Attenuation: check the shape, stack the constraints
 
@@ -384,21 +433,35 @@ the grant being revoked is a *proof* in some later chain, not its leaf.
 
 Feeds D-04-02. Deltas against `docs/archive/authorization-engine-spec.md`.
 
-### 6.1 Three sections, deployed with the service
+### 6.1 One section, deployed with the service
 
 One document per service, referenced from the manifest (`policy_path`, per
 M04B's migration strategy), versioned and JSON-Schema-validated at deploy — the
 Cedar lesson from §3.
 
+After the removals below and the unification in §9.1, the whole schema is
+`version` plus **one** section — object types, each declaring where it lives,
+how it connects, and what may be done to it:
+
 ```yaml
 version: "fdae/v1"
 
-data:            # what objects exist, and where they live
-relations:       # how objects connect (recursive: true for chains)
-permissions:     # who can do what, as boolean paths over relations
+definitions:
+  document:
+    table: documents            # in this service's own DB (see below)
+    relations:                  # how this type connects to others
+      creator:       { target: user, join_column: creator_uuid }
+      management_chain:
+        { target: user, from_key: id, to_key: manager_id, recursive: true }
+    permissions:                # §9.1 — operations AND rows, one declaration
+      view:
+        allows: [data-layer/read]
+        paths:
+          - [creator, caller]
+          - [creator, management_chain, caller]
 ```
 
-Two deliberate removals from the archived spec, both of which delete concepts
+Three deliberate removals from the archived spec, all of which delete concepts
 rather than add them:
 
 - **`data_sources` is deleted entirely.** The archived spec has policies
@@ -411,6 +474,14 @@ rather than add them:
 - **`hierarchies` folds into `relations`** as `recursive: true`. It was never a
   separate kind of thing — just a self-join that needs `WITH RECURSIVE`. One
   concept fewer for the same expressiveness.
+- **App abilities fold into `permissions`** (§9.1). A permission declares both
+  which operations it covers (`allows:`) and which rows it reaches (`paths:`),
+  so there is exactly one definition site and the §5.3 `policy:` caveat
+  disappears.
+
+**`public:`** is a permission with no `paths:` — reachable by anyone who holds
+it, no relational rule. It exists so authors have an explicit way to say "no row
+restriction here" rather than fighting default-deny.
 
 ### 6.2 Permission operators — `union` is not enough
 
@@ -573,7 +644,7 @@ before SQL is touched.
 |---|---|---|---|
 | 0 | Who are you? | Chain verify → `SessionContext` (identity, grants, claims, anchor, path) | ~ms, cacheable |
 | 1 | May you touch this service at all? | Grant: does any capability name this resource? | µs |
-| 2 | This verb, this collection/topic/method? | Grant: `can` entails, `with` covers | µs |
+| 2 | This verb, this collection/topic/method? | Grant: `can` entails (platform) or the named permission's `allows:` covers the operation (app), and `with` covers | µs |
 | 3 | Which rows and columns? | **Policy ∧ chain `where` caveats ∧ caller's own filter**, compiled into one statement | SQL |
 | 4 | Any non-relational override? | Optional WASM ABAC — batched, fuel-metered, **restrict-only**; may look things up at N+1 cost (§6.7) | per batch |
 
@@ -581,6 +652,27 @@ The layers overlap in exactly one place — `where` caveats and policy filters b
 `AND` into the same SQL statement — and that is fine, because both are
 intersective. The grant is coarse/static/pre-SQL; the policy is fine/dynamic/
 in-SQL. They are not symmetric in shape, only in authority.
+
+### 7.1.1 Composing multiple grants
+
+Within one chain, constraints **conjoin** (§5.4) — that is attenuation. Across
+*independent* grants, they **unite**: holding more capabilities means more
+access, never less.
+
+```
+effective = ⋃ᵢ ( grantᵢ  ∧  policy(grantᵢ.can) )
+```
+
+**The consequence people get wrong: a `where` caveat binds only within its own
+chain.** If Alice holds grant A (`data-layer/read` on `orders`, `where: {region:
+"EU"}`) *and* grant B (`data-layer/read` on `orders`, uncaveated), she sees all
+orders — B is simply a broader grant, and A's caveat does not reach it. This is
+correct (it is what "holding a broader capability" means) and it surprises
+people, so the trace (§7.2) must name **which** grant admitted a row.
+
+Narrowing someone therefore means **revoking the broader grant**, not adding a
+narrower one. There is no "most restrictive wins" rule — that is the AWS
+deny-override model, rejected in §2.
 
 ### 7.2 The decision trace is load-bearing
 
@@ -591,15 +683,25 @@ structured trace:
 ```
 denied
   tier: 3 (data-plane)
-  layer: policy
-  permission: document.view
+  held: app/document.view          # via grant: did:key:z6MkAlice -> orders-svc
+  operation_admitted: true         # permission's `allows:` covers data-layer/read
+  rows_reached: false              # its `paths:` did not reach document 42
   path_failed: [creator -> management_chain -> caller]
-  grant_would_have_allowed: true
+  caveats_applied: [where {region: "EU"}]
 ```
 
-`grant_would_have_allowed` is the field that matters: it tells the operator
-*which layer to go edit*, which is the exact question AWS's policy simulator
-exists to answer. Not a debugging nicety — the reason the design is affordable.
+The fields that matter are `operation_admitted` and `rows_reached`, because
+together they answer *what do I go edit* — the exact question AWS's policy
+simulator exists for. `held` names **which** grant was in play, which §7.1.1
+makes necessary: with multiple grants, "denied" is meaningless without knowing
+which one was evaluated.
+
+**Unification (§9.1) shrinks this problem rather than adding to it.** The
+original worry was "two places to look." For a platform ability that still holds
+(grant and policy are separate artifacts), but for an app permission there is
+**one definition site** — the policy — and the split is no longer *grant vs.
+policy* but *operation admission vs. row reachability*, both answered by the same
+`permissions:` block. That is a meaningfully easier question than IAM's.
 
 **If we will not build this, take Fork A (§10) instead.**
 
@@ -610,20 +712,29 @@ exists to answer. Not a debugging nicety — the reason the design is affordable
 Alice's client calls `orders-svc`, which calls `reports-svc` to render a
 dashboard.
 
-**Grant.** The app owner issued Alice `{with: synapp:acme:svc:reports/collection/orders, can: data-layer/read, caveats: {policy: "order.view", fields: {deny: ["margin"]}}}`. Alice's client re-delegated to `orders-svc` for this request, adding `{where: {region: "EU"}}`.
+**Grant.** The app owner issued Alice
+`{with: synapp:acme:svc:reports, can: app/order.view, caveats: {fields: {deny: ["margin"]}}}`.
+Alice's client re-delegated to `orders-svc` for this request, adding
+`{where: {region: "EU"}}`.
 
 **Chain gives us:** subject = `orders-svc`, **anchor = Alice**, path =
 `[Alice, orders-svc]`. Effective caveats = `where: {region: "EU"}` ∧
-`fields: deny [margin]` ∧ `policy: order.view`.
+`fields: deny [margin]`.
 
-**Tier 1–2:** the selector covers `collection/orders`; `data-layer/read` is
-entailed. Pass, no SQL yet.
+**Tier 1–2:** `with` names the service; `reports-svc`'s policy defines
+`order.view`, whose `allows: [data-layer/read]` covers the `query` being
+dispatched. Pass, no SQL yet — and had the policy not defined `order.view`, this
+is where it would have failed closed (§5.2).
 
-**Tier 3:** `reports-svc`'s policy defines `order.view` as *creator OR
+**Tier 3:** the same `order.view` block supplies the rows — *creator OR
 in-creator's-management-chain*. It compiles against **`anchor`** — Alice, not
 `orders-svc` — which is precisely the confused-deputy defense from §5.5. That
-`WHERE EXISTS` block ANDs with the grant's `region: "EU"` and with the caller's
-own `{status: "open"}` filter. `margin` is projected out by CLS.
+`WHERE EXISTS` ANDs with the grant's `region: "EU"` and with the caller's own
+`{status: "open"}` filter. `margin` is projected out by CLS.
+
+Note that `order.view` did two jobs here — admitting the operation at Tier 2 and
+supplying the rows at Tier 3 — from **one declaration** (§9.1). That is what the
+trace's `operation_admitted` / `rows_reached` split reports on.
 
 **Result:** open EU orders Alice can see, sans margin — one SQL statement, no
 row leaving SQLite that Alice was not entitled to. Had the policy been widened
@@ -633,27 +744,49 @@ reaches. **Neither owner can override the other.**
 
 ---
 
-## 9. Decisions and the one question left
+## 9. Decisions
 
-All review questions resolved 2026-07-16 except §9.1.
+All review questions resolved 2026-07-16.
 
-### 9.1 Live: do app abilities and policy permissions unify?
+### 9.1 App abilities and policy permissions unify ✓
 
-The one thing worth settling before D-04-02 builds either. `app/document.manage`
-(an ability in a grant's `can`) and `document.manage` (a permission in the
-policy's `permissions:` block) are suspiciously the same concept — a named verb
-over a resource type. A grant carrying `can: app/document.view` *and*
-`caveats: {policy: "document.view"}` names it twice.
+They looked like the same concept named twice — a grant carrying
+`can: app/document.view` *and* `caveats: {policy: "document.view"}`. On closer
+reading they are not the same concept at all: they sit on **different axes** —
+an app ability says *which operations* (`manage` ⊇ `move`), a policy permission
+says *which rows* (`view` = creator ∪ management-chain).
 
-If app abilities live in the policy next to `permissions:` (§9.2), the **`policy:`
-caveat from §5.3 may collapse into `can` entirely**, leaving one vocabulary
-instead of two. This is what Zanzibar does — `document:123#view@user:alice` has
-no separate ability concept. Platform abilities (`data-layer/read`) would remain
-distinct and host-fixed, since a service's own internal `put` goes through no
-policy at all.
+**That is an argument for merging, not separating.** Neither is meaningful
+alone: operations with no row rule, and a row rule with no operations, are one
+idea split across two files. So a permission declares both:
 
-Cheap to notice now, expensive to discover once both mechanisms exist. It makes
-the design *smaller*, which is the tiebreaker.
+```yaml
+permissions:
+  view:
+    allows: [data-layer/read]
+    paths:  [[creator, caller], [creator, management_chain, caller]]
+  manage:
+    allows:   [data-layer/read, data-layer/write, rpc/move]
+    includes: [view]          # entailment: declared, not derived
+    paths:    [[creator, caller]]
+```
+
+Consequences, all of them subtractive:
+
+- **The `policy:` caveat is deleted** (§5.3). `can: app/document.view` names it
+  once.
+- **Entailment is declared** (`includes:`), not derived — no inference rules.
+- **One definition site**, which shrinks §7.2's "two places to look" problem.
+- Platform abilities stay as the raw-operation vocabulary for policy-less paths,
+  syntactically distinct via the `app/` prefix (§5.2).
+
+Two rules keep it safe: **if a policy exists for a resource it always applies**
+(a grant cannot opt out, or `can: data-layer/read` becomes a bypass and the
+intersection collapses); **if no policy exists the grant alone decides** (which
+is what keeps M04B additive — today's policy-less services keep working).
+
+The cost is that grants now name something owner-mutable — see §5.2.1, where
+late binding is argued for on its merits.
 
 ### 9.2 App-ability vocabulary lives in the **policy document** ✓
 
@@ -663,7 +796,7 @@ one artifact; the manifest is deliberately a "dumb, fully-resolved document"
 not a semantics one; and the policy's `permissions:` block **already** names
 permissions and defines their meaning. Naming an ability in the manifest while
 defining it in the policy is split-brain vocabulary — the worst available
-outcome. *(And see §9.1 — they may be one thing.)*
+outcome. *(§9.1 went further: they are one thing.)*
 
 ### 9.3 `exclusion` only; no free-floating `deny` ✓
 
@@ -747,14 +880,32 @@ this decision must be reopened, not quietly kept.
 
 ## 11. Milestone mapping
 
-Nothing here moves a milestone boundary.
+Nothing here moves a milestone boundary. **Both ADRs written 2026-07-16.**
 
 | Work | Where | Notes |
 |---|---|---|
-| Selectors, closed-form caveats, `anchor_did`/`path`, app abilities, resource-scoped `is_trusted_root`, chain-wide revocation | **ADR-0015 amendment** | **B7 is the first real consumer** — a revocable, non-re-delegatable, per-grantee `orchestrator/deploy` grant needs the selector *and* `can_delegate`, neither of which exists today. |
-| Policy document, ReBAC→SQL compiler, RLS/CLS, operators, safety rails, stage-4 ABAC | **D-04-02 / M04B** | Unchanged in position. |
-| Decision trace | **Both** | Grant-side denials in the amendment; policy-side in D-04-02. Same trace type. |
+| Selectors, closed-form caveats, conjunction-attenuation, `anchor_did`/`path`, app permissions, resource-scoped `is_trusted_root`, chain-wide revocation | [**ADR-0015** amendment](../decisions/0015-ucan-capability-model.md) (A1–A8) | **B7 is the first real consumer** — a revocable, non-re-delegatable, per-grantee `orchestrator/deploy` grant needs the selector (A1) *and* `can_delegate` (A3), and A6's `owner_of(resource)` **is** B7's catalog owner field. |
+| Policy document, permissions carrying operations + rows, ReBAC→SQL compiler, RLS/CLS, operators, stage-2 batching, stage-4 ABAC, safety rails | [**ADR-0017**](../decisions/0017-fdae-policy-schema-and-compilation.md) (D-04-02) / M04B | Unchanged in position. Status: Proposed — M04B's blocking ADR. |
+| Decision trace | **Both** | Grant-side denials in the amendment; policy-side in ADR-0017 §9. Same trace type. |
 
 Convenient consequence: **B7 validates the grant layer before M04B commits to
 it.** If the caveat/selector model cannot express a revocable deploy grant
 cleanly, we learn it one milestone early.
+
+### Still to do
+
+- **Fold into `system-architecture.md`'s `[FND-IAM]`** — *after* the ADRs
+  settle, so the architecture cites decisions rather than anticipating them.
+  Recommendation: rewrite that section as a condensed statement of the settled
+  model (the mental model, the two layers, the tier table, the safety rails —
+  ~40 lines) that links out to both ADRs. **Do not copy this document**: it is a
+  reasoning record, full of "an earlier draft argued X and that does not
+  survive," which is right here and wrong in a reference. A bare pointer is also
+  wrong — `system-requirements-spec.md:985` already points at
+  `[FND-IAM]`, so someone reading the architecture end-to-end must get the model
+  without leaving the file.
+- **Same pass:** `system-architecture.md:1892`'s interim-security-posture note
+  still lists `http-native` as an interface, which M04A Decision Register A.3
+  established is not real.
+- **`traceability-matrix.md`** gains the `[FND-IAM]` data-aware-authorization
+  row when M04B closes.

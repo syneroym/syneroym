@@ -1,6 +1,6 @@
 # D-04-01: UCAN Capability & Verification Model
 
-**Status**: Accepted
+**Status**: Accepted (amended 2026-07-16 — see "Amendments" below)
 
 **Context**:
 
@@ -125,3 +125,150 @@ Alternatives).
 - **Extending `DelegationCertificate.scope` into a capability string** instead of
   a token chain. Rejected: no attenuated delegation, no proof chain, and it
   overloads the transport-identity artifact with authorization semantics.
+
+---
+
+## Amendments
+
+**2026-07-16 (grant-layer synthesis).** Everything in the original decision
+stands and is shipped (`crates/ucan`, Slices B0/B1). This amendment **adds** the
+grant-layer half of
+[`docs/planning/access-control-design.md`](../planning/access-control-design.md),
+which reconciled this ADR with the FDAE policy material — each was silent
+exactly where the other spoke. Amended in place rather than superseded, per the
+convention of ADR-0007/ADR-0011. Nothing below is implemented yet; **Slice B7 is
+the first consumer** (items 1, 4, 6, 7).
+
+### A1. `ResourceUri` gains an optional selector path
+
+The original `with` is service-granularity
+(`synapp:<app>:svc:<svc>`), so "may call `createOrder` but not `deleteOrder`" is
+inexpressible. Extend to `synapp:<app>:svc:<svc>[/<selector>]` (and likewise for
+`substrate:<node_did>`), where the selector is interface-shaped:
+`collection/<name>[/<id>]`, `blob/<prefix>`, `topic/<pattern>`,
+`rpc/<method>`, `orchestrator`'s `app/<name>`.
+
+Matching is segment-wise prefix covering; a trailing `/` or `*` is a prefix
+wildcard. **`with` stays the *what*, `can` the *verb*** — keeping selectors out
+of `can` keeps entailment a pure string-hierarchy question. `Capability::covers`
+extends from `self.with == other.with` to a prefix cover; the
+`is_substrate_scope` wildcard rule is unchanged.
+
+### A2. Two ability namespaces: a value and a reference
+
+`can` accepts exactly two kinds of thing, and the difference is semantic:
+
+- **Platform abilities — a *value*.** The existing closed, host-defined
+  vocabulary (§1 above) with fixed entailment. Self-describing and immutable.
+  `Ability::tier`'s `data-layer` hierarchy and flat-by-default rule stand
+  unchanged.
+- **App permissions — a *reference*.** `app/<type>.<permission>`, resolved
+  against the target service's FDAE policy document (ADR-0017), which declares
+  both the operations it covers and the rows it reaches.
+
+Failing closed: an app permission never entails a platform ability; `can: app/X`
+where the policy does not define `X` — or where the service has no policy — is
+**denied**, never ignored.
+
+**Late binding is deliberate.** An app permission's meaning is owner-mutable, so
+a delegator hands over a reference, not a value. Pinning a policy version would
+be worse: policy *tightening* would then never reach outstanding grants, and a
+hole could never be closed. The delegator's defense is a `where` caveat (A3),
+which conjoins regardless of what the policy later says.
+
+### A3. Caveats become a closed, evaluated set
+
+The original decision deferred caveats entirely — a passthrough `Value`, unread
+by `grants`/`covers`. That is now the blocking gap: without evaluated caveats the
+grant layer cannot attenuate meaningfully. The governing line:
+
+> A caveat may constrain anything the **issuer knows at issue time** or the
+> **verifier can see in the request itself**. It may **never require a data
+> lookup** to evaluate.
+
+A data-dependent caveat would destroy offline verifiability, make a token mean
+something different as data moves under it, make attenuation undecidable, and
+duplicate in a second engine what the policy already expresses. Three forms:
+
+| Caveat | Meaning | Composition along the chain |
+|---|---|---|
+| `where` | An ADR-0007 MongoDB-style JSON filter document — reuses `crates/data_db/src/filter.rs`, not a new language. **Data-layer only** for now. | Conjunction (`AND`) |
+| `fields` | `{allow: [...]}` / `{deny: [...]}` — CLS. | Allows intersect, denies union |
+| `can_delegate` | Bool. Absent ⇒ `true` (today's behavior). | Logical AND; once false, terminal |
+
+### A4. Attenuation: check the shape, stack the constraints
+
+`with` (prefix cover) and `can` (entailment) are **checked**. Caveats are **not
+checked at all** — the verifier **conjoins** every caveat along the chain.
+
+Proving one arbitrary filter is a subset of another is intractable; conjoining is
+monotonically narrowing *by construction*, so a child cannot escalate and there
+is nothing to verify. (Parent `{dept: 5}` + child `{}` → `dept=5`; + child
+`{dept: {$in: [5,6]}}` → `dept=5`. The attempted widening is inert.) This is why
+the caveat language must stay closed-form: conjunction is sound only because
+every form is intersective.
+
+Across *independent* grants, capabilities **unite** — more grants, more access.
+A `where` caveat therefore binds only within its own chain; narrowing someone
+means revoking the broader grant, not adding a narrower one.
+
+### A5. `SessionContext` surfaces `anchor_did` and `path`
+
+`from_verified_chain` discards the chain after `verify_chain`, keeping only
+`subject_did` (the immediate caller). The chain **is** the provenance record:
+the **anchor** is the audience of the first non-root token (the original
+principal), the **origin** is the leaf's issuer (the previous service in the
+call chain), and the **path** is the chain itself. Surface them; let policies
+bind either `caller` or `anchor` as a terminal. This is confused-deputy
+prevention at the cost of not discarding data already verified.
+
+### A6. `is_trusted_root` becomes resource-scoped
+
+Today's `|iss, _res| iss == admin_root` makes one node-wide admin DID the only
+party that can root a chain or assert trusted facts — so a **service owner
+cannot grant `data-layer/read` on their own service**. It must become:
+
+```
+is_trusted_root(issuer, resource) = issuer == admin_root         // node-wide
+                                 || issuer == owner_of(resource) // per-service
+```
+
+This is what lets a service owner attest claims about *their own* users (an
+external identity binding: `{iss: service_did, sub: did:key:X, email: …}` — a
+**one-way attestation**; the user co-signing would not make it more true, and
+mutual signing is a *consent* mechanism belonging with `[PRD-SAF]`) while being
+unable to assert anything about another service's resources.
+
+**`owner_of(resource)` does not exist yet — it is Slice B7's catalog owner
+field.** This is precisely what `session.rs`'s existing `TODO(B7)` guards: its
+synthetic `ResourceUri::substrate(leaf.issuer_did)` probe asks whether an issuer
+is a root for a made-up resource named after itself, which under a
+resource-scoped predicate reads the wrong scope and could wrongly trust facts.
+
+Claims stay claims: external identifiers (email, username, OAuth `sub`) are
+**never** subjects — signatures, attenuation, and revocation all need a key.
+Note also that policy must join on **DID, not email**: emails get reassigned and
+carry normalization traps, and inheriting those into authorization yields silent
+misattribution.
+
+### A7. Revocation checks the whole chain
+
+The DHT revocation check (§2 above) must run against **every token in the proof
+chain**, not just the leaf — the grant being revoked is a *proof* in some later
+chain, not its leaf. This is what makes B7's revocable deploy grant actually
+revocable.
+
+### A8. Deferred, recorded
+
+- **One DID per principal.** Pairwise/per-service DIDs defeat cross-service
+  relationship joins and anchor propagation (A5). The threat they answer is
+  privacy (correlation by colluding services), not access control, and has no M4
+  consumer. If ever adopted, the app instance is the natural boundary — it
+  already bounds the data namespace, blob namespace, and per-app KEK.
+- **SCP-style node ceilings.** Conjunction (A4) *almost* gives them free — a
+  ceiling is a caveat on the root grant — except only chains passing through
+  that root inherit it, and under A6 a service-owner-rooted chain does not pass
+  through the substrate owner. Deferred: benefit is not yet real (B7's
+  marketplace is "eventually"), effort is structural, and the risk is
+  philosophical — service owners would stop being independent roots and become
+  the node's delegates. Interim: B7's binary deploy grant is a coarse ceiling.
