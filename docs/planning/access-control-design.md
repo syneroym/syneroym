@@ -1,8 +1,8 @@
 # Access Control Design (Grants + Policy)
 
 > **Status: Settled; split into ADRs.** A standalone design doc. Reviewed
-> 2026-07-16; §10's Fork B is decided and every §9 question is resolved. The
-> decisions now live in
+> 2026-07-16; §10's Fork B is decided and §9.1–9.6 are resolved (§9.7–9.8 are
+> later, non-blocking opens). The decisions now live in
 > [ADR-0015](../decisions/0015-ucan-capability-model.md)'s 2026-07-16 amendment
 > (the grant layer) and
 > [ADR-0017](../decisions/0017-fdae-policy-schema-and-compilation.md) (the
@@ -479,9 +479,77 @@ rather than add them:
   so there is exactly one definition site and the §5.3 `policy:` caveat
   disappears.
 
-**`public:`** is a permission with no `paths:` — reachable by anyone who holds
-it, no relational rule. It exists so authors have an explicit way to say "no row
-restriction here" rather than fighting default-deny.
+**`public:`** is a permission with no `paths:` — every row, for anyone **holding
+that permission**. It says nothing about whether a credential is needed; that is
+§6.1.2's question, and conflating the two is a mistake an earlier draft of this
+doc made.
+
+### 6.1.1 What "default-deny" actually means, per layer
+
+The two layers have **different defaults**, and stating this imprecisely (as an
+earlier draft did — "default-deny overall") makes the design look far heavier
+than it is:
+
+- **The grant layer is default-deny.** No capability, no access. Always,
+  everywhere, no exceptions.
+- **The policy layer is default-*absent*, not default-deny.** A resource with no
+  `definitions:` entry gets **no row filtering** — the grant is the whole
+  answer. A resource *with* a policy gets default-deny *within* it: an operation
+  no `allows:` covers is denied, a row no `paths:` reaches is excluded.
+
+**Granularity is the object type, not the policy file.** Writing a policy for
+one collection does not conscript the others.
+
+**This is Postgres's model**, which is the most useful thing to say about it:
+
+| Postgres | Here |
+|---|---|
+| `GRANT SELECT ON orders TO alice` | The capability (`can: data-layer/read`, `with: …/collection/orders`) |
+| `CREATE POLICY … ON orders` (RLS) | The FDAE `permissions:` block |
+| A table without RLS enabled → visible to anyone holding `GRANT` | A collection with no `definitions:` entry → grant alone decides |
+| `FORCE ROW LEVEL SECURITY` | No equivalent — see §9.7 |
+
+RLS is opt-in per table, and nobody finds Postgres confusing. Same split, same
+reason.
+
+**The common case — 100 objects, 5 need rules.** You define the 5 and never
+mention the 95:
+
+```yaml
+# grant:  { with: synapp:acme:svc:shop/collection/*, can: data-layer/read }
+definitions:
+  order:   { … }      # only the 5 that need rules
+  invoice: { … }
+```
+
+One `*` selector grant (§5.1) covers all 100; the five with policies get
+filtered on top of it. **Nothing is enumerated.** Note that a grant cannot say
+"all except these five" — grants have no exclusion operator — but it never needs
+to: the wildcard grant hits the five policies and they do the narrowing.
+
+### 6.1.2 Anonymous callers, and why a static site declares nothing
+
+An anonymous caller — no identity presented at all — is a legitimate, already
+shipped state, represented as `Option<CallerContext> = None` (which is why
+`AuthLevel` has no `Anonymous` variant). It is admitted or rejected by
+**interface**, not by policy:
+
+- **Native interfaces reject it.** `data-layer`, `vault`, `blob-store`,
+  `messaging`, `app-config` require a verified caller —
+  `crates/router/src/route_handler/dispatch.rs`'s
+  `"unauthenticated caller for native interface"`, the B0 gate.
+- **WASM guests accept it.** The guest dispatch arm never consults `caller`; an
+  anonymous request reaches the component and runs.
+
+So a **static website declares nothing at all**: it ships no policy (so Tier 3
+never engages), serves no data-layer rows (so there is nothing to filter), and
+its visitors need no capability (so the grant layer never bites). The general
+shape is *anonymous visitor → WASM guest → guest reads its own data as itself* —
+the component holds the identity, the visitor never touches the data layer.
+
+FDAE starts to matter exactly when the **visitor's** identity decides which rows
+they see, which is precisely when access control is what you wanted. **Cost is
+proportional to requirement**, and that is the property to preserve.
 
 ### 6.2 Permission operators — `union` is not enough
 
@@ -561,8 +629,10 @@ configurable, default conservative.**
 - `sqlite3_progress_handler` watchdog + configurable time budget →
   **default-deny** on timeout.
 - Strict `?`/`:name` binding; no string concatenation, ever.
-- Default-deny overall, with an explicit `public:` declaration so authors do not
-  end up fighting the engine.
+- Default-deny **within a policy** (§6.1.1) — an operation no `allows:` covers,
+  or a row no `paths:` reaches, is denied. This is *not* "default-deny overall":
+  a resource with no policy is not filtered at all, and the grant layer is what
+  denies by default.
 
 ### 6.6 Non-SQL resources: one evaluator, N key extractors
 
@@ -639,6 +709,11 @@ every hatch is **declared in the policy** and **appears in the trace** (§7.2).
 
 Fail closed at every tier. Tiers 1–2 are cheap and reject most bad traffic
 before SQL is touched.
+
+**Not every request has an identity, and that is fine** (§6.1.2). An anonymous
+caller (`caller = None`) is rejected outright at native interfaces and admitted
+at WASM guests, before any of this. The tiers below describe a request that
+*has* a caller.
 
 | Tier | Question | Source | Cost |
 |---|---|---|---|
@@ -746,7 +821,9 @@ reaches. **Neither owner can override the other.**
 
 ## 9. Decisions
 
-All review questions resolved 2026-07-16.
+The original review questions (9.1–9.6) resolved 2026-07-16. **9.7 and 9.8 were
+opened afterwards**, by the "does a simple app have to enumerate everything?"
+question that produced §6.1.1–6.1.2 — neither blocks B7.
 
 ### 9.1 App abilities and policy permissions unify ✓
 
@@ -844,6 +921,38 @@ you do not — and is sufficient until partial trust is a real scenario.
 power physically (their hardware, their disk). The question is whether to make
 implicit power explicit and bounded — which is an argument for eventually doing
 it.*
+
+### 9.7 Open: a `strict:` mode (Postgres's `FORCE ROW LEVEL SECURITY`)
+
+Default-absent (§6.1.1) has a real edge: define a policy on `orders`, forget
+`order_line_items` holding the same sensitive data, and the line items are
+grant-only. Silently.
+
+Postgres's answer is `FORCE ROW LEVEL SECURITY`. Ours would be **`strict: true`**
+at the policy top level — any resource in this service with no `definitions:`
+entry is *denied* rather than unfiltered. **Off by default** (keeps M04B additive
+and the 100-objects/5-rules case trivial), on for services wanting the guarantee.
+Cheap companion: an author-time validation warning when a known collection has no
+definition, since the schema is already validated at deploy.
+
+Recorded rather than decided — it is a genuine trade between "additive and easy"
+and "fail-closed by construction," and the answer likely depends on whether
+third-party developers will be authoring these policies.
+
+### 9.8 Open: Tier 1 is mis-addressed in the code
+
+`crates/router/src/route_handler/dispatch.rs` carries a `TODO(M04B/FDAE)` saying
+which callers may reach a native service "is enforced by the FDAE policy engine
+(M04B)… until then any verified identity passes."
+
+**This design says otherwise:** Tier 1 is a µs-scale capability check in the
+grant layer ("does any capability name this resource?"), not something a policy
+engine should be loaded to answer. If that is right, the TODO is mis-addressed
+and the work belongs in the grant layer, not M04B.
+
+It also means the live gap is wider than the doc implies: **today any verified
+identity reaches any native service.** Worth reconciling in B7, which is already
+touching this trust boundary.
 
 ### Resolved during review
 

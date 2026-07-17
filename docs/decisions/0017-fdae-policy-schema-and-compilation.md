@@ -73,8 +73,8 @@ Three deletions from the archived spec:
   both which operations it covers (`allows:`) and which rows it reaches
   (`paths:`), so there is one definition site.
 
-`public:` is a permission with no `paths:` — an explicit way to say "no row
-restriction here" rather than fighting default-deny.
+`public:` is a permission with no `paths:` — every row, for anyone **holding that
+permission**. It says nothing about whether a credential is required (§2.1).
 
 ## 2. Permissions carry operations *and* rows
 
@@ -93,6 +93,37 @@ Two rules keep the intersection intact:
   collapses.
 - **If no policy exists, the grant alone decides.** This is what makes M04B
   additive: today's policy-less services keep working unchanged.
+
+### 2.1 Defaults, per layer — and the granularity that makes them usable
+
+**Granularity is the object type, not the policy file.** Writing a policy for one
+collection does not conscript the others. Stated precisely:
+
+- **The grant layer is default-deny.** No capability, no access. Always.
+- **The policy layer is default-*absent*, not default-deny.** A resource with no
+  `definitions:` entry gets no row filtering. A resource *with* a policy gets
+  default-deny *within* it (§8).
+
+**This is Postgres's model**, and saying so is more useful than deriving it:
+`GRANT` is the capability, `CREATE POLICY` (RLS) is the `permissions:` block, and
+a table without RLS enabled is visible to anyone holding `GRANT`. RLS is opt-in
+per table. Same split, same reason. (Postgres's `FORCE ROW LEVEL SECURITY` has no
+equivalent here — see Open.)
+
+**The common case — 100 objects, 5 needing rules — enumerates nothing.** A single
+`*`-selector grant (ADR-0015 A1) covers all 100; the five with `definitions:`
+entries get filtered on top. A grant cannot express "all except these five"
+(grants have no exclusion operator), but it never needs to: the wildcard grant
+hits those five policies and they narrow it.
+
+**Anonymous callers are admitted by interface, not by policy.** `caller = None`
+is a legitimate, already-shipped state: native interfaces reject it (the B0 gate
+in `crates/router/src/route_handler/dispatch.rs`), WASM guests accept it (the
+guest arm never consults `caller`). So a static site declares nothing — no
+policy, no rows, no capability needed by visitors. The shape is *anonymous
+visitor → WASM guest → guest reads its own data as itself*. FDAE engages exactly
+when the **visitor's** identity decides which rows they see — which is when
+access control is what was wanted. Cost stays proportional to requirement.
 
 ## 3. Operators: `union`, `intersection`, `exclusion`
 
@@ -206,7 +237,9 @@ must be conservative but not hard-coded."
 - `sqlite3_progress_handler` watchdog + **configurable** time budget →
   **default-deny** on timeout, transaction rolled back.
 - Strict `?`/`:name` binding; no string concatenation, ever.
-- Default-deny overall.
+- Default-deny **within a policy** (§2.1) — an operation no `allows:` covers, or
+  a row no `paths:` reaches, is denied. Not "default-deny overall": a resource
+  with no policy is unfiltered, and the grant layer is what denies by default.
 
 ## 9. The decision trace
 
@@ -258,6 +291,22 @@ vs. row reachability* — both answered by the same `permissions:` block.
 - **Default permission when a grant names a platform ability and a policy exists**
   (§2's "policy always applies"): which permission applies when the grant names
   none? Default-deny unless the policy declares one is the conservative answer.
+- **A `strict: true` mode** (Postgres's `FORCE ROW LEVEL SECURITY`). Default-
+  absent (§2.1) has a real edge: define a policy on `orders`, forget
+  `order_line_items` holding the same data, and the line items are grant-only —
+  silently. `strict: true` at the policy top level would deny any resource with
+  no `definitions:` entry. **Off by default** (keeps this ADR additive and the
+  100-objects/5-rules case trivial), on for services wanting the guarantee, with
+  an author-time warning when a known collection has no definition. A genuine
+  trade between "additive and easy" and "fail-closed by construction"; the answer
+  likely depends on whether third-party developers author these policies.
+- **Tier 1 may be mis-addressed in the code.** `route_handler/dispatch.rs`'s
+  `TODO(M04B/FDAE)` says which callers may reach a native service is enforced by
+  FDAE "until then any verified identity passes." This ADR's position is that
+  Tier 1 is a µs-scale capability check in the grant layer, not a policy-engine
+  question — meaning that TODO belongs to the grant layer, not M04B, and the live
+  gap (**today any verified identity reaches any native service**) is wider than
+  the milestone docs imply. Reconcile in B7, which already touches this boundary.
 
 **Alternatives considered**:
 
