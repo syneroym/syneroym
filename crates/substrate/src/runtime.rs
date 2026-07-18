@@ -346,6 +346,23 @@ async fn setup_connection_router(config: &SubstrateConfig) -> anyhow::Result<Con
     }
     let config = &effective_config;
 
+    // M04A Slice B7a (F4): no verified ControllerAgreement controller and no
+    // [iam].admin_ucan_root means nobody can root an orchestrator grant, so
+    // every verified caller is issued the orchestrator abilities on this
+    // node instead (`build_caller`, `crates/router/src/route_handler/io.rs`)
+    // -- a bootstrap posture, not a disabled check. Logged loudly since it
+    // is a real, if bounded, security posture.
+    if config.iam.admin_ucan_root.is_none() {
+        warn!(
+            "substrate has no verified ControllerAgreement controller and no \
+             [iam].admin_ucan_root: running UNOWNED -- every verified caller is granted \
+             orchestrator/{{deploy,undeploy,status}} on this node, and so may deploy, undeploy, \
+             status-check, and see every app. (Data-plane admin -- execute-ddl/query-raw -- is \
+             NOT granted; those stay denied.) Configure a ControllerAgreement to enforce \
+             ownership (M04A Slice B7a, F4)"
+        );
+    }
+
     let router = setup_router(config, &service_id, secret_key).await?;
 
     if (config.substrate.enable_bep0044_dht || config.substrate.registry_url.is_some())
@@ -473,6 +490,7 @@ async fn build_route_handler_deps(
     let http_routes: HttpRouteRegistry = Arc::new(DashMap::new());
 
     let control_plane_service = ControlPlaneService::init(
+        service_id.to_string(),
         service_id.to_string(),
         app_sandbox_engine.clone(),
         podman_sandbox_engine,

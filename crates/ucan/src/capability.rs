@@ -52,6 +52,12 @@ impl Ability {
     pub const DATA_LAYER_WRITE: &'static str = "data-layer/write";
     pub const MESSAGING_PUBLISH: &'static str = "messaging/publish";
     pub const MESSAGING_SUBSCRIBE: &'static str = "messaging/subscribe";
+    /// M04A Slice B7a/B7b: deploy/undeploy/status-check on the orchestrator
+    /// interface. Flat -- each entails only itself (§6 Q6: no `tier` entry),
+    /// so "deploy but not undeploy" stays expressible.
+    pub const ORCHESTRATOR_DEPLOY: &'static str = "orchestrator/deploy";
+    pub const ORCHESTRATOR_STATUS: &'static str = "orchestrator/status";
+    pub const ORCHESTRATOR_UNDEPLOY: &'static str = "orchestrator/undeploy";
     pub const SUBSTRATE_ADMIN: &'static str = "substrate/admin";
     pub const VAULT_REVEAL: &'static str = "vault/reveal";
 

@@ -4,6 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
+use anyhow::Context;
 use app::AppCommands;
 use clap::Subcommand;
 use identity::IdentityCommands;
@@ -12,6 +13,7 @@ use substrate::SubstrateCommands;
 use svc::SvcCommands;
 use syneroym_core::util;
 use syneroym_identity::{Identity, substrate as identity_substrate};
+use syneroym_sdk::SyneroymClient;
 
 pub mod app;
 pub mod identity;
@@ -95,12 +97,34 @@ fn get_substrate_did(substrate_opt: Option<String>, dir: &Path) -> anyhow::Resul
         })
 }
 
+/// Build a client acting as `--as <name>` if given, else with the ephemeral
+/// key `SyneroymClient::new` generates (today's behavior) -- M04A Slice B7a,
+/// F5. Distinct from `svc deploy --identity`, which names the app's own
+/// signing key for its registry certificate, not the operator.
+pub(crate) fn client_for(
+    substrate_did: String,
+    api_url: &str,
+    dir: &Path,
+    run_as: Option<&str>,
+) -> anyhow::Result<SyneroymClient> {
+    match run_as {
+        None => Ok(SyneroymClient::new(substrate_did, api_url.to_string())),
+        Some(name) => {
+            let path = dir.join("identities").join(format!("{name}.key"));
+            let id = Identity::load_from_path(&path)
+                .with_context(|| format!("no local identity '{name}' at {}", path.display()))?;
+            Ok(SyneroymClient::new_with_identity(substrate_did, api_url.to_string(), id))
+        }
+    }
+}
+
 /// Execute the subcommands
 pub async fn run(
     command: Commands,
     api_url: String,
     substrate_opt: Option<String>,
     dir: PathBuf,
+    run_as: Option<String>,
 ) -> anyhow::Result<()> {
     match command {
         Commands::Substrate { command } => {
@@ -108,11 +132,11 @@ pub async fn run(
         }
         Commands::Svc { command } => {
             let substrate_did = get_substrate_did(substrate_opt, &dir)?;
-            svc::handle(&command, &api_url, substrate_did, &dir).await?;
+            svc::handle(&command, &api_url, substrate_did, &dir, run_as.as_deref()).await?;
         }
         Commands::App { command } => {
             let substrate_did = get_substrate_did(substrate_opt, &dir)?;
-            app::handle(&command, &api_url, substrate_did).await?;
+            app::handle(&command, &api_url, substrate_did, &dir, run_as.as_deref()).await?;
         }
         Commands::Identity { command } => {
             identity::handle(&command, &dir).await?;
@@ -135,11 +159,13 @@ pub async fn run(
         }
         Commands::Kek { command } => {
             let substrate_did = get_substrate_did(substrate_opt, &dir)?;
-            security::handle_kek(&command, &api_url, substrate_did).await?;
+            security::handle_kek(&command, &api_url, substrate_did, &dir, run_as.as_deref())
+                .await?;
         }
         Commands::Secret { command } => {
             let substrate_did = get_substrate_did(substrate_opt, &dir)?;
-            security::handle_secret(&command, &api_url, substrate_did).await?;
+            security::handle_secret(&command, &api_url, substrate_did, &dir, run_as.as_deref())
+                .await?;
         }
     }
     Ok(())

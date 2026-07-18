@@ -63,10 +63,24 @@ D-04-02 as a pair):
 
 ## Decision Register
 
-### B. Blocking — new ADR required before Slice B2 begins
+### B. Blocking — ADR drafted, awaiting acceptance before Slice B2 begins
 
-- **D-04-02 — FDAE Policy Schema & Compilation Strategy.** The core design work
-  of this milestone. Must settle:
+- **D-04-02 — FDAE Policy Schema & Compilation Strategy** →
+  [ADR-0017](../../../decisions/0017-fdae-policy-schema-and-compilation.md)
+  (**Proposed**, drafted 2026-07-16 from
+  [`access-control-design.md`](../../access-control-design.md); co-designed with
+  [ADR-0015](../../../decisions/0015-ucan-capability-model.md)'s 2026-07-16
+  amendment, which is the grant-layer half). Move to *Accepted* before B2 starts.
+  Notable departures from the checklist below, each **deleting** a concept: the
+  physical registry / `data_sources` is dropped entirely (a relation is local or
+  names a service — policies never carry connection strings); `hierarchies`
+  folds into `relations` as `recursive: true`; and app abilities fold into
+  `permissions`, which now declare both the operations they cover and the rows
+  they reach. Stage-4 ABAC **may** issue read-only lookups (restrict-only and
+  fuel-metered) — the prohibition below rested on two arguments that do not
+  hold; only the N+1 performance one does. See ADR-0017 §1, §2, §7.
+
+  The core design work of this milestone. Must settle:
   - The declarative Zanzibar-style policy config format (YAML/JSON) and the
     **typed policy model** it deserializes into (no runtime string lexers —
     `system-architecture.md:1832-1836`), versioned + JSON-Schema-validated at
@@ -86,11 +100,11 @@ D-04-02 as a pair):
     ADR-0007 MongoDB-style JSON query filter at SQL generation (two compilers,
     one `AND` at the end).
 
-  Resolve as an ADR (per `session-strategy.md` §6) before Slice B2. Suggested
-  number 0017. **Design as a pair with M04A's D-04-01**
+  ~~Resolve as an ADR (per `session-strategy.md` §6) before Slice B2.~~ Drafted
+  as ADR-0017 (above). **Designed as a pair with M04A's D-04-01**
   ([ADR-0015](../../../decisions/0015-ucan-capability-model.md), written
-  2026-07-13) — its `SessionContext`/`Capability` types are the inputs this
-  compiler binds as SQL `?` parameters.
+  2026-07-13, amended 2026-07-16) — its `SessionContext`/`Capability` types are
+  the inputs this compiler binds as SQL `?` parameters.
 
 ---
 
