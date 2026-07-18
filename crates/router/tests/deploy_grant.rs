@@ -24,9 +24,20 @@
 //! `build_caller`'s `is_root` closure lives) -- this file drives
 //! `ControlPlaneService` directly with hand-built `CallerContext`s, matching
 //! `service_ownership.rs`'s style, since admission itself does not depend on
-//! how the capability was verified.
+//! how the capability was verified. The two `..._real_signed_token_...` /
+//! `..._real_token_...` tests near the end (post-commit review, F3) are the
+//! exception: they join both halves -- a real signed, real-registry-owner-
+//! rooted `CapabilityToken` verified with `syneroym_ucan::verify_chain` (the
+//! same code `build_caller` calls), fed into this file's real
+//! `ControlPlaneService::deploy` gate -- closing the gap task.md item 1's
+//! "exercised end to end ... not just hand-built `CallerContext`s" claim
+//! otherwise left half-proven.
 
-use std::{path::Path, sync::Arc};
+use std::{
+    path::Path,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use dashmap::DashMap;
 use serde_json::{Value, json};
@@ -41,10 +52,12 @@ use syneroym_core::{
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
 use syneroym_data_db::SqliteStorageProvider;
 use syneroym_data_keystore::KeyStore;
+use syneroym_identity::{Identity, substrate::derive_did_key};
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
 use syneroym_rpc::{
-    Ability, AuthLevel, CallerContext, Capability, NativeDispatchRegistry, NativeInvocation,
-    NativeResponse, NativeService, ResourceUri, RpcResult, SessionContext,
+    Ability, AuthLevel, CallerContext, Capability, CapabilityToken, ChainVerifyOpts,
+    NativeDispatchRegistry, NativeInvocation, NativeResponse, NativeService, ResourceUri,
+    RpcResult, SessionContext,
 };
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     DeployManifest, DeployedService, NetworkEndpoint, ServiceConfig, ServiceType, TcpManifest,
@@ -120,7 +133,18 @@ fn tcp_manifest(port: u16) -> DeployManifest {
 }
 
 async fn test_service(temp_dir: &Path) -> ControlPlaneService {
-    let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+    test_service_with_registry(temp_dir, EndpointRegistry::new_mock(Arc::new(MockStorage::new())))
+        .await
+}
+
+/// Like `test_service`, but takes the `EndpointRegistry` from the caller
+/// instead of creating one internally -- lets a test keep a handle to query
+/// `owner_of` after a deploy records ownership (B7a), the way a real
+/// owner-rooted `is_trusted_root` predicate does (ADR-0015 A6).
+async fn test_service_with_registry(
+    temp_dir: &Path,
+    registry: EndpointRegistry,
+) -> ControlPlaneService {
     let config = SubstrateConfig::default();
     let key_store = Arc::new(KeyStore::new());
     let storage_provider = Arc::new(SqliteStorageProvider::new(temp_dir, false).unwrap());
@@ -327,4 +351,140 @@ async fn per_service_readyz_admitted_with_orchestrator_status() {
              readiness engine then reports: {e:?}"
         );
     }
+}
+
+/// A verified `CapabilityToken` chain, owner-rooted per ADR-0015 A6 (trusted
+/// iff the issuer is `registry`'s recorded owner of `service_id`), resolved
+/// with the real `syneroym_ucan::verify_chain` -- the same call `build_caller`
+/// makes, not a hand-built `SessionContext`. Mirrors `build_caller`'s
+/// owner-rooted half of `is_root` (`crates/router/src/route_handler/io.rs`).
+fn owner_rooted_caller_from_real_token(
+    registry: &EndpointRegistry,
+    service_id: &str,
+    audience_did: &str,
+    token: &CapabilityToken,
+) -> CallerContext {
+    let registry = registry.clone();
+    let service_id = service_id.to_string();
+    let is_root =
+        move |iss: &str, _cap: &Capability| registry.owner_of(&service_id).as_deref() == Some(iss);
+    let now_secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let opts = ChainVerifyOpts {
+        expected_audience_did: audience_did,
+        is_trusted_root: &is_root,
+        now_secs,
+    };
+    let session = SessionContext::from_verified_chain(token, &opts)
+        .expect("a structurally valid chain must verify (even if it admits nothing)");
+    CallerContext {
+        caller_did: audience_did.to_string(),
+        app_instance: None,
+        session,
+        auth: AuthLevel::Ucan,
+        proof: None,
+    }
+}
+
+/// Post-commit review (F3): joins the two halves task.md item 1 claims are
+/// both covered -- a real signed, real-registry-owner-rooted `CapabilityToken`
+/// (ADR-0015 A6), verified through the real `syneroym_ucan` chain-verification
+/// code `build_caller` also calls (not a hand-built `SessionContext`), admits
+/// at the real `ControlPlaneService::deploy` gate. Positive case: the owner
+/// self-issues a real token to redeploy their own already-existing service --
+/// the one owner-rooted-grant shape that clears *both* the Tier-1 capability
+/// gate and F7's takeover-protection check (which requires `caller_did` to
+/// equal the recorded owner, or node-wide authority -- see the negative case
+/// below for what a non-owner delegate's real grant runs into).
+#[tokio::test]
+async fn owner_self_issued_real_token_admits_redeploy_of_their_own_service() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+    let service = test_service_with_registry(temp_dir.path(), registry.clone()).await;
+
+    // The initial deploy establishes `owner_of("svc-a")` (B7a); a hand-built
+    // grantee caller (`owner_did` as its `caller_did`) stands in for whatever
+    // authenticated that first deploy -- this file's other tests establish
+    // that admission is unaffected by how the capability was verified.
+    let owner_identity = Identity::generate().unwrap();
+    let owner_did = derive_did_key(&owner_identity.public_key());
+    deploy(&service, "svc-a", &app_grantee(&owner_did, "svc-a")).await;
+    assert_eq!(registry.owner_of("svc-a").as_deref(), Some(owner_did.as_str()));
+
+    let resource = ResourceUri(format!("substrate:{NODE_DID}/app/svc-a"));
+    let token = CapabilityToken::issue(
+        &owner_identity,
+        &owner_did,
+        vec![Capability {
+            with: resource,
+            can: Ability(Ability::ORCHESTRATOR_DEPLOY.to_string()),
+            caveats: None,
+        }],
+        serde_json::Map::new(),
+        3600,
+        vec![],
+    )
+    .unwrap();
+
+    let caller = owner_rooted_caller_from_real_token(&registry, "svc-a", &owner_did, &token);
+    assert_eq!(caller.auth, AuthLevel::Ucan);
+    assert!(
+        !caller.session.capabilities.is_empty(),
+        "the owner-rooted chain must admit the deploy capability"
+    );
+
+    let result = deploy_result(&service, "svc-a", &caller).await;
+    assert!(
+        result.is_ok(),
+        "the owner's own real signed, owner-rooted grant must admit redeploy at the real gate: \
+         {result:?}"
+    );
+}
+
+/// The negative half of F3's join: a *different* party holding a real
+/// signed, owner-rooted grant for someone else's service is admitted at the
+/// Tier-1 capability gate but still rejected by F7's takeover-protection
+/// check, which binds on `caller_did == recorded owner` (or node-wide
+/// authority), not on capability possession. Confirms capability delegation
+/// cannot be used to bypass takeover protection -- the two checks in
+/// `orchestration.rs::deploy` are independent, and a real verified chain
+/// does not change that.
+#[tokio::test]
+async fn owner_rooted_grant_to_a_different_caller_does_not_bypass_takeover_protection() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+    let service = test_service_with_registry(temp_dir.path(), registry.clone()).await;
+
+    let owner_identity = Identity::generate().unwrap();
+    let owner_did = derive_did_key(&owner_identity.public_key());
+    deploy(&service, "svc-a", &app_grantee(&owner_did, "svc-a")).await;
+
+    let client_identity = Identity::generate().unwrap();
+    let client_did = derive_did_key(&client_identity.public_key());
+    let resource = ResourceUri(format!("substrate:{NODE_DID}/app/svc-a"));
+    let token = CapabilityToken::issue(
+        &owner_identity,
+        &client_did,
+        vec![Capability {
+            with: resource,
+            can: Ability(Ability::ORCHESTRATOR_DEPLOY.to_string()),
+            caveats: None,
+        }],
+        serde_json::Map::new(),
+        3600,
+        vec![],
+    )
+    .unwrap();
+
+    let caller = owner_rooted_caller_from_real_token(&registry, "svc-a", &client_did, &token);
+    assert!(
+        !caller.session.capabilities.is_empty(),
+        "the Tier-1 capability gate admits the delegate's real grant"
+    );
+
+    let result = deploy_result(&service, "svc-a", &caller).await;
+    assert!(
+        result.is_err(),
+        "a delegate holding a real owner-rooted grant must still be rejected by takeover \
+         protection, since they are not the recorded owner: {result:?}"
+    );
 }

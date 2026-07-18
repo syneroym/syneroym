@@ -134,7 +134,7 @@ fn caller_from_verified_chain(
     admin_root: &str,
     token: &CapabilityToken,
 ) -> CallerContext {
-    let is_root = |iss: &str, _res: &ResourceUri| iss == admin_root;
+    let is_root = |iss: &str, _cap: &Capability| iss == admin_root;
     let now_secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
     let opts =
         ChainVerifyOpts { expected_audience_did: client_did, is_trusted_root: &is_root, now_secs };

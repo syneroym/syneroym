@@ -58,7 +58,7 @@ impl SessionContext {
         // capabilities has no resource to attest the issuer against, so it
         // gets no facts either (fail-closed).
         let leaf_issuer_is_trusted_root = !leaf.capabilities.is_empty()
-            && leaf.capabilities.iter().all(|c| (opts.is_trusted_root)(&leaf.issuer_did, &c.with));
+            && leaf.capabilities.iter().all(|c| (opts.is_trusted_root)(&leaf.issuer_did, c));
         let claims =
             if leaf_issuer_is_trusted_root { leaf.facts.clone() } else { serde_json::Map::new() };
         Ok(Self {
@@ -134,7 +134,7 @@ mod tests {
 
         let leaf = CapabilityToken::issue(&root, audience, vec![], facts, 3600, vec![]).unwrap();
 
-        let is_root = |iss: &str, _res: &ResourceUri| iss == root_did;
+        let is_root = |iss: &str, _cap: &Capability| iss == root_did;
         let opts = ChainVerifyOpts {
             expected_audience_did: audience,
             is_trusted_root: &is_root,
@@ -182,7 +182,7 @@ mod tests {
         .unwrap();
 
         // The issuer is a trusted root for resource_a only.
-        let is_root = move |iss: &str, res: &ResourceUri| iss == owner_did && *res == resource_a;
+        let is_root = move |iss: &str, cap: &Capability| iss == owner_did && cap.with == resource_a;
         let opts = ChainVerifyOpts {
             expected_audience_did: audience,
             is_trusted_root: &is_root,

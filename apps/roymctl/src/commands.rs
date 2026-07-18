@@ -109,6 +109,17 @@ fn get_substrate_did(substrate_opt: Option<String>, dir: &Path) -> anyhow::Resul
 /// `roymctl identity issue-grant`'s output), it is read, parsed, and
 /// presented via `with_ucan` -- on top of whichever transport identity `--as`
 /// selected.
+///
+/// `--ucan` requires `--as` (post-commit review, F2): the token's
+/// `audience_did` must equal the connection's verified master DID
+/// (`from_verified_chain`'s audience check,
+/// `crates/router/src/route_handler/io.rs`), and without `--as` that DID is a
+/// fresh ephemeral key `SyneroymClient::new` generates per invocation --
+/// never the grant's `--to`. The mismatch fails only on the server side (a
+/// `warn!`-logged chain drop, not a client-visible error), so the caller
+/// silently falls back to `AuthLevel::Delegated` and sees a confusing
+/// "holds no grant" error downstream instead of the real cause. Rejected
+/// here instead, before any connection is attempted.
 pub(crate) fn client_for(
     substrate_did: String,
     api_url: &str,
@@ -116,6 +127,14 @@ pub(crate) fn client_for(
     run_as: Option<&str>,
     ucan_path: Option<&Path>,
 ) -> anyhow::Result<SyneroymClient> {
+    if ucan_path.is_some() && run_as.is_none() {
+        anyhow::bail!(
+            "--ucan requires --as <name>: the presented token's audience must match the \
+             connecting identity, and without --as that identity is a fresh ephemeral key that \
+             can never match. Pass --as <name>, where <name> is the identity the grant's --to \
+             names."
+        );
+    }
     let client = match run_as {
         None => SyneroymClient::new(substrate_did, api_url.to_string()),
         Some(name) => {
@@ -219,4 +238,27 @@ pub async fn run(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Post-commit review (F2): `client_for` rejects `--ucan` without `--as`
+    /// directly, not just via clap's `requires` on the CLI's global flags --
+    /// a direct caller within the crate would otherwise hit the confusing
+    /// downstream "holds no grant" failure instead of a clear cause.
+    #[test]
+    fn client_for_rejects_ucan_without_as() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = client_for(
+            "did:key:zSomeSubstrate".to_string(),
+            "http://localhost:7961",
+            dir.path(),
+            None,
+            Some(Path::new("/does/not/matter.json")),
+        );
+        let err = result.expect_err("--ucan without --as must be rejected");
+        assert!(err.to_string().contains("--as"), "error must point at --as: {err}");
+    }
 }

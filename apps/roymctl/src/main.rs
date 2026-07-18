@@ -45,8 +45,11 @@ struct Cli {
     /// Path to a signed UCAN `CapabilityToken` JSON file (see `roymctl
     /// identity issue-grant`) to present on connect (M04A Slice B7b) --
     /// proves whatever capability the grant names, on top of `--as`'s
-    /// transport identity.
-    #[arg(global = true, long = "ucan")]
+    /// transport identity. Requires `--as <name>`, where `<name>` is the
+    /// identity the grant's `--to` names -- the token's audience must match
+    /// the connecting identity, which a bare `--ucan` (no `--as`) can never
+    /// satisfy (a fresh ephemeral key every invocation).
+    #[arg(global = true, long = "ucan", requires = "run_as")]
     ucan_path: Option<PathBuf>,
 }
 

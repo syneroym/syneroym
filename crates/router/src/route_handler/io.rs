@@ -113,7 +113,7 @@ fn owning_service_id(res: &ResourceUri) -> Option<&str> {
     }
     if let Some(rest) = res.0.strip_prefix("substrate:") {
         let (_, selector) = rest.split_once('/')?;
-        let mut parts = selector.splitn(2, '/');
+        let mut parts = selector.split('/');
         if parts.next() == Some("app") {
             return parts.next();
         }
@@ -129,7 +129,15 @@ fn owning_service_id(res: &ResourceUri) -> Option<&str> {
 /// root (node-wide, and only for a resource this node actually names, F6)
 /// or at a resource's own recorded owner (ADR-0015 A6, M04A Slice B7b: a
 /// service owner is an independent root for their own service, regardless of
-/// whether the substrate itself has an admin root at all). `auth` is
+/// whether the substrate itself has an admin root at all) -- except for
+/// `data-layer/admin` (or anything entailing it): an owner cannot self-root
+/// that ability on their own service, only the node admin root can, so a
+/// self-issued `data-layer/admin` grant does not silently open
+/// `execute-ddl`/`query-raw` on every deployment (post-commit review, F1 --
+/// `is_trusted_root`'s resource-only predicate was ability-agnostic and would
+/// otherwise have admitted it; see
+/// `unowned_substrate_does_not_grant_data_layer_admin`'s
+/// sibling `owner_rooted_chain_does_not_grant_data_layer_admin`). `auth` is
 /// upgraded to `AuthLevel::Ucan` only when the chain actually admitted at
 /// least one capability -- a structurally valid but entirely untrusted chain
 /// (e.g. self-issued, rooted nowhere) must not read as "holds a verified UCAN
@@ -213,10 +221,11 @@ async fn build_caller(
     // whether this substrate has an admin root at all: an owner-rooted
     // per-service chain is independent of node-wide ownership.
     if let Some(token) = &preamble.ucan {
-        let is_root = |iss: &str, res: &ResourceUri| {
-            (admin_root == Some(iss) && resource_is_local(res, node_did))
-                || owning_service_id(res)
+        let is_root = |iss: &str, cap: &Capability| {
+            (admin_root == Some(iss) && resource_is_local(&cap.with, node_did))
+                || (owning_service_id(&cap.with)
                     .is_some_and(|svc| registry.owner_of(svc).as_deref() == Some(iss))
+                    && !cap.can.entails(&Ability(Ability::DATA_LAYER_ADMIN.to_string())))
         };
         let opts = ChainVerifyOpts {
             expected_audience_did: &id.master_did,
@@ -1195,6 +1204,18 @@ mod tests {
         );
     }
 
+    /// Regression: a `substrate:` resource with a trailing selector past the
+    /// service name (e.g. the orchestrator's `.../app/<svc>/deploy`) must
+    /// still yield just the service id, not the selector tail glued onto it.
+    #[test]
+    fn owning_service_id_strips_a_trailing_selector_past_the_service_name() {
+        assert_eq!(
+            owning_service_id(&ResourceUri("substrate:did:key:zNode/app/svc-a/deploy".to_string()))
+                .unwrap(),
+            "svc-a"
+        );
+    }
+
     #[test]
     fn resource_is_local_checks_the_named_node_for_substrate_resources() {
         assert!(resource_is_local(
@@ -1253,6 +1274,95 @@ mod tests {
             caller
                 .session
                 .has_capability(&resource, &Ability(Ability::ORCHESTRATOR_DEPLOY.to_string()))
+        );
+    }
+
+    /// Post-commit review (F1): the owner-rooted trust ADR-0015 A6 grants is
+    /// bounded away from `data-layer/admin` -- a service owner self-issuing a
+    /// UCAN claiming `data-layer/admin` on their own service must not be
+    /// admitted, or `execute-ddl`/`query-raw` would be open on every owned
+    /// service, contradicting task.md's "execute-ddl/query-raw remain denied
+    /// ... unaffected by B7b" guarantee. `substrate/admin` is included too
+    /// (it entails `data-layer/admin`), though it cannot reach this path in
+    /// practice: `owning_service_id` never matches a bare `substrate:` URI.
+    #[tokio::test]
+    async fn owner_rooted_chain_does_not_grant_data_layer_admin() {
+        let owner = Identity::generate().unwrap();
+        let owner_did = derive_did_key(&owner.public_key());
+        let node_did = "did:key:zNode";
+        let resource = ResourceUri::service("svc-a", "svc-a");
+
+        let registry = empty_registry();
+        registry.set_owner("svc-a".to_string(), owner_did.clone()).await.unwrap();
+
+        // The owner self-issues a token to themselves, claiming admin on
+        // their own service -- the shape F1's reproduction describes.
+        let token = CapabilityToken::issue(
+            &owner,
+            &owner_did,
+            vec![Capability {
+                with: resource.clone(),
+                can: Ability(Ability::DATA_LAYER_ADMIN.to_string()),
+                caveats: None,
+            }],
+            serde_json::Map::new(),
+            3600,
+            vec![],
+        )
+        .unwrap();
+
+        let preamble = ucan_preamble(token);
+        let id = VerifiedIdentity { master_did: owner_did.clone(), temporary_did: owner_did };
+        let resolver = MockResolver { revoked: HashMap::new() };
+
+        let caller = build_caller(&preamble, &id, None, node_did, &registry, &resolver).await;
+
+        assert!(
+            !caller
+                .session
+                .has_capability(&resource, &Ability(Ability::DATA_LAYER_ADMIN.to_string())),
+            "an owner-rooted chain must not admit data-layer/admin on the owner's own service"
+        );
+    }
+
+    /// The narrow case ADR-0015 A6 actually motivates still works: an owner
+    /// self-rooting a non-admin ability (`data-layer/read`) on their own
+    /// service is admitted.
+    #[tokio::test]
+    async fn owner_rooted_chain_grants_data_layer_read() {
+        let owner = Identity::generate().unwrap();
+        let owner_did = derive_did_key(&owner.public_key());
+        let node_did = "did:key:zNode";
+        let resource = ResourceUri::service("svc-a", "svc-a");
+
+        let registry = empty_registry();
+        registry.set_owner("svc-a".to_string(), owner_did.clone()).await.unwrap();
+
+        let token = CapabilityToken::issue(
+            &owner,
+            &owner_did,
+            vec![Capability {
+                with: resource.clone(),
+                can: Ability(Ability::DATA_LAYER_READ.to_string()),
+                caveats: None,
+            }],
+            serde_json::Map::new(),
+            3600,
+            vec![],
+        )
+        .unwrap();
+
+        let preamble = ucan_preamble(token);
+        let id = VerifiedIdentity { master_did: owner_did.clone(), temporary_did: owner_did };
+        let resolver = MockResolver { revoked: HashMap::new() };
+
+        let caller = build_caller(&preamble, &id, None, node_did, &registry, &resolver).await;
+
+        assert!(
+            caller
+                .session
+                .has_capability(&resource, &Ability(Ability::DATA_LAYER_READ.to_string())),
+            "owner-rooted data-layer/read is A6's motivating case and must still be admitted"
         );
     }
 

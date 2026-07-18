@@ -2140,3 +2140,83 @@ not silently deferred)
 - **Multiple substrate owners** (F12/Q5) and **declared service visibility**
   (ADR-0018, *Proposed*) remain deferred/spun out, as B7a's section already
   recorded.
+
+### Post-commit review (2026-07-18) — two independent reviews, findings incorporated
+
+Two reviewers examined the committed B7b diff. One finding was a real
+authorization widening fixed at the trust-root predicate; one was a parsing
+bug fixed with a one-line change; both prior test-coverage gaps were closed;
+the UX finding was fixed at both the CLI-parsing and function layers.
+
+- **Fixed (security) — the owner-rooted root (A6) was ability-agnostic and
+  admitted `data-layer/admin`.** `is_trusted_root(issuer, resource)` decided
+  trust from the resource alone, so a service owner self-issuing a UCAN
+  claiming `data-layer/admin` on their own `synapp:<svc>:svc:<svc>` was
+  admitted exactly like any other owner-rooted ability — opening
+  `execute-ddl`/`query-raw` on every owned service and contradicting this
+  file's own "execute-ddl/query-raw remain denied … unaffected by B7b"
+  claim above. `ChainVerifyOpts::is_trusted_root` (`crates/ucan/src/
+  token.rs`) now takes the whole `&Capability` (resource *and* ability), not
+  just `&ResourceUri` — `token.rs`'s `granted_capabilities` and `session.rs`'s
+  `from_verified_chain` pass `cap`/`c` directly instead of `&cap.with`.
+  `build_caller`'s `is_root` (`crates/router/src/route_handler/io.rs`) now
+  excludes anything entailing `data-layer/admin` from the owner-rooted
+  branch specifically; the admin-root branch is unchanged (still ability-
+  agnostic, by design — node-wide trust). `substrate/admin` is excluded too
+  via `entails`, though it cannot reach this branch in practice
+  (`owning_service_id` never matches a bare `substrate:` resource). Pinned
+  by two new tests in `io.rs`: `owner_rooted_chain_does_not_grant_data_
+  layer_admin` (the reproduction, now denied) and `owner_rooted_chain_
+  grants_data_layer_read` (A6's actual motivating case — a non-admin
+  self-grant — still works).
+- **Fixed (correctness) — `owning_service_id` mis-parsed a `substrate:`
+  resource with a selector past the service name.** `selector.splitn(2,
+  '/')` on `app/<svc>/<tail>` returned `"<svc>/<tail>"`, not `"<svc>"`, so
+  `substrate:<node>/app/my-svc/deploy` failed to resolve to `my-svc`'s
+  registered owner — an owner's capability naming that fuller selector
+  would silently fail to root. Changed to `selector.split('/')`, matching
+  the `synapp:` branch's existing `.split('/').next()` pattern two lines
+  above. Pinned by `owning_service_id_strips_a_trailing_selector_past_the_
+  service_name`.
+- **Fixed (test coverage) — no test drove a real signed owner-rooted
+  `CapabilityToken` through the actual `ControlPlaneService` deploy gate.**
+  `deploy_grant.rs` hand-built every `CallerContext`; `io.rs`'s real-token
+  tests stopped at `build_caller` and never reached the gate; the two were
+  never joined, leaving task.md's "exercised end to end by real signed
+  `CapabilityToken`s" claim half-proven. Added two tests to `deploy_grant.rs`:
+  `owner_self_issued_real_token_admits_redeploy_of_their_own_service` (a
+  real signed, real-registry-owner-rooted token, verified through
+  `syneroym_ucan::verify_chain`, admits at the real gate when the token's
+  audience is the recorded owner) and `owner_rooted_grant_to_a_different_
+  caller_does_not_bypass_takeover_protection` (the same real grant, issued
+  to a non-owner delegate, clears the Tier-1 capability check but is still
+  rejected by F7's takeover protection — confirming capability delegation
+  and ownership-takeover are independent checks, not a way to route around
+  the latter).
+- **Fixed (UX) — `--ucan` without `--as` was a silent no-op.** The
+  presented token's `audience_did` must equal the connecting identity's
+  verified master DID; without `--as`, `SyneroymClient::new` generates a
+  fresh ephemeral identity per invocation that can never match, so the
+  chain was dropped server-side (`warn!`-only) and the caller fell back to
+  `AuthLevel::Delegated` with no client-visible error — surfacing later as
+  a confusing "holds no grant" failure. Fixed at two layers: `main.rs`'s
+  global `--ucan` flag now declares `requires = "run_as"` (clap rejects the
+  combination up front, before any connection is attempted), and
+  `commands::client_for` independently rejects it too, for the direct
+  in-crate callers clap's CLI-layer check doesn't cover. Pinned by
+  `test_ucan_without_as_is_rejected` (`apps/roymctl/tests/cli_args.rs`) and
+  `client_for_rejects_ucan_without_as` (`apps/roymctl/src/commands.rs`).
+
+### Gate (re-verified after review fixes)
+
+- `cargo +nightly fmt --all` — clean.
+- `cargo clippy --workspace --all-targets --all-features` — zero warnings.
+- `cargo test --workspace` — **548 passed, 0 failed** (was 541, +7: the
+  `owning_service_id` selector-parsing pin, the two `data-layer/admin`
+  owner-rooted pins, the two real-signed-token deploy-gate tests, and the
+  two `--ucan`-without-`--as` pins in `roymctl`, one at the clap layer and
+  one at `client_for`), full run with the sandbox disabled (the default
+  sandbox blocks the iroh-relay integration test's local socket bind,
+  matching the established methodology from B7a/B7b).
+- `mise run test:e2e` — unchanged from B7b's own gate above — none of the
+  fixes touch wire-visible behavior the e2e suite exercises.

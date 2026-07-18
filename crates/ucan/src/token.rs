@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use syneroym_identity::{Identity, substrate};
 
-use crate::capability::{Capability, ResourceUri};
+use crate::capability::Capability;
 
 /// Clock-skew tolerance for `not_before` (mirrors `DelegationCertificate`'s
 /// 300 s future-issue tolerance).
@@ -142,10 +142,15 @@ pub struct ChainVerifyOpts<'a> {
     /// someone else.
     pub expected_audience_did: &'a str,
     /// Returns whether `issuer_did` is a trusted root of authority for
-    /// `resource`. At B1 the router passes `|iss, _res| iss == admin_root`.
-    /// `Send + Sync` so `ChainVerifyOpts` (and futures holding it across an
-    /// `.await`) stay usable from `tokio::spawn`ed connection handlers.
-    pub is_trusted_root: &'a (dyn Fn(&str, &ResourceUri) -> bool + Send + Sync),
+    /// `capability` (its resource *and* the ability being claimed -- M04A
+    /// Slice B7b: an owner-rooted root may need to trust a resource for some
+    /// abilities but not others, e.g. `data-layer/read` but not the
+    /// `data-layer/admin` escape hatch, so the predicate needs the ability,
+    /// not just the resource). At B1 the router passed
+    /// `|iss, _cap| iss == admin_root`. `Send + Sync` so `ChainVerifyOpts`
+    /// (and futures holding it across an `.await`) stay usable from
+    /// `tokio::spawn`ed connection handlers.
+    pub is_trusted_root: &'a (dyn Fn(&str, &Capability) -> bool + Send + Sync),
     pub now_secs: u64,
 }
 
@@ -211,7 +216,7 @@ fn granted_capabilities(
         })
         .collect::<Result<_>>()?;
     for cap in &token.capabilities {
-        let rooted = (opts.is_trusted_root)(&token.issuer_did, &cap.with);
+        let rooted = (opts.is_trusted_root)(&token.issuer_did, cap);
         // ADR-0015 A3/A4: a parent capability only backs a child's if the
         // parent also permits further delegation. `can_delegate` is
         // *checked*, not conjoined, into the child (it is terminal, not
@@ -233,13 +238,13 @@ mod tests {
     use syneroym_identity::substrate::derive_did_key;
 
     use super::*;
-    use crate::capability::Ability;
+    use crate::capability::{Ability, ResourceUri};
 
     fn cap(resource: ResourceUri, ability: &str) -> Capability {
         Capability { with: resource, can: Ability(ability.to_string()), caveats: None }
     }
 
-    fn no_root(_iss: &str, _res: &ResourceUri) -> bool {
+    fn no_root(_iss: &str, _cap: &Capability) -> bool {
         false
     }
 
@@ -261,7 +266,7 @@ mod tests {
         )
         .unwrap();
 
-        let is_root = |iss: &str, _res: &ResourceUri| iss == admin_root;
+        let is_root = |iss: &str, _cap: &Capability| iss == admin_root;
         let opts = ChainVerifyOpts {
             expected_audience_did: &alice_did,
             is_trusted_root: &is_root,
@@ -301,7 +306,7 @@ mod tests {
         )
         .unwrap();
 
-        let is_root = |iss: &str, _res: &ResourceUri| iss == admin_root;
+        let is_root = |iss: &str, _cap: &Capability| iss == admin_root;
         let opts = ChainVerifyOpts {
             expected_audience_did: &bob_did,
             is_trusted_root: &is_root,
@@ -340,7 +345,7 @@ mod tests {
         )
         .unwrap();
 
-        let is_root = |iss: &str, _res: &ResourceUri| iss == admin_root;
+        let is_root = |iss: &str, _cap: &Capability| iss == admin_root;
         let opts = ChainVerifyOpts {
             expected_audience_did: &bob_did,
             is_trusted_root: &is_root,
@@ -457,7 +462,7 @@ mod tests {
         )
         .unwrap();
 
-        let is_root = |iss: &str, _res: &ResourceUri| iss == admin_root;
+        let is_root = |iss: &str, _cap: &Capability| iss == admin_root;
         let opts = ChainVerifyOpts {
             expected_audience_did: &bob_did,
             is_trusted_root: &is_root,
@@ -511,7 +516,7 @@ mod tests {
         .unwrap();
         token.capabilities = vec![cap(resource, Ability::DATA_LAYER_ADMIN)];
 
-        let is_root = |iss: &str, _res: &ResourceUri| iss == admin_root;
+        let is_root = |iss: &str, _cap: &Capability| iss == admin_root;
         let opts = ChainVerifyOpts {
             expected_audience_did: &alice_did,
             is_trusted_root: &is_root,
@@ -580,7 +585,7 @@ mod tests {
         )
         .unwrap();
 
-        let is_root = |iss: &str, _res: &ResourceUri| iss == admin_root;
+        let is_root = |iss: &str, _cap: &Capability| iss == admin_root;
         let opts = ChainVerifyOpts {
             expected_audience_did: &bob_did,
             is_trusted_root: &is_root,
@@ -634,7 +639,7 @@ mod tests {
         )
         .unwrap();
 
-        let is_root = |iss: &str, _res: &ResourceUri| iss == admin_root;
+        let is_root = |iss: &str, _cap: &Capability| iss == admin_root;
         let opts = ChainVerifyOpts {
             expected_audience_did: &alice_did,
             is_trusted_root: &is_root,
@@ -681,7 +686,7 @@ mod tests {
         }
         let leaf_did = derive_did_key(&identities.last().unwrap().public_key());
 
-        let is_root = |iss: &str, _res: &ResourceUri| iss == root_did;
+        let is_root = |iss: &str, _cap: &Capability| iss == root_did;
         let opts = ChainVerifyOpts {
             expected_audience_did: &leaf_did,
             is_trusted_root: &is_root,
@@ -730,7 +735,7 @@ mod tests {
         )
         .unwrap();
 
-        let is_root = |iss: &str, _res: &ResourceUri| iss == admin_root;
+        let is_root = |iss: &str, _cap: &Capability| iss == admin_root;
         let opts = ChainVerifyOpts {
             expected_audience_did: &bob_did,
             is_trusted_root: &is_root,
@@ -789,7 +794,7 @@ mod tests {
         )
         .unwrap();
 
-        let is_root = |iss: &str, _res: &ResourceUri| iss == admin_root;
+        let is_root = |iss: &str, _cap: &Capability| iss == admin_root;
         let opts = ChainVerifyOpts {
             expected_audience_did: &carol_did,
             is_trusted_root: &is_root,
@@ -826,7 +831,7 @@ mod tests {
         )
         .unwrap();
 
-        let is_root = |iss: &str, _res: &ResourceUri| iss == admin_root;
+        let is_root = |iss: &str, _cap: &Capability| iss == admin_root;
         let opts = ChainVerifyOpts {
             expected_audience_did: &alice_did,
             is_trusted_root: &is_root,

@@ -62,6 +62,24 @@ fn test_global_ucan_flag_parses() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Post-commit review (F2): `--ucan` without `--as` is a silent no-op at the
+/// protocol level (the presented token's audience can never match a fresh
+/// ephemeral per-invocation identity), so clap rejects the combination
+/// up front with a clear message instead of letting the caller hit a
+/// confusing downstream "holds no grant" failure.
+#[test]
+fn test_ucan_without_as_is_rejected() -> Result<(), Box<dyn Error>> {
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.arg("--ucan")
+        .arg("some-token.json")
+        .arg("svc")
+        .arg("list")
+        .assert()
+        .failure()
+        .stderr(contains("--as"));
+    Ok(())
+}
+
 /// M04A Slice B7b end to end: `identity create` then `identity issue-grant`
 /// produces a signed `CapabilityToken` JSON naming exactly the requested
 /// `with`/`can`/`to`/`can_delegate`.
