@@ -50,7 +50,7 @@ fn bench_chain_verify(c: &mut Criterion) {
     )
     .unwrap();
 
-    let is_root = |iss: &str, _res: &ResourceUri| iss == admin_root;
+    let is_root = |iss: &str, _cap: &Capability| iss == admin_root;
 
     c.bench_function("verify_chain_two_link", |b| {
         b.iter(|| {

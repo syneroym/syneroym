@@ -9,6 +9,7 @@ use std::{
 
 use anyhow::{Result, anyhow};
 use hyper_util::rt::TokioIo;
+use syneroym_core::local_registry::EndpointRegistry;
 use syneroym_rpc::{
     Ability, AuthLevel, CallerContext, CallerProof, Capability, CapabilityToken, ChainVerifyOpts,
     ResourceUri, SessionContext, framing,
@@ -83,11 +84,60 @@ async fn ucan_chain_not_revoked(
     true
 }
 
+/// M04A Slice B7b (ADR-0015 A6/F6): whether `res`'s named substrate node is
+/// *this* node. `synapp:...` service resources are always local (evaluated
+/// locally by construction -- a cross-node proxy hop re-verifies with a
+/// fresh `CallerContext` at the destination, ADR-0016 §6); a
+/// `substrate:<node_did>[/selector]` resource is local only when it names
+/// this node's own DID. This is the node-locality half of A6's
+/// `is_trusted_root`; the per-service half is `owning_service_id` below.
+fn resource_is_local(res: &ResourceUri, node_did: &str) -> bool {
+    match res.0.strip_prefix("substrate:") {
+        Some(rest) => rest.split('/').next().unwrap_or(rest) == node_did,
+        None => true,
+    }
+}
+
+/// M04A Slice B7b (ADR-0015 A6): the `service_id` a resource names, for the
+/// per-service `owner_of` root check -- both forms a live resource can take:
+/// `synapp:<app_instance_id>:svc:<service_id>[/selector]` (in practice
+/// `app_instance_id == service_id` today, since `CallerContext.app_instance`
+/// is always `None` -- see `synsvc_native.rs`) and the orchestrator's
+/// `substrate:<node_did>/app/<service_id>[...]` selector. `None` for every
+/// other resource shape (e.g. a bare `substrate:<node_did>`, which
+/// per-service ownership does not apply to).
+fn owning_service_id(res: &ResourceUri) -> Option<&str> {
+    if let Some(rest) = res.0.strip_prefix("synapp:") {
+        let (_, after_svc) = rest.split_once(":svc:")?;
+        return Some(after_svc.split('/').next().unwrap_or(after_svc));
+    }
+    if let Some(rest) = res.0.strip_prefix("substrate:") {
+        let (_, selector) = rest.split_once('/')?;
+        let mut parts = selector.split('/');
+        if parts.next() == Some("app") {
+            return parts.next();
+        }
+    }
+    None
+}
+
 /// Builds the `CallerContext` for a verified handshake identity (ADR-0016
 /// §4.2, Slice B1). A caller whose master DID equals the configured
 /// `[iam].admin_ucan_root` is granted `substrate/admin` on this node (the B0
-/// direct-equality path, kept). A presented `preamble.ucan` chain rooted at
-/// that same admin root is additionally verified and merged in; `auth` is
+/// direct-equality path, kept). A presented `preamble.ucan` chain is
+/// additionally verified and merged in -- rooted either at that same admin
+/// root (node-wide, and only for a resource this node actually names, F6)
+/// or at a resource's own recorded owner (ADR-0015 A6, M04A Slice B7b: a
+/// service owner is an independent root for their own service, regardless of
+/// whether the substrate itself has an admin root at all) -- except for
+/// `data-layer/admin` (or anything entailing it): an owner cannot self-root
+/// that ability on their own service, only the node admin root can, so a
+/// self-issued `data-layer/admin` grant does not silently open
+/// `execute-ddl`/`query-raw` on every deployment (post-commit review, F1 --
+/// `is_trusted_root`'s resource-only predicate was ability-agnostic and would
+/// otherwise have admitted it; see
+/// `unowned_substrate_does_not_grant_data_layer_admin`'s
+/// sibling `owner_rooted_chain_does_not_grant_data_layer_admin`). `auth` is
 /// upgraded to `AuthLevel::Ucan` only when the chain actually admitted at
 /// least one capability -- a structurally valid but entirely untrusted chain
 /// (e.g. self-issued, rooted nowhere) must not read as "holds a verified UCAN
@@ -111,6 +161,7 @@ async fn build_caller(
     id: &VerifiedIdentity,
     admin_root: Option<&str>,
     node_did: &str,
+    registry: &EndpointRegistry,
     resolver: &dyn MasterAnchorResolver,
 ) -> CallerContext {
     let now = now_secs();
@@ -163,10 +214,19 @@ async fn build_caller(
         });
     }
 
-    // B1 path: verify a presented UCAN chain rooted at the node admin root,
-    // addressed to this verified connection identity.
-    if let (Some(token), Some(root)) = (&preamble.ucan, admin_root) {
-        let is_root = |iss: &str, _res: &ResourceUri| iss == root;
+    // B1/B7b path: verify a presented UCAN chain addressed to this verified
+    // connection identity, rooted either at the node admin root (node-wide,
+    // and only for a resource this node actually names -- F6) or at a
+    // resource's own recorded owner (ADR-0015 A6). Runs regardless of
+    // whether this substrate has an admin root at all: an owner-rooted
+    // per-service chain is independent of node-wide ownership.
+    if let Some(token) = &preamble.ucan {
+        let is_root = |iss: &str, cap: &Capability| {
+            (admin_root == Some(iss) && resource_is_local(&cap.with, node_did))
+                || (owning_service_id(&cap.with)
+                    .is_some_and(|svc| registry.owner_of(svc).as_deref() == Some(iss))
+                    && !cap.can.entails(&Ability(Ability::DATA_LAYER_ADMIN.to_string())))
+        };
         let opts = ChainVerifyOpts {
             expected_audience_did: &id.master_did,
             is_trusted_root: &is_root,
@@ -280,6 +340,7 @@ impl RouteHandler {
                     &id,
                     self.inner.admin_ucan_root.as_deref(),
                     &self.inner.node_did,
+                    &self.inner.registry,
                     self.inner.registry_client.as_ref(),
                 )
                 .await,
@@ -502,14 +563,23 @@ impl RouteHandler {
 mod tests {
     use std::{
         collections::HashMap,
-        sync::atomic::{AtomicUsize, Ordering},
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
     };
 
-    use syneroym_core::dht_registry::MasterAnchorPayload;
+    use syneroym_core::{dht_registry::MasterAnchorPayload, storage::MockStorage};
     use syneroym_identity::{Identity, substrate::derive_did_key};
     use tokio::io::duplex;
 
     use super::*;
+
+    /// A fresh, empty `EndpointRegistry` for tests that don't exercise A6's
+    /// owner-rooted trust (every other test in this module).
+    fn empty_registry() -> EndpointRegistry {
+        EndpointRegistry::new_mock(Arc::new(MockStorage::new()))
+    }
 
     /// A `MasterAnchorResolver` double whose `revoked_keys` are configured
     /// per-issuer, mirroring `handshake.rs`'s own test `MockResolver`.
@@ -586,8 +656,15 @@ mod tests {
         let id = VerifiedIdentity { master_did: client_did.clone(), temporary_did: client_did };
         let resolver = MockResolver { revoked: HashMap::new() };
 
-        let caller =
-            build_caller(&preamble, &id, Some(&admin_root), "did:key:zNode", &resolver).await;
+        let caller = build_caller(
+            &preamble,
+            &id,
+            Some(&admin_root),
+            "did:key:zNode",
+            &empty_registry(),
+            &resolver,
+        )
+        .await;
 
         assert_eq!(caller.auth, AuthLevel::Ucan);
         assert_eq!(caller.caller_did, id.master_did);
@@ -643,9 +720,15 @@ mod tests {
             .expect("a self-asserted pubkey with no delegation cert must verify");
         assert_eq!(verified_id.master_did, client_did);
 
-        let caller =
-            build_caller(&parsed, &verified_id, Some(&admin_root), "did:key:zNode", &resolver)
-                .await;
+        let caller = build_caller(
+            &parsed,
+            &verified_id,
+            Some(&admin_root),
+            "did:key:zNode",
+            &empty_registry(),
+            &resolver,
+        )
+        .await;
 
         assert_eq!(caller.auth, AuthLevel::Ucan);
         assert!(
@@ -688,8 +771,15 @@ mod tests {
         let id = VerifiedIdentity { master_did: impostor_did.clone(), temporary_did: impostor_did };
         let resolver = MockResolver { revoked: HashMap::new() };
 
-        let caller =
-            build_caller(&preamble, &id, Some(&admin_root), "did:key:zNode", &resolver).await;
+        let caller = build_caller(
+            &preamble,
+            &id,
+            Some(&admin_root),
+            "did:key:zNode",
+            &empty_registry(),
+            &resolver,
+        )
+        .await;
 
         assert_eq!(caller.auth, AuthLevel::Delegated);
         assert!(
@@ -732,8 +822,15 @@ mod tests {
         let id = VerifiedIdentity { master_did: client_did.clone(), temporary_did: client_did };
         let resolver = MockResolver { revoked: HashMap::new() };
 
-        let caller =
-            build_caller(&preamble, &id, Some(&admin_root), "did:key:zNode", &resolver).await;
+        let caller = build_caller(
+            &preamble,
+            &id,
+            Some(&admin_root),
+            "did:key:zNode",
+            &empty_registry(),
+            &resolver,
+        )
+        .await;
 
         assert_eq!(caller.auth, AuthLevel::Delegated);
         assert!(
@@ -774,8 +871,15 @@ mod tests {
             revoked: HashMap::from([(admin_root.clone(), vec![id.master_did.clone()])]),
         };
 
-        let caller =
-            build_caller(&preamble, &id, Some(&admin_root), "did:key:zNode", &resolver).await;
+        let caller = build_caller(
+            &preamble,
+            &id,
+            Some(&admin_root),
+            "did:key:zNode",
+            &empty_registry(),
+            &resolver,
+        )
+        .await;
 
         assert_eq!(caller.auth, AuthLevel::Delegated);
         assert!(
@@ -921,7 +1025,8 @@ mod tests {
         let id = VerifiedIdentity { master_did: client_did.clone(), temporary_did: client_did };
         let resolver = MockResolver { revoked: HashMap::new() };
 
-        let caller = build_caller(&preamble, &id, None, node_did, &resolver).await;
+        let caller =
+            build_caller(&preamble, &id, None, node_did, &empty_registry(), &resolver).await;
 
         for ability in [
             Ability::ORCHESTRATOR_DEPLOY,
@@ -950,7 +1055,8 @@ mod tests {
         let id = VerifiedIdentity { master_did: client_did.clone(), temporary_did: client_did };
         let resolver = MockResolver { revoked: HashMap::new() };
 
-        let caller = build_caller(&preamble, &id, None, node_did, &resolver).await;
+        let caller =
+            build_caller(&preamble, &id, None, node_did, &empty_registry(), &resolver).await;
 
         assert!(
             !caller.has_capability(&some_service, &Ability(Ability::DATA_LAYER_ADMIN.to_string())),
@@ -979,16 +1085,30 @@ mod tests {
 
         let owner_id =
             VerifiedIdentity { master_did: owner_did.clone(), temporary_did: owner_did.clone() };
-        let owner_caller =
-            build_caller(&preamble, &owner_id, Some(&owner_did), node_did, &resolver).await;
+        let owner_caller = build_caller(
+            &preamble,
+            &owner_id,
+            Some(&owner_did),
+            node_did,
+            &empty_registry(),
+            &resolver,
+        )
+        .await;
         assert!(
             owner_caller
                 .has_capability(&node_resource, &Ability(Ability::SUBSTRATE_ADMIN.to_string()))
         );
 
         let other_id = VerifiedIdentity { master_did: other_did.clone(), temporary_did: other_did };
-        let other_caller =
-            build_caller(&preamble, &other_id, Some(&owner_did), node_did, &resolver).await;
+        let other_caller = build_caller(
+            &preamble,
+            &other_id,
+            Some(&owner_did),
+            node_did,
+            &empty_registry(),
+            &resolver,
+        )
+        .await;
         assert!(
             !other_caller
                 .has_capability(&node_resource, &Ability(Ability::SUBSTRATE_ADMIN.to_string()))
@@ -1019,7 +1139,9 @@ mod tests {
         let id =
             VerifiedIdentity { master_did: owner_did.clone(), temporary_did: owner_did.clone() };
 
-        let caller = build_caller(&preamble, &id, Some(&owner_did), node_did, &resolver).await;
+        let caller =
+            build_caller(&preamble, &id, Some(&owner_did), node_did, &empty_registry(), &resolver)
+                .await;
 
         assert!(
             caller.session.capabilities.iter().any(|c| c.with == ResourceUri::substrate(node_did)),
@@ -1058,9 +1180,398 @@ mod tests {
         };
         let resolver = MockResolver { revoked: HashMap::new() };
 
-        let caller = build_caller(&preamble, &id, None, "did:key:zNode", &resolver).await;
+        let caller =
+            build_caller(&preamble, &id, None, "did:key:zNode", &empty_registry(), &resolver).await;
 
         assert_eq!(caller.caller_did, master_did);
         assert_ne!(caller.caller_did, temporary_did);
+    }
+
+    // -- M04A Slice B7b (ADR-0015 A6/F6/A7): owner-rooted trust ----------
+
+    #[test]
+    fn owning_service_id_parses_both_resource_shapes() {
+        assert_eq!(owning_service_id(&ResourceUri::service("app-1", "svc-a")).unwrap(), "svc-a");
+        assert_eq!(
+            owning_service_id(&ResourceUri("substrate:did:key:zNode/app/svc-a".to_string()))
+                .unwrap(),
+            "svc-a"
+        );
+        assert!(owning_service_id(&ResourceUri::substrate("did:key:zNode")).is_none());
+        assert!(
+            owning_service_id(&ResourceUri("substrate:did:key:zNode/other/thing".to_string()))
+                .is_none()
+        );
+    }
+
+    /// Regression: a `substrate:` resource with a trailing selector past the
+    /// service name (e.g. the orchestrator's `.../app/<svc>/deploy`) must
+    /// still yield just the service id, not the selector tail glued onto it.
+    #[test]
+    fn owning_service_id_strips_a_trailing_selector_past_the_service_name() {
+        assert_eq!(
+            owning_service_id(&ResourceUri("substrate:did:key:zNode/app/svc-a/deploy".to_string()))
+                .unwrap(),
+            "svc-a"
+        );
+    }
+
+    #[test]
+    fn resource_is_local_checks_the_named_node_for_substrate_resources() {
+        assert!(resource_is_local(
+            &ResourceUri::substrate("did:key:zThisNode"),
+            "did:key:zThisNode"
+        ));
+        assert!(!resource_is_local(
+            &ResourceUri::substrate("did:key:zOtherNode"),
+            "did:key:zThisNode"
+        ));
+        assert!(resource_is_local(
+            &ResourceUri(format!("{}/app/foo", ResourceUri::substrate("did:key:zThisNode").0)),
+            "did:key:zThisNode"
+        ));
+        // synapp: resources are always local by construction.
+        assert!(resource_is_local(&ResourceUri::service("app-1", "svc-a"), "did:key:zThisNode"));
+    }
+
+    /// ADR-0015 A6: a service owner is an independent root for their own
+    /// service, regardless of whether the substrate has a node-wide admin
+    /// root at all (`admin_root: None` here -- the F4 unowned posture).
+    #[tokio::test]
+    async fn owner_rooted_chain_grants_a_capability_on_the_owners_own_service() {
+        let owner = Identity::generate().unwrap();
+        let client = Identity::generate().unwrap();
+        let owner_did = derive_did_key(&owner.public_key());
+        let client_did = derive_did_key(&client.public_key());
+        let node_did = "did:key:zNode";
+        let resource = ResourceUri(format!("substrate:{node_did}/app/svc-a"));
+
+        let registry = empty_registry();
+        registry.set_owner("svc-a".to_string(), owner_did.clone()).await.unwrap();
+
+        let token = CapabilityToken::issue(
+            &owner,
+            &client_did,
+            vec![Capability {
+                with: resource.clone(),
+                can: Ability(Ability::ORCHESTRATOR_DEPLOY.to_string()),
+                caveats: None,
+            }],
+            serde_json::Map::new(),
+            3600,
+            vec![],
+        )
+        .unwrap();
+
+        let preamble = ucan_preamble(token);
+        let id = VerifiedIdentity { master_did: client_did.clone(), temporary_did: client_did };
+        let resolver = MockResolver { revoked: HashMap::new() };
+
+        let caller = build_caller(&preamble, &id, None, node_did, &registry, &resolver).await;
+
+        assert_eq!(caller.auth, AuthLevel::Ucan);
+        assert!(
+            caller
+                .session
+                .has_capability(&resource, &Ability(Ability::ORCHESTRATOR_DEPLOY.to_string()))
+        );
+    }
+
+    /// Post-commit review (F1): the owner-rooted trust ADR-0015 A6 grants is
+    /// bounded away from `data-layer/admin` -- a service owner self-issuing a
+    /// UCAN claiming `data-layer/admin` on their own service must not be
+    /// admitted, or `execute-ddl`/`query-raw` would be open on every owned
+    /// service, contradicting task.md's "execute-ddl/query-raw remain denied
+    /// ... unaffected by B7b" guarantee. `substrate/admin` is included too
+    /// (it entails `data-layer/admin`), though it cannot reach this path in
+    /// practice: `owning_service_id` never matches a bare `substrate:` URI.
+    #[tokio::test]
+    async fn owner_rooted_chain_does_not_grant_data_layer_admin() {
+        let owner = Identity::generate().unwrap();
+        let owner_did = derive_did_key(&owner.public_key());
+        let node_did = "did:key:zNode";
+        let resource = ResourceUri::service("svc-a", "svc-a");
+
+        let registry = empty_registry();
+        registry.set_owner("svc-a".to_string(), owner_did.clone()).await.unwrap();
+
+        // The owner self-issues a token to themselves, claiming admin on
+        // their own service -- the shape F1's reproduction describes.
+        let token = CapabilityToken::issue(
+            &owner,
+            &owner_did,
+            vec![Capability {
+                with: resource.clone(),
+                can: Ability(Ability::DATA_LAYER_ADMIN.to_string()),
+                caveats: None,
+            }],
+            serde_json::Map::new(),
+            3600,
+            vec![],
+        )
+        .unwrap();
+
+        let preamble = ucan_preamble(token);
+        let id = VerifiedIdentity { master_did: owner_did.clone(), temporary_did: owner_did };
+        let resolver = MockResolver { revoked: HashMap::new() };
+
+        let caller = build_caller(&preamble, &id, None, node_did, &registry, &resolver).await;
+
+        assert!(
+            !caller
+                .session
+                .has_capability(&resource, &Ability(Ability::DATA_LAYER_ADMIN.to_string())),
+            "an owner-rooted chain must not admit data-layer/admin on the owner's own service"
+        );
+    }
+
+    /// The narrow case ADR-0015 A6 actually motivates still works: an owner
+    /// self-rooting a non-admin ability (`data-layer/read`) on their own
+    /// service is admitted.
+    #[tokio::test]
+    async fn owner_rooted_chain_grants_data_layer_read() {
+        let owner = Identity::generate().unwrap();
+        let owner_did = derive_did_key(&owner.public_key());
+        let node_did = "did:key:zNode";
+        let resource = ResourceUri::service("svc-a", "svc-a");
+
+        let registry = empty_registry();
+        registry.set_owner("svc-a".to_string(), owner_did.clone()).await.unwrap();
+
+        let token = CapabilityToken::issue(
+            &owner,
+            &owner_did,
+            vec![Capability {
+                with: resource.clone(),
+                can: Ability(Ability::DATA_LAYER_READ.to_string()),
+                caveats: None,
+            }],
+            serde_json::Map::new(),
+            3600,
+            vec![],
+        )
+        .unwrap();
+
+        let preamble = ucan_preamble(token);
+        let id = VerifiedIdentity { master_did: owner_did.clone(), temporary_did: owner_did };
+        let resolver = MockResolver { revoked: HashMap::new() };
+
+        let caller = build_caller(&preamble, &id, None, node_did, &registry, &resolver).await;
+
+        assert!(
+            caller
+                .session
+                .has_capability(&resource, &Ability(Ability::DATA_LAYER_READ.to_string())),
+            "owner-rooted data-layer/read is A6's motivating case and must still be admitted"
+        );
+    }
+
+    /// The other half of A6: an owner of one service is not thereby a root
+    /// for a *different* service -- they cannot mint a capability on a
+    /// resource they do not own.
+    #[tokio::test]
+    async fn owner_rooted_chain_does_not_grant_on_a_different_owners_service() {
+        let owner_a = Identity::generate().unwrap();
+        let client = Identity::generate().unwrap();
+        let owner_a_did = derive_did_key(&owner_a.public_key());
+        let client_did = derive_did_key(&client.public_key());
+        let node_did = "did:key:zNode";
+        // owner_a owns "svc-a", not "svc-b".
+        let foreign_resource = ResourceUri(format!("substrate:{node_did}/app/svc-b"));
+
+        let registry = empty_registry();
+        registry.set_owner("svc-a".to_string(), owner_a_did.clone()).await.unwrap();
+        registry.set_owner("svc-b".to_string(), "did:key:zSomeoneElse".to_string()).await.unwrap();
+
+        let token = CapabilityToken::issue(
+            &owner_a,
+            &client_did,
+            vec![Capability {
+                with: foreign_resource.clone(),
+                can: Ability(Ability::ORCHESTRATOR_DEPLOY.to_string()),
+                caveats: None,
+            }],
+            serde_json::Map::new(),
+            3600,
+            vec![],
+        )
+        .unwrap();
+
+        let preamble = ucan_preamble(token);
+        let id = VerifiedIdentity { master_did: client_did.clone(), temporary_did: client_did };
+        let resolver = MockResolver { revoked: HashMap::new() };
+
+        // An unrelated admin_root, distinct from `client` -- an owned
+        // substrate on which this caller is not the owner, so no F4
+        // bootstrap grant leaks in and masks the chain's own outcome.
+        let admin_root = derive_did_key(&Identity::generate().unwrap().public_key());
+        let caller =
+            build_caller(&preamble, &id, Some(&admin_root), node_did, &registry, &resolver).await;
+
+        assert!(
+            !caller.session.has_capability(
+                &foreign_resource,
+                &Ability(Ability::ORCHESTRATOR_DEPLOY.to_string())
+            )
+        );
+    }
+
+    /// F6: an admin root's node-wide grant only covers a resource that
+    /// actually names *this* node -- a leaf naming a different node's
+    /// `substrate:` resource is not admitted even though the issuer equals
+    /// `admin_root`.
+    #[tokio::test]
+    async fn admin_root_grant_is_rejected_for_a_different_nodes_resource() {
+        let owner = Identity::generate().unwrap();
+        let client = Identity::generate().unwrap();
+        let admin_root = derive_did_key(&owner.public_key());
+        let client_did = derive_did_key(&client.public_key());
+        let this_node = "did:key:zThisNode";
+        let other_nodes_resource = ResourceUri::substrate("did:key:zOtherNode");
+
+        let token = CapabilityToken::issue(
+            &owner,
+            &client_did,
+            vec![Capability {
+                with: other_nodes_resource.clone(),
+                can: Ability(Ability::SUBSTRATE_ADMIN.to_string()),
+                caveats: None,
+            }],
+            serde_json::Map::new(),
+            3600,
+            vec![],
+        )
+        .unwrap();
+
+        let preamble = ucan_preamble(token);
+        let id = VerifiedIdentity { master_did: client_did.clone(), temporary_did: client_did };
+        let resolver = MockResolver { revoked: HashMap::new() };
+
+        let caller = build_caller(
+            &preamble,
+            &id,
+            Some(&admin_root),
+            this_node,
+            &empty_registry(),
+            &resolver,
+        )
+        .await;
+
+        assert_eq!(
+            caller.auth,
+            AuthLevel::Delegated,
+            "must not upgrade on a foreign-node resource"
+        );
+    }
+
+    /// A7: revocation still checks the whole chain for an owner-rooted
+    /// grant, the same as the admin-rooted path
+    /// (`build_caller_rejects_a_revoked_chain`).
+    #[tokio::test]
+    async fn owner_rooted_chain_is_rejected_when_revoked() {
+        let owner = Identity::generate().unwrap();
+        let client = Identity::generate().unwrap();
+        let owner_did = derive_did_key(&owner.public_key());
+        let client_did = derive_did_key(&client.public_key());
+        let node_did = "did:key:zNode";
+        let resource = ResourceUri(format!("substrate:{node_did}/app/svc-a"));
+
+        let registry = empty_registry();
+        registry.set_owner("svc-a".to_string(), owner_did.clone()).await.unwrap();
+
+        let token = CapabilityToken::issue(
+            &owner,
+            &client_did,
+            vec![Capability {
+                with: resource.clone(),
+                can: Ability(Ability::ORCHESTRATOR_DEPLOY.to_string()),
+                caveats: None,
+            }],
+            serde_json::Map::new(),
+            3600,
+            vec![],
+        )
+        .unwrap();
+
+        let preamble = ucan_preamble(token);
+        let id = VerifiedIdentity { master_did: client_did.clone(), temporary_did: client_did };
+        let resolver =
+            MockResolver { revoked: HashMap::from([(owner_did, vec![id.master_did.clone()])]) };
+
+        // An unrelated admin_root, distinct from `client` -- an owned
+        // substrate on which this caller is not the owner, so no F4
+        // bootstrap grant leaks in and masks the revocation's own effect.
+        let admin_root = derive_did_key(&Identity::generate().unwrap().public_key());
+        let caller =
+            build_caller(&preamble, &id, Some(&admin_root), node_did, &registry, &resolver).await;
+
+        assert_eq!(caller.auth, AuthLevel::Delegated);
+        assert!(
+            !caller
+                .session
+                .has_capability(&resource, &Ability(Ability::ORCHESTRATOR_DEPLOY.to_string()))
+        );
+    }
+
+    /// ADR-0015 A3/A4: a `can_delegate: false` owner-rooted grant cannot be
+    /// re-delegated -- the same terminal behavior `syneroym_ucan::token`
+    /// pins directly, exercised here end to end through `build_caller`.
+    #[tokio::test]
+    async fn owner_rooted_grant_with_can_delegate_false_cannot_be_redelegated() {
+        let owner = Identity::generate().unwrap();
+        let alice = Identity::generate().unwrap();
+        let bob = Identity::generate().unwrap();
+        let owner_did = derive_did_key(&owner.public_key());
+        let alice_did = derive_did_key(&alice.public_key());
+        let bob_did = derive_did_key(&bob.public_key());
+        let node_did = "did:key:zNode";
+        let resource = ResourceUri(format!("substrate:{node_did}/app/svc-a"));
+
+        let registry = empty_registry();
+        registry.set_owner("svc-a".to_string(), owner_did).await.unwrap();
+
+        let owner_to_alice = CapabilityToken::issue(
+            &owner,
+            &alice_did,
+            vec![Capability {
+                with: resource.clone(),
+                can: Ability(Ability::ORCHESTRATOR_DEPLOY.to_string()),
+                caveats: Some(serde_json::json!({"can_delegate": false})),
+            }],
+            serde_json::Map::new(),
+            3600,
+            vec![],
+        )
+        .unwrap();
+        let alice_to_bob = CapabilityToken::issue(
+            &alice,
+            &bob_did,
+            vec![Capability {
+                with: resource.clone(),
+                can: Ability(Ability::ORCHESTRATOR_DEPLOY.to_string()),
+                caveats: None,
+            }],
+            serde_json::Map::new(),
+            3600,
+            vec![owner_to_alice],
+        )
+        .unwrap();
+
+        let preamble = ucan_preamble(alice_to_bob);
+        let id = VerifiedIdentity { master_did: bob_did.clone(), temporary_did: bob_did };
+        let resolver = MockResolver { revoked: HashMap::new() };
+
+        // An unrelated admin_root, distinct from `bob` -- an owned substrate
+        // on which this caller is not the owner, so no F4 bootstrap grant
+        // leaks in and masks the delegation block's own effect.
+        let admin_root = derive_did_key(&Identity::generate().unwrap().public_key());
+        let caller =
+            build_caller(&preamble, &id, Some(&admin_root), node_did, &registry, &resolver).await;
+
+        assert!(
+            !caller
+                .session
+                .has_capability(&resource, &Ability(Ability::ORCHESTRATOR_DEPLOY.to_string()))
+        );
     }
 }

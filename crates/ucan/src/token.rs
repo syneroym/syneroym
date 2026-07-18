@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use syneroym_identity::{Identity, substrate};
 
-use crate::capability::{Capability, ResourceUri};
+use crate::capability::Capability;
 
 /// Clock-skew tolerance for `not_before` (mirrors `DelegationCertificate`'s
 /// 300 s future-issue tolerance).
@@ -142,10 +142,15 @@ pub struct ChainVerifyOpts<'a> {
     /// someone else.
     pub expected_audience_did: &'a str,
     /// Returns whether `issuer_did` is a trusted root of authority for
-    /// `resource`. At B1 the router passes `|iss, _res| iss == admin_root`.
-    /// `Send + Sync` so `ChainVerifyOpts` (and futures holding it across an
-    /// `.await`) stay usable from `tokio::spawn`ed connection handlers.
-    pub is_trusted_root: &'a (dyn Fn(&str, &ResourceUri) -> bool + Send + Sync),
+    /// `capability` (its resource *and* the ability being claimed -- M04A
+    /// Slice B7b: an owner-rooted root may need to trust a resource for some
+    /// abilities but not others, e.g. `data-layer/read` but not the
+    /// `data-layer/admin` escape hatch, so the predicate needs the ability,
+    /// not just the resource). At B1 the router passed
+    /// `|iss, _cap| iss == admin_root`. `Send + Sync` so `ChainVerifyOpts`
+    /// (and futures holding it across an `.await`) stay usable from
+    /// `tokio::spawn`ed connection handlers.
+    pub is_trusted_root: &'a (dyn Fn(&str, &Capability) -> bool + Send + Sync),
     pub now_secs: u64,
 }
 
@@ -211,8 +216,14 @@ fn granted_capabilities(
         })
         .collect::<Result<_>>()?;
     for cap in &token.capabilities {
-        let rooted = (opts.is_trusted_root)(&token.issuer_did, &cap.with);
-        let backed = parent_grants.iter().flatten().any(|pc| pc.covers(cap));
+        let rooted = (opts.is_trusted_root)(&token.issuer_did, cap);
+        // ADR-0015 A3/A4: a parent capability only backs a child's if the
+        // parent also permits further delegation. `can_delegate` is
+        // *checked*, not conjoined, into the child (it is terminal, not
+        // intersective like `where`/`fields`) -- once a held capability
+        // carries `can_delegate: false`, nothing derived from it can
+        // attenuate any further, no matter how many hops re-wrap it.
+        let backed = parent_grants.iter().flatten().any(|pc| pc.covers(cap) && pc.can_delegate());
         if rooted || backed {
             effective.push(cap.clone());
         }
@@ -227,13 +238,13 @@ mod tests {
     use syneroym_identity::substrate::derive_did_key;
 
     use super::*;
-    use crate::capability::Ability;
+    use crate::capability::{Ability, ResourceUri};
 
     fn cap(resource: ResourceUri, ability: &str) -> Capability {
         Capability { with: resource, can: Ability(ability.to_string()), caveats: None }
     }
 
-    fn no_root(_iss: &str, _res: &ResourceUri) -> bool {
+    fn no_root(_iss: &str, _cap: &Capability) -> bool {
         false
     }
 
@@ -255,7 +266,7 @@ mod tests {
         )
         .unwrap();
 
-        let is_root = |iss: &str, _res: &ResourceUri| iss == admin_root;
+        let is_root = |iss: &str, _cap: &Capability| iss == admin_root;
         let opts = ChainVerifyOpts {
             expected_audience_did: &alice_did,
             is_trusted_root: &is_root,
@@ -295,7 +306,7 @@ mod tests {
         )
         .unwrap();
 
-        let is_root = |iss: &str, _res: &ResourceUri| iss == admin_root;
+        let is_root = |iss: &str, _cap: &Capability| iss == admin_root;
         let opts = ChainVerifyOpts {
             expected_audience_did: &bob_did,
             is_trusted_root: &is_root,
@@ -334,7 +345,7 @@ mod tests {
         )
         .unwrap();
 
-        let is_root = |iss: &str, _res: &ResourceUri| iss == admin_root;
+        let is_root = |iss: &str, _cap: &Capability| iss == admin_root;
         let opts = ChainVerifyOpts {
             expected_audience_did: &bob_did,
             is_trusted_root: &is_root,
@@ -451,7 +462,7 @@ mod tests {
         )
         .unwrap();
 
-        let is_root = |iss: &str, _res: &ResourceUri| iss == admin_root;
+        let is_root = |iss: &str, _cap: &Capability| iss == admin_root;
         let opts = ChainVerifyOpts {
             expected_audience_did: &bob_did,
             is_trusted_root: &is_root,
@@ -505,7 +516,7 @@ mod tests {
         .unwrap();
         token.capabilities = vec![cap(resource, Ability::DATA_LAYER_ADMIN)];
 
-        let is_root = |iss: &str, _res: &ResourceUri| iss == admin_root;
+        let is_root = |iss: &str, _cap: &Capability| iss == admin_root;
         let opts = ChainVerifyOpts {
             expected_audience_did: &alice_did,
             is_trusted_root: &is_root,
@@ -574,7 +585,7 @@ mod tests {
         )
         .unwrap();
 
-        let is_root = |iss: &str, _res: &ResourceUri| iss == admin_root;
+        let is_root = |iss: &str, _cap: &Capability| iss == admin_root;
         let opts = ChainVerifyOpts {
             expected_audience_did: &bob_did,
             is_trusted_root: &is_root,
@@ -628,7 +639,7 @@ mod tests {
         )
         .unwrap();
 
-        let is_root = |iss: &str, _res: &ResourceUri| iss == admin_root;
+        let is_root = |iss: &str, _cap: &Capability| iss == admin_root;
         let opts = ChainVerifyOpts {
             expected_audience_did: &alice_did,
             is_trusted_root: &is_root,
@@ -675,7 +686,7 @@ mod tests {
         }
         let leaf_did = derive_did_key(&identities.last().unwrap().public_key());
 
-        let is_root = |iss: &str, _res: &ResourceUri| iss == root_did;
+        let is_root = |iss: &str, _cap: &Capability| iss == root_did;
         let opts = ChainVerifyOpts {
             expected_audience_did: &leaf_did,
             is_trusted_root: &is_root,
@@ -684,6 +695,116 @@ mod tests {
 
         let err = verify_chain(&chain, &opts).unwrap_err();
         assert!(err.to_string().contains("more than"));
+    }
+
+    /// ADR-0015 A3: a `can_delegate: false` parent capability does not back
+    /// a child's attenuated capability -- the delegation attempt is dropped
+    /// (fail-closed), not an error, matching every other "not backed"
+    /// outcome in this module.
+    #[test]
+    fn can_delegate_false_blocks_further_delegation() {
+        let owner = Identity::generate().unwrap();
+        let alice = Identity::generate().unwrap();
+        let bob = Identity::generate().unwrap();
+        let admin_root = derive_did_key(&owner.public_key());
+        let alice_did = derive_did_key(&alice.public_key());
+        let bob_did = derive_did_key(&bob.public_key());
+        let resource = ResourceUri::service("app1", "s1");
+
+        let non_delegable = Capability {
+            with: resource.clone(),
+            can: Ability(Ability::DATA_LAYER_ADMIN.to_string()),
+            caveats: Some(serde_json::json!({"can_delegate": false})),
+        };
+        let owner_to_alice = CapabilityToken::issue(
+            &owner,
+            &alice_did,
+            vec![non_delegable],
+            Map::new(),
+            3600,
+            vec![],
+        )
+        .unwrap();
+        let alice_to_bob = CapabilityToken::issue(
+            &alice,
+            &bob_did,
+            vec![cap(resource, Ability::DATA_LAYER_WRITE)],
+            Map::new(),
+            3600,
+            vec![owner_to_alice],
+        )
+        .unwrap();
+
+        let is_root = |iss: &str, _cap: &Capability| iss == admin_root;
+        let opts = ChainVerifyOpts {
+            expected_audience_did: &bob_did,
+            is_trusted_root: &is_root,
+            now_secs: now_secs().unwrap(),
+        };
+        let granted = verify_chain(&alice_to_bob, &opts).unwrap();
+        assert!(granted.is_empty(), "a can_delegate: false capability must not back a child's");
+    }
+
+    /// The block is terminal across hops, not just at the first one: a
+    /// grandchild attenuated through an intermediate that itself received
+    /// nothing (because its own parent was `can_delegate: false`) also gets
+    /// nothing -- there is no capability to re-derive from downstream.
+    #[test]
+    fn can_delegate_false_is_terminal_across_two_hops() {
+        let owner = Identity::generate().unwrap();
+        let alice = Identity::generate().unwrap();
+        let bob = Identity::generate().unwrap();
+        let carol = Identity::generate().unwrap();
+        let admin_root = derive_did_key(&owner.public_key());
+        let alice_did = derive_did_key(&alice.public_key());
+        let bob_did = derive_did_key(&bob.public_key());
+        let carol_did = derive_did_key(&carol.public_key());
+        let resource = ResourceUri::service("app1", "s1");
+
+        let non_delegable = Capability {
+            with: resource.clone(),
+            can: Ability(Ability::DATA_LAYER_ADMIN.to_string()),
+            caveats: Some(serde_json::json!({"can_delegate": false})),
+        };
+        let owner_to_alice = CapabilityToken::issue(
+            &owner,
+            &alice_did,
+            vec![non_delegable],
+            Map::new(),
+            3600,
+            vec![],
+        )
+        .unwrap();
+        let alice_to_bob = CapabilityToken::issue(
+            &alice,
+            &bob_did,
+            vec![cap(resource.clone(), Ability::DATA_LAYER_WRITE)],
+            Map::new(),
+            3600,
+            vec![owner_to_alice],
+        )
+        .unwrap();
+        let bob_to_carol = CapabilityToken::issue(
+            &bob,
+            &carol_did,
+            vec![cap(resource, Ability::DATA_LAYER_READ)],
+            Map::new(),
+            3600,
+            vec![alice_to_bob],
+        )
+        .unwrap();
+
+        let is_root = |iss: &str, _cap: &Capability| iss == admin_root;
+        let opts = ChainVerifyOpts {
+            expected_audience_did: &carol_did,
+            is_trusted_root: &is_root,
+            now_secs: now_secs().unwrap(),
+        };
+        let granted = verify_chain(&bob_to_carol, &opts).unwrap();
+        assert!(
+            granted.is_empty(),
+            "a can_delegate: false block must not be re-derivable downstream"
+        );
     }
 
     #[test]
@@ -710,7 +831,7 @@ mod tests {
         )
         .unwrap();
 
-        let is_root = |iss: &str, _res: &ResourceUri| iss == admin_root;
+        let is_root = |iss: &str, _cap: &Capability| iss == admin_root;
         let opts = ChainVerifyOpts {
             expected_audience_did: &alice_did,
             is_trusted_root: &is_root,

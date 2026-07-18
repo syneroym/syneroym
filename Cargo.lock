@@ -6166,6 +6166,8 @@ dependencies = [
  "syneroym-core",
  "syneroym-identity",
  "syneroym-sdk",
+ "syneroym-ucan",
+ "tempfile",
  "tokio",
 ]
 

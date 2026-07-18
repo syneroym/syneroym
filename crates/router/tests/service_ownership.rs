@@ -48,13 +48,53 @@ use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::or
 
 const NODE_DID: &str = "did:key:zNodeUnderTest";
 
-/// An ordinary verified caller with no capabilities -- the shape a service
-/// owner has under B7a (B7b's real UCAN grants are out of scope here).
+/// An ordinary verified caller with no capabilities at all -- used where a
+/// caller must be rejected outright (no admission grant, no ownership) or
+/// where only `list`'s ownership-filter behavior is under test (`list` is
+/// not gated on any ability -- §2.4/§3.2). **Not** used for `deploy`/
+/// `undeploy` setup calls any more: M04A Slice B7b adds a Tier-1 admission
+/// gate requiring an explicit `orchestrator/{deploy,undeploy}` capability
+/// (`orchestration.rs`'s new checks), which this caller by construction
+/// never holds -- see `app_grantee` for that.
 fn plain_caller(did: &str) -> CallerContext {
     CallerContext {
         caller_did: did.to_string(),
         app_instance: None,
         session: SessionContext::default(),
+        auth: AuthLevel::Delegated,
+        proof: None,
+    }
+}
+
+/// M04A Slice B7b: a caller holding an app-scoped `orchestrator/{deploy,
+/// undeploy}` grant for exactly `service_id` -- the shape a real B7b deploy
+/// grant produces (§3.2's `substrate:<node>/app/<name>` selector), as
+/// opposed to `node_wide_caller`'s bare, node-wide form. Used for every
+/// `deploy`/`undeploy` setup call in this file so B7b's new admission gate
+/// does not mask what these tests actually exercise (ownership/list
+/// filtering, not admission) -- `plain_caller` alone no longer clears that
+/// gate.
+fn app_grantee(did: &str, service_id: &str) -> CallerContext {
+    let resource = ResourceUri(format!("substrate:{NODE_DID}/app/{service_id}"));
+    CallerContext {
+        caller_did: did.to_string(),
+        app_instance: None,
+        session: SessionContext {
+            subject_did: did.to_string(),
+            capabilities: vec![
+                Capability {
+                    with: resource.clone(),
+                    can: Ability(Ability::ORCHESTRATOR_DEPLOY.to_string()),
+                    caveats: None,
+                },
+                Capability {
+                    with: resource,
+                    can: Ability(Ability::ORCHESTRATOR_UNDEPLOY.to_string()),
+                    caveats: None,
+                },
+            ],
+            ..Default::default()
+        },
         auth: AuthLevel::Delegated,
         proof: None,
     }
@@ -262,8 +302,8 @@ async fn list(service: &ControlPlaneService, caller: &CallerContext) -> Vec<Depl
 async fn unowned_substrate_lists_every_app_to_any_caller() {
     let temp_dir = tempfile::tempdir().unwrap();
     let service = test_service(temp_dir.path()).await;
-    let alice = plain_caller("did:key:zAlice");
-    let bob = plain_caller("did:key:zBob");
+    let alice = app_grantee("did:key:zAlice", "svc-a");
+    let bob = app_grantee("did:key:zBob", "svc-b");
     let onlooker = node_wide_caller("did:key:zOnlooker");
 
     deploy(&service, "svc-a", &alice).await;
@@ -281,8 +321,8 @@ async fn unowned_substrate_lists_every_app_to_any_caller() {
 async fn owned_substrate_owner_sees_every_app() {
     let temp_dir = tempfile::tempdir().unwrap();
     let service = test_service(temp_dir.path()).await;
-    let alice = plain_caller("did:key:zAlice");
-    let bob = plain_caller("did:key:zBob");
+    let alice = app_grantee("did:key:zAlice", "alice-svc");
+    let bob = app_grantee("did:key:zBob", "bob-svc");
     let owner = node_wide_caller("did:key:zOwner");
 
     deploy(&service, "alice-svc", &alice).await;
@@ -300,8 +340,8 @@ async fn owned_substrate_owner_sees_every_app() {
 async fn owned_substrate_service_owner_sees_only_own_apps() {
     let temp_dir = tempfile::tempdir().unwrap();
     let service = test_service(temp_dir.path()).await;
-    let alice = plain_caller("did:key:zAlice");
-    let bob = plain_caller("did:key:zBob");
+    let alice = app_grantee("did:key:zAlice", "alice-svc");
+    let bob = app_grantee("did:key:zBob", "bob-svc");
 
     deploy(&service, "alice-svc", &alice).await;
     deploy(&service, "bob-svc", &bob).await;
@@ -319,7 +359,7 @@ async fn owned_substrate_service_owner_sees_only_own_apps() {
 async fn unattributed_app_is_hidden_from_non_owners() {
     let temp_dir = tempfile::tempdir().unwrap();
     let service = test_service(temp_dir.path()).await;
-    let alice = plain_caller("did:key:zAlice");
+    let alice = app_grantee("did:key:zAlice", "alice-svc");
     let bob = plain_caller("did:key:zBob");
 
     deploy(&service, "alice-svc", &alice).await;
@@ -335,7 +375,7 @@ async fn unattributed_app_is_hidden_from_non_owners() {
 async fn redeploy_by_a_different_did_is_rejected() {
     let temp_dir = tempfile::tempdir().unwrap();
     let service = test_service(temp_dir.path()).await;
-    let alice = plain_caller("did:key:zAlice");
+    let alice = app_grantee("did:key:zAlice", "contested-svc");
     let mallory = plain_caller("did:key:zMallory");
 
     deploy(&service, "contested-svc", &alice).await;
@@ -353,7 +393,7 @@ async fn redeploy_by_a_different_did_is_rejected() {
 async fn undeploy_by_a_non_owner_is_rejected() {
     let temp_dir = tempfile::tempdir().unwrap();
     let service = test_service(temp_dir.path()).await;
-    let alice = plain_caller("did:key:zAlice");
+    let alice = app_grantee("did:key:zAlice", "guarded-svc");
     let mallory = plain_caller("did:key:zMallory");
 
     deploy(&service, "guarded-svc", &alice).await;
@@ -379,7 +419,7 @@ async fn undeploy_by_a_non_owner_is_rejected() {
 async fn owner_can_redeploy_their_own_service() {
     let temp_dir = tempfile::tempdir().unwrap();
     let service = test_service(temp_dir.path()).await;
-    let alice = plain_caller("did:key:zAlice");
+    let alice = app_grantee("did:key:zAlice", "alice-svc");
 
     deploy(&service, "alice-svc", &alice).await;
     let result = deploy_result(&service, "alice-svc", &alice).await;
@@ -402,7 +442,7 @@ async fn owner_can_redeploy_their_own_service() {
 async fn node_wide_caller_can_redeploy_over_a_foreign_owner() {
     let temp_dir = tempfile::tempdir().unwrap();
     let service = test_service(temp_dir.path()).await;
-    let alice = plain_caller("did:key:zAlice");
+    let alice = app_grantee("did:key:zAlice", "alice-svc");
     let owner = node_wide_caller("did:key:zOwner");
 
     deploy(&service, "alice-svc", &alice).await;
@@ -430,7 +470,7 @@ async fn node_wide_caller_can_redeploy_over_a_foreign_owner() {
 async fn node_wide_caller_can_undeploy_a_foreign_owners_service() {
     let temp_dir = tempfile::tempdir().unwrap();
     let service = test_service(temp_dir.path()).await;
-    let alice = plain_caller("did:key:zAlice");
+    let alice = app_grantee("did:key:zAlice", "alice-svc");
     let admin = node_wide_caller("did:key:zAdmin");
 
     deploy(&service, "alice-svc", &alice).await;
@@ -461,7 +501,7 @@ async fn failed_remove_owner_blocks_a_different_callers_later_redeploy() {
     let storage = Arc::new(RemoveOwnerFailingStorage { inner: MockStorage::new() });
     let registry = EndpointRegistry::new(storage).await.unwrap();
     let service = test_service_with_registry(temp_dir.path(), registry).await;
-    let alice = plain_caller("did:key:zAlice");
+    let alice = app_grantee("did:key:zAlice", "squat-svc");
     let bob = plain_caller("did:key:zBob");
 
     deploy(&service, "squat-svc", &alice).await;

@@ -141,15 +141,12 @@ impl ControlPlaneService {
     ///
     /// The resource is the **bare** `substrate:<node_did>` -- node-wide (F2).
     /// That excludes an app-scoped B7b grantee (`substrate:<node>/app/foo`):
-    /// their capability carries a selector, so it is not
-    /// `is_substrate_scope` (**not yet true today** -- `is_substrate_scope`
-    /// is currently a bare `starts_with("substrate:")` prefix test with no
-    /// selector awareness, so a selectored capability would *also* match it
-    /// as written; the narrowing to exclude selectored resources is B7b's
-    /// F2, not yet landed. No selectored `substrate:.../app/...` capability
-    /// is minted anywhere in B7a -- `build_caller` only ever issues the bare
-    /// form -- so this is inert today, but the exclusion is not yet
-    /// enforced in code and must not be assumed to be).
+    /// their capability carries a selector, so it is not `is_substrate_scope`
+    /// (`ResourceUri::is_substrate_scope`, narrowed at M04A Slice B7b to
+    /// exclude selector-bearing resources -- landed alongside this gate, so
+    /// the exclusion is real, not merely inert-by-absence as it was at B7a).
+    /// They are prefix-covered by `covers_resource` instead, at each gate's
+    /// own selectored resource check (deploy/undeploy/per-service readyz).
     fn has_node_wide_ability(&self, caller: &CallerContext, ability: &'static str) -> bool {
         caller
             .has_capability(&ResourceUri::substrate(&self.node_did), &Ability(ability.to_string()))
@@ -335,6 +332,46 @@ mod tests {
     use wit_parser::Resolve;
 
     use super::*;
+
+    /// M04A Slice B7b: a caller holding node-wide orchestrator authority on
+    /// `"did:key:zTestNode"` (every test in this module inits
+    /// `ControlPlaneService` with that node DID) -- the shape `build_caller`
+    /// issues for the F4 unowned-substrate bootstrap grant. `deploy`/
+    /// `undeploy` now gate on an explicit `orchestrator/{deploy,undeploy}`
+    /// capability (§3.2), so any test that deploys/undeploys a service as
+    /// setup for exercising a *different* interface (data-layer, blob-store,
+    /// messaging) needs a caller that holds it --
+    /// `CallerContext::service_system` (zero capabilities) no longer
+    /// suffices for that setup step. Not used for the native-interface
+    /// dispatch calls themselves, which stay ungated (F3.1/Q2: B7 does not
+    /// close the five data interfaces).
+    fn node_wide_caller(caller_did: &str) -> CallerContext {
+        use syneroym_rpc::{Ability, AuthLevel, Capability, ResourceUri, SessionContext};
+
+        let resource = ResourceUri::substrate("did:key:zTestNode");
+        CallerContext {
+            caller_did: caller_did.to_string(),
+            app_instance: None,
+            session: SessionContext {
+                subject_did: caller_did.to_string(),
+                capabilities: vec![
+                    Capability {
+                        with: resource.clone(),
+                        can: Ability(Ability::ORCHESTRATOR_DEPLOY.to_string()),
+                        caveats: None,
+                    },
+                    Capability {
+                        with: resource,
+                        can: Ability(Ability::ORCHESTRATOR_UNDEPLOY.to_string()),
+                        caveats: None,
+                    },
+                ],
+                ..Default::default()
+            },
+            auth: AuthLevel::Delegated,
+            proof: None,
+        }
+    }
 
     const MESSAGING_TEST_DRIVER_INTERFACE: &str =
         "syneroym-test:messaging-pubsub-test/test-driver@0.1.0";
@@ -606,7 +643,7 @@ mod tests {
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
         };
-        let test_caller = CallerContext::service_system("test-caller");
+        let test_caller = node_wide_caller("test-caller");
         service.deploy(service_id.clone(), manifest, &test_caller).await.unwrap();
 
         let native = service
@@ -869,7 +906,7 @@ mod tests {
             registry_certificate: None,
         };
         service
-            .deploy(service_id.clone(), manifest, &CallerContext::service_system("test-caller"))
+            .deploy(service_id.clone(), manifest, &node_wide_caller("test-caller"))
             .await
             .unwrap();
 
@@ -1004,7 +1041,7 @@ mod tests {
             registry_certificate: None,
         };
         service
-            .deploy(service_id.clone(), manifest, &CallerContext::service_system("test-caller"))
+            .deploy(service_id.clone(), manifest, &node_wide_caller("test-caller"))
             .await
             .unwrap();
         let native_dispatch = service.native_dispatch.upgrade().unwrap();
@@ -1098,7 +1135,7 @@ mod tests {
         .unwrap();
 
         let service_id = "messaging-undeploy-svc".to_string();
-        let test_caller = CallerContext::service_system("test-caller");
+        let test_caller = node_wide_caller("test-caller");
         service
             .deploy(service_id.clone(), messaging_wasm_manifest(wasm_bytes), &test_caller)
             .await
@@ -1186,7 +1223,7 @@ mod tests {
 
         let service_a = "messaging-isolation-a".to_string();
         let service_b = "messaging-isolation-b".to_string();
-        let test_caller = CallerContext::service_system("test-caller");
+        let test_caller = node_wide_caller("test-caller");
         service
             .deploy(service_a.clone(), messaging_wasm_manifest(wasm_bytes.clone()), &test_caller)
             .await
@@ -1427,7 +1464,7 @@ mod tests {
         .unwrap();
 
         let service_id = "stream-undeploy-svc".to_string();
-        let test_caller = CallerContext::service_system("test-caller");
+        let test_caller = node_wide_caller("test-caller");
         service
             .deploy(service_id.clone(), stream_wasm_manifest(wasm_bytes), &test_caller)
             .await

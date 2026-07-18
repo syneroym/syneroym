@@ -41,6 +41,16 @@ struct Cli {
     /// signing key for its registry certificate; this names the *operator*.
     #[arg(global = true, long = "as")]
     run_as: Option<String>,
+
+    /// Path to a signed UCAN `CapabilityToken` JSON file (see `roymctl
+    /// identity issue-grant`) to present on connect (M04A Slice B7b) --
+    /// proves whatever capability the grant names, on top of `--as`'s
+    /// transport identity. Requires `--as <name>`, where `<name>` is the
+    /// identity the grant's `--to` names -- the token's audience must match
+    /// the connecting identity, which a bare `--ucan` (no `--as`) can never
+    /// satisfy (a fresh ephemeral key every invocation).
+    #[arg(global = true, long = "ucan", requires = "run_as")]
+    ucan_path: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -52,7 +62,8 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
-    commands::run(cli.command, cli.api_url, cli.substrate, cli.dir, cli.run_as).await?;
+    commands::run(cli.command, cli.api_url, cli.substrate, cli.dir, cli.run_as, cli.ucan_path)
+        .await?;
 
     Ok(())
 }

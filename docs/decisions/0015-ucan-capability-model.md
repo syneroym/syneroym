@@ -149,10 +149,24 @@ inexpressible. Extend to `synapp:<app>:svc:<svc>[/<selector>]` (and likewise for
 `rpc/<method>`, `orchestrator`'s `app/<name>`.
 
 Matching is segment-wise prefix covering; a trailing `/` or `*` is a prefix
-wildcard. **`with` stays the *what*, `can` the *verb*** — keeping selectors out
-of `can` keeps entailment a pure string-hierarchy question. `Capability::covers`
-extends from `self.with == other.with` to a prefix cover; the
-`is_substrate_scope` wildcard rule is unchanged.
+wildcard, matching whole segments only (never a partial string — an ADR-0017
+Q3 sharpening, `docs/planning/access-control-design.md` §6.1.1). **`with`
+stays the *what*, `can` the *verb*** — keeping selectors out of `can` keeps
+entailment a pure string-hierarchy question. `Capability::covers` extends
+from `self.with == other.with` to a prefix cover (`ResourceUri::covers_resource`).
+
+**Amended 2026-07-18 (Slice B7b, F2):** the original "`is_substrate_scope`
+wildcard rule is unchanged" clause above is **wrong** and is replaced. A
+selector-bearing `substrate:<node_did>/<selector>` resource (e.g.
+`orchestrator`'s `app/<name>`) is a specific resource, not node-wide
+authority, and must prefix-match like any other — leaving the wildcard rule
+"unchanged" would let a `with: substrate:<node>/app/foo` grant silently
+wildcard over every app on the node, `app/foo` never consulted. Corrected
+rule: `is_substrate_scope` is true only for the **bare** form,
+`substrate:<node_did>` with no selector; a selector-bearing `substrate:`
+resource goes through the same `covers_resource` prefix check as a `synapp:`
+resource. `substrate/admin` on the bare form still ⊇ everything on the node,
+unchanged.
 
 ### A2. Two ability namespaces: a value and a reference
 

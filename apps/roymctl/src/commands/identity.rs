@@ -9,6 +9,7 @@ use anyhow::Context;
 use clap::Subcommand;
 use syneroym_core::dht_registry::RegistryClient;
 use syneroym_identity::{DelegationCertificate, Identity, substrate};
+use syneroym_ucan::{Ability, Capability, CapabilityToken, ResourceUri};
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum IdentityCommands {
@@ -41,6 +42,34 @@ pub enum IdentityCommands {
         master: String,
         #[arg(long)]
         registry_url: String,
+    },
+    /// Issue a UCAN `CapabilityToken` granting an ability to another DID
+    /// (M04A Slice B7b) -- e.g. the substrate owner granting
+    /// `orchestrator/deploy` on `substrate:<node>/app/*` to an operator.
+    /// Prints the signed token as JSON; present it with the global `--ucan
+    /// <path>` flag.
+    IssueGrant {
+        /// Name of the locally-stored identity issuing the grant (the root
+        /// of trust for `--with`'s resource -- e.g. the substrate owner, or
+        /// a service's own recorded owner).
+        #[arg(long)]
+        from: String,
+        /// DID of the grantee (the token's audience).
+        #[arg(long)]
+        to: String,
+        /// The ability to grant, e.g. `orchestrator/deploy`.
+        #[arg(long)]
+        can: String,
+        /// The resource to grant it on, e.g. `substrate:<node_did>/app/*`.
+        #[arg(long)]
+        with: String,
+        #[arg(long)]
+        expires_days: u64,
+        /// Forbid the grantee from further delegating this capability
+        /// (ADR-0015 A3 `can_delegate: false`). Absent defaults to
+        /// delegable.
+        #[arg(long)]
+        no_delegate: bool,
     },
 }
 
@@ -137,6 +166,27 @@ pub async fn handle(command: &IdentityCommands, dir: &Path) -> anyhow::Result<()
 
             client.publish_master_anchor(&master_id, vec![], None, &identity, true).await?;
             println!("Successfully published MasterAnchorPayload to {}", registry_url);
+        }
+        IdentityCommands::IssueGrant { from, to, can, with, expires_days, no_delegate } => {
+            let key_path = dir.join("identities").join(format!("{from}.key"));
+            if !key_path.exists() {
+                anyhow::bail!("Identity '{}' not found at {}", from, key_path.display());
+            }
+            let issuer = Identity::load_from_path(&key_path)?;
+
+            let caveats = no_delegate.then(|| serde_json::json!({"can_delegate": false}));
+            let capability =
+                Capability { with: ResourceUri(with.clone()), can: Ability(can.clone()), caveats };
+
+            let token = CapabilityToken::issue(
+                &issuer,
+                to,
+                vec![capability],
+                serde_json::Map::new(),
+                expires_days * 24 * 3600,
+                vec![],
+            )?;
+            println!("{}", serde_json::to_string_pretty(&token)?);
         }
     }
     Ok(())

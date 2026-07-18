@@ -356,7 +356,7 @@ Wire `inject_kek`'s `_scope` param (`key_store.rs:46`) to derive per-app-instanc
 KEKs, gated on the caller's verified app-instance identity. Specify + test the DEK
 re-wrap path (Migration Strategy).
 
-#### Slice B7: Substrate & Service Ownership (Deploy Authorization + Ownership Attribution) — split into **B7a ✅ (2026-07-18)** / **B7b not started** ([plans/B7.md](plans/B7.md))
+#### Slice B7: Substrate & Service Ownership (Deploy Authorization + Ownership Attribution) — split into **B7a ✅ (2026-07-18)** / **B7b ✅ (2026-07-18)** ([plans/B7.md](plans/B7.md))
 **Depends on:** B0 (done — substrate-owner resolution now sources from
 `ControllerAgreement`, see status.md addendum). **Interacts with:** B1 (a
 real capability-delegation chain is the likely mechanism for item 1 below).
@@ -471,10 +471,26 @@ everything, an ordinary caller sees only their own, an unattributed
 pre-B7a app is hidden); redeploy/undeploy from a non-owner rejected (F7);
 the unowned-substrate posture (F4) expressed as an issued capability, logged
 at boot; `roymctl --as` operator identity (F5); both Tier-1 TODOs retargeted
-off `M04B/FDAE` (F3/§2.8). **B7b (the deploy grant itself) is not started** —
-on today's unowned-by-default substrate, any verified caller still holds the
-orchestrator abilities; `execute-ddl`/`query-raw` remain denied (F4's
-over-grant trap, tested).
+off `M04B/FDAE` (F3/§2.8).
+
+**B7b delivered (2026-07-18)** — see `status.md`'s B7b section for full
+evidence: ADR-0015 A1 selectors + segment-wise prefix cover
+(`ResourceUri::covers_resource`), `is_substrate_scope` narrowed to the bare
+form (F2), `A3`'s `can_delegate` caveat enforced at attenuation, `A6`'s
+resource-scoped `is_trusted_root` (owner-rooted trust per service) wired
+into `build_caller`, `A7`'s revocation confirmed to already cover it (F11),
+`F6`'s cross-node wildcard closed at the chain-rooting predicate. The Tier-1
+`orchestrator/{deploy,undeploy,status}` gate now runs on every
+`deploy`/`undeploy`/per-service `readyz` call (§3.2/§2.4.1), independent of
+ownership — item 1 is closed. `roymctl identity issue-grant` + the global
+`--ucan` flag let an operator mint and present a real grant. **Item 1 is the
+only thing B7b closes; nothing else in B7's scope changes.** As before B7b,
+the gate is inert in practice on today's every-substrate-is-unowned reality
+(F4) — every verified caller still holds the bare orchestrator abilities and
+passes the gate trivially — but it is now real code, not "not started", and
+is exercised end to end by real signed `CapabilityToken`s in the test suite
+(not just hand-built `CallerContext`s). `execute-ddl`/`query-raw` remain
+denied (F4's over-grant trap, still tested, unaffected by B7b).
 
 **Spun out of B7** (plan §6.2, which has the detail):
 - **Declared service visibility** — designed in
