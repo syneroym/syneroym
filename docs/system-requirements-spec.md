@@ -1288,7 +1288,7 @@ Sequenced after the baseline, pending detailed specs. Each must add on without r
 | **[PLT-DAT] Content Addressed** | **Ledger** | Storing immutable blocks and transaction receipts. |
 | **[PLT-ASY] Offline Operation** | **Chat** | Outbox message queuing and syncing upon reconnection. |
 | **[APP-AGI] AI (Agents/Vector Store)** | **Chat** | AI participants with long-term memory in group chats. |
-| **[FND-FDA] Access Control (FDAE/Consent)** | **Chat** | Enforcing read/write rules for trusted rooms and AI delegation. |
+| **[FND-IAM] Access Control (FDAE/Consent)** | **Chat** | Enforcing read/write rules for trusted rooms and AI delegation. |
 | **[PLT-RED] Service Redundancy (Sharding)** | **Ledger** | High availability and partition tolerance for the credit network. |
 | **[FND-SEC] Security (TPM 2.0)** | **Ledger** | Hardware-backed multi-party signing for high-value settlements. |
 | **[FND-VER] Versioning & Migrations** | **Ledger** | Upgrading complex, stateful settlement rules without downtime. |
