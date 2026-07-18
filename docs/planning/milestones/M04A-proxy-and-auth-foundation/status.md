@@ -1777,3 +1777,131 @@ freely** — B7a narrows *attribution* and *visibility*, not *admission*.
 the five data native-capability interfaces still admit any verified
 identity, unchanged, per F3.1/§6.1's own scope note. No ADR was touched (F2's
 amendment is B7b's, per the plan's own exit criteria). No WIT file changed.
+
+### Post-commit review (2026-07-18) — two independent reviews, findings incorporated
+
+Two reviewers examined the committed B7a diff. Verified each finding against
+the actual code before acting; four were fixed, three were pinned with a
+test rather than changed, two were corrected as doc-only issues, and one
+(the doc-comment overclaim, folded into the same fix as the security issue
+below) needed no separate action.
+
+- **Fixed (security) — `has_node_wide_orchestrator_authority` checked only
+  `ORCHESTRATOR_STATUS`, everywhere.** `deploy`'s takeover-override and
+  `undeploy`'s owner-override reused the same single-ability check as
+  `list`'s "sees everything" branch. Since the three `orchestrator/*`
+  abilities are deliberately flat and independently grantable (B7b's design,
+  §3.1 A2 — "deploy but not undeploy" must stay expressible), a future
+  grantee holding only `orchestrator/status` (a read-only monitor) would
+  satisfy the node-wide check and be able to override *any* owner's
+  deploy/undeploy — a privilege escalation once B7b mints such a grant. Not
+  reachable in B7a itself: F4 only ever issues all three abilities together,
+  and no tooling exists yet to mint a partial grant — but the predicate
+  itself was wrong regardless of what's reachable today. Fixed by
+  parameterizing `has_node_wide_orchestrator_authority` →
+  `has_node_wide_ability(caller, ability)`
+  (`crates/control_plane/src/service.rs`): `deploy`'s takeover check now
+  requires `ORCHESTRATOR_DEPLOY` specifically, `undeploy`'s gate requires
+  `ORCHESTRATOR_UNDEPLOY`, and `list`'s visibility bar keeps
+  `ORCHESTRATOR_STATUS` (a status-only grantee is meant to see the list —
+  that is what the ability names — without thereby gaining any
+  deploy/undeploy override). This also folds in the doc-comment fix a
+  reviewer separately flagged: the comment previously asserted a B7b
+  app-scoped grant is already excluded "because it is not
+  `is_substrate_scope`" as if that exclusion were already enforced;
+  `is_substrate_scope` (`crates/ucan/src/capability.rs`) is today a bare
+  `starts_with("substrate:")` prefix test with no selector awareness, so a
+  selectored capability would *also* match it as written — the narrowing is
+  B7b's deferred F2, not yet landed. The rewritten doc comment states this
+  explicitly instead of asserting a safety property the code doesn't have
+  yet.
+- **Fixed (test coverage) — no test proved `caller_did` resolves to the
+  delegation's `master_did`, not the ephemeral `temporary_did`.** Every
+  `build_caller` test in `io.rs` constructed `VerifiedIdentity { master_did
+  == temporary_did }`, so none could distinguish a regression that swapped
+  the two — task.md item 3 / F11's actual requirement. Added
+  `build_caller_uses_master_did_not_temporary_did_as_caller_did`
+  (`crates/router/src/route_handler/io.rs`) with a genuinely distinct pair;
+  fixed the false claim in `orchestration.rs`'s
+  `deploy_records_owner_as_caller_did` doc comment, which asserted "io.rs's
+  own tests cover that resolution" when they did not.
+- **Fixed (test coverage) — every ownership-gate test asserted only
+  rejection.** `redeploy_by_a_different_did_is_rejected` and
+  `undeploy_by_a_non_owner_is_rejected` never exercised the *allow* branches
+  — an over-strict gate that locked out the legitimate owner or a substrate
+  owner would have passed the whole suite. Added three positive-path tests
+  to `crates/router/tests/service_ownership.rs`:
+  `owner_can_redeploy_their_own_service`,
+  `node_wide_caller_can_redeploy_over_a_foreign_owner` (also pins that a
+  node-wide override reassigns ownership to the overriding caller — `set_owner`
+  unconditionally records `caller.caller_did` on every successful deploy),
+  `node_wide_caller_can_undeploy_a_foreign_owners_service`.
+- **Fixed (doc accuracy) — the rollback-safety comments overstated an
+  invariant.** `undeploy`'s doc comment claimed the owner row is "either
+  unset or already `caller.caller_did`" when called from `deploy`'s own
+  rollback; a third case (a node-wide caller redeploying over a *foreign*
+  owner, where the row is neither) also passes the gate, just via the
+  authority branch rather than the DID match. Reworded to state all three
+  cases explicitly.
+- **Pinned with a test, not fixed — CC2: a failed `remove_owner` can block
+  a different caller's later redeploy ("ID squatting").** `undeploy`'s
+  `remove_owner` call is best-effort (warn-not-fail, matching every other
+  teardown step in that function); if the storage write fails, the stale
+  owner row survives a fully-undeployed service and rejects a *different*
+  caller's future deploy of that `service_id` via the takeover check.
+  Currently **inert**: every substrate today is unowned (F4), so every
+  verified caller holds node-wide authority and would override the stale
+  row regardless — this only bites once B7b makes non-node-wide callers
+  real. A real fix needs a retryable/idempotent teardown or a recovery path,
+  both out of this slice's scope. Added
+  `failed_remove_owner_blocks_a_different_callers_later_redeploy`
+  (`crates/router/tests/service_ownership.rs`, using a new
+  `RemoveOwnerFailingStorage` test-only `EndpointStorage` decorator) to pin
+  the current behavior so a future change to undeploy's failure handling is
+  a deliberate decision, not a silent regression either way.
+- **Documented, not fixed — CC1/TOCTOU: the takeover check and the terminal
+  `set_owner` write are not atomic.** Two concurrent *first* deploys of the
+  same brand-new `service_id` from different DIDs can both observe
+  `owner_of == None` and both proceed; whichever `set_owner` call lands
+  last wins attribution. Verified this cannot defeat an *existing* owner's
+  protection — a service that already has a recorded owner is rejected
+  deterministically regardless of timing, since the row predates both
+  racing calls — so it is an attribution race on an as-yet-unowned
+  `service_id`, not a takeover-check bypass (one reviewer's framing implied
+  the latter; not borne out on inspection). Not fixed: closing it needs a
+  per-service_id lock or an atomic claim-then-verify wrapped around the
+  entire — already non-atomic, pre-existing — `deploy` flow, a materially
+  larger change than this slice's scope. Documented at the takeover-check
+  call site.
+- **Documented, not fixed — "rollback deletes previous deployment" on a
+  re-deploy's late `set_owner` failure.** A reviewer observed that if
+  `set_owner` fails at the very end of a *re-deploy* of an already-running
+  service, the rollback (`self.undeploy(...)`) tears the service down
+  entirely rather than restoring the prior version, since the new
+  wasm/container/tcp version was already swapped in before that line runs.
+  Verified via `git log` that this is **not a new B7a gap**: the
+  pre-existing native-capability-registration-failure rollback a few lines
+  above (predating B7a, present already at commit `1dccfab`) does the exact
+  same full-teardown-on-late-failure for the exact same structural reason.
+  `deploy` has never been transactional across config-generation/engine/
+  registry writes (plan §2.3 already documents this: "Known non-atomicity…
+  B7a does not make this worse"). Fixing it needs a genuinely versioned/
+  staged deploy (keep the old instance live until the new one fully
+  commits) — out of this slice's scope. Comment at the `set_owner` rollback
+  site now states this explicitly, citing the pre-existing parallel.
+- **No action — C2 (crash-window unattributed service) and the "B7a is
+  inert while every substrate is unowned" observations.** Both reviewers
+  independently confirmed these are already correctly documented in this
+  section and in the plan; no code or doc gap found.
+
+### Gate (re-verified after review fixes)
+
+- `cargo +nightly fmt --all` — clean.
+- `cargo clippy --workspace --all-targets --all-features` — zero warnings.
+- `cargo test --workspace` — **512 passed, 0 failed** (was 507, +5: the
+  master/temporary-DID test, the two node-wide-override positive-path
+  tests, the owner-redeploy positive-path test, and the failed-`remove_owner`
+  squatting-pin test), full run with the sandbox disabled per the
+  established methodology.
+- `mise run test:e2e` — **12 passed, 0 failed** (8 + 4), unchanged — none of
+  the fixes touch wire-visible behavior.

@@ -1035,4 +1035,32 @@ mod tests {
              resource must be node-scoped, not caller-scoped)"
         );
     }
+
+    /// Post-commit review (B7a): task.md item 3 / F11 requires attribution
+    /// to resolve to the delegation's `master_did`, not the ephemeral
+    /// `temporary_did` -- the DID `ControlPlaneService::deploy` later
+    /// records as a service's owner. Every other test in this module
+    /// constructs `VerifiedIdentity { master_did == temporary_did }`, so none
+    /// can actually distinguish a bug that swapped the two;
+    /// `handshake.rs`'s own tests prove `HandshakeVerifier::verify_preamble`
+    /// resolves a real wire handshake correctly, but nothing previously
+    /// exercised `build_caller` itself with a genuinely distinct pair.
+    #[tokio::test]
+    async fn build_caller_uses_master_did_not_temporary_did_as_caller_did() {
+        let client = Identity::generate().unwrap();
+        let master_did = derive_did_key(&client.public_key());
+        let temporary_did = "did:key:zSomeEphemeralTemporaryKey".to_string();
+
+        let preamble = RoutePreamble::binary_json_rpc("svc", "data-layer");
+        let id = VerifiedIdentity {
+            master_did: master_did.clone(),
+            temporary_did: temporary_did.clone(),
+        };
+        let resolver = MockResolver { revoked: HashMap::new() };
+
+        let caller = build_caller(&preamble, &id, None, "did:key:zNode", &resolver).await;
+
+        assert_eq!(caller.caller_did, master_did);
+        assert_ne!(caller.caller_did, temporary_did);
+    }
 }

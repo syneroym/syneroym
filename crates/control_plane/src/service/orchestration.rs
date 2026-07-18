@@ -19,7 +19,7 @@ use syneroym_core::{
     local_registry::{NATIVE_CAPABILITY_INTERFACES, SubstrateEndpoint},
     util,
 };
-use syneroym_rpc::{CallerContext, NativeService};
+use syneroym_rpc::{Ability, CallerContext, NativeService};
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, ContainerManifest, DeployManifest, DeployedService, DeploymentPlan,
     ServiceType as WitServiceType, TcpManifest, WasmManifest,
@@ -191,10 +191,28 @@ impl OrchestratorInterface for ControlPlaneService {
         // not be re-deployed into. On an unowned substrate every caller
         // holds node-wide orchestrator authority (F4), so this never fires
         // and today's overwrite-on-redeploy behavior is preserved exactly --
-        // without a mode branch.
+        // without a mode branch. Checks ORCHESTRATOR_DEPLOY specifically
+        // (post-review fix, not the old single-ability
+        // `has_node_wide_orchestrator_authority`): a caller who holds only
+        // `orchestrator/status` must not be able to override someone else's
+        // takeover protection just because they can also list every app.
+        //
+        // TOCTOU note (reviewed, accepted): this read and the terminal
+        // `set_owner` write below are separated by the whole deploy body,
+        // not atomic. Two concurrent *first* deploys of the same brand-new
+        // `service_id` from different DIDs can both observe `owner_of ==
+        // None` and both proceed -- whichever `set_owner` call lands last
+        // wins attribution. This cannot defeat an *existing* owner's
+        // protection (a service that already has a recorded owner is
+        // rejected deterministically regardless of timing, since the row
+        // predates both racing calls), so it is an attribution race on a
+        // service_id nobody owns yet, not a takeover-check bypass. Not fixed
+        // here: closing it fully needs a per-service_id lock or an atomic
+        // claim-then-verify around the entire (non-atomic, pre-existing)
+        // deploy flow, which is a larger change than this slice's scope.
         if let Some(existing) = self.registry.owner_of(&service_id)
             && existing != caller.caller_did
-            && !self.has_node_wide_orchestrator_authority(caller)
+            && !self.has_node_wide_ability(caller, Ability::ORCHESTRATOR_DEPLOY)
         {
             return Err(format!(
                 "service '{service_id}' is owned by {existing}; redeploy must come from its owner \
@@ -351,6 +369,23 @@ impl OrchestratorInterface for ControlPlaneService {
         // never leaves a stale owner row. Writing it first would leak an
         // owner row on the `deploy_wasm_service`/`deploy_container_service`
         // failure paths, which only roll back the config generation.
+        //
+        // Reviewed: on a *re-deploy* of an already-owned, already-running
+        // service, a `set_owner` failure here rolls back via a full
+        // `undeploy` -- tearing the service down entirely rather than
+        // restoring the previous running version, since the new
+        // wasm/container/tcp version was already swapped in above before
+        // this line ever runs. This is not a new gap this slice introduces:
+        // the native-capability-registration failure branch a few lines up
+        // (`self.undeploy(...)` after the `registry.register` loop) already
+        // does the exact same full-teardown rollback for the exact same
+        // reason, predating B7a. `deploy` has never been transactional
+        // across config-generation / engine / registry writes (plan §2.3,
+        // "Known non-atomicity... B7a does not make this worse"); making a
+        // re-deploy's late failure preserve the prior running version would
+        // need a genuinely versioned/staged deploy (keep the old instance
+        // live until the new one fully commits), which is a materially
+        // larger change than this slice's scope -- not attempted here.
         if let Err(e) = self.registry.set_owner(service_id.clone(), caller.caller_did.clone()).await
         {
             if let Err(undeploy_err) = self.undeploy(service_id.clone(), caller).await {
@@ -367,14 +402,25 @@ impl OrchestratorInterface for ControlPlaneService {
 
     /// M04A Slice B7a / F7: gates on ownership before tearing anything down
     /// -- a non-owner undeploying someone else's service is the same
-    /// escalation as taking it over via redeploy. Safe to call from
-    /// `deploy`'s own rollback path (§2.3): at that point the owner row is
-    /// either unset (not yet reached) or already `caller.caller_did` (this
-    /// same call already succeeded once), so the gate always passes there.
+    /// escalation as taking it over via redeploy. Checks
+    /// `ORCHESTRATOR_UNDEPLOY` specifically (post-review fix -- see
+    /// `has_node_wide_ability`'s doc comment): a status-only grantee must
+    /// not be able to undeploy someone else's app.
+    ///
+    /// Safe to call from `deploy`'s own rollback path (§2.3): at that point
+    /// `owner_of` is one of (a) `None` (the native-capability-registration
+    /// failure path, reached before `set_owner` ever ran), (b) already
+    /// `caller.caller_did` (the happy-path retry: this same `deploy` call
+    /// already ran `set_owner` successfully once, or this is an ordinary
+    /// owner re-deploying their own service), or (c) a *different* DID that
+    /// `caller` is redeploying over while holding node-wide authority -- in
+    /// which case this gate passes via that authority, not because the row
+    /// matches `caller.caller_did`. All three pass; there is no branch where
+    /// `deploy`'s own rollback gets rejected by this check.
     async fn undeploy(&self, service_id: String, caller: &CallerContext) -> Result<(), String> {
         if let Some(owner) = self.registry.owner_of(&service_id)
             && owner != caller.caller_did
-            && !self.has_node_wide_orchestrator_authority(caller)
+            && !self.has_node_wide_ability(caller, Ability::ORCHESTRATOR_UNDEPLOY)
         {
             return Err(format!(
                 "service '{service_id}' is owned by {owner}; only its owner or a substrate owner \
@@ -503,8 +549,13 @@ impl OrchestratorInterface for ControlPlaneService {
 
         // M04A Slice B7a: node-wide orchestrator authority sees everything --
         // the substrate owner, or on an unowned substrate, everyone (F4),
-        // preserving today's behavior with no mode branch.
-        if self.has_node_wide_orchestrator_authority(caller) {
+        // preserving today's behavior with no mode branch. Checks
+        // ORCHESTRATOR_STATUS specifically (unlike deploy/undeploy's checks
+        // above): a status-only monitoring grantee is meant to see the
+        // list -- that is what the ability names -- without thereby gaining
+        // any deploy/undeploy override, which the two checks above enforce
+        // independently.
+        if self.has_node_wide_ability(caller, Ability::ORCHESTRATOR_STATUS) {
             return Ok(result);
         }
         // A service owner sees only their own. `owner_of` == None (deployed
@@ -1094,9 +1145,12 @@ mod tests {
     /// M04A Slice B7a (§2.3, F11): `deploy` records `caller.caller_did` as
     /// the owner -- the same DID `build_caller` resolves to the
     /// `DelegationCertificate`'s `master_did`, never the ephemeral
-    /// `temporary_did` (io.rs's own tests cover that resolution; this test
-    /// covers what `ControlPlaneService` does with whatever `caller_did` it
-    /// is handed).
+    /// `temporary_did`. `crates/router/src/route_handler/io.rs`'s
+    /// `build_caller_uses_master_did_not_temporary_did_as_caller_did`
+    /// (added on post-commit review -- every other `build_caller` test
+    /// constructed `master_did == temporary_did`, so none could actually
+    /// distinguish the two) proves that resolution; this test covers what
+    /// `ControlPlaneService` does with whatever `caller_did` it is handed.
     #[tokio::test]
     async fn deploy_records_owner_as_caller_did() {
         let temp_dir = tempfile::tempdir().unwrap();

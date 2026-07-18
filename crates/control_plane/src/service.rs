@@ -115,28 +115,44 @@ impl ControlPlaneService {
         })
     }
 
-    /// Whether `caller` holds **node-wide** orchestrator authority: the
-    /// substrate owner (whose `substrate/admin` entails every ability), or --
-    /// on an unowned substrate -- any verified caller (M04A Slice B7a, F4).
-    /// One predicate; there is deliberately no "is the substrate owned?"
-    /// branch anywhere else, because the unowned posture is expressed as an
-    /// issued capability, not as a skipped check (design §6.1.1).
+    /// Whether `caller` holds a specific **node-wide** orchestrator ability:
+    /// the substrate owner (whose `substrate/admin` entails every ability),
+    /// or -- on an unowned substrate -- any verified caller (M04A Slice B7a,
+    /// F4). There is deliberately no "is the substrate owned?" branch
+    /// anywhere else, because the unowned posture is expressed as an issued
+    /// capability, not as a skipped check (design §6.1.1).
+    ///
+    /// **Parameterized by `ability`, not hardcoded to one** (post-review
+    /// fix): B7b's design (§3.1 A2) deliberately keeps the three
+    /// `orchestrator/*` abilities flat and independently grantable ("deploy
+    /// but not undeploy" must stay expressible), so a future grantee could
+    /// hold `orchestrator/status` alone. Checking a single hardcoded ability
+    /// here for every caller-side use -- deploy's takeover override, undeploy's
+    /// gate, and list's visibility -- would let a *read-only, status-only*
+    /// grantee also override another owner's deploy/undeploy, a privilege
+    /// escalation once B7b mints such a grant (not reachable in B7a itself:
+    /// F4 only ever issues all three abilities together, and no tooling
+    /// exists yet to mint a partial grant). Each call site below must pass
+    /// the ability it actually needs to exercise -- `ORCHESTRATOR_DEPLOY` to
+    /// override a takeover, `ORCHESTRATOR_UNDEPLOY` to override an undeploy
+    /// gate, `ORCHESTRATOR_STATUS` for list's broader visibility bar (a
+    /// monitoring-only grantee is meant to see the list; it is not thereby
+    /// meant to deploy/undeploy over someone else's app).
     ///
     /// The resource is the **bare** `substrate:<node_did>` -- node-wide (F2).
-    /// That is what excludes an app-scoped B7b grantee
-    /// (`substrate:<node>/app/foo`): their capability carries a selector, so
-    /// it is not `is_substrate_scope`, and prefix cover against a bare
-    /// resource fails. They may deploy their app; they do not see everyone's.
-    ///
-    /// `orchestrator/status`, not `substrate/admin`: the latter would make
-    /// this true only for a real owner, leaving the unowned case (F4) with no
-    /// way to answer `list` -- and issuing `substrate/admin` to everyone
-    /// instead is the over-grant trap F4 documents.
-    fn has_node_wide_orchestrator_authority(&self, caller: &CallerContext) -> bool {
-        caller.has_capability(
-            &ResourceUri::substrate(&self.node_did),
-            &Ability(Ability::ORCHESTRATOR_STATUS.to_string()),
-        )
+    /// That excludes an app-scoped B7b grantee (`substrate:<node>/app/foo`):
+    /// their capability carries a selector, so it is not
+    /// `is_substrate_scope` (**not yet true today** -- `is_substrate_scope`
+    /// is currently a bare `starts_with("substrate:")` prefix test with no
+    /// selector awareness, so a selectored capability would *also* match it
+    /// as written; the narrowing to exclude selectored resources is B7b's
+    /// F2, not yet landed. No selectored `substrate:.../app/...` capability
+    /// is minted anywhere in B7a -- `build_caller` only ever issues the bare
+    /// form -- so this is inert today, but the exclusion is not yet
+    /// enforced in code and must not be assumed to be).
+    fn has_node_wide_ability(&self, caller: &CallerContext, ability: &'static str) -> bool {
+        caller
+            .has_capability(&ResourceUri::substrate(&self.node_did), &Ability(ability.to_string()))
     }
 }
 

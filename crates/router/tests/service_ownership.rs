@@ -29,8 +29,10 @@ use syneroym_control_plane::{
     dummy_sandbox::{AppSandboxEngine, ContainerEngine},
 };
 use syneroym_core::{
-    config::SubstrateConfig, http_routes::HttpRouteRegistry, local_registry::EndpointRegistry,
-    storage::MockStorage,
+    config::SubstrateConfig,
+    http_routes::HttpRouteRegistry,
+    local_registry::{EndpointRegistry, SubstrateEndpoint},
+    storage::{EndpointStorage, MockStorage},
 };
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
 use syneroym_data_db::SqliteStorageProvider;
@@ -61,8 +63,10 @@ fn plain_caller(did: &str) -> CallerContext {
 /// A caller holding node-wide orchestrator authority on `NODE_DID` -- the
 /// exact shape `build_caller` issues for the F4 unowned-substrate bootstrap
 /// grant (and, in spirit, what a real substrate owner's `substrate/admin`
-/// also satisfies via `Ability::entails`'s short-circuit). Used here to
-/// drive `ControlPlaneService::has_node_wide_orchestrator_authority`
+/// also satisfies via `Ability::entails`'s short-circuit). Holds all three
+/// `orchestrator/*` abilities together (matching F4's bundle), so it passes
+/// `ControlPlaneService::has_node_wide_ability` regardless of which specific
+/// ability a given call site checks. Used here to drive that predicate
 /// directly without going through the router.
 fn node_wide_caller(did: &str) -> CallerContext {
     let resource = ResourceUri::substrate(NODE_DID);
@@ -95,6 +99,42 @@ fn node_wide_caller(did: &str) -> CallerContext {
     }
 }
 
+/// A storage decorator used only by
+/// `failed_remove_owner_blocks_a_different_callers_later_redeploy` (CC2): it
+/// delegates everything to an inner `MockStorage` except `remove_owner`,
+/// which always fails, simulating a storage-layer error during undeploy's
+/// best-effort owner cleanup.
+struct RemoveOwnerFailingStorage {
+    inner: MockStorage,
+}
+
+#[async_trait::async_trait]
+impl EndpointStorage for RemoveOwnerFailingStorage {
+    async fn load_all(&self) -> anyhow::Result<Vec<(String, String, SubstrateEndpoint)>> {
+        self.inner.load_all().await
+    }
+    async fn save(
+        &self,
+        service_id: &str,
+        interface_name: &str,
+        endpoint: &SubstrateEndpoint,
+    ) -> anyhow::Result<()> {
+        self.inner.save(service_id, interface_name, endpoint).await
+    }
+    async fn remove(&self, service_id: &str, interface_name: &str) -> anyhow::Result<()> {
+        self.inner.remove(service_id, interface_name).await
+    }
+    async fn load_all_owners(&self) -> anyhow::Result<Vec<(String, String)>> {
+        self.inner.load_all_owners().await
+    }
+    async fn save_owner(&self, service_id: &str, owner_did: &str) -> anyhow::Result<()> {
+        self.inner.save_owner(service_id, owner_did).await
+    }
+    async fn remove_owner(&self, _service_id: &str) -> anyhow::Result<()> {
+        Err(anyhow::anyhow!("simulated storage failure removing owner"))
+    }
+}
+
 /// A TCP manifest with one real endpoint -- `list()` only surfaces a
 /// service that has at least one *non*-native-capability interface
 /// registered (the native data-layer/vault/etc. channels every deploy also
@@ -122,13 +162,20 @@ fn tcp_manifest(port: u16) -> DeployManifest {
 }
 
 async fn test_service(temp_dir: &std::path::Path) -> ControlPlaneService {
+    test_service_with_registry(temp_dir, EndpointRegistry::new_mock(Arc::new(MockStorage::new())))
+        .await
+}
+
+async fn test_service_with_registry(
+    temp_dir: &std::path::Path,
+    registry: EndpointRegistry,
+) -> ControlPlaneService {
     let config = SubstrateConfig::default();
     let key_store = Arc::new(KeyStore::new());
     let storage_provider = Arc::new(SqliteStorageProvider::new(temp_dir, false).unwrap());
     let blob_provider: Arc<dyn BlobProvider> =
         Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
     let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
-    let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
     let app_sandbox = Arc::new(
         AppSandboxEngine::init(
             &config,
@@ -319,5 +366,119 @@ async fn undeploy_by_a_non_owner_is_rejected() {
         alice_view.len(),
         1,
         "the service must still be deployed after the rejected undeploy"
+    );
+}
+
+/// Post-commit review: every existing gate test asserted only *rejection*.
+/// This is the positive-path counterpart of `redeploy_by_a_different_did_is_
+/// rejected` -- the legitimate owner redeploying their own service must
+/// still succeed (the `existing != caller.caller_did` branch never fires for
+/// them). An over-strict gate that locked out the real owner would pass
+/// every previously-existing test in this file.
+#[tokio::test]
+async fn owner_can_redeploy_their_own_service() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let service = test_service(temp_dir.path()).await;
+    let alice = plain_caller("did:key:zAlice");
+
+    deploy(&service, "alice-svc", &alice).await;
+    let result = deploy_result(&service, "alice-svc", &alice).await;
+    assert!(result.is_ok(), "the owner must be able to redeploy their own service: {result:?}");
+
+    let alice_view = list(&service, &alice).await;
+    assert_eq!(alice_view.len(), 1);
+    assert_eq!(alice_view[0].service_id, "alice-svc");
+}
+
+/// Positive-path counterpart of the takeover-rejection tests: a caller
+/// holding node-wide orchestrator authority (F4's unowned-substrate grant,
+/// or a real substrate owner) may redeploy over -- and thereby take
+/// ownership of -- a service someone else owns. Exercises the
+/// `!has_node_wide_ability(caller, ORCHESTRATOR_DEPLOY)` branch at
+/// `orchestration.rs`'s takeover check, which `redeploy_by_a_different_did_
+/// is_rejected` cannot reach (its `mallory` caller holds no capabilities at
+/// all).
+#[tokio::test]
+async fn node_wide_caller_can_redeploy_over_a_foreign_owner() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let service = test_service(temp_dir.path()).await;
+    let alice = plain_caller("did:key:zAlice");
+    let owner = node_wide_caller("did:key:zOwner");
+
+    deploy(&service, "alice-svc", &alice).await;
+    let result = deploy_result(&service, "alice-svc", &owner).await;
+    assert!(
+        result.is_ok(),
+        "a node-wide caller must be able to override a foreign owner: {result:?}"
+    );
+
+    // Redeploying reassigns ownership to the overriding caller -- `set_owner`
+    // unconditionally records `caller.caller_did` on every successful
+    // deploy, authorized or not.
+    let owner_view = list(&service, &owner).await;
+    assert_eq!(owner_view.len(), 1);
+    assert_eq!(owner_view[0].service_id, "alice-svc");
+    let alice_view = list(&service, &alice).await;
+    assert!(alice_view.is_empty(), "ownership must have transferred away from alice");
+}
+
+/// Positive-path counterpart of `undeploy_by_a_non_owner_is_rejected`: a
+/// node-wide caller may undeploy someone else's service. Exercises the
+/// `!has_node_wide_ability(caller, ORCHESTRATOR_UNDEPLOY)` branch at
+/// `orchestration.rs`'s undeploy gate.
+#[tokio::test]
+async fn node_wide_caller_can_undeploy_a_foreign_owners_service() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let service = test_service(temp_dir.path()).await;
+    let alice = plain_caller("did:key:zAlice");
+    let admin = node_wide_caller("did:key:zAdmin");
+
+    deploy(&service, "alice-svc", &alice).await;
+    let result = undeploy_result(&service, "alice-svc", &admin).await;
+    assert!(
+        result.is_ok(),
+        "a node-wide caller must be able to undeploy a foreign owner's service: {result:?}"
+    );
+
+    let admin_view = list(&service, &admin).await;
+    assert!(admin_view.is_empty(), "the service must be gone after the authorized undeploy");
+}
+
+/// Post-commit review (CC2): `undeploy`'s `remove_owner` is best-effort
+/// (warn-not-fail, matching every other teardown step). If the storage
+/// write fails, the owner row survives a fully-undeployed service and blocks
+/// a *different* caller's later redeploy of that `service_id` via the
+/// takeover check -- "ID squatting". This is currently **inert**: every
+/// substrate today is unowned (F4), so every verified caller holds node-wide
+/// orchestrator authority and would override the stale row anyway (see
+/// `node_wide_caller_can_redeploy_over_a_foreign_owner`); it only bites an
+/// *ordinary* caller once B7b makes non-node-wide callers real. Pinned here,
+/// not fixed -- a real fix needs either a retryable/idempotent teardown or a
+/// recovery path, both out of this slice's scope.
+#[tokio::test]
+async fn failed_remove_owner_blocks_a_different_callers_later_redeploy() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let storage = Arc::new(RemoveOwnerFailingStorage { inner: MockStorage::new() });
+    let registry = EndpointRegistry::new(storage).await.unwrap();
+    let service = test_service_with_registry(temp_dir.path(), registry).await;
+    let alice = plain_caller("did:key:zAlice");
+    let bob = plain_caller("did:key:zBob");
+
+    deploy(&service, "squat-svc", &alice).await;
+    let undeploy_outcome = undeploy_result(&service, "squat-svc", &alice).await;
+    assert!(
+        undeploy_outcome.is_ok(),
+        "undeploy itself must still succeed despite remove_owner failing (warn-not-fail): \
+         {undeploy_outcome:?}"
+    );
+
+    // The stale owner row still says alice, even though the service is
+    // fully torn down -- bob's attempt to deploy the same service_id is
+    // rejected by the takeover check.
+    let result = deploy_result(&service, "squat-svc", &bob).await;
+    assert!(
+        result.is_err(),
+        "documents the known limitation: a stale owner row from a failed remove_owner blocks a \
+         different caller's redeploy of the same service_id"
     );
 }
