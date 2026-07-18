@@ -44,6 +44,7 @@ pub async fn handle(
     substrate_did: String,
     dir: &Path,
     run_as: Option<&str>,
+    ucan_path: Option<&Path>,
 ) -> anyhow::Result<()> {
     match command {
         AppCommands::Deploy { instance_id, manifest_path, journal_path } => {
@@ -104,7 +105,8 @@ pub async fn handle(
 
                 let wit_plan = mapper::map_deployment_plan_to_wit(target_plan.clone())?;
 
-                let mut client = super::client_for(substrate_did.clone(), api_url, dir, run_as)?;
+                let mut client =
+                    super::client_for(substrate_did.clone(), api_url, dir, run_as, ucan_path)?;
                 client.connect().await?;
                 client.deploy_plan(wit_plan).await?;
 

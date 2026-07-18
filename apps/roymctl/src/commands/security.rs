@@ -37,8 +37,9 @@ pub async fn handle_kek(
     substrate_did: String,
     dir: &Path,
     run_as: Option<&str>,
+    ucan_path: Option<&Path>,
 ) -> anyhow::Result<()> {
-    let mut client = super::client_for(substrate_did, api_url, dir, run_as)?;
+    let mut client = super::client_for(substrate_did, api_url, dir, run_as, ucan_path)?;
     client.wait_for_ready(Duration::from_secs(5)).await?;
 
     match command {
@@ -60,8 +61,9 @@ pub async fn handle_secret(
     substrate_did: String,
     dir: &Path,
     run_as: Option<&str>,
+    ucan_path: Option<&Path>,
 ) -> anyhow::Result<()> {
-    let mut client = super::client_for(substrate_did, api_url, dir, run_as)?;
+    let mut client = super::client_for(substrate_did, api_url, dir, run_as, ucan_path)?;
     client.wait_for_ready(Duration::from_secs(5)).await?;
 
     match command {

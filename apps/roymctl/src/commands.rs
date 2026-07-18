@@ -2,7 +2,10 @@
 //!
 //! Registers CLI parsing hooks and routes input options to command modules.
 
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use anyhow::Context;
 use app::AppCommands;
@@ -14,6 +17,7 @@ use svc::SvcCommands;
 use syneroym_core::util;
 use syneroym_identity::{Identity, substrate as identity_substrate};
 use syneroym_sdk::SyneroymClient;
+use syneroym_ucan::CapabilityToken;
 
 pub mod app;
 pub mod identity;
@@ -100,20 +104,35 @@ fn get_substrate_did(substrate_opt: Option<String>, dir: &Path) -> anyhow::Resul
 /// Build a client acting as `--as <name>` if given, else with the ephemeral
 /// key `SyneroymClient::new` generates (today's behavior) -- M04A Slice B7a,
 /// F5. Distinct from `svc deploy --identity`, which names the app's own
-/// signing key for its registry certificate, not the operator.
+/// signing key for its registry certificate, not the operator. If `--ucan
+/// <path>` names a signed `CapabilityToken` JSON file (M04A Slice B7b,
+/// `roymctl identity issue-grant`'s output), it is read, parsed, and
+/// presented via `with_ucan` -- on top of whichever transport identity `--as`
+/// selected.
 pub(crate) fn client_for(
     substrate_did: String,
     api_url: &str,
     dir: &Path,
     run_as: Option<&str>,
+    ucan_path: Option<&Path>,
 ) -> anyhow::Result<SyneroymClient> {
-    match run_as {
-        None => Ok(SyneroymClient::new(substrate_did, api_url.to_string())),
+    let client = match run_as {
+        None => SyneroymClient::new(substrate_did, api_url.to_string()),
         Some(name) => {
             let path = dir.join("identities").join(format!("{name}.key"));
             let id = Identity::load_from_path(&path)
                 .with_context(|| format!("no local identity '{name}' at {}", path.display()))?;
-            Ok(SyneroymClient::new_with_identity(substrate_did, api_url.to_string(), id))
+            SyneroymClient::new_with_identity(substrate_did, api_url.to_string(), id)
+        }
+    };
+    match ucan_path {
+        None => Ok(client),
+        Some(path) => {
+            let raw = fs::read_to_string(path)
+                .with_context(|| format!("failed to read UCAN token at {}", path.display()))?;
+            let token: CapabilityToken = serde_json::from_str(&raw)
+                .with_context(|| format!("invalid UCAN token JSON at {}", path.display()))?;
+            Ok(client.with_ucan(token))
         }
     }
 }
@@ -125,6 +144,7 @@ pub async fn run(
     substrate_opt: Option<String>,
     dir: PathBuf,
     run_as: Option<String>,
+    ucan_path: Option<PathBuf>,
 ) -> anyhow::Result<()> {
     match command {
         Commands::Substrate { command } => {
@@ -132,11 +152,27 @@ pub async fn run(
         }
         Commands::Svc { command } => {
             let substrate_did = get_substrate_did(substrate_opt, &dir)?;
-            svc::handle(&command, &api_url, substrate_did, &dir, run_as.as_deref()).await?;
+            svc::handle(
+                &command,
+                &api_url,
+                substrate_did,
+                &dir,
+                run_as.as_deref(),
+                ucan_path.as_deref(),
+            )
+            .await?;
         }
         Commands::App { command } => {
             let substrate_did = get_substrate_did(substrate_opt, &dir)?;
-            app::handle(&command, &api_url, substrate_did, &dir, run_as.as_deref()).await?;
+            app::handle(
+                &command,
+                &api_url,
+                substrate_did,
+                &dir,
+                run_as.as_deref(),
+                ucan_path.as_deref(),
+            )
+            .await?;
         }
         Commands::Identity { command } => {
             identity::handle(&command, &dir).await?;
@@ -159,13 +195,27 @@ pub async fn run(
         }
         Commands::Kek { command } => {
             let substrate_did = get_substrate_did(substrate_opt, &dir)?;
-            security::handle_kek(&command, &api_url, substrate_did, &dir, run_as.as_deref())
-                .await?;
+            security::handle_kek(
+                &command,
+                &api_url,
+                substrate_did,
+                &dir,
+                run_as.as_deref(),
+                ucan_path.as_deref(),
+            )
+            .await?;
         }
         Commands::Secret { command } => {
             let substrate_did = get_substrate_did(substrate_opt, &dir)?;
-            security::handle_secret(&command, &api_url, substrate_did, &dir, run_as.as_deref())
-                .await?;
+            security::handle_secret(
+                &command,
+                &api_url,
+                substrate_did,
+                &dir,
+                run_as.as_deref(),
+                ucan_path.as_deref(),
+            )
+            .await?;
         }
     }
     Ok(())

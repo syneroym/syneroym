@@ -19,7 +19,7 @@ use syneroym_core::{
     local_registry::{NATIVE_CAPABILITY_INTERFACES, SubstrateEndpoint},
     util,
 };
-use syneroym_rpc::{Ability, CallerContext, NativeService};
+use syneroym_rpc::{Ability, CallerContext, NativeService, ResourceUri};
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, ContainerManifest, DeployManifest, DeployedService, DeploymentPlan,
     ServiceType as WitServiceType, TcpManifest, WasmManifest,
@@ -156,13 +156,32 @@ impl ControlPlaneService {
 
 #[async_trait::async_trait]
 impl OrchestratorInterface for ControlPlaneService {
-    /// `caller` is threaded through (M04A Slice B7a) but not yet consulted:
-    /// per-service `readyz` gating on `orchestrator/status` is B7b scope
-    /// (plans/B7.md §2.4.1) -- gating it here would break `wait_for_ready`,
-    /// which every `roymctl`/SDK client calls pre-capability. Behavior is
-    /// unchanged at B7a.
-    async fn readyz(&self, service_id: String, _caller: &CallerContext) -> Result<(), String> {
+    /// M04A Slice B7b (§2.4.1): `readyz` has two forms, and only one is a
+    /// status-check in the ownership sense. Empty `service_id` is a
+    /// substrate-liveness ping -- `SyneroymClient::wait_for_ready` calls it
+    /// pre-capability during `connect()`, so gating it would break connect
+    /// for every ordinary client; it stays open, as a health probe (design
+    /// §6.1.2's spirit: liveness is not an authorization surface). A
+    /// non-empty `service_id` is a per-service readiness check (task.md item
+    /// 1's "status-check") and is gated on `orchestrator/status`, exactly
+    /// like `deploy`/`undeploy` gate on their own abilities below --
+    /// node-wide authority (the owner, or on an unowned substrate, anyone --
+    /// F4) passes for free; otherwise the caller needs a grant covering this
+    /// app.
+    async fn readyz(&self, service_id: String, caller: &CallerContext) -> Result<(), String> {
         if !service_id.is_empty() {
+            if !self.has_node_wide_ability(caller, Ability::ORCHESTRATOR_STATUS) {
+                let resource = ResourceUri(format!("substrate:{}/app/{service_id}", self.node_did));
+                if !caller
+                    .has_capability(&resource, &Ability(Ability::ORCHESTRATOR_STATUS.to_string()))
+                {
+                    return Err(format!(
+                        "caller {} holds no orchestrator/status grant for '{service_id}'",
+                        caller.caller_did
+                    ));
+                }
+            }
+
             let endpoints = self.registry.lookup_by_service(&service_id);
             let mut is_container = false;
             for (_, endpoint) in endpoints {
@@ -217,6 +236,24 @@ impl OrchestratorInterface for ControlPlaneService {
             return Err(format!(
                 "service '{service_id}' is owned by {existing}; redeploy must come from its owner \
                  or a substrate owner"
+            ));
+        }
+
+        // M04A Slice B7b (§3.2): Tier-1 deploy admission. The caller must
+        // hold `orchestrator/deploy` covering this app. No owner/unowned
+        // branch and no separate substrate-owner bypass here: a bare
+        // `substrate:<node>` capability (the owner's `substrate/admin`, or
+        // the unowned grant of F4) is `is_substrate_scope`, so `grants`
+        // wildcards the resource and only `entails` has to hold -- both
+        // pass here for free. An app-scoped B7b grantee is prefix-covered
+        // instead. One check, three principals, no branch.
+        let deploy_resource = ResourceUri(format!("substrate:{}/app/{service_id}", self.node_did));
+        if !caller
+            .has_capability(&deploy_resource, &Ability(Ability::ORCHESTRATOR_DEPLOY.to_string()))
+        {
+            return Err(format!(
+                "caller {} holds no orchestrator/deploy grant for '{service_id}' on this substrate",
+                caller.caller_did
             ));
         }
 
@@ -425,6 +462,38 @@ impl OrchestratorInterface for ControlPlaneService {
             return Err(format!(
                 "service '{service_id}' is owned by {owner}; only its owner or a substrate owner \
                  may undeploy it"
+            ));
+        }
+
+        // M04A Slice B7b (§3.2): Tier-1 undeploy admission, the same shape
+        // as `deploy`'s -- the caller must hold `orchestrator/undeploy`
+        // covering this app.
+        //
+        // Interaction with `deploy`'s own rollback path (§2.3): `deploy`
+        // calls `self.undeploy(service_id.clone(), caller)` with the *same*
+        // `caller` on two failure paths. F4's unowned-substrate grant issues
+        // all three `orchestrator/*` abilities together, so this never trips
+        // there; on a real *owned* substrate it could, in principle, reject
+        // a rollback for a caller who legitimately holds `orchestrator/
+        // deploy` on this app but was never separately granted `orchestrator/
+        // undeploy` for it -- abilities are deliberately flat and
+        // independently grantable (§3.1 A2), so "deploy but not undeploy" is
+        // a real, supported shape. That is inert today for the same reason
+        // §6.1 records for the gate as a whole: nothing can create a
+        // `ControllerAgreement` yet, so every substrate is unowned and every
+        // verified caller holds all three abilities together. Revisit if a
+        // deploy-only grantee becomes real before the ownership tooling
+        // lands.
+        let undeploy_resource =
+            ResourceUri(format!("substrate:{}/app/{service_id}", self.node_did));
+        if !caller.has_capability(
+            &undeploy_resource,
+            &Ability(Ability::ORCHESTRATOR_UNDEPLOY.to_string()),
+        ) {
+            return Err(format!(
+                "caller {} holds no orchestrator/undeploy grant for '{service_id}' on this \
+                 substrate",
+                caller.caller_did
             ));
         }
 
@@ -645,6 +714,44 @@ mod tests {
 
     use super::*;
     use crate::dummy_sandbox::{AppSandboxEngine, ContainerEngine};
+
+    /// M04A Slice B7b: a caller holding node-wide orchestrator authority on
+    /// `"did:key:zTestNode"` (every test in this module inits
+    /// `ControlPlaneService` with that node DID) -- the shape `build_caller`
+    /// issues for the F4 unowned-substrate bootstrap grant. Deploy/undeploy
+    /// now gate on an explicit `orchestrator/{deploy,undeploy}` capability
+    /// (§3.2), so every test below that exercises `deploy`/`deploy_plan`/
+    /// `undeploy` and expects to get *past* that gate (to reach a
+    /// path-traversal/schema/rollback/ownership assertion further in) needs
+    /// a caller that holds it -- `CallerContext::service_system` (zero
+    /// capabilities) no longer suffices on its own.
+    fn node_wide_caller(caller_did: &str) -> CallerContext {
+        use syneroym_rpc::{AuthLevel, Capability, SessionContext};
+
+        let resource = ResourceUri::substrate("did:key:zTestNode");
+        CallerContext {
+            caller_did: caller_did.to_string(),
+            app_instance: None,
+            session: SessionContext {
+                subject_did: caller_did.to_string(),
+                capabilities: vec![
+                    Capability {
+                        with: resource.clone(),
+                        can: Ability(Ability::ORCHESTRATOR_DEPLOY.to_string()),
+                        caveats: None,
+                    },
+                    Capability {
+                        with: resource,
+                        can: Ability(Ability::ORCHESTRATOR_UNDEPLOY.to_string()),
+                        caveats: None,
+                    },
+                ],
+                ..Default::default()
+            },
+            auth: AuthLevel::Delegated,
+            proof: None,
+        }
+    }
 
     #[tokio::test]
     async fn test_deploy_plan_path_traversal() {
@@ -870,11 +977,7 @@ mod tests {
         };
 
         let result = service
-            .deploy(
-                "test_service".to_string(),
-                manifest,
-                &CallerContext::service_system("test-caller"),
-            )
+            .deploy("test_service".to_string(), manifest, &node_wide_caller("test-caller"))
             .await;
 
         let _ = fs::remove_file(&schema_filename);
@@ -948,11 +1051,7 @@ mod tests {
         };
 
         let result = service
-            .deploy(
-                "rollback_service".to_string(),
-                manifest,
-                &CallerContext::service_system("test-caller"),
-            )
+            .deploy("rollback_service".to_string(), manifest, &node_wide_caller("test-caller"))
             .await;
         assert!(result.is_err()); // deployment must fail
 
@@ -1035,7 +1134,7 @@ mod tests {
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
         };
-        let caller = CallerContext::service_system("test-caller");
+        let caller = node_wide_caller("test-caller");
         service.deploy(service_id.clone(), manifest, &caller).await.unwrap();
 
         let routes = http_routes.get(&service_id).expect("http_routes populated on deploy");
@@ -1114,7 +1213,7 @@ mod tests {
             registry_certificate: None,
         };
         service
-            .deploy(service_id.clone(), manifest, &CallerContext::service_system("test-caller"))
+            .deploy(service_id.clone(), manifest, &node_wide_caller("test-caller"))
             .await
             .unwrap();
 
@@ -1196,7 +1295,7 @@ mod tests {
         .await
         .unwrap();
 
-        let caller = CallerContext::service_system("did:key:zOwnerDid");
+        let caller = node_wide_caller("did:key:zOwnerDid");
         let service_id = "owner-attribution-svc".to_string();
         service.deploy(service_id.clone(), owner_test_manifest(), &caller).await.unwrap();
 

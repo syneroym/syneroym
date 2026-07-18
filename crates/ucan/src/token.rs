@@ -212,7 +212,13 @@ fn granted_capabilities(
         .collect::<Result<_>>()?;
     for cap in &token.capabilities {
         let rooted = (opts.is_trusted_root)(&token.issuer_did, &cap.with);
-        let backed = parent_grants.iter().flatten().any(|pc| pc.covers(cap));
+        // ADR-0015 A3/A4: a parent capability only backs a child's if the
+        // parent also permits further delegation. `can_delegate` is
+        // *checked*, not conjoined, into the child (it is terminal, not
+        // intersective like `where`/`fields`) -- once a held capability
+        // carries `can_delegate: false`, nothing derived from it can
+        // attenuate any further, no matter how many hops re-wrap it.
+        let backed = parent_grants.iter().flatten().any(|pc| pc.covers(cap) && pc.can_delegate());
         if rooted || backed {
             effective.push(cap.clone());
         }
@@ -684,6 +690,116 @@ mod tests {
 
         let err = verify_chain(&chain, &opts).unwrap_err();
         assert!(err.to_string().contains("more than"));
+    }
+
+    /// ADR-0015 A3: a `can_delegate: false` parent capability does not back
+    /// a child's attenuated capability -- the delegation attempt is dropped
+    /// (fail-closed), not an error, matching every other "not backed"
+    /// outcome in this module.
+    #[test]
+    fn can_delegate_false_blocks_further_delegation() {
+        let owner = Identity::generate().unwrap();
+        let alice = Identity::generate().unwrap();
+        let bob = Identity::generate().unwrap();
+        let admin_root = derive_did_key(&owner.public_key());
+        let alice_did = derive_did_key(&alice.public_key());
+        let bob_did = derive_did_key(&bob.public_key());
+        let resource = ResourceUri::service("app1", "s1");
+
+        let non_delegable = Capability {
+            with: resource.clone(),
+            can: Ability(Ability::DATA_LAYER_ADMIN.to_string()),
+            caveats: Some(serde_json::json!({"can_delegate": false})),
+        };
+        let owner_to_alice = CapabilityToken::issue(
+            &owner,
+            &alice_did,
+            vec![non_delegable],
+            Map::new(),
+            3600,
+            vec![],
+        )
+        .unwrap();
+        let alice_to_bob = CapabilityToken::issue(
+            &alice,
+            &bob_did,
+            vec![cap(resource, Ability::DATA_LAYER_WRITE)],
+            Map::new(),
+            3600,
+            vec![owner_to_alice],
+        )
+        .unwrap();
+
+        let is_root = |iss: &str, _res: &ResourceUri| iss == admin_root;
+        let opts = ChainVerifyOpts {
+            expected_audience_did: &bob_did,
+            is_trusted_root: &is_root,
+            now_secs: now_secs().unwrap(),
+        };
+        let granted = verify_chain(&alice_to_bob, &opts).unwrap();
+        assert!(granted.is_empty(), "a can_delegate: false capability must not back a child's");
+    }
+
+    /// The block is terminal across hops, not just at the first one: a
+    /// grandchild attenuated through an intermediate that itself received
+    /// nothing (because its own parent was `can_delegate: false`) also gets
+    /// nothing -- there is no capability to re-derive from downstream.
+    #[test]
+    fn can_delegate_false_is_terminal_across_two_hops() {
+        let owner = Identity::generate().unwrap();
+        let alice = Identity::generate().unwrap();
+        let bob = Identity::generate().unwrap();
+        let carol = Identity::generate().unwrap();
+        let admin_root = derive_did_key(&owner.public_key());
+        let alice_did = derive_did_key(&alice.public_key());
+        let bob_did = derive_did_key(&bob.public_key());
+        let carol_did = derive_did_key(&carol.public_key());
+        let resource = ResourceUri::service("app1", "s1");
+
+        let non_delegable = Capability {
+            with: resource.clone(),
+            can: Ability(Ability::DATA_LAYER_ADMIN.to_string()),
+            caveats: Some(serde_json::json!({"can_delegate": false})),
+        };
+        let owner_to_alice = CapabilityToken::issue(
+            &owner,
+            &alice_did,
+            vec![non_delegable],
+            Map::new(),
+            3600,
+            vec![],
+        )
+        .unwrap();
+        let alice_to_bob = CapabilityToken::issue(
+            &alice,
+            &bob_did,
+            vec![cap(resource.clone(), Ability::DATA_LAYER_WRITE)],
+            Map::new(),
+            3600,
+            vec![owner_to_alice],
+        )
+        .unwrap();
+        let bob_to_carol = CapabilityToken::issue(
+            &bob,
+            &carol_did,
+            vec![cap(resource, Ability::DATA_LAYER_READ)],
+            Map::new(),
+            3600,
+            vec![alice_to_bob],
+        )
+        .unwrap();
+
+        let is_root = |iss: &str, _res: &ResourceUri| iss == admin_root;
+        let opts = ChainVerifyOpts {
+            expected_audience_did: &carol_did,
+            is_trusted_root: &is_root,
+            now_secs: now_secs().unwrap(),
+        };
+        let granted = verify_chain(&bob_to_carol, &opts).unwrap();
+        assert!(
+            granted.is_empty(),
+            "a can_delegate: false block must not be re-derivable downstream"
+        );
     }
 
     #[test]
