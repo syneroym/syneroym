@@ -19,8 +19,8 @@ use syneroym_data_db::traits::StorageProvider;
 use syneroym_data_keystore::KeyStore;
 use syneroym_mqtt_broker::MqttBroker;
 use syneroym_rpc::{
-    NativeDispatchRegistry, NativeInvocation, NativeResponse, NativeService, RpcError, RpcResult,
-    WeakNativeDispatchRegistry,
+    Ability, CallerContext, NativeDispatchRegistry, NativeInvocation, NativeResponse,
+    NativeService, ResourceUri, RpcError, RpcResult, WeakNativeDispatchRegistry,
 };
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     DeployManifest, DeploymentPlan,
@@ -42,6 +42,11 @@ const SECURITY_INTERFACE: &str = "security";
 /// like Podman or Wasmtime.
 pub struct ControlPlaneService {
     service_id: String,
+    /// This node's own DID; `substrate:<node_did>` resources name it (M04A
+    /// Slice B7a). Distinct field from `service_id` above (which happens to
+    /// hold the same value in production) because it is used as an
+    /// *identity*, not a routing key -- mirrors `RouteHandlerInner::node_did`.
+    node_did: String,
     registry: EndpointRegistry,
     app_sandbox_engine: Arc<AppSandboxEngine>,
     podman_sandbox_engine: Arc<ContainerEngine>,
@@ -76,6 +81,7 @@ impl ControlPlaneService {
     #[allow(clippy::too_many_arguments)]
     pub async fn init(
         service_id: String,
+        node_did: String,
         app_sandbox_engine: Arc<AppSandboxEngine>,
         podman_sandbox_engine: Arc<ContainerEngine>,
         registry: EndpointRegistry,
@@ -95,6 +101,7 @@ impl ControlPlaneService {
 
         Ok(Self {
             service_id,
+            node_did,
             registry,
             app_sandbox_engine,
             podman_sandbox_engine,
@@ -106,6 +113,46 @@ impl ControlPlaneService {
             native_dispatch: Arc::downgrade(&native_dispatch),
             http_routes,
         })
+    }
+
+    /// Whether `caller` holds a specific **node-wide** orchestrator ability:
+    /// the substrate owner (whose `substrate/admin` entails every ability),
+    /// or -- on an unowned substrate -- any verified caller (M04A Slice B7a,
+    /// F4). There is deliberately no "is the substrate owned?" branch
+    /// anywhere else, because the unowned posture is expressed as an issued
+    /// capability, not as a skipped check (design §6.1.1).
+    ///
+    /// **Parameterized by `ability`, not hardcoded to one** (post-review
+    /// fix): B7b's design (§3.1 A2) deliberately keeps the three
+    /// `orchestrator/*` abilities flat and independently grantable ("deploy
+    /// but not undeploy" must stay expressible), so a future grantee could
+    /// hold `orchestrator/status` alone. Checking a single hardcoded ability
+    /// here for every caller-side use -- deploy's takeover override, undeploy's
+    /// gate, and list's visibility -- would let a *read-only, status-only*
+    /// grantee also override another owner's deploy/undeploy, a privilege
+    /// escalation once B7b mints such a grant (not reachable in B7a itself:
+    /// F4 only ever issues all three abilities together, and no tooling
+    /// exists yet to mint a partial grant). Each call site below must pass
+    /// the ability it actually needs to exercise -- `ORCHESTRATOR_DEPLOY` to
+    /// override a takeover, `ORCHESTRATOR_UNDEPLOY` to override an undeploy
+    /// gate, `ORCHESTRATOR_STATUS` for list's broader visibility bar (a
+    /// monitoring-only grantee is meant to see the list; it is not thereby
+    /// meant to deploy/undeploy over someone else's app).
+    ///
+    /// The resource is the **bare** `substrate:<node_did>` -- node-wide (F2).
+    /// That excludes an app-scoped B7b grantee (`substrate:<node>/app/foo`):
+    /// their capability carries a selector, so it is not
+    /// `is_substrate_scope` (**not yet true today** -- `is_substrate_scope`
+    /// is currently a bare `starts_with("substrate:")` prefix test with no
+    /// selector awareness, so a selectored capability would *also* match it
+    /// as written; the narrowing to exclude selectored resources is B7b's
+    /// F2, not yet landed. No selectored `substrate:.../app/...` capability
+    /// is minted anywhere in B7a -- `build_caller` only ever issues the bare
+    /// form -- so this is inert today, but the exclusion is not yet
+    /// enforced in code and must not be assumed to be).
+    fn has_node_wide_ability(&self, caller: &CallerContext, ability: &'static str) -> bool {
+        caller
+            .has_capability(&ResourceUri::substrate(&self.node_did), &Ability(ability.to_string()))
     }
 }
 
@@ -216,7 +263,9 @@ impl NativeService for ControlPlaneService {
                             .map(|p| p.service_id)
                     })
                     .unwrap_or_default();
-                self.readyz(service_id).await.map_err(RpcError::InternalError)?;
+                self.readyz(service_id, &invocation.caller)
+                    .await
+                    .map_err(RpcError::InternalError)?;
                 Ok(ready_response())
             }
             "deploy" => {
@@ -224,7 +273,9 @@ impl NativeService for ControlPlaneService {
                     serde_json::from_value(invocation.params).map_err(|e| {
                         RpcError::InvalidParams(format!("Failed to parse deploy params: {e}"))
                     })?;
-                self.deploy(service_id, manifest).await.map_err(RpcError::InternalError)?;
+                self.deploy(service_id, manifest, &invocation.caller)
+                    .await
+                    .map_err(RpcError::InternalError)?;
                 Ok(NativeResponse { payload: serde_json::json!({"status": "deployed"}) })
             }
             "deploy-plan" => {
@@ -235,7 +286,9 @@ impl NativeService for ControlPlaneService {
                     .map_err(|e| {
                         RpcError::InvalidParams(format!("Failed to parse deploy-plan params: {e}"))
                     })?;
-                self.deploy_plan(plan).await.map_err(RpcError::InternalError)?;
+                self.deploy_plan(plan, &invocation.caller)
+                    .await
+                    .map_err(RpcError::InternalError)?;
                 Ok(NativeResponse { payload: serde_json::json!({"status": "deployed_plan"}) })
             }
             "undeploy" => {
@@ -244,11 +297,14 @@ impl NativeService for ControlPlaneService {
                     .map_err(|e| {
                         RpcError::InvalidParams(format!("Failed to parse undeploy params: {e}"))
                     })?;
-                self.undeploy(service_id).await.map_err(RpcError::InternalError)?;
+                self.undeploy(service_id, &invocation.caller)
+                    .await
+                    .map_err(RpcError::InternalError)?;
                 Ok(NativeResponse { payload: serde_json::json!({"status": "undeployed"}) })
             }
             "list" => {
-                let services = self.list().await.map_err(RpcError::InternalError)?;
+                let services =
+                    self.list(&invocation.caller).await.map_err(RpcError::InternalError)?;
                 Ok(NativeResponse {
                     payload: serde_json::to_value(services).unwrap_or(Value::Null),
                 })
@@ -366,6 +422,7 @@ mod tests {
         let native_dispatch = NativeDispatchRegistry::default();
         let service = ControlPlaneService::init(
             "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
             app_sandbox,
             container_engine,
             registry,
@@ -432,6 +489,7 @@ mod tests {
         let native_dispatch = NativeDispatchRegistry::default();
         let service = ControlPlaneService::init(
             "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
             app_sandbox,
             container_engine,
             registry,
@@ -520,6 +578,7 @@ mod tests {
         let native_dispatch = NativeDispatchRegistry::default();
         let service = ControlPlaneService::init(
             "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
             app_sandbox,
             container_engine,
             registry,
@@ -547,7 +606,8 @@ mod tests {
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
         };
-        service.deploy(service_id.clone(), manifest).await.unwrap();
+        let test_caller = CallerContext::service_system("test-caller");
+        service.deploy(service_id.clone(), manifest, &test_caller).await.unwrap();
 
         let native = service
             .native_dispatch
@@ -739,7 +799,7 @@ mod tests {
         assert_eq!(delivered_payload, b"order-1");
 
         // undeploy removes the native dispatch registration
-        service.undeploy(service_id.clone()).await.unwrap();
+        service.undeploy(service_id.clone(), &test_caller).await.unwrap();
         assert!(
             service
                 .native_dispatch
@@ -780,6 +840,7 @@ mod tests {
         let native_dispatch = NativeDispatchRegistry::default();
         let service = ControlPlaneService::init(
             "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
             app_sandbox,
             container_engine,
             registry,
@@ -807,7 +868,10 @@ mod tests {
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
         };
-        service.deploy(service_id.clone(), manifest).await.unwrap();
+        service
+            .deploy(service_id.clone(), manifest, &CallerContext::service_system("test-caller"))
+            .await
+            .unwrap();
 
         let native = service
             .native_dispatch
@@ -911,6 +975,7 @@ mod tests {
         let native_dispatch = NativeDispatchRegistry::default();
         let service = ControlPlaneService::init(
             "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
             app_sandbox,
             container_engine,
             registry,
@@ -938,7 +1003,10 @@ mod tests {
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
         };
-        service.deploy(service_id.clone(), manifest).await.unwrap();
+        service
+            .deploy(service_id.clone(), manifest, &CallerContext::service_system("test-caller"))
+            .await
+            .unwrap();
         let native_dispatch = service.native_dispatch.upgrade().unwrap();
         let native = native_dispatch.get(&service_id).unwrap();
 
@@ -1014,6 +1082,7 @@ mod tests {
         let native_dispatch = NativeDispatchRegistry::default();
         let service = ControlPlaneService::init(
             "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
             app_sandbox,
             container_engine,
             registry,
@@ -1029,7 +1098,11 @@ mod tests {
         .unwrap();
 
         let service_id = "messaging-undeploy-svc".to_string();
-        service.deploy(service_id.clone(), messaging_wasm_manifest(wasm_bytes)).await.unwrap();
+        let test_caller = CallerContext::service_system("test-caller");
+        service
+            .deploy(service_id.clone(), messaging_wasm_manifest(wasm_bytes), &test_caller)
+            .await
+            .unwrap();
         call_test_driver(
             &service.app_sandbox_engine,
             &service_id,
@@ -1042,7 +1115,7 @@ mod tests {
         let persisted = storage_provider.list_all_messaging_subscriptions().await.unwrap();
         assert_eq!(persisted, vec![(service_id.clone(), namespaced_topic.clone())]);
 
-        service.undeploy(service_id.clone()).await.unwrap();
+        service.undeploy(service_id.clone(), &test_caller).await.unwrap();
 
         let after_undeploy = storage_provider.list_all_messaging_subscriptions().await.unwrap();
         assert!(after_undeploy.is_empty(), "subscription row must be gone after undeploy");
@@ -1096,6 +1169,7 @@ mod tests {
         let native_dispatch = NativeDispatchRegistry::default();
         let service = ControlPlaneService::init(
             "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
             app_sandbox,
             container_engine,
             registry,
@@ -1112,11 +1186,15 @@ mod tests {
 
         let service_a = "messaging-isolation-a".to_string();
         let service_b = "messaging-isolation-b".to_string();
+        let test_caller = CallerContext::service_system("test-caller");
         service
-            .deploy(service_a.clone(), messaging_wasm_manifest(wasm_bytes.clone()))
+            .deploy(service_a.clone(), messaging_wasm_manifest(wasm_bytes.clone()), &test_caller)
             .await
             .unwrap();
-        service.deploy(service_b.clone(), messaging_wasm_manifest(wasm_bytes)).await.unwrap();
+        service
+            .deploy(service_b.clone(), messaging_wasm_manifest(wasm_bytes), &test_caller)
+            .await
+            .unwrap();
 
         // B subscribes to its own bare namespace only.
         call_test_driver(
@@ -1333,6 +1411,7 @@ mod tests {
         let native_dispatch = NativeDispatchRegistry::default();
         let service = ControlPlaneService::init(
             "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
             app_sandbox,
             container_engine,
             registry.clone(),
@@ -1348,7 +1427,11 @@ mod tests {
         .unwrap();
 
         let service_id = "stream-undeploy-svc".to_string();
-        service.deploy(service_id.clone(), stream_wasm_manifest(wasm_bytes)).await.unwrap();
+        let test_caller = CallerContext::service_system("test-caller");
+        service
+            .deploy(service_id.clone(), stream_wasm_manifest(wasm_bytes), &test_caller)
+            .await
+            .unwrap();
 
         assert!(
             registry.lookup(&service_id, STREAM_PROTOCOL).is_some(),
@@ -1356,7 +1439,7 @@ mod tests {
              registry after deploy"
         );
 
-        service.undeploy(service_id.clone()).await.unwrap();
+        service.undeploy(service_id.clone(), &test_caller).await.unwrap();
 
         assert!(
             registry.lookup(&service_id, STREAM_PROTOCOL).is_none(),

@@ -3,6 +3,7 @@ use std::{
     fs::DirBuilder,
     path::Path,
     sync::{Arc, Mutex, MutexGuard},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::Result;
@@ -60,6 +61,19 @@ impl SqliteEndpointStorage {
                         endpoint_type TEXT NOT NULL,
                         endpoint_data TEXT NOT NULL,
                         PRIMARY KEY (service_id, interface_name)
+                    );",
+                    [],
+                )?;
+                // M04A Slice B7a: service ownership. Separate table, not a
+                // column on local_endpoints -- ownership is per service, and
+                // local_endpoints is keyed (service_id, interface_name), so a
+                // column would duplicate the owner across every interface and
+                // admit disagreement between rows.
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS service_owners (
+                        service_id TEXT PRIMARY KEY,
+                        owner_did  TEXT NOT NULL,
+                        created_at INTEGER NOT NULL
                     );",
                     [],
                 )?;
@@ -158,6 +172,55 @@ impl EndpointStorage for SqliteEndpointStorage {
                 "DELETE FROM local_endpoints WHERE service_id = ?1 AND interface_name = ?2",
                 params![sid, iname],
             )?;
+            Ok(())
+        })
+        .await?
+    }
+
+    async fn load_all_owners(&self) -> Result<Vec<(String, String)>> {
+        let conn_arc = self.conn.clone();
+        task::spawn_blocking(move || -> Result<Vec<(String, String)>> {
+            let conn = lock_db(&conn_arc)?;
+            let mut stmt = conn.prepare("SELECT service_id, owner_did FROM service_owners")?;
+            let mut owners = Vec::new();
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                owners.push((row.get(0)?, row.get(1)?));
+            }
+            Ok(owners)
+        })
+        .await?
+    }
+
+    async fn save_owner(&self, service_id: &str, owner_did: &str) -> Result<()> {
+        let conn_arc = self.conn.clone();
+        let sid = service_id.to_string();
+        let owner = owner_did.to_string();
+        let created_at: i64 =
+            SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+
+        task::spawn_blocking(move || -> Result<()> {
+            let conn = lock_db(&conn_arc)?;
+            conn.execute(
+                "INSERT INTO service_owners (service_id, owner_did, created_at)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(service_id) DO UPDATE SET
+                    owner_did = excluded.owner_did,
+                    created_at = excluded.created_at",
+                params![sid, owner, created_at],
+            )?;
+            Ok(())
+        })
+        .await?
+    }
+
+    async fn remove_owner(&self, service_id: &str) -> Result<()> {
+        let conn_arc = self.conn.clone();
+        let sid = service_id.to_string();
+
+        task::spawn_blocking(move || -> Result<()> {
+            let conn = lock_db(&conn_arc)?;
+            conn.execute("DELETE FROM service_owners WHERE service_id = ?1", params![sid])?;
             Ok(())
         })
         .await?
@@ -299,5 +362,40 @@ mod tests {
         assert!(
             matches!(&all[0].2, SubstrateEndpoint::WasmChannel { service_id } if service_id == "valid-1")
         );
+    }
+
+    /// M04A Slice B7a: a freshly created `endpoints.db` gets both tables in
+    /// the same `version == 0` migration block -- `service_owners` is usable
+    /// immediately, no separate migration step.
+    #[tokio::test]
+    async fn test_fresh_db_gets_service_owners_table() {
+        let (store, _dir) = make_store().await;
+        store.save_owner("svc-1", "did:key:zOwner").await.unwrap();
+        let owners = store.load_all_owners().await.unwrap();
+        assert_eq!(owners, vec![("svc-1".to_string(), "did:key:zOwner".to_string())]);
+    }
+
+    #[tokio::test]
+    async fn test_save_owner_upserts() {
+        let (store, _dir) = make_store().await;
+        store.save_owner("svc-1", "did:key:zAlice").await.unwrap();
+        store.save_owner("svc-1", "did:key:zBob").await.unwrap();
+
+        let owners = store.load_all_owners().await.unwrap();
+        assert_eq!(owners, vec![("svc-1".to_string(), "did:key:zBob".to_string())]);
+    }
+
+    #[tokio::test]
+    async fn test_remove_owner() {
+        let (store, _dir) = make_store().await;
+        store.save_owner("svc-1", "did:key:zOwner").await.unwrap();
+        store.remove_owner("svc-1").await.unwrap();
+        assert!(store.load_all_owners().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_remove_owner_is_idempotent() {
+        let (store, _dir) = make_store().await;
+        store.remove_owner("never-owned").await.unwrap();
     }
 }

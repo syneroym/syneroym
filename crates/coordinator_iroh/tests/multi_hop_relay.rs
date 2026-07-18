@@ -133,6 +133,7 @@ async fn build_test_route_handler_deps(
 
     let control_plane_service = ControlPlaneService::init(
         service_id.to_string(),
+        service_id.to_string(),
         app_sandbox_engine.clone(),
         podman_sandbox_engine,
         registry.clone(),

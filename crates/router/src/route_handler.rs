@@ -28,7 +28,7 @@ use syneroym_core::{
 };
 use syneroym_data_db::traits::StorageProvider;
 use syneroym_data_keystore::KeyStore;
-use syneroym_identity::Identity;
+use syneroym_identity::{Identity, substrate};
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
 use syneroym_rpc::{NativeDispatchRegistry, NativeService, ServiceProxy};
 use syneroym_sandbox_wasm::AppSandboxEngine;
@@ -121,6 +121,10 @@ pub struct RouteHandlerInner {
     /// this is granted `substrate/admin`. `None` in coordinator mode
     /// (coordinators don't host native capabilities).
     pub admin_ucan_root: Option<String>,
+    /// This node's own DID -- `RouteHandler::init`'s `service_id` (M04A
+    /// Slice B7a). Named `node_did` where it is used as an identity rather
+    /// than a routing key: `substrate:<node_did>` resources name it.
+    pub node_did: String,
     /// The Universal Proxy (M04A Slice A1). `RouteHandlerInner` is its
     /// strong owner -- `AppSandboxEngine::service_proxy` only ever holds the
     /// `Weak` published from here, to avoid the `RouteHandlerInner ->
@@ -232,6 +236,7 @@ impl RouteHandler {
             key_store: Some(deps.key_store),
             storage_provider: Some(deps.storage_provider),
             admin_ucan_root: config.iam.admin_ucan_root.clone(),
+            node_did: service_id.clone(),
             _proxy: Some(proxy),
         });
 
@@ -249,11 +254,13 @@ impl RouteHandler {
         retry_policy: RetryPolicy,
         max_connections: Option<usize>,
     ) -> Self {
+        let identity = Identity::generate().expect("coordinator identity");
+        let node_did = substrate::derive_did_key(&identity.public_key());
         let inner = Arc::new(RouteHandlerInner {
             registry: EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
             native_dispatch: Arc::new(DashMap::new()),
             app_sandbox_engine: None,
-            identity: Arc::new(Identity::generate().expect("coordinator identity")),
+            identity: Arc::new(identity),
             iroh_endpoint: Some(iroh_endpoint),
             registry_client: Arc::new(registry_client),
             _parent_relay_url: parent_relay_url,
@@ -267,6 +274,7 @@ impl RouteHandler {
             key_store: None,
             storage_provider: None,
             admin_ucan_root: None,
+            node_did,
             // Coordinators have no native capabilities or sandbox to proxy
             // to.
             _proxy: None,

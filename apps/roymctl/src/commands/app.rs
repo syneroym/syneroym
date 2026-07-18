@@ -11,7 +11,7 @@ use syneroym_app_orchestration::{
     SynAppManifest, compile,
     models::{AppBlueprintId, LogicalServiceName, ServiceConfig, ServiceSpec, ServiceType},
 };
-use syneroym_sdk::{SyneroymClient, mapper};
+use syneroym_sdk::mapper;
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum AppCommands {
@@ -42,6 +42,8 @@ pub async fn handle(
     command: &AppCommands,
     api_url: &str,
     substrate_did: String,
+    dir: &Path,
+    run_as: Option<&str>,
 ) -> anyhow::Result<()> {
     match command {
         AppCommands::Deploy { instance_id, manifest_path, journal_path } => {
@@ -102,7 +104,7 @@ pub async fn handle(
 
                 let wit_plan = mapper::map_deployment_plan_to_wit(target_plan.clone())?;
 
-                let mut client = SyneroymClient::new(substrate_did.clone(), api_url.to_string());
+                let mut client = super::client_for(substrate_did.clone(), api_url, dir, run_as)?;
                 client.connect().await?;
                 client.deploy_plan(wit_plan).await?;
 

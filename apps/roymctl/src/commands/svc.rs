@@ -12,7 +12,6 @@ use std::{
 use clap::Subcommand;
 use syneroym_core::dht_registry::{EndpointInfo, EndpointType};
 use syneroym_identity::Identity;
-use syneroym_sdk::SyneroymClient;
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum SvcCommands {
@@ -63,8 +62,9 @@ pub async fn handle(
     api_url: &str,
     substrate_did: String,
     dir: &Path,
+    run_as: Option<&str>,
 ) -> anyhow::Result<()> {
-    let mut client = SyneroymClient::new(substrate_did.clone(), api_url.to_string());
+    let mut client = super::client_for(substrate_did.clone(), api_url, dir, run_as)?;
     client.wait_for_ready(Duration::from_secs(5)).await?;
 
     match command {
