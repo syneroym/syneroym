@@ -356,7 +356,7 @@ Wire `inject_kek`'s `_scope` param (`key_store.rs:46`) to derive per-app-instanc
 KEKs, gated on the caller's verified app-instance identity. Specify + test the DEK
 re-wrap path (Migration Strategy).
 
-#### Slice B7: Substrate & Service Ownership (Deploy Authorization + Ownership Attribution) — *planned, not started ([plans/B7.md](plans/B7.md))*
+#### Slice B7: Substrate & Service Ownership (Deploy Authorization + Ownership Attribution) — split into **B7a ✅ (2026-07-18)** / **B7b not started** ([plans/B7.md](plans/B7.md))
 **Depends on:** B0 (done — substrate-owner resolution now sources from
 `ControllerAgreement`, see status.md addendum). **Interacts with:** B1 (a
 real capability-delegation chain is the likely mechanism for item 1 below).
@@ -378,8 +378,14 @@ Agreed shape (not yet designed in code):
    a marketplace to arbitrary grantees). Likely realized as a UCAN capability
    once B1's real chain-verification exists; B0's `admin_ucan_root`-style
    allowlist is not expressive enough (no revocation, no per-grantee scoping).
-2. **App catalog needs an owner field.** `catalog.rs` must record which DID's
-   deploy call created each app.
+2. ~~**App catalog needs an owner field.** `catalog.rs` must record which
+   DID's deploy call created each app.~~ **Corrected per plan F1 (B7a ✅):**
+   `app_orchestration/src/catalog.rs` is a client-side (`roymctl`)
+   blueprint→manifest resolver with no deployed-app records and no
+   `control_plane` caller. The substrate's actual deployed-service record is
+   `EndpointRegistry` (`crates/core/src/local_registry.rs`, persisted via
+   `endpoints.db`'s new `service_owners` table) — that is what `list` reads
+   and where the owner field now lives.
 3. **Attribution must resolve through one hop of delegation to the real
    owner**, not the immediate signing key — covers both key rotation and a
    distinct team-member's own key equally (same mechanism, `master_did`
@@ -456,6 +462,19 @@ Agreed shape (not yet designed in code):
   no service resource to name; ADR-0017 §2.1's default-*absent* rule agrees
   (a resource with no `definitions:` entry is grant-only). The two milestones do
   not duplicate the mechanism.
+
+**B7a delivered (2026-07-18)** — see `status.md`'s B7a section for full
+evidence: owner recorded per deployed service (`EndpointRegistry`/
+`endpoints.db`'s `service_owners` table), survives restart, cleared on
+undeploy; `list` filtered per item 5 (node-wide orchestrator authority sees
+everything, an ordinary caller sees only their own, an unattributed
+pre-B7a app is hidden); redeploy/undeploy from a non-owner rejected (F7);
+the unowned-substrate posture (F4) expressed as an issued capability, logged
+at boot; `roymctl --as` operator identity (F5); both Tier-1 TODOs retargeted
+off `M04B/FDAE` (F3/§2.8). **B7b (the deploy grant itself) is not started** —
+on today's unowned-by-default substrate, any verified caller still holds the
+orchestrator abilities; `execute-ddl`/`query-raw` remain denied (F4's
+over-grant trap, tested).
 
 **Spun out of B7** (plan §6.2, which has the detail):
 - **Declared service visibility** — designed in

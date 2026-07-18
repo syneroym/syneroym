@@ -19,7 +19,7 @@ use syneroym_core::{
     local_registry::{NATIVE_CAPABILITY_INTERFACES, SubstrateEndpoint},
     util,
 };
-use syneroym_rpc::NativeService;
+use syneroym_rpc::{CallerContext, NativeService};
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, ContainerManifest, DeployManifest, DeployedService, DeploymentPlan,
     ServiceType as WitServiceType, TcpManifest, WasmManifest,
@@ -32,11 +32,17 @@ use crate::{config_utils, http_routes, synsvc_native::SynSvcNativeService};
 
 #[async_trait::async_trait]
 pub trait OrchestratorInterface {
-    async fn readyz(&self, service_id: String) -> Result<(), String>;
-    async fn deploy(&self, service_id: String, manifest: DeployManifest) -> Result<(), String>;
-    async fn undeploy(&self, service_id: String) -> Result<(), String>;
-    async fn list(&self) -> Result<Vec<DeployedService>, String>;
-    async fn deploy_plan(&self, plan: DeploymentPlan) -> Result<(), String>;
+    async fn readyz(&self, service_id: String, caller: &CallerContext) -> Result<(), String>;
+    async fn deploy(
+        &self,
+        service_id: String,
+        manifest: DeployManifest,
+        caller: &CallerContext,
+    ) -> Result<(), String>;
+    async fn undeploy(&self, service_id: String, caller: &CallerContext) -> Result<(), String>;
+    async fn list(&self, caller: &CallerContext) -> Result<Vec<DeployedService>, String>;
+    async fn deploy_plan(&self, plan: DeploymentPlan, caller: &CallerContext)
+    -> Result<(), String>;
 }
 
 impl ControlPlaneService {
@@ -150,7 +156,12 @@ impl ControlPlaneService {
 
 #[async_trait::async_trait]
 impl OrchestratorInterface for ControlPlaneService {
-    async fn readyz(&self, service_id: String) -> Result<(), String> {
+    /// `caller` is threaded through (M04A Slice B7a) but not yet consulted:
+    /// per-service `readyz` gating on `orchestrator/status` is B7b scope
+    /// (plans/B7.md §2.4.1) -- gating it here would break `wait_for_ready`,
+    /// which every `roymctl`/SDK client calls pre-capability. Behavior is
+    /// unchanged at B7a.
+    async fn readyz(&self, service_id: String, _caller: &CallerContext) -> Result<(), String> {
         if !service_id.is_empty() {
             let endpoints = self.registry.lookup_by_service(&service_id);
             let mut is_container = false;
@@ -170,7 +181,27 @@ impl OrchestratorInterface for ControlPlaneService {
         Ok(())
     }
 
-    async fn deploy(&self, service_id: String, manifest: DeployManifest) -> Result<(), String> {
+    async fn deploy(
+        &self,
+        service_id: String,
+        manifest: DeployManifest,
+        caller: &CallerContext,
+    ) -> Result<(), String> {
+        // M04A Slice B7a / F7: a service_id already owned by someone else may
+        // not be re-deployed into. On an unowned substrate every caller
+        // holds node-wide orchestrator authority (F4), so this never fires
+        // and today's overwrite-on-redeploy behavior is preserved exactly --
+        // without a mode branch.
+        if let Some(existing) = self.registry.owner_of(&service_id)
+            && existing != caller.caller_did
+            && !self.has_node_wide_orchestrator_authority(caller)
+        {
+            return Err(format!(
+                "service '{service_id}' is owned by {existing}; redeploy must come from its owner \
+                 or a substrate owner"
+            ));
+        }
+
         if let Some(cert) = &manifest.registry_certificate {
             let cert_path = self.hosted_apps_dir.join(format!("{service_id}.json"));
             if let Err(e) = fs::write(&cert_path, cert) {
@@ -276,7 +307,7 @@ impl OrchestratorInterface for ControlPlaneService {
                 )
                 .await
             {
-                if let Err(undeploy_err) = self.undeploy(service_id.clone()).await {
+                if let Err(undeploy_err) = self.undeploy(service_id.clone(), caller).await {
                     tracing::error!(
                         "Failed to roll back partially deployed service {} after native \
                          capability registration error: {}",
@@ -313,10 +344,44 @@ impl OrchestratorInterface for ControlPlaneService {
             self.http_routes.insert(service_id.clone(), http_routes);
         }
 
+        // M04A Slice B7a: record the owner last, after every other step
+        // succeeded. Every earlier failure path above either never reached
+        // this line, or calls `undeploy` (whose rollback is itself safe --
+        // see the doc comment there), so a crash/failure before this point
+        // never leaves a stale owner row. Writing it first would leak an
+        // owner row on the `deploy_wasm_service`/`deploy_container_service`
+        // failure paths, which only roll back the config generation.
+        if let Err(e) = self.registry.set_owner(service_id.clone(), caller.caller_did.clone()).await
+        {
+            if let Err(undeploy_err) = self.undeploy(service_id.clone(), caller).await {
+                tracing::error!(
+                    "rollback after owner-attribution failure also failed: {undeploy_err}"
+                );
+            }
+            self.rollback_config_generation(&service_id, new_gen).await;
+            return Err(format!("Owner attribution failed: {e}"));
+        }
+
         Ok(())
     }
 
-    async fn undeploy(&self, service_id: String) -> Result<(), String> {
+    /// M04A Slice B7a / F7: gates on ownership before tearing anything down
+    /// -- a non-owner undeploying someone else's service is the same
+    /// escalation as taking it over via redeploy. Safe to call from
+    /// `deploy`'s own rollback path (§2.3): at that point the owner row is
+    /// either unset (not yet reached) or already `caller.caller_did` (this
+    /// same call already succeeded once), so the gate always passes there.
+    async fn undeploy(&self, service_id: String, caller: &CallerContext) -> Result<(), String> {
+        if let Some(owner) = self.registry.owner_of(&service_id)
+            && owner != caller.caller_did
+            && !self.has_node_wide_orchestrator_authority(caller)
+        {
+            return Err(format!(
+                "service '{service_id}' is owned by {owner}; only its owner or a substrate owner \
+                 may undeploy it"
+            ));
+        }
+
         info!("Undeploying service: {}", service_id);
 
         let cert_path = self.hosted_apps_dir.join(format!("{service_id}.json"));
@@ -397,10 +462,16 @@ impl OrchestratorInterface for ControlPlaneService {
         }
         self.http_routes.remove(&service_id);
 
+        // Warn-not-fail, matching every other teardown step above (endpoints,
+        // subscriptions, http_routes are all best-effort).
+        if let Err(e) = self.registry.remove_owner(&service_id).await {
+            tracing::warn!("Failed to remove owner record for service {}: {}", service_id, e);
+        }
+
         Ok(())
     }
 
-    async fn list(&self) -> Result<Vec<DeployedService>, String> {
+    async fn list(&self, caller: &CallerContext) -> Result<Vec<DeployedService>, String> {
         let endpoints = self.registry.get_all_endpoints();
         let mut services: HashMap<String, DeployedService> = HashMap::new();
 
@@ -430,10 +501,29 @@ impl OrchestratorInterface for ControlPlaneService {
         let mut result: Vec<DeployedService> = services.into_values().collect();
         result.sort_by(|a, b| a.service_id.cmp(&b.service_id));
 
-        Ok(result)
+        // M04A Slice B7a: node-wide orchestrator authority sees everything --
+        // the substrate owner, or on an unowned substrate, everyone (F4),
+        // preserving today's behavior with no mode branch.
+        if self.has_node_wide_orchestrator_authority(caller) {
+            return Ok(result);
+        }
+        // A service owner sees only their own. `owner_of` == None (deployed
+        // pre-B7a, or the §2.3 crash window) filters OUT: an unattributed
+        // app is not "everyone's", and defaulting it visible would make that
+        // window a disclosure bug. The substrate owner still sees it above.
+        Ok(result
+            .into_iter()
+            .filter(|s| {
+                self.registry.owner_of(&s.service_id).as_deref() == Some(caller.caller_did.as_str())
+            })
+            .collect())
     }
 
-    async fn deploy_plan(&self, plan: DeploymentPlan) -> Result<(), String> {
+    async fn deploy_plan(
+        &self,
+        plan: DeploymentPlan,
+        caller: &CallerContext,
+    ) -> Result<(), String> {
         for service in plan.services {
             let service_id = service.service_id.clone();
 
@@ -477,7 +567,7 @@ impl OrchestratorInterface for ControlPlaneService {
                 }
             }
 
-            self.deploy(service_id, deploy_manifest).await?;
+            self.deploy(service_id, deploy_manifest, caller).await?;
         }
 
         Ok(())
@@ -499,7 +589,7 @@ mod tests {
     use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
     use syneroym_rpc::NativeDispatchRegistry;
     use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
-        PlannedService, ServiceConfig,
+        NetworkEndpoint, PlannedService, ServiceConfig,
     };
 
     use super::*;
@@ -535,6 +625,7 @@ mod tests {
         let native_dispatch = NativeDispatchRegistry::default();
         let service = ControlPlaneService::init(
             "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
             app_sandbox,
             container_engine,
             registry,
@@ -576,7 +667,7 @@ mod tests {
             }],
         };
 
-        let result = service.deploy_plan(plan).await;
+        let result = service.deploy_plan(plan, &CallerContext::service_system("test-caller")).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Arbitrary file read prevented: Path traversal"));
     }
@@ -611,6 +702,7 @@ mod tests {
         let native_dispatch = NativeDispatchRegistry::default();
         let service = ControlPlaneService::init(
             "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
             app_sandbox,
             container_engine,
             registry,
@@ -651,7 +743,7 @@ mod tests {
             }],
         };
 
-        let result = service.deploy_plan(plan).await;
+        let result = service.deploy_plan(plan, &CallerContext::service_system("test-caller")).await;
         assert!(result.is_err());
         assert!(
             result
@@ -690,6 +782,7 @@ mod tests {
         let native_dispatch = NativeDispatchRegistry::default();
         let service = ControlPlaneService::init(
             "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
             app_sandbox,
             container_engine,
             registry,
@@ -725,7 +818,13 @@ mod tests {
             registry_certificate: None,
         };
 
-        let result = service.deploy("test_service".to_string(), manifest).await;
+        let result = service
+            .deploy(
+                "test_service".to_string(),
+                manifest,
+                &CallerContext::service_system("test-caller"),
+            )
+            .await;
 
         let _ = fs::remove_file(&schema_filename);
 
@@ -764,6 +863,7 @@ mod tests {
         let native_dispatch = NativeDispatchRegistry::default();
         let service = ControlPlaneService::init(
             "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
             app_sandbox,
             container_engine,
             registry,
@@ -796,7 +896,13 @@ mod tests {
             registry_certificate: None,
         };
 
-        let result = service.deploy("rollback_service".to_string(), manifest).await;
+        let result = service
+            .deploy(
+                "rollback_service".to_string(),
+                manifest,
+                &CallerContext::service_system("test-caller"),
+            )
+            .await;
         assert!(result.is_err()); // deployment must fail
 
         // Config generation should not exist
@@ -841,6 +947,7 @@ mod tests {
         let http_routes: HttpRouteRegistry = Arc::new(DashMap::new());
         let service = ControlPlaneService::init(
             "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
             app_sandbox,
             container_engine,
             registry,
@@ -877,14 +984,15 @@ mod tests {
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
         };
-        service.deploy(service_id.clone(), manifest).await.unwrap();
+        let caller = CallerContext::service_system("test-caller");
+        service.deploy(service_id.clone(), manifest, &caller).await.unwrap();
 
         let routes = http_routes.get(&service_id).expect("http_routes populated on deploy");
         assert_eq!(routes.len(), 2);
         assert_eq!(routes[0].collection.as_deref(), Some("orders"));
         drop(routes);
 
-        service.undeploy(service_id.clone()).await.unwrap();
+        service.undeploy(service_id.clone(), &caller).await.unwrap();
         assert!(
             http_routes.get(&service_id).is_none(),
             "http_routes entry must be removed on undeploy"
@@ -926,6 +1034,7 @@ mod tests {
         let http_routes: HttpRouteRegistry = Arc::new(DashMap::new());
         let service = ControlPlaneService::init(
             "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
             app_sandbox,
             container_engine,
             registry,
@@ -953,8 +1062,93 @@ mod tests {
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
         };
-        service.deploy(service_id.clone(), manifest).await.unwrap();
+        service
+            .deploy(service_id.clone(), manifest, &CallerContext::service_system("test-caller"))
+            .await
+            .unwrap();
 
         assert!(http_routes.get(&service_id).is_none());
+    }
+
+    fn owner_test_manifest() -> DeployManifest {
+        DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema_path: None,
+                rotation_policy: None,
+            },
+            service_type: WitServiceType::Tcp(TcpManifest {
+                endpoints: vec![NetworkEndpoint {
+                    interface_name: "default".to_string(),
+                    host: "127.0.0.1".to_string(),
+                    port: 9100,
+                }],
+            }),
+            registry_certificate: None,
+        }
+    }
+
+    /// M04A Slice B7a (§2.3, F11): `deploy` records `caller.caller_did` as
+    /// the owner -- the same DID `build_caller` resolves to the
+    /// `DelegationCertificate`'s `master_did`, never the ephemeral
+    /// `temporary_did` (io.rs's own tests cover that resolution; this test
+    /// covers what `ControlPlaneService` does with whatever `caller_did` it
+    /// is handed).
+    #[tokio::test]
+    async fn deploy_records_owner_as_caller_did() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+            )
+            .await
+            .unwrap(),
+        );
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+
+        let native_dispatch = NativeDispatchRegistry::default();
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
+            app_sandbox,
+            container_engine,
+            registry.clone(),
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider,
+            blob_provider,
+            messaging_broker,
+            native_dispatch,
+            Arc::new(DashMap::new()),
+        )
+        .await
+        .unwrap();
+
+        let caller = CallerContext::service_system("did:key:zOwnerDid");
+        let service_id = "owner-attribution-svc".to_string();
+        service.deploy(service_id.clone(), owner_test_manifest(), &caller).await.unwrap();
+
+        assert_eq!(registry.owner_of(&service_id), Some(caller.caller_did.clone()));
+
+        service.undeploy(service_id.clone(), &caller).await.unwrap();
+        assert_eq!(registry.owner_of(&service_id), None);
     }
 }

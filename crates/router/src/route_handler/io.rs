@@ -94,15 +94,23 @@ async fn ucan_chain_not_revoked(
 /// capability" to any future code that checks `auth == Ucan` as a privilege
 /// signal.
 ///
-/// TODO(M04B/FDAE): B0 gate only proves *an* identity is present. Which
-/// callers may actually reach a given native service (service-owner /
-/// substrate-owner) and with what row/column scope is enforced by the FDAE
-/// policy engine (M04B), evaluated against `caller.session`. Until then any
-/// verified identity passes.
+/// TODO(B7b / post-B7): B0's gate only proves *an* identity is present.
+/// "May this caller touch this service at all?" is Tier 1 -- a µs-scale
+/// grant-layer capability check, NOT an FDAE/M04B policy question (ADR-0017
+/// Open, design §9.8; this comment previously mis-addressed it to M04B).
+/// B7b implements it for `orchestrator`. `security` and the five data
+/// native-capability interfaces remain open -- today any verified identity
+/// reaches any native service. `security`'s gate is `substrate/admin`,
+/// which is unholdable until a ControllerAgreement can be created, so it
+/// ships with that tool (B7.md F3.1). M04B/FDAE owns Tier 3 (rows/columns)
+/// only.
+/// The `None` rejection below is correct and settled (design §6.1.2):
+/// native interfaces reject anonymous callers, WASM guests admit them.
 async fn build_caller(
     preamble: &RoutePreamble,
     id: &VerifiedIdentity,
     admin_root: Option<&str>,
+    node_did: &str,
     resolver: &dyn MasterAnchorResolver,
 ) -> CallerContext {
     let now = now_secs();
@@ -113,11 +121,44 @@ async fn build_caller(
     };
     let mut auth = AuthLevel::Delegated;
 
-    // B0 path (kept): the substrate owner's own DID gets substrate/admin.
-    if admin_root == Some(id.master_did.as_str()) {
+    // M04A Slice B7a (F4): the substrate-owner capability is issued from
+    // this single site, with no "is this substrate owned?" branch anywhere
+    // downstream -- the unowned bootstrap posture is expressed as a real
+    // issued capability, not a skipped check (design §6.1.1).
+    let node_wide_abilities: Vec<&str> = match admin_root {
+        // Owned, and this caller is the owner: substrate/admin (kept from
+        // B0), entailing everything on the node.
+        Some(root) if root == id.master_did => vec![Ability::SUBSTRATE_ADMIN],
+        // Owned, but this caller is not the owner: nothing node-wide.
+        Some(_) => vec![],
+        // UNOWNED: no verified ControllerAgreement controller and no
+        // [iam].admin_ucan_root -- nobody can root an orchestrator grant, so
+        // default-deny would brick the substrate permanently (you could not
+        // deploy the thing that would establish ownership). Every verified
+        // caller therefore holds the orchestrator abilities here.
+        //
+        // NOT substrate/admin: that would entail data-layer/admin too
+        // (`Ability::entails`'s substrate/admin short-circuit), opening
+        // execute-ddl/query-raw to every verified caller -- strictly worse
+        // than today's `admin_root: None`, where nobody holds it and DDL is
+        // denied to all. Issuing the three orchestrator/* abilities instead
+        // costs nothing extra: `orchestrator/deploy.entails(data-layer/admin)`
+        // is false, so DDL stays denied exactly as today.
+        None => vec![
+            Ability::ORCHESTRATOR_DEPLOY,
+            Ability::ORCHESTRATOR_UNDEPLOY,
+            Ability::ORCHESTRATOR_STATUS,
+        ],
+    };
+    for ability in node_wide_abilities {
         session.capabilities.push(Capability {
-            with: ResourceUri::substrate(&id.master_did),
-            can: Ability(Ability::SUBSTRATE_ADMIN.to_string()),
+            // Bare `substrate:<node_did>` -- the resource is the node
+            // itself, not the caller's own DID (B0 named it after the
+            // caller; that was inert only because of the is_substrate_scope
+            // wildcard, and becomes wrong the moment a selector-bearing
+            // resource is evaluated against it, per B7b's F2/F6).
+            with: ResourceUri::substrate(node_did),
+            can: Ability(ability.to_string()),
             caveats: None,
         });
     }
@@ -238,6 +279,7 @@ impl RouteHandler {
                     &preamble,
                     &id,
                     self.inner.admin_ucan_root.as_deref(),
+                    &self.inner.node_did,
                     self.inner.registry_client.as_ref(),
                 )
                 .await,
@@ -544,7 +586,8 @@ mod tests {
         let id = VerifiedIdentity { master_did: client_did.clone(), temporary_did: client_did };
         let resolver = MockResolver { revoked: HashMap::new() };
 
-        let caller = build_caller(&preamble, &id, Some(&admin_root), &resolver).await;
+        let caller =
+            build_caller(&preamble, &id, Some(&admin_root), "did:key:zNode", &resolver).await;
 
         assert_eq!(caller.auth, AuthLevel::Ucan);
         assert_eq!(caller.caller_did, id.master_did);
@@ -600,7 +643,9 @@ mod tests {
             .expect("a self-asserted pubkey with no delegation cert must verify");
         assert_eq!(verified_id.master_did, client_did);
 
-        let caller = build_caller(&parsed, &verified_id, Some(&admin_root), &resolver).await;
+        let caller =
+            build_caller(&parsed, &verified_id, Some(&admin_root), "did:key:zNode", &resolver)
+                .await;
 
         assert_eq!(caller.auth, AuthLevel::Ucan);
         assert!(
@@ -643,7 +688,8 @@ mod tests {
         let id = VerifiedIdentity { master_did: impostor_did.clone(), temporary_did: impostor_did };
         let resolver = MockResolver { revoked: HashMap::new() };
 
-        let caller = build_caller(&preamble, &id, Some(&admin_root), &resolver).await;
+        let caller =
+            build_caller(&preamble, &id, Some(&admin_root), "did:key:zNode", &resolver).await;
 
         assert_eq!(caller.auth, AuthLevel::Delegated);
         assert!(
@@ -686,7 +732,8 @@ mod tests {
         let id = VerifiedIdentity { master_did: client_did.clone(), temporary_did: client_did };
         let resolver = MockResolver { revoked: HashMap::new() };
 
-        let caller = build_caller(&preamble, &id, Some(&admin_root), &resolver).await;
+        let caller =
+            build_caller(&preamble, &id, Some(&admin_root), "did:key:zNode", &resolver).await;
 
         assert_eq!(caller.auth, AuthLevel::Delegated);
         assert!(
@@ -727,7 +774,8 @@ mod tests {
             revoked: HashMap::from([(admin_root.clone(), vec![id.master_did.clone()])]),
         };
 
-        let caller = build_caller(&preamble, &id, Some(&admin_root), &resolver).await;
+        let caller =
+            build_caller(&preamble, &id, Some(&admin_root), "did:key:zNode", &resolver).await;
 
         assert_eq!(caller.auth, AuthLevel::Delegated);
         assert!(
@@ -857,5 +905,134 @@ mod tests {
 
         let preamble = result.expect("must not time out on a promptly-sent preamble").unwrap();
         assert_eq!(preamble.service_id, "substrate-123");
+    }
+
+    /// M04A Slice B7a (F4): on an unowned substrate (`admin_root: None`),
+    /// every verified caller holds the three `orchestrator/*` abilities on
+    /// the bare `substrate:<node_did>` resource -- the bootstrap posture.
+    #[tokio::test]
+    async fn unowned_substrate_grants_orchestrator_abilities_to_any_verified_caller() {
+        let client = Identity::generate().unwrap();
+        let client_did = derive_did_key(&client.public_key());
+        let node_did = "did:key:zNodeUnowned";
+        let node_resource = ResourceUri::substrate(node_did);
+
+        let preamble = RoutePreamble::binary_json_rpc("svc", "data-layer");
+        let id = VerifiedIdentity { master_did: client_did.clone(), temporary_did: client_did };
+        let resolver = MockResolver { revoked: HashMap::new() };
+
+        let caller = build_caller(&preamble, &id, None, node_did, &resolver).await;
+
+        for ability in [
+            Ability::ORCHESTRATOR_DEPLOY,
+            Ability::ORCHESTRATOR_UNDEPLOY,
+            Ability::ORCHESTRATOR_STATUS,
+        ] {
+            assert!(
+                caller.has_capability(&node_resource, &Ability(ability.to_string())),
+                "expected unowned substrate to grant {ability}"
+            );
+        }
+    }
+
+    /// The regression test for F4's over-grant trap: an unowned substrate
+    /// must NOT grant `data-layer/admin` (or `substrate/admin`, which would
+    /// entail it) to a verified caller -- `execute-ddl`/`query-raw` stay
+    /// denied exactly as today. This is B7a's single most important test.
+    #[tokio::test]
+    async fn unowned_substrate_does_not_grant_data_layer_admin() {
+        let client = Identity::generate().unwrap();
+        let client_did = derive_did_key(&client.public_key());
+        let node_did = "did:key:zNodeUnowned";
+        let some_service = ResourceUri::service("app-1", "svc-a");
+
+        let preamble = RoutePreamble::binary_json_rpc("svc", "data-layer");
+        let id = VerifiedIdentity { master_did: client_did.clone(), temporary_did: client_did };
+        let resolver = MockResolver { revoked: HashMap::new() };
+
+        let caller = build_caller(&preamble, &id, None, node_did, &resolver).await;
+
+        assert!(
+            !caller.has_capability(&some_service, &Ability(Ability::DATA_LAYER_ADMIN.to_string())),
+            "unowned substrate must not grant data-layer/admin -- the over-grant trap"
+        );
+        assert!(!caller.has_capability(
+            &ResourceUri::substrate(node_did),
+            &Ability(Ability::SUBSTRATE_ADMIN.to_string())
+        ));
+    }
+
+    /// On an owned substrate, only the caller whose DID equals `admin_root`
+    /// gets `substrate/admin`; anyone else gets no node-wide capability at
+    /// all.
+    #[tokio::test]
+    async fn owned_substrate_grants_substrate_admin_only_to_the_owner() {
+        let owner = Identity::generate().unwrap();
+        let other = Identity::generate().unwrap();
+        let owner_did = derive_did_key(&owner.public_key());
+        let other_did = derive_did_key(&other.public_key());
+        let node_did = "did:key:zNodeOwned";
+        let node_resource = ResourceUri::substrate(node_did);
+
+        let preamble = RoutePreamble::binary_json_rpc("svc", "data-layer");
+        let resolver = MockResolver { revoked: HashMap::new() };
+
+        let owner_id =
+            VerifiedIdentity { master_did: owner_did.clone(), temporary_did: owner_did.clone() };
+        let owner_caller =
+            build_caller(&preamble, &owner_id, Some(&owner_did), node_did, &resolver).await;
+        assert!(
+            owner_caller
+                .has_capability(&node_resource, &Ability(Ability::SUBSTRATE_ADMIN.to_string()))
+        );
+
+        let other_id = VerifiedIdentity { master_did: other_did.clone(), temporary_did: other_did };
+        let other_caller =
+            build_caller(&preamble, &other_id, Some(&owner_did), node_did, &resolver).await;
+        assert!(
+            !other_caller
+                .has_capability(&node_resource, &Ability(Ability::SUBSTRATE_ADMIN.to_string()))
+        );
+        for ability in [
+            Ability::ORCHESTRATOR_DEPLOY,
+            Ability::ORCHESTRATOR_UNDEPLOY,
+            Ability::ORCHESTRATOR_STATUS,
+        ] {
+            assert!(
+                !other_caller.has_capability(&node_resource, &Ability(ability.to_string())),
+                "an owned substrate must not fall back to the unowned grant for a non-owner"
+            );
+        }
+    }
+
+    /// The owner's `substrate/admin` capability names the node's own DID,
+    /// not the caller's -- a B0 naming quirk that stayed inert only because
+    /// of the `is_substrate_scope` wildcard (F2/F6, B7b).
+    #[tokio::test]
+    async fn substrate_admin_capability_names_the_node_not_the_caller() {
+        let owner = Identity::generate().unwrap();
+        let owner_did = derive_did_key(&owner.public_key());
+        let node_did = "did:key:zNodeOwned";
+
+        let preamble = RoutePreamble::binary_json_rpc("svc", "data-layer");
+        let resolver = MockResolver { revoked: HashMap::new() };
+        let id =
+            VerifiedIdentity { master_did: owner_did.clone(), temporary_did: owner_did.clone() };
+
+        let caller = build_caller(&preamble, &id, Some(&owner_did), node_did, &resolver).await;
+
+        assert!(
+            caller.session.capabilities.iter().any(|c| c.with == ResourceUri::substrate(node_did)),
+            "expected the granted capability's resource to name the node DID"
+        );
+        assert!(
+            !caller
+                .session
+                .capabilities
+                .iter()
+                .any(|c| c.with == ResourceUri::substrate(&owner_did)),
+            "must not name the caller's own DID (which happens to equal the owner here, but the \
+             resource must be node-scoped, not caller-scoped)"
+        );
     }
 }

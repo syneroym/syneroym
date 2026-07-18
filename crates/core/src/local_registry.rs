@@ -62,6 +62,9 @@ pub struct EndpointRegistry {
     /// Secondary map for fast lookup by interface hash: (`service_id`,
     /// `interface_hash`) -> `interface_name`
     interface_hashes: Arc<DashMap<(String, String), String>>,
+    /// `service_id` -> `owner_did` (M04A Slice B7a). Separate from
+    /// `active_endpoints`, which is keyed per interface.
+    service_owners: Arc<DashMap<String, String>>,
     /// Stable storage connection for persistence
     storage: Arc<dyn EndpointStorage>,
 }
@@ -82,6 +85,7 @@ impl EndpointRegistry {
         let registry = Self {
             active_endpoints: Arc::new(DashMap::new()),
             interface_hashes: Arc::new(DashMap::new()),
+            service_owners: Arc::new(DashMap::new()),
             storage,
         };
 
@@ -98,6 +102,10 @@ impl EndpointRegistry {
             let hash = util::short_hash(&interface_name);
             self.interface_hashes.insert((service_id.clone(), hash), interface_name.clone());
             self.active_endpoints.insert((service_id, interface_name), endpoint);
+        }
+
+        for (service_id, owner_did) in self.storage.load_all_owners().await? {
+            self.service_owners.insert(service_id, owner_did);
         }
         Ok(())
     }
@@ -188,8 +196,31 @@ impl EndpointRegistry {
         Self {
             active_endpoints: Arc::new(DashMap::new()),
             interface_hashes: Arc::new(DashMap::new()),
+            service_owners: Arc::new(DashMap::new()),
             storage,
         }
+    }
+
+    /// Record the owner of a deployed service (M04A Slice B7a). Overwrites
+    /// any existing entry -- the takeover check is the caller's
+    /// responsibility (`ControlPlaneService::deploy`), not this store's.
+    pub async fn set_owner(&self, service_id: String, owner_did: String) -> Result<()> {
+        self.storage.save_owner(&service_id, &owner_did).await?;
+        self.service_owners.insert(service_id, owner_did);
+        Ok(())
+    }
+
+    /// The recorded owner, or `None` for a service deployed before B7a.
+    #[must_use]
+    pub fn owner_of(&self, service_id: &str) -> Option<String> {
+        self.service_owners.get(service_id).map(|e| e.value().clone())
+    }
+
+    /// Forget `service_id`'s owner. Idempotent.
+    pub async fn remove_owner(&self, service_id: &str) -> Result<()> {
+        self.storage.remove_owner(service_id).await?;
+        self.service_owners.remove(service_id);
+        Ok(())
     }
 }
 
@@ -243,5 +274,32 @@ mod tests {
             SubstrateEndpoint::WasmChannel { service_id } => assert_eq!(service_id, service),
             _ => panic!("Wrong endpoint type"),
         }
+    }
+
+    /// M04A Slice B7a: `set_owner`/`owner_of`/`remove_owner` round-trip, and
+    /// persist across a second `EndpointRegistry::new` on the same storage
+    /// (mirrors `test_registry_lifecycle`'s persistence step).
+    #[tokio::test]
+    async fn test_owner_round_trip_and_persistence() {
+        let storage = Arc::new(MockStorage::new());
+        let registry = EndpointRegistry::new(storage.clone()).await.unwrap();
+
+        assert_eq!(registry.owner_of("svc-1"), None);
+
+        registry.set_owner("svc-1".to_string(), "did:key:zOwner".to_string()).await.unwrap();
+        assert_eq!(registry.owner_of("svc-1"), Some("did:key:zOwner".to_string()));
+
+        let registry2 = EndpointRegistry::new(storage).await.unwrap();
+        assert_eq!(registry2.owner_of("svc-1"), Some("did:key:zOwner".to_string()));
+
+        registry2.remove_owner("svc-1").await.unwrap();
+        assert_eq!(registry2.owner_of("svc-1"), None);
+    }
+
+    #[tokio::test]
+    async fn test_owner_of_unknown_service_is_none() {
+        let storage = Arc::new(MockStorage::new());
+        let registry = EndpointRegistry::new(storage).await.unwrap();
+        assert_eq!(registry.owner_of("never-deployed"), None);
     }
 }

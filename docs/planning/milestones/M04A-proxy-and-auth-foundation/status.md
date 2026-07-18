@@ -1569,3 +1569,211 @@ with the sandbox disabled per the established methodology; `mise run
 test:e2e` — **12 passed, 0 failed** (8 + 4), unchanged, a pure regression
 check; `wasm32-wasip2` — `test-components/data-layer-test` still builds
 clean (no WIT type/signature change, doc-comment only).
+
+## Slice B7a — Substrate & Service Ownership: Attribution ✅ (2026-07-18)
+
+Branch: `feat/m04a-b7a`. Requirement `[FND-IAM]`; closes task.md's B7 items
+2, 3, 5 (item 4 dropped, item 1 is B7b — **not started**). Plan:
+[plans/B7.md](plans/B7.md) §2, plus the retained §1 flags (F1, F3/F3.1, F4,
+F5, F7, F9, F11 — all resolved 2026-07-17 by the requester, §6). Depends on
+B0 (done) and B1 (done).
+
+### What was delivered
+
+1. **Owner store** (`crates/core/src/storage.rs`, `crates/core/src/
+   local_registry.rs`, `crates/data_db/src/registry_store.rs`) —
+   `EndpointStorage` gains `load_all_owners`/`save_owner`/`remove_owner`;
+   `MockStorage` and `SqliteEndpointStorage` both implement them.
+   `SqliteEndpointStorage` adds a `service_owners(service_id PRIMARY KEY,
+   owner_did, created_at)` table inside the **existing** `version == 0`
+   migration block (no new `user_version` rung, no migration ladder — the
+   plan's explicit "product is unreleased, change schema in place"
+   convention, §2.1). `EndpointRegistry` gains an
+   in-memory `service_owners: DashMap<String, String>` alongside
+   `active_endpoints`, loaded in `load_from_db` and exposed via
+   `set_owner`/`owner_of`/`remove_owner` (write-through, storage first).
+2. **The substrate-owner capability, one site (F4)** —
+   `crates/router/src/route_handler.rs`'s `RouteHandlerInner` gains
+   `node_did: String` (set from `RouteHandler::init`'s `service_id`, which
+   is already the node's own DID). `crates/router/src/route_handler/io.rs`'s
+   `build_caller` now takes `node_did: &str` and implements F4's match: the
+   real substrate owner gets `substrate/admin` on `substrate:<node_did>`
+   (changed from B0's `substrate:<caller_did>` naming — inert then, load-
+   bearing once B7b's selector-aware resource matching lands); a non-owner
+   on an owned substrate gets nothing node-wide; an **unowned** substrate (no
+   verified `ControllerAgreement`, no `[iam].admin_ucan_root`) issues every
+   verified caller `orchestrator/{deploy,undeploy,status}` on
+   `substrate:<node_did>` — never `substrate/admin`, which would entail
+   `data-layer/admin` and open `execute-ddl`/`query-raw` to the world (the
+   over-grant trap the plan calls out explicitly). `crates/substrate/src/
+   runtime.rs`'s `setup_connection_router` logs a loud `warn!` at boot when
+   the effective `admin_ucan_root` is `None`, naming the posture and its
+   bound (data-plane admin stays denied).
+3. **`Ability::ORCHESTRATOR_{DEPLOY,STATUS,UNDEPLOY}`**
+   (`crates/ucan/src/capability.rs`) — flat by default (no `tier` entry, per
+   plan §6 Q6), landed in B7a because B7a's unowned grant and `list`
+   predicate both need them.
+4. **`ControlPlaneService`** (`crates/control_plane/src/service.rs`) gains a
+   `node_did: String` field/ctor param (16 call sites updated: 1 production
+   — `crates/substrate/src/runtime.rs`'s `build_route_handler_deps`, which
+   passes the same `service_id` twice, mirroring `RouteHandlerInner`'s own
+   `node_did` — and 15 test call sites) and
+   `has_node_wide_orchestrator_authority(&CallerContext) -> bool`, checking
+   `orchestrator/status` on the bare `substrate:<node_did>` — the single
+   predicate every gate below uses; there is deliberately no "is the
+   substrate owned?" branch anywhere (design §6.1.1's default-deny, no
+   exceptions).
+5. **`OrchestratorInterface`** (`crates/control_plane/src/service/
+   orchestration.rs`) — every method (`readyz`/`deploy`/`undeploy`/`list`/
+   `deploy_plan`) gains a `caller: &CallerContext` parameter (uniform trait
+   change); dispatch call sites in `service.rs`'s `NativeService::dispatch`
+   thread `&invocation.caller` through. `readyz`'s **body is unchanged at
+   B7a** — the per-service `orchestrator/status` capability check is
+   explicitly B7b scope (plan §2.4.1: it needs B7b's selector-aware
+   `covers_resource` to mean anything for an app-scoped grantee; gating it
+   now would also break `wait_for_ready`'s empty-`service_id` liveness probe
+   if done wrong, which the plan flags as a trap two reviewers walked into).
+6. **`deploy`** — a takeover check at the top (F7): if `service_id` already
+   has a recorded owner different from the caller and the caller lacks
+   node-wide authority, the redeploy is rejected before any side effect.
+   The owner is recorded **last**, after every other step succeeds
+   (`registry.set_owner(service_id, caller.caller_did)`), with the same
+   rollback-via-`undeploy` shape the existing native-capability-registration
+   failure path already uses — safe because the owner row is either unset
+   or already the caller's own DID at that point (documented at the
+   rollback call site per the plan's own warning).
+7. **`undeploy`** — gates on ownership (same predicate as `deploy`'s
+   takeover check) before tearing anything down, then clears the owner row
+   alongside the existing `http_routes.remove` (warn-not-fail, matching
+   every other best-effort teardown step in this function).
+8. **`list`** — node-wide orchestrator authority (owner, or anyone on an
+   unowned substrate) sees every deployed app, unchanged from today; an
+   ordinary caller sees only services whose recorded owner matches their
+   `caller_did`; a service with `owner_of == None` (deployed before B7a, or
+   caught in the §2.3 crash window between endpoint registration and
+   `set_owner`) is filtered **out**, not defaulted visible — the substrate
+   owner still sees it via the node-wide branch.
+9. **Tier-1 TODO retargeting (F3/§2.8)** — both `TODO(M04B/FDAE)` sites
+   (`crates/router/src/route_handler/dispatch.rs`'s
+   `dispatch_json_rpc_once` and `io.rs`'s `build_caller` doc comment) now
+   read `TODO(B7b / post-B7)`, naming the grant layer (not FDAE) as Tier 1's
+   home, and record that B7b closes it for `orchestrator` only — `security`
+   (whose correct gate, `substrate/admin`, is unholdable until a
+   `ControllerAgreement` can be created — F3.1, found on pre-implementation
+   review) and the five data native-capability interfaces stay open, a
+   known gap recorded here rather than left to imply M04B will close it.
+10. **`roymctl --as` operator identity (F5)** — a new global `--as <name>`
+    flag (`apps/roymctl/src/main.rs`), distinct from `svc deploy --identity`
+    (which names the *app's* signing key, not the operator's — a flag-name
+    collision the plan explicitly calls out to avoid). A new
+    `commands::client_for` helper (`apps/roymctl/src/commands.rs`) builds a
+    `SyneroymClient::new_with_identity` from `<dir>/identities/<name>.key`
+    when `--as` is given, else today's ephemeral-key behavior unchanged.
+    Threaded through the four `SyneroymClient::new(...)` call sites
+    (`svc.rs`, `app.rs`, `security.rs` ×2). `global-setup.ts` passes no
+    `--as`, so e2e is unaffected — its ephemeral key is granted the
+    orchestrator abilities via F4 on the unowned test substrate.
+
+### Deviation from the plan (recorded, not silent)
+
+`ControlPlaneService` gained a **new** `node_did: String` field distinct
+from its existing `service_id: String`, even though at the one production
+call site (`runtime.rs`) both are passed the identical string. The plan
+calls for this explicitly (§2.2: "`ControlPlaneService` needs **only** the
+node DID... one new field + one ctor param"), mirroring
+`RouteHandlerInner::node_did`'s own doc comment: the field is used as an
+*identity* (naming a `substrate:<node_did>` resource), not as a routing
+key, and the two happening to coincide today is not a reason to conflate
+them structurally.
+
+### Tests
+
+- **`crates/core/src/local_registry.rs`** (+2): `set_owner`/`owner_of`/
+  `remove_owner` round-trip, persisting across a second `EndpointRegistry::
+  new` on the same storage; `owner_of` on an unknown service is `None`.
+- **`crates/data_db/src/registry_store.rs`** (+4): a fresh `endpoints.db`
+  gets `service_owners` usable immediately (no migration test — there is no
+  migration, by design); upsert; remove; remove is idempotent.
+- **`crates/router/src/route_handler/io.rs`** (+4, in-crate — `build_caller`
+  is private): `unowned_substrate_grants_orchestrator_abilities_to_any_
+  verified_caller`; **`unowned_substrate_does_not_grant_data_layer_admin`**
+  — the regression test for F4's over-grant trap, and the single most
+  important test in this slice (an unowned-substrate caller's session must
+  not satisfy `data-layer/admin` on any resource, nor hold `substrate/
+  admin`); `owned_substrate_grants_substrate_admin_only_to_the_owner`
+  (a non-owner on an owned substrate gets nothing node-wide, including no
+  fallback to the unowned grant); `substrate_admin_capability_names_the_
+  node_not_the_caller` (pins §2.2's resource-naming change).
+- **`crates/control_plane/src/service/orchestration.rs`** (+1, in-crate):
+  `deploy_records_owner_as_caller_did` — deploy records `caller.caller_did`
+  as owner (queried via the same `EndpointRegistry` handle the test holds);
+  undeploy clears the row.
+- **New `crates/router/tests/service_ownership.rs`** (6, integration,
+  matching B0's `native_dispatch_identity.rs` dispatch-level style since
+  `OrchestratorInterface` is crate-private — drives `ControlPlaneService::
+  dispatch` with hand-built `CallerContext`s): `unowned_substrate_lists_
+  every_app_to_any_caller`; `owned_substrate_owner_sees_every_app`;
+  `owned_substrate_service_owner_sees_only_own_apps`; `unattributed_app_is_
+  hidden_from_non_owners`; `redeploy_by_a_different_did_is_rejected` (F7);
+  `undeploy_by_a_non_owner_is_rejected`. A `node_wide_caller` helper builds
+  a `CallerContext` carrying the three `ORCHESTRATOR_*` abilities on
+  `substrate:<NODE_DID>`, mirroring what `build_caller`'s F4/owner branch
+  issues on a real connection (this file exercises `ControlPlaneService`'s
+  own ownership logic directly, independent of the router; `io.rs`'s own
+  tests cover `build_caller` itself).
+
+### Gate
+
+- `cargo +nightly fmt --all` — clean.
+- `cargo clippy --workspace --all-targets --all-features` — zero warnings.
+- `cargo test --workspace` — **507 passed, 0 failed** across 51 test
+  binaries (full run, sandbox disabled — see environment note below).
+- `mise run test:e2e` — **12 passed, 0 failed** (8 + 4 across the two
+  Playwright configs) — matches the A0′/B0/A1/B1/B5/B4 baseline exactly;
+  B7a touches no client-facing wire behavior the e2e suite exercises, so
+  this is a pure regression check.
+- `wasm32-wasip2` — `test-components/data-layer-test` builds clean; B7a
+  adds no WIT types (verification is host-side, `EndpointRegistry`/
+  `ControlPlaneService` only), so the guest surface is unchanged.
+
+**Environment note:** as with every prior slice, network-binding
+integration tests need the agent command sandbox disabled to bind loopback
+sockets. One additional B7a-specific case surfaced during this gate run:
+`crates/substrate/tests/basic_lifecycle.rs`'s `test_run_finishes_on_ctrl_c`
+spawns the real `syneroym-substrate` binary as a subprocess with no
+`storage.db_dir` override, so it opens the machine's real default
+`endpoints.db` (`dirs::data_dir()/syneroym/db/endpoints.db`). That file
+predated B7a (created 2026-07-03, `user_version = 1` already) — the
+`service_owners` migration lives in the *existing* `version == 0` block by
+design (plan §2.1: "product is unreleased... no migration ladder"), so a
+pre-B7a database never re-runs it and `save_owner` fails with `no such
+table: service_owners` on first deploy. This is precisely the documented,
+expected one-time consequence, not a code defect. Resolved locally by
+moving the stale file aside (`endpoints.db.pre-b7a.bak`, not deleted) so a
+fresh schema gets created; the sandbox separately blocked both the move and
+the subsequent fresh-file creation (writes outside the repo tree), so this
+one test was run with the sandbox disabled specifically for the file
+operation and the retest. No code changed as a result — this is a one-time
+local-environment note for any other pre-B7a dev machine, exactly as
+plans/B7.md §2.1 anticipated.
+
+### Scope discipline
+
+Only B7a was implemented: items 2, 3 (the one-hop-resolution half; the
+multi-hop-deferral *flag* is already in place via the existing doc comments
+`build_caller`/`EndpointRegistry::set_owner` inherited from B1/B0 and is
+unchanged here — no multi-hop UCAN chain work, which is B7b/M04B territory),
+4 (dropped, per F9, no code), and 5. **B7b is untouched**: no
+`ResourceUri::split_selector`/`covers_resource` (A1 selectors), no `F2`
+`is_substrate_scope` narrowing, no `can_delegate` caveat (A3), no A6
+resource-scoped `is_trusted_root`, no actual `orchestrator/deploy` capability
+*gate* in `deploy`/`undeploy` (only the ownership/takeover check, which is
+B7a's), no `roymctl identity issue-grant`. Consequence, stated plainly per
+the plan's own requirement: **on every substrate today (all unowned, since
+nothing in the tree can create a `ControllerAgreement`), any verified
+caller still holds the orchestrator abilities and may deploy/undeploy/list
+freely** — B7a narrows *attribution* and *visibility*, not *admission*.
+`execute-ddl`/`query-raw` remain denied throughout (tested). `security` and
+the five data native-capability interfaces still admit any verified
+identity, unchanged, per F3.1/§6.1's own scope note. No ADR was touched (F2's
+amendment is B7b's, per the plan's own exit criteria). No WIT file changed.

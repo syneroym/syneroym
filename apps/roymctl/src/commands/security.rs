@@ -1,10 +1,10 @@
 use std::{
     io::{self, Read},
+    path::Path,
     time::Duration,
 };
 
 use clap::Subcommand;
-use syneroym_sdk::SyneroymClient;
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum KekCommands {
@@ -35,8 +35,10 @@ pub async fn handle_kek(
     command: &KekCommands,
     api_url: &str,
     substrate_did: String,
+    dir: &Path,
+    run_as: Option<&str>,
 ) -> anyhow::Result<()> {
-    let mut client = SyneroymClient::new(substrate_did, api_url.to_string());
+    let mut client = super::client_for(substrate_did, api_url, dir, run_as)?;
     client.wait_for_ready(Duration::from_secs(5)).await?;
 
     match command {
@@ -56,8 +58,10 @@ pub async fn handle_secret(
     command: &SecretCommands,
     api_url: &str,
     substrate_did: String,
+    dir: &Path,
+    run_as: Option<&str>,
 ) -> anyhow::Result<()> {
-    let mut client = SyneroymClient::new(substrate_did, api_url.to_string());
+    let mut client = super::client_for(substrate_did, api_url, dir, run_as)?;
     client.wait_for_ready(Duration::from_secs(5)).await?;
 
     match command {
