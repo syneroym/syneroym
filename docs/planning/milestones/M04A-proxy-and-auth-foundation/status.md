@@ -2248,3 +2248,264 @@ unstarted.
   candidate to spike if cheap; it wasn't cheap without the consumer.
   `traceability-matrix.md`'s `[PLT-DAP-05]` row should read "spike/M5", not
   M04A-delivered (task.md exit criterion, item 9).
+
+## Slice B6 — Per-SynApp-Instance KEK Narrowing ✅ (2026-07-18)
+
+Branch: `feat/m04a-b6-per-instance-kek`. Requirement `[FND-SEC]`; closes M04A
+gate item **#5**. Depends on B0 (done). Plan: [plans/B6.md](plans/B6.md).
+
+### What was delivered
+
+Ships the plan's recommended **Model A (derived-KEK)**, decided by the user
+2026-07-18 (plan §0): one substrate-global master KEK, still injected once,
+now wraps each service's DEK via a **per-instance key derived with
+HKDF-SHA256** rather than the raw master directly.
+
+1. **`derive_instance_kek`** (new private helper,
+   `crates/data_keystore/src/key_store.rs`) —
+   `HKDF-SHA256(master, info = "syneroym:kek:v1:{service_id}")`, mirroring
+   `data_blob/src/crypto.rs`'s existing HKDF pattern with its own
+   domain-separated `info` prefix (`"syneroym:kek:v1:"` vs. `data_blob`'s
+   `"syneroym:blob*"`).
+2. **`inject_kek`** narrowed from `(kek_bytes, _scope: Option<&str>)` to
+   `(kek_bytes)` — the vestigial, always-`None` `_scope` param is removed
+   rather than wired up (F2), per this repo's "no migrations pre-release"
+   convention: nothing is deployed, so there is no compat shim to preserve.
+3. **`generate_dek`/`load_dek`** wrap/unwrap each service's DEK under
+   `derive_instance_kek(&master, service_id)` instead of the raw master KEK
+   directly. Signatures unchanged — `service_id` was already the parameter,
+   it is now also the derivation scope.
+4. **`rotate_kek`** re-wraps every row using the per-service derived key on
+   both sides (unwrap under `derive_instance_kek(&old_master, &service_id)`,
+   re-wrap under `derive_instance_kek(&new_master, &service_id)`) inside the
+   existing single transaction — this is the re-wrap mechanism the Migration
+   Strategy asks to be tested (F3: no dedicated one-shot migration method
+   exists or is needed, since nothing is deployed to migrate).
+5. **Call-site fallout** (mechanical, no logic change): every
+   `KeyStore::inject_kek(x, None)` site updated to `inject_kek(x)` —
+   `control_plane/src/service.rs`'s `inject-kek` RPC arm; tests in
+   `key_store.rs`, `data_db/src/sqlite.rs`, `sandbox_wasm/src/host_capabilities.rs`;
+   both benches (`data_db/benches/security_config_bench.rs`,
+   `sandbox_wasm/benches/data_layer_bench.rs`). The SDK/roymctl
+   `inject_kek(kek_hex)` client methods (`sdk/src/lib.rs`,
+   `roymctl/.../security.rs`) are a distinct client→RPC method and were not
+   touched.
+6. **`CallerContext.app_instance` docstring** (`crates/rpc/src/native.rs`)
+   clarified, no behavior change (plan §3.4): states that per-app KEK scoping
+   is realized via the bound `service_id`, not by reading this field.
+   ADR-0016 gets a matching one-line note where its B0-era `CallerContext`
+   sketch repeats the now-stale "per-app KEK" attribution on the same field.
+7. **`hkdf`/`sha2`** added as direct dependencies of `syneroym-data-keystore`
+   (`Cargo.toml`) — both already workspace deps, used the same way by
+   `syneroym-data-blob`.
+8. **Docs updated to match Model A, with Model B's gate kept visibly open**
+   (plan §8, §10): ADR-0006 amended in place (new Amendments section,
+   mirroring ADR-0007/ADR-0011's own M04A amendment pattern);
+   `traceability-matrix.md`'s `[FND-SEC]` (per-app KEK) row moved to
+   "Complete (derived only)" with an explicit "DEFERRED, blocks multi-tenant
+   production" marker for Model B; `system-architecture.md`'s "Unlock Model"
+   paragraph and `system-requirements-spec.md`'s matching KEK-scope sentence
+   (both previously described Model B as "M4, gated on IAM") rewritten to
+   describe what actually shipped, with Model B named as the still-open
+   target. None of these edits soften or drop ADR-0006's "must introduce
+   per-SynApp-Instance KEK before any production multi-tenant deployment is
+   considered secure" caveat — it is retargeted at Model B, not satisfied.
+
+No change to `StorageProvider`, `ServiceStore`, `NativeInvocation` shape,
+native/guest dispatch, `SubstrateConfig`, or any WIT file — confirmed by the
+plan's own read of the consumption chain (§1) and by this slice's diff, which
+touches no WIT package and no dispatch signature.
+
+### Design decision: Model A (derived) vs. Model B (provisioned) — plan §2, §10
+
+The plan's central call, made explicit because `task.md` itself describes two
+contradictory models (F1): **derive** every instance's KEK from one injected
+master (Model A, what shipped) vs. **inject a distinct, separately-provisioned
+KEK per instance** (Model B, what ADR-0006's original "KEK Scope" section and
+`task.md`'s Migration Strategy/exit-criterion wording literally describe).
+Model B is not buildable in M04A — there is no per-instance provisioning
+channel or IAM-gated authorization model for "who may inject which app's
+KEK" anywhere in the codebase, the same "no consumer, defer" reasoning this
+milestone already applied to A.4 (data-pipeline streams) and A.6 (bespoke
+credit backpressure). Model A is shipped as a forward-compatible
+defense-in-depth down-payment, explicitly **not** a substitute:
+
+- **What Model A buys:** a leaked derived key `K_s` reveals neither the
+  master nor a sibling instance's `K_s'` (distinct HKDF `info` per
+  `service_id`) — proven by `cross_instance_kek_isolation` and
+  `test_cross_instance_dek_does_not_open_sibling_sqlcipher_db` (§ Tests,
+  below).
+- **What Model A does NOT buy (plan §2.1, the threat-model limitation to
+  read):** at-rest isolation against a party who holds the master KEK or
+  reads substrate RAM — one injected master still derives every instance's
+  key. That stronger property is Model B's, and is ADR-0006's actual
+  original M4 ask ("enforce which authenticated caller is authorised to
+  inject which app's KEK").
+- **Durable tracking so this cannot be silently missed later (plan §10):**
+  ADR-0006's Amendments section is the primary anchor — it states plainly
+  that M4 delivered only the derived down-payment and that the
+  IAM-gated-provisioning requirement is deferred, not satisfied, and keeps
+  the multi-tenant caveat in force, retargeted at Model B.
+  `traceability-matrix.md`'s `[FND-SEC]` row is the secondary anchor — it
+  reads "Complete (derived only)" with the deferred-provisioning marker
+  spelled out in the evidence column, not a clean "Complete" that would hide
+  the gap. Model B is not pinned to a milestone (M5 is not scoped yet;
+  pinning it here would be a guess) — it is gated on a real provisioning
+  consumer/UX and its own ADR.
+
+### Flags resolved (plan.md §6)
+
+- **F1 — Model A chosen (user decision, 2026-07-18).** See "Design decision"
+  above; Model B tracked in §10, not dropped.
+- **F2 — exit-criterion wording reconciled.** `task.md`'s "`_scope` actually
+  used" is reworded to "the per-instance scope (`service_id`) derives the
+  effective wrap key" — the vestigial `inject_kek` `_scope` param is removed,
+  not wired up, under Model A.
+- **F3 — no migration.** Nothing is deployed, so M3-era raw-master-wrapped
+  DEKs are wiped rather than upgraded; no migration method, no startup
+  auto-detection, no on-disk scheme marker. The re-wrap *mechanism* itself is
+  tested via `rotate_kek_preserves_per_instance_deks`.
+- **F4 — failure-table row already reworded in `task.md`** (done ahead of
+  this slice, 2026-07-18): reads "No cross-instance decryption ... not by a
+  runtime `permission-denied`" rather than a literal denial outcome, since
+  Model A has no API surface by which a caller *requests* another instance's
+  KEK. Confirmed accurate against what actually shipped — no changes needed
+  here.
+- **F5 — "per-SynApp-Instance" vs. "per-service" naming.** DEKs are already
+  per `service_id`, and `service_id == app_instance_id` today
+  (`crates/router/src/route_handler/io.rs`), so deriving per `service_id` is
+  genuinely per-instance narrowing, not a naming gap. No separate instance
+  identifier introduced.
+- **F6 — DB-open perf budget is Pi-4-deferred.** `criterion` bench added
+  (§ Performance, below) and dev-host numbers recorded; the Raspberry Pi 4
+  figure itself remains outstanding, same treatment M03 used for its own
+  deferred Pi-4 item — no Pi-4 hardware in this environment.
+- **F7 — the B6 scope sentence's "gated on the caller's verified
+  app-instance identity" clause.** Not implemented as a runtime gate under
+  Model A: a caller reaches a service's store solely by being routed to that
+  service past B0's mandatory handshake (structural), and the KEK scope is
+  the bound `service_id` (cryptographic) — not a new per-request "does this
+  caller own this instance" check, which is the still-open Tier-1 gate
+  (`io.rs:147` TODO) for the five data native-capability interfaces, out of
+  scope here (same resolution as F4).
+
+### Tests
+
+Unit (`crates/data_keystore/src/key_store.rs`, 4 → 6, +2 net new; one
+extended in place):
+
+- `per_instance_wrap_round_trip` — inject master; `generate_dek("svc-a")`
+  then `load_dek("svc-a")` matches. Guards the derive path end-to-end (plan
+  §5 test 1).
+- `cross_instance_kek_isolation` — hand-wraps a DEK for `svc-a` under its
+  derived key, asserts AES-GCM decryption under `svc-b`'s derived key fails,
+  then confirms via the public API that each `service_id` only ever loads
+  its own DEK back. **This is the failure-table proof** (plan §5 test 2,
+  task.md's Failure and Security Tests row).
+- `rotate_kek_preserves_per_instance_deks` (extends the former
+  `test_rotate_kek`) — rotates the master under two services' DEKs, confirms
+  both still load correctly afterward, and additionally proves the re-wrap
+  was genuine (not a no-op) by asserting the pre-rotation derived key can no
+  longer decrypt the post-rotation ciphertext. **This is the re-wrap-path
+  proof the Migration Strategy asks for** (plan §5 test 3).
+- `test_dek_never_plaintext_on_disk` / `test_kek_zeroized_on_rotation` kept
+  green, `inject_kek` calls adjusted (plan §5 test 4).
+
+Integration (`crates/data_db/src/sqlite.rs`, +2, encryption enabled):
+
+- `test_open_service_db_two_instances_independently_keyed` — two distinct
+  `service_id`s under one master KEK produce two working, independently
+  keyed service DBs (round-trips a vault write/reveal in each via the real
+  `StorageProvider` path); their loaded DEKs are asserted distinct (plan §5
+  test 5).
+- `test_cross_instance_dek_does_not_open_sibling_sqlcipher_db` — the
+  failure-table proof mirrored at the storage layer: instance A's own
+  (real, generated) DEK is used as the `PRAGMA key` to open instance B's
+  on-disk SQLCipher `state.db` directly via a raw `rusqlite::Connection`;
+  the first real read (`SELECT COUNT(*) FROM sqlite_master`) fails, since
+  SQLCipher accepts any `PRAGMA key` but cannot decrypt pages wrapped under
+  a different key (plan §5 test 6, previously marked optional; included).
+
+`wasm32-wasip2` is unaffected (no WIT change) — see Gate below for the guest
+build check that was still run.
+
+### Performance (criterion, `--bench security_config_bench`)
+
+New `service_db_open_per_instance_kek` group (plan §7) times
+`open_service_db` end-to-end — HKDF derive + AES-GCM DEK unwrap/wrap +
+SQLCipher `PRAGMA key` open — via `--quick` runs on the dev host:
+
+| Benchmark | Time |
+|---|---|
+| `hkdf_derive_instance_kek` (derivation in isolation) | ~2.30 µs |
+| `service_db_open_per_instance_kek/first_open_generate` | ~705 µs |
+| `service_db_open_per_instance_kek/warm_reopen_load` | ~96 µs |
+
+The warm-reopen case uses a fresh `SqliteStorageProvider` instance over the
+same `db_dir` so the in-memory `service_stores` cache is empty and
+`open_service_db` is forced through the real `resolve_dek` load path and a
+fresh SQLCipher open, not the cache shortcut. HKDF-derive (~2.3 µs) is a
+small fraction of either open figure (~0.3% of first-open, ~2.4% of
+warm-reopen), confirming ADR-0006's original prediction that raw-key
+SQLCipher open time is not dominated by key derivation (task.md's "Service DB
+open with per-app KEK" perf-budget row, plan F6). **Pi-4 figure remains
+outstanding** — no Tier-1 hardware in this environment; recorded as such
+rather than guessed, matching M03's own precedent for its deferred Pi-4 item.
+
+### Gate
+
+- `cargo +nightly fmt --all` — clean.
+- `cargo clippy --workspace --all-targets --all-features` — zero warnings.
+- `cargo test --workspace` — **552 passed, 0 failed** across 76 test result
+  blocks (unit + integration binaries + doctests; full run, sandbox disabled
+  per the established environment note below).
+- `mise run test:e2e` — **12 passed, 0 failed** (8 + 4 across the two
+  Playwright configs) — matches the established baseline exactly; B6 adds no
+  e2e-visible behavior (no new HTTP route, no new WIT surface, no new
+  Playwright-driven flow), so this run is a pure regression check.
+- `wasm32-wasip2` — `test-components/greeter` (CI's own canonical
+  `wasm32-wasip2` gate, `.github/actions/ci-build-and-test/action.yml`)
+  builds clean. `test-components/data-layer-test` was also attempted per the
+  plan's verification checklist, but fails in this dev environment with a
+  pre-existing `cargo-component`/`wasm-tools` WIT-symlink-resolution error
+  ("package 'syneroym:data-layer@0.1.0' not found") unrelated to this slice:
+  **verified pre-existing** by stashing every B6 change and reproducing the
+  identical failure against the unmodified base branch. B6 touches no WIT
+  file and no WASM guest-facing code, so this is not a regression; it is also
+  not covered by CI, which only builds `greeter` (no WIT deps) for this
+  check. Not fixed here as out of scope for a KEK-only slice — worth a
+  follow-up look since `proxy-test`/`stream-test`/`messaging-pubsub-test`
+  likely hit the same symlink-depth issue and none of the four are
+  CI-verified today.
+
+**Environment notes:**
+- As with every prior M04A slice, the agent command sandbox blocks loopback
+  socket binds needed by `syneroym-coordinator-iroh`'s `connection_limit`
+  test and by the Playwright E2E harness; the figures above are from runs
+  with the sandbox disabled, consistent with A0′/B0/A1/B1/B5/B4/B7a/B7b's own
+  gate methodology.
+- One `cargo test --workspace` run hit a single, non-reproducing flake in
+  `sandbox_wasm/tests/messaging_integration.rs`'s
+  `test_guest_delivery_latency_budget` ("timed out waiting for guest delivery
+  #1", a 5 s wall-clock polling deadline) under full-workspace parallel test
+  load. Not a B6 regression: confirmed unrelated by scope (this slice touches
+  no messaging/pub-sub code — `git diff --stat` covers only
+  `data_keystore`/`data_db`/`control_plane`/`rpc`/one `sandbox_wasm` test
+  fixture line/docs) and by isolation (`cargo test -p syneroym-sandbox-wasm
+  --test messaging_integration test_guest_delivery_latency_budget
+  --test-threads=1` passes in 0.91 s). A subsequent full-workspace run
+  completed clean with zero failures (the 552/0 figure above).
+
+### Scope discipline
+
+Only Slice B6 was touched: `syneroym-data-keystore` (`derive_instance_kek`,
+`inject_kek`/`generate_dek`/`load_dek`/`rotate_kek`, its `Cargo.toml`, its own
+tests), the mechanical `inject_kek` call-site fallout across
+`control_plane`/`data_db`/`sandbox_wasm` tests and benches, the two new
+`data_db` integration tests, the one new `data_db` bench group,
+`CallerContext.app_instance`'s docstring (`rpc/src/native.rs`, comment-only),
+and the docs listed under "What was delivered" item 8. No `StorageProvider`/
+`ServiceStore`/`NativeInvocation`/dispatch/WIT change (plan §3.4 confirmed
+none needed). No B7 (ownership/grants) work, no M04B (FDAE) work. Model B
+(IAM-gated per-instance KEK provisioning) is deliberately not implemented —
+tracked per plan §10, not silently dropped.

@@ -102,3 +102,57 @@ via deployer scripts that call `roymctl kek inject` on startup.
   encryption specifically.
 - M4 must introduce per-SynApp-Instance KEK before any production multi-tenant
   deployment is considered secure.
+
+## Amendments
+
+**2026-07-18 (M04A Slice B6).** Per-SynApp-Instance KEK narrowing shipped as
+the **derived-KEK model ("Model A")**, not the provisioning model this ADR's
+"KEK Scope" section originally described — see
+`docs/planning/milestones/M04A-proxy-and-auth-foundation/plans/B6.md` §2 for
+the full comparison. This ADR is amended in place rather than superseded,
+per the same convention ADR-0007/ADR-0011 used for their M04A amendments.
+
+- **What shipped:** the substrate-global master KEK is still injected exactly
+  once (`inject_kek`'s vestigial `_scope: Option<&str>` param, dead since M3,
+  is removed rather than wired up). Each service's DEK is now wrapped by a
+  **per-instance KEK derived via HKDF-SHA256(master, info =
+  "syneroym:kek:v1:{service_id}")** (`derive_instance_kek`,
+  `crates/data_keystore/src/key_store.rs`) instead of by the raw master
+  directly. `service_id` is the derivation scope; it is already the
+  app-instance id (`crates/router/src/route_handler/io.rs` records
+  `app_instance_id == service_id`), so this is genuine per-app-instance
+  narrowing without a new identifier or a WIT/dispatch-signature change.
+- **What this buys, and what it does NOT buy:** a leaked derived key does not
+  reveal the master or any sibling instance's key (cryptographic isolation,
+  `cross_instance_kek_isolation` test). It does **not** buy at-rest isolation
+  against a party who holds the master or reads substrate RAM — one injected
+  master still derives every instance's key. That stronger property is this
+  ADR's actual original M4 ask (below).
+- **ADR-0006's real M4 requirement — NOT satisfied, deferred.** This ADR's
+  original "KEK Scope" section asked for M4 to let the `KeyStore` API accept
+  "a `scope` parameter or equivalent extensibility point" so a *distinct,
+  externally-provisioned* KEK could be injected **per instance** ("Model B"),
+  IAM-gated on who may inject which app's KEK. That provisioning channel and
+  its authorization model do not exist yet — there is no consumer or
+  management-channel surface for it in M04A, the same "no consumer, defer"
+  reasoning this milestone applied elsewhere (data-pipeline streams,
+  credit-based backpressure). Model B is deferred, not dropped; tracked
+  durably in `docs/planning/traceability-matrix.md`'s `[FND-SEC]` row and in
+  the M04A `task.md`/`status.md` B6 sections.
+- **The multi-tenant caveat above stays in force, retargeted at Model B.**
+  Model A is a forward-compatible down-payment (defense-in-depth), **not** a
+  substitute for the provisioning requirement. Do not read this amendment, or
+  B6's completion, as "M4 done / multi-tenant-at-rest safe" — that gate
+  remains shut until Model B ships.
+- **DB Open Time Budget outcome:** measured on the dev host (not Tier-1
+  Raspberry Pi 4 hardware — that figure remains outstanding, consistent with
+  how M03 recorded its own deferred Pi-4 item), via `criterion`
+  (`crates/data_db/benches/security_config_bench.rs`,
+  `service_db_open_per_instance_kek` group): `open_service_db` end-to-end
+  (HKDF derive + AES-GCM DEK unwrap/wrap + SQLCipher `PRAGMA key` open) is
+  ~705 µs on a first open (DEK generated) and ~96 µs on a warm re-open (DEK
+  loaded); the HKDF derivation itself, measured in isolation
+  (`hkdf_derive_instance_kek`), is ~2.3 µs — a small fraction of either
+  figure, confirming this section's original prediction that raw-key
+  SQLCipher open time is not dominated by key derivation. Full numbers in
+  `status.md`'s B6 section.

@@ -182,7 +182,7 @@ impl NativeService for ControlPlaneService {
                     let mut arr = [0u8; 32];
                     arr.copy_from_slice(&kek_bytes);
                     self.key_store
-                        .inject_kek(arr, None)
+                        .inject_kek(arr)
                         .map_err(|e| RpcError::InternalError(e.to_string()))?;
                     return Ok(NativeResponse {
                         payload: serde_json::json!({"status": "injected"}),
