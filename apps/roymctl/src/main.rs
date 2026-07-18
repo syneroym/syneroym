@@ -32,6 +32,15 @@ struct Cli {
     /// current dir)
     #[arg(global = true, long, default_value = ".")]
     dir: PathBuf,
+
+    /// Act as this locally-stored identity (see `roymctl identity create
+    /// --name`). Defaults to an ephemeral per-invocation key, which owns
+    /// nothing and can see nothing on an owned substrate (M04A Slice B7a).
+    ///
+    /// Distinct from `svc deploy --identity`, which names the *app's*
+    /// signing key for its registry certificate; this names the *operator*.
+    #[arg(global = true, long = "as")]
+    run_as: Option<String>,
 }
 
 #[tokio::main]
@@ -43,7 +52,7 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
-    commands::run(cli.command, cli.api_url, cli.substrate, cli.dir).await?;
+    commands::run(cli.command, cli.api_url, cli.substrate, cli.dir, cli.run_as).await?;
 
     Ok(())
 }
