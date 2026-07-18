@@ -318,12 +318,14 @@ shape with M04B's B3 federated fetch** (co-design seam #2).
 Not implemented. The fail-fast error + reserved `json-rpc/v1` tag are handled in
 A1. Full negotiation revisited with wRPC later.
 
-#### Slice A3: `[PLT-DAP-05]` Data Pipeline Streams — SPIKE-FIRST / M5 CANDIDATE
+#### Slice A3: `[PLT-DAP-05]` Data Pipeline Streams — DEFERRED TO M5 ✅ (2026-07-18)
 **Requirement:** `[PLT-DAP-05]`. *(No bespoke-credit ADR — A.6.)*
 `syneroym:data-stream` WIT interface; point-to-point QUIC streams, Arrow
 `RecordBatch`-shaped framing, **relying on QUIC-native flow control**. Standalone
 (A.4) — no DataFusion coupling. Run as a framing spike; if it cannot be validated
-without its M5 consumer, **move wholesale to M5**.
+without its M5 consumer, **move wholesale to M5**. **Decided: moved wholesale to
+M5** — validating the framing choice has no real signal without M5's actual
+consumer; see `status.md`'s "Slice A3 — DEFERRED TO M5" section.
 
 #### Slice B1: UCAN Context Extraction and Normalization
 **Blocked on:** ADR D-04-01. **Depends on:** B0. **Requirement:** `[FND-IAM]`.
@@ -518,12 +520,17 @@ Continues the "Professional Services Guild" walking skeleton from M03B (step 19)
     Universal Proxy (A1) — JSON-RPC transport with full WIT⇄JSON conversion (A0′)
     — routed transparently to the remote instance. Proven by
     `crates/coordinator_iroh/tests/multi_hop_relay.rs::test_cross_node_proxy_call`.
-21. A client presents a UCAN; the gateway verifies the chain and normalizes
-    claims/capabilities into a SessionContext (B1).
-24. An admin-scoped caller runs `query-raw` for a report needing a join beyond
-    the JSON filter DSL (B5).
-25. A peer with no valid delegation attempts a `data-layer` write over a raw Iroh
+21. ✅ A client presents a UCAN; the gateway verifies the chain and normalizes
+    claims/capabilities into a SessionContext (B1). Proven by
+    `crates/router/tests/ucan_context.rs::verified_ucan_capability_reaches_native_dispatch`.
+24. ✅ An admin-scoped caller runs `query-raw` for a report needing a join beyond
+    the JSON filter DSL (B5). Proven by
+    `crates/router/tests/native_dispatch_identity.rs::admin_caller_admitted_query_raw`
+    and `::query_raw_binds_params_no_injection`.
+25. ✅ A peer with no valid delegation attempts a `data-layer` write over a raw Iroh
     connection; now rejected at the router (B0) — the interim gap is closed.
+    Proven by
+    `crates/router/tests/native_dispatch_identity.rs::anonymous_caller_rejected_before_native_dispatch_for_every_interface`.
 
 *(Steps 22–23 — FDAE row filtering and federated fetch — belong to
 [M04B](../M04B-fdae-policy/task.md).)*
@@ -584,7 +591,7 @@ Continues the "Professional Services Guild" walking skeleton from M03B (step 19)
 ## Measurable Exit Criteria
 
 - [x] `cargo +nightly fmt --all` clean; `cargo clippy --workspace --all-targets --all-features` zero warnings; `cargo test --workspace` green; `mise run test:e2e` green (no M0–M3C regression); `wasm32-wasip2` unbroken after every slice. *(True as of A0′+B0+A1+B1+B5+B4; re-verify after each subsequent slice.)*
-- [ ] ADRs D-04-01, D-04-05 exist in `docs/decisions/`.
+- [x] ADRs D-04-01, D-04-05 exist in `docs/decisions/`. *([0015-ucan-capability-model.md](../../../decisions/0015-ucan-capability-model.md) and [0016-native-dispatch-identity-threading.md](../../../decisions/0016-native-dispatch-identity-threading.md), both Status: Accepted.)*
 - [x] Full WIT⇄JSON conversion replaces the `conversions.rs` stub; round-trip tested across the full WIT type set; JSON fidelity limitations documented. *(A0′ delivered the encode/decode primitives; A1 closes the deferred half — typing the JSON-RPC `result` field itself via `wasm_results_to_json`/`execute_wasm_json` — see `status.md`'s A1 section.)*
 - [x] **Gate item #1 verified with a real test** (not code inspection): an unauthenticated peer's `data-layer`/`messaging`/`blob-store`/`vault`/`app-config` call and HTTP-bridge request are all rejected. *(B0 — see `crates/router/tests/native_dispatch_identity.rs`.)*
 - [x] `AggregationPipeline` implemented and tested. *(B4 — `crates/data_db/src/aggregate.rs`'s `compile` (whitelisted `$match`/`$group`/`$having`/`$project`/`$sort`/`$limit`/`$skip` document compiler, all field paths/values bound as `?`); `do_aggregate` in `crates/data_db/src/sqlite.rs` reuses B5's `run_query_raw`; guest impl in `crates/sandbox_wasm/src/host_capabilities.rs` (no capability gate, same trust level as `query`); native arm in `crates/control_plane/src/synsvc_native.rs`'s `dispatch_data_layer`; ADR-0007 amended in place — see `status.md`'s B4 section.)*
@@ -593,8 +600,8 @@ Continues the "Professional Services Guild" walking skeleton from M03B (step 19)
 - [ ] Per-app-instance KEK narrowing implemented; `_scope` actually used; DEK re-wrap path tested.
 - [x] Universal Proxy handles ≥1 real cross-node typed call over JSON-RPC (full WIT⇄JSON conversion) in an e2e test; the transport-agnostic seam for later wRPC is in place. *(A1 — `crates/router/src/proxy.rs`'s `ProxyRouter`/`RemoteHop`/`IrohHop`; cross-node proof in `crates/coordinator_iroh/tests/multi_hop_relay.rs::test_cross_node_proxy_call`.)*
 - [x] A caller declaring an unsupported protocol receives a typed error (negotiation deferred, A.7). *(A1 — `ServiceStage::UnsupportedProtocol`, `-32091`; see `crates/router/tests/unsupported_protocol.rs`.)*
-- [ ] `[PLT-DAP-05]` either ships as a QUIC-flow-control-backed framing spike or is explicitly deferred to M5 with rationale in `status.md`.
-- [ ] Reference scenario steps 20, 21, 24, 25 execute end-to-end. *(A1 closes step 20 — proven by `test_cross_node_proxy_call`. B0 closes step 25's substrate-side enforcement — proven at the router-dispatch level by `native_dispatch_identity.rs`. B1 closes step 21 — proven by `crates/router/tests/ucan_context.rs` (verified-chain capability reaches native dispatch) plus `crates/router/src/route_handler/io.rs`'s `build_caller` unit tests (chain verify + revocation wiring). B5 closes step 24's capability + unit/integration proof — `crates/router/tests/native_dispatch_identity.rs`'s `admin_caller_admitted_query_raw`/`query_raw_binds_params_no_injection`; the live-substrate e2e assertion remains a milestone-close activity per B5.md §9, not re-run here.)*
-- [ ] Performance budgets verified; `criterion` output in `status.md`. *(A1 delivers the "Universal Proxy call (JSON-RPC, same-node)" row — see `status.md`'s A1 section; B1 delivers the "UCAN chain verification (cache-cold)" row — see `status.md`'s B1 section. The remaining rows belong to B6/A3.)*
-- [ ] `traceability-matrix.md` updated with M04A evidence for `[PLT-DAT]` (Universal Proxy + conversion + aggregation + `query-raw`), `[FND-IAM]` (foundation: identity threading + UCAN context + Admin capability), `[FND-SEC]` (per-app KEK); `[PLT-DAP-05]` marked spike/M5; `[LFC-VER]` protocol-negotiation retargeted out; `[FND-FDA]`→`[FND-IAM]` citation fixed (A.2).
+- [x] `[PLT-DAP-05]` either ships as a QUIC-flow-control-backed framing spike or is explicitly deferred to M5 with rationale in `status.md`. *(Deferred wholesale to M5, per A3's own stated fallback — no code exists, and validating the framing choice has no real signal without M5's actual consumer. Rationale recorded in `status.md`'s "Slice A3 — DEFERRED TO M5" section.)*
+- [x] Reference scenario steps 20, 21, 24, 25 execute end-to-end. *(All four now marked ✅ in the Reference Scenario section above, each with its own dedicated integration-test proof, matching the convention step 20 already established rather than requiring one continuous chained run: A1 closes step 20 — `test_cross_node_proxy_call`. B1 closes step 21 — `ucan_context.rs::verified_ucan_capability_reaches_native_dispatch` plus `io.rs`'s `build_caller` unit tests (chain verify + revocation wiring). B5 closes step 24 — `native_dispatch_identity.rs`'s `admin_caller_admitted_query_raw`/`query_raw_binds_params_no_injection`; the live-substrate e2e assertion remains a milestone-close activity per B5.md §9, not re-run here. B0 closes step 25 — `native_dispatch_identity.rs::anonymous_caller_rejected_before_native_dispatch_for_every_interface`.)*
+- [ ] Performance budgets verified; `criterion` output in `status.md`. *(A1 delivers the "Universal Proxy call (JSON-RPC, same-node)" row — see `status.md`'s A1 section; B1 delivers the "UCAN chain verification (cache-cold)" row — see `status.md`'s B1 section. A3's row no longer applies — deferred wholesale to M5, no transport to benchmark. The remaining row belongs to B6.)*
+- [x] `traceability-matrix.md` updated with M04A evidence for `[PLT-DAT]` (Universal Proxy + conversion + aggregation + `query-raw`), `[FND-IAM]` (foundation: identity threading + UCAN context + Admin capability), `[FND-SEC]` (per-app KEK); `[PLT-DAP-05]` marked spike/M5; `[LFC-VER]` protocol-negotiation retargeted out; `[FND-FDA]`→`[FND-IAM]` citation fixed (A.2). *(`[PLT-DAT]`/`[FND-IAM]` (M4A) rows flipped to Complete with evidence; `[FND-SEC]` (per-app KEK) correctly left Planned — B6 not started; `[PLT-DAP-05]` evidence points at the new deferral rationale. `[FND-FDA]` citation fixed at its two sources, `system-requirements-spec.md`'s Appendix and `meta-implementation-plan.md` — it was never present in `traceability-matrix.md` itself.)*
 - [x] `system-architecture.md:1892` interim-security-posture note updated to record the native-dispatch gap as closed. *(B0 — see the "Gap closed (M04A Slice B0)" note at that anchor.)*

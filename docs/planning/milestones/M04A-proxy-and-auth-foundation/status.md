@@ -2220,3 +2220,31 @@ the UX finding was fixed at both the CLI-parsing and function layers.
   matching the established methodology from B7a/B7b).
 - `mise run test:e2e` — unchanged from B7b's own gate above — none of the
   fixes touch wire-visible behavior the e2e suite exercises.
+
+## Slice A3 — `[PLT-DAP-05]` Data Pipeline Streams — DEFERRED TO M5 (2026-07-18)
+
+task.md frames Slice A3 itself as spike-first: "run as a framing spike; if it
+cannot be validated without its M5 consumer, move wholesale to M5." Housekeeping
+pass (pre-B6) confirms the latter branch applies, formally, in writing, per the
+exit criteria's own requirement to record this rather than leave it silently
+unstarted.
+
+- **No code exists.** No `syneroym:data-stream` WIT interface anywhere under
+  `crates/wit_interfaces/wit/`, no Arrow/`RecordBatch`-framed stream type, no
+  point-to-point QUIC-stream scaffold beyond what A1's Universal Proxy already
+  provides for ordinary typed calls. Nothing was spiked.
+- **Why the spike itself was never attempted:** A3 is explicitly "standalone —
+  no DataFusion coupling" *for the transport*, but validating the framing
+  choice (whether QUIC-native flow control alone is sufficient backpressure
+  for Arrow `RecordBatch`-shaped streams, without bespoke credits — A.6) has
+  no meaningful signal without a real consumer driving actual batch sizes and
+  cadence. M04A has no data-pipeline consumer; the nearest one is M5's own
+  scope. A spike run against synthetic load would validate nothing an M5
+  design review couldn't equally decide from first principles, at the cost of
+  a WIT interface + framing implementation this milestone would then have to
+  carry and potentially revise once the real consumer's shape is known.
+- **Decision: move wholesale to M5**, per A3's own stated fallback. Not a
+  scope cut — `[PLT-DAP-05]` was never a hard M04A requirement, only a
+  candidate to spike if cheap; it wasn't cheap without the consumer.
+  `traceability-matrix.md`'s `[PLT-DAP-05]` row should read "spike/M5", not
+  M04A-delivered (task.md exit criterion, item 9).

@@ -322,7 +322,7 @@ the order in which their slices are picked up.
 **Feature Grouping:**
 - Thin Syneroym Hub (Desktop/Web surface only)
 - Professional Services Guild Application
-- Chat SynApp (`[PLT-DAT]`/`[PLT-ASY]`/`[FND-FDA]` per the requirements-spec Substrate Feature Coverage Matrix)
+- Chat SynApp (`[PLT-DAT]`/`[PLT-ASY]`/`[FND-IAM]` per the requirements-spec Substrate Feature Coverage Matrix)
 
 **Implementation Approach:**
 1. **Headless Native Shell:** Build the thin desktop/web UI shell that renders JSON Action Cards.
