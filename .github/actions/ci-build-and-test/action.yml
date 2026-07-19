@@ -8,8 +8,11 @@ inputs:
 runs:
   using: "composite"
   steps:
-    - name: Build WASM Test Component
-      run: cd test-components/greeter && cargo component build --release --target wasm32-wasip2
+    - name: Build WASM Test Components
+      run: |
+        for component in greeter data-layer-test proxy-test stream-test messaging-pubsub-test; do
+          (cd "test-components/$component" && cargo component build --release --target wasm32-wasip2)
+        done
       shell: bash
 
     - name: Run Tests
