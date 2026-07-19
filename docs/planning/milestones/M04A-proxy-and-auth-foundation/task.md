@@ -352,7 +352,7 @@ Implement `query-raw`/`sql-value` per
 [ADR-0011](../../../decisions/0011-privileged-raw-sql-query.md), gated by the
 Admin UCAN capability from B0 instead of `is_init_context`.
 
-#### Slice B6: Per-SynApp-Instance KEK Narrowing
+#### Slice B6: Per-SynApp-Instance KEK Narrowing ✅ (2026-07-18)
 **Depends on:** B0. **Requirement:** `[FND-SEC]`; closes gate item #5.
 Wire `inject_kek`'s `_scope` param (`key_store.rs:46`) to derive per-app-instance
 KEKs, gated on the caller's verified app-instance identity. Specify + test the DEK
@@ -385,6 +385,21 @@ re-wrap path (Migration Strategy).
 > **visible `traceability-matrix.md` "DEFERRED, blocks multi-tenant production"
 > marker** on `[FND-SEC]` (per-app KEK) are the anchors (plan B6.md §10); this
 > note is context only.
+
+**B6 delivered (2026-07-18)** — see `status.md`'s B6 section for full
+evidence: `derive_instance_kek` (HKDF-SHA256, scope = `service_id`) in
+`crates/data_keystore/src/key_store.rs`, wired into `generate_dek`/
+`load_dek`/`rotate_kek`; the dead `inject_kek` `_scope` param removed (F2);
+cross-instance cryptographic isolation proven by `cross_instance_kek_isolation`
+and mirrored at the SQLCipher storage layer by
+`test_cross_instance_dek_does_not_open_sibling_sqlcipher_db`; the re-wrap
+path proven by `rotate_kek_preserves_per_instance_deks`; `open_service_db`
+end-to-end perf measured via the new `service_db_open_per_instance_kek`
+`criterion` group (dev-host numbers in status.md; Pi-4 figure outstanding,
+F6). ADR-0006 amended in place and `traceability-matrix.md`'s `[FND-SEC]`
+row updated per the durable-anchor note above — both record that this ships
+**Model A (derived) only**; Model B (IAM-gated per-instance provisioning) is
+deferred and the multi-tenant-at-rest gate stays shut.
 
 #### Slice B7: Substrate & Service Ownership (Deploy Authorization + Ownership Attribution) — split into **B7a ✅ (2026-07-18)** / **B7b ✅ (2026-07-18)** ([plans/B7.md](plans/B7.md))
 **Depends on:** B0 (done — substrate-owner resolution now sources from
@@ -625,11 +640,11 @@ Continues the "Professional Services Guild" walking skeleton from M03B (step 19)
 - [x] `AggregationPipeline` implemented and tested. *(B4 — `crates/data_db/src/aggregate.rs`'s `compile` (whitelisted `$match`/`$group`/`$having`/`$project`/`$sort`/`$limit`/`$skip` document compiler, all field paths/values bound as `?`); `do_aggregate` in `crates/data_db/src/sqlite.rs` reuses B5's `run_query_raw`; guest impl in `crates/sandbox_wasm/src/host_capabilities.rs` (no capability gate, same trust level as `query`); native arm in `crates/control_plane/src/synsvc_native.rs`'s `dispatch_data_layer`; ADR-0007 amended in place — see `status.md`'s B4 section.)*
 - [x] `query-raw` implemented, gated by Admin UCAN capability (not `is_init_context`). *(B5 — `crates/data_db/src/sqlite.rs`'s `do_query_raw` (read-only enforced two-layer: `Statement::readonly()` plus an authorizer denying `ATTACH`/`DETACH`/`BEGIN`/pragma-set, post-commit review S1; compute additionally bounded by a `progress_handler`, S1); guest gate in `crates/sandbox_wasm/src/host_capabilities.rs`; native gate in `crates/control_plane/src/synsvc_native.rs`'s `dispatch_data_layer` (request/response `sql-value` JSON encoding made symmetric, post-commit review C1); ADR-0011 amended in place — see `status.md`'s B5 section.)*
 - [x] Both `TODO(M4)` sites (`host_capabilities.rs:452-463`, `synsvc_native.rs:309-316`) removed. *(B0 — both replaced by the `data-layer/admin` capability gate.)*
-- [ ] Per-app-instance KEK narrowing implemented; `_scope` actually used; DEK re-wrap path tested.
+- [x] Per-app-instance KEK narrowing implemented; the per-instance scope (`service_id`) derives the effective wrap key (not "`_scope` on `inject_kek` actually used" — that vestigial param is removed as dead instead, per F2's reword); DEK re-wrap path tested. *(B6 — `derive_instance_kek` in `crates/data_keystore/src/key_store.rs` (HKDF-SHA256, `info = "syneroym:kek:v1:{service_id}"`), wired into `generate_dek`/`load_dek`/`rotate_kek`; cross-instance isolation proven by `cross_instance_kek_isolation` and `test_cross_instance_dek_does_not_open_sibling_sqlcipher_db`; re-wrap path proven by `rotate_kek_preserves_per_instance_deks`. Ships **Model A (derived) only** — Model B (IAM-gated per-instance *provisioning*, ADR-0006's actual M4 ask) remains deferred and does not clear the multi-tenant-at-rest gate; see `status.md`'s B6 section and ADR-0006's Amendments.)*
 - [x] Universal Proxy handles ≥1 real cross-node typed call over JSON-RPC (full WIT⇄JSON conversion) in an e2e test; the transport-agnostic seam for later wRPC is in place. *(A1 — `crates/router/src/proxy.rs`'s `ProxyRouter`/`RemoteHop`/`IrohHop`; cross-node proof in `crates/coordinator_iroh/tests/multi_hop_relay.rs::test_cross_node_proxy_call`.)*
 - [x] A caller declaring an unsupported protocol receives a typed error (negotiation deferred, A.7). *(A1 — `ServiceStage::UnsupportedProtocol`, `-32091`; see `crates/router/tests/unsupported_protocol.rs`.)*
 - [x] `[PLT-DAP-05]` either ships as a QUIC-flow-control-backed framing spike or is explicitly deferred to M5 with rationale in `status.md`. *(Deferred wholesale to M5, per A3's own stated fallback — no code exists, and validating the framing choice has no real signal without M5's actual consumer. Rationale recorded in `status.md`'s "Slice A3 — DEFERRED TO M5" section.)*
 - [x] Reference scenario steps 20, 21, 24, 25 execute end-to-end. *(All four now marked ✅ in the Reference Scenario section above, each with its own dedicated integration-test proof, matching the convention step 20 already established rather than requiring one continuous chained run: A1 closes step 20 — `test_cross_node_proxy_call`. B1 closes step 21 — `ucan_context.rs::verified_ucan_capability_reaches_native_dispatch` plus `io.rs`'s `build_caller` unit tests (chain verify + revocation wiring). B5 closes step 24 — `native_dispatch_identity.rs`'s `admin_caller_admitted_query_raw`/`query_raw_binds_params_no_injection`; the live-substrate e2e assertion remains a milestone-close activity per B5.md §9, not re-run here. B0 closes step 25 — `native_dispatch_identity.rs::anonymous_caller_rejected_before_native_dispatch_for_every_interface`.)*
-- [ ] Performance budgets verified; `criterion` output in `status.md`. *(A1 delivers the "Universal Proxy call (JSON-RPC, same-node)" row — see `status.md`'s A1 section; B1 delivers the "UCAN chain verification (cache-cold)" row — see `status.md`'s B1 section. A3's row no longer applies — deferred wholesale to M5, no transport to benchmark. The remaining row belongs to B6.)*
+- [x] Performance budgets verified; `criterion` output in `status.md`. *(A1 delivers the "Universal Proxy call (JSON-RPC, same-node)" row — see `status.md`'s A1 section; B1 delivers the "UCAN chain verification (cache-cold)" row — see `status.md`'s B1 section. A3's row no longer applies — deferred wholesale to M5, no transport to benchmark. B6 delivers the remaining "Service DB open with per-app KEK" row: `service_db_open_per_instance_kek` `criterion` group in `crates/data_db/benches/security_config_bench.rs` — see `status.md`'s B6 section for dev-host numbers. The Raspberry Pi 4 figure itself remains outstanding, same treatment as M03's own deferred Pi-4 item, per plan B6.md F6.)*
 - [x] `traceability-matrix.md` updated with M04A evidence for `[PLT-DAT]` (Universal Proxy + conversion + aggregation + `query-raw`), `[FND-IAM]` (foundation: identity threading + UCAN context + Admin capability), `[FND-SEC]` (per-app KEK); `[PLT-DAP-05]` marked spike/M5; `[LFC-VER]` protocol-negotiation retargeted out; `[FND-FDA]`→`[FND-IAM]` citation fixed (A.2). *(`[PLT-DAT]`/`[FND-IAM]` (M4A) rows flipped to Complete with evidence; `[FND-SEC]` (per-app KEK) correctly left Planned — B6 not started; `[PLT-DAP-05]` evidence points at the new deferral rationale. `[FND-FDA]` citation fixed at its two sources, `system-requirements-spec.md`'s Appendix and `meta-implementation-plan.md` — it was never present in `traceability-matrix.md` itself.)*
 - [x] `system-architecture.md:1892` interim-security-posture note updated to record the native-dispatch gap as closed. *(B0 — see the "Gap closed (M04A Slice B0)" note at that anchor.)*

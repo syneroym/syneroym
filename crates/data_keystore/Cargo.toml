@@ -8,8 +8,10 @@ license.workspace = true
 [dependencies]
 syneroym-identity.workspace = true
 aes-gcm.workspace = true
+hkdf.workspace = true
 rand.workspace = true
 rusqlite.workspace = true
+sha2.workspace = true
 zeroize.workspace = true
 chrono.workspace = true
 thiserror.workspace = true

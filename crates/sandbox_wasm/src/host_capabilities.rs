@@ -919,7 +919,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn test_vault_reveal_not_found_at_host_boundary() {
         let key_store = Arc::new(KeyStore::new());
-        key_store.inject_kek([3u8; 32], None).unwrap();
+        key_store.inject_kek([3u8; 32]).unwrap();
         let temp_dir = tempfile::tempdir().unwrap();
         let storage_provider = Arc::new(SqliteStorageProvider::new(temp_dir.path(), true).unwrap());
         let mut host_state = HostState::new(

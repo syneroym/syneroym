@@ -64,6 +64,11 @@ capabilities this ADR carries.
    (now-mandatory) handshake; `session.capabilities` may be empty until B1 wires
    full UCAN verification. `CallerContext` lives in `syneroym-rpc` (alongside
    `NativeInvocation`); `SessionContext` is re-exported from `syneroym-ucan`.
+   **Note (M04A Slice B6):** the sketch above's `app_instance` comment
+   ("per-app KEK") predates B6's derivation model. B6 derives each service's
+   KEK from the bound `service_id` (== `app_instance` today) at the storage
+   layer (`syneroym_data_keystore::key_store`), not by reading this field —
+   see `plans/B6.md` §2 and `crates/rpc/src/native.rs`'s current doc comment.
 
 3. **Make `verify_preamble` mandatory.** Remove the
    `if preamble.delegation.is_some()` gate in `io.rs`: every native-capability

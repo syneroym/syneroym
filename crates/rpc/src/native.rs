@@ -22,8 +22,11 @@ use crate::RpcResult;
 pub struct CallerContext {
     /// Verified `did:key` of the immediate caller.
     pub caller_did: String,
-    /// App-instance the caller acts as (`creator_id`, per-app KEK). `None`
-    /// on the raw B0 path.
+    /// App-instance the caller acts as (`creator_id`). `None` on the raw B0
+    /// path. Names the per-app identity, but does **not** drive per-app KEK
+    /// selection: M04A Slice B6 derives each service's KEK from the bound
+    /// `service_id` (== this identity today) at the storage layer, not by
+    /// reading this field — see `syneroym_data_keystore::key_store`.
     pub app_instance: Option<String>,
     /// Verified capabilities/claims. Empty unless the interim admin-root
     /// path (B0) or a real UCAN chain (B1) populated it.

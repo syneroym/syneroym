@@ -707,14 +707,23 @@ impl SqliteStorageProvider {
     /// this as an error, it's a deliberate per-deployment mode. Does not
     /// call `verify_encryption_mode`; callers that need the
     /// `EncryptionKeyRequired` / insecure-mode-warning checks (e.g.
-    /// `open_service_db`) must call it themselves first.
+    /// `open_service_db`) must call it themselves first. Validates
+    /// `service_id` against `SERVICE_ID_REGEX` itself (rather than relying on
+    /// callers like `open_service_db` to have already done so via
+    /// `resolve_service_db_dir`), so every path into the KEK/DEK layer --
+    /// including `load_service_dek`, which has no filesystem path to guard
+    /// on -- rejects the same malformed `service_id`s before they become an
+    /// HKDF scope.
     fn resolve_dek(
         &self,
         service_id: &str,
         key_store: &Arc<KeyStore>,
-    ) -> anyhow::Result<Option<[u8; 32]>> {
+    ) -> anyhow::Result<Option<Zeroizing<[u8; 32]>>> {
         if !self.encryption_enabled {
             return Ok(None);
+        }
+        if !SERVICE_ID_REGEX.is_match(service_id) {
+            return Err(anyhow::anyhow!("Invalid service ID format: {}", service_id));
         }
         let conn =
             self.substrate_conn.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {}", e))?;
@@ -937,7 +946,8 @@ impl StorageProvider for SqliteStorageProvider {
         // dummy-key behavior is local to the SQLite/SQLCipher path -- the
         // public `load_service_dek` trait method returns `None` as-is to
         // its callers instead of this substitution).
-        let dek = Zeroizing::new(self.resolve_dek(service_id, key_store)?.unwrap_or([0u8; 32]));
+        let dek =
+            self.resolve_dek(service_id, key_store)?.unwrap_or_else(|| Zeroizing::new([0u8; 32]));
 
         // Open service DB connection for the single writer actor
         let writer_conn = Connection::open(&db_file_path)?;
@@ -1018,7 +1028,7 @@ impl StorageProvider for SqliteStorageProvider {
         key_store: &Arc<KeyStore>,
     ) -> anyhow::Result<Option<Zeroizing<[u8; 32]>>> {
         self.verify_encryption_mode(key_store)?;
-        Ok(self.resolve_dek(service_id, key_store)?.map(Zeroizing::new))
+        self.resolve_dek(service_id, key_store)
     }
 
     async fn save_config_generation(
@@ -1606,7 +1616,7 @@ mod tests {
         assert_eq!(res.err().unwrap().to_string(), "EncryptionKeyRequired");
 
         // Inject KEK
-        key_store.inject_kek([9u8; 32], None).unwrap();
+        key_store.inject_kek([9u8; 32]).unwrap();
 
         // Now succeeds
         assert!(provider.open_service_db("my-service", &key_store).await.is_ok());
@@ -1635,7 +1645,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let provider = SqliteStorageProvider::new(dir.path(), true).unwrap();
         let key_store = Arc::new(KeyStore::new());
-        key_store.inject_kek([21u8; 32], None).unwrap();
+        key_store.inject_kek([21u8; 32]).unwrap();
 
         let dek_a = provider.load_service_dek("svc-a", &key_store).await.unwrap();
         let dek_b = provider.load_service_dek("svc-a", &key_store).await.unwrap();
@@ -1652,7 +1662,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let provider = SqliteStorageProvider::new(dir.path(), true).unwrap();
         let key_store = Arc::new(KeyStore::new());
-        key_store.inject_kek([33u8; 32], None).unwrap();
+        key_store.inject_kek([33u8; 32]).unwrap();
 
         // Opening the service DB first generates the DEK as a side effect.
         let _ = provider.open_service_db("svc-shared", &key_store).await.unwrap();
@@ -1666,12 +1676,67 @@ mod tests {
         assert_eq!(via_load, via_load2);
     }
 
+    /// M04A Slice B6 §5 test 5: two distinct `service_id`s under one master
+    /// KEK produce two working, independently-keyed service DBs, exercising
+    /// the full `StorageProvider` path with per-instance derivation.
+    #[tokio::test]
+    async fn test_open_service_db_two_instances_independently_keyed() {
+        let dir = tempdir().unwrap();
+        let provider = SqliteStorageProvider::new(dir.path(), true).unwrap();
+        let key_store = Arc::new(KeyStore::new());
+        key_store.inject_kek([44u8; 32]).unwrap();
+
+        let store_a = provider.open_service_db("kek-svc-a", &key_store).await.unwrap();
+        let store_b = provider.open_service_db("kek-svc-b", &key_store).await.unwrap();
+
+        store_a.write_secret("api_key", b"secret-for-a").await.unwrap();
+        store_b.write_secret("api_key", b"secret-for-b").await.unwrap();
+
+        assert_eq!(store_a.reveal_secret("api_key").await.unwrap(), Some(b"secret-for-a".to_vec()));
+        assert_eq!(store_b.reveal_secret("api_key").await.unwrap(), Some(b"secret-for-b".to_vec()));
+
+        // Each instance's DEK is distinct -- derived under its own scope.
+        let dek_a = provider.load_service_dek("kek-svc-a", &key_store).await.unwrap();
+        let dek_b = provider.load_service_dek("kek-svc-b", &key_store).await.unwrap();
+        assert_ne!(dek_a, dek_b);
+    }
+
+    /// M04A Slice B6 §5 test 6 -- the failure row mirrored at the storage
+    /// layer: a DEK that is genuinely instance A's own (not a copy of B's)
+    /// does not open instance B's on-disk SQLCipher database. SQLCipher
+    /// accepts any `PRAGMA key`; a wrong key surfaces as a decrypt failure
+    /// on the first real read ("file is not a database"), asserted here via
+    /// a raw connection rather than through `StorageProvider`, since the
+    /// trait never exposes "open with an explicit foreign key".
+    #[tokio::test]
+    async fn test_cross_instance_dek_does_not_open_sibling_sqlcipher_db() {
+        let dir = tempdir().unwrap();
+        let provider = SqliteStorageProvider::new(dir.path(), true).unwrap();
+        let key_store = Arc::new(KeyStore::new());
+        key_store.inject_kek([55u8; 32]).unwrap();
+
+        let store_b = provider.open_service_db("iso-svc-b", &key_store).await.unwrap();
+        store_b.write_secret("marker", b"only-in-b").await.unwrap();
+        drop(store_b);
+
+        // svc-a's own (real, generated) DEK -- not svc-b's.
+        let dek_a = provider.load_service_dek("iso-svc-a", &key_store).await.unwrap().unwrap();
+
+        let db_b_path = dir.path().join("services").join("iso-svc-b").join("state.db");
+        let raw = Connection::open(&db_b_path).unwrap();
+        let pragma_val = format!("x'{}'", hex::encode(*dek_a));
+        raw.pragma_update(None, "key", &pragma_val).unwrap();
+        let result: rusqlite::Result<i64> =
+            raw.query_row("SELECT COUNT(*) FROM sqlite_master", [], |row| row.get(0));
+        assert!(result.is_err(), "svc-a's DEK must not decrypt svc-b's SQLCipher database");
+    }
+
     #[tokio::test]
     async fn test_vault_write_and_reveal() {
         let dir = tempdir().unwrap();
         let provider = SqliteStorageProvider::new(dir.path(), true).unwrap();
         let key_store = Arc::new(KeyStore::new());
-        key_store.inject_kek([15u8; 32], None).unwrap();
+        key_store.inject_kek([15u8; 32]).unwrap();
 
         let store = provider.open_service_db("vault-test", &key_store).await.unwrap();
 
@@ -1692,7 +1757,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let provider = SqliteStorageProvider::new(dir.path(), true).unwrap();
         let key_store = Arc::new(KeyStore::new());
-        key_store.inject_kek([17u8; 32], None).unwrap();
+        key_store.inject_kek([17u8; 32]).unwrap();
 
         let first = provider.open_service_db("cached-vault", &key_store).await.unwrap();
         let second = provider.open_service_db("cached-vault", &key_store).await.unwrap();
@@ -1718,7 +1783,7 @@ mod tests {
     async fn test_restart_survival() {
         let dir = tempdir().unwrap();
         let key_store = Arc::new(KeyStore::new());
-        key_store.inject_kek([42u8; 32], None).unwrap();
+        key_store.inject_kek([42u8; 32]).unwrap();
 
         // Write data on first boot
         {

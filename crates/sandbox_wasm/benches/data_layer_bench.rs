@@ -40,7 +40,7 @@ fn bench_data_layer_crud(c: &mut Criterion) {
     let temp_dir = tempfile::tempdir().unwrap();
     let provider = SqliteStorageProvider::new(temp_dir.path(), true).unwrap();
     let key_store = Arc::new(KeyStore::new());
-    key_store.inject_kek([7u8; 32], None).unwrap();
+    key_store.inject_kek([7u8; 32]).unwrap();
 
     let store = runtime.block_on(provider.open_service_db("bench-svc", &key_store)).unwrap();
     runtime.block_on(store.create_collection(&schema("bench"))).unwrap();
