@@ -138,6 +138,13 @@ cpu_limit = 1
 memory_limit = "1Gi"
 # Maximum number of concurrent WASM instances
 max_concurrent_instances = 10
+# Wall-clock budget (seconds) for an ordinary dispatch call -- RPC/proxy
+# invocation, message delivery, or one streaming chunk
+dispatch_epoch_timeout_secs = 5
+# Wall-clock budget (seconds) for a component's init()/migrate() lifecycle
+# hook, run once per deploy; larger than dispatch_epoch_timeout_secs since
+# this does real one-time work (e.g. opening the service's encrypted DB)
+lifecycle_hook_epoch_timeout_secs = 30
 
 # Service Registry: allows services to be discovered within the ecosystem
 [roles.community_registry]

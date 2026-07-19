@@ -413,6 +413,12 @@ fn default_memory_limit() -> String {
 const fn default_max_concurrent_instances() -> u32 {
     10
 }
+const fn default_dispatch_epoch_timeout_secs() -> u64 {
+    5
+}
+const fn default_lifecycle_hook_epoch_timeout_secs() -> u64 {
+    30
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -424,6 +430,19 @@ pub struct AppSandboxRole {
     pub max_concurrent_instances: u32,
     pub default_max_instructions: Option<u64>,
     pub default_max_memory_bytes: Option<u64>,
+    /// Wall-clock budget (Wasmtime epoch interruption) for an ordinary
+    /// dispatch call -- RPC/proxy invocation, message delivery, or one
+    /// streaming chunk. Tight by design: this is the hot path a stuck or
+    /// hostile guest would otherwise hang forever.
+    pub dispatch_epoch_timeout_secs: u64,
+    /// Wall-clock budget for a component's `init()`/`migrate()` lifecycle
+    /// hook (`AppSandboxEngine::invoke_lifecycle_hook`, called once per
+    /// deploy). Deliberately larger than `dispatch_epoch_timeout_secs`: this
+    /// hook does real one-time work (e.g. `store::create_collection`
+    /// opening the service's SQLCipher DB), not a hot path repeatedly hit by
+    /// a request, so a generous budget doesn't trade away the same
+    /// protection the tighter dispatch budget buys.
+    pub lifecycle_hook_epoch_timeout_secs: u64,
 }
 
 impl AppSandboxRole {
@@ -442,6 +461,8 @@ impl Default for AppSandboxRole {
             max_concurrent_instances: default_max_concurrent_instances(),
             default_max_instructions: Some(10_000_000_000),
             default_max_memory_bytes: Some(256 * 1024 * 1024),
+            dispatch_epoch_timeout_secs: default_dispatch_epoch_timeout_secs(),
+            lifecycle_hook_epoch_timeout_secs: default_lifecycle_hook_epoch_timeout_secs(),
         }
     }
 }

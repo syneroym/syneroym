@@ -171,16 +171,20 @@ fn extract_result<T>(
 /// epoch deadline and fuel budget first (a long-lived stream instance
 /// otherwise inherits only its *original* instantiation-time budget --
 /// see ADR-0014 "Instance Lifetime and Quota"). `extra_args` are appended
-/// after the implicit resource receiver.
+/// after the implicit resource receiver. `epoch_deadline_ticks` is the
+/// same dispatch-call budget every other per-request instance gets (see
+/// `AppSandboxEngine::dispatch_epoch_ticks`) -- a stream chunk call is
+/// steady-state dispatch, not a lifecycle hook.
 async fn call_resource_method(
     store: &mut Store<HostState>,
     instance: &Instance,
     max_instructions: Option<u64>,
+    epoch_deadline_ticks: u64,
     resource: ResourceAny,
     method_name: &str,
     extra_args: &[Val],
 ) -> Result<Vec<Val>> {
-    store.set_epoch_deadline(50);
+    store.set_epoch_deadline(epoch_deadline_ticks);
     if let Some(instructions) = max_instructions {
         store.set_fuel(instructions)?;
     }
@@ -283,6 +287,7 @@ pub struct GuestStreamCursor {
     instance: Instance,
     resource: ResourceAny,
     max_instructions: Option<u64>,
+    epoch_deadline_ticks: u64,
 }
 
 impl Debug for GuestStreamCursor {
@@ -298,8 +303,9 @@ impl GuestStreamCursor {
         instance: Instance,
         resource: ResourceAny,
         max_instructions: Option<u64>,
+        epoch_deadline_ticks: u64,
     ) -> Self {
-        Self { store, instance, resource, max_instructions }
+        Self { store, instance, resource, max_instructions, epoch_deadline_ticks }
     }
 }
 
@@ -322,6 +328,7 @@ impl ChunkSource for GuestStreamCursor {
                 &mut self.store,
                 &self.instance,
                 self.max_instructions,
+                self.epoch_deadline_ticks,
                 self.resource,
                 "[method]stream-cursor.next-chunk",
                 &[],
@@ -357,6 +364,7 @@ pub struct GuestStreamSink {
     instance: Instance,
     resource: ResourceAny,
     max_instructions: Option<u64>,
+    epoch_deadline_ticks: u64,
 }
 
 impl Debug for GuestStreamSink {
@@ -372,8 +380,9 @@ impl GuestStreamSink {
         instance: Instance,
         resource: ResourceAny,
         max_instructions: Option<u64>,
+        epoch_deadline_ticks: u64,
     ) -> Self {
-        Self { store, instance, resource, max_instructions }
+        Self { store, instance, resource, max_instructions, epoch_deadline_ticks }
     }
 }
 
@@ -384,6 +393,7 @@ impl ChunkSink for GuestStreamSink {
             &mut self.store,
             &self.instance,
             self.max_instructions,
+            self.epoch_deadline_ticks,
             self.resource,
             "[method]stream-sink.push-chunk",
             &[bytes_to_val_list(data)],
@@ -398,6 +408,7 @@ impl ChunkSink for GuestStreamSink {
             &mut this.store,
             &this.instance,
             this.max_instructions,
+            this.epoch_deadline_ticks,
             this.resource,
             "[method]stream-sink.finalize",
             &[],
