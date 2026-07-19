@@ -288,6 +288,7 @@ async fn main() -> Result<()> {
         max_concurrent_instances: 5,
         default_max_instructions: Some(5_000),
         default_max_memory_bytes: Some(1024 * 1024), // 1MB
+        ..Default::default()
     });
     config.storage.blobs_dir = env::temp_dir();
 

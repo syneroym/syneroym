@@ -134,6 +134,13 @@ pub struct AppSandboxEngine {
     /// `STREAM_INSTANCE_POOL_HEADROOM` pool slots always available for
     /// ordinary calls, instead of letting streams silently starve them.
     stream_instance_permits: Arc<Semaphore>,
+    /// Epoch-tick budget for an ordinary dispatch call (RPC/proxy
+    /// invocation, message delivery, one streaming chunk) -- see
+    /// `AppSandboxRole::dispatch_epoch_timeout_secs`.
+    dispatch_epoch_ticks: u64,
+    /// Epoch-tick budget for a component's `init()`/`migrate()` lifecycle
+    /// hook -- see `AppSandboxRole::lifecycle_hook_epoch_timeout_secs`.
+    lifecycle_hook_epoch_ticks: u64,
 }
 
 /// Pool slots reserved out of `max_concurrent_instances` for short-lived
@@ -141,6 +148,19 @@ pub struct AppSandboxEngine {
 /// `stream_instance_permits` hands out to long-lived stream instances. See
 /// that field's doc comment for the cross-service DoS this prevents.
 const STREAM_INSTANCE_POOL_HEADROOM: u32 = 2;
+
+/// How often the epoch ticker (spawned in `init`) advances Wasmtime's global
+/// epoch. `Store::set_epoch_deadline` counts in ticks of this interval, not
+/// seconds directly -- see [`ticks_for_secs`].
+const EPOCH_TICK_MS: u64 = 100;
+
+/// Converts an operator-facing timeout in seconds
+/// (`AppSandboxRole::dispatch_epoch_timeout_secs` /
+/// `lifecycle_hook_epoch_timeout_secs`) into the tick count
+/// `Store::set_epoch_deadline` expects, given the `EPOCH_TICK_MS` ticker.
+const fn ticks_for_secs(secs: u64) -> u64 {
+    (secs * 1000) / EPOCH_TICK_MS
+}
 
 impl Debug for AppSandboxEngine {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
@@ -206,6 +226,18 @@ impl AppSandboxEngine {
                 (Some(10_000_000_000), Some(256 * 1024 * 1024))
             };
 
+        let (dispatch_timeout_secs, lifecycle_hook_timeout_secs) =
+            if let Some(sandbox_config) = &config.roles.app_sandbox {
+                (
+                    sandbox_config.dispatch_epoch_timeout_secs,
+                    sandbox_config.lifecycle_hook_epoch_timeout_secs,
+                )
+            } else {
+                (5, 30)
+            };
+        let dispatch_epoch_ticks = ticks_for_secs(dispatch_timeout_secs);
+        let lifecycle_hook_epoch_ticks = ticks_for_secs(lifecycle_hook_timeout_secs);
+
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
 
         let max_concurrent_streams_per_service =
@@ -244,6 +276,8 @@ impl AppSandboxEngine {
             stream_registry: StreamRegistry::new(),
             max_concurrent_streams_per_service,
             stream_instance_permits: Arc::new(Semaphore::new(stream_instance_budget as usize)),
+            dispatch_epoch_ticks,
+            lifecycle_hook_epoch_ticks,
         };
 
         for (service_id, _interface_name, endpoint) in endpoints {
@@ -262,7 +296,7 @@ impl AppSandboxEngine {
 
         let engine_clone = app_engine.engine.clone();
         tokio::spawn(async move {
-            let mut interval = time::interval(Duration::from_millis(100));
+            let mut interval = time::interval(Duration::from_millis(EPOCH_TICK_MS));
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
@@ -579,6 +613,7 @@ impl AppSandboxEngine {
         &self,
         service_id: &str,
         caller: CallerContext,
+        epoch_deadline_ticks: u64,
     ) -> Result<(Store<HostState>, Instance, Option<u64>)> {
         // Look up the pre-linked component instance
         let (instance_pre, quota) = {
@@ -644,7 +679,7 @@ impl AppSandboxEngine {
 
         store.limiter(|state| state);
         store.epoch_deadline_trap();
-        store.set_epoch_deadline(50); // 50 * 100ms = 5 seconds wall-clock timeout
+        store.set_epoch_deadline(epoch_deadline_ticks);
 
         if let Some(instructions) = max_instructions {
             store.set_fuel(instructions)?;
@@ -668,15 +703,23 @@ impl AppSandboxEngine {
         method_name: &str,
     ) -> Result<(Store<HostState>, Func, usize, ComponentItem)> {
         // Lifecycle hooks run substrate-elevated (carrying `data-layer/admin`
-        // for `execute-ddl`); an ordinary invocation is the component acting
-        // as itself, with no elevated capability (ADR-0015/0016).
-        let caller = if method_name == "init" || method_name == "migrate" {
+        // for `execute-ddl`) and get the larger lifecycle-hook epoch budget;
+        // an ordinary invocation is the component acting as itself, with no
+        // elevated capability, and the tighter dispatch budget
+        // (ADR-0015/0016).
+        let is_lifecycle_hook = method_name == "init" || method_name == "migrate";
+        let caller = if is_lifecycle_hook {
             CallerContext::local_elevated(service_id)
         } else {
             CallerContext::service_system(service_id)
         };
+        let epoch_deadline_ticks = if is_lifecycle_hook {
+            self.lifecycle_hook_epoch_ticks
+        } else {
+            self.dispatch_epoch_ticks
+        };
         let (mut store, instance, _max_instructions) =
-            self.build_store_and_instantiate(service_id, caller).await?;
+            self.build_store_and_instantiate(service_id, caller, epoch_deadline_ticks).await?;
 
         // Use the helper to extract the function
         let (func, results_len, item) =
@@ -695,7 +738,11 @@ impl AppSandboxEngine {
     /// unconditionally on every deploy.
     async fn invoke_lifecycle_hook(&self, service_id: &str, hook: &str) -> Result<()> {
         let (mut store, instance, _max_instructions) = self
-            .build_store_and_instantiate(service_id, CallerContext::local_elevated(service_id))
+            .build_store_and_instantiate(
+                service_id,
+                CallerContext::local_elevated(service_id),
+                self.lifecycle_hook_epoch_ticks,
+            )
             .await?;
 
         if instance.get_export(&mut store, None, hook).is_none() {
@@ -779,7 +826,11 @@ impl AppSandboxEngine {
         // would let every delivered message pass the `execute-ddl` Admin
         // gate. The component receiving a message acts as itself.
         let (mut store, instance, _max_instructions) = match self
-            .build_store_and_instantiate(service_id, CallerContext::service_system(service_id))
+            .build_store_and_instantiate(
+                service_id,
+                CallerContext::service_system(service_id),
+                self.dispatch_epoch_ticks,
+            )
             .await
         {
             Ok(triple) => triple,
@@ -933,8 +984,12 @@ impl AppSandboxEngine {
     ) -> Result<(Store<HostState>, Instance, Option<u64>)> {
         // `service_system`, never `local_elevated` -- same reasoning as
         // `deliver_message`: the component acts as itself, not as an admin.
-        self.build_store_and_instantiate(service_id, CallerContext::service_system(service_id))
-            .await
+        self.build_store_and_instantiate(
+            service_id,
+            CallerContext::service_system(service_id),
+            self.dispatch_epoch_ticks,
+        )
+        .await
     }
 
     /// Entry point for a peer-initiated `raw://<protocol>|<service_id>`
@@ -1067,7 +1122,13 @@ impl AppSandboxEngine {
                         return Ok(StreamRequestOutcome::Declined);
                     }
                 };
-                let cursor = GuestStreamCursor::new(store, instance, resource, max_instructions);
+                let cursor = GuestStreamCursor::new(
+                    store,
+                    instance,
+                    resource,
+                    max_instructions,
+                    self.dispatch_epoch_ticks,
+                );
                 chunk_transfer::pull_until_eof(cursor, &mut writer).await
             }
             StreamDirection::Upload => {
@@ -1092,8 +1153,13 @@ impl AppSandboxEngine {
                         return Ok(StreamRequestOutcome::Declined);
                     }
                 };
-                let sink: Box<dyn ChunkSink> =
-                    Box::new(GuestStreamSink::new(store, instance, resource, max_instructions));
+                let sink: Box<dyn ChunkSink> = Box::new(GuestStreamSink::new(
+                    store,
+                    instance,
+                    resource,
+                    max_instructions,
+                    self.dispatch_epoch_ticks,
+                ));
                 chunk_transfer::push_until_eof(reader, sink).await
             }
         };
@@ -1247,6 +1313,8 @@ mod tests {
             stream_registry: StreamRegistry::new(),
             max_concurrent_streams_per_service: 8,
             stream_instance_permits: Arc::new(Semaphore::new(8)),
+            dispatch_epoch_ticks: ticks_for_secs(5),
+            lifecycle_hook_epoch_ticks: ticks_for_secs(30),
         };
 
         // Cache the test component
