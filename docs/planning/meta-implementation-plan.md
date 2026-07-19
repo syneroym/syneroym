@@ -282,6 +282,7 @@ the order in which their slices are picked up.
 - `[PLT-DAP]` Federated Query Orchestrator
 - `[LFC-VER]` Versioning Support (State snapshot/rollback)
 - `[ADV-DEV]` SynApp Developer Tooling
+- `[FND-IAM]` `ControllerAgreement` creation tool (closes the M04A B7b gate)
 
 **Implementation Approach:**
 1. **Async Primitives:** Implement the Outbox queue, cron lease mechanisms, Dead Letter Queue (DLQ), long-running task restart rules, and compensating transactions (sagas).
@@ -293,6 +294,7 @@ the order in which their slices are picked up.
    - *(Design TBD to resolve before M5: How the Orchestrator discovers which node holds which shard, and how data routing tables are maintained for `[PLT-DAP-01]`)*
 3. **Versioning:** Implement pre-upgrade SQLite snapshotting and automatic rollback mechanisms.
 4. **Developer Tools:** Release the mock SDK, project templates, the zero-drift `roymctl dev` local environment, and remote package retrieval over HTTP/OCI for the `ManifestCatalog`.
+5. **`ControllerAgreement` Creation Tool:** Build the `roymctl` tool to create/sign a `ControllerAgreement`, spun out of M04A Slice B7 (`docs/planning/milestones/M04A-proxy-and-auth-foundation/plans/B7.md` §6; task.md's post-B7b item list). Until this exists, B7b's ownership/deploy capability gate is inert — every substrate remains unowned, so this closes that gap. Bundled with it: the deferred registry-trust-model ADR, multiple-substrate-owners representation (F12), and Tier 1 for the five data native-capability interfaces (F3).
 
 > **Note:** Decentralized Pub/Sub completion (`[PLT-DAP-04]`, adapting the
 > M3B in-process `rumqttd` broker to synchronise its topic log with peer

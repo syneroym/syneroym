@@ -2594,3 +2594,49 @@ task rather than fixed here.
 - `cargo test --workspace` — 0 failures (sandbox disabled for the loopback
   socket binds, as in every prior gate run this file documents).
 - `mise run test:e2e` — 4 passed, 0 failed.
+
+## Milestone closeout audit ✅ (2026-07-19)
+
+Full-milestone audit cross-checking `task.md`, this `status.md`,
+`traceability-matrix.md`, the requirements/architecture anchors, the code, and
+the tests. Every measurable exit criterion in `task.md` re-verified with
+evidence; all validation commands re-run from `main` @ `aec88d8`.
+
+**Validation commands (all green):**
+
+- `cargo +nightly fmt --all --check` — clean.
+- `cargo clippy --workspace --all-targets --all-features` — 0 warnings.
+- `cargo test --workspace` — 554 passed, 0 failed (run with sandbox disabled and
+  `--no-fail-fast`; the sandbox denies loopback socket binds, which otherwise
+  aborts `coordinator_iroh`'s `connection_limit` relay test with `Operation not
+  permitted` — a harness artifact, confirmed passing off-sandbox, not a code
+  regression, as every prior gate run in this file records).
+- `mise run test:e2e` — 12 passed, 0 failed (8 default config + 4 multi-hop).
+- `wasm32-wasip2` guest components (`greeter`, `data-layer-test`,
+  `messaging-pubsub-test`, `proxy-test`, `stream-test`) all build clean.
+  (`miniapp-demo1-web` is a native axum e2e backend crate, not a wasip2 guest —
+  it is not built for that target.)
+
+**Exit-criteria evidence spot-checked in code, not just prose:** both
+`TODO(M4)` sites removed and replaced by the `data-layer/admin` capability gate
+(`host_capabilities.rs`, `synsvc_native.rs`); `derive_instance_kek` (HKDF, scope
+= `service_id`) wired into `generate_dek`/`load_dek`/`rotate_kek` with the dead
+`inject_kek` scope param gone; `service_owners` table + owner-filtered `list`;
+`ProxyRouter`/`RemoteHop` cross-node path; every named reference-scenario and
+failure-security test present (`test_cross_node_proxy_call`,
+`verified_ucan_capability_reaches_native_dispatch`,
+`anonymous_caller_rejected_before_native_dispatch_for_every_interface`,
+`admin_caller_admitted_query_raw`, `query_raw_binds_params_no_injection`,
+`cross_instance_kek_isolation`,
+`test_cross_instance_dek_does_not_open_sibling_sqlcipher_db`,
+`rotate_kek_preserves_per_instance_deks`). Performance rows populated:
+proxy same-node ~619 ns native / ~34.6 µs wasm, UCAN verify ~58 µs, WIT⇄JSON
+record encode ~2.7 µs, per-instance-KEK DB open ~705 µs first / ~96 µs warm —
+all within budget.
+
+**Verdict: M04A is COMPLETE.** All in-scope exit criteria are met and evidenced.
+Explicitly deferred (recorded, not gaps): Slice A3 `[PLT-DAP-05]` → M5; KEK
+"Model B" (IAM-gated per-instance *provisioning*) → deferred, so the
+multi-tenant-at-rest gate stays shut (ADR-0006 caveat in force); the Raspberry
+Pi 4 per-app-KEK-open figure → outstanding, same treatment as M03's deferred
+Pi-4 item.
