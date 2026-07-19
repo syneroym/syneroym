@@ -10,3 +10,7 @@ serde_json = "1"
 
 [lib]
 crate-type = ["cdylib"]
+
+[package.metadata.component.target.dependencies]
+"syneroym:messaging" = { path = "wit/deps/messaging" }
+"syneroym:data-layer" = { path = "wit/deps/data-layer" }
