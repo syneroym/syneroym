@@ -2509,3 +2509,88 @@ and the docs listed under "What was delivered" item 8. No `StorageProvider`/
 none needed). No B7 (ownership/grants) work, no M04B (FDAE) work. Model B
 (IAM-gated per-instance KEK provisioning) is deliberately not implemented —
 tracked per plan §10, not silently dropped.
+
+### Post-commit code review (2026-07-19) — two reviews, findings incorporated
+
+Two independent reviews of commit `ce6040c`, plus a CI report of two failing
+tests, all against the same committed diff.
+
+**Reviewer 1** (deep two-pass review) verified the derivation, exhaustiveness,
+and concurrency properties and raised five actionable items:
+
+- **Fixed (S2) — internal DEK plaintext copies were not zeroized.**
+  `KeyStore::generate_dek`/`load_dek` returned a bare `[u8; 32]` by move (the
+  caller-facing `resolve_dek`/`load_service_dek` path already wrapped its
+  result in `Zeroizing`, but the keystore's own internals didn't), and
+  `rotate_kek`'s per-row decrypted `Vec<u8>` was dropped unwiped. Both methods
+  now return `Zeroizing<[u8; 32]>`, and the rotation loop's intermediate
+  plaintext is `Zeroizing<Vec<u8>>`. `resolve_dek` (`data_db/src/sqlite.rs`)
+  updated to match; its two callers (`open_service_db`, `load_service_dek`)
+  needed no behavior change since they already produced `Zeroizing` at their
+  boundary.
+- **Fixed (S3) — `load_service_dek` derived a KEK scope `open_service_db`
+  would have rejected.** `resolve_dek` now validates `service_id` against
+  `SERVICE_ID_REGEX` itself, closing the asymmetry: `open_service_db` was
+  guarded via `resolve_service_db_dir` before ever calling `resolve_dek`, but
+  `load_service_dek` (used by blob encryption and the HTTP signed-URL path)
+  called it directly with no such check. Not exploitable pre-fix (host-supplied
+  `service_id`, parameterized SQL, never used as a path in that call) but worth
+  closing at the root rather than leaving two validation paths to keep in sync.
+- **Noted, not restructured (C2) — `rotate_kek` swaps the in-memory KEK guard
+  after the DB commit.** A poisoned mutex at that exact point would leave disk
+  and memory referencing different masters until restart/re-inject. Reviewer's
+  own verdict was "low — acceptable; note it, or acquire the guard before
+  commit"; holding the guard across the whole transaction to close this would
+  serialize KEK reads against the entire rotation for a poison-only,
+  no-data-loss failure mode, so a comment documenting the accepted window was
+  added instead of reordering.
+- **Added (T2, T3) — two test gaps.** `load_dek_fails_cleanly_under_wrong_master`
+  (a DEK generated under one master returns a `Crypto` error, not a panic,
+  under a different master) and `rotate_kek_succeeds_on_empty_dek_store`
+  (rotation on a fresh substrate with zero `dek_store` rows still succeeds and
+  activates the new master).
+- **No action (A1, A2, T4) — already accurately documented, not gaps.** A1
+  (Model B's multi-tenant-at-rest gate stays shut) and T4 (Pi-4 perf figure
+  outstanding) are accepted deferrals already recorded in `task.md`'s exit
+  criteria and this section's "What was delivered"/"Performance" text — the
+  reviewer's own read confirms this, flagging them only so a reader doesn't
+  mistake the slice header's "✅" for closing the multi-tenant gate. A2 (the
+  `app_instance_id == service_id` invariant isn't asserted anywhere) is a
+  documentation-only ask — it's already stated at all three sites a reader
+  would look (`key_store.rs`'s struct doc, `native.rs`'s `app_instance` field
+  doc, `router/src/route_handler/io.rs`'s preamble doc); there is no separate
+  `app_instance_id` field to assert equality against today, so a runtime
+  assertion has nothing to check.
+
+**Reviewer 2** raised one finding: a stale `CallerContext::app_instance`
+docstring in `rpc/src/native.rs` claiming it drives per-app KEK selection,
+conflicting with B6's actual Model A design. Already fixed in the original
+`ce6040c` commit itself (see item 6 under "What was delivered" above,
+predates this review round) — verified by re-reading the current docstring,
+no further change needed.
+
+**CI failures** — two reports of `init() lifecycle hook failed ... wasm trap:
+interrupt` (`sandbox_wasm/tests/messaging_integration.rs`'s
+`test_guest_to_guest_cross_service_message_delivery` and `control_plane`'s
+`test_messaging_undeploy_removes_subscriptions`), not reproducing locally.
+Investigated and confirmed **pre-existing, unrelated to B6**: both hit the
+same fixed epoch-interruption deadline this section already flagged above for
+a sibling test in the same file (`test_guest_delivery_latency_budget`) —
+`crates/sandbox_wasm/src/engine.rs`'s hardcoded `set_epoch_deadline(50)`
+against a 100 ms ticker (a flat 5 s wall-clock budget for every lifecycle
+hook, introduced 2026-06-29, untouched by B6's diff). Both failing tests'
+`init()` hooks do real work on the KEK/DEK path (`store::create_collection`
+opens the service's SQLCipher DB), so a loaded/slower CI runner can plausibly
+exceed a fixed wall-clock budget that a fast local Mac does not; B6's only
+addition to that path is one HKDF-SHA256 expand (microsecond-scale), not a
+plausible cause. Reordering or widening the sandbox's epoch-deadline design
+is out of scope for a KEK-derivation slice — flagged as a separate follow-up
+task rather than fixed here.
+
+### Gate (re-verified after review fixes)
+
+- `cargo +nightly fmt --all` — clean.
+- `cargo clippy --workspace --all-targets --all-features` — zero warnings.
+- `cargo test --workspace` — 0 failures (sandbox disabled for the loopback
+  socket binds, as in every prior gate run this file documents).
+- `mise run test:e2e` — 4 passed, 0 failed.

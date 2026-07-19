@@ -707,14 +707,23 @@ impl SqliteStorageProvider {
     /// this as an error, it's a deliberate per-deployment mode. Does not
     /// call `verify_encryption_mode`; callers that need the
     /// `EncryptionKeyRequired` / insecure-mode-warning checks (e.g.
-    /// `open_service_db`) must call it themselves first.
+    /// `open_service_db`) must call it themselves first. Validates
+    /// `service_id` against `SERVICE_ID_REGEX` itself (rather than relying on
+    /// callers like `open_service_db` to have already done so via
+    /// `resolve_service_db_dir`), so every path into the KEK/DEK layer --
+    /// including `load_service_dek`, which has no filesystem path to guard
+    /// on -- rejects the same malformed `service_id`s before they become an
+    /// HKDF scope.
     fn resolve_dek(
         &self,
         service_id: &str,
         key_store: &Arc<KeyStore>,
-    ) -> anyhow::Result<Option<[u8; 32]>> {
+    ) -> anyhow::Result<Option<Zeroizing<[u8; 32]>>> {
         if !self.encryption_enabled {
             return Ok(None);
+        }
+        if !SERVICE_ID_REGEX.is_match(service_id) {
+            return Err(anyhow::anyhow!("Invalid service ID format: {}", service_id));
         }
         let conn =
             self.substrate_conn.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {}", e))?;
@@ -937,7 +946,8 @@ impl StorageProvider for SqliteStorageProvider {
         // dummy-key behavior is local to the SQLite/SQLCipher path -- the
         // public `load_service_dek` trait method returns `None` as-is to
         // its callers instead of this substitution).
-        let dek = Zeroizing::new(self.resolve_dek(service_id, key_store)?.unwrap_or([0u8; 32]));
+        let dek =
+            self.resolve_dek(service_id, key_store)?.unwrap_or_else(|| Zeroizing::new([0u8; 32]));
 
         // Open service DB connection for the single writer actor
         let writer_conn = Connection::open(&db_file_path)?;
@@ -1018,7 +1028,7 @@ impl StorageProvider for SqliteStorageProvider {
         key_store: &Arc<KeyStore>,
     ) -> anyhow::Result<Option<Zeroizing<[u8; 32]>>> {
         self.verify_encryption_mode(key_store)?;
-        Ok(self.resolve_dek(service_id, key_store)?.map(Zeroizing::new))
+        self.resolve_dek(service_id, key_store)
     }
 
     async fn save_config_generation(

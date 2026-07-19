@@ -116,13 +116,13 @@ impl KeyStore {
 
     /// Generates a new 32-byte DEK, encrypts it with the KEK derived for
     /// `service_id`, and stores it in the database.
-    pub fn generate_dek(&self, service_id: &str, conn: &Connection) -> Result<[u8; 32]> {
+    pub fn generate_dek(&self, service_id: &str, conn: &Connection) -> Result<Zeroizing<[u8; 32]>> {
         let master = self.get_kek()?;
         let kek = derive_instance_kek(&master, service_id);
 
         // Generate a new random DEK
-        let mut dek = [0u8; 32];
-        rand::rng().fill_bytes(&mut dek);
+        let mut dek = Zeroizing::new([0u8; 32]);
+        rand::rng().fill_bytes(&mut *dek);
 
         // Encrypt the DEK using the per-instance KEK (AES-256-GCM)
         let key = Key::<Aes256Gcm>::from_slice(&*kek);
@@ -149,7 +149,7 @@ impl KeyStore {
 
     /// Loads and decrypts the DEK for a given service, using the KEK
     /// derived for `service_id`.
-    pub fn load_dek(&self, service_id: &str, conn: &Connection) -> Result<[u8; 32]> {
+    pub fn load_dek(&self, service_id: &str, conn: &Connection) -> Result<Zeroizing<[u8; 32]>> {
         let master = self.get_kek()?;
         let kek = derive_instance_kek(&master, service_id);
 
@@ -169,15 +169,17 @@ impl KeyStore {
             let cipher = Aes256Gcm::new(key);
             let nonce = Nonce::from_slice(&nonce_bytes);
 
-            let decrypted = cipher
-                .decrypt(nonce, ciphertext.as_slice())
-                .map_err(|e| KeyStoreError::Crypto(e.to_string()))?;
+            let decrypted = Zeroizing::new(
+                cipher
+                    .decrypt(nonce, ciphertext.as_slice())
+                    .map_err(|e| KeyStoreError::Crypto(e.to_string()))?,
+            );
 
             if decrypted.len() != 32 {
                 return Err(KeyStoreError::Crypto("Decrypted DEK has invalid length".into()));
             }
 
-            let mut dek = [0u8; 32];
+            let mut dek = Zeroizing::new([0u8; 32]);
             dek.copy_from_slice(&decrypted);
             Ok(dek)
         } else {
@@ -226,9 +228,11 @@ impl KeyStore {
                 let old_key = Key::<Aes256Gcm>::from_slice(&*old_instance_kek);
                 let old_cipher = Aes256Gcm::new(old_key);
                 let nonce = Nonce::from_slice(&nonce_bytes);
-                let dek = old_cipher
-                    .decrypt(nonce, ciphertext.as_slice())
-                    .map_err(|e| KeyStoreError::Crypto(e.to_string()))?;
+                let dek = Zeroizing::new(
+                    old_cipher
+                        .decrypt(nonce, ciphertext.as_slice())
+                        .map_err(|e| KeyStoreError::Crypto(e.to_string()))?,
+                );
 
                 // Re-encrypt using the per-instance KEK derived from the new
                 // master, same scope.
@@ -259,7 +263,12 @@ impl KeyStore {
 
         tx.commit()?;
 
-        // Update active KEK in KeyStore
+        // Update active KEK in KeyStore. Accepted ordering risk: if this
+        // `lock()` fails (mutex poisoned by an earlier panic), the rows are
+        // already committed under `new_kek` but the in-memory guard still
+        // holds `old_kek` until the process restarts and re-injects --
+        // low-likelihood (poison-only), no data loss, so not worth widening
+        // the lock scope across the whole transaction just to close it.
         let mut guard = self
             .kek
             .lock()
@@ -310,7 +319,7 @@ mod tests {
 
         // Generate DEK
         let dek = ks.generate_dek("svc-a", &db).unwrap();
-        assert_ne!(dek, [0u8; 32]);
+        assert_ne!(*dek, [0u8; 32]);
 
         // Load DEK
         let loaded = ks.load_dek("svc-a", &db).unwrap();
@@ -518,8 +527,67 @@ mod tests {
 
         let raw_bytes = fs::read(&db_path).unwrap();
         assert!(
-            !raw_bytes.windows(dek_plain.len()).any(|window| window == dek_plain),
+            !raw_bytes.windows(dek_plain.len()).any(|window| window == &dek_plain[..]),
             "plaintext DEK bytes found verbatim in substrate.db on disk"
         );
+    }
+
+    /// M04A Slice B6 review (S2 gap): a DEK generated under one master must
+    /// fail to load -- cleanly, not by panicking -- once the keystore holds
+    /// a *different* master. Guards the M3-era-DB-wipe assumption (task.md
+    /// F2/F3): rotation is the only supported path between masters.
+    #[test]
+    fn load_dek_fails_cleanly_under_wrong_master() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute(
+            "CREATE TABLE dek_store (
+                service_id    TEXT PRIMARY KEY,
+                encrypted_dek BLOB NOT NULL,
+                nonce         BLOB NOT NULL,
+                created_at    INTEGER NOT NULL
+            )",
+            [],
+        )
+        .unwrap();
+
+        let ks_m1 = KeyStore::new();
+        ks_m1.inject_kek([11u8; 32]).unwrap();
+        ks_m1.generate_dek("svc-a", &db).unwrap();
+
+        let ks_m2 = KeyStore::new();
+        ks_m2.inject_kek([22u8; 32]).unwrap();
+        assert!(
+            matches!(ks_m2.load_dek("svc-a", &db), Err(KeyStoreError::Crypto(_))),
+            "loading a DEK wrapped under a different master must fail with a Crypto error, not \
+             panic"
+        );
+    }
+
+    /// M04A Slice B6 review (T3 gap): rotation must succeed as a no-op when
+    /// `dek_store` has no rows yet (a fresh substrate rotating before any
+    /// service has been provisioned).
+    #[test]
+    fn rotate_kek_succeeds_on_empty_dek_store() {
+        let mut db = Connection::open_in_memory().unwrap();
+        db.execute(
+            "CREATE TABLE dek_store (
+                service_id    TEXT PRIMARY KEY,
+                encrypted_dek BLOB NOT NULL,
+                nonce         BLOB NOT NULL,
+                created_at    INTEGER NOT NULL
+            )",
+            [],
+        )
+        .unwrap();
+
+        let ks = KeyStore::new();
+        ks.inject_kek([1u8; 32]).unwrap();
+
+        ks.rotate_kek([2u8; 32], &mut db).unwrap();
+
+        // The new master is active: a DEK generated after rotation must
+        // round-trip under it.
+        let dek = ks.generate_dek("svc-a", &db).unwrap();
+        assert_eq!(ks.load_dek("svc-a", &db).unwrap(), dek);
     }
 }
