@@ -8,3 +8,6 @@ wit-bindgen = "0.55.0"
 
 [lib]
 crate-type = ["cdylib"]
+
+[package.metadata.component.target.dependencies]
+"syneroym:proxy" = { path = "wit/deps/proxy" }
