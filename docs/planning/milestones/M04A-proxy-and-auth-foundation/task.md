@@ -358,6 +358,34 @@ Wire `inject_kek`'s `_scope` param (`key_store.rs:46`) to derive per-app-instanc
 KEKs, gated on the caller's verified app-instance identity. Specify + test the DEK
 re-wrap path (Migration Strategy).
 
+> **Planned 2026-07-18 — see [plans/B6.md](plans/B6.md).** The plan flags that
+> this section, the Migration Strategy, and the exit criterion describe **two
+> contradictory KEK models**: "derive per-app-instance KEKs" (derive from one
+> master via HKDF) vs. "the scope passed to `inject_kek` changes to an instance
+> ID" / "`_scope` actually used" (inject a distinct KEK per instance).
+> **Decided 2026-07-18: ship the derive model** — the scope is the `service_id`
+> the DEK is already keyed by (`io.rs:103`: `app_instance_id == service_id`
+> today), so no trait/dispatch/WIT change is needed and the vestigial `_scope`
+> on `inject_kek` is removed rather than "used". No data migration (nothing is
+> deployed); the re-wrap path is proven via the existing `rotate_kek`.
+> **Spun out / deferred (milestone TBD, likely M5) — a security gate, not a
+> nicety:** IAM-gated per-instance/per-service KEK **provisioning** (the
+> architecture's independent-unlock design, `system-architecture.md:1808`) —
+> each service's KEK a *separately injected* secret, so neither substrate-RAM
+> access nor one service's KEK decrypts another's DB at rest. This is
+> **ADR-0006's actual M4 requirement** and what its "must introduce
+> per-SynApp-Instance KEK before any production multi-tenant deployment is
+> considered secure" caveat gates on. **B6 (derive-from-one-master, Model A)
+> does NOT satisfy it** — a single injected master derives every KEK, so
+> substrate/master access decrypts everything (plan B6.md §2.1). So the
+> multi-tenant-at-rest gate is **not cleared by M04A**; it remains blocked on
+> this deferred work. **Not pinned to a milestone (that would be a guess).**
+> Durable, requirement-first tracking so it cannot be silently missed: the
+> **ADR-0006 amendment** (keeps the multi-tenant caveat in force) and a
+> **visible `traceability-matrix.md` "DEFERRED, blocks multi-tenant production"
+> marker** on `[FND-SEC]` (per-app KEK) are the anchors (plan B6.md §10); this
+> note is context only.
+
 #### Slice B7: Substrate & Service Ownership (Deploy Authorization + Ownership Attribution) — split into **B7a ✅ (2026-07-18)** / **B7b ✅ (2026-07-18)** ([plans/B7.md](plans/B7.md))
 **Depends on:** B0 (done — substrate-owner resolution now sources from
 `ControllerAgreement`, see status.md addendum). **Interacts with:** B1 (a
@@ -548,7 +576,7 @@ Continues the "Professional Services Guild" walking skeleton from M03B (step 19)
 | `query-raw` with SQL injection via `params` | Bound as a parameterized value; no injection |
 | Caller declares a protocol scheme the callee does not support | Typed *unsupported-protocol/version* error (A.7) |
 | WIT⇄JSON round-trip of a `u64 > 2^53` / `char` / nested `option` value | Documented lossy-edge behavior (A0′) — no silent corruption |
-| Per-app-instance KEK requested by a caller without that app-instance's identity | `permission-denied`; another instance's KEK never returned |
+| Instance B attempts to unlock instance A's DEK (KEK derived per `service_id` scope, M04A Slice B6 / Model A) | No cross-instance decryption: A's DEK is undecryptable with B's derived KEK, and another instance's KEK is never derivable or returned — enforced structurally (a store is bound to its own `service_id`) and cryptographically (distinct HKDF `info`), not by a runtime `permission-denied` (which has no surface under the derive model) |
 
 ---
 
