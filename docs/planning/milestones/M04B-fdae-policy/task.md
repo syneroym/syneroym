@@ -5,8 +5,13 @@
 > authentication + capability foundation this milestone builds on —
 > verified caller-identity threading, UCAN context, the Universal Proxy — is the
 > sibling milestone
-> [M04A-proxy-and-auth-foundation](../M04A-proxy-and-auth-foundation/task.md).
-> Code anchors re-verified against `main` @ `6c6e859`.
+> [M04A-proxy-and-auth-foundation](../M04A-proxy-and-auth-foundation/task.md),
+> which is now **closed** — every slice (A0′, B0, A1, B1, B4, B5, B6, B7a, B7b)
+> shipped and green (matrix rows `[PLT-DAT]`/`[FND-IAM]`/`[FND-SEC]` = Complete).
+> Code anchors re-verified against `main` @ `64f3571` (2026-07-20). The one
+> M04A follow-on **not** delivered — the `ControllerAgreement` creation tool —
+> was deferred to M5 (matrix row, 2026-07-18) and is **out of M04B scope**: FDAE
+> depends on B0/B1/A1, not on that tool. See Dependency Gates below.
 >
 > **What this milestone is.** The Federated Data-Aware Authorization Engine
 > (FDAE): declarative ReBAC policy compiled into SQLite so unauthorized rows and
@@ -31,7 +36,7 @@ cross-service relationship proofs fetched mid-evaluation via the Universal Proxy
 
 | Requirement ID | Sub-scope in M04B | Current matrix status |
 |---|---|---|
-| `[FND-IAM]` (policy engine) | Declarative Zanzibar-style policy schema; ReBAC→SQL compilation (`WHERE EXISTS`/`WITH RECURSIVE`); RLS + CLS; the 4-stage hybrid pipeline; stage-4 WASM ABAC (`system-requirements-spec.md:971-985`, `system-architecture.md:1826-1848`) | No matrix row exists |
+| `[FND-IAM]` (policy engine) | Declarative Zanzibar-style policy schema; ReBAC→SQL compilation (`WHERE EXISTS`/`WITH RECURSIVE`); RLS + CLS; the 4-stage hybrid pipeline; stage-4 WASM ABAC (`system-requirements-spec.md:971-985`, `system-architecture.md:1826-1848`) | Row **exists** — `[FND-IAM]` (M4B: FDAE), status **Planned** (`traceability-matrix.md`). Exit criteria flip it to Complete with evidence. |
 
 M04A carries the `[FND-IAM]` *foundation* row (identity threading, UCAN context,
 Admin capability). M04B carries the `[FND-IAM]` *data-aware-authorization* row.
@@ -40,15 +45,28 @@ Admin capability). M04B carries the `[FND-IAM]` *data-aware-authorization* row.
 
 ## Dependency on M04A & Co-design Seams
 
-**M04B implementation follows M04A** — hard dependencies:
+**M04B implementation follows M04A**, which is closed — the three hard
+dependencies below all **shipped and are green** (verify against the anchors,
+don't re-plan them):
 
-- **B0's `NativeInvocation` caller-identity field** — Tier 3 filters *against* the
-  caller identity; without B0 there is nothing to filter by (today
-  `creator_id = self.service_id`, the DB owner, not the caller).
-- **B1's SessionContext** — the pushdown compiler binds its normalized
-  scopes/claims as SQL `?` parameters (`system-architecture.md:978`).
+- **B0's caller identity** — `NativeInvocation.caller: CallerContext` in
+  [`crates/rpc/src/native.rs`](../../../../crates/rpc/src/native.rs) carries the
+  verified `caller_did`. Tier 3 filters *against* it (before B0, the query path
+  keyed on `creator_id = self.service_id`, the DB owner, not the caller).
+- **B1's `SessionContext`** — `{subject_did, capabilities, claims,
+  verified_at_secs}` in
+  [`crates/ucan/src/session.rs`](../../../../crates/ucan/src/session.rs),
+  reached via `CallerContext.session`. The pushdown compiler binds from it as
+  SQL `?` parameters. The spec's "normalized scopes and claims"
+  (`system-requirements-spec.md:976,978`) maps onto these two fields —
+  **"scopes" is loose prose for `capabilities`**, not a missing dimension (no
+  `scopes`/`roles`/`env` field exists, and `Capability {with, can, caveats}` is
+  the richer form). `claims` is a `serde_json::Map`, trusted only when the leaf's
+  issuer is a trusted root. What the compiler binds vs. what it uses to *select a
+  policy branch* is an **unresolved decision** (see Decision Register D-04-02-a).
 - **A1's Universal Proxy** — Slice B3's stage-2 cross-service relationship-proof
-  fetch rides it.
+  fetch rides it; the internal fetch path is already reserved at
+  [`crates/rpc/src/proxy.rs:51`](../../../../crates/rpc/src/proxy.rs).
 
 **M04B *design* (ADR D-04-02) runs in parallel with M04A implementation.** Two
 contracts are built in M04A but consumed here; design them jointly (D-04-01 ↔
@@ -63,14 +81,16 @@ D-04-02 as a pair):
 
 ## Decision Register
 
-### B. Blocking — ADR drafted, awaiting acceptance before Slice B2 begins
+### B. FDAE policy schema & compilation — ADR **Accepted**, B2 unblocked
 
 - **D-04-02 — FDAE Policy Schema & Compilation Strategy** →
   [ADR-0017](../../../decisions/0017-fdae-policy-schema-and-compilation.md)
-  (**Proposed**, drafted 2026-07-16 from
+  (**Accepted 2026-07-20**; drafted 2026-07-16 from
   [`access-control-design.md`](../../access-control-design.md); co-designed with
   [ADR-0015](../../../decisions/0015-ucan-capability-model.md)'s 2026-07-16
-  amendment, which is the grant-layer half). Move to *Accepted* before B2 starts.
+  amendment, which is the grant-layer half). Accepted with the parameter-binding
+  (D-04-02-a), default-permission (-b), and `strict:` (-c) items resolved at
+  acceptance — see the ADR's "Resolved at acceptance" block. B2 is unblocked.
   Notable departures from the checklist below, each **deleting** a concept: the
   physical registry / `data_sources` is dropped entirely (a relation is local or
   names a service — policies never carry connection strings); `hierarchies`
@@ -85,10 +105,15 @@ D-04-02 as a pair):
     **typed policy model** it deserializes into (no runtime string lexers —
     `system-architecture.md:1832-1836`), versioned + JSON-Schema-validated at
     deploy (as `app-config` already is).
-  - **Two-layer naming** (see FDAE Enforcement Model below): a portable *logical*
-    vocabulary (object types, relations, permissions, field names) resolved at
-    compile time against a *physical registry* binding (logical name → service
-    DID → SQLite DB → table → column) — `system-architecture.md:1834,1881-1883`.
+  - **Naming.** A portable *logical* vocabulary (object types, relations,
+    permissions, field names). ADR-0017 **drops the standalone physical
+    registry / `data_sources`** the arch doc sketched (`:1834`): a relation is
+    either local or names a service DID; policies never carry connection
+    strings. Logical→service-DID resolution reuses the existing app-context
+    registry (`system-architecture.md:1881-1883`); logical→table/column binding
+    lives in the policy's own `definitions:` block (ADR-0017 §1, §5). *(This
+    supersedes the earlier "resolved against a physical registry binding"
+    framing, which the ADR deleted.)*
   - How ReBAC relationship chains compile to `WHERE EXISTS` / cycle-protected
     `WITH RECURSIVE` (the "Pushdown Sieve"), the `visited_track` cycle guard, and
     the `sqlite3_progress_handler` watchdog + policy-configurable time budget
@@ -106,21 +131,58 @@ D-04-02 as a pair):
   2026-07-13, amended 2026-07-16) — its `SessionContext`/`Capability` types are
   the inputs this compiler binds as SQL `?` parameters.
 
+### Sub-decisions — a/b/c resolved at ADR acceptance; d/e remain
+
+Carried from ADR-0017 §9, plus one (`-a`) surfaced by re-verifying against
+`main`. The first three were **resolved at ADR-0017's acceptance (2026-07-20)**
+and no longer gate B2; d/e remain as a deferral and a B7 hand-off.
+
+- **D-04-02-a — What the compiler binds as `?`.** ✅ **Resolved.** *"Scopes" is
+  not a missing dimension* — the spec's "scopes" (`system-requirements-spec.md:976,978`)
+  is loose prose for the shipped `capabilities` field, and `Capability {with,
+  can, caveats}` is the richer form (no `scopes`/`roles`/`env` field, none
+  added). `claims` (scalars) and a capability's scalar **`caveats`** bind as `?`;
+  the capability's `with`/`can` instead **select which permission/`WHERE EXISTS`
+  branch compiles**. No `SessionContext` change. See ADR-0017 "Resolved at
+  acceptance".
+- **D-04-02-b — Default permission when a grant names a platform ability and a
+  policy exists.** ✅ **Resolved: default-deny** unless the policy declares a
+  default (ADR-0017 §2, "Resolved at acceptance").
+- **D-04-02-c — `strict: true` mode.** ✅ **Resolved: off by default, additive**,
+  with an author-time warning; implementation **sequenced inside B2, not ahead of
+  it** (it only ever tightens, so it can't block the slice start). Whether
+  `strict` eventually flips default-on is left to the third-party-authoring point.
+- **D-04-02-d — Stale relationship data / Zanzibar "new enemy"** (ADR-0017 §9).
+  **Deliberately deferred to M7** (replication); recorded here so it is a
+  decision, not an M7 surprise. §6's TTL'd proofs bound the cross-service window.
+  **Not a M04B gate — documented deferral.**
+- **D-04-02-e — Tier-1 native-service admission ownership** (ADR-0017 §9;
+  `route_handler/dispatch.rs`'s `TODO(M04B/FDAE)`). ADR-0017's position: Tier 1
+  is a µs-scale *grant-layer* capability check, **not** a policy-engine question —
+  so that TODO does **not** belong to M04B, and "today any verified identity
+  reaches any native service" is a wider live gap than the milestone docs imply.
+  **Reconcile in B7 (grant layer), explicitly out of M04B scope.**
+
 ---
 
 ## FDAE Enforcement Model (design seed for D-04-02)
 
 *Reference material for the ADR — not the ADR itself. Grounded in the request
-lifecycle on `main` @ `6c6e859`.*
+lifecycle on `main` @ `64f3571`.*
 
 Access control is a **synthesis of cryptographic capabilities and relational
 data state** (`system-requirements-spec.md:976`): **UCAN capabilities** gate
 Tiers 0–2 (built in M04A); **FDAE ReBAC** is Tier 3 (this milestone).
 
 **Stage 0 — Context init (produces the truth, not itself a gate).** M04A B1
-builds the SessionContext `{caller_did, capabilities, scopes, claims, roles,
-env}`. Host-injected and unspoofable (`system-architecture.md:1830`). Everything
-below reads it.
+builds the verified `SessionContext` `{subject_did, capabilities, claims,
+verified_at_secs}` (`crates/ucan/src/session.rs`), wrapped by `CallerContext`
+`{caller_did, creator_id, session, proof}` (`crates/rpc/src/native.rs`).
+Host-injected and unspoofable (`system-architecture.md:1830`); never
+deserialized-and-trusted from the wire — `claims` are honored only when the
+leaf's issuer is a trusted root. Everything below reads it. *(The arch/spec
+prose also names "scopes"/"roles"/"env"; those are **not** implemented fields —
+see Decision Register D-04-02-a.)*
 
 **Tier 1 — Service admission (M04A B0).** *"May this caller invoke this interface
 on this `service_id` at all?"* — `handle_stream` / `verify_preamble`.
@@ -156,27 +218,31 @@ fetch-then-filter in the guest).
 
 ### Stage-4 ABAC — signature & guardrail
 
-The after-step is a **pure predicate over provided inputs**, *not* a handle that
-can reach back into data sources. It receives candidate-row fields + caller
-context; it must **not** be able to issue new queries (that would re-open the
-fetch-then-filter hole, break WASM isolation, and destroy the per-row performance
-model — remote data is stage 2's job, before SQL execution). Illustrative shape
-for D-04-02 to pin:
+The after-step runs on the SQL-sieve's candidate rows + caller context. Per
+**ADR-0017 §7**, it **may** issue read-only lookups (restrict-only and
+fuel-metered) — the earlier blanket "no query handle, pure predicate over
+provided inputs" prohibition was **relaxed** by the ADR: of its three original
+arguments (fetch-then-filter hole, WASM-isolation break, N+1 performance), only
+the N+1 performance one survives, and fuel-metering + restrict-only contain it.
+So stage 4 is **not** a general query planner (that is stage 2's job, before SQL
+execution), but neither is it barred from lookups. Illustrative shape for
+D-04-02 to pin:
 
 ```wit
 // guest-exported; host calls it with the SQL-sieve's candidate rows
 authorize-rows: func(ctx: auth-context, rows: list<candidate-row>)
              -> list<row-decision>;
-// auth-context = { caller-did, capabilities, scopes, claims, roles, env }
+// auth-context = { subject-did, capabilities, claims }   // mirrors SessionContext
 // row-decision = allow | deny | redact(fields)
 ```
 
 Decisions D-04-02 must settle: **batch invocation** (pass a batch, not one call
-per row — hot path); **opt-in per policy rule** (not global); and — since the
-arch calls stage 4 an *"Override Filter"* (`system-requirements-spec.md:983`) —
-whether it may only **further-restrict/redact** (safe default) or also **widen**
-access beyond ReBAC (dangerous; must be explicitly capability-gated if allowed).
-Default: restrict-only.
+per row — hot path); **opt-in per policy rule** (not global); the **fuel/time
+budget** for any §7 lookup; and — since the arch calls stage 4 an *"Override
+Filter"* (`system-requirements-spec.md:983`) — that it may only
+**further-restrict/redact**, never **widen** access beyond ReBAC. Default and
+enforced position: **restrict-only** (a widen path would need an explicit,
+separately capability-gated design; not in M04B scope).
 
 ---
 
@@ -200,29 +266,33 @@ Default: restrict-only.
 
 M04B may begin **implementation** only when:
 
-1. **M04A is closed** — B0 (identity field), B1 (SessionContext), and A1
-   (Universal Proxy) shipped and green.
-2. **ADR D-04-02 resolved** and written to `docs/decisions/` before Slice B2.
-   D-04-02 *design* may proceed in parallel with M04A implementation; only B2/B3
-   *code* is gated.
+1. ~~**M04A is closed**~~ — **SATISFIED (2026-07-20).** B0 (caller identity),
+   B1 (`SessionContext`), and A1 (Universal Proxy) all shipped and green; matrix
+   rows Complete. The deferred `ControllerAgreement` creation tool (M5) does
+   **not** gate M04B — FDAE binds B0/B1/A1, not that tool.
+2. ~~**ADR D-04-02 resolved**~~ — **SATISFIED (2026-07-20).** ADR-0017 is
+   **Accepted**, with sub-decisions **D-04-02-a/-b/-c** resolved at acceptance
+   (parameter binding, default-deny, `strict:` off-by-default-and-sequenced).
+   D-04-02-d (M7 deferral) and -e (B7 grant-layer) were never B2 blockers.
 3. `cargo test --workspace` clean, zero clippy warnings on the branch M04B starts
-   from.
+   from (main is currently green @ `64f3571`).
 
-**Slice order:** B2 (local sieve) → B3 (federated fetch, needs A1) → stage-4 ABAC
-(may fold into B2's design).
+**Slice order:** B2 (local sieve) → B3 (federated fetch, needs A1) → B4-fdae
+(stage-4 ABAC, depends on B2; may fold into it).
 
 ---
 
-## Current State Inventory (anchors re-verified on `main` @ `6c6e859`)
+## Current State Inventory (anchors re-verified on `main` @ `64f3571`)
 
 | Crate / File | What Exists / Gap |
 |---|---|
-| `crates/data_db/src/filter.rs` | ADR-0007 MongoDB-style JSON filter → parameterized SQLite compiler. **The FDAE security subquery must merge with this**, not replace it |
+| `crates/data_db/src/filter.rs` | ADR-0007 MongoDB-style JSON filter → parameterized SQLite compiler: `compile_filter(Option<&str>) -> Option<CompiledFilter>`. **The FDAE security subquery must merge with `CompiledFilter`** (one `AND` at SQL generation), not replace it |
 | `crates/data_db/src/sqlite.rs` | CRUD/query building, single-writer + reader-pool model. Query path is where the compiled `WHERE EXISTS` block is injected |
-| `crates/rpc/src/native.rs` (post-M04A) | `NativeInvocation` will carry the caller identity Tier 3 filters against (M04A B0) |
-| `crates/router` Universal Proxy (post-M04A A1) | Transport B3's cross-service proof-fetch rides |
+| `crates/rpc/src/native.rs` | **Shipped (B0):** `NativeInvocation.caller: CallerContext` carries the verified `caller_did` + `SessionContext` Tier 3 filters against |
+| `crates/rpc/src/proxy.rs:51` | **Shipped (A1):** Substrate-internal proxy path already reserved for "the FDAE policy engine's relationship-proof fetch" — B3's stage-2 transport |
+| In-code seams | `TODO(M04B/FDAE)` markers mark the wire-in points: `router/src/route_handler/dispatch.rs` (Tier-1 admission — see D-04-02-e), `router/src/proxy.rs` (interim coarse gate → FDAE), `control_plane/src/service.rs` (security-op authz) |
 | [ADR-0007](../../../decisions/0007-data-layer-wit-interface.md) | "No result is a valid outcome" principle — unauthorized rows are *excluded*, not errored |
-| — | **Gaps:** no FDAE policy model, no ReBAC→SQL compiler, no RLS/CLS, no cross-service fetch, no stage-4 ABAC |
+| — | **Gaps:** no FDAE policy model, no ReBAC→SQL compiler, no RLS/CLS, no cross-service fetch, no stage-4 ABAC — no `fdae` crate or `policy`/`rebac` module exists in `crates/data_db/src/` |
 
 ---
 
@@ -248,7 +318,8 @@ D-04-02) — minor bump, non-breaking. `wasm32-wasip2` must stay unbroken.
 ## Ordered Implementation Slices
 
 #### Slice B2: Local FDAE (SQL Pushdown Sieve)
-**Blocked on:** ADR D-04-02. **Depends on:** M04A (B1 SessionContext, B0 identity).
+**Unblocked** (ADR D-04-02 Accepted; a/b/c resolved). **Depends on:** M04A (B1
+SessionContext, B0 identity).
 **Requirement:** `[FND-IAM]`.
 Compile declarative ReBAC policy into SQLite `WHERE EXISTS` / cycle-protected
 `WITH RECURSIVE`; implement **Mode A** (Point-In-Time) and **Mode B** (Relational
@@ -256,8 +327,12 @@ Data Filtering) per `system-architecture.md:1842-1844`; RLS (row prune) + CLS
 (column projection/masking); the `visited_track` cycle guard and
 `sqlite3_progress_handler` watchdog with **default-deny** on timeout
 (`:1847-1848`); strict parameterized binding (no injection). Merge the compiled
-security subquery with the caller's ADR-0007 JSON filter at SQL generation.
-Covers pipeline stages 1, 3, 4 (stage 2 is B3).
+security subquery with the caller's ADR-0007 `CompiledFilter` at SQL generation
+(one `AND`, two compilers). Covers pipeline stages 1 and 3 (stage 2 is B3;
+stage 4 is Slice B4-fdae). Applies the ADR-0017 resolutions: bind `claims` +
+capability `caveats` while `with`/`can` select the branch (D-04-02-a);
+**default-deny** when no permission is named (-b); `strict:` off by default and
+implemented within this slice (-c).
 
 #### Slice B3: Federated FDAE (Cross-Service Parameter Fetch)
 **Depends on:** B2, and M04A A1 (Universal Proxy). **Requirement:** `[FND-IAM]`.
@@ -266,10 +341,14 @@ pause evaluation, fetch remote relationship proofs/parameters via the Universal
 Proxy, inject into local evaluation context, resume. Enforcement happens at the
 **data-owning node**; a fetch timeout falls back to **deny**, not silent allow.
 
-#### Stage-4 WASM ABAC
+#### Slice B4-fdae: Stage-4 WASM ABAC
+**Depends on:** B2 (candidate rows come from the sieve). May fold into B2's
+design if it stays small. **Requirement:** `[FND-IAM]`.
 Wire the guest-exported `authorize-rows` after-step (shape per D-04-02, see FDAE
-Enforcement Model). Pure predicate over provided inputs; batched; opt-in per rule;
-restrict-only by default.
+Enforcement Model). Batched (one call per candidate batch, not per row); opt-in
+per policy rule; **restrict-only** (may redact/deny, never widen). Per ADR-0017
+§7 it **may** issue read-only lookups, but only fuel-/time-metered — enforce the
+budget and Default-Deny on overrun.
 
 ---
 
@@ -294,7 +373,8 @@ Continues from M04A (steps 20–21, 24–25):
 | FDAE policy with a cyclic ReBAC relationship in user data | `visited_track` breaks recursion; no infinite loop (`system-architecture.md:1847`) |
 | Compiled FDAE query exceeds the policy time budget | Transaction rolled back, Default-Denied (`:1848`) |
 | Cross-service FDAE parameter fetch times out | Falls back to deny, not silent allow |
-| Stage-4 ABAC attempts to reach back into a data source | Not possible by construction — it receives rows + context only, no query handle |
+| Stage-4 ABAC attempts to **widen** access beyond ReBAC | Rejected — restrict-only enforced; a widen decision cannot grant a row the sieve excluded (ADR-0017 §7) |
+| Stage-4 ABAC read-only lookup (§7) exceeds its fuel/time budget | Aborted, row Default-Denied; the lookup cannot run unmetered |
 | Stage-4 ABAC returns `redact(fields)` | Named fields removed from the row before it reaches the guest |
 
 ---
@@ -325,7 +405,7 @@ Continues from M04A (steps 20–21, 24–25):
 ## Measurable Exit Criteria
 
 - [ ] `cargo +nightly fmt --all` clean; `cargo clippy --workspace --all-targets --all-features` zero warnings; `cargo test --workspace` green; `mise run test:e2e` green (no M0–M04A regression); `wasm32-wasip2` unbroken after every slice.
-- [ ] ADR D-04-02 exists in `docs/decisions/`.
+- [x] ADR D-04-02 ([ADR-0017](../../../decisions/0017-fdae-policy-schema-and-compilation.md)) **Accepted** (2026-07-20), with D-04-02-a/-b/-c resolved.
 - [ ] FDAE pushdown sieve implemented: Mode A + Mode B, RLS + CLS, cycle guard, watchdog default-deny, parameterized binding.
 - [ ] Compiled FDAE security subquery merges correctly with the ADR-0007 JSON filter.
 - [ ] Federated cross-service fetch (B3) works over the Universal Proxy; timeout→deny verified.
@@ -333,4 +413,5 @@ Continues from M04A (steps 20–21, 24–25):
 - [ ] Reference scenario steps 22–23 execute end-to-end.
 - [ ] All Failure and Security Tests produce documented outcomes.
 - [ ] Performance budgets verified; `criterion` output in `status.md`.
-- [ ] `traceability-matrix.md` updated with M04B evidence for `[FND-IAM]` (data-aware authorization: pushdown sieve, RLS/CLS, 4-stage pipeline); `[PRD-SAF]` retargeted to `TBD` (M04A Decision Register A.1) if not already done at M04A closeout.
+- [ ] `traceability-matrix.md` `[FND-IAM]` (M4B: FDAE) row flipped **Planned → Complete** with evidence (pushdown sieve, RLS/CLS, 4-stage pipeline, federated fetch, stage-4 ABAC). *(Row already present; `[PRD-SAF]` already retargeted to `TBD` at M04A closeout — no action unless it regresses.)*
+- [ ] Sub-decisions D-04-02-a/-b/-c (resolved at ADR acceptance) reflected in the shipped schema/compiler; D-04-02-d/-e recorded as deferral/B7 hand-off, not silently dropped.

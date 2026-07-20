@@ -1,6 +1,8 @@
 # D-04-02: FDAE Policy Schema & Compilation Strategy
 
-**Status**: Proposed (M04B blocking ADR; draft 2026-07-16)
+**Status**: Accepted (2026-07-20; drafted 2026-07-16 as the M04B blocking ADR).
+Accepted with three open items resolved at acceptance — see the "Resolved at
+acceptance" block under Decision §9.
 
 **Context**:
 
@@ -280,6 +282,37 @@ vs. row reachability* — both answered by the same `permissions:` block.
 - **Defers**: full MongoDB aggregation-operator compatibility; policy/relationship
   state replication (M7); the in-memory filter backend (§5).
 
+**Resolved at acceptance (2026-07-20)**:
+
+- **Parameter binding — what the SQL compiler binds as `?`.** The spec's
+  "normalized scopes and claims" (`system-requirements-spec.md:976,978`) maps
+  onto the two shipped `SessionContext` fields: **"scopes" is loose prose for
+  `capabilities`** — not a separate dimension, and `Capability {with, can,
+  caveats}` is its precise form (there is no `scopes`/`roles`/`env` field, and
+  none is added). `capabilities` and `claims` bind *differently*:
+  - `claims` (a `serde_json::Map` of scalars) bind directly as `?`.
+  - a whole `Capability` does **not** bind as one `?`. Its scalar **`caveats`**
+    (e.g. `{region: "EU"}` → `WHERE region = ?`) join `claims` as bound values;
+    its `with`/`can` instead **select which permission/`WHERE EXISTS` branch
+    compiles** (a gate, not a bound value).
+
+  So a capability contributes both a *branch selector* (`with`/`can`) and *bound
+  values* (`caveats`). No change to M04A's `SessionContext` type. The bindable
+  `claims` keys and `caveat` leaves are named by the policy's `definitions:`/
+  `permissions:` blocks (§1, §2), not hard-coded here.
+- **Default permission when a grant names a platform ability and a policy
+  exists** (§2). **Default-deny** unless the policy declares a default
+  permission. Conservative and fail-closed; consistent with §8's safety rails.
+- **`strict: true` mode.** Confirmed **off by default and additive** (a resource
+  with no `definitions:` entry stays grant-only, as today), with an author-time
+  warning when a known collection lacks a definition, and opt-in `strict: true`
+  at the policy top level to deny any undefined resource. Because it is purely
+  additive and only ever tightens, its **implementation is sequenced *inside*
+  the first sieve slice, not ahead of it** — it does not gate the slice's start.
+  The "additive-and-easy vs. fail-closed-by-construction" trade for whether
+  `strict` should eventually flip to default-on is left to the point third-party
+  developers author these policies.
+
 **Open — must be settled before or during implementation**:
 
 - **Stale relationship data (Zanzibar's "new enemy" problem).** Bob is removed
@@ -288,18 +321,6 @@ vs. row reachability* — both answered by the same `permissions:` block.
   **Recorded as a deliberate deferral so it is a decision, not an oversight
   discovered in M7.** §6's TTL'd proofs bound the equivalent window for
   cross-service data.
-- **Default permission when a grant names a platform ability and a policy exists**
-  (§2's "policy always applies"): which permission applies when the grant names
-  none? Default-deny unless the policy declares one is the conservative answer.
-- **A `strict: true` mode** (Postgres's `FORCE ROW LEVEL SECURITY`). Default-
-  absent (§2.1) has a real edge: define a policy on `orders`, forget
-  `order_line_items` holding the same data, and the line items are grant-only —
-  silently. `strict: true` at the policy top level would deny any resource with
-  no `definitions:` entry. **Off by default** (keeps this ADR additive and the
-  100-objects/5-rules case trivial), on for services wanting the guarantee, with
-  an author-time warning when a known collection has no definition. A genuine
-  trade between "additive and easy" and "fail-closed by construction"; the answer
-  likely depends on whether third-party developers author these policies.
 - **Tier 1 may be mis-addressed in the code.** `route_handler/dispatch.rs`'s
   `TODO(M04B/FDAE)` says which callers may reach a native service is enforced by
   FDAE "until then any verified identity passes." This ADR's position is that
