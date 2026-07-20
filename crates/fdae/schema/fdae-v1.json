@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://syneroym.xyz/schema/fdae-v1.json",
+  "title": "FDAE policy document (fdae/v1)",
+  "type": "object",
+  "required": ["version", "definitions"],
+  "additionalProperties": false,
+  "properties": {
+    "version": { "const": "fdae/v1" },
+    "strict": { "type": "boolean" },
+    "definitions": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/definition" }
+    }
+  },
+  "$defs": {
+    "definition": {
+      "type": "object",
+      "required": ["table"],
+      "additionalProperties": false,
+      "properties": {
+        "table": { "type": "string", "minLength": 1 },
+        "principal_column": { "type": "string", "minLength": 1 },
+        "relations": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/relation" }
+        },
+        "permissions": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/permission" }
+        },
+        "default": { "type": "string", "minLength": 1 }
+      }
+    },
+    "relation": {
+      "type": "object",
+      "required": ["target"],
+      "additionalProperties": false,
+      "properties": {
+        "target": { "type": "string", "minLength": 1 },
+        "service": { "type": "string", "minLength": 1 },
+        "join_column": { "type": "string", "minLength": 1 },
+        "from_key": { "type": "string", "minLength": 1 },
+        "to_key": { "type": "string", "minLength": 1 },
+        "recursive": { "type": "boolean" }
+      }
+    },
+    "permission": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allows": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "operator": {
+          "type": "string",
+          "enum": ["union", "intersection", "exclusion"]
+        },
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "minItems": 1
+          }
+        },
+        "conditions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/condition" }
+        },
+        "includes": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "fields": { "$ref": "#/$defs/fields_policy" }
+      }
+    },
+    "condition": {
+      "type": "object",
+      "required": ["column", "claim"],
+      "additionalProperties": false,
+      "properties": {
+        "column": { "type": "string", "minLength": 1 },
+        "claim": { "type": "string", "minLength": 1 },
+        "op": {
+          "type": "string",
+          "enum": ["eq", "ne", "gt", "gte", "lt", "lte"]
+        }
+      }
+    },
+    "fields_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allow": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "deny": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}
