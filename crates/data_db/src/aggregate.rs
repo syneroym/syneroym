@@ -34,10 +34,16 @@ pub struct CompiledAggregation {
 /// Compiles a MongoDB-style JSON aggregation document into a parameterized
 /// SQLite `SELECT ... GROUP BY ... HAVING ...` statement targeting
 /// `collection`. `collection` is validated here too (belt-and-suspenders --
-/// `do_aggregate` also validates it before calling this function).
+/// `do_aggregate` also validates it before calling this function). `sieve`
+/// is the FDAE RLS security clause (already merged with any caveat `where`s)
+/// plus its bound params, injected into the inner query's `WHERE` ahead of
+/// `$match` (ADR-0017 Mode B) -- `do_aggregate` denies the whole aggregate
+/// closed instead when the sieve carries CLS `masked_fields`, so `compile`
+/// never sees that case.
 pub fn compile(
     collection: &str,
     pipeline_json: &str,
+    sieve: Option<(&str, &[Value])>,
 ) -> Result<CompiledAggregation, DataLayerError> {
     validate_identifier(collection)?;
     let doc = parse_object(pipeline_json)?;
@@ -72,9 +78,19 @@ pub fn compile(
         None => (None, Vec::new()),
     };
 
+    let mut where_clauses = Vec::new();
+    let mut sieve_params: Vec<Value> = Vec::new();
+    if let Some((sieve_clause, params)) = sieve {
+        where_clauses.push(sieve_clause.to_string());
+        sieve_params.extend(params.iter().cloned());
+    }
+    if let Some(match_clause) = &where_sql {
+        where_clauses.push(match_clause.clone());
+    }
+
     let mut inner = format!("SELECT {} FROM {collection}", group.select_exprs.join(", "));
-    if let Some(where_clause) = &where_sql {
-        inner.push_str(&format!(" WHERE {where_clause}"));
+    if !where_clauses.is_empty() {
+        inner.push_str(&format!(" WHERE {}", where_clauses.join(" AND ")));
     }
     if group.group_by_id {
         inner.push_str(" GROUP BY _id");
@@ -83,7 +99,12 @@ pub fn compile(
         inner.push_str(&format!(" HAVING {having_clause}"));
     }
 
+    // Binding order matches the assembled text left-to-right: the
+    // `$group` select-list params come first (they appear in `SELECT ...
+    // FROM`), then the sieve (first in `WHERE`), then `$match`, then
+    // `$having`.
     let mut params = group.params;
+    params.extend(sieve_params);
     params.extend(match_params);
     params.extend(having_params);
 
@@ -443,11 +464,11 @@ mod tests {
     use super::*;
 
     fn compile_ok(pipeline: &str) -> CompiledAggregation {
-        compile("people", pipeline).unwrap()
+        compile("people", pipeline, None).unwrap()
     }
 
     fn compile_err(pipeline: &str) -> DataLayerError {
-        compile("people", pipeline).unwrap_err()
+        compile("people", pipeline, None).unwrap_err()
     }
 
     fn expect_schema_violation(err: &DataLayerError, contains: &str) {

@@ -7740,6 +7740,8 @@ dependencies = [
  "sha2 0.10.9",
  "syneroym-core",
  "syneroym-data-keystore",
+ "syneroym-fdae",
+ "syneroym-ucan",
  "syneroym-wit-interfaces",
  "tempfile",
  "tokio",

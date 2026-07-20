@@ -333,7 +333,7 @@ D-04-02) — minor bump, non-breaking. `wasm32-wasip2` must stay unbroken.
 
 ## Ordered Implementation Slices
 
-#### Slice B2: Local FDAE (SQL Pushdown Sieve)
+#### Slice B2: Local FDAE (SQL Pushdown Sieve) — Phase 1 ✅ (2026-07-20, PR #86); Phase 2 ✅ (2026-07-20)
 **Unblocked** (ADR D-04-02 Accepted; a/b/c resolved). **Depends on:** M04A (B1
 SessionContext, B0 identity).
 **Requirement:** `[FND-IAM]`.
@@ -349,6 +349,15 @@ stage 4 is Slice B4-fdae). Applies the ADR-0017 resolutions: bind `claims` +
 capability `caveats` while `with`/`can` select the branch (D-04-02-a);
 **default-deny** when no permission is named (-b); `strict:` off by default and
 implemented within this slice (-c).
+
+**Phase 1** (`crates/fdae`: policy model, JSON Schema, ReBAC→SQL compiler) —
+merged `main` @ PR #86. **Phase 2** (`crates/data_db` integration: `query`/
+`get`/`aggregate`/`delete_many` threaded with an `Option<QueryAuth>`, sieve
+spliced into SQL generation, new `check_access` Mode-A primitive, watchdog
+matrix wired) — done on `feat/m04b-slice-b2-data-db`. CLS is plumbed
+(`ReadOutcome::masked_fields` exposed) but **not yet stripped** — the
+host-side field-projection lands in **Phase 3**, so the Failure/Security
+matrix's CLS row stays open until then. Full evidence: `status.md`.
 
 #### Slice B3: Federated FDAE (Cross-Service Parameter Fetch)
 **Depends on:** B2, and M04A A1 (Universal Proxy). **Requirement:** `[FND-IAM]`.

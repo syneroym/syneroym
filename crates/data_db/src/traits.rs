@@ -4,7 +4,10 @@ use async_trait::async_trait;
 use syneroym_data_keystore::KeyStore;
 use zeroize::Zeroizing;
 
-use crate::host_store;
+use crate::{
+    auth::{QueryAuth, ReadOutcome},
+    host_store,
+};
 
 #[async_trait]
 pub trait StorageProvider: Send + Sync {
@@ -134,31 +137,41 @@ pub trait ServiceStore: Send + Sync {
     ) -> Result<(), host_store::DataLayerError>;
 
     /// Fetches a record by id. Returns `Ok(None)` if the record does not
-    /// exist -- a missing record is a valid state, not an error.
+    /// exist -- a missing record is a valid state, not an error. `auth`
+    /// applies the FDAE pushdown sieve (ADR-0017 Mode A) when present; an
+    /// unreachable-but-existing row is indistinguishable from a missing one
+    /// (`ReadOutcome::value == None`), per ADR-0007 "no result is a valid
+    /// outcome".
     async fn get(
         &self,
         collection: &str,
         id: &str,
-    ) -> Result<Option<host_store::RecordReadValue>, host_store::DataLayerError>;
+        auth: Option<&QueryAuth<'_>>,
+    ) -> Result<ReadOutcome<Option<host_store::RecordReadValue>>, host_store::DataLayerError>;
 
     /// Queries records matching an optional MongoDB-style JSON filter, with
     /// cursor pagination. Returns an empty list (not an error) when nothing
-    /// matches.
+    /// matches. `auth` applies the FDAE pushdown sieve (ADR-0017 Mode B) when
+    /// present, ANDed with the caller's own filter.
     async fn query(
         &self,
         collection: &str,
         opts: &host_store::QueryOptions,
-    ) -> Result<host_store::QueryResult, host_store::DataLayerError>;
+        auth: Option<&QueryAuth<'_>>,
+    ) -> Result<ReadOutcome<host_store::QueryResult>, host_store::DataLayerError>;
 
     /// Runs an aggregation (ADR-0007, Slice B4) over a collection: compiles
     /// the MongoDB-style aggregation document `pipeline` to a parameterized
     /// `GROUP BY`/`HAVING` query and returns the projected columns/rows.
     /// Safe by construction (whitelisted operators, all values bound) -- no
-    /// capability gate, same trust level as `query`.
+    /// capability gate, same trust level as `query`. `auth` applies the FDAE
+    /// RLS sieve to the inner query; a CLS-active policy denies the whole
+    /// aggregate rather than attempting a CLS-safe aggregation.
     async fn aggregate(
         &self,
         collection: &str,
         pipeline: &str,
+        auth: Option<&QueryAuth<'_>>,
     ) -> Result<host_store::RawQueryResult, host_store::DataLayerError>;
 
     /// Deletes a record by id. Idempotent: deleting a non-existent id is not
@@ -166,11 +179,13 @@ pub trait ServiceStore: Send + Sync {
     async fn delete(&self, collection: &str, id: &str) -> Result<(), host_store::DataLayerError>;
 
     /// Deletes all records matching an optional filter, returning the number
-    /// of affected rows.
+    /// of affected rows. `auth` applies the FDAE pushdown sieve as a
+    /// `data-layer/write` operation (deleting is a write, not a read).
     async fn delete_many(
         &self,
         collection: &str,
         filter: Option<&str>,
+        auth: Option<&QueryAuth<'_>>,
     ) -> Result<u64, host_store::DataLayerError>;
 
     /// Applies all mutations in a single transaction, rolling back entirely
@@ -193,4 +208,17 @@ pub trait ServiceStore: Send + Sync {
         sql: &str,
         params: &[host_store::SqlValue],
     ) -> Result<host_store::RawQueryResult, host_store::DataLayerError>;
+
+    /// Mode A point-in-time check (ADR-0017 §4): "may `auth`'s caller reach
+    /// `id` in `collection` under `operation`?" Fail-closed: a policy-absent
+    /// caller falls back to an existence check (D3); any compile/exec error
+    /// or watchdog timeout returns `Ok(false)`, never surfaced as an error a
+    /// caller could misread as "allowed".
+    async fn check_access(
+        &self,
+        collection: &str,
+        id: &str,
+        operation: &str,
+        auth: Option<&QueryAuth<'_>>,
+    ) -> Result<bool, host_store::DataLayerError>;
 }

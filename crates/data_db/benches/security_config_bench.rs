@@ -144,7 +144,7 @@ fn bench_sqlcipher_overhead(c: &mut Criterion) {
             .unwrap();
         group.bench_function(format!("get_{label}"), |b| {
             b.to_async(&runtime).iter(|| async {
-                let _ = store.get("bench", black_box("g1")).await.unwrap();
+                let _ = store.get("bench", black_box("g1"), None).await.unwrap();
             });
         });
 

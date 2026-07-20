@@ -1,0 +1,427 @@
+//! FDAE pushdown-sieve integration tests (M04B Slice B2 Phase 2): real SQL
+//! against seeded rows through the `ServiceStore` trait, exercised with a
+//! real compiled [`Policy`] and hand-built `SessionContext`s -- asserting row
+//! *visibility*, not SQL string shape.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+use std::sync::Arc;
+
+use serde_json::json;
+use syneroym_data_keystore::KeyStore;
+use syneroym_fdae::{Policy, parse_and_validate};
+use syneroym_ucan::{Ability, Capability, ResourceUri, SessionContext};
+use tempfile::tempdir;
+
+use crate::{
+    QueryAuth, ServiceStore, SqliteStorageProvider, StorageProvider,
+    host_store::{CollectionSchema, DataLayerError, QueryOptions, RecordWriteValue, SqlValue},
+};
+
+/// `SqlValue` doesn't derive `PartialEq` (only `Clone`/`Debug`/serde) --
+/// compare via its already-derived `Serialize` impl, mirroring
+/// `tests_crud.rs::rows_as_json`.
+fn rows_as_json(rows: &[Vec<SqlValue>]) -> serde_json::Value {
+    serde_json::to_value(rows).unwrap()
+}
+
+const SERVICE_ID: &str = "svc-fdae-test";
+
+async fn setup_store() -> Box<dyn ServiceStore> {
+    let dir = tempdir().unwrap();
+    let dir = Box::leak(Box::new(dir));
+    let provider = SqliteStorageProvider::new(dir.path(), false).unwrap();
+    let key_store = Arc::new(KeyStore::new());
+    provider.open_service_db("fdae-test-svc", &key_store).await.unwrap()
+}
+
+fn plain_schema(name: &str) -> CollectionSchema {
+    CollectionSchema { name: name.to_string(), indexes: vec![] }
+}
+
+fn write_value(id: &str, payload_json: &str) -> RecordWriteValue {
+    RecordWriteValue { id: id.to_string(), payload: payload_json.as_bytes().to_vec() }
+}
+
+fn resource(collection: &str) -> ResourceUri {
+    ResourceUri(format!(
+        "{}/collection/{collection}",
+        ResourceUri::service(SERVICE_ID, SERVICE_ID).0
+    ))
+}
+
+fn read_cap(collection: &str) -> Capability {
+    Capability {
+        with: resource(collection),
+        can: Ability(Ability::DATA_LAYER_READ.to_string()),
+        caveats: None,
+    }
+}
+
+fn session(subject_did: &str, capabilities: Vec<Capability>) -> SessionContext {
+    SessionContext {
+        subject_did: subject_did.to_string(),
+        capabilities,
+        claims: serde_json::Map::new(),
+        verified_at_secs: 0,
+    }
+}
+
+/// `document` --creator--> `user` (principal_column `did`), `view` permission
+/// reachable only via the creator relation.
+fn single_hop_policy() -> Policy {
+    parse_and_validate(
+        r#"{
+            "version": "fdae/v1",
+            "definitions": {
+                "document": {
+                    "table": "documents",
+                    "relations": {"creator": {"target": "user", "join_column": "creator_uuid"}},
+                    "permissions": {
+                        "view": {"allows": ["data-layer/read"], "paths": [["creator", "caller"]]}
+                    }
+                },
+                "user": {"table": "users", "principal_column": "did"}
+            }
+        }"#,
+    )
+    .unwrap()
+}
+
+/// Same shape as `single_hop_policy`, plus a CLS `fields.deny: ["ssn"]` on
+/// `view`.
+fn cls_policy() -> Policy {
+    parse_and_validate(
+        r#"{
+            "version": "fdae/v1",
+            "definitions": {
+                "document": {
+                    "table": "documents",
+                    "relations": {"creator": {"target": "user", "join_column": "creator_uuid"}},
+                    "permissions": {
+                        "view": {
+                            "allows": ["data-layer/read"],
+                            "paths": [["creator", "caller"]],
+                            "fields": {"deny": ["ssn"]}
+                        }
+                    }
+                },
+                "user": {"table": "users", "principal_column": "did"}
+            }
+        }"#,
+    )
+    .unwrap()
+}
+
+/// A `manage` permission covering `data-layer/write`, reachable via the same
+/// creator relation -- used to exercise `delete_many`'s D2 write-op binding.
+fn write_policy() -> Policy {
+    parse_and_validate(
+        r#"{
+            "version": "fdae/v1",
+            "definitions": {
+                "document": {
+                    "table": "documents",
+                    "relations": {"creator": {"target": "user", "join_column": "creator_uuid"}},
+                    "permissions": {
+                        "manage": {"allows": ["data-layer/write"], "paths": [["creator", "caller"]]}
+                    }
+                },
+                "user": {"table": "users", "principal_column": "did"}
+            }
+        }"#,
+    )
+    .unwrap()
+}
+
+/// `document.creator` targets a definition (`ghost_user`) whose physical
+/// table is never created via `create_collection` -- ADR-0017's 2026-07-20
+/// `principal_column` amendment's residual "missing target table" case
+/// (§6.6): this must fail closed, not leak.
+fn missing_target_table_policy() -> Policy {
+    parse_and_validate(
+        r#"{
+            "version": "fdae/v1",
+            "definitions": {
+                "document": {
+                    "table": "documents",
+                    "relations": {"creator": {"target": "ghost_user", "join_column": "creator_uuid"}},
+                    "permissions": {
+                        "view": {"allows": ["data-layer/read"], "paths": [["creator", "caller"]]}
+                    }
+                },
+                "ghost_user": {"table": "ghost_users_never_created", "principal_column": "did"}
+            }
+        }"#,
+    )
+    .unwrap()
+}
+
+async fn seed_creator_docs(store: &dyn ServiceStore) {
+    store.create_collection(&plain_schema("users")).await.unwrap();
+    store.create_collection(&plain_schema("documents")).await.unwrap();
+    store
+        .put("users", &write_value("u-alice", &json!({"did": "did:key:alice"}).to_string()), "svc")
+        .await
+        .unwrap();
+    store
+        .put("users", &write_value("u-bob", &json!({"did": "did:key:bob"}).to_string()), "svc")
+        .await
+        .unwrap();
+    store
+        .put(
+            "documents",
+            &write_value("doc-1", &json!({"creator_uuid": "u-alice"}).to_string()),
+            "svc",
+        )
+        .await
+        .unwrap();
+    store
+        .put(
+            "documents",
+            &write_value("doc-2", &json!({"creator_uuid": "u-bob"}).to_string()),
+            "svc",
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn mode_b_query_excludes_unreachable_rows_not_error() {
+    let store = setup_store().await;
+    seed_creator_docs(store.as_ref()).await;
+    let policy = single_hop_policy();
+    let alice = session("did:key:alice", vec![read_cap("documents")]);
+    let auth = QueryAuth { policy: &policy, session: &alice, service_id: SERVICE_ID };
+
+    let opts = QueryOptions { filter: None, limit: None, cursor: None };
+    let outcome = store.query("documents", &opts, Some(&auth)).await.unwrap();
+    let ids: Vec<_> = outcome.value.records.iter().map(|r| r.id.clone()).collect();
+    assert_eq!(ids, vec!["doc-1"], "bob's document must be excluded, not erred");
+    assert!(outcome.masked_fields.is_empty());
+}
+
+#[tokio::test]
+async fn mode_a_check_access_denies_unreachable_row() {
+    let store = setup_store().await;
+    seed_creator_docs(store.as_ref()).await;
+    let policy = single_hop_policy();
+    let alice = session("did:key:alice", vec![read_cap("documents")]);
+    let auth = QueryAuth { policy: &policy, session: &alice, service_id: SERVICE_ID };
+
+    assert!(
+        store
+            .check_access("documents", "doc-1", Ability::DATA_LAYER_READ, Some(&auth))
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store
+            .check_access("documents", "doc-2", Ability::DATA_LAYER_READ, Some(&auth))
+            .await
+            .unwrap()
+    );
+}
+
+#[tokio::test]
+async fn check_access_with_no_auth_is_an_existence_check() {
+    // D3: `auth = None` falls back to plain existence, not policy semantics.
+    let store = setup_store().await;
+    seed_creator_docs(store.as_ref()).await;
+
+    assert!(store.check_access("documents", "doc-1", "data-layer/read", None).await.unwrap());
+    assert!(store.check_access("documents", "doc-2", "data-layer/read", None).await.unwrap());
+    assert!(
+        !store.check_access("documents", "does-not-exist", "data-layer/read", None).await.unwrap()
+    );
+}
+
+#[tokio::test]
+async fn get_of_unreachable_row_returns_none_not_error() {
+    let store = setup_store().await;
+    seed_creator_docs(store.as_ref()).await;
+    let policy = single_hop_policy();
+    let alice = session("did:key:alice", vec![read_cap("documents")]);
+    let auth = QueryAuth { policy: &policy, session: &alice, service_id: SERVICE_ID };
+
+    let own = store.get("documents", "doc-1", Some(&auth)).await.unwrap();
+    assert!(own.value.is_some());
+    let other = store.get("documents", "doc-2", Some(&auth)).await.unwrap();
+    assert!(other.value.is_none(), "an existing-but-unreachable row reads as a miss (ADR-0007)");
+}
+
+#[tokio::test]
+async fn aggregate_is_row_filtered_identically_to_query() {
+    let store = setup_store().await;
+    seed_creator_docs(store.as_ref()).await;
+    let policy = single_hop_policy();
+    let alice = session("did:key:alice", vec![read_cap("documents")]);
+    let auth = QueryAuth { policy: &policy, session: &alice, service_id: SERVICE_ID };
+
+    let result = store
+        .aggregate("documents", r#"{"$group":{"_id":null,"n":{"$sum":1}}}"#, Some(&auth))
+        .await
+        .unwrap();
+    assert_eq!(
+        rows_as_json(&result.rows),
+        rows_as_json(&[vec![SqlValue::Integer(1)]]),
+        "only alice's own doc-1 is counted"
+    );
+}
+
+#[tokio::test]
+async fn aggregate_denied_when_cls_active() {
+    let store = setup_store().await;
+    seed_creator_docs(store.as_ref()).await;
+    let policy = cls_policy();
+    let alice = session("did:key:alice", vec![read_cap("documents")]);
+    let auth = QueryAuth { policy: &policy, session: &alice, service_id: SERVICE_ID };
+
+    let err = store
+        .aggregate("documents", r#"{"$group":{"_id":null,"n":{"$sum":1}}}"#, Some(&auth))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataLayerError::PermissionDenied));
+}
+
+#[tokio::test]
+async fn masked_fields_exposed_but_rows_unmasked_in_phase_2() {
+    let store = setup_store().await;
+    seed_creator_docs(store.as_ref()).await;
+    let policy = cls_policy();
+    let alice = session("did:key:alice", vec![read_cap("documents")]);
+    let auth = QueryAuth { policy: &policy, session: &alice, service_id: SERVICE_ID };
+
+    let opts = QueryOptions { filter: None, limit: None, cursor: None };
+    let outcome = store.query("documents", &opts, Some(&auth)).await.unwrap();
+    assert_eq!(outcome.masked_fields, vec!["ssn".to_string()]);
+    // Phase 2 never strips fields itself (Phase 3 does, host-side) -- the
+    // row's payload is untouched even though the mask metadata is exposed.
+    assert_eq!(outcome.value.records.len(), 1);
+}
+
+#[tokio::test]
+async fn delete_many_is_row_filtered_as_a_write_operation() {
+    let store = setup_store().await;
+    seed_creator_docs(store.as_ref()).await;
+    let policy = write_policy();
+    // Alice holds only a *read* capability -- `manage` requires
+    // data-layer/write, so D2's write-mode compile must deny every row.
+    let alice_read_only = session("did:key:alice", vec![read_cap("documents")]);
+    let auth_ro = QueryAuth { policy: &policy, session: &alice_read_only, service_id: SERVICE_ID };
+    let deleted = store.delete_many("documents", None, Some(&auth_ro)).await.unwrap();
+    assert_eq!(deleted, 0, "a read-only capability must not satisfy the write-mode sieve");
+
+    // A write capability lets alice delete only her own row.
+    let write_cap = Capability {
+        with: resource("documents"),
+        can: Ability(Ability::DATA_LAYER_WRITE.to_string()),
+        caveats: None,
+    };
+    let alice_write = session("did:key:alice", vec![write_cap]);
+    let auth_rw = QueryAuth { policy: &policy, session: &alice_write, service_id: SERVICE_ID };
+    let deleted = store.delete_many("documents", None, Some(&auth_rw)).await.unwrap();
+    assert_eq!(deleted, 1, "only alice's own document is deletable");
+    assert!(store.get("documents", "doc-1", None).await.unwrap().value.is_none());
+    assert!(store.get("documents", "doc-2", None).await.unwrap().value.is_some());
+}
+
+#[tokio::test]
+async fn binding_order_sieve_and_filter_and_cursor_with_caveat_where() {
+    let store = setup_store().await;
+    store.create_collection(&plain_schema("users")).await.unwrap();
+    store.create_collection(&plain_schema("documents")).await.unwrap();
+    store
+        .put("users", &write_value("u-alice", &json!({"did": "did:key:alice"}).to_string()), "svc")
+        .await
+        .unwrap();
+    for (id, region, kind) in
+        [("doc-1", "EU", "report"), ("doc-2", "US", "report"), ("doc-3", "EU", "memo")]
+    {
+        store
+            .put(
+                "documents",
+                &write_value(
+                    id,
+                    &json!({"creator_uuid": "u-alice", "region": region, "kind": kind}).to_string(),
+                ),
+                "svc",
+            )
+            .await
+            .unwrap();
+    }
+
+    let policy = single_hop_policy();
+    let cap_with_region_caveat = Capability {
+        with: resource("documents"),
+        can: Ability(Ability::DATA_LAYER_READ.to_string()),
+        caveats: Some(json!({"where": {"region": "EU"}})),
+    };
+    let alice = session("did:key:alice", vec![cap_with_region_caveat]);
+    let auth = QueryAuth { policy: &policy, session: &alice, service_id: SERVICE_ID };
+
+    // Sieve (creator=alice, all 3) ∧ caveat (region=EU, doc-1/doc-3) ∧ the
+    // caller's own JSON filter (kind=report, doc-1 only) ∧ cursor pagination.
+    let opts = QueryOptions {
+        filter: Some(r#"{"kind": "report"}"#.to_string()),
+        limit: Some(10),
+        cursor: None,
+    };
+    let outcome = store.query("documents", &opts, Some(&auth)).await.unwrap();
+    let ids: Vec<_> = outcome.value.records.iter().map(|r| r.id.clone()).collect();
+    assert_eq!(ids, vec!["doc-1"]);
+}
+
+#[tokio::test]
+async fn missing_target_table_fails_closed_not_leak() {
+    let store = setup_store().await;
+    // Only `documents` is created -- `ghost_users_never_created` never is.
+    store.create_collection(&plain_schema("documents")).await.unwrap();
+    store
+        .put(
+            "documents",
+            &write_value("doc-1", &json!({"creator_uuid": "u-alice"}).to_string()),
+            "svc",
+        )
+        .await
+        .unwrap();
+
+    let policy = missing_target_table_policy();
+    let alice = session("did:key:alice", vec![read_cap("documents")]);
+    let auth = QueryAuth { policy: &policy, session: &alice, service_id: SERVICE_ID };
+
+    let opts = QueryOptions { filter: None, limit: None, cursor: None };
+    let err = store.query("documents", &opts, Some(&auth)).await.unwrap_err();
+    assert!(
+        matches!(err, DataLayerError::CollectionNotFound | DataLayerError::Internal(_)),
+        "a missing policy-referenced table must surface as an error, not an empty-but-successful \
+         (silently-wrong) result: got {err:?}"
+    );
+
+    // Mode A: same missing-table condition must fail closed to `Ok(false)`,
+    // never `Ok(true)`.
+    assert!(
+        !store
+            .check_access("documents", "doc-1", Ability::DATA_LAYER_READ, Some(&auth))
+            .await
+            .unwrap()
+    );
+}
+
+#[tokio::test]
+async fn policy_absent_definition_is_unfiltered_when_not_strict() {
+    // No `auth` at all preserves today's unfiltered behavior -- covered by
+    // `tests_crud.rs`; here we cover the "auth present, but the policy names
+    // no definition for this collection" branch instead (`compile_read`'s
+    // `Ok(None)` path), which must also be unfiltered, not denied.
+    let store = setup_store().await;
+    store.create_collection(&plain_schema("unrelated")).await.unwrap();
+    store.put("unrelated", &write_value("r1", "{}"), "svc").await.unwrap();
+
+    let policy = parse_and_validate(r#"{"version": "fdae/v1", "definitions": {}}"#).unwrap();
+    let alice = session("did:key:alice", vec![]);
+    let auth = QueryAuth { policy: &policy, session: &alice, service_id: SERVICE_ID };
+
+    let opts = QueryOptions { filter: None, limit: None, cursor: None };
+    let outcome = store.query("unrelated", &opts, Some(&auth)).await.unwrap();
+    assert_eq!(outcome.value.records.len(), 1);
+}

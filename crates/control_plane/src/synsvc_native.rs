@@ -281,7 +281,11 @@ impl SynSvcNativeService {
                     id: String,
                 }
                 let req: Req = parse_params(&invocation)?;
-                let result = store.get(&req.collection, &req.id).await.map_err(data_layer_error)?;
+                let result = store
+                    .get(&req.collection, &req.id, None)
+                    .await
+                    .map_err(data_layer_error)?
+                    .value;
                 to_payload(&result)
             }
             "query" => {
@@ -291,8 +295,11 @@ impl SynSvcNativeService {
                     opts: QueryOptions,
                 }
                 let req: Req = parse_params(&invocation)?;
-                let result =
-                    store.query(&req.collection, &req.opts).await.map_err(data_layer_error)?;
+                let result = store
+                    .query(&req.collection, &req.opts, None)
+                    .await
+                    .map_err(data_layer_error)?
+                    .value;
                 to_payload(&result)
             }
             "delete" => {
@@ -316,7 +323,7 @@ impl SynSvcNativeService {
                 }
                 let req: Req = parse_params(&invocation)?;
                 let affected = store
-                    .delete_many(&req.collection, req.filter.as_deref())
+                    .delete_many(&req.collection, req.filter.as_deref(), None)
                     .await
                     .map_err(|e| internal(e.to_string()))?;
                 to_payload(&affected)
@@ -429,7 +436,7 @@ impl SynSvcNativeService {
                 }
                 let req: Req = parse_params(&invocation)?;
                 let result = store
-                    .aggregate(&req.collection, &req.pipeline)
+                    .aggregate(&req.collection, &req.pipeline, None)
                     .await
                     .map_err(data_layer_error)?;
                 raw_query_result_payload(result)

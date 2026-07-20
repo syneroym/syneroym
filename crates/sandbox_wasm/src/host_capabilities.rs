@@ -18,7 +18,10 @@ use syneroym_core::local_registry::SubstrateEndpoint;
 use syneroym_data_blob::{
     BlobError as BlobStoreError, HostDownloadSession, HostUploadSession, traits::BlobProvider,
 };
-use syneroym_data_db::traits::{ServiceStore, StorageProvider};
+use syneroym_data_db::{
+    QueryAuth,
+    traits::{ServiceStore, StorageProvider},
+};
 use syneroym_data_keystore::KeyStore;
 use syneroym_mqtt_broker::{
     MessagingError as BrokerMessagingError, MqttBroker, namespace_topic,
@@ -426,7 +429,11 @@ impl store::Host for HostState {
             self.storage_provider.clone(),
         )
         .await?;
-        store.get(&collection, &id).await
+        // Real `QueryAuth` construction (from `HostState`'s policy/session)
+        // lands in Phase 3; every read call site threads `auth` now so that
+        // wiring is a construction-site change only, not a signature change.
+        let auth: Option<QueryAuth<'_>> = None;
+        Ok(store.get(&collection, &id, auth.as_ref()).await?.value)
     }
 
     async fn query(
@@ -440,7 +447,8 @@ impl store::Host for HostState {
             self.storage_provider.clone(),
         )
         .await?;
-        store.query(&collection, &opts).await
+        let auth: Option<QueryAuth<'_>> = None;
+        Ok(store.query(&collection, &opts, auth.as_ref()).await?.value)
     }
 
     async fn aggregate(
@@ -454,7 +462,8 @@ impl store::Host for HostState {
             self.storage_provider.clone(),
         )
         .await?;
-        store.aggregate(&collection, &pipeline).await
+        let auth: Option<QueryAuth<'_>> = None;
+        store.aggregate(&collection, &pipeline, auth.as_ref()).await
     }
 
     async fn delete(&mut self, collection: String, id: String) -> Result<(), DataLayerError> {
@@ -478,7 +487,8 @@ impl store::Host for HostState {
             self.storage_provider.clone(),
         )
         .await?;
-        store.delete_many(&collection, Some(filter.as_str())).await
+        let auth: Option<QueryAuth<'_>> = None;
+        store.delete_many(&collection, Some(filter.as_str()), auth.as_ref()).await
     }
 
     async fn batch_mutate(
