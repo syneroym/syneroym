@@ -270,6 +270,16 @@ The data-layer read operation maps to platform ability `data-layer/read`
 (`Ability::DATA_LAYER_READ`). `compile_read` uses that as the operation for
 branch selection.
 
+> **Implementation note (Phase 1 landed, PR #86):** the shipped signature is
+> `compile_read(policy, collection, session, service_id, operation, mode)` --
+> two params beyond this sketch. `service_id` is needed to build the
+> collection-qualified resource §3.2 itself requires; `operation: &Ability`
+> is needed so Mode A can distinguish a read check from a write check (the
+> signature above has no way to do that, which would let a read-only
+> capability pass a write-mode `check-access`). `CompiledSieve` also gained
+> `where_caveats: Vec<serde_json::Value>` per §6's decision. Treat
+> `crates/fdae/src/compile.rs` as ground truth over this section.
+
 ### 3.2 Branch selection (grant ∩ policy) — the D-04-02-a/-b core
 
 ```
@@ -412,6 +422,19 @@ Cycle guard = ADR-0017 §8 path-concatenation `visited_track`: `seen` is the `/`
 delimited id path; a node already in it is not re-expanded. `depth < ?` is the
 second backstop. `MAX_RECURSION_DEPTH` is a compile constant (propose 64) bound
 as a param, not interpolated.
+
+> **Implementation note (Phase 1 landed, PR #86):** this worked example
+> groups `management_chain` under `document.relations`, but its `from_key`/
+> `to_key` are self-join columns on `user`, not `document` -- the shipped
+> policy declares it under `user.relations` instead (relation lookup
+> transitions to the current type after each hop; `creator` reaches `user`,
+> then `management_chain` is looked up *there*). The compiled SQL is
+> unchanged. Also: `<col(...)>` here is illustrative string interpolation --
+> the shipped `col()` binds a non-reserved field name's JSON path as a `?`
+> param instead (`json_extract(qualifier.payload, ?)`), never splicing it
+> into the string literal, after a security review found the interpolated
+> form let a malformed policy-authored field name break out of the SQL
+> string.
 
 Design notes for the walk:
 - Non-recursive relations compose as nested/joined `EXISTS` correlated to the
@@ -930,9 +953,12 @@ near `config_generations`, `sqlite.rs:~655-685`; the `save`/`load` fns mirror
 
 ## 13. Suggested execution order (phases)
 
-1. **Phase 1 — `syneroym-fdae` crate**: model (`policy.rs`) + schema JSON +
+1. **Phase 1 — `syneroym-fdae` crate — landed, PR #86 (branch
+   `feat/m04b-slice-b2-fdae-sieve`).** model (`policy.rs`) + schema JSON +
    `parse_and_validate` + compiler (`compile.rs`) + full unit tests (SQL run
    against in-memory sqlite). No other crate touched. Resolve §12.1/12.2 first.
+   See the implementation notes under §3.1 and §3.4 for where the shipped
+   code deviates from this section's pseudocode.
 2. **Phase 2 — `data_db` integration**: `QueryAuth`; trait sig changes on
    **both** impls (`SqliteServiceStore` + `Arc<…>` forwarder); `do_query` merge +
    binding order; `do_get`; `do_check_access`; `delete_many` via the
