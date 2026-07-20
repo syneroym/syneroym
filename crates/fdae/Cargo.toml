@@ -16,4 +16,3 @@ serde_json.workspace = true
 rusqlite.workspace = true
 jsonschema.workspace = true
 thiserror.workspace = true
-anyhow.workspace = true

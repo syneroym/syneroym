@@ -34,10 +34,15 @@ pub struct CompiledSieve {
     pub params: Vec<Value>,
     /// CLS: payload JSON field paths to strip post-fetch. Derived from
     /// `deny`-list entries only (policy `Permission.fields.deny` union each
-    /// entitling capability's `caveats.fields.deny`); an `allow`-list
-    /// cannot be reduced to a field-name list without knowing a record's
-    /// full key set, which this compiler does not have -- see the crate's
-    /// `compile_cls` doc comment.
+    /// entitling capability's `caveats.fields.deny`). `parse_and_validate`
+    /// rejects a policy `Permission.fields.allow` outright (an allow-list
+    /// can't be reduced to a field-name-to-strip list without knowing a
+    /// record's full key set, which this compiler does not have), so it
+    /// never reaches here from the policy side; a capability's *caveat*
+    /// `fields.allow` is a runtime UCAN value outside the policy document
+    /// and is not similarly rejectable -- it remains an unenforced no-op,
+    /// same category as `syneroym-ucan`'s
+    /// `caveats_passthrough_is_not_yet_enforced`.
     pub masked_fields: Vec<String>,
     /// Each entitling capability's raw `caveats.where` document (an
     /// ADR-0007 MongoDB-style filter), for the caller to compile via
@@ -89,16 +94,19 @@ pub fn compile_read(
         ResourceUri::service(service_id, service_id).0
     ));
 
-    let (mut applicable, entitling_caps) =
+    let (mut applicable, mut entitling_caps) =
         applicable_permissions(def, object_type, &resource, operation, session);
-    close_over_includes(&mut applicable, def);
+    close_over_includes(&mut applicable, def, operation);
 
     if applicable.is_empty() {
-        let holds_operation =
-            session.capabilities.iter().any(|cap| cap.grants(&resource, operation));
+        let holding_caps: Vec<&Capability> =
+            session.capabilities.iter().filter(|cap| cap.grants(&resource, operation)).collect();
         match &def.default {
-            Some(default_perm) if holds_operation => {
+            Some(default_perm) if !holding_caps.is_empty() => {
                 applicable.insert(default_perm.clone());
+                for cap in holding_caps {
+                    push_unique(&mut entitling_caps, cap);
+                }
             }
             _ => return Ok(Some(deny_all())),
         }
@@ -203,13 +211,26 @@ fn push_unique<'a>(caps: &mut Vec<&'a Capability>, cap: &'a Capability) {
     }
 }
 
-fn close_over_includes(applicable: &mut BTreeSet<String>, def: &Definition) {
+/// Widens `applicable` by each already-applicable permission's `includes`,
+/// but only when the included permission's *own* `allows` covers
+/// `operation` -- otherwise a write-mode check could pull in an
+/// unconditionally-public (`paths: []`) read-only sibling permission and
+/// silently grant write access through its `1=1` path predicate. Closure
+/// widens *which* already-operation-eligible permissions apply; it must
+/// never re-open the operation gate `applicable_permissions` already
+/// closed.
+fn close_over_includes(applicable: &mut BTreeSet<String>, def: &Definition, operation: &Ability) {
     loop {
         let additions: Vec<String> = applicable
             .iter()
             .filter_map(|pname| def.permissions.get(pname))
             .flat_map(|perm| perm.includes.iter().cloned())
             .filter(|included| !applicable.contains(included))
+            .filter(|included| {
+                def.permissions.get(included).is_some_and(|perm| {
+                    perm.allows.iter().any(|a| Ability(a.clone()).entails(operation))
+                })
+            })
             .collect();
         if additions.is_empty() {
             return;
@@ -218,14 +239,14 @@ fn close_over_includes(applicable: &mut BTreeSet<String>, def: &Definition) {
     }
 }
 
-/// CLS: field masking derived from `deny`-list entries only. An
-/// `allow`-list narrows further but cannot be reduced to a field-name list
+/// CLS: field masking derived from `deny`-list entries only. A policy
+/// `Permission.fields.allow` is rejected at parse time (`policy::
+/// validate_permissions`), since it can't be reduced to a field-name list
 /// at compile time -- doing so would require knowing every key a record's
-/// JSON payload might carry, which the policy model does not declare. This
-/// is a recorded B2 limitation, not a silent gap: `deny` lists (the
-/// documented failure/security test case -- "caller lacks column
-/// permission -> column masked out") are fully enforced; `allow`-list-only
-/// CLS is a no-op until a schema-aware masking pass lands.
+/// JSON payload might carry, which the policy model does not declare. A
+/// capability's *caveat* `fields.allow` reaches here unrestricted (caveats
+/// are a runtime UCAN value, not part of the parsed policy document) and
+/// remains an unenforced no-op -- see `CompiledSieve::masked_fields`.
 fn compile_cls(
     def: &Definition,
     applicable: &BTreeSet<String>,
@@ -297,9 +318,12 @@ fn compile_permission(
 
     let def = get_def(policy, object_type)?;
     for (cond, claim_val) in perm.conditions.iter().zip(claim_values) {
+        // `col_expr` (and the `?` it may push for a JSON-path param) must be
+        // computed *before* the claim value is pushed: it appears first in
+        // the text below, and positional `?` binding must match text order.
+        let col_expr = col(&def.table, &cond.column, params);
         params.push(json_value_to_sql(claim_val)?);
-        path_pred =
-            format!("{path_pred} AND {} {} ?", col(&def.table, &cond.column), sql_op(cond.op));
+        path_pred = format!("{path_pred} AND {col_expr} {} ?", sql_op(cond.op));
     }
 
     Ok(path_pred)
@@ -339,14 +363,21 @@ fn get_def<'a>(policy: &'a Policy, type_name: &str) -> Result<&'a Definition, Po
         .ok_or_else(|| PolicyError::Semantic(format!("unknown object type '{type_name}'")))
 }
 
-/// `<col>`: reserved names address the physical column directly; anything
-/// else addresses the JSON `payload` column (ADR-0017 Amendments,
-/// 2026-07-20; §12.2 of the implementation plan).
-fn col(qualifier: &str, name: &str) -> String {
+/// `<col>`: reserved names address the physical column directly (`name` is
+/// checked against a fixed list, never interpolated as arbitrary text);
+/// anything else addresses the JSON `payload` column via `json_extract`,
+/// with the JSON path bound as a `?` parameter -- never spliced into the
+/// string literal -- mirroring `data_db::filter::json_path_param`. Only
+/// `qualifier` (a compiler-chosen alias, or a policy `table` name already
+/// restricted by the schema's identifier pattern) is interpolated as text;
+/// no SQL identifier can be bound as a parameter, so `table` still relies
+/// on schema validation rather than this function.
+fn col(qualifier: &str, name: &str, params: &mut Vec<Value>) -> String {
     if RESERVED_COLUMNS.contains(&name) {
         format!("{qualifier}.{name}")
     } else {
-        format!("json_extract({qualifier}.payload, '$.{name}')")
+        params.push(Value::Text(format!("$.{name}")));
+        format!("json_extract({qualifier}.payload, ?)")
     }
 }
 
@@ -428,9 +459,10 @@ fn compile_path(
                  principal_column"
             ))
         })?;
+        let col_expr = col(&start_def.table, principal_col, params);
         let bound = terminal_value(terminal, session)?;
         params.push(Value::Text(bound));
-        return Ok(format!("{} = ?", col(&start_def.table, principal_col)));
+        return Ok(format!("{col_expr} = ?"));
     }
 
     let hops = resolve_hops(policy, start_type, rel_names)?;
@@ -475,7 +507,7 @@ fn emit_chain(
                     hop.name
                 ))
             })?;
-            let correlate_expr = col(correlate_qualifier, join_column);
+            let correlate_expr = col(correlate_qualifier, join_column, params);
             let inner = if rest.is_empty() {
                 let principal_col = hop.target_def.principal_column.as_ref().ok_or_else(|| {
                     PolicyError::Semantic(format!(
@@ -484,9 +516,10 @@ fn emit_chain(
                         hop.relation.target
                     ))
                 })?;
+                let col_expr = col(&alias, principal_col, params);
                 let bound = terminal_value(terminal, session)?;
                 params.push(Value::Text(bound));
-                format!("{} = ?", col(&alias, principal_col))
+                format!("{col_expr} = ?")
             } else {
                 emit_chain(rest, &alias, terminal, session, params, alias_idx)?
             };
@@ -534,26 +567,54 @@ fn emit_fused_recursive(
     })?;
 
     let seed_table = &recursive.target_def.table;
-    let seed_correlate = col(correlate_qualifier, join_column);
-    let seed_fk = col("u", from_key);
-    let step_fk = col("u2", from_key);
-    let step_lookup = col(seed_table, to_key);
-    let bare_fk = col(seed_table, from_key);
-    let did_u = col("u", principal_col);
-    let did_u2 = col("u2", principal_col);
 
+    // `from_key` under "u" and "u2" (and `principal_col`/`to_key`) each
+    // appear several times in the text below. `col()` binds a non-reserved
+    // name's JSON path as a fresh `?` param per call, so each textual
+    // occurrence must call `col()` again (never reuse a previously
+    // rendered fragment) -- reusing a cached "json_extract(..., ?)" string
+    // would repeat its `?` in the text without a matching extra param.
+    // Building left-to-right as a sequence of statements (rather than one
+    // `format!`) makes each `col()` call's param land in the same position
+    // as its `?` in the assembled text, by construction.
+    let mut sql = String::new();
+    sql.push_str("EXISTS (WITH RECURSIVE mc(id, prin, depth, seen) AS (SELECT ");
+    sql.push_str(&col("u", from_key, params));
+    sql.push_str(", ");
+    sql.push_str(&col("u", principal_col, params));
+    sql.push_str(", 0, '/' || ");
+    sql.push_str(&col("u", from_key, params));
+    sql.push_str(" || '/' FROM ");
+    sql.push_str(seed_table);
+    sql.push_str(" u WHERE ");
+    sql.push_str(&col("u", from_key, params));
+    sql.push_str(" = ");
+    sql.push_str(&col(correlate_qualifier, join_column, params));
+    sql.push_str(" UNION ALL SELECT ");
+    sql.push_str(&col("u2", from_key, params));
+    sql.push_str(", ");
+    sql.push_str(&col("u2", principal_col, params));
+    sql.push_str(", mc.depth + 1, mc.seen || ");
+    sql.push_str(&col("u2", from_key, params));
+    sql.push_str(" || '/' FROM ");
+    sql.push_str(seed_table);
+    sql.push_str(" u2 JOIN mc ON ");
+    sql.push_str(&col("u2", from_key, params));
+    sql.push_str(" = (SELECT ");
+    sql.push_str(&col(seed_table, to_key, params));
+    sql.push_str(" FROM ");
+    sql.push_str(seed_table);
+    sql.push_str(" WHERE ");
+    sql.push_str(&col(seed_table, from_key, params));
+    sql.push_str(" = mc.id) WHERE mc.depth < ?");
     params.push(Value::Integer(MAX_RECURSION_DEPTH));
+    sql.push_str(" AND instr(mc.seen, '/' || ");
+    sql.push_str(&col("u2", from_key, params));
+    sql.push_str(" || '/') = 0) SELECT 1 FROM mc WHERE mc.prin = ?)");
     let bound = terminal_value(terminal, session)?;
     params.push(Value::Text(bound));
 
-    Ok(format!(
-        "EXISTS (WITH RECURSIVE mc(id, prin, depth, seen) AS (SELECT {seed_fk}, {did_u}, 0, '/' \
-         || {seed_fk} || '/' FROM {seed_table} u WHERE {seed_fk} = {seed_correlate} UNION ALL \
-         SELECT {step_fk}, {did_u2}, mc.depth + 1, mc.seen || {step_fk} || '/' FROM {seed_table} \
-         u2 JOIN mc ON {step_fk} = (SELECT {step_lookup} FROM {seed_table} WHERE {bare_fk} = \
-         mc.id) WHERE mc.depth < ? AND instr(mc.seen, '/' || {step_fk} || '/') = 0) SELECT 1 FROM \
-         mc WHERE mc.prin = ?)"
-    ))
+    Ok(sql)
 }
 
 #[cfg(test)]
@@ -1010,8 +1071,17 @@ mod tests {
         assert_ne!(sieve.where_clause, "0=1");
     }
 
+    /// Isolates the `includes` closure from direct entailment: the caller
+    /// holds *only* an app-permission grant for "manage" (`app/document.
+    /// manage`, a flat, self-entailing-only ability string), never a
+    /// platform-ability capability -- so "view" can only ever become
+    /// applicable through `manage`'s `includes`, never through the direct
+    /// route. This is what makes the write-mode assertion below a real
+    /// regression test for the escalation Reviewer 1 found: closure used to
+    /// widen unconditionally, so a write-mode check would previously have
+    /// pulled in "view" (read-only) anyway.
     #[test]
-    fn includes_closure_pulls_in_the_included_permissions_paths() {
+    fn includes_closure_is_gated_by_the_included_permissions_own_allows() {
         let policy = parse_and_validate(
             r#"{
                 "version": "fdae/v1",
@@ -1040,20 +1110,17 @@ mod tests {
             }"#,
         )
         .unwrap();
-        let write_cap = Capability {
+        let app_cap = Capability {
             with: resource("document"),
-            can: Ability(Ability::DATA_LAYER_WRITE.to_string()),
+            can: Ability("app/document.manage".to_string()),
             caveats: None,
         };
-        let alice = session("did:key:alice", vec![write_cap]);
-        // Requesting a *read*: "manage" itself only allows write, so it
-        // would not directly cover a read-mode check -- but its included
-        // "view" does allow read, and includes-closure happens *before*
-        // operation filtering only affects which perms became applicable
-        // in the first place. Here we check write mode: "manage" is
-        // directly entitled by the write cap, and its closure should pull
-        // in "view"'s path too (both paths OR together).
-        let sieve = compile_read(
+        let alice = session("did:key:alice", vec![app_cap]);
+
+        // Write mode: "view" (allows: read) does not cover write, so
+        // closure must NOT pull its path in -- the predicate is exactly
+        // manage's own path, no OR.
+        let write_sieve = compile_read(
             &policy,
             "document",
             &alice,
@@ -1063,8 +1130,29 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert!(sieve.where_clause.contains("creator_uuid") || sieve.where_clause.contains("dept"));
-        assert!(sieve.where_clause.contains(" OR "), "closure should OR manage's and view's paths");
+        assert!(
+            !write_sieve.where_clause.contains(" OR "),
+            "a write-mode check must not pull in a read-only included permission's path"
+        );
+
+        // Read mode: "manage" is still applicable (its own `allows: write`
+        // entails read), and "view" (allows: read) *does* cover this
+        // operation -- closure should widen to OR its path in too.
+        let read_sieve = compile_read(
+            &policy,
+            "document",
+            &alice,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::Filter,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(
+            read_sieve.where_clause.contains(" OR "),
+            "a read-mode check should widen through includes when the included permission covers \
+             it"
+        );
     }
 
     #[test]
@@ -1260,5 +1348,202 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(sieve.where_caveats, vec![json!({"region": "EU"})]);
+    }
+
+    #[test]
+    fn intersection_operator_requires_every_path_to_hold() {
+        let conn = Connection::open_in_memory().unwrap();
+        seed_schema(&conn);
+        insert_user(&conn, "u-alice", "did:key:alice", None);
+        insert_user(&conn, "u-bob", "did:key:bob", None);
+        let insert_reviewed_doc = |id: &str, creator: &str, reviewer: &str| {
+            let payload = json!({"creator_uuid": creator, "reviewer_uuid": reviewer});
+            conn.execute(
+                "INSERT INTO documents (id, payload) VALUES (?1, ?2)",
+                (id, payload.to_string()),
+            )
+            .unwrap();
+        };
+        insert_reviewed_doc("doc-both", "u-alice", "u-alice");
+        insert_reviewed_doc("doc-creator-only", "u-alice", "u-bob");
+        insert_reviewed_doc("doc-reviewer-only", "u-bob", "u-alice");
+
+        let policy = parse_and_validate(
+            r#"{
+                "version": "fdae/v1",
+                "definitions": {
+                    "document": {
+                        "table": "documents",
+                        "relations": {
+                            "creator": {"target": "user", "join_column": "creator_uuid"},
+                            "reviewer": {"target": "user", "join_column": "reviewer_uuid"}
+                        },
+                        "permissions": {
+                            "view": {
+                                "allows": ["data-layer/read"],
+                                "operator": "intersection",
+                                "paths": [["creator", "caller"], ["reviewer", "caller"]]
+                            }
+                        }
+                    },
+                    "user": {"table": "users", "principal_column": "did"}
+                }
+            }"#,
+        )
+        .unwrap();
+        let alice = session("did:key:alice", vec![read_cap(Some("document"))]);
+        let sieve = compile_read(
+            &policy,
+            "document",
+            &alice,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::Filter,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            run_sieve(&conn, "documents", &sieve),
+            vec!["doc-both"],
+            "intersection requires alice to be both creator and reviewer"
+        );
+    }
+
+    #[test]
+    fn plain_two_hop_chain_prunes_through_both_joins() {
+        // document -creator-> user -home_department-> department, with the
+        // *department's owner* (not the creator) as the terminal -- a
+        // non-recursive, non-fused 2-hop chain, distinct from the
+        // recursive-fused case the other multi-hop test covers.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE departments (id TEXT PRIMARY KEY, payload TEXT NOT NULL DEFAULT '{}');
+            CREATE TABLE users (id TEXT PRIMARY KEY, payload TEXT NOT NULL DEFAULT '{}');
+            CREATE TABLE documents (id TEXT PRIMARY KEY, payload TEXT NOT NULL DEFAULT '{}');
+            ",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO departments (id, payload) VALUES ('dept-eng', ?1)",
+            [json!({"owner_did": "did:key:carol"}).to_string()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO users (id, payload) VALUES ('u-alice', ?1)",
+            [json!({"dept_id": "dept-eng"}).to_string()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO documents (id, payload) VALUES ('doc-1', ?1)",
+            [json!({"creator_uuid": "u-alice"}).to_string()],
+        )
+        .unwrap();
+
+        let policy = parse_and_validate(
+            r#"{
+                "version": "fdae/v1",
+                "definitions": {
+                    "document": {
+                        "table": "documents",
+                        "relations": {"creator": {"target": "user", "join_column": "creator_uuid"}},
+                        "permissions": {
+                            "view": {
+                                "allows": ["data-layer/read"],
+                                "paths": [["creator", "home_department", "caller"]]
+                            }
+                        }
+                    },
+                    "user": {
+                        "table": "users",
+                        "relations": {"home_department": {"target": "department", "join_column": "dept_id"}}
+                    },
+                    "department": {"table": "departments", "principal_column": "owner_did"}
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let carol = session("did:key:carol", vec![read_cap(Some("document"))]);
+        let sieve = compile_read(
+            &policy,
+            "document",
+            &carol,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::Filter,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            run_sieve(&conn, "documents", &sieve),
+            vec!["doc-1"],
+            "carol owns alice's home department, two joins away from the document"
+        );
+
+        let dave = session("did:key:dave", vec![read_cap(Some("document"))]);
+        let sieve = compile_read(
+            &policy,
+            "document",
+            &dave,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::Filter,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(run_sieve(&conn, "documents", &sieve).is_empty());
+    }
+
+    #[test]
+    fn default_fallback_still_carries_the_entitling_capabilitys_caveats() {
+        // Regression test (both reviews flagged this independently): when
+        // no permission is directly/app-permission-applicable and access
+        // comes only through `default`, the capability that satisfied
+        // `holds_operation` must still contribute its caveats -- dropping
+        // them would silently widen access beyond what the caveat allows.
+        let policy = parse_and_validate(
+            r#"{
+                "version": "fdae/v1",
+                "definitions": {
+                    "document": {
+                        "table": "documents",
+                        "relations": {"creator": {"target": "user", "join_column": "creator_uuid"}},
+                        "default": "fallback",
+                        "permissions": {
+                            "fallback": {
+                                "paths": [["creator", "caller"]]
+                            }
+                        }
+                    },
+                    "user": {"table": "users", "principal_column": "did"}
+                }
+            }"#,
+        )
+        .unwrap();
+        // "fallback" declares no `allows` at all, so `applicable_permissions`
+        // always skips it (its `covering_abilities` filter is empty) --
+        // it is reachable *only* through `default`'s `holds_operation`
+        // check, which is what isolates this test to that branch
+        // specifically (the bug: `holds_operation` used to be a bare bool,
+        // discarding which capability satisfied it).
+        let caveat_cap = Capability {
+            with: ResourceUri::service(SERVICE_ID, SERVICE_ID),
+            can: Ability(Ability::DATA_LAYER_READ.to_string()),
+            caveats: Some(json!({"where": {"region": "EU"}, "fields": {"deny": ["ssn"]}})),
+        };
+        let alice = session("did:key:alice", vec![caveat_cap]);
+        let sieve = compile_read(
+            &policy,
+            "document",
+            &alice,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::Filter,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(sieve.where_caveats, vec![json!({"region": "EU"})]);
+        assert_eq!(sieve.masked_fields, vec!["ssn".to_string()]);
     }
 }

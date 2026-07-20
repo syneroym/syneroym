@@ -174,9 +174,37 @@ fn validate_semantics(policy: &Policy) -> Result<(), PolicyError> {
     if policy.version != "fdae/v1" {
         return Err(PolicyError::UnsupportedVersion(policy.version.clone()));
     }
+    validate_no_collection_ambiguity(policy)?;
     for (type_name, def) in &policy.definitions {
         validate_relations(policy, type_name, def)?;
         validate_permissions(policy, type_name, def)?;
+    }
+    Ok(())
+}
+
+/// The compiler resolves a query's `collection` string against either a
+/// definition's key or its `table` (`compile::find_definition`), taking the
+/// first match. If two definitions' keys/tables collide, that resolution
+/// would silently pick one and mask the other with no error -- reject the
+/// ambiguity at parse time instead.
+fn validate_no_collection_ambiguity(policy: &Policy) -> Result<(), PolicyError> {
+    let mut owners: BTreeMap<&str, &str> = BTreeMap::new();
+    for (type_name, def) in &policy.definitions {
+        for name in [type_name.as_str(), def.table.as_str()] {
+            match owners.get(name) {
+                Some(owner) if *owner != type_name.as_str() => {
+                    return Err(PolicyError::Semantic(format!(
+                        "'{name}' resolves ambiguously to both definition '{owner}' and \
+                         '{type_name}' -- a definition's key or table must not collide with \
+                         another's"
+                    )));
+                }
+                Some(_) => {}
+                None => {
+                    owners.insert(name, type_name.as_str());
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -252,6 +280,23 @@ fn validate_permissions(
                      permission '{included}'"
                 )));
             }
+        }
+        // `fields.allow` is accepted by the schema/model but not enforced
+        // by this slice's compiler (CLS only derives masked_fields from
+        // `deny`-list entries -- an allow-list can't be reduced to a
+        // field-name-to-strip list without knowing a record's full key
+        // set). Silently ignoring it would give the policy author the
+        // opposite of what they declared: every field returned instead of
+        // only the allowed ones. Reject it here so that's a loud parse-time
+        // error, not a silent full-exposure no-op.
+        if let Some(fields) = &perm.fields
+            && fields.allow.is_some()
+        {
+            return Err(PolicyError::Semantic(format!(
+                "definition '{type_name}' permission '{perm_name}' declares fields.allow, which \
+                 this slice does not enforce (only fields.deny is compiled) -- express the \
+                 restriction as fields.deny instead"
+            )));
         }
     }
     if let Some(default) = &def.default
@@ -569,5 +614,56 @@ mod tests {
         );
         let policy = parse_and_validate(&doc).unwrap();
         assert_eq!(policy.definitions.len(), 3);
+    }
+
+    #[test]
+    fn rejects_fields_allow_since_this_slice_does_not_enforce_it() {
+        let doc = minimal_doc(
+            r#"{"user": {"table": "users", "principal_column": "did", "permissions": {
+                "view_self": {"paths": [["caller"]], "fields": {"allow": ["name"]}}
+            }}}"#,
+        );
+        let err = parse_and_validate(&doc).unwrap_err();
+        assert!(matches!(err, PolicyError::Semantic(_)));
+    }
+
+    #[test]
+    fn accepts_fields_deny_without_allow() {
+        let doc = minimal_doc(
+            r#"{"user": {"table": "users", "principal_column": "did", "permissions": {
+                "view_self": {"paths": [["caller"]], "fields": {"deny": ["ssn"]}}
+            }}}"#,
+        );
+        parse_and_validate(&doc).unwrap();
+    }
+
+    #[test]
+    fn rejects_a_table_name_that_is_not_a_safe_sql_identifier() {
+        let doc = minimal_doc(r#"{"user": {"table": "users'; DROP TABLE users; --"}}"#);
+        let err = parse_and_validate(&doc).unwrap_err();
+        assert!(matches!(err, PolicyError::Schema(_)));
+    }
+
+    #[test]
+    fn rejects_a_join_column_that_is_not_a_safe_sql_identifier() {
+        let doc = minimal_doc(
+            r#"{"document": {"table": "documents", "relations": {"creator": {
+                "target": "user", "join_column": "creator_uuid') OR ('1'='1"
+            }}}}"#,
+        );
+        let err = parse_and_validate(&doc).unwrap_err();
+        assert!(matches!(err, PolicyError::Schema(_)));
+    }
+
+    #[test]
+    fn rejects_a_definitions_table_colliding_with_another_definitions_key() {
+        let doc = minimal_doc(
+            r#"{
+                "orders": {"table": "orders_tbl"},
+                "shipments": {"table": "orders"}
+            }"#,
+        );
+        let err = parse_and_validate(&doc).unwrap_err();
+        assert!(matches!(err, PolicyError::Semantic(_)));
     }
 }
