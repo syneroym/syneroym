@@ -159,3 +159,68 @@ is unchanged in this phase (treated as ground truth per the plan).
   (above the stage-4 hook, below the WIT response). Phase 2's job is only to
   surface `masked_fields` out of the store via `ReadOutcome`; task.md's CLS
   Failure/Security row stays open until Phase 3.
+
+### Post-commit review (2026-07-21) — two independent passes
+
+Two reviews came back against commit `14d318a`. Both independently re-ran
+`cargo test -p syneroym-data-db` (117/117 green) and clippy on the touched
+crates before reviewing, rather than trusting this file's self-report; both
+concluded no SQL-injection or auth-bypass (privilege-widening) defect exists
+— every merge path they traced fails toward over-restriction, never a leak.
+
+**Addressed, code changed (this session, still Phase 2 scope):**
+
+- **`do_aggregate` compiled caveat filters before checking CLS denial**
+  (low severity) — `merge_sieve` ran (and could itself fail/propagate) ahead
+  of the `masked_fields.is_empty()` check that unconditionally denies a
+  CLS-active aggregate. Fixed: the CLS check now runs first, so a CLS-active
+  call is denied immediately without compiling its caveats at all, and a
+  malformed caveat on a CLS-masked collection can no longer surface as a
+  generic `Err` instead of `PermissionDenied`.
+- **Plan §11's "adversarial `subject_did`/caveat bound not interpolated"
+  data_db end-to-end row was missing** (medium severity) — added
+  `tests_fdae.rs::adversarial_subject_did_and_caveat_value_are_bound_not_interpolated`:
+  an attacker-controlled `subject_did` (`"attacker' OR '1'='1"`) and a
+  caveat `where` value containing `DROP TABLE`/comment syntax, exercised
+  through both `query` (Mode B) and `check_access` (Mode A, a real
+  parameterized `PointInTime` sieve with bound `id`/`subject_did` params —
+  this also directly answers Reviewer 2's ask for a `check_access` test with
+  real bound parameters, not just the watchdog test's hand-built
+  parameterless sieve). Asserts correct denial *and* that the table survives
+  intact, proving binding rather than interpolation.
+
+**Recorded as a known limitation, not fixed here (out of Phase 2 scope):**
+
+- **An extra capability can narrow access below what a broader one alone
+  grants** (medium severity, confirmed real) — `CompiledSieve.where_caveats`
+  is a flat list spanning *every* entitling capability, ANDed together by
+  `merge_sieve`; a caller holding both an unrestricted and a
+  narrower-caveated capability on the same resource gets the
+  **intersection**, not the union each should independently provide.
+  Capabilities are meant to be additive; this is accidentally intersective.
+  **Root cause is in `crates/fdae` (Phase 1, already merged via PR #86)** —
+  `CompiledSieve` would need to carry each caveat alongside the specific
+  OR-branch/permission it entitles, an ADR-0017-level contract change, not a
+  `data_db`/Phase 2 fix. Both reviewers independently agreed this is
+  Phase-1-scoped. Recorded as Decision Register **D-04-02-g** in task.md
+  (open, not gating B2). Added
+  `tests_fdae.rs::two_capabilities_with_conflicting_caveats_currently_narrow_to_zero_rows`,
+  which pins today's (undesired) behavior explicitly with a comment
+  directing whoever resolves D-04-02-g to flip the assertion — so the fix,
+  when it lands, has a concrete regression to update rather than rediscovering
+  the bug.
+
+**Reviewed and no action needed:**
+
+- **FDAE enforces nothing yet for any real caller (`auth = None`
+  everywhere)** (informational) — correct and already documented at every
+  call site, in this file, and in task.md; real `QueryAuth` construction is
+  Phase 3.
+- **Write-side integrity (`put`/`patch`) is unenforced** (Reviewer 2) —
+  already correctly scoped to Slice B5-fdae behind sub-decision D-04-02-f;
+  no new information, no action.
+
+Verification after the two code changes above:
+`cargo test -p syneroym-data-db` — **119 passed, 0 failed** (117 prior + 2
+new); `cargo +nightly fmt --all` clean; `cargo clippy --workspace
+--all-targets --all-features` zero warnings.

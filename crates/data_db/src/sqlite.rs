@@ -498,12 +498,16 @@ fn do_aggregate(
 ) -> Result<host_store::RawQueryResult, host_store::DataLayerError> {
     validate_identifier(collection)?;
 
-    let merged = sieve.map(merge_sieve).transpose()?;
+    // Check CLS denial *before* compiling caveat filters: a CLS-active sieve
+    // denies the whole call regardless of what its caveats say, so there is
+    // no reason to pay a caveat-filter compile (or surface its error, if the
+    // caveat is malformed) on a call that is about to be denied anyway.
     if let Some(s) = sieve
         && !s.masked_fields.is_empty()
     {
         return Err(host_store::DataLayerError::PermissionDenied);
     }
+    let merged = sieve.map(merge_sieve).transpose()?;
     let sieve_arg = merged.as_ref().map(|(clause, params)| (clause.as_str(), params.as_slice()));
 
     let compiled = aggregate::compile(collection, pipeline_json, sieve_arg)?;

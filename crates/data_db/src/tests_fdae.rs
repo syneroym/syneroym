@@ -425,3 +425,92 @@ async fn policy_absent_definition_is_unfiltered_when_not_strict() {
     let outcome = store.query("unrelated", &opts, Some(&auth)).await.unwrap();
     assert_eq!(outcome.value.records.len(), 1);
 }
+
+/// Plan §11's "adversarial `subject_did`/caveat bound not interpolated
+/// (covered in `fdae`; add a data_db end-to-end row)" -- `fdae`'s own unit
+/// tests already prove `compile_read` binds these as `?` params; this proves
+/// the same holds once `data_db` runs the merged sieve+caveat SQL for real,
+/// through both Mode B (`query`) and Mode A (`check_access`).
+#[tokio::test]
+async fn adversarial_subject_did_and_caveat_value_are_bound_not_interpolated() {
+    let store = setup_store().await;
+    seed_creator_docs(store.as_ref()).await;
+    let policy = single_hop_policy();
+
+    // If either the subject_did or the caveat's `where` value were ever
+    // string-interpolated instead of bound, `OR '1'='1'` would make every
+    // row visible and the embedded `DROP TABLE`/comment would either break
+    // the query or actually execute.
+    let attacker_cap = Capability {
+        with: resource("documents"),
+        can: Ability(Ability::DATA_LAYER_READ.to_string()),
+        caveats: Some(json!({"where": {"kind": "x'; DROP TABLE documents; --"}})),
+    };
+    let attacker = session("attacker' OR '1'='1", vec![attacker_cap]);
+    let auth = QueryAuth { policy: &policy, session: &attacker, service_id: SERVICE_ID };
+
+    let opts = QueryOptions { filter: None, limit: None, cursor: None };
+    let outcome = store.query("documents", &opts, Some(&auth)).await.unwrap();
+    assert!(
+        outcome.value.records.is_empty(),
+        "an adversarial subject_did/caveat must never widen visibility via injection"
+    );
+
+    // Mode A, same adversarial session: a real, bound `id = ?` AND
+    // subject_did predicate must still correctly deny, not error or panic.
+    assert!(
+        !store
+            .check_access("documents", "doc-1", Ability::DATA_LAYER_READ, Some(&auth))
+            .await
+            .unwrap()
+    );
+
+    // The table must still exist and be fully queryable afterwards -- a
+    // real injection would have corrupted or dropped it.
+    assert!(
+        store.check_access("documents", "doc-1", Ability::DATA_LAYER_READ, None).await.unwrap()
+    );
+}
+
+/// **Known limitation, tracked as D-04-02-g** (surfaced during Slice B2
+/// Phase 2 review): `CompiledSieve.where_caveats` is a flat list collected
+/// from *every* entitling capability (`crates/fdae/src/compile.rs`'s
+/// `entitling_caps`), not associated per-OR-branch. `merge_sieve` ANDs all
+/// of them onto the single RLS predicate, so a caller holding a second,
+/// narrower-caveated capability on the same resource has their *broader*
+/// capability's access narrowed too -- capabilities are meant to be
+/// additive, not intersective. This is a `crates/fdae` (Phase 1, already
+/// shipped) data-shape issue, not something Phase 2's `merge_sieve` can fix
+/// on its own: resolving it needs `CompiledSieve` to carry each caveat
+/// alongside the OR-branch it entitles, an ADR-0017-level change. Fails
+/// toward *over-restriction*, never a leak -- not a Phase 2 blocker, but
+/// pinned here so a future fix has a concrete regression to update (see
+/// task.md's Decision Register, D-04-02-g).
+#[tokio::test]
+async fn two_capabilities_with_conflicting_caveats_currently_narrow_to_zero_rows() {
+    let store = setup_store().await;
+    seed_creator_docs(store.as_ref()).await;
+    let policy = single_hop_policy();
+
+    let unrestricted_cap = read_cap("documents");
+    let eu_only_cap = Capability {
+        with: resource("documents"),
+        can: Ability(Ability::DATA_LAYER_READ.to_string()),
+        caveats: Some(json!({"where": {"region": "EU"}})),
+    };
+    // Alice holds both an unrestricted read grant AND an EU-caveated one on
+    // the same resource -- today's (undesired) behavior ANDs both caveats
+    // onto the sieve, so even the unrestricted grant's rows are suppressed.
+    let alice = session("did:key:alice", vec![unrestricted_cap, eu_only_cap]);
+    let auth = QueryAuth { policy: &policy, session: &alice, service_id: SERVICE_ID };
+
+    let opts = QueryOptions { filter: None, limit: None, cursor: None };
+    let outcome = store.query("documents", &opts, Some(&auth)).await.unwrap();
+    assert!(
+        outcome.value.records.is_empty(),
+        "D-04-02-g: today, an extra caveated capability narrows an unrestricted one instead of \
+         being additive -- alice's unrestricted grant should see doc-1, but the EU caveat (no \
+         seeded document carries a matching 'region') ANDs it away. If this assertion starts \
+         failing, D-04-02-g has been fixed -- update this test to assert doc-1 IS visible."
+    );
+}

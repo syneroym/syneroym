@@ -177,6 +177,31 @@ and no longer gate B2; d/e remain as a deferral and a B7 hand-off.
   can still `delete(id)`/`patch(id)` it — pre-existing, since host write paths run
   under service authority and carry no capability gate today). Surfaced during
   Slice B2 Phase-2 review.
+- **D-04-02-g — Multi-capability caveat semantics (additive vs.
+  intersective).** ⛳ **Open — not a B2 blocker (over-restrictive, not a
+  leak).** `compile_read` collects `entitling_caps` as *every* capability
+  whose `grants()` covers the operation (caveats play no part in `grants()`),
+  then flattens each one's `caveats.where` into `CompiledSieve.where_caveats`
+  — a single list ANDed together by `data_db`'s `merge_sieve`, with no
+  per-OR-branch association back to the capability that earned it. Concrete
+  failure: a caller holding both an unrestricted `read` capability and a
+  second, narrower-caveated one (e.g. `region: EU`) on the same resource gets
+  **the intersection** of both caveats, not the union each capability should
+  independently grant — the unrestricted capability's access is narrowed by
+  the mere presence of the second one. Capabilities are meant to be additive;
+  this is accidentally intersective. Correct semantics need each path/OR-branch
+  to carry *its own* entitling capability's caveat — `(P1 AND caveat₁) OR (P2
+  AND caveat₂)` — which the current flat `where_caveats: Vec<Json>` shape
+  cannot express; fixing it is a `crates/fdae` (Phase 1) `CompiledSieve`
+  contract change, not a Phase 2 `data_db` one. The same root cause makes CLS
+  `fields.deny` lists union across capabilities too (`compile_cls`) — lower
+  impact today since Phase 2 doesn't yet strip fields (that's Phase 3), but the
+  same "should an extra capability ever narrow?" question applies there as
+  well. **Pinned, not silently dropped:**
+  `tests_fdae.rs::two_capabilities_with_conflicting_caveats_currently_narrow_to_zero_rows`
+  asserts today's (undesired) behavior explicitly, with a comment directing
+  whoever fixes this to flip the assertion. Surfaced during Slice B2 Phase-2
+  review (independent re-review pass).
 
 ---
 
