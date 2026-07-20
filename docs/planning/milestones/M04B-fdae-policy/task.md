@@ -162,6 +162,21 @@ and no longer gate B2; d/e remain as a deferral and a B7 hand-off.
   so that TODO does **not** belong to M04B, and "today any verified identity
   reaches any native service" is a wider live gap than the milestone docs imply.
   **Reconcile in B7 (grant layer), explicitly out of M04B scope.**
+- **D-04-02-f — Creation authorization for the write path.** ⛳ **Open — gates
+  Slice B5-fdae, not B2.** FDAE's read side (RLS/CLS, B2/B3) protects
+  *confidentiality*; the *integrity* side — Mode-A authorization of single-row
+  mutations (`put`/`patch`/`delete`/`batch_mutate`) — is deferred to Slice
+  B5-fdae. `patch`/`delete` of an existing row map cleanly to Mode A ("may caller
+  write row `id`?"), but **`put`-create has no row to evaluate `[creator,
+  caller]` against**: row-reachability ReBAC cannot express *"who may create a row
+  in this collection,"* which is a **collection-scoped** permission the current
+  policy model lacks. Must settle: whether creation is governed by a new
+  collection-level permission kind (an ADR-0017 §1 schema amendment), and how
+  `batch_mutate` authorizes per-mutation. **Until B5-fdae lands, single-row
+  write/delete integrity is unenforced** (a caller who cannot *see* a row via RLS
+  can still `delete(id)`/`patch(id)` it — pre-existing, since host write paths run
+  under service authority and carry no capability gate today). Surfaced during
+  Slice B2 Phase-2 review.
 
 ---
 
@@ -277,8 +292,9 @@ M04B may begin **implementation** only when:
 3. `cargo test --workspace` clean, zero clippy warnings on the branch M04B starts
    from (main is currently green @ `64f3571`).
 
-**Slice order:** B2 (local sieve) → B3 (federated fetch, needs A1) → B4-fdae
-(stage-4 ABAC, depends on B2; may fold into it).
+**Slice order:** B2 (local sieve, read side) → B3 (federated fetch, needs A1) →
+B4-fdae (stage-4 ABAC, depends on B2; may fold into it) → B5-fdae (write-side
+Mode-A enforcement, depends on B2's `check_access` + D-04-02-f).
 
 ---
 
@@ -362,6 +378,31 @@ Enforcement Model). Batched (one call per candidate batch, not per row); opt-in
 per policy rule; **restrict-only** (may redact/deny, never widen). Per ADR-0017
 §7 it **may** issue read-only lookups, but only fuel-/time-metered — enforce the
 budget and Default-Deny on overrun.
+
+#### Slice B5-fdae: Write-Side Tier 3 (Mode-A Write Authorization)
+**Depends on:** B2 (the `check_access` Mode-A primitive) **and D-04-02-f**
+(creation authorization). **Requirement:** `[FND-IAM]`.
+B2/B3 deliver read-side Tier 3 (confidentiality: RLS/CLS on `query`/`get`/
+`aggregate`). This slice closes the **integrity** half: authorize single-row
+mutations against the caller's ReBAC policy so a row a caller cannot reach is
+also one they cannot write or delete. Today `put`/`patch`/`delete`/`batch_mutate`
+run under service authority (`creator_id = component_id`), never consult
+`caller.session`, and carry no capability gate — so single-row write/delete
+bypasses Tier 3, an asymmetry with B2's already-filtered `delete_many`
+(surfaced in Slice B2 Phase-2 review).
+- **`patch`/`delete`/`batch_mutate`-delete** of an *existing* row → Mode-A
+  `check_access` (op = `data-layer/write`) at the host before executing;
+  unreachable → `permission-denied`, not a silent write.
+- **`put`-create** → blocked on **D-04-02-f**: row-reachability cannot express
+  "who may create," so this needs the collection-scoped create-permission
+  decision first (an ADR-0017 §1 schema amendment) before it can be enforced.
+- Thread `caller.session` into the host write methods (they don't today); add the
+  write-path rows to the Failure/Security matrix (unreachable write → deny; create
+  without create-permission → deny).
+
+**Known limitation until this slice lands:** FDAE protects read confidentiality
+and bulk-delete, but single-row write/delete integrity is unenforced —
+deployments relying on FDAE for write integrity must wait for B5-fdae.
 
 ---
 
