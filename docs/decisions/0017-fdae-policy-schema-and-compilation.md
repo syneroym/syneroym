@@ -345,3 +345,24 @@ vs. row reachability* — both answered by the same `permissions:` block.
   deploy grant, which would then need a bespoke mechanism anyway.
 - **Grants pinning a policy version.** Rejected: policy *tightening* would never
   reach outstanding grants — a hole could never be closed. See ADR-0015 A2.
+
+## Amendments
+
+**2026-07-20 (Slice B2, `principal_column` convention).** §1's relations model
+left unsaid how a reached object row's identity compares to the caller's DID —
+the terminal (`caller`, and later `anchor` per ADR-0015 A5) names a *person*,
+but a `paths:` walk only ever reaches a *row*. Resolved: a `definitions:` entry
+usable as a path-terminal's target declares `principal_column`, naming the
+column on that type's table whose value is the principal DID the terminal
+compares against (`col(target, principal_column) = ?`, bound to
+`session.subject_did` for `caller`). Reserved-name aware, matching `join_column`/
+`from_key`/`to_key`'s existing physical-vs-JSON split: `id`/`creator_id`/
+`created_at`/`updated_at` address the physical column directly; any other name
+addresses `json_extract(payload, '$.<name>')`. An object type reached as a path
+terminal but missing `principal_column` is a semantic validation error at
+policy-**parse** time (the policy document is fully known then). Whether the
+named column actually exists on the physical table is a separate, later check:
+validated lazily at **query** time, fail-closed with a trace entry if missing —
+the guest's table may not exist yet when the policy is parsed. Locks the SQL
+shape in §1's `[creator, caller]` example: `creator` resolves to `user`, and
+`user` declares `principal_column: did` for the comparison to bind against.
