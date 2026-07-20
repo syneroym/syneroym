@@ -7767,6 +7767,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "syneroym-fdae"
+version = "0.1.0"
+dependencies = [
+ "jsonschema",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "syneroym-ucan",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "syneroym-identity"
 version = "0.1.0"
 dependencies = [

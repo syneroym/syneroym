@@ -55,6 +55,7 @@ syneroym-sdk = { path = "crates/sdk" }
 syneroym-smoke-tests = { path = "crates/smoke-tests" }
 syneroym-substrate = { path = "crates/substrate" }
 syneroym-ucan = { path = "crates/ucan" }
+syneroym-fdae = { path = "crates/fdae" }
 syneroym-mqtt-broker = { path = "crates/mqtt_broker" }
 syneroym-chunk-transfer = { path = "crates/chunk_transfer" }
 miniapp-demo1-web = { path = "test-components/miniapp-demo1-web" }
