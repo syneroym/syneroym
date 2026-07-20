@@ -993,7 +993,7 @@ Nothing here moves a milestone boundary. **Both ADRs written 2026-07-16.**
 
 | Work | Where | Notes |
 |---|---|---|
-| Selectors, closed-form caveats, conjunction-attenuation, `anchor_did`/`path`, app permissions, resource-scoped `is_trusted_root`, chain-wide revocation | [**ADR-0015** amendment](../decisions/0015-ucan-capability-model.md) (A1–A8) | **B7 is the first real consumer** — a revocable, non-re-delegatable, per-grantee `orchestrator/deploy` grant needs the selector (A1) *and* `can_delegate` (A3), and A6's `owner_of(resource)` **is** B7's catalog owner field. |
+| Selectors, closed-form caveats, conjunction-attenuation, `anchor_did`/`path`, app permissions, resource-scoped `is_trusted_root`, chain-wide revocation | [**ADR-0015** amendment](../decisions/0015-ucan-capability-model.md) (A1–A8) | **B7 is the first real consumer** — a revocable, non-re-delegatable, per-grantee `orchestrator/deploy` grant needs the selector (A1) *and* `can_delegate` (A3), and A6's `owner_of(resource)` **is** B7's catalog owner field. **Exception — A5 `anchor_did`:** B7 shipped without it (used the `DelegationCertificate` `master_did`, B7.md:1119-1124); its first real consumer is **M04B Slice B3**, where cross-service chains make `caller ≠ anchor` real and testable. A5's `path` list binding stays deferred beyond B3. |
 | Policy document, permissions carrying operations + rows, ReBAC→SQL compiler, RLS/CLS, operators, stage-2 batching, stage-4 ABAC, safety rails | [**ADR-0017**](../decisions/0017-fdae-policy-schema-and-compilation.md) (D-04-02) / M04B | Unchanged in position. Status: Proposed — M04B's blocking ADR. |
 | Decision trace | **Both** | Grant-side denials in the amendment; policy-side in ADR-0017 §9. Same trace type. |
 

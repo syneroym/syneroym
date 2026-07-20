@@ -341,6 +341,19 @@ pause evaluation, fetch remote relationship proofs/parameters via the Universal
 Proxy, inject into local evaluation context, resume. Enforcement happens at the
 **data-owning node**; a fetch timeout falls back to **deny**, not silent allow.
 
+Also lands **ADR-0015 A5's `anchor_did`** (accepted in the ADR, implemented
+nowhere — B7 shipped with the `DelegationCertificate`'s `master_did` and
+deferred `anchor_did` to real UCAN chains, B7.md:1119-1124). B3 is A5's first
+real consumer: cross-service chains are the first place `caller ≠ anchor` is
+real and e2e-testable, and a row policy on the data-owning node must filter by
+the **original principal (`anchor`)**, not the proxying service (`caller`) — the
+confused-deputy defense. Adds `SessionContext.anchor_did: Option<String>`
+(populated in `from_verified_chain` as the audience of the first non-root token)
+and the compiler's `anchor` path-terminal (B2 ships `caller` only and errors on
+`anchor`). A5's full `path` *list* binding stays deferred (no near-term
+consumer). *(This supersedes access-control-design.md:996's "B7 is the first
+real consumer" line for A5 specifically.)*
+
 #### Slice B4-fdae: Stage-4 WASM ABAC
 **Depends on:** B2 (candidate rows come from the sieve). May fold into B2's
 design if it stays small. **Requirement:** `[FND-IAM]`.
