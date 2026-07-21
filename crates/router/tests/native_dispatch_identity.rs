@@ -895,7 +895,7 @@ async fn aggregate_malformed_pipeline_is_schema_violation() {
 //
 // `dispatch.rs`'s native arm threads the router-verified `CallerContext`
 // into `NativeInvocation.caller` -- the one ingress ADR-0017 can honestly
-// claim as *enforced* (§2.1). This is the headline proof: a deployed policy,
+// claim as *enforced*. This is the headline proof: a deployed policy,
 // reached through the real `dispatch_json_rpc_once` path, row-filters and
 // column-masks for two distinct verified callers.
 
@@ -1063,4 +1063,227 @@ async fn native_fdae_policy_row_filters_and_masks_for_two_distinct_verified_call
     let records = resp["result"]["records"].as_array().expect("query must return records");
     assert_eq!(records.len(), 1, "bob's query must exclude alice's document: {resp:?}");
     assert_eq!(records[0]["id"], "doc-2");
+}
+
+/// A `manage` permission covering `data-layer/write`, reachable via the same
+/// creator relation as `native_fdae_policy`'s `view` -- exercises
+/// `delete_many`'s `QueryAuth` wiring, which the headline test above does
+/// not touch (`get`/`query` only).
+fn native_fdae_write_policy() -> Policy {
+    parse_and_validate(
+        r#"{
+            "version": "fdae/v1",
+            "definitions": {
+                "document": {
+                    "table": "documents",
+                    "relations": {"creator": {"target": "user", "join_column": "creator_uuid"}},
+                    "permissions": {
+                        "manage": {"allows": ["data-layer/write"], "paths": [["creator", "caller"]]}
+                    }
+                },
+                "user": {"table": "users", "principal_column": "did"}
+            }
+        }"#,
+    )
+    .unwrap()
+}
+
+/// Same shape as `native_fdae_policy`, minus the CLS `fields.deny` --
+/// `aggregate` fails a CLS-active sieve closed outright (`data_db`'s own
+/// documented behavior), so a policy for exercising aggregate's *RLS* half
+/// specifically must not also be CLS-active.
+fn native_fdae_rls_only_policy() -> Policy {
+    parse_and_validate(
+        r#"{
+            "version": "fdae/v1",
+            "definitions": {
+                "document": {
+                    "table": "documents",
+                    "relations": {"creator": {"target": "user", "join_column": "creator_uuid"}},
+                    "permissions": {
+                        "view": {"allows": ["data-layer/read"], "paths": [["creator", "caller"]]}
+                    }
+                },
+                "user": {"table": "users", "principal_column": "did"}
+            }
+        }"#,
+    )
+    .unwrap()
+}
+
+fn fdae_writer_caller(subject_did: &str, service_id: &str) -> CallerContext {
+    CallerContext {
+        caller_did: subject_did.to_string(),
+        app_instance: None,
+        session: SessionContext {
+            subject_did: subject_did.to_string(),
+            capabilities: vec![Capability {
+                with: native_fdae_resource(service_id, "documents"),
+                can: Ability(Ability::DATA_LAYER_WRITE.to_string()),
+                caveats: None,
+            }],
+            ..Default::default()
+        },
+        auth: AuthLevel::Delegated,
+        proof: None,
+    }
+}
+
+/// `delete_many`'s `QueryAuth` wiring, exercised through native dispatch:
+/// a write-capable verified caller's `delete-many` deletes only the row
+/// their ReBAC chain reaches, leaving an unreachable row untouched.
+#[tokio::test]
+async fn native_delete_many_is_row_filtered_as_a_write_operation() {
+    let (route_handler, _http_routes) = test_route_handler().await;
+
+    let service_id = "native-fdae-delete-svc".to_string();
+    let key_store = Arc::new(KeyStore::new());
+    let temp_dir = tempfile::tempdir().unwrap();
+    let storage_provider = Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+    let blob_provider: Arc<dyn BlobProvider> =
+        Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+    let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+    let policy = Arc::new(native_fdae_write_policy());
+    let data_service = Arc::new(SynSvcNativeService::new(
+        service_id.clone(),
+        key_store,
+        storage_provider,
+        blob_provider,
+        messaging_broker,
+        Some(policy),
+    ));
+    route_handler.register_native_service(service_id.clone(), data_service);
+
+    let pipeline = raw_pipeline(&service_id);
+    let preamble = preamble_for(&service_id, "data-layer");
+
+    let seeder = test_caller("did:key:z6MkDeleteSeeder");
+    for (collection, id, payload) in [
+        ("users", "u-alice", json!({"did": "did:key:alice"})),
+        ("users", "u-bob", json!({"did": "did:key:bob"})),
+        ("documents", "doc-1", json!({"creator_uuid": "u-alice"})),
+        ("documents", "doc-2", json!({"creator_uuid": "u-bob"})),
+    ] {
+        let create_body = json_rpc_body("create-collection", json!({"name": collection}));
+        let _ = route_handler
+            .dispatch_json_rpc_once(&pipeline, &preamble, Some(&seeder), &create_body)
+            .await;
+        let put_body = json_rpc_body(
+            "put",
+            json!({"collection": collection, "value": {"id": id, "payload": payload.to_string().into_bytes()}}),
+        );
+        let resp = route_handler
+            .dispatch_json_rpc_once(&pipeline, &preamble, Some(&seeder), &put_body)
+            .await
+            .unwrap();
+        let resp: Value = serde_json::from_slice(&resp).unwrap();
+        assert!(resp.get("error").is_none(), "seeding {collection}/{id} failed: {resp:?}");
+    }
+
+    let alice = fdae_writer_caller("did:key:alice", &service_id);
+    let delete_body =
+        json_rpc_body("delete-many", json!({"collection": "documents", "filter": null}));
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&alice), &delete_body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert!(resp.get("error").is_none(), "delete-many failed: {resp:?}");
+    assert_eq!(
+        resp["result"],
+        json!(1),
+        "only alice's own reachable row must be deleted: {resp:?}"
+    );
+
+    // Ground-truth check via `query-raw` (an admin caller, not sieve-aware --
+    // the point here is to observe actual table state, independent of the
+    // RLS being tested, not to re-exercise it).
+    let admin = admin_caller("did:key:z6MkDeleteVerifier");
+    let ids_body = json_rpc_body(
+        "query-raw",
+        json!({"sql": "SELECT id FROM documents ORDER BY id", "params": []}),
+    );
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&admin), &ids_body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert_eq!(
+        resp["result"]["rows"],
+        json!([[{"type": "text", "value": "doc-2"}]]),
+        "alice's row must be gone and bob's must survive untouched: {resp:?}"
+    );
+}
+
+/// `aggregate`'s `QueryAuth` wiring, exercised through native dispatch: the
+/// RLS half (CLS is already fail-closed in `data_db` -- a non-empty
+/// `masked_fields` denies the whole aggregate outright, so there is no
+/// column-masking case to cover here).
+#[tokio::test]
+async fn native_aggregate_is_row_filtered_through_native_dispatch() {
+    let (route_handler, _http_routes) = test_route_handler().await;
+
+    let service_id = "native-fdae-aggregate-svc".to_string();
+    let key_store = Arc::new(KeyStore::new());
+    let temp_dir = tempfile::tempdir().unwrap();
+    let storage_provider = Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+    let blob_provider: Arc<dyn BlobProvider> =
+        Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+    let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+    let policy = Arc::new(native_fdae_rls_only_policy());
+    let data_service = Arc::new(SynSvcNativeService::new(
+        service_id.clone(),
+        key_store,
+        storage_provider,
+        blob_provider,
+        messaging_broker,
+        Some(policy),
+    ));
+    route_handler.register_native_service(service_id.clone(), data_service);
+
+    let pipeline = raw_pipeline(&service_id);
+    let preamble = preamble_for(&service_id, "data-layer");
+
+    let seeder = test_caller("did:key:z6MkAggregateSeeder");
+    for (collection, id, payload) in [
+        ("users", "u-alice", json!({"did": "did:key:alice"})),
+        ("users", "u-bob", json!({"did": "did:key:bob"})),
+        ("documents", "doc-1", json!({"creator_uuid": "u-alice"})),
+        ("documents", "doc-2", json!({"creator_uuid": "u-bob"})),
+    ] {
+        let create_body = json_rpc_body("create-collection", json!({"name": collection}));
+        let _ = route_handler
+            .dispatch_json_rpc_once(&pipeline, &preamble, Some(&seeder), &create_body)
+            .await;
+        let put_body = json_rpc_body(
+            "put",
+            json!({"collection": collection, "value": {"id": id, "payload": payload.to_string().into_bytes()}}),
+        );
+        let resp = route_handler
+            .dispatch_json_rpc_once(&pipeline, &preamble, Some(&seeder), &put_body)
+            .await
+            .unwrap();
+        let resp: Value = serde_json::from_slice(&resp).unwrap();
+        assert!(resp.get("error").is_none(), "seeding {collection}/{id} failed: {resp:?}");
+    }
+
+    let alice = fdae_reader_caller("did:key:alice", &service_id);
+    let aggregate_body = json_rpc_body(
+        "aggregate",
+        json!({
+            "collection": "documents",
+            "pipeline": r#"{"$group":{"_id":null,"n":{"$sum":1}}}"#,
+        }),
+    );
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&alice), &aggregate_body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert!(resp.get("error").is_none(), "aggregate failed: {resp:?}");
+    assert_eq!(
+        resp["result"]["rows"],
+        json!([[{"type": "integer", "value": 1}]]),
+        "alice's aggregate must count only her own reachable document: {resp:?}"
+    );
 }

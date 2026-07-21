@@ -493,11 +493,16 @@ fn do_check_access(
 /// internals (`sqlite_%`) and the host's own `_vault` table, since those are
 /// never `definitions:` targets in a policy document.
 fn do_list_collections(conn: &mut Connection) -> Result<Vec<String>, host_store::DataLayerError> {
+    // Excludes SQLite's own internal tables and the host's own `_vault` by
+    // exact name -- not the whole `_%` namespace. `IDENTIFIER_REGEX` permits
+    // a leading underscore (`^[a-zA-Z_]...`), so a guest-created collection
+    // like `_audit` is a legal name that must still appear here for the
+    // `strict:` warning to see it correctly in both directions.
     let mut stmt = conn
         .prepare(
             "SELECT name FROM sqlite_master
              WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'
-               AND name NOT LIKE '\\_%' ESCAPE '\\'",
+               AND name != '_vault'",
         )
         .map_err(|e| host_store::DataLayerError::Internal(format!("list_collections: {e}")))?;
     let names = stmt
@@ -1495,6 +1500,17 @@ impl StorageProvider for SqliteStorageProvider {
         })
         .await?
     }
+
+    async fn delete_fdae_policy(&self, service_id: &str) -> anyhow::Result<()> {
+        let conn_arc = self.substrate_conn.clone();
+        let s_id = service_id.to_string();
+        task::spawn_blocking(move || -> anyhow::Result<()> {
+            let conn = conn_arc.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {}", e))?;
+            conn.execute("DELETE FROM fdae_policies WHERE service_id = ?1", params![s_id])?;
+            Ok(())
+        })
+        .await?
+    }
 }
 
 pub struct SqliteServiceStore {
@@ -2257,6 +2273,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_fdae_policy_delete_is_idempotent_and_removes_the_row() {
+        let dir = tempdir().unwrap();
+        let provider = SqliteStorageProvider::new(dir.path(), false).unwrap();
+
+        // Deleting a row that was never saved is not an error.
+        provider.delete_fdae_policy("svc-never-saved").await.unwrap();
+
+        provider.save_fdae_policy("svc-a", r#"{"version":1}"#).await.unwrap();
+        provider.delete_fdae_policy("svc-a").await.unwrap();
+        assert_eq!(provider.load_fdae_policy("svc-a").await.unwrap(), None);
+
+        // Deleting the same row again is still not an error.
+        provider.delete_fdae_policy("svc-a").await.unwrap();
+    }
+
+    #[tokio::test]
     async fn test_list_collections_returns_created_tables_excludes_vault_and_sqlite_internals() {
         let dir = tempdir().unwrap();
         let provider = SqliteStorageProvider::new(dir.path(), true).unwrap();
@@ -2279,12 +2311,25 @@ mod tests {
             })
             .await
             .unwrap();
+        // A leading underscore is a legal collection identifier
+        // (`IDENTIFIER_REGEX` is `^[a-zA-Z_]...`) and must not be swept up
+        // by an overly broad `_%` exclusion meant only for `_vault`.
+        store
+            .create_collection(&host_store::CollectionSchema {
+                name: "_audit".to_string(),
+                indexes: vec![],
+            })
+            .await
+            .unwrap();
         // A vault write forces `_vault` to exist alongside the collections.
         store.write_secret("k", b"v").await.unwrap();
 
         let mut collections = store.list_collections().await.unwrap();
         collections.sort();
-        assert_eq!(collections, vec!["gadgets".to_string(), "widgets".to_string()]);
+        assert_eq!(
+            collections,
+            vec!["_audit".to_string(), "gadgets".to_string(), "widgets".to_string()]
+        );
     }
 
     #[test]

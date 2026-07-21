@@ -710,3 +710,189 @@ original-principal question), not as a slice of its own.
   `data-layer-test` fixture's existing compiled artifact still exercising
   correctly through `data_layer_integration.rs` (including the new
   D-04-02-h test).
+
+### Post-commit review (2026-07-21)
+
+Independent review against commit `7c0270a`. Re-ran every gate from a clean
+tree (no code modified before reviewing) and confirmed F1 and F3's disclosure
+behavior by direct execution, not inspection alone. Ten findings; two high,
+three medium, five low. All ten were independently re-verified against the
+code before being addressed below — two (F1, F4) by temporarily reverting the
+fix and confirming the new regression test actually fails without it.
+
+**Addressed, code changed (this session):**
+
+- **F1 (High) — a `migrate()`/`init()` hook under a deployed policy silently
+  read zero rows.** `invoke_lifecycle_hook` builds `CallerContext::
+  local_elevated`, whose `data-layer/admin` capability entails
+  `data-layer/read` and covers every collection -- so instead of the
+  synthesized-identity `deny_all()` D-04-02-h describes, `compile_read`
+  compiled a *real* sieve bound to `"system:local-elevated:<service_id>"`, a
+  DID no principal row can ever hold. A migration reading its own data to
+  decide how to rewrite it would see nothing and could act on that
+  emptiness -- confirmed by reverting the fix and watching the new
+  regression test fail with `left: 0, right: 2`. Fixed: `HostState::
+  query_auth` now returns `None` for `AuthLevel::LocalElevated`, distinct
+  from the `AuthLevel::System` carve-out that stays refused (`LocalElevated`
+  is exclusively host-synthesized for `init`/`migrate`, never guest-
+  reachable, so exempting it cannot become a self-proxy bypass the way
+  exempting `System` would). New test:
+  `host_capabilities.rs::fdae_local_elevated_lifecycle_reads_stay_unfiltered_under_a_policy`.
+- **F2 (High) — a policy could never be removed, and the WASM engine cache
+  resurrected it.** No `delete_fdae_policy` existed anywhere, and `undeploy`
+  never touched `fdae_policies`; a re-deploy dropping the `[services.x.fdae]`
+  block (with or without an intervening undeploy) left the row in place, so
+  `AppSandboxEngine::resolve_fdae_policy` kept serving the stale policy to
+  the WASM ingress while native dispatch had correctly gone unfiltered --
+  two ingresses of the same service enforcing different policies with no way
+  to un-declare one. Fixed: new `StorageProvider::delete_fdae_policy`,
+  called from `undeploy` and from `deploy` whenever the manifest no longer
+  declares `fdae_policy_path`. New tests: `test_undeploy_removes_fdae_policy`,
+  `test_redeploy_without_fdae_block_clears_previous_policy`,
+  `sqlite::tests::test_fdae_policy_delete_is_idempotent_and_removes_the_row`.
+- **F3 (Medium) — the deploy error echoed policy-file content back to the
+  caller.** `PolicyError::Schema`'s `to_string()` wraps `jsonschema::
+  ValidationError::Display`, which embeds the offending JSON *instance* --
+  for a top-level type mismatch on `fdae_policy_path`, that instance is the
+  whole file, unlike `schema_path` (whose instance is always the caller's
+  own `custom_config`). Confirmed by reading the `jsonschema` 0.46 source
+  directly (`ValidationErrorKind::Type`'s `Display` arm) and by a test that
+  writes a `"SUPER_SECRET_API_KEY_abc123"` policy file and asserts it does
+  not appear in the returned error. A caller holding `orchestrator/deploy`
+  -- which, on an unowned substrate (the runtime's default until a
+  `ControllerAgreement` exists), is *every* verified caller -- could aim
+  `fdae_policy_path` at any JSON file below the substrate's working
+  directory and read fragments back through failed deploys. Fixed: the
+  underlying error is logged in full via `tracing::warn!`; the caller gets
+  a fixed generic message. New test:
+  `test_deploy_fdae_policy_error_does_not_echo_file_contents`.
+- **F4 (Medium) — lost cache invalidation in `resolve_fdae_policy`.**
+  Check-cache → `await` storage load → insert, with no lock held across the
+  await, so a redeploy's eviction landing mid-load (against a key not yet
+  cached) could be immediately undone by the racing load's own insert once
+  it finally completed -- silently serving a stale policy until the next
+  `stop_wasm`/redeploy, contradicting ADR-0017's "tightening must take
+  effect immediately." Confirmed by reverting the fix and watching the new
+  race test fail. Fixed: a per-service generation counter
+  (`fdae_policy_generation`), bumped by both eviction sites, captured before
+  and compared after the storage read; a mismatch means an eviction raced
+  the load, so the result is returned for that call but not cached. New
+  test: `engine::tests::fdae_policy_resolution_racing_an_eviction_is_not_cached`,
+  which reproduces the race deterministically via a `RacingStorageProvider`
+  test double that pauses `load_fdae_policy` on a `Notify` -- not a flaky
+  sleep-based timing test. The lower-severity thundering-herd cost the same
+  finding raised (concurrent cold-cache misses each independently hit
+  storage) is unaddressed -- deduplicating concurrent loads needs a per-key
+  async lock, which is a proportionate fix for a perf optimization, not the
+  correctness bug this session prioritized.
+- **F5 (Medium) — a failed deploy left its policy in force, contradicting
+  the code comment.** The in-comment justification ("nothing reads a policy
+  for a service_id whose deploy never completed") was wrong for a *re*-
+  deploy: `save_fdae_policy` runs before `deploy_wasm_service`, whose own
+  first-branch failure only rolled back the config generation, so a
+  still-running previous version's engine cache (evicted by
+  `compile_and_cache_wasm` before the failure) would resolve the failed
+  deploy's policy on its next miss. Fixed with more care than a blind
+  delete: `fdae_policies` is last-write-wins with no generation ladder
+  (unlike `config_generations`), so unconditionally deleting on rollback
+  would have struck a still-valid *previous* policy on a re-deploy. `deploy`
+  now captures the previous value via `load_fdae_policy` before overwriting,
+  and `rollback_fdae_policy` (mirroring `rollback_config_generation`,
+  called at the same four sites) restores it -- or deletes, only when there
+  was no previous policy. New test:
+  `test_deploy_failure_restores_previous_fdae_policy_not_the_new_one`,
+  which deploys policy P1 successfully, then fails a re-deploy carrying
+  policy P2, and asserts P1 (not P2, not an empty row) survives.
+- **F6 (Low) — `list_collections` hid every collection whose name starts
+  with `_`.** `IDENTIFIER_REGEX` (`^[a-zA-Z_]...`) permits a leading
+  underscore, so a guest-created collection like `_audit` is a legal name
+  that the `_%`-wide exclusion (written to drop the host's `_vault`) also
+  swallowed -- direction 1 of the `strict:` warning would never fire for it,
+  and direction 2 would false-positive claiming it doesn't exist. Fixed:
+  excludes `_vault` by exact name. Test extended with a `_audit` collection
+  asserted present in the result.
+- **F7 (Low) — `delete_many`/`aggregate`'s native `QueryAuth` wiring was
+  untested.** The headline test only drove `get`/`query`. New tests:
+  `native_delete_many_is_row_filtered_as_a_write_operation` (a write-capable
+  caller's `delete-many` removes only their own reachable row; verified via
+  `query-raw` as an admin caller, independent of the RLS under test) and
+  `native_aggregate_is_row_filtered_through_native_dispatch` (RLS-filtered
+  count; a CLS-active policy was deliberately *not* used here, since
+  `aggregate` already fails a CLS-active sieve closed outright -- confirmed
+  correct and unchanged).
+- **F9 (Low, partial) — two comments misattributed plan-only content to
+  ADR-0017 section numbers, and one misattributed a `task.md` Decision
+  Register entry to ADR-0017 itself.** `synsvc_native.rs`'s `query_auth` doc
+  comment said "see ADR-0017's D-04-02-h in `task.md`" -- D-04-02-h is a
+  `task.md` Decision Register entry; ADR-0017 does not contain it. Two
+  other comments (`synsvc_native.rs`'s `strip_record`,
+  `native_dispatch_identity.rs`'s section header) cited "(ADR-0017 §2.1)"
+  for the ingress-enforcement distinction, which is actually the Phase 4
+  plan's own §2 numbering -- ADR-0017's real §2.1 is "Defaults, per layer"
+  (default-absent semantics), unrelated content. Fixed: all three corrected
+  to drop the wrong citation rather than repeat it.
+
+**Reviewed, not code-changed (context recorded here):**
+
+- **F3's symlink/canonicalization gap.** The traversal guard rejects
+  `ParentDir` components and absolute paths but never canonicalizes, so a
+  symlink under the working directory could still walk outside it. This is
+  not new: it is the exact guard `schema_path` already uses, deliberately
+  mirrored per this phase's own plan ("Same guard as schema_path"). Fixing
+  it only for `fdae_policy_path` would diverge from `schema_path`'s
+  identical, already-shipped behavior; fixing both is a real but separate,
+  self-contained hardening task, not a Phase 4 regression. Flagged as a
+  follow-up rather than fixed asymmetrically here.
+- **F8 — the D-04-02-h pins silently pass (`eprintln!` + early `return`)
+  when the `proxy-test`/`greeter`/`data-layer-test` WASM fixtures aren't
+  built**, so a job that skips the `wasm32-wasip2` build step would never
+  exercise the two tests that are the only guard on a deliberate behavior
+  change to an already-reachable production path. Checked against
+  `.github/actions/ci-build-and-test/action.yml`: CI builds every
+  `test-components/*` fixture unconditionally before `cargo test
+  --workspace`, so in the environment that actually gates merges this
+  finding's risk does not materialize today. The silent-skip pattern itself
+  predates this phase and is used by every WASM-fixture-dependent test in
+  both files (`test_deploy_init_crud_creator_id_and_migrate`,
+  `guest_to_guest_same_node_proxy_call_returns_typed_result`, etc.) --
+  changing it for only the two new tests would be an isolated inconsistency
+  within files that otherwise agree; changing it file-wide is a real but
+  separate convention decision (e.g. failing loud instead of skipping),
+  out of scope for a targeted fix pass.
+- **F10 — a node-wide admin's reads go empty with no diagnostic.** Confirmed
+  correct, not a bug: `Capability::grants` short-circuits for
+  substrate-scoped capabilities, so a node-wide admin is entitled to the
+  permission and then row-filtered by the ReBAC path against their own DID
+  -- typically to nothing, which is what default-deny asks for
+  (`query_raw`/`execute_ddl` remain the admin escape hatch). The
+  operability gap is real: until Phase 5's decision trace lands, an
+  unexpectedly empty result is diagnosable only from `RUST_LOG` and the
+  policy document, and ADR-0007's "no result is a valid outcome" means it
+  does not even look like a denial. Already tracked as a named Phase 4
+  limitation (this file, "The decision trace" under Explicitly out of Phase
+  4 scope) -- no new action, but worth restating plainly here since the
+  review specifically asked for it to be visible wherever Phase 4 is
+  announced as enforcing.
+
+### Verification evidence (post-review)
+
+- `cargo +nightly fmt --all` — clean.
+- `cargo clippy --workspace --all-targets --all-features` — zero warnings.
+- `cargo test -p syneroym-sandbox-wasm --lib --tests` — 89 passed, 0 failed
+  (lib 40, up from 38: the F1 and F4 regression tests, both independently
+  confirmed to fail without their fix; the six integration binaries
+  unchanged at 5+2+6+3+13+... see per-binary counts above -- all green).
+- `cargo test -p syneroym-control-plane --lib` — 34 passed, 0 failed (30
+  prior + F2's `test_undeploy_removes_fdae_policy`/
+  `test_redeploy_without_fdae_block_clears_previous_policy`, F3's
+  `test_deploy_fdae_policy_error_does_not_echo_file_contents`, and F5's
+  `test_deploy_failure_restores_previous_fdae_policy_not_the_new_one`).
+- `cargo test -p syneroym-data-db --lib` — 132 passed, 0 failed (131 prior
+  + F2's `test_fdae_policy_delete_is_idempotent_and_removes_the_row`; F6's
+  fix is an assertion change on an existing test, not a new one).
+- `cargo test -p syneroym-router --test native_dispatch_identity` — 18
+  passed, 0 failed (16 prior + F7's `native_delete_many_is_row_filtered_as_a_write_operation`
+  and `native_aggregate_is_row_filtered_through_native_dispatch`).
+- `cargo test --workspace --no-fail-fast` (sandbox disabled) — zero
+  failures, full clean run (no `error: N targets failed` summary; every
+  `test result:` line green through to the doctests, which run last).

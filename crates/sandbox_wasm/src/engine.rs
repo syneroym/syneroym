@@ -102,6 +102,16 @@ pub struct AppSandboxEngine {
     /// `stop_wasm` and `compile_and_cache_wasm` so a re-deploy re-resolves
     /// rather than serving the previous policy.
     fdae_policies: DashMap<String, Option<Arc<Policy>>>,
+    /// Per-service generation counter, bumped by every `fdae_policies`
+    /// eviction (`stop_wasm`, `compile_and_cache_wasm`). `resolve_fdae_policy`
+    /// captures it before its (possibly slow, cross-await) storage read and
+    /// compares after: if an eviction raced the read, the read is stale and
+    /// must not be cached. Without this, a redeploy's eviction can fire
+    /// against a key that isn't cached yet (the racing load hasn't inserted
+    /// it), and the racing load then inserts its *old* result afterward --
+    /// resurrecting a policy the redeploy should have replaced, indefinitely
+    /// (until the next `stop_wasm`/redeploy). See `resolve_fdae_policy`.
+    fdae_policy_generation: DashMap<String, u64>,
     default_max_instructions: Option<u64>,
     default_max_memory_bytes: Option<u64>,
     _shutdown_tx: Option<oneshot::Sender<()>>,
@@ -274,6 +284,7 @@ impl AppSandboxEngine {
             linker,
             components,
             fdae_policies: DashMap::new(),
+            fdae_policy_generation: DashMap::new(),
             default_max_instructions,
             default_max_memory_bytes,
             _shutdown_tx: Some(shutdown_tx),
@@ -635,6 +646,13 @@ impl AppSandboxEngine {
         if let Some(cached) = self.fdae_policies.get(service_id) {
             return cached.clone();
         }
+        // Captured *before* the cross-await storage read, so a concurrent
+        // eviction (redeploy) that races this load can be detected below --
+        // see `fdae_policy_generation`'s doc comment. `.get()` immutably
+        // borrows a shard just long enough to copy the `u64` out; the shard
+        // is not held across the `.await`.
+        let generation_before =
+            self.fdae_policy_generation.get(service_id).map(|g| *g).unwrap_or(0);
         let resolved = match self.storage_provider.load_fdae_policy(service_id).await {
             Ok(Some(doc)) => match syneroym_fdae::parse_and_validate(&doc) {
                 Ok(policy) => Some(Arc::new(policy)),
@@ -653,7 +671,21 @@ impl AppSandboxEngine {
                 None
             }
         };
-        self.fdae_policies.insert(service_id.to_string(), resolved.clone());
+        let generation_after = self.fdae_policy_generation.get(service_id).map(|g| *g).unwrap_or(0);
+        if generation_before == generation_after {
+            self.fdae_policies.insert(service_id.to_string(), resolved.clone());
+        } else {
+            // An eviction (redeploy) landed while this load was in flight --
+            // this result may already be stale. Return it for *this* call
+            // (it was the correct answer at some point during the read, and
+            // returning it beats blocking or erroring), but do not cache it:
+            // the next call re-resolves fresh rather than serving a policy a
+            // redeploy already superseded.
+            debug!(
+                service_id,
+                "FDAE policy resolution raced a redeploy; serving uncached this time"
+            );
+        }
         resolved
     }
 
@@ -946,12 +978,21 @@ impl AppSandboxEngine {
         self.execute_wasm(service_id, component_id, &request).await
     }
 
+    /// Bumps `fdae_policy_generation` for `service_id`, marking any
+    /// `resolve_fdae_policy` load currently in flight for it as stale --
+    /// called alongside every `fdae_policies` eviction. See
+    /// `fdae_policy_generation`'s doc comment.
+    fn bump_fdae_policy_generation(&self, service_id: &str) {
+        *self.fdae_policy_generation.entry(service_id.to_string()).or_insert(0) += 1;
+    }
+
     /// Stop and evict a running Wasm component from the in-memory cache.
     pub async fn stop_wasm(&self, service_id: &str) -> Result<()> {
         Self::validate_service_id(service_id)?;
         info!(service_id = %service_id, "AppSandboxEngine: stopping Wasm component");
         self.components.remove(service_id);
         self.fdae_policies.remove(service_id);
+        self.bump_fdae_policy_generation(service_id);
         self.abort_streams(service_id);
         metrics::gauge!("substrate.wasm.component_cache_size").set(self.components.len() as f64);
         Ok(())
@@ -1019,6 +1060,7 @@ impl AppSandboxEngine {
         // previously resolved policy so the next instantiation re-resolves
         // from `substrate.db` rather than serving a stale one.
         self.fdae_policies.remove(service_id);
+        self.bump_fdae_policy_generation(service_id);
         info!("WASM component compiled and cached for {}", service_id);
         metrics::gauge!("substrate.wasm.component_cache_size").set(self.components.len() as f64);
         Ok(())
@@ -1236,14 +1278,170 @@ mod tests {
     use std::{env, fs};
 
     use syneroym_core::{storage::MockStorage, test_constants};
-    use syneroym_data_db::SqliteStorageProvider;
+    use syneroym_data_db::{ServiceStore, SqliteStorageProvider};
     use syneroym_mqtt_broker::MqttBrokerConfig;
+    use tokio::{sync::Notify, task};
     use wasmtime::component::Component;
 
     use super::*;
     use crate::host_capabilities::tests::{
         test_blob_provider, test_messaging_context, test_service_proxy, test_streaming_context,
     };
+
+    /// Wraps a real `StorageProvider`, pausing `load_fdae_policy` on
+    /// `release` before delegating -- lets a test deterministically land a
+    /// `bump_fdae_policy_generation` call inside `resolve_fdae_policy`'s
+    /// cross-await race window, rather than relying on incidental thread
+    /// scheduling (which would make the test flaky in either direction).
+    /// Every other method delegates straight through; `resolve_fdae_policy`
+    /// only ever calls `load_fdae_policy`.
+    struct RacingStorageProvider {
+        inner: Arc<dyn StorageProvider>,
+        release: Arc<Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl StorageProvider for RacingStorageProvider {
+        async fn open_service_db(
+            &self,
+            service_id: &str,
+            key_store: &Arc<KeyStore>,
+        ) -> anyhow::Result<Box<dyn ServiceStore>> {
+            self.inner.open_service_db(service_id, key_store).await
+        }
+        async fn rotate_kek(
+            &self,
+            key_store: &Arc<KeyStore>,
+            new_kek: [u8; 32],
+        ) -> anyhow::Result<()> {
+            self.inner.rotate_kek(key_store, new_kek).await
+        }
+        async fn load_service_dek(
+            &self,
+            service_id: &str,
+            key_store: &Arc<KeyStore>,
+        ) -> anyhow::Result<Option<zeroize::Zeroizing<[u8; 32]>>> {
+            self.inner.load_service_dek(service_id, key_store).await
+        }
+        async fn service_exists(&self, service_id: &str) -> anyhow::Result<bool> {
+            self.inner.service_exists(service_id).await
+        }
+        async fn save_config_generation(
+            &self,
+            service_id: &str,
+            config_blob: &str,
+        ) -> anyhow::Result<u64> {
+            self.inner.save_config_generation(service_id, config_blob).await
+        }
+        async fn delete_config_generation(
+            &self,
+            service_id: &str,
+            generation: u64,
+        ) -> anyhow::Result<()> {
+            self.inner.delete_config_generation(service_id, generation).await
+        }
+        async fn get_config_generation(
+            &self,
+            service_id: &str,
+            generation: u64,
+        ) -> anyhow::Result<Option<String>> {
+            self.inner.get_config_generation(service_id, generation).await
+        }
+        async fn get_latest_config_generation(
+            &self,
+            service_id: &str,
+        ) -> anyhow::Result<Option<(u64, String)>> {
+            self.inner.get_latest_config_generation(service_id).await
+        }
+        async fn save_messaging_subscription(
+            &self,
+            service_id: &str,
+            topic: &str,
+        ) -> anyhow::Result<()> {
+            self.inner.save_messaging_subscription(service_id, topic).await
+        }
+        async fn delete_messaging_subscription(
+            &self,
+            service_id: &str,
+            topic: &str,
+        ) -> anyhow::Result<()> {
+            self.inner.delete_messaging_subscription(service_id, topic).await
+        }
+        async fn delete_all_messaging_subscriptions_for_service(
+            &self,
+            service_id: &str,
+        ) -> anyhow::Result<()> {
+            self.inner.delete_all_messaging_subscriptions_for_service(service_id).await
+        }
+        async fn list_all_messaging_subscriptions(&self) -> anyhow::Result<Vec<(String, String)>> {
+            self.inner.list_all_messaging_subscriptions().await
+        }
+        async fn save_fdae_policy(
+            &self,
+            service_id: &str,
+            policy_json: &str,
+        ) -> anyhow::Result<()> {
+            self.inner.save_fdae_policy(service_id, policy_json).await
+        }
+        async fn load_fdae_policy(&self, service_id: &str) -> anyhow::Result<Option<String>> {
+            self.release.notified().await;
+            self.inner.load_fdae_policy(service_id).await
+        }
+        async fn delete_fdae_policy(&self, service_id: &str) -> anyhow::Result<()> {
+            self.inner.delete_fdae_policy(service_id).await
+        }
+    }
+
+    /// Reproduces the lost-invalidation race directly: a `resolve_fdae_policy`
+    /// load is paused (via `RacingStorageProvider`) after it has already
+    /// captured `generation_before`, a concurrent eviction (simulating a
+    /// redeploy) fires while it's still in flight, and only then is the load
+    /// allowed to complete. The in-flight call must still return the correct
+    /// (if now possibly stale) answer, but must **not** repopulate the cache
+    /// -- otherwise the eviction it raced would be silently undone, and the
+    /// stale policy would be served indefinitely until the next
+    /// `stop_wasm`/redeploy.
+    #[tokio::test]
+    async fn fdae_policy_resolution_racing_an_eviction_is_not_cached() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let real_provider: Arc<dyn StorageProvider> =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        real_provider
+            .save_fdae_policy("svc-race", r#"{"version": "fdae/v1", "definitions": {}}"#)
+            .await
+            .unwrap();
+
+        let release = Arc::new(Notify::new());
+        let racing_provider: Arc<dyn StorageProvider> =
+            Arc::new(RacingStorageProvider { inner: real_provider, release: release.clone() });
+        let app_engine = Arc::new(test_app_engine(racing_provider));
+
+        let resolver = {
+            let app_engine = app_engine.clone();
+            tokio::spawn(async move { app_engine.resolve_fdae_policy("svc-race").await })
+        };
+
+        // Let the spawned task run up through its `generation_before`
+        // snapshot and into `load_fdae_policy`'s `release.notified().await`
+        // suspension point, before the eviction below fires.
+        task::yield_now().await;
+        task::yield_now().await;
+
+        // The eviction half of a concurrent redeploy, landing while the load
+        // above is still paused.
+        app_engine.fdae_policies.remove("svc-race");
+        app_engine.bump_fdae_policy_generation("svc-race");
+
+        release.notify_one();
+        let resolved = resolver.await.unwrap();
+
+        assert!(resolved.is_some(), "the in-flight call must still return the correct answer");
+        assert!(
+            app_engine.fdae_policies.get("svc-race").is_none(),
+            "a load that raced a concurrent eviction must not repopulate the cache -- doing so \
+             would silently undo the eviction and serve a possibly-stale policy indefinitely"
+        );
+    }
 
     #[tokio::test]
     async fn test_list_interfaces() {
@@ -1359,6 +1557,7 @@ mod tests {
             linker,
             components: DashMap::new(),
             fdae_policies: DashMap::new(),
+            fdae_policy_generation: DashMap::new(),
             default_max_instructions: Some(10_000),
             default_max_memory_bytes: Some(1024 * 1024), // 1MB
             _shutdown_tx: None,
@@ -1421,6 +1620,7 @@ mod tests {
             linker,
             components: DashMap::new(),
             fdae_policies: DashMap::new(),
+            fdae_policy_generation: DashMap::new(),
             default_max_instructions: Some(10_000),
             default_max_memory_bytes: Some(1024 * 1024),
             _shutdown_tx: None,

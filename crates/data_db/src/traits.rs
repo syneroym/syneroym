@@ -103,6 +103,15 @@ pub trait StorageProvider: Send + Sync {
 
     /// Loads a service's persisted FDAE policy document, if any.
     async fn load_fdae_policy(&self, service_id: &str) -> anyhow::Result<Option<String>>;
+
+    /// Removes a service's persisted FDAE policy, if any. Idempotent:
+    /// deleting an absent row is not an error. Called from `undeploy` and
+    /// from a `deploy` whose manifest no longer declares `fdae_policy_path`
+    /// -- without this, a service's `fdae_policies` row outlives the
+    /// manifest that declared it, and `AppSandboxEngine::resolve_fdae_policy`
+    /// resurrects it from storage on the next cache miss even though native
+    /// dispatch has correctly gone unfiltered.
+    async fn delete_fdae_policy(&self, service_id: &str) -> anyhow::Result<()>;
 }
 
 #[async_trait]

@@ -129,9 +129,9 @@ fn data_layer_error(e: DataLayerError) -> RpcError {
 /// the invocation's verified caller session, so
 /// `outcome.masked_fields` is live here exactly as it is on the WASM host
 /// path -- this is no longer a no-op for a policy-carrying service reached by
-/// a router-verified external caller (`dispatch.rs`'s native arm, ADR-0017
-/// §2.1). It stays a no-op for a service deployed without a policy
-/// (`fdae_policy: None`), unchanged from before.
+/// a router-verified external caller (`dispatch.rs`'s native arm). It stays
+/// a no-op for a service deployed without a policy (`fdae_policy: None`),
+/// unchanged from before.
 fn strip_record(
     mut record: RecordReadValue,
     masked_fields: &[String],
@@ -237,7 +237,7 @@ impl SynSvcNativeService {
     /// proxy to itself to escape it. The synthesized-identity ingress
     /// returning empty is over-restriction, which is correct; a carve-out
     /// here would be a bypass. Do not "simplify" this away -- see
-    /// ADR-0017's D-04-02-h in `task.md`.
+    /// D-04-02-h in `task.md`'s Decision Register.
     fn query_auth<'a>(&'a self, invocation: &'a NativeInvocation) -> Option<QueryAuth<'a>> {
         self.fdae_policy.as_ref().map(|policy| QueryAuth {
             policy,

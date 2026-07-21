@@ -30,8 +30,8 @@ use syneroym_mqtt_broker::{
     namespace_topic_for_publish,
 };
 use syneroym_rpc::{
-    Ability, CallOrigin, CallerContext, ProxyError as RpcProxyError, ProxyProtocol, ProxyRequest,
-    ResourceUri, ServiceProxy,
+    Ability, AuthLevel, CallOrigin, CallerContext, ProxyError as RpcProxyError, ProxyProtocol,
+    ProxyRequest, ResourceUri, ServiceProxy,
 };
 use syneroym_wit_interfaces::host::syneroym::{
     app_config::app_config::{self, ConfigError},
@@ -172,7 +172,28 @@ impl HostState {
     /// Builds the `QueryAuth` for the current request from `fdae_policy` +
     /// `caller.session`, or `None` on the policy-absent path (today's
     /// unfiltered behavior).
+    ///
+    /// **`AuthLevel::LocalElevated` is exempt.** This is not the
+    /// `AuthLevel::System` carve-out `synsvc_native.rs::query_auth`
+    /// deliberately refuses (that one would let a guest's self-proxy escape
+    /// its own policy) -- `LocalElevated` is a categorically different,
+    /// host-synthesized-only context: `engine.rs`'s `invoke_lifecycle_hook`
+    /// is the sole producer, for `init`/`migrate`, and no guest input can
+    /// ever request it. Its capability (`data-layer/admin` on the service's
+    /// own resource) already entails `data-layer/read` and covers every
+    /// collection, so a policy with a `caller`-terminal permission compiles
+    /// a *real* (non-`deny_all`) sieve here -- one bound to
+    /// `"system:local-elevated:<service_id>"`, a DID no principal row will
+    /// ever hold, so it silently returns zero rows rather than failing. A
+    /// migration that reads its own data to decide how to rewrite it would
+    /// see nothing and could act on that emptiness. Sieving this context
+    /// was never the intent -- `execute-ddl`/`query-raw`'s own admin gate
+    /// exists specifically so lifecycle hooks act with full authority over
+    /// their own service's data.
     fn query_auth(&self) -> Option<QueryAuth<'_>> {
+        if self.caller.auth == AuthLevel::LocalElevated {
+            return None;
+        }
         self.fdae_policy.as_ref().map(|policy| QueryAuth {
             policy,
             session: &self.caller.session,
@@ -839,7 +860,7 @@ pub(crate) mod tests {
     use syneroym_data_db::SqliteStorageProvider;
     use syneroym_fdae::parse_and_validate;
     use syneroym_mqtt_broker::MqttBrokerConfig;
-    use syneroym_rpc::{AuthLevel, Capability, SessionContext};
+    use syneroym_rpc::{Capability, SessionContext};
 
     use super::*;
 
@@ -1317,6 +1338,45 @@ pub(crate) mod tests {
                 "no policy means no CLS strip -- ssn must survive untouched"
             );
         }
+    }
+
+    /// Lifecycle-hook reads (`init`/`migrate`, which run as
+    /// `CallerContext::local_elevated`) must stay unfiltered even under a
+    /// deployed policy. Without `query_auth`'s `LocalElevated` exemption,
+    /// `local_elevated`'s `data-layer/admin` capability entails
+    /// `data-layer/read` and covers every collection, so `compile_read`
+    /// compiles a *real* sieve here -- bound to
+    /// `"system:local-elevated:<service_id>"`, a DID no principal row can
+    /// ever hold -- and both documents would silently vanish. A migration
+    /// that reads its own data to decide how to rewrite it would act on
+    /// that emptiness instead of erroring.
+    #[tokio::test]
+    async fn fdae_local_elevated_lifecycle_reads_stay_unfiltered_under_a_policy() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage_provider: Arc<dyn StorageProvider> =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        fdae_seed_documents(storage_provider.clone()).await;
+
+        let policy = Arc::new(fdae_single_hop_policy());
+        let caller = CallerContext::local_elevated(FDAE_SERVICE_ID);
+        let mut host = fdae_host_state(storage_provider, caller, Some(policy));
+
+        let opts = QueryOptions { filter: None, limit: None, cursor: None };
+        let result = store::Host::query(&mut host, "documents".to_string(), opts).await.unwrap();
+        assert_eq!(
+            result.records.len(),
+            2,
+            "a lifecycle hook must see every row regardless of the deployed policy"
+        );
+
+        let doc = store::Host::get(&mut host, "documents".to_string(), "doc-2".to_string())
+            .await
+            .unwrap();
+        assert!(
+            doc.is_some(),
+            "get during init/migrate must not be sieved against the synthesized local-elevated \
+             identity"
+        );
     }
 
     /// `aggregate` is row-filtered through the host layer identically to
