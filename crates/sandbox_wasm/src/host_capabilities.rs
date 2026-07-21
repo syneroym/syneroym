@@ -9,6 +9,7 @@
 
 use std::{
     fmt::{self, Debug, Formatter},
+    mem,
     sync::{Arc, Weak},
     time::Duration,
 };
@@ -476,7 +477,7 @@ impl store::Host for HostState {
         .await?;
         let query_auth = self.query_auth();
         let mut outcome = store.query(&collection, &opts, query_auth.as_ref()).await?;
-        let records = std::mem::take(&mut outcome.value.records)
+        let records = mem::take(&mut outcome.value.records)
             .into_iter()
             .map(|record| strip_record(record, &outcome.masked_fields))
             .collect::<Result<Vec<_>, _>>()?;
@@ -1095,6 +1096,36 @@ pub(crate) mod tests {
         .unwrap()
     }
 
+    /// A `manage` permission covering `data-layer/write`, reachable via the
+    /// same creator relation -- used to exercise `delete_many`'s write-mode
+    /// sieve. Mirrors `data_db::tests_fdae::write_policy`.
+    fn fdae_write_policy() -> Policy {
+        parse_and_validate(
+            r#"{
+                "version": "fdae/v1",
+                "definitions": {
+                    "document": {
+                        "table": "documents",
+                        "relations": {"creator": {"target": "user", "join_column": "creator_uuid"}},
+                        "permissions": {
+                            "manage": {"allows": ["data-layer/write"], "paths": [["creator", "caller"]]}
+                        }
+                    },
+                    "user": {"table": "users", "principal_column": "did"}
+                }
+            }"#,
+        )
+        .unwrap()
+    }
+
+    fn fdae_write_cap(collection: &str) -> Capability {
+        Capability {
+            with: fdae_resource(collection),
+            can: Ability(Ability::DATA_LAYER_WRITE.to_string()),
+            caveats: None,
+        }
+    }
+
     fn fdae_host_state(
         storage_provider: Arc<dyn StorageProvider>,
         caller: CallerContext,
@@ -1286,6 +1317,68 @@ pub(crate) mod tests {
                 "no policy means no CLS strip -- ssn must survive untouched"
             );
         }
+    }
+
+    /// `aggregate` is row-filtered through the host layer identically to
+    /// `get`/`query` -- covers the `store::Host::aggregate` wiring seam this
+    /// phase adds, which no host test previously exercised with a real
+    /// `Some(policy)` (a dropped or `None`-replaced `query_auth()` call here
+    /// would have passed every prior test).
+    #[tokio::test]
+    async fn fdae_aggregate_is_row_filtered_through_host() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage_provider: Arc<dyn StorageProvider> =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        fdae_seed_documents(storage_provider.clone()).await;
+
+        let policy = Arc::new(fdae_single_hop_policy());
+        let alice = fdae_caller("did:key:alice", vec![fdae_read_cap("documents")]);
+        let mut host = fdae_host_state(storage_provider, alice, Some(policy));
+
+        let result = store::Host::aggregate(
+            &mut host,
+            "documents".to_string(),
+            r#"{"$group":{"_id":null,"n":{"$sum":1}}}"#.to_string(),
+        )
+        .await
+        .unwrap();
+        // `SqlValue` doesn't derive `PartialEq` -- compare via its
+        // already-derived `Serialize` impl.
+        assert_eq!(
+            serde_json::to_value(&result.rows).unwrap(),
+            serde_json::to_value(vec![vec![SqlValue::Integer(1)]]).unwrap(),
+            "only alice's own doc-1 is counted"
+        );
+    }
+
+    /// `delete_many` is filtered as a write operation through the host layer
+    /// -- same wiring-seam coverage gap as `aggregate` above.
+    #[tokio::test]
+    async fn fdae_delete_many_is_write_filtered_through_host() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage_provider: Arc<dyn StorageProvider> =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        fdae_seed_documents(storage_provider.clone()).await;
+        let policy = Arc::new(fdae_write_policy());
+
+        // A read-only capability must not satisfy the write-mode sieve.
+        let alice_read_only = fdae_caller("did:key:alice", vec![fdae_read_cap("documents")]);
+        let mut host_ro =
+            fdae_host_state(storage_provider.clone(), alice_read_only, Some(policy.clone()));
+        let deleted =
+            store::Host::delete_many(&mut host_ro, "documents".to_string(), String::new())
+                .await
+                .unwrap();
+        assert_eq!(deleted, 0, "a read-only capability must not delete anything");
+
+        // A write capability deletes only alice's own row.
+        let alice_write = fdae_caller("did:key:alice", vec![fdae_write_cap("documents")]);
+        let mut host_rw = fdae_host_state(storage_provider, alice_write, Some(policy));
+        let deleted =
+            store::Host::delete_many(&mut host_rw, "documents".to_string(), String::new())
+                .await
+                .unwrap();
+        assert_eq!(deleted, 1, "only alice's own document is deletable");
     }
 
     /// **D-04-02-g CLS-narrowing pin** (task.md Decision Register): the same

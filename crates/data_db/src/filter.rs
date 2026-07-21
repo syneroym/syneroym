@@ -7,6 +7,8 @@
 //! second argument to `json_extract`; nothing from the filter document is
 //! ever interpolated into the SQL text itself.
 
+use std::collections::BTreeSet;
+
 use rusqlite::types::Value;
 use serde_json::Value as Json;
 
@@ -47,6 +49,63 @@ pub fn compile_filter(filter_json: Option<&str>) -> Result<Option<CompiledFilter
     let mut params = Vec::new();
     let where_clause = compile_document(&doc, 0, &mut params)?;
     Ok(Some(CompiledFilter { where_clause, params }))
+}
+
+/// Returns the top-level field names an (optional) MongoDB-style filter
+/// document references, recursing through `$and`/`$or`/`$not` (the only
+/// logical composition this DSL supports) but not otherwise interpreting
+/// the document. Used to reject a filter that touches a CLS-masked field
+/// (ADR-0017 §4): `compile_cls` derives `masked_fields` as flat top-level
+/// keys, with no dot-path parsing, so the field's own top-level key is
+/// always what a masking policy names, however deep a query nests under it.
+/// A caller who cannot see a masked column in the output must not be able
+/// to recover it by filtering on it instead -- masking only the projection
+/// while leaving the predicate unrestricted turns the mask into an oracle.
+pub fn referenced_top_level_fields(
+    filter_json: Option<&str>,
+) -> Result<BTreeSet<String>, DataLayerError> {
+    let Some(raw) = filter_json else { return Ok(BTreeSet::new()) };
+    if raw.trim().is_empty() {
+        return Ok(BTreeSet::new());
+    }
+
+    let parsed: Json = serde_json::from_str(raw)
+        .map_err(|e| DataLayerError::SchemaViolation(format!("invalid filter JSON: {e}")))?;
+
+    let Json::Object(doc) = parsed else {
+        return Err(DataLayerError::SchemaViolation(
+            "filter document must be a JSON object".to_string(),
+        ));
+    };
+
+    let mut fields = BTreeSet::new();
+    collect_referenced_fields(&doc, &mut fields);
+    Ok(fields)
+}
+
+fn collect_referenced_fields(doc: &serde_json::Map<String, Json>, fields: &mut BTreeSet<String>) {
+    for (key, value) in doc {
+        match key.as_str() {
+            "$and" | "$or" => {
+                if let Json::Array(items) = value {
+                    for item in items {
+                        if let Json::Object(sub) = item {
+                            collect_referenced_fields(sub, fields);
+                        }
+                    }
+                }
+            }
+            "$not" => {
+                if let Json::Object(sub) = value {
+                    collect_referenced_fields(sub, fields);
+                }
+            }
+            _ if key.starts_with('$') => {}
+            _ => {
+                fields.insert(key.split('.').next().unwrap_or(key).to_string());
+            }
+        }
+    }
 }
 
 fn compile_document(
@@ -383,5 +442,35 @@ mod tests {
     fn test_invalid_json_rejected() {
         let err = compile_filter(Some("not json")).unwrap_err();
         assert!(matches!(err, DataLayerError::SchemaViolation(_)));
+    }
+
+    #[test]
+    fn test_referenced_top_level_fields_none_and_empty() {
+        assert!(referenced_top_level_fields(None).unwrap().is_empty());
+        assert!(referenced_top_level_fields(Some("")).unwrap().is_empty());
+        assert!(referenced_top_level_fields(Some("{}")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_referenced_top_level_fields_flat_and_dotted() {
+        let fields =
+            referenced_top_level_fields(Some(r#"{"name": "alice", "age": {"$gt": 18}}"#)).unwrap();
+        assert_eq!(fields, BTreeSet::from(["name".to_string(), "age".to_string()]));
+
+        // A dotted sub-path collapses to its top-level segment.
+        let fields = referenced_top_level_fields(Some(r#"{"ssn.prefix": "1"}"#)).unwrap();
+        assert_eq!(fields, BTreeSet::from(["ssn".to_string()]));
+    }
+
+    #[test]
+    fn test_referenced_top_level_fields_recurses_through_and_or_not() {
+        let fields = referenced_top_level_fields(Some(
+            r#"{"$and": [{"kind": "report"}, {"$or": [{"ssn": "1"}, {"$not": {"region": "EU"}}]}]}"#,
+        ))
+        .unwrap();
+        assert_eq!(
+            fields,
+            BTreeSet::from(["kind".to_string(), "ssn".to_string(), "region".to_string()])
+        );
     }
 }

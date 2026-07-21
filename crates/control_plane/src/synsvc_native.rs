@@ -13,7 +13,7 @@
 //! data-layer/blob-store access must work even in builds without the WASM
 //! sandbox feature enabled.
 
-use std::{collections::HashMap, fmt, sync::Arc};
+use std::{collections::HashMap, fmt, mem, sync::Arc};
 
 use serde_json::Value;
 use syneroym_data_blob::{
@@ -317,7 +317,7 @@ impl SynSvcNativeService {
                     .query(&req.collection, &req.opts, None)
                     .await
                     .map_err(data_layer_error)?;
-                let records = std::mem::take(&mut outcome.value.records)
+                let records = mem::take(&mut outcome.value.records)
                     .into_iter()
                     .map(|record| strip_record(record, &outcome.masked_fields))
                     .collect::<Result<Vec<_>, _>>()

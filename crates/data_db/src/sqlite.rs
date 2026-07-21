@@ -371,6 +371,21 @@ fn do_query(
     sieve: Option<&CompiledSieve>,
 ) -> Result<host_store::QueryResult, host_store::DataLayerError> {
     validate_identifier(collection)?;
+
+    // A CLS-masked field must not be filterable either -- otherwise masking
+    // only the projection turns the predicate into an oracle that recovers
+    // the value via presence/absence (or, with `$regex`/comparison
+    // operators, full extraction) even though it never appears in a
+    // returned payload.
+    if let Some(s) = sieve
+        && !s.masked_fields.is_empty()
+    {
+        let referenced = filter::referenced_top_level_fields(opts.filter.as_deref())?;
+        if s.masked_fields.iter().any(|f| referenced.contains(f)) {
+            return Err(host_store::DataLayerError::PermissionDenied);
+        }
+    }
+
     let compiled = filter::compile_filter(opts.filter.as_deref())?;
     let limit = opts.limit.unwrap_or(MAX_QUERY_PAGE_SIZE).min(MAX_QUERY_PAGE_SIZE);
 

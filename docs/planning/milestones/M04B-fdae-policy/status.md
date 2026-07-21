@@ -369,3 +369,78 @@ ground truth for this phase.
   (`fdae_policy` is `None` everywhere real deployment happens), so there is
   nothing new for the Playwright e2e suite to exercise. A deliberate skip,
   recorded per the plan's own scoping (§2).
+
+### Post-commit review (2026-07-21)
+
+Reviewed against commit `fc8d7d5`. Independently re-ran the new
+`sandbox_wasm` FDAE host tests, the `strip_masked_fields` unit tests, and
+clippy on the three touched crates before reviewing.
+
+**Addressed, code changed (this session, still Phase 3 scope):**
+
+- **CLS masks output only — the masked column stayed filterable, so its
+  value was recoverable via predicate probing** (medium severity, confirmed)
+  — the Phase-3 strip removes a masked field from the *returned payload*,
+  but `do_query`'s caller-supplied filter compiles directly against the raw
+  `payload` JSON (`filter::compile_filter`, unaware of `masked_fields`), and
+  supports `$regex`/comparison operators. A caller could filter on a masked
+  field (e.g. `{"ssn": {"$regex": "^111"}}`) and read the value back out via
+  row presence/absence, or extract it character-by-character — even though
+  the field never appears in the output. This meant `task.md`'s "CLS: value
+  never returned" row read as satisfied when the requirement's actual intent
+  (the caller cannot *learn* the masked value) wasn't met. Fixed: new
+  `filter::referenced_top_level_fields` extracts the top-level field names a
+  filter document touches (recursing through `$and`/`$or`/`$not`); `do_query`
+  now rejects (`PermissionDenied`) a filter that references any
+  `masked_fields` key, before compiling or running it — masked fields are
+  always flat top-level keys (`compile_cls` copies `fields.deny` verbatim),
+  so no path-parsing complexity. `aggregate` needed no equivalent fix
+  (Phase 2 already denies a CLS-active aggregate outright) and `get` takes
+  no filter. New tests:
+  `tests_fdae.rs::query_filter_referencing_a_cls_masked_field_is_denied`
+  (bare and `$and`/dotted-path forms) and
+  `::query_filter_on_non_masked_field_still_works_when_cls_active` (proves
+  the deny doesn't over-trigger), plus 3 new `filter.rs` unit tests for the
+  extraction helper itself.
+- **`aggregate`/`delete_many` host-path wiring was untested with a real
+  policy** (low severity) — the new Phase-3 host tests covered `get`/
+  `query`/`check_access` with an injected policy, but nothing exercised
+  `aggregate`/`delete_many` through `store::Host` with `Some(policy)`, so a
+  dropped or `None`-replaced `query_auth()` call at either site would have
+  passed every existing test. Added
+  `host_capabilities.rs::tests::fdae_aggregate_is_row_filtered_through_host`
+  and `::fdae_delete_many_is_write_filtered_through_host`.
+- **Inline `std::mem::take` violated the repo's own import convention** (low
+  severity) — `host_capabilities.rs`'s and `synsvc_native.rs`'s `query` strip
+  loops called `std::mem::take(...)` as an inline fully-qualified path.
+  AGENTS.md's import-cleanup rule asks for functions qualified by parent
+  module; fixed by importing `std::mem` and calling `mem::take(...)` in both
+  files.
+
+**Recorded as a known, by-design boundary (out of Phase 3 scope):**
+
+- **`query_raw` is not sieve-aware** (informational) — the privileged
+  raw-SQL escape hatch threads no `QueryAuth` and applies neither RLS nor
+  CLS. This is guarded by the `data-layer/admin` capability (a higher trust
+  tier than ordinary read access) and predates this slice, not a Phase-3
+  regression — but now that CLS is "live," it's worth recording explicitly
+  that the row/column guarantees have a deliberate gap at `query_raw`: an
+  admin-capable caller can read any masked column directly. No code change;
+  flagged here so it's a documented limit of the CLS guarantee, not an
+  assumed-closed one.
+
+**Reviewed and no action needed:**
+
+- **FDAE enforces nothing yet for any live deployed caller
+  (`fdae_policy: None` everywhere in production)** (informational) — already
+  correctly documented in this file, task.md, and the plan; unchanged by
+  this review.
+
+Verification after the code changes above: `cargo test -p syneroym-data-db`
+— **129 passed, 0 failed** (124 prior + 5 new: 2 filter-probe integration
+tests + 3 `filter.rs` unit tests); `cargo test -p syneroym-sandbox-wasm` —
+**34 passed, 0 failed** (32 prior + 2 new aggregate/delete_many host tests);
+`cargo +nightly fmt --all` clean; `cargo clippy --workspace --all-targets
+--all-features` zero warnings; `cargo test --workspace` green (same
+pre-existing/environmental `coordinator-iroh` sandbox failure, confirmed
+unrelated by rerunning with the sandbox disabled).

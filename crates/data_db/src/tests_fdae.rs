@@ -299,6 +299,60 @@ async fn masked_fields_exposed_but_rows_unmasked_in_phase_2() {
     assert_eq!(outcome.value.records.len(), 1);
 }
 
+/// A CLS-masked field must not be filterable either -- otherwise the Phase-3
+/// host-side strip only hides the value from the *output*, while the
+/// caller's own filter predicate (which runs in SQL against the raw
+/// payload, unaware of `masked_fields`) still turns row presence/absence
+/// into a boolean oracle -- and with `$regex`/comparison operators, a full
+/// extraction channel, not just a single guess. Surfaced during Slice B2
+/// Phase 3 review.
+#[tokio::test]
+async fn query_filter_referencing_a_cls_masked_field_is_denied() {
+    let store = setup_store().await;
+    seed_creator_docs(store.as_ref()).await;
+    let policy = cls_policy();
+    let alice = session("did:key:alice", vec![read_cap("documents")]);
+    let auth = QueryAuth { policy: &policy, session: &alice, service_id: SERVICE_ID };
+
+    let opts = QueryOptions {
+        filter: Some(r#"{"ssn": {"$regex": "1"}}"#.to_string()),
+        limit: None,
+        cursor: None,
+    };
+    let err = store.query("documents", &opts, Some(&auth)).await.unwrap_err();
+    assert!(matches!(err, DataLayerError::PermissionDenied));
+
+    // Nested under $and/$or/$not, or as a dotted sub-path, must be caught
+    // too -- not just a bare top-level equality filter.
+    let opts = QueryOptions {
+        filter: Some(r#"{"$and": [{"kind": "report"}, {"ssn.prefix": "1"}]}"#.to_string()),
+        limit: None,
+        cursor: None,
+    };
+    let err = store.query("documents", &opts, Some(&auth)).await.unwrap_err();
+    assert!(matches!(err, DataLayerError::PermissionDenied));
+}
+
+/// The masked-field filter deny must not over-trigger: filtering on a
+/// non-masked field while CLS is active for a *different* field must still
+/// work normally.
+#[tokio::test]
+async fn query_filter_on_non_masked_field_still_works_when_cls_active() {
+    let store = setup_store().await;
+    seed_creator_docs(store.as_ref()).await;
+    let policy = cls_policy();
+    let alice = session("did:key:alice", vec![read_cap("documents")]);
+    let auth = QueryAuth { policy: &policy, session: &alice, service_id: SERVICE_ID };
+
+    let opts = QueryOptions {
+        filter: Some(r#"{"creator_uuid": "u-alice"}"#.to_string()),
+        limit: None,
+        cursor: None,
+    };
+    let outcome = store.query("documents", &opts, Some(&auth)).await.unwrap();
+    assert_eq!(outcome.value.records.len(), 1);
+}
+
 #[tokio::test]
 async fn delete_many_is_row_filtered_as_a_write_operation() {
     let store = setup_store().await;
