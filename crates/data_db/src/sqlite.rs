@@ -488,6 +488,26 @@ fn do_check_access(
     }
 }
 
+/// Lists the service's collections (user tables) for the deploy-time
+/// `strict:` author-time warning (ADR-0017 §1/D-04-02-c): excludes SQLite
+/// internals (`sqlite_%`) and the host's own `_vault` table, since those are
+/// never `definitions:` targets in a policy document.
+fn do_list_collections(conn: &mut Connection) -> Result<Vec<String>, host_store::DataLayerError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT name FROM sqlite_master
+             WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'
+               AND name NOT LIKE '\\_%' ESCAPE '\\'",
+        )
+        .map_err(|e| host_store::DataLayerError::Internal(format!("list_collections: {e}")))?;
+    let names = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| host_store::DataLayerError::Internal(format!("list_collections: {e}")))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| host_store::DataLayerError::Internal(format!("list_collections: {e}")))?;
+    Ok(names)
+}
+
 /// Runs an `aggregate` call (ADR-0007, Slice B4) on the reader pool. The
 /// compiled SQL is entirely host-generated (bound params + validated
 /// identifiers only), so it is `readonly()` by construction and needs none
@@ -853,6 +873,7 @@ impl SqliteStorageProvider {
         }
         Self::run_m3a_migration(&tx)?;
         Self::run_m3b_migration(&tx)?;
+        Self::run_fdae_migration(&tx)?;
         let updated =
             tx.execute("UPDATE schema_version SET version = ?1", [SUBSTRATE_SCHEMA_VERSION])?;
         if updated == 0 {
@@ -901,6 +922,18 @@ impl SqliteStorageProvider {
                 topic      TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
                 PRIMARY KEY (service_id, topic)
+            )",
+            [],
+        )?;
+        Ok(())
+    }
+
+    fn run_fdae_migration(conn: &Connection) -> rusqlite::Result<()> {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS fdae_policies (
+                service_id  TEXT PRIMARY KEY,
+                policy_json TEXT NOT NULL,
+                updated_at  INTEGER NOT NULL
             )",
             [],
         )?;
@@ -1429,6 +1462,39 @@ impl StorageProvider for SqliteStorageProvider {
         })
         .await?
     }
+
+    async fn save_fdae_policy(&self, service_id: &str, policy_json: &str) -> anyhow::Result<()> {
+        let conn_arc = self.substrate_conn.clone();
+        let s_id = service_id.to_string();
+        let policy = policy_json.to_string();
+        task::spawn_blocking(move || -> anyhow::Result<()> {
+            let conn = conn_arc.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {}", e))?;
+            let now = Utc::now().timestamp_millis();
+            conn.execute(
+                "INSERT INTO fdae_policies (service_id, policy_json, updated_at)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT (service_id) DO UPDATE SET
+                     policy_json = excluded.policy_json,
+                     updated_at = excluded.updated_at",
+                params![s_id, policy, now],
+            )?;
+            Ok(())
+        })
+        .await?
+    }
+
+    async fn load_fdae_policy(&self, service_id: &str) -> anyhow::Result<Option<String>> {
+        let conn_arc = self.substrate_conn.clone();
+        let s_id = service_id.to_string();
+        task::spawn_blocking(move || -> anyhow::Result<Option<String>> {
+            let conn = conn_arc.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {}", e))?;
+            let mut stmt =
+                conn.prepare("SELECT policy_json FROM fdae_policies WHERE service_id = ?1")?;
+            let mut rows = stmt.query(params![s_id])?;
+            if let Some(row) = rows.next()? { Ok(Some(row.get(0)?)) } else { Ok(None) }
+        })
+        .await?
+    }
 }
 
 pub struct SqliteServiceStore {
@@ -1705,6 +1771,17 @@ impl ServiceStore for SqliteServiceStore {
                 host_store::DataLayerError::Internal(format!("reader pool interact: {e}"))
             })?
     }
+
+    async fn list_collections(&self) -> Result<Vec<String>, host_store::DataLayerError> {
+        let conn = self
+            .reader_pool
+            .get()
+            .await
+            .map_err(|e| host_store::DataLayerError::Internal(format!("reader pool: {e}")))?;
+        conn.interact(do_list_collections).await.map_err(|e| {
+            host_store::DataLayerError::Internal(format!("reader pool interact: {e}"))
+        })?
+    }
 }
 
 #[async_trait]
@@ -1815,6 +1892,10 @@ impl ServiceStore for Arc<SqliteServiceStore> {
         auth: Option<&QueryAuth<'_>>,
     ) -> Result<bool, host_store::DataLayerError> {
         self.as_ref().check_access(collection, id, operation, auth).await
+    }
+
+    async fn list_collections(&self) -> Result<Vec<String>, host_store::DataLayerError> {
+        self.as_ref().list_collections().await
     }
 }
 
@@ -2150,6 +2231,60 @@ mod tests {
             let all = provider.list_all_messaging_subscriptions().await.unwrap();
             assert_eq!(all, vec![("svc-b".to_string(), "svc/svc-b/status".to_string())]);
         }
+    }
+
+    #[tokio::test]
+    async fn test_fdae_policy_save_load_roundtrip_and_replace() {
+        let dir = tempdir().unwrap();
+        let provider = SqliteStorageProvider::new(dir.path(), false).unwrap();
+
+        assert_eq!(provider.load_fdae_policy("svc-a").await.unwrap(), None);
+
+        provider.save_fdae_policy("svc-a", r#"{"version":1}"#).await.unwrap();
+        assert_eq!(
+            provider.load_fdae_policy("svc-a").await.unwrap(),
+            Some(r#"{"version":1}"#.to_string())
+        );
+
+        // A second save for the same service_id replaces (last-write-wins, one row).
+        provider.save_fdae_policy("svc-a", r#"{"version":2}"#).await.unwrap();
+        assert_eq!(
+            provider.load_fdae_policy("svc-a").await.unwrap(),
+            Some(r#"{"version":2}"#.to_string())
+        );
+
+        assert_eq!(provider.load_fdae_policy("svc-unknown").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn test_list_collections_returns_created_tables_excludes_vault_and_sqlite_internals() {
+        let dir = tempdir().unwrap();
+        let provider = SqliteStorageProvider::new(dir.path(), true).unwrap();
+        let key_store = Arc::new(KeyStore::new());
+        key_store.inject_kek([21u8; 32]).unwrap();
+
+        let store = provider.open_service_db("list-collections-svc", &key_store).await.unwrap();
+
+        store
+            .create_collection(&host_store::CollectionSchema {
+                name: "widgets".to_string(),
+                indexes: vec![],
+            })
+            .await
+            .unwrap();
+        store
+            .create_collection(&host_store::CollectionSchema {
+                name: "gadgets".to_string(),
+                indexes: vec![],
+            })
+            .await
+            .unwrap();
+        // A vault write forces `_vault` to exist alongside the collections.
+        store.write_secret("k", b"v").await.unwrap();
+
+        let mut collections = store.list_collections().await.unwrap();
+        collections.sort();
+        assert_eq!(collections, vec!["gadgets".to_string(), "widgets".to_string()]);
     }
 
     #[test]

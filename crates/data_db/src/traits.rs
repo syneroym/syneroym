@@ -94,6 +94,15 @@ pub trait StorageProvider: Send + Sync {
     /// Lists every persisted `(service_id, topic)` subscription, replayed
     /// into the broker on substrate startup.
     async fn list_all_messaging_subscriptions(&self) -> anyhow::Result<Vec<(String, String)>>;
+
+    /// Saves (replacing) the validated FDAE policy document for a service.
+    /// Last-write-wins -- unlike config generations, a policy has no
+    /// generation ladder (ADR-0017: a grant that names a policy binds late by
+    /// design, so tightening a deployed policy must take effect immediately).
+    async fn save_fdae_policy(&self, service_id: &str, policy_json: &str) -> anyhow::Result<()>;
+
+    /// Loads a service's persisted FDAE policy document, if any.
+    async fn load_fdae_policy(&self, service_id: &str) -> anyhow::Result<Option<String>>;
 }
 
 #[async_trait]
@@ -221,4 +230,8 @@ pub trait ServiceStore: Send + Sync {
         operation: &str,
         auth: Option<&QueryAuth<'_>>,
     ) -> Result<bool, host_store::DataLayerError>;
+
+    /// Lists the service's collections (user tables), excluding SQLite
+    /// internals and the host's own `_vault`.
+    async fn list_collections(&self) -> Result<Vec<String>, host_store::DataLayerError>;
 }

@@ -256,6 +256,30 @@ curl -X POST http://localhost:7960/ \
   }'
 ```
 
+##### Declaring an FDAE Policy (Row/Column-Level Security)
+
+Any deployed service (WASM, TCP, or container) may declare a `config.fdae`
+block naming a declarative ReBAC policy document, validated at deploy:
+```toml
+[services.my-svc.fdae]
+policy_path = "fdae-policy.json"
+```
+or, in the raw `deploy` JSON-RPC `config` above:
+```json
+"config": { "env": [], "args": [], "custom_config": null, "fdae_policy_path": "fdae-policy.json" }
+```
+The path is read **on the substrate's side**, relative to its working
+directory (identical resolution to `schema_path`, with the same
+path-traversal guard) — not fetched from the caller. The document itself
+must be **JSON** (ADR-0017's own examples are YAML for readability only; the
+compiler is `serde_json::from_str`). A malformed or schema-invalid policy is
+a hard deploy failure, so an author finds out at deploy time, not the first
+time a caller is unexpectedly denied. A service with **no** `fdae` block is
+unfiltered — every row and column reachable exactly as before FDAE existed
+(ADR-0017 §2.1's default-absent). See
+[ADR-0017](decisions/0017-fdae-policy-schema-and-compilation.md) for the
+policy schema itself.
+
 #### Calling Another Service from a WASM Component (Universal Proxy)
 A deployed WASM component reaches another service — local or on another node —
 through the `syneroym:proxy/proxy` WIT import (M04A Slice A1), without knowing

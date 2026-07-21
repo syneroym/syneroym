@@ -152,6 +152,13 @@ and no longer gate B2; d/e remain as a deferral and a B7 hand-off.
   with an author-time warning; implementation **sequenced inside B2, not ahead of
   it** (it only ever tightens, so it can't block the slice start). Whether
   `strict` eventually flips default-on is left to the third-party-authoring point.
+  The compiler side (`strict:` parsed, additive, no runtime enforcement change)
+  shipped in Phase 1; the deploy-path author-time warning shipped in Phase 4,
+  checked against the service's own database as the collection inventory (a
+  manifest declares no collection list of its own) -- warns when a table has
+  no matching `definitions:` entry (would be denied under `strict: true`) and
+  when a `definitions:` entry's table doesn't exist yet (expected for a
+  lazily-initialized TCP/container service).
 - **D-04-02-d — Stale relationship data / Zanzibar "new enemy"** (ADR-0017 §9).
   **Deliberately deferred to M7** (replication); recorded here so it is a
   decision, not an M7 surprise. §6's TTL'd proofs bound the cross-service window.
@@ -208,6 +215,38 @@ and no longer gate B2; d/e remain as a deferral and a B7 hand-off.
   (CLS, Phase 3) both assert today's (undesired) behavior explicitly, with a
   comment directing whoever fixes this to flip the assertion. Surfaced during
   Slice B2 Phase-2 review (independent re-review pass).
+- **D-04-02-h — Guest-originated reads carry no principal.** ⛳ **Open —
+  expected to be resolved alongside B3's `anchor_did`, not as a slice of its
+  own.** Every read a guest originates runs under a synthesized
+  `CallerContext::service_system(service_id)` — "the callee acts as itself",
+  settled in M04A B0/A1 — whose `SessionContext` holds no capabilities, so
+  `compile_read` falls to `deny_all()` and the read returns empty (Mode B) /
+  `false` (Mode A) for any permission requiring an external principal.
+  **Two ingresses**, and the distinction is per-ingress, not native-vs-WASM:
+  (i) the WASM engine path, `prepare_wasm_execution` (`engine.rs:711-716`),
+  reaching the store through `HostState`; and (ii) a guest's
+  `syneroym:proxy` call into its **own** service's native `data-layer` --
+  `proxy::Host::call` synthesizes the same identity
+  (`host_capabilities.rs:670`), the proxy gate's same-service exception
+  deliberately permits it (`proxy.rs:224-231`), and `ProxyRouter::invoke_local`
+  hands it to `SynSvcNativeService` (`proxy.rs:251-265`). Ingress (ii) is a
+  **behavior change** introduced by Phase 4 on a path that previously read
+  unfiltered; it fails over-restrictive, never open. Phase 4 ships the
+  deploy/persist/load mechanism but does not thread real caller identity:
+  that is cross-cutting through `crates/router` and collides with the
+  proxy's deliberate "callee acts as itself" semantics for cross-service
+  calls — the same original-principal question **Slice B3 is already
+  solving via ADR-0015 A5's `anchor_did`**. Deliberately **not** worked
+  around by exempting `AuthLevel::System` callers from the sieve: that would
+  make ingress (ii) a bypass of ingress (i)'s enforcement. What **is**
+  enforced as of Phase 4 is an external, router-verified caller reaching
+  native dispatch through `dispatch_json_rpc_once` (`dispatch.rs:99-105`) —
+  that ingress, and only that one. Pinned by
+  `sandbox_wasm/tests/data_layer_integration.rs::test_deployed_policy_yields_empty_guest_originated_query_d04_02_h`
+  (ingress i) and
+  `router/tests/proxy_dispatch.rs::guest_self_proxy_data_layer_returns_empty_when_policy_present`
+  (ingress ii), each asserting today's empty result explicitly. Surfaced
+  during Slice B2 Phase 4 planning.
 
 ---
 
@@ -345,12 +384,17 @@ Mode-A enforcement, depends on B2's `check_access` + D-04-02-f).
 
 ## Migration Strategy
 
-### `ServiceManifest` Extension
+### `ServiceConfig` Extension
+Shipped in Phase 4 (the `ServiceManifest` heading below was stale -- there is
+no `ServiceManifest` struct; the field lives on `ServiceConfig`, per
+`slice-b2-implementation-plan.md` §12.6):
 ```toml
 [services.my-svc.fdae]
 policy_path = "fdae-policy.json"   # optional declarative ReBAC policy (D-04-02 schema)
 ```
-`#[serde(default)]`; existing manifests parse cleanly.
+`#[serde(default)]`; existing manifests parse cleanly. The policy document
+itself is **JSON**, not YAML (`parse_and_validate` is `serde_json::from_str`)
+-- ADR-0017's examples are YAML for readability only.
 
 ### No Data Migration
 Policy enforcement is additive at the query-compilation layer, not a stored-data
@@ -364,7 +408,7 @@ D-04-02) — minor bump, non-breaking. `wasm32-wasip2` must stay unbroken.
 
 ## Ordered Implementation Slices
 
-#### Slice B2: Local FDAE (SQL Pushdown Sieve) — Phase 1 ✅ (2026-07-20, PR #86); Phase 2 ✅ (2026-07-20); Phase 3 ✅ (2026-07-21)
+#### Slice B2: Local FDAE (SQL Pushdown Sieve) — Phase 1 ✅ (2026-07-20, PR #86); Phase 2 ✅ (2026-07-20); Phase 3 ✅ (2026-07-21); Phase 4 ✅ (2026-07-21, manifest/deploy/persist/native-enforcement plumbing shipped -- FDAE is enforced for a router-verified external caller reaching native dispatch, and the mechanism is loaded at WASM instantiation, but a guest-originated read (WASM host functions or same-service self-proxy) still carries a capability-less synthesized identity and returns empty, per D-04-02-h)
 **Unblocked** (ADR D-04-02 Accepted; a/b/c resolved). **Depends on:** M04A (B1
 SessionContext, B0 identity).
 **Requirement:** `[FND-IAM]`.
@@ -455,7 +499,16 @@ deployments relying on FDAE for write integrity must wait for B5-fdae.
 Continues from M04A (steps 20–21, 24–25):
 
 22. A `data-layer::query` call is transparently filtered by FDAE's SQL pushdown
-    sieve — unauthorized rows never reach the WASM guest (B2, Mode B).
+    sieve — unauthorized rows never reach the WASM guest (B2, Mode B). **The
+    filtering half is closed** as of Phase 4, end to end from a real
+    router-verified caller into native dispatch
+    (`router/tests/native_dispatch_identity.rs::native_fdae_policy_row_filters_and_masks_for_two_distinct_verified_callers`).
+    **The "…never reach the WASM guest" half stays open**, blocked on
+    D-04-02-h: a guest-originated read (either ingress) carries no external
+    principal, so it cannot yet be *shown* to be correctly filtered for a
+    real caller reaching the WASM guest specifically — it is provably empty
+    instead, which is a different (over-restrictive) claim. Resolves
+    alongside B3's `anchor_did`.
 23. A ReBAC check requiring a remote relationship proof triggers a cross-service
     fetch via the Universal Proxy mid-query (B3, pipeline stage 2).
 

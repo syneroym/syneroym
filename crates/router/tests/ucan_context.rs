@@ -97,6 +97,7 @@ async fn test_route_handler(service_id: &str) -> RouteHandler {
         storage_provider.clone(),
         blob_provider.clone(),
         messaging_broker.clone(),
+        None,
     ));
 
     let deps = RouteHandlerDeps {

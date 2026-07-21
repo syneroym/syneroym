@@ -156,6 +156,7 @@ mod tests {
                     quota: None,
                     schema_path: None,
                     rotation_policy: Default::default(),
+                    fdae: None,
                 },
                 resolved_dependencies: vec![],
                 topology_mode: TopologyMode::Singleton,

@@ -30,6 +30,10 @@ interface orchestrator {
         quota: option<resource-quota>,
         schema-path: option<string>,
         rotation-policy: option<rotation-policy>,
+        /// Path to this service's declarative FDAE ReBAC policy document
+        /// (ADR-0017 §1), read and validated at deploy. Absent = no row/column
+        /// filtering for this service.
+        fdae-policy-path: option<string>,
     }
 
     /// Manifest details for a Wasm component deployment.

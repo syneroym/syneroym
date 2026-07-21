@@ -28,6 +28,7 @@ syneroym-app-orchestration.workspace = true
 syneroym-data-keystore.workspace = true
 syneroym-data-db.workspace = true
 syneroym-data-blob.workspace = true
+syneroym-fdae.workspace = true
 syneroym-mqtt-broker.workspace = true
 hex.workspace = true
 jsonschema.workspace = true
@@ -37,3 +38,4 @@ zeroize.workspace = true
 [dev-dependencies]
 wit-parser.workspace = true
 tempfile.workspace = true
+tracing-subscriber.workspace = true

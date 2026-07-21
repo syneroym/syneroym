@@ -31,6 +31,7 @@ use syneroym_core::{
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
 use syneroym_data_db::SqliteStorageProvider;
 use syneroym_data_keystore::KeyStore;
+use syneroym_fdae::{Policy, parse_and_validate};
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
 use syneroym_router::{
     AdaptationStage, EncryptionStage, RouteHandler, RouteHandlerDeps, RoutePipeline, RoutePreamble,
@@ -229,6 +230,7 @@ async fn authenticated_caller_identity_becomes_creator_id_not_service_id() {
         storage_provider,
         blob_provider,
         messaging_broker,
+        None,
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -289,6 +291,7 @@ async fn execute_ddl_denied_for_ordinary_native_caller() {
         storage_provider,
         blob_provider,
         messaging_broker,
+        None,
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -328,6 +331,7 @@ async fn execute_ddl_allowed_for_admin_ucan_root_native_caller() {
         storage_provider,
         blob_provider,
         messaging_broker,
+        None,
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -363,6 +367,7 @@ async fn ordinary_caller_denied_query_raw() {
         storage_provider,
         blob_provider,
         messaging_broker,
+        None,
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -402,6 +407,7 @@ async fn admin_caller_admitted_query_raw() {
         storage_provider,
         blob_provider,
         messaging_broker,
+        None,
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -440,6 +446,7 @@ async fn query_raw_binds_params_no_injection() {
         storage_provider,
         blob_provider,
         messaging_broker,
+        None,
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -518,6 +525,7 @@ async fn query_raw_null_param_round_trips() {
         storage_provider,
         blob_provider,
         messaging_broker,
+        None,
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -571,6 +579,7 @@ async fn query_raw_result_cells_are_round_trippable_as_params() {
         storage_provider,
         blob_provider,
         messaging_broker,
+        None,
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -779,6 +788,7 @@ async fn ordinary_caller_admitted_aggregate() {
         storage_provider,
         blob_provider,
         messaging_broker,
+        None,
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -849,6 +859,7 @@ async fn aggregate_malformed_pipeline_is_schema_violation() {
         storage_provider,
         blob_provider,
         messaging_broker,
+        None,
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -878,4 +889,178 @@ async fn aggregate_malformed_pipeline_is_schema_violation() {
         json!(-32012),
         "a $group-less pipeline must surface a schema-violation error: {resp:?}"
     );
+}
+
+// -- Native FDAE enforcement ------------------------------------------------
+//
+// `dispatch.rs`'s native arm threads the router-verified `CallerContext`
+// into `NativeInvocation.caller` -- the one ingress ADR-0017 can honestly
+// claim as *enforced* (§2.1). This is the headline proof: a deployed policy,
+// reached through the real `dispatch_json_rpc_once` path, row-filters and
+// column-masks for two distinct verified callers.
+
+/// `document` --creator--> `user`, `view` permission reachable only via the
+/// creator relation, plus `fields.deny: ["ssn"]` -- mirrors
+/// `sandbox_wasm::host_capabilities`'s `fdae_cls_policy`, the WASM-host-path
+/// analog of this same policy shape.
+fn native_fdae_policy() -> Policy {
+    parse_and_validate(
+        r#"{
+            "version": "fdae/v1",
+            "definitions": {
+                "document": {
+                    "table": "documents",
+                    "relations": {"creator": {"target": "user", "join_column": "creator_uuid"}},
+                    "permissions": {
+                        "view": {
+                            "allows": ["data-layer/read"],
+                            "paths": [["creator", "caller"]],
+                            "fields": {"deny": ["ssn"]}
+                        }
+                    }
+                },
+                "user": {"table": "users", "principal_column": "did"}
+            }
+        }"#,
+    )
+    .unwrap()
+}
+
+fn native_fdae_resource(service_id: &str, collection: &str) -> ResourceUri {
+    ResourceUri(format!(
+        "{}/collection/{collection}",
+        ResourceUri::service(service_id, service_id).0
+    ))
+}
+
+/// A verified caller entitled to `data-layer/read` on `documents` -- the
+/// router-threaded `CallerContext` shape a real external caller carries,
+/// distinct from `test_caller` (no capabilities) and `admin_caller`
+/// (node-wide authority).
+fn fdae_reader_caller(subject_did: &str, service_id: &str) -> CallerContext {
+    CallerContext {
+        caller_did: subject_did.to_string(),
+        app_instance: None,
+        session: SessionContext {
+            subject_did: subject_did.to_string(),
+            capabilities: vec![Capability {
+                with: native_fdae_resource(service_id, "documents"),
+                can: Ability(Ability::DATA_LAYER_READ.to_string()),
+                caveats: None,
+            }],
+            ..Default::default()
+        },
+        auth: AuthLevel::Delegated,
+        proof: None,
+    }
+}
+
+#[tokio::test]
+async fn native_fdae_policy_row_filters_and_masks_for_two_distinct_verified_callers() {
+    let (route_handler, _http_routes) = test_route_handler().await;
+
+    let service_id = "native-fdae-svc".to_string();
+    let key_store = Arc::new(KeyStore::new());
+    let temp_dir = tempfile::tempdir().unwrap();
+    let storage_provider = Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+    let blob_provider: Arc<dyn BlobProvider> =
+        Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+    let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+    let policy = Arc::new(native_fdae_policy());
+    let data_service = Arc::new(SynSvcNativeService::new(
+        service_id.clone(),
+        key_store,
+        storage_provider,
+        blob_provider,
+        messaging_broker,
+        Some(policy),
+    ));
+    route_handler.register_native_service(service_id.clone(), data_service);
+
+    let pipeline = raw_pipeline(&service_id);
+    let preamble = preamble_for(&service_id, "data-layer");
+
+    // Seed via an elevated, unentitled-by-policy caller: `put`/
+    // `create-collection` carry no FDAE gate (write-side Tier 3 is Slice
+    // B5-fdae), so any verified caller can seed fixture rows.
+    let seeder = test_caller("did:key:z6MkSeeder");
+    for (collection, id, payload) in [
+        ("users", "u-alice", json!({"did": "did:key:alice"})),
+        ("users", "u-bob", json!({"did": "did:key:bob"})),
+        ("documents", "doc-1", json!({"creator_uuid": "u-alice", "ssn": "111-11-1111"})),
+        ("documents", "doc-2", json!({"creator_uuid": "u-bob", "ssn": "222-22-2222"})),
+    ] {
+        let create_body = json_rpc_body("create-collection", json!({"name": collection}));
+        let _ = route_handler
+            .dispatch_json_rpc_once(&pipeline, &preamble, Some(&seeder), &create_body)
+            .await;
+        let put_body = json_rpc_body(
+            "put",
+            json!({"collection": collection, "value": {"id": id, "payload": payload.to_string().into_bytes()}}),
+        );
+        let resp = route_handler
+            .dispatch_json_rpc_once(&pipeline, &preamble, Some(&seeder), &put_body)
+            .await
+            .unwrap();
+        let resp: Value = serde_json::from_slice(&resp).unwrap();
+        assert!(resp.get("error").is_none(), "seeding {collection}/{id} failed: {resp:?}");
+    }
+
+    // Alice sees only her own document, with `ssn` stripped.
+    let alice = fdae_reader_caller("did:key:alice", &service_id);
+    let get_body = json_rpc_body("get", json!({"collection": "documents", "id": "doc-1"}));
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&alice), &get_body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    let result = resp.get("result").expect("alice must reach her own document: {resp:?}");
+    assert!(!result.is_null(), "alice's own document must be reachable: {resp:?}");
+    let payload: Value = serde_json::from_slice(
+        &serde_json::from_value::<Vec<u8>>(result["payload"].clone()).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        payload.get("ssn").is_none(),
+        "ssn must be stripped from alice's own payload: {payload:?}"
+    );
+
+    let get_other_body = json_rpc_body("get", json!({"collection": "documents", "id": "doc-2"}));
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&alice), &get_other_body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert!(
+        resp.get("result").map(Value::is_null).unwrap_or(true),
+        "bob's document must be unreachable for alice, not an error (ADR-0007): {resp:?}"
+    );
+
+    let query_body = json_rpc_body(
+        "query",
+        json!({"collection": "documents", "opts": {"filter": null, "limit": null, "cursor": null}}),
+    );
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&alice), &query_body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    let records = resp["result"]["records"].as_array().expect("query must return records");
+    assert_eq!(records.len(), 1, "alice's query must exclude bob's document: {resp:?}");
+    assert_eq!(records[0]["id"], "doc-1");
+
+    // Bob, a distinct verified caller, sees only his own document.
+    let bob = fdae_reader_caller("did:key:bob", &service_id);
+    let bob_query_body = json_rpc_body(
+        "query",
+        json!({"collection": "documents", "opts": {"filter": null, "limit": null, "cursor": null}}),
+    );
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&bob), &bob_query_body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    let records = resp["result"]["records"].as_array().expect("query must return records");
+    assert_eq!(records.len(), 1, "bob's query must exclude alice's document: {resp:?}");
+    assert_eq!(records[0]["id"], "doc-2");
 }

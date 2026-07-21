@@ -444,3 +444,269 @@ tests + 3 `filter.rs` unit tests); `cargo test -p syneroym-sandbox-wasm` —
 --all-features` zero warnings; `cargo test --workspace` green (same
 pre-existing/environmental `coordinator-iroh` sandbox failure, confirmed
 unrelated by rerunning with the sandbox disabled).
+
+## Phase 4 — Manifest + Deploy + Persistence Plumbing ✅ (2026-07-21)
+
+Branch: `feat/m04b-slice-b2-data-db` (same branch/PR as Phases 1-3). Plan:
+[slice-b2-phase4-deploy-persist-plan.md](slice-b2-phase4-deploy-persist-plan.md).
+`crates/fdae`'s `Policy`/`parse_and_validate`/`compile_read`, `crates/data_db`'s
+`QueryAuth`/`ReadOutcome`/`check_access`/`strip_masked_fields`,
+`HostState.fdae_policy`/`query_auth()`, and the WIT `check-access` function are
+unchanged ground truth for this phase.
+
+### What was delivered
+
+- **Manifest** — `ServiceConfig.fdae: Option<FdaeManifest>`
+  (`app_orchestration/src/models.rs`) and the mirrored WIT `service-config.
+  fdae-policy-path: option<string>` (`control-plane.wit`), copied by
+  `sdk::mapper::map_deployment_plan_to_wit`. All ~32 existing struct-literal
+  sites (6 Rust `ServiceConfig`, 26 WIT `WitServiceConfig`) updated
+  mechanically to `fdae: None` / `fdae_policy_path: None` — zero behavior
+  change confirmed by the full pre-existing suite staying green.
+- **Deploy-time read, validate, persist** (`control_plane/src/service/
+  orchestration.rs`'s `deploy`) — `fdae_policy_path` is read relative to the
+  substrate's working directory with the same traversal guard as
+  `schema_path`, parsed via `syneroym_fdae::parse_and_validate` (a hard
+  deploy failure on any error), and persisted via the new
+  `StorageProvider::save_fdae_policy` **before** the service is actually
+  instantiated (so `init`/`migrate`'s first read already sees the row).
+  Deliberately **not** nested inside the `custom_config` block the way
+  `schema_path` is — a policy is independent of `custom_config` — regression-
+  tested explicitly.
+- **`strict:` author-time warning** (D-04-02-c) — a new
+  `ServiceStore::list_collections` (excludes `sqlite_%` and `_%` tables) is
+  called after the service's own DB exists (post first-deploy `init()`), and
+  `warn_on_policy_collection_mismatch` warns in both directions: a table with
+  no matching `definitions:` entry (would be denied under `strict: true`),
+  and a `definitions:` entry whose table doesn't exist yet (expected for a
+  lazily-initialized TCP/container service). Both are `tracing::warn!`, never
+  a deploy failure.
+- **Persistence** — new `fdae_policies` table in `substrate.db`
+  (`service_id TEXT PRIMARY KEY, policy_json TEXT NOT NULL, updated_at
+  INTEGER NOT NULL`), created by a new `run_fdae_migration` alongside the
+  existing M3A/M3B migrations (not named after this milestone, per AGENTS.md).
+  `save_fdae_policy`/`load_fdae_policy` on `StorageProvider`, last-write-wins
+  (`INSERT … ON CONFLICT (service_id) DO UPDATE`) — a policy has no
+  generation ladder, unlike config generations: ADR-0017's grant-layer design
+  means a deployed policy must bind late, so tightening it must take effect
+  immediately, not behind a version pin.
+- **Native dispatch enforcement** (`control_plane/src/synsvc_native.rs`) —
+  `SynSvcNativeService` gains `fdae_policy: Option<Arc<Policy>>` (set once at
+  construction from the `Arc<Policy>` `deploy` already parsed; no load, no
+  cache, no parse on this hot path) and a private `query_auth()` helper
+  mirroring `HostState::query_auth`, wired into all four read/delete sites
+  (`get`/`query`/`delete_many`/`aggregate`) in place of the former hardcoded
+  `None`. **Deliberately no `AuthLevel` carve-out** — branching to `auth =
+  None` for a synthesized/system caller would make the guest self-proxy
+  ingress *more* permissive than the direct WIT path under the same policy,
+  i.e. a bypass. `strip_record`'s doc comment (stale since Phase 3, "no
+  policy source until Phase 4") rewritten to describe live CLS. The one
+  production construction site (`orchestration.rs`'s `deploy`) now threads
+  the just-parsed `Arc<Policy>`; the 11 test construction sites (`router`
+  crate) pass `None`, preserving their existing behavior exactly.
+- **WASM instantiation** (`sandbox_wasm/src/engine.rs`) — new
+  `fdae_policies: DashMap<String, Option<Arc<Policy>>>` cache next to the
+  component cache (the `Option` is itself cached, so "resolved: no policy" —
+  the common case — doesn't re-query `substrate.db` per invocation).
+  `build_store_and_instantiate`'s new `resolve_fdae_policy` helper looks up,
+  and on a miss loads + `parse_and_validate`s + inserts; a parse failure at
+  this point is fail-closed-**absent** (log and cache `None`, not deny every
+  read for the service — the deploy path is what rejects a bad policy before
+  it's ever persisted, so a row that fails to parse here means the DB was
+  tampered with or the crate's schema moved since deploy). Evicted on
+  `stop_wasm` and `compile_and_cache_wasm` (a re-deploy's recompile) so a
+  redeploy re-resolves rather than serving the previous policy. Because the
+  load is from `fdae_policies` (not from any in-memory deploy result), this
+  is correct across a substrate restart: `load_cached_wasm` recompiles from
+  disk and the next instantiation re-resolves the policy from the DB.
+
+### What Phase 4 does and does not make live (§2 of the plan — stated per-ingress, not native-vs-WASM)
+
+**Enforced** — an external, router-verified caller reaching native dispatch
+through `dispatch_json_rpc_once` (`dispatch.rs:99-105` threads the verified
+`CallerContext` into `NativeInvocation.caller`). This is the phase's headline
+proof: `router/tests/native_dispatch_identity.rs`'s
+`native_fdae_policy_row_filters_and_masks_for_two_distinct_verified_callers`
+seeds two documents owned by two different verified callers and asserts each
+sees only their own row, with a CLS-masked field absent from the payload.
+
+**Not enforced (empty), by ingress, both pre-existing behavior changes on
+paths that previously read unfiltered, both fail toward over-restriction:**
+
+- **Guest → WIT host functions** (`prepare_wasm_execution` synthesizes
+  `CallerContext::service_system(service_id)` — "the callee acts as itself",
+  settled in M04A). A guest's own `query`/`get` under a deployed policy sees
+  none of the rows it wrote via the (ungated) write path, since
+  `service_system`'s empty capabilities can never be entitled to any
+  permission and `compile_read` falls to `deny_all()`. Pinned:
+  `sandbox_wasm/tests/data_layer_integration.rs::test_deployed_policy_yields_empty_guest_originated_query_d04_02_h`.
+- **Guest self-proxy → native dispatch** — a guest's `syneroym:proxy` call
+  into its **own** service's native `data-layer` also carries a synthesized
+  `service_system` identity (`host_capabilities.rs`'s `proxy::Host::call`),
+  and the proxy gate's same-service exception (`proxy.rs:224-231`)
+  deliberately permits the call to reach `SynSvcNativeService` — the exact
+  code the native-enforcement wiring above made policy-aware. **This is a
+  behavior change**: before Phase 4 this ingress read unfiltered (`auth =
+  None` everywhere); after Phase 4, for a policy-carrying service, it reads
+  empty. Pinned in both directions, since this path had zero coverage
+  before this phase: `router/tests/proxy_dispatch.rs`'s
+  `guest_self_proxy_data_layer_reads_normally_when_policy_absent` (baseline,
+  pins the same-service exception itself as intended behavior) and
+  `guest_self_proxy_data_layer_returns_empty_when_policy_present` (the
+  D-04-02-h pin).
+
+Both gaps are recorded as **D-04-02-h** in `task.md`'s Decision Register,
+expected to resolve alongside Slice B3's `anchor_did` work (the same
+original-principal question), not as a slice of its own.
+
+### Tests
+
+- **`app_orchestration`** (`models.rs`) — `test_manifest_parsing_toml_with_fdae_policy`:
+  a `[services.x.fdae] policy_path = "…"` TOML block parses into
+  `Some(FdaeManifest)` and survives a `to_toml`/`from_toml` round trip; the
+  existing `test_manifest_parsing_toml` gained an assertion that a manifest
+  without the block parses with `fdae: None`.
+- **`sdk`** (`mapper.rs`, new `#[cfg(test)] mod tests`) —
+  `map_deployment_plan_to_wit_copies_fdae_policy_path` and
+  `..._maps_absent_fdae_to_none`: the mapper's `fdae.policy_path` copy into
+  `fdae_policy_path`, both directions (the §9.1 "unreachable code" guard --
+  without this the field is silently dropped at the WIT boundary).
+- **`data_db`** (`sqlite.rs`'s existing private `tests` module) —
+  `test_fdae_policy_save_load_roundtrip_and_replace` (round trip; a second
+  save for the same `service_id` replaces, one row; an unknown `service_id`
+  is `Ok(None)`) and
+  `test_list_collections_returns_created_tables_excludes_vault_and_sqlite_internals`.
+- **`control_plane`** (`orchestration.rs`'s `#[cfg(test)] mod tests`) — four
+  new deploy tests modeled on `test_deploy_config_schema_rejection`:
+  `test_deploy_fdae_policy_validates_persists_and_is_loadable` (also the
+  regression test for the FDAE block's placement outside `custom_config`),
+  `test_deploy_fdae_policy_schema_invalid_rejected_and_not_persisted`,
+  `test_deploy_fdae_policy_path_traversal_and_absolute_rejected`, and a
+  direct unit test of the extracted `warn_on_policy_collection_mismatch`
+  helper, `test_warn_on_policy_collection_mismatch_fires_in_both_directions`
+  (a `tracing` capture, asserting both warning directions fire and a
+  correctly-defined collection does not warn).
+- **Native end-to-end — the phase's headline test** — see above.
+- **Guest self-proxy ingress** — see above.
+- **`sandbox_wasm`** — four new internal `engine::tests` unit tests
+  (`fdae_policy_absent_resolves_none_and_caches`,
+  `fdae_policy_present_resolves_some_and_cache_hit_skips_storage`,
+  `fdae_policy_cache_evicted_on_stop_wasm_and_recompile`,
+  `fdae_policy_unparseable_in_storage_resolves_none_not_error`) exercising
+  the engine's cache directly (private-field access from the same module),
+  plus the D-04-02-h pin in `data_layer_integration.rs` above.
+- **Unchanged and stays green**: the D-04-02-g pins, every Phase 2/3 test,
+  and all pre-existing deploy/mapper/manifest tests — the ~32 mechanical
+  `None` literal sites change no behavior, confirmed by the full pre-existing
+  suites passing unmodified.
+
+### Decisions carried into this phase
+
+- **Policy documents are JSON, not YAML** — `parse_and_validate` is
+  `serde_json::from_str`; ADR-0017's examples are YAML for readability only.
+  Noted in `task.md`'s Migration Strategy and belongs in the developer guide.
+- **No generation ladder for policies** — last-write-wins via
+  `ON CONFLICT (service_id) DO UPDATE`, because a grant that names a policy
+  binds late by design (a deployed policy must take effect immediately on
+  tightening, unlike a config generation that a grant can pin a version of).
+- **The `strict:` warning is warn-only, in both directions, never a deploy
+  failure** — D-04-02-c's resolution; direction 2 (a definition whose table
+  doesn't exist yet) legitimately fires for a TCP/container service whose
+  collections are created lazily on first use, so it must read as an
+  expected case, not an error.
+- **Engine-side policy cache, and why** — `parse_and_validate` re-compiles
+  the embedded JSON Schema on every call; `build_store_and_instantiate` runs
+  on *every* guest invocation, so caching (keyed by `service_id`, `Option`-
+  valued so the no-policy case is cached too) is what keeps schema
+  compilation off the hot path. Evicted on `stop_wasm`/recompile, not on a
+  TTL, since a policy only changes on a re-deploy.
+- **No `fdae_policies` rollback on a later deploy-failure path** — unlike
+  `rollback_config_generation`, a deploy failure after the policy row is
+  persisted (but before native-capability registration or owner attribution
+  succeeds) leaves the row in place. No code path reads a policy for a
+  service_id whose deploy never completed, and any future successful
+  (re-)deploy of the same `service_id` overwrites the row unconditionally via
+  `ON CONFLICT DO UPDATE`, so the row is inert, not a leak. Simpler than
+  inventing a `delete_fdae_policy` method the plan's own trait list (§1.6)
+  did not specify.
+
+### Explicitly out of Phase 4 scope (plan §5 — recorded, not silently dropped)
+
+- **Threading real caller identity into guest-originated reads** (D-04-02-h,
+  both ingresses) — expected alongside B3's `anchor_did`. Not worked around
+  by an `AuthLevel::System` sieve exemption (would make the self-proxy
+  ingress a bypass of the direct-caller ingress's enforcement).
+- **Reference-scenario step 22's "…never reaches the WASM guest" half** —
+  blocked on the above; the filtering half is closed by this phase's native
+  end-to-end test. No Playwright spec added or modified.
+- **Decision trace** (ADR-0017 §9) — held at Phase 5, per the plan's own
+  reasoning (pulling it forward would reopen `crates/fdae`'s Phase 1
+  contract mid-flight, and Phase 5 follows immediately on the same
+  branch/PR). Until Phase 5, a deny is diagnosable only from `RUST_LOG`
+  tracing and the policy document itself.
+- **Benchmarks** (`criterion` FDAE pushdown bench, the < 25 ms p99 budget
+  row) — Phase 5.
+- **Failure/Security matrix sign-off** — Phase 5.
+- **Native `check-access` JSON-RPC method** — Mode A is not exposed on the
+  native dispatch surface; adding it would be new API, not plumbing.
+- **Policy-configurable watchdog budget** — still the interim
+  `FDAE_MAX_VM_OPS` constant.
+- **B3 `anchor` terminal, B4-fdae stage-4 ABAC, B5-fdae write-path gate,
+  D-04-02-e native-admission TODO, `router/src/proxy.rs`'s interim gate** —
+  later slices, untouched; the proxy gate was not widened while touching
+  adjacent code.
+- **`query_raw` sieve-awareness** — the documented Phase 3 CLS gap stands,
+  guarded by `data-layer/admin`, unchanged here.
+
+### Verification evidence
+
+- `cargo +nightly fmt --all` — clean.
+- `cargo clippy --workspace --all-targets --all-features` — zero warnings.
+- `cargo test -p syneroym-app-orchestration` — 53 passed, 0 failed (52 prior
+  + 1 new manifest test).
+- `cargo test -p syneroym-sdk` — 2 passed, 0 failed (both new mapper tests;
+  the crate had no prior test module).
+- `cargo test -p syneroym-data-db` — 131 passed, 0 failed (129 prior + 2 new
+  storage tests).
+- `cargo test -p syneroym-control-plane --lib` — 30 passed, 0 failed (26
+  prior + 4 new deploy/strict-warning tests).
+- `cargo test -p syneroym-sandbox-wasm --lib --tests` — 67 passed, 0 failed
+  across the lib and all integration test binaries (62 prior + 5 new: 4
+  engine cache unit tests + the D-04-02-h pin in `data_layer_integration.rs`).
+- `cargo test -p syneroym-router --lib --tests` — 114 passed, 0 failed
+  across the lib (71) and all six test binaries (`deploy_grant` 9,
+  `native_dispatch_identity` 16 -- including the new
+  `native_fdae_policy_row_filters_and_masks_for_two_distinct_verified_callers`
+  headline test, `proxy_dispatch` 4 -- including the two new self-proxy
+  pins, `service_ownership` 10, `ucan_context` 2, `unsupported_protocol` 2).
+  One run under heavy parallel background test load hit a one-off panic in
+  `authenticated_caller_reaches_native_dispatch` (`mainline` DHT actor:
+  `"actor thread unexpectedly shutdown: SendError(..)"`) -- unrelated to
+  this test's own assertions; reran clean both in isolation and as part of
+  the full 16-test binary immediately after, confirming a resource-
+  contention flake, not a regression.
+- `cargo test --workspace --no-fail-fast` — under this CLI's default network
+  sandbox, 9 test targets fail on socket/UDP binding (`coordinator-iroh`'s
+  `connection_limit`/`multi_hop_relay`/`tls_rotation`, `mqtt-broker`'s lib
+  tests, `sdk`'s `connect_timeout`, and `substrate`'s `basic_lifecycle`/
+  `http_passthrough_e2e`/`messaging_client_e2e`/`stream_client_e2e`) — all
+  pre-existing/environmental (none of these crates' test files were touched
+  this phase), same class as the `coordinator-iroh` failure Phases 2/3
+  documented. Rerunning the full workspace suite with the sandbox disabled
+  passed with **zero failures** (confirmed twice, including a rerun after
+  the final import-hygiene pass).
+- `mise run test:e2e` — not run. The reference-scenario E2E fixtures
+  (`crates/substrate/tests/e2e/tests/`) are `webrtc.spec.ts` and
+  `multi-hop.spec.ts` against `miniapp-demo1-web`, a Rust HTTP backend with
+  no data-layer use and anonymous browser visitors by design — there is
+  nothing in that suite for a deployed FDAE policy to touch. Closing
+  step 22's filtering half with a Rust integration test rather than
+  Playwright is the established convention (M04A closed steps 20/21/24/25
+  the same way). A deliberate skip, recorded per the plan's own scoping
+  (§2), same reasoning as Phases 2 and 3.
+- `wasm32-wasip2` — unbroken. The `control-plane.wit` change is additive and
+  touches no guest-imported interface (`data-layer.wit` is untouched this
+  phase), so no `test-components` rebuild was required; confirmed via the
+  `data-layer-test` fixture's existing compiled artifact still exercising
+  correctly through `data_layer_integration.rs` (including the new
+  D-04-02-h test).

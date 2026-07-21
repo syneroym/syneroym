@@ -25,6 +25,7 @@ pub fn map_deployment_plan_to_wit(plan: DeploymentPlan) -> anyhow::Result<WitDep
                 RotationPolicy::RestartOnRotation => WitRotationPolicy::RestartOnRotation,
                 RotationPolicy::None => WitRotationPolicy::None,
             }),
+            fdae_policy_path: svc.config.fdae.as_ref().map(|f| f.policy_path.clone()),
         };
 
         let service_type = match svc.config.service_type {
@@ -126,4 +127,69 @@ pub fn map_deployment_plan_to_wit(plan: DeploymentPlan) -> anyhow::Result<WitDep
         version: plan.version.to_string(),
         services,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use semver::Version;
+    use syneroym_app_orchestration::models::{
+        AppBlueprintId, AppInstanceId, FdaeManifest, LogicalServiceName, LogicalServiceRef,
+        PlannedService, ServiceConfig, ServiceId, ServiceType, TopologyMode,
+    };
+
+    use super::*;
+
+    fn base_config() -> ServiceConfig {
+        ServiceConfig {
+            service_type: ServiceType::Tcp,
+            source: "127.0.0.1:9000".to_string(),
+            hash: None,
+            interfaces: vec![],
+            env: BTreeMap::new(),
+            args: vec![],
+            custom_config: None,
+            quota: None,
+            schema_path: None,
+            rotation_policy: Default::default(),
+            fdae: None,
+        }
+    }
+
+    fn plan_with_config(config: ServiceConfig) -> DeploymentPlan {
+        DeploymentPlan {
+            app_instance_id: AppInstanceId::new("inst-1"),
+            blueprint_id: AppBlueprintId::new("syneroym:test-app"),
+            version: Version::parse("0.1.0").unwrap(),
+            services: vec![PlannedService {
+                service_id: ServiceId::new("did:key:h123"),
+                logical_ref: LogicalServiceRef {
+                    app_instance_id: AppInstanceId::new("inst-1"),
+                    service_name: LogicalServiceName::new("svc"),
+                },
+                config,
+                resolved_dependencies: vec![],
+                topology_mode: TopologyMode::Singleton,
+            }],
+        }
+    }
+
+    #[test]
+    fn map_deployment_plan_to_wit_copies_fdae_policy_path() {
+        let mut config = base_config();
+        config.fdae = Some(FdaeManifest { policy_path: "fdae-policy.json".to_string() });
+
+        let wit_plan = map_deployment_plan_to_wit(plan_with_config(config)).unwrap();
+        assert_eq!(
+            wit_plan.services[0].manifest.config.fdae_policy_path,
+            Some("fdae-policy.json".to_string())
+        );
+    }
+
+    #[test]
+    fn map_deployment_plan_to_wit_maps_absent_fdae_to_none() {
+        let wit_plan = map_deployment_plan_to_wit(plan_with_config(base_config())).unwrap();
+        assert_eq!(wit_plan.services[0].manifest.config.fdae_policy_path, None);
+    }
 }
