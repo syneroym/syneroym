@@ -896,3 +896,149 @@ fix and confirming the new regression test actually fails without it.
 - `cargo test --workspace --no-fail-fast` (sandbox disabled) — zero
   failures, full clean run (no `error: N targets failed` summary; every
   `test result:` line green through to the doctests, which run last).
+
+### Post-commit review, second pass (2026-07-21)
+
+A follow-up review ran against `e5fbc3a` plus the working tree (which by
+then also held the separately-committed `2955ee5`, closing F3's recorded
+symlink-canonicalization gap for both `schema_path` and `fdae_policy_path`).
+Re-ran every gate from the working tree before reviewing. Disposition of
+the ten F1-F10 findings: seven fixed and confirmed (F2, F3, F4 with a noted
+residual, F6, F7), one regressed (F1 -- see N1 below), one partial (F5 -- a
+second failure branch it named was still unrolled-back), two accepted with
+no new information (F8, F10) and one partial-but-accepted (F9, citation
+convention). Three new findings (N1-N3) from the fixes themselves. Each was
+independently re-verified against current code before being addressed --
+N1 and N2 by reverting the fix and confirming the new regression test fails
+without it, matching this file's established practice from the first
+post-commit review.
+
+**Addressed, code changed (this session):**
+
+- **N1 (High) — the `LocalElevated` exemption F1 added was reachable from
+  the wire, turning a silent zero-rows bug into a total FDAE bypass.**
+  F1 fixed `HostState::query_auth` to exempt `AuthLevel::LocalElevated`
+  from the sieve, reasoning that `engine.rs`'s `invoke_lifecycle_hook` is
+  its sole producer and no guest input can request it. That's true of
+  `invoke_lifecycle_hook` itself, but `prepare_wasm_execution` -- the
+  ordinary dispatch path reached from wire-originated JSON-RPC
+  (`dispatch.rs`) and guest-to-guest proxy calls, both of which let an
+  untrusted caller pick `method_name` freely -- independently synthesized
+  the same `local_elevated` context whenever `method_name` was `"init"` or
+  `"migrate"`, a check that predates FDAE (M3A) and was never guarded by
+  any capability. Sending `{"method":"init"}` to a policy-carrying WASM
+  service therefore ran every `get`/`query` in that invocation completely
+  unfiltered -- no RLS, no CLS -- with no capability required, since the
+  WASM ingress admits anonymous callers by design. Confirmed by tracing
+  the call chain end to end (`dispatch.rs` → `execute_wasm_json` →
+  `prepare_wasm_execution`) and by checking `invoke_lifecycle_hook`'s only
+  call site (`deploy_wasm`, host-internal, never reached through
+  `prepare_wasm_execution`) -- the method-name branch in
+  `prepare_wasm_execution` had no legitimate caller at all. Fixed by
+  removing the branch entirely: `prepare_wasm_execution` now always builds
+  `CallerContext::service_system` at the ordinary dispatch epoch budget,
+  regardless of `method_name`. This also closes the pre-existing,
+  FDAE-independent hazard the same inference created (a wire caller
+  self-elevating to `data-layer/admin`, gating `execute-ddl`/`query-raw`) as
+  a side effect, with no functional loss: `local_elevated` is now
+  producible only from `invoke_lifecycle_hook`, exactly as the exempting
+  comment already claimed. New test:
+  `engine::tests::prepare_wasm_execution_grants_no_elevation_for_init_or_migrate_method_names`,
+  confirmed to fail (`left: LocalElevated, right: System`) against the
+  pre-fix code by reverting and rerunning.
+- **N2 (Medium) — dropping a policy on re-deploy was never restored,
+  failing open.** `deploy`'s `fdae_policy_rollback` capture only ran
+  `load_fdae_policy` (to remember the previous document for rollback) in
+  the branch where the new manifest *declares* a policy; the branch where
+  the manifest drops the `fdae` block called `delete_fdae_policy`
+  unconditionally and recorded `None` ("nothing to roll back"). A later
+  deploy-step failure on a re-deploy that dropped the block therefore left
+  the row deleted rather than restoring whatever policy the previous,
+  still-running version depended on -- the same "an already-running
+  previous version loses its policy to an unrelated failed re-deploy"
+  scenario F5's own fix comment already named as the reason to restore
+  rather than delete, just reached from the other branch, and failing
+  *open* instead of closed. Fixed by capturing `previous_fdae_policy` via
+  `load_fdae_policy` unconditionally, before either the save or the delete,
+  and rolling back to that captured value symmetrically in both
+  directions; `rollback_fdae_policy` and `Option<Option<String>>`
+  collapsed to `Option<String>` since a rollback target now always exists.
+  New test: `test_deploy_failure_restores_a_policy_the_new_manifest_dropped`
+  (deploys a policy, re-deploys dropping the `fdae` block with a WASM
+  source that then fails, asserts the original policy is restored, not left
+  deleted), confirmed to fail against the pre-fix code by reverting.
+- **F5 residual (Medium) — the failure branch the finding actually named
+  was still unrolled-back.** The first post-commit review's F5 fix added
+  rollback to `deploy_wasm`'s own failure branch inside
+  `deploy_wasm_service`, but `register_wasm_endpoints`'s failure --
+  reached *after* `deploy_wasm` already succeeded (compiled/cached the
+  component and run its lifecycle hook) -- returned its error via a bare
+  `?`/`map_err` with no rollback call at all, leaving both the new config
+  generation and the new FDAE policy in force despite the deploy failing.
+  `deploy_container_service`'s endpoint-registration loop had the
+  identical shape (a failure there also skipped rollback) -- fixed both,
+  since leaving the sibling function with the same unrolled-back gap right
+  next to this fix would be an obvious, easily-rediscovered inconsistency.
+  New test:
+  `test_deploy_failure_after_successful_wasm_compile_rolls_back_gen_and_policy`
+  (a `FailingEndpointStorage` test double fails `EndpointRegistry::register`
+  for one specific interface name, deterministically forcing the failure
+  into `register_wasm_endpoints` after a real minimal WASM component has
+  already compiled and a new policy has already persisted; asserts both the
+  config generation and the FDAE policy roll back to their pre-deploy
+  values), confirmed to fail against the pre-fix code by reverting. The
+  container-path fix has no equivalent test -- deploying a container
+  service successfully needs a real Podman socket, which nothing in this
+  test suite provides (no existing test in this file deploys a container
+  service at all); the fix is the same one-line-shape change reviewed by
+  inspection, not exercised end-to-end.
+
+**Reviewed and disagreed, no code changed:**
+
+- **N3 (Low) — a narrower residual race, and unbounded `fdae_policy_
+  generation` growth.** The review's own suggested response was "a comment
+  acknowledging it... rather than a redesign," and that's the judgment
+  applied here: (1) the generation comparison and the `fdae_policies`
+  insert in `resolve_fdae_policy` are still two separate `DashMap`
+  operations with no `await` between them, so an eviction landing in that
+  now-much-narrower gap is still silently undone -- correctness-equivalent
+  to the wide race F4 already closed, just far less likely, and closing it
+  fully would mean merging two `DashMap`s behind one lock, a real redesign
+  for a race this narrow; (2) `fdae_policy_generation` entries are only
+  ever inserted or bumped, never removed on `stop_wasm`, so the map grows
+  by one entry per distinct `service_id` the process has ever seen -- real,
+  but bounded by service churn (redeploys/undeploys over the node's
+  lifetime), not request volume, and not a request-driven leak. Documented
+  both directly on the `fdae_policy_generation` field's doc comment rather
+  than fixed, matching this file's own established pattern for a genuine,
+  low-severity, by-design gap (F8/F10 above).
+
+**Reviewed, already correct, no action needed:**
+
+- **F1, F2, F3, F4, F6, F7 (as fixed in the prior session)** — re-verified
+  against current code; still correct.
+- **F8, F9, F10** — re-confirmed as already-recorded, accepted conventions;
+  no new information this pass.
+
+### Verification evidence (post second-pass review)
+
+- `cargo +nightly fmt --all` — clean.
+- `cargo clippy --workspace --all-targets --all-features` — zero warnings.
+- `cargo test -p syneroym-sandbox-wasm --lib` — 41 passed, 0 failed (40
+  prior + N1's regression test).
+- `cargo test -p syneroym-control-plane --lib` — 38 passed, 0 failed (36
+  prior, including the separately-committed symlink-hardening tests + N2's
+  and F5's regression tests).
+- `cargo test --workspace --no-fail-fast` — two isolated failures across
+  two separate full runs (`syneroym-router --test native_dispatch_identity`
+  once, `syneroym-sandbox-wasm --test messaging_integration`'s
+  `test_guest_delivery_latency_budget` once), neither touched by this
+  session's diff (engine.rs/orchestration.rs only); both passed cleanly
+  when rerun in isolation immediately after, and a third full run completed
+  with zero failures -- resource-contention flakes under parallel load,
+  the same class already documented for Phase 4's own verification.
+  With this CLI's default network sandbox left enabled, the same
+  pre-existing/environmental socket-bind failures as every prior phase
+  (`coordinator-iroh`, `mqtt-broker`, `sdk`'s `connect_timeout`,
+  `substrate`'s HTTP/messaging/stream e2e binaries) reproduce identically;
+  confirmed unrelated by the sandbox-disabled runs above.

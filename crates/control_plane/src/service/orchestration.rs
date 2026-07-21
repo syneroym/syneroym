@@ -149,12 +149,11 @@ impl ControlPlaneService {
 
     /// Restores whatever FDAE policy (or absence) `service_id` had before
     /// this deploy attempt's `save_fdae_policy`/`delete_fdae_policy` call --
-    /// see `fdae_policy_rollback`'s doc comment in `deploy` for why this
-    /// must restore rather than unconditionally delete. A no-op when
-    /// `rollback` is `None` (this deploy declared no policy at all, so
-    /// nothing was written). Best-effort, same as `rollback_config_generation`.
-    async fn rollback_fdae_policy(&self, service_id: &str, rollback: &Option<Option<String>>) {
-        let Some(previous) = rollback else { return };
+    /// see `previous_fdae_policy`'s capture in `deploy` for why this must
+    /// restore the previous value rather than unconditionally delete, in
+    /// both directions (a new/changed policy, or the manifest dropping the
+    /// block entirely). Best-effort, same as `rollback_config_generation`.
+    async fn rollback_fdae_policy(&self, service_id: &str, previous: &Option<String>) {
         let result = match previous {
             Some(doc) => self.storage_provider.save_fdae_policy(service_id, doc).await,
             None => self.storage_provider.delete_fdae_policy(service_id).await,
@@ -174,17 +173,22 @@ impl ControlPlaneService {
         manifest: &DeployManifest,
         wasm_manifest: &WasmManifest,
         new_gen: u64,
-        fdae_policy_rollback: &Option<Option<String>>,
+        previous_fdae_policy: &Option<String>,
     ) -> Result<(), String> {
         if let Err(e) = self.app_sandbox_engine.deploy_wasm(service_id, manifest).await {
             self.rollback_config_generation(service_id, new_gen).await;
-            self.rollback_fdae_policy(service_id, fdae_policy_rollback).await;
+            self.rollback_fdae_policy(service_id, previous_fdae_policy).await;
             return Err(format!("WASM deployment failed: {e}"));
         }
 
-        self.register_wasm_endpoints(service_id, wasm_manifest.interfaces.clone())
-            .await
-            .map_err(|e| format!("Endpoint registration failed: {e}"))
+        if let Err(e) =
+            self.register_wasm_endpoints(service_id, wasm_manifest.interfaces.clone()).await
+        {
+            self.rollback_config_generation(service_id, new_gen).await;
+            self.rollback_fdae_policy(service_id, previous_fdae_policy).await;
+            return Err(format!("Endpoint registration failed: {e}"));
+        }
+        Ok(())
     }
 
     async fn deploy_tcp_service(
@@ -218,20 +222,21 @@ impl ControlPlaneService {
         manifest: &DeployManifest,
         container_manifest: &ContainerManifest,
         new_gen: u64,
-        fdae_policy_rollback: &Option<Option<String>>,
+        previous_fdae_policy: &Option<String>,
     ) -> Result<(), String> {
         info!("Deploying container service {}: image={}", service_id, container_manifest.image);
         let actual_mappings = match self.podman_sandbox_engine.deploy(service_id, manifest).await {
             Ok(mappings) => mappings,
             Err(e) => {
                 self.rollback_config_generation(service_id, new_gen).await;
-                self.rollback_fdae_policy(service_id, fdae_policy_rollback).await;
+                self.rollback_fdae_policy(service_id, previous_fdae_policy).await;
                 return Err(format!("Container deployment failed: {e}"));
             }
         };
 
         for (interface_name, host_port) in actual_mappings {
-            self.registry
+            if let Err(e) = self
+                .registry
                 .register(
                     service_id.to_string(),
                     interface_name,
@@ -241,7 +246,11 @@ impl ControlPlaneService {
                     },
                 )
                 .await
-                .map_err(|e| format!("Endpoint registration failed: {e}"))?;
+            {
+                self.rollback_config_generation(service_id, new_gen).await;
+                self.rollback_fdae_policy(service_id, previous_fdae_policy).await;
+                return Err(format!("Endpoint registration failed: {e}"));
+            }
         }
         Ok(())
     }
@@ -461,45 +470,43 @@ impl OrchestratorInterface for ControlPlaneService {
         // above) -- a policy edit binds late by design.
         //
         // `previous_fdae_policy` captures whatever was there *before* this
-        // write, for `rollback_fdae_policy` below. Unlike config
-        // generations (append-only, so rolling back a failed attempt's row
-        // never touches an earlier one), `fdae_policies` is a single
+        // deploy's write, for `rollback_fdae_policy` below, unconditionally
+        // and in both directions (a new/changed policy, or the manifest
+        // dropping the block entirely). Unlike config generations
+        // (append-only, so rolling back a failed attempt's row never
+        // touches an earlier one), `fdae_policies` is a single
         // last-write-wins row per service -- on a re-deploy, a later step
-        // failing must restore the *previous* policy, not just delete the
-        // row, or an already-running previous version loses its policy to
-        // an unrelated failed re-deploy attempt the next time its engine
-        // cache re-resolves from storage. `fdae_policy_rollback` is
-        // `Option<Option<String>>`: outer `None` means this deploy declared
-        // no policy at all (nothing to roll back); `Some(previous)` means it
-        // did, and `previous` is what to restore (`None` = delete, this was
-        // the service's first policy).
-        let fdae_policy_rollback: Option<Option<String>> =
-            if let Some((policy_doc, _)) = &fdae_policy {
-                let previous = self
-                    .storage_provider
-                    .load_fdae_policy(&service_id)
-                    .await
-                    .map_err(|e| format!("Failed to check existing FDAE policy: {}", e))?;
-                self.storage_provider
-                    .save_fdae_policy(&service_id, policy_doc)
-                    .await
-                    .map_err(|e| format!("Failed to save FDAE policy: {}", e))?;
-                Some(previous)
-            } else {
-                // A manifest that no longer declares `fdae_policy_path` clears
-                // any previously-declared policy -- a deploy's `config` fully
-                // declares this service's policy state, so absence means
-                // explicit removal, not "leave whatever was there" (the F2
-                // resurrection bug: without this, `AppSandboxEngine::
-                // resolve_fdae_policy` would reload the stale row on its next
-                // cache miss even though native dispatch has correctly gone
-                // unfiltered).
-                self.storage_provider
-                    .delete_fdae_policy(&service_id)
-                    .await
-                    .map_err(|e| format!("Failed to clear FDAE policy: {}", e))?;
-                None
-            };
+        // failing must restore the *previous* policy exactly, or an
+        // already-running previous version loses its policy to an
+        // unrelated failed re-deploy attempt the next time its engine cache
+        // re-resolves from storage. This applies just as much when the new
+        // manifest drops the policy block: capturing `previous` only in the
+        // save branch would let a later-step failure leave a deleted policy
+        // deleted, silently reopening the previous version's enforcement.
+        let previous_fdae_policy = self
+            .storage_provider
+            .load_fdae_policy(&service_id)
+            .await
+            .map_err(|e| format!("Failed to check existing FDAE policy: {}", e))?;
+        if let Some((policy_doc, _)) = &fdae_policy {
+            self.storage_provider
+                .save_fdae_policy(&service_id, policy_doc)
+                .await
+                .map_err(|e| format!("Failed to save FDAE policy: {}", e))?;
+        } else {
+            // A manifest that no longer declares `fdae_policy_path` clears
+            // any previously-declared policy -- a deploy's `config` fully
+            // declares this service's policy state, so absence means
+            // explicit removal, not "leave whatever was there" (the F2
+            // resurrection bug: without this, `AppSandboxEngine::
+            // resolve_fdae_policy` would reload the stale row on its next
+            // cache miss even though native dispatch has correctly gone
+            // unfiltered).
+            self.storage_provider
+                .delete_fdae_policy(&service_id)
+                .await
+                .map_err(|e| format!("Failed to clear FDAE policy: {}", e))?;
+        }
 
         match &manifest.service_type {
             WitServiceType::Wasm(wasm_manifest) => {
@@ -508,7 +515,7 @@ impl OrchestratorInterface for ControlPlaneService {
                     &manifest,
                     wasm_manifest,
                     new_gen,
-                    &fdae_policy_rollback,
+                    &previous_fdae_policy,
                 )
                 .await?;
             }
@@ -521,7 +528,7 @@ impl OrchestratorInterface for ControlPlaneService {
                     &manifest,
                     container_manifest,
                     new_gen,
-                    &fdae_policy_rollback,
+                    &previous_fdae_policy,
                 )
                 .await?;
             }
@@ -576,7 +583,7 @@ impl OrchestratorInterface for ControlPlaneService {
                     );
                 }
                 self.rollback_config_generation(&service_id, new_gen).await;
-                self.rollback_fdae_policy(&service_id, &fdae_policy_rollback).await;
+                self.rollback_fdae_policy(&service_id, &previous_fdae_policy).await;
                 return Err(format!("Native capability registration failed: {e}"));
             }
         }
@@ -639,7 +646,7 @@ impl OrchestratorInterface for ControlPlaneService {
                 );
             }
             self.rollback_config_generation(&service_id, new_gen).await;
-            self.rollback_fdae_policy(&service_id, &fdae_policy_rollback).await;
+            self.rollback_fdae_policy(&service_id, &previous_fdae_policy).await;
             return Err(format!("Owner attribution failed: {e}"));
         }
 
@@ -920,8 +927,10 @@ mod tests {
 
     use dashmap::DashMap;
     use syneroym_core::{
-        config::SubstrateConfig, http_routes::HttpRouteRegistry, local_registry::EndpointRegistry,
-        storage::MockStorage,
+        config::SubstrateConfig,
+        http_routes::HttpRouteRegistry,
+        local_registry::EndpointRegistry,
+        storage::{EndpointStorage, MockStorage},
     };
     use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
     use syneroym_data_db::{SqliteStorageProvider, traits::StorageProvider};
@@ -1722,6 +1731,298 @@ mod tests {
             "a failed re-deploy must restore the previous policy, not leave the new one in force \
              or drop the row entirely -- the still-running previous version's engine cache would \
              otherwise resurrect the failed deploy's policy on its next miss"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_deploy_failure_restores_a_policy_the_new_manifest_dropped() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+            )
+            .await
+            .unwrap(),
+        );
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+
+        let native_dispatch = NativeDispatchRegistry::default();
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider.clone(),
+            blob_provider.clone(),
+            messaging_broker.clone(),
+            native_dispatch.clone(),
+            Arc::new(DashMap::new()),
+        )
+        .await
+        .unwrap();
+
+        let caller = node_wide_caller("test-caller");
+
+        // First, a successful deploy with a policy.
+        let policy_filename = format!("test_fdae_dropped_rollback_{}.json", std::process::id());
+        fs::write(&policy_filename, r#"{"version": "fdae/v1", "definitions": {}}"#).unwrap();
+        let first = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema_path: None,
+                rotation_policy: None,
+                fdae_policy_path: Some(policy_filename.clone()),
+            },
+            service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+            registry_certificate: None,
+        };
+        service.deploy("dropped_rollback_svc".to_string(), first, &caller).await.unwrap();
+        let _ = fs::remove_file(&policy_filename);
+        assert_eq!(
+            storage_provider.load_fdae_policy("dropped_rollback_svc").await.unwrap(),
+            Some(r#"{"version": "fdae/v1", "definitions": {}}"#.to_string())
+        );
+
+        // Re-deploy the same service_id as WASM, with no `fdae` block at all
+        // (the new manifest's `config` fully declares this deploy's policy
+        // state, so absence deletes the previous row up front) and a WASM
+        // source that doesn't exist, so `deploy_wasm` fails after the
+        // deletion already happened. The failure must restore the policy
+        // that was there before this deploy attempt, not leave the row
+        // deleted -- an already-running previous version must not lose its
+        // policy to an unrelated failed re-deploy.
+        let second = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema_path: None,
+                rotation_policy: None,
+                fdae_policy_path: None,
+            },
+            service_type: WitServiceType::Wasm(WasmManifest {
+                source: ArtifactSource::Url("/does_not_exist.wasm".to_string()),
+                hash: None,
+                interfaces: vec![],
+            }),
+            registry_certificate: None,
+        };
+        let result = service.deploy("dropped_rollback_svc".to_string(), second, &caller).await;
+        assert!(result.is_err(), "the WASM deploy must fail: {result:?}");
+
+        assert_eq!(
+            storage_provider.load_fdae_policy("dropped_rollback_svc").await.unwrap(),
+            Some(r#"{"version": "fdae/v1", "definitions": {}}"#.to_string()),
+            "a failed re-deploy whose manifest dropped the fdae block must restore the policy \
+             that existed before this attempt, not leave it deleted -- the still-running previous \
+             version's engine cache would otherwise resolve no policy on its next miss"
+        );
+    }
+
+    /// Wraps `MockStorage`, failing `save` for one specific interface name --
+    /// lets a test deterministically fail `EndpointRegistry::register`
+    /// (used by `register_wasm_endpoints`/`deploy_container_service`'s
+    /// registration loop) without needing a real network/podman failure.
+    struct FailingEndpointStorage {
+        inner: MockStorage,
+        fail_interface: String,
+    }
+
+    #[async_trait::async_trait]
+    impl EndpointStorage for FailingEndpointStorage {
+        async fn load_all(&self) -> Result<Vec<(String, String, SubstrateEndpoint)>> {
+            self.inner.load_all().await
+        }
+        async fn save(
+            &self,
+            service_id: &str,
+            interface_name: &str,
+            endpoint: &SubstrateEndpoint,
+        ) -> Result<()> {
+            if interface_name == self.fail_interface {
+                anyhow::bail!("simulated registry storage failure for {interface_name}");
+            }
+            self.inner.save(service_id, interface_name, endpoint).await
+        }
+        async fn remove(&self, service_id: &str, interface_name: &str) -> Result<()> {
+            self.inner.remove(service_id, interface_name).await
+        }
+        async fn load_all_owners(&self) -> Result<Vec<(String, String)>> {
+            self.inner.load_all_owners().await
+        }
+        async fn save_owner(&self, service_id: &str, owner_did: &str) -> Result<()> {
+            self.inner.save_owner(service_id, owner_did).await
+        }
+        async fn remove_owner(&self, service_id: &str) -> Result<()> {
+            self.inner.remove_owner(service_id).await
+        }
+    }
+
+    #[tokio::test]
+    async fn test_deploy_failure_after_successful_wasm_compile_rolls_back_gen_and_policy() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+            )
+            .await
+            .unwrap(),
+        );
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+        // The endpoint registry itself fails to persist one specific
+        // interface -- simulating `register_wasm_endpoints` (called *after*
+        // `deploy_wasm` has already compiled/cached the component and run
+        // its lifecycle hook) hitting a real storage error.
+        let registry = EndpointRegistry::new(Arc::new(FailingEndpointStorage {
+            inner: MockStorage::new(),
+            fail_interface: "fails-to-register".to_string(),
+        }))
+        .await
+        .unwrap();
+
+        let native_dispatch = NativeDispatchRegistry::default();
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider.clone(),
+            blob_provider.clone(),
+            messaging_broker.clone(),
+            native_dispatch.clone(),
+            Arc::new(DashMap::new()),
+        )
+        .await
+        .unwrap();
+
+        let caller = node_wide_caller("test-caller");
+
+        // First, a successful TCP deploy with policy P1, establishing a
+        // baseline config generation and policy for the same service_id.
+        let policy_1_filename = format!("test_fdae_endpoint_reg_p1_{}.json", std::process::id());
+        fs::write(&policy_1_filename, r#"{"version": "fdae/v1", "definitions": {}}"#).unwrap();
+        let first = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema_path: None,
+                rotation_policy: None,
+                fdae_policy_path: Some(policy_1_filename.clone()),
+            },
+            service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+            registry_certificate: None,
+        };
+        service.deploy("endpoint_reg_svc".to_string(), first, &caller).await.unwrap();
+        let _ = fs::remove_file(&policy_1_filename);
+        let (gen_before, _) = storage_provider
+            .get_latest_config_generation("endpoint_reg_svc")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            storage_provider.load_fdae_policy("endpoint_reg_svc").await.unwrap(),
+            Some(r#"{"version": "fdae/v1", "definitions": {}}"#.to_string())
+        );
+
+        // Re-deploy as WASM with a real, minimal, valid component (so
+        // `deploy_wasm` itself succeeds) and a new policy P2, but declaring
+        // the interface name the registry is rigged to reject -- so the
+        // failure happens in `register_wasm_endpoints`, *after* the
+        // component was already compiled/cached and P2 already persisted.
+        let wat = r#"
+(component
+  (core module $m (func (export "noop")))
+  (core instance $i (instantiate $m))
+  (func $noop (canon lift (core func $i "noop")))
+  (instance $interface (export "greet" (func $noop)))
+  (export "test-interface" (instance $interface))
+)
+"#;
+        let policy_2_filename = format!("test_fdae_endpoint_reg_p2_{}.json", std::process::id());
+        fs::write(
+            &policy_2_filename,
+            r#"{"version": "fdae/v1", "strict": true, "definitions": {}}"#,
+        )
+        .unwrap();
+        let second = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema_path: None,
+                rotation_policy: None,
+                fdae_policy_path: Some(policy_2_filename.clone()),
+            },
+            service_type: WitServiceType::Wasm(WasmManifest {
+                source: ArtifactSource::Binary(wat.as_bytes().to_vec()),
+                hash: None,
+                interfaces: vec!["fails-to-register".to_string()],
+            }),
+            registry_certificate: None,
+        };
+        let result = service.deploy("endpoint_reg_svc".to_string(), second, &caller).await;
+        let _ = fs::remove_file(&policy_2_filename);
+        assert!(result.is_err(), "endpoint registration must fail: {result:?}");
+        assert!(result.unwrap_err().contains("Endpoint registration failed"));
+
+        assert_eq!(
+            storage_provider.load_fdae_policy("endpoint_reg_svc").await.unwrap(),
+            Some(r#"{"version": "fdae/v1", "definitions": {}}"#.to_string()),
+            "a register_wasm_endpoints failure -- after the component was already compiled and \
+             the new policy already persisted -- must restore the previous policy, not leave the \
+             new one (P2) in force"
+        );
+        let (gen_after, _) = storage_provider
+            .get_latest_config_generation("endpoint_reg_svc")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            gen_after, gen_before,
+            "a register_wasm_endpoints failure must roll back the config generation this deploy \
+             attempt saved, not leave it in force alongside a rolled-back policy"
         );
     }
 

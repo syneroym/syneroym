@@ -111,6 +111,20 @@ pub struct AppSandboxEngine {
     /// it), and the racing load then inserts its *old* result afterward --
     /// resurrecting a policy the redeploy should have replaced, indefinitely
     /// (until the next `stop_wasm`/redeploy). See `resolve_fdae_policy`.
+    ///
+    /// Two known, accepted residuals, both narrower than the race above:
+    /// (1) the generation comparison and the `fdae_policies` insert in
+    /// `resolve_fdae_policy` are still two separate `DashMap` operations
+    /// (no `await` between them, unlike the wide window this counter
+    /// closes), so an eviction landing in that narrow gap is still
+    /// silently undone; and (2) entries here are only ever inserted or
+    /// bumped, never removed (`stop_wasm` evicts `fdae_policies` but not
+    /// this map), so the map grows by one entry per distinct `service_id`
+    /// this process has ever seen, for the process's lifetime. Neither has
+    /// an observed impact -- closing (1) fully would need the two maps
+    /// merged behind one lock (a real redesign for a race narrower than
+    /// the one already closed), and (2) is bounded by service churn, not
+    /// request volume.
     fdae_policy_generation: DashMap<String, u64>,
     default_max_instructions: Option<u64>,
     default_max_memory_bytes: Option<u64>,
@@ -787,24 +801,18 @@ impl AppSandboxEngine {
         interface_name: &str,
         method_name: &str,
     ) -> Result<(Store<HostState>, Func, usize, ComponentItem)> {
-        // Lifecycle hooks run substrate-elevated (carrying `data-layer/admin`
-        // for `execute-ddl`) and get the larger lifecycle-hook epoch budget;
-        // an ordinary invocation is the component acting as itself, with no
-        // elevated capability, and the tighter dispatch budget
-        // (ADR-0015/0016).
-        let is_lifecycle_hook = method_name == "init" || method_name == "migrate";
-        let caller = if is_lifecycle_hook {
-            CallerContext::local_elevated(service_id)
-        } else {
-            CallerContext::service_system(service_id)
-        };
-        let epoch_deadline_ticks = if is_lifecycle_hook {
-            self.lifecycle_hook_epoch_ticks
-        } else {
-            self.dispatch_epoch_ticks
-        };
+        // This is the ordinary dispatch path -- reached from wire-originated
+        // JSON-RPC (`dispatch.rs`) and guest-to-guest proxy calls, both of
+        // which let the caller pick `method_name` freely. It must never
+        // grant `local_elevated` (the `data-layer/admin`-bearing, FDAE-exempt
+        // context): a caller simply naming their request "init" or "migrate"
+        // would otherwise self-elevate. `local_elevated` is reserved for
+        // `invoke_lifecycle_hook`, which the deploy path calls directly
+        // (never through this function) and builds its own caller/epoch
+        // budget without consulting `method_name` at all.
+        let caller = CallerContext::service_system(service_id);
         let (mut store, instance, _max_instructions) =
-            self.build_store_and_instantiate(service_id, caller, epoch_deadline_ticks).await?;
+            self.build_store_and_instantiate(service_id, caller, self.dispatch_epoch_ticks).await?;
 
         // Use the helper to extract the function
         let (func, results_len, item) =
@@ -1280,6 +1288,7 @@ mod tests {
     use syneroym_core::{storage::MockStorage, test_constants};
     use syneroym_data_db::{ServiceStore, SqliteStorageProvider};
     use syneroym_mqtt_broker::MqttBrokerConfig;
+    use syneroym_rpc::AuthLevel;
     use tokio::{sync::Notify, task};
     use wasmtime::component::Component;
 
@@ -1441,6 +1450,55 @@ mod tests {
             "a load that raced a concurrent eviction must not repopulate the cache -- doing so \
              would silently undo the eviction and serve a possibly-stale policy indefinitely"
         );
+    }
+
+    /// `prepare_wasm_execution` is the ordinary dispatch path reached from
+    /// wire-originated JSON-RPC (`dispatch.rs`) and guest-to-guest proxy
+    /// calls, both of which let the caller pick `method_name` freely.
+    /// Naming a request "init" or "migrate" must not synthesize
+    /// `CallerContext::local_elevated` -- the `data-layer/admin`-bearing
+    /// context `HostState::query_auth` exempts from the FDAE sieve entirely
+    /// -- or any caller could self-elevate by choosing that method name.
+    /// Only `invoke_lifecycle_hook` (called directly by the deploy path,
+    /// never through this function) may synthesize that context.
+    #[tokio::test]
+    async fn prepare_wasm_execution_grants_no_elevation_for_init_or_migrate_method_names() {
+        let wat = r#"
+(component
+  (core module $m
+    (func (export "noop"))
+  )
+  (core instance $i (instantiate $m))
+  (func $noop (canon lift (core func $i "noop")))
+  (instance $interface
+    (export "init" (func $noop))
+    (export "migrate" (func $noop))
+  )
+  (export "test-interface" (instance $interface))
+)
+"#;
+        let storage_provider: Arc<dyn StorageProvider> = Arc::new(
+            SqliteStorageProvider::new(tempfile::tempdir().unwrap().path(), false).unwrap(),
+        );
+        let app_engine = test_app_engine(storage_provider);
+        app_engine.compile_and_cache_wasm("svc-n1", wat.as_bytes(), None).unwrap();
+
+        for method in ["init", "migrate"] {
+            let (store, _func, _results_len, _item) = app_engine
+                .prepare_wasm_execution("svc-n1", "test-interface", method)
+                .await
+                .unwrap();
+            assert_eq!(
+                store.data().caller.auth,
+                AuthLevel::System,
+                "a wire-dispatched call naming its method {method:?} must not be granted \
+                 LocalElevated -- only invoke_lifecycle_hook may synthesize that context"
+            );
+            assert!(
+                !store.data().caller.caller_did.contains("local-elevated"),
+                "caller_did leaked a local-elevated identity for method {method:?}"
+            );
+        }
     }
 
     #[tokio::test]
