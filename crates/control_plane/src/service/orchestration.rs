@@ -9,7 +9,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fs,
-    path::{Component, PathBuf},
+    path::{Component, Path, PathBuf},
     sync::Arc,
 };
 
@@ -44,6 +44,38 @@ pub trait OrchestratorInterface {
     async fn list(&self, caller: &CallerContext) -> Result<Vec<DeployedService>, String>;
     async fn deploy_plan(&self, plan: DeploymentPlan, caller: &CallerContext)
     -> Result<(), String>;
+}
+
+/// Rejects `path` if it's absolute, contains a `..` component, or -- once
+/// symlinks are resolved -- canonicalizes to somewhere outside the
+/// process's working directory. The component check alone doesn't catch a
+/// symlink placed under the working directory that itself points outside
+/// it (no `..` anywhere in `path`), so both `schema_path` and
+/// `fdae_policy_path` need this second, filesystem-resolving check too.
+/// `field_name` names the offending manifest field for the error message.
+fn reject_path_escape(path: &Path, field_name: &str) -> Result<(), String> {
+    if path.components().any(|c| matches!(c, Component::ParentDir)) || path.is_absolute() {
+        return Err(format!(
+            "Arbitrary file read prevented: Path traversal or absolute paths are not allowed in \
+             {field_name}: {:?}",
+            path
+        ));
+    }
+
+    let cwd = std::env::current_dir()
+        .map_err(|e| format!("Failed to resolve working directory: {}", e))?;
+    let canonical_cwd = fs::canonicalize(&cwd)
+        .map_err(|e| format!("Failed to resolve working directory: {}", e))?;
+    let resolved = fs::canonicalize(cwd.join(path))
+        .map_err(|e| format!("Failed to resolve {field_name} at {}: {}", path.display(), e))?;
+    if !resolved.starts_with(&canonical_cwd) {
+        return Err(format!(
+            "Arbitrary file read prevented: {field_name} resolves outside the working directory \
+             via a symlink: {:?}",
+            path
+        ));
+    }
+    Ok(())
 }
 
 /// D-04-02-c's deploy-time author-time warning: compares a deployed policy's
@@ -347,17 +379,7 @@ impl OrchestratorInterface for ControlPlaneService {
 
             if let Some(schema_path_str) = &manifest.config.schema_path {
                 let schema_path = PathBuf::from(schema_path_str);
-
-                // Path traversal check
-                if schema_path.components().any(|c| matches!(c, Component::ParentDir))
-                    || schema_path.is_absolute()
-                {
-                    return Err(format!(
-                        "Arbitrary file read prevented: Path traversal or absolute paths are not \
-                         allowed in schema_path: {:?}",
-                        schema_path
-                    ));
-                }
+                reject_path_escape(&schema_path, "schema_path")?;
 
                 let custom_json_clone = custom_json.clone();
                 task::spawn_blocking(move || -> Result<(), String> {
@@ -398,15 +420,7 @@ impl OrchestratorInterface for ControlPlaneService {
             &manifest.config.fdae_policy_path
         {
             let policy_path = PathBuf::from(policy_path_str);
-            if policy_path.components().any(|c| matches!(c, Component::ParentDir))
-                || policy_path.is_absolute()
-            {
-                return Err(format!(
-                    "Arbitrary file read prevented: Path traversal or absolute paths are not \
-                     allowed in fdae_policy_path: {:?}",
-                    policy_path
-                ));
-            }
+            reject_path_escape(&policy_path, "fdae_policy_path")?;
             let doc = task::spawn_blocking(move || {
                 fs::read_to_string(&policy_path).map_err(|e| {
                     format!("Failed to read FDAE policy at {}: {}", policy_path.display(), e)
@@ -1196,6 +1210,96 @@ mod tests {
         assert!(err_msg.contains("Configuration validation failed"), "{}", err_msg);
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_deploy_schema_path_symlink_escape_rejected() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+            )
+            .await
+            .unwrap(),
+        );
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+
+        let native_dispatch = NativeDispatchRegistry::default();
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider,
+            blob_provider.clone(),
+            messaging_broker.clone(),
+            native_dispatch.clone(),
+            Arc::new(DashMap::new()),
+        )
+        .await
+        .unwrap();
+
+        // A symlink under the working directory whose target lives outside
+        // it. No `..` component and not absolute, so the component check
+        // alone would let it through; only canonicalizing the resolved path
+        // catches it.
+        let outside_dir = tempfile::tempdir().unwrap();
+        let outside_schema = outside_dir.path().join("schema.json");
+        fs::write(&outside_schema, r#"{"type": "object"}"#).unwrap();
+
+        let symlink_name = format!("test_schema_symlink_{}.json", std::process::id());
+        std::os::unix::fs::symlink(&outside_schema, &symlink_name).unwrap();
+
+        let manifest = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: Some(r#"{"port": 8080}"#.to_string()),
+                quota: None,
+                schema_path: Some(symlink_name.clone()),
+                rotation_policy: None,
+                fdae_policy_path: None,
+            },
+            service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+            registry_certificate: None,
+        };
+
+        let result = service
+            .deploy(
+                "symlink_schema_service".to_string(),
+                manifest,
+                &node_wide_caller("test-caller"),
+            )
+            .await;
+
+        let _ = fs::remove_file(&symlink_name);
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err();
+        assert!(
+            err_msg.contains("resolves outside the working directory via a symlink"),
+            "{}",
+            err_msg
+        );
+    }
+
     #[tokio::test]
     async fn test_deploy_config_generation_rollback() {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -1848,6 +1952,95 @@ mod tests {
                 "{bad_path} should fail on the traversal guard"
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_deploy_fdae_policy_path_symlink_escape_rejected() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+            )
+            .await
+            .unwrap(),
+        );
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+
+        let native_dispatch = NativeDispatchRegistry::default();
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider,
+            blob_provider.clone(),
+            messaging_broker.clone(),
+            native_dispatch.clone(),
+            Arc::new(DashMap::new()),
+        )
+        .await
+        .unwrap();
+
+        // Same symlink-escape gap as the schema_path guard, on the
+        // fdae_policy_path guard: no `..` component, not absolute, but the
+        // symlink target lives outside the working directory.
+        let outside_dir = tempfile::tempdir().unwrap();
+        let outside_policy = outside_dir.path().join("fdae-policy.json");
+        fs::write(&outside_policy, r#"{"version": "fdae/v1", "definitions": {}}"#).unwrap();
+
+        let symlink_name = format!("test_fdae_policy_symlink_{}.json", std::process::id());
+        std::os::unix::fs::symlink(&outside_policy, &symlink_name).unwrap();
+
+        let manifest = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema_path: None,
+                rotation_policy: None,
+                fdae_policy_path: Some(symlink_name.clone()),
+            },
+            service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+            registry_certificate: None,
+        };
+
+        let result = service
+            .deploy(
+                "symlink_fdae_policy_service".to_string(),
+                manifest,
+                &node_wide_caller("test-caller"),
+            )
+            .await;
+
+        let _ = fs::remove_file(&symlink_name);
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err();
+        assert!(
+            err_msg.contains("resolves outside the working directory via a symlink"),
+            "{}",
+            err_msg
+        );
     }
 
     #[test]
