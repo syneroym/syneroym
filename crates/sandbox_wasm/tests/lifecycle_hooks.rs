@@ -113,6 +113,7 @@ async fn test_execute_ddl_denied_outside_lifecycle_context() {
         test_messaging_context(),
         test_streaming_context(),
         empty_service_proxy(),
+        None,
     );
 
     let err = DataLayerHost::execute_ddl(&mut host_state, "CREATE TABLE x (id TEXT)".to_string())
@@ -145,6 +146,7 @@ async fn test_execute_ddl_allowed_for_local_elevated_lifecycle_context() {
         test_messaging_context(),
         test_streaming_context(),
         empty_service_proxy(),
+        None,
     );
 
     DataLayerHost::execute_ddl(&mut host_state, "CREATE TABLE x (id TEXT)".to_string())
@@ -194,6 +196,7 @@ async fn test_execute_ddl_allowed_for_admin_ucan_root_caller() {
         test_messaging_context(),
         test_streaming_context(),
         empty_service_proxy(),
+        None,
     );
 
     DataLayerHost::execute_ddl(&mut host_state, "CREATE TABLE x (id TEXT)".to_string())
@@ -223,6 +226,7 @@ async fn test_query_raw_denied_for_ordinary_caller() {
         test_messaging_context(),
         test_streaming_context(),
         empty_service_proxy(),
+        None,
     );
 
     let err = DataLayerHost::query_raw(&mut host_state, "SELECT 1".to_string(), vec![])
@@ -253,6 +257,7 @@ async fn test_query_raw_allowed_for_local_elevated_lifecycle_context() {
         test_messaging_context(),
         test_streaming_context(),
         empty_service_proxy(),
+        None,
     );
 
     let result = DataLayerHost::query_raw(

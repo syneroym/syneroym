@@ -25,7 +25,10 @@ use syneroym_data_blob::{
     },
     traits::{DownloadSession, UploadSession},
 };
-use syneroym_data_db::traits::{ServiceStore, StorageProvider};
+use syneroym_data_db::{
+    auth,
+    traits::{ServiceStore, StorageProvider},
+};
 use syneroym_data_keystore::KeyStore;
 use syneroym_mqtt_broker::{MqttBroker, namespace_topic_for_publish};
 use syneroym_rpc::{
@@ -35,7 +38,7 @@ use syneroym_wit_interfaces::host::syneroym::{
     app_config::app_config::ConfigError,
     data_layer::store::{
         CollectionSchema, DataLayerError, IndexDefinition, IndexType, Mutation, PatchMutation,
-        QueryOptions, RawQueryResult, RecordWriteValue, SqlValue,
+        QueryOptions, RawQueryResult, RecordReadValue, RecordWriteValue, SqlValue,
     },
     vault::vault::VaultError,
 };
@@ -111,6 +114,19 @@ fn data_layer_error(e: DataLayerError) -> RpcError {
         }
         DataLayerError::Internal(msg) => internal(msg),
     }
+}
+
+/// Applies the host-side CLS field-mask projection to a single read record
+/// (ADR-0017 §4, Phase 3). `auth` stays `None` on this native-dispatch path
+/// (no policy source until Phase 4), so `masked_fields` is always empty here
+/// and this is a correct no-op -- added for symmetry with the WASM host path
+/// so Phase 4's native policy wiring needs zero further change.
+fn strip_record(
+    mut record: RecordReadValue,
+    masked_fields: &[String],
+) -> Result<RecordReadValue, DataLayerError> {
+    record.payload = auth::strip_masked_fields(record.payload, masked_fields)?;
+    Ok(record)
 }
 
 fn parse_params<T: serde::de::DeserializeOwned>(invocation: &NativeInvocation) -> RpcResult<T> {
@@ -281,11 +297,13 @@ impl SynSvcNativeService {
                     id: String,
                 }
                 let req: Req = parse_params(&invocation)?;
-                let result = store
-                    .get(&req.collection, &req.id, None)
-                    .await
-                    .map_err(data_layer_error)?
-                    .value;
+                let outcome =
+                    store.get(&req.collection, &req.id, None).await.map_err(data_layer_error)?;
+                let result = outcome
+                    .value
+                    .map(|record| strip_record(record, &outcome.masked_fields))
+                    .transpose()
+                    .map_err(data_layer_error)?;
                 to_payload(&result)
             }
             "query" => {
@@ -295,12 +313,17 @@ impl SynSvcNativeService {
                     opts: QueryOptions,
                 }
                 let req: Req = parse_params(&invocation)?;
-                let result = store
+                let mut outcome = store
                     .query(&req.collection, &req.opts, None)
                     .await
-                    .map_err(data_layer_error)?
-                    .value;
-                to_payload(&result)
+                    .map_err(data_layer_error)?;
+                let records = std::mem::take(&mut outcome.value.records)
+                    .into_iter()
+                    .map(|record| strip_record(record, &outcome.masked_fields))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(data_layer_error)?;
+                outcome.value.records = records;
+                to_payload(&outcome.value)
             }
             "delete" => {
                 #[derive(serde::Deserialize)]

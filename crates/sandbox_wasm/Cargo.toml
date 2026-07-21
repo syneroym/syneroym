@@ -19,6 +19,7 @@ syneroym-rpc.workspace = true
 syneroym-data-keystore.workspace = true
 syneroym-data-db.workspace = true
 syneroym-data-blob.workspace = true
+syneroym-fdae.workspace = true
 syneroym-mqtt-broker.workspace = true
 syneroym-chunk-transfer.workspace = true
 

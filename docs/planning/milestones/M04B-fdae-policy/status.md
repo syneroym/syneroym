@@ -224,3 +224,148 @@ Verification after the two code changes above:
 `cargo test -p syneroym-data-db` — **119 passed, 0 failed** (117 prior + 2
 new); `cargo +nightly fmt --all` clean; `cargo clippy --workspace
 --all-targets --all-features` zero warnings.
+
+## Phase 3 — WIT `check-access` + Host QueryAuth Wiring + CLS Strip ✅ (2026-07-21)
+
+Branch: `feat/m04b-slice-b2-data-db` (same branch/PR as Phases 1-2). Plan:
+[slice-b2-phase3-plan.md](slice-b2-phase3-plan.md). `crates/fdae` and
+`crates/data_db`'s `QueryAuth`/`ReadOutcome`/`check_access` are unchanged
+ground truth for this phase.
+
+### What was delivered
+
+- **WIT** — additive `check-access: func(collection, id, operation) ->
+  result<bool, data-layer-error>` added to
+  `crates/wit_interfaces/wit/data-layer/data-layer.wit`'s `store` interface,
+  after `query-raw`. `wit/host/deps/data-layer/data-layer.wit` and every
+  `test-components/*/wit/deps/data-layer/data-layer.wit` are symlinks to this
+  one file, so the host `bindgen!` and every guest `generate!` picked it up
+  from the single edit — no manual mirror, no guest rebuild needed (additive;
+  existing guests ignore it).
+- **`crates/data_db/src/auth.rs`** — `pub fn strip_masked_fields(payload:
+  Vec<u8>, masked: &[String]) -> Result<Vec<u8>, DataLayerError>`: removes
+  each top-level key named in `masked` from a JSON-object payload. Fail-closed
+  (a non-empty mask against a payload that won't parse as a JSON object is an
+  `Err`, never a pass-through); an empty mask returns the payload untouched
+  without parsing it. Exported alongside `QueryAuth`/`ReadOutcome`; 5 new unit
+  tests.
+- **`HostState.fdae_policy: Option<Arc<syneroym_fdae::Policy>>`**
+  (`crates/sandbox_wasm/src/host_capabilities.rs`) — `None` = today's
+  unfiltered behavior. New trailing `HostState::new` param, threaded through
+  every call site (the one production site in `engine.rs` passes `None`; all
+  ~17 test/bench sites pass `None` except the new Phase-3 host tests, which
+  pass `Some(policy)`). A private `HostState::query_auth(&self)` helper
+  builds `QueryAuth` from `fdae_policy` + `caller.session` +
+  `component_id`, reused by every `store::Host` method below.
+- **`store::Host for HostState`** — `get`/`query`/`aggregate`/`delete_many`
+  now build a real `QueryAuth` via `query_auth()` instead of a hardcoded
+  `None`. New `check_access` method: builds the same `QueryAuth`, delegates
+  to `ServiceStore::check_access`, **no capability gate** (unlike
+  `execute_ddl`/`query_raw`) — `check-access` *is* the authorization
+  primitive, reveals only the caller's own access, and is fail-closed to
+  `false` inside the store, so gating it would be circular. `get`/`query`
+  capture the full `ReadOutcome` and run `strip_masked_fields` over each
+  returned record's payload before returning; a fail-closed `Err` from the
+  helper propagates as the method's `Err`. `aggregate` needs no strip — Phase
+  2 already denies a CLS-active aggregate outright.
+- **Native path** (`crates/control_plane/src/synsvc_native.rs`) — `get`/
+  `query` arms gained the same `strip_masked_fields` call (capturing the full
+  `ReadOutcome`) for symmetry. `auth` stays `None` here (no policy field on
+  `SynSvcNativeService`; that's Phase 4), so `masked_fields` is always empty
+  and the strip is a correct no-op today — Phase 4's native policy wiring
+  needs zero further change to this path.
+
+### Tests
+
+- **`crates/data_db/src/auth.rs`** (5 new unit tests): strips a named
+  top-level key; leaves sibling fields untouched; empty mask returns the
+  payload untouched without parsing; a non-JSON payload with a non-empty
+  mask fails closed; a mask naming an absent key is a no-op success.
+- **`crates/sandbox_wasm/src/host_capabilities.rs::tests`** (4 new
+  integration tests, a `HostState` built with a hand-injected `Policy` and a
+  `caller.session` carrying real capabilities, seeded rows via the same
+  `store::Host` trait the tests exercise):
+  - `fdae_rls_filters_get_query_and_check_access` — `get`/`query` return only
+    the caller-reachable row; `check_access` returns the right Mode-A bool
+    for a reachable vs. unreachable row.
+  - `fdae_cls_strips_masked_field_from_get_and_query` — a `fields.deny:
+    ["ssn"]` policy strips `ssn` from both `get`'s and `query`'s returned
+    payload while leaving sibling fields intact (the row itself is still
+    correctly RLS-filtered).
+  - `fdae_policy_absent_is_unfiltered_pass_through` — `fdae_policy: None`
+    leaves both rows and payloads (including `ssn`) untouched, proving zero
+    behavior change on the unconfigured (today's production) path.
+  - `fdae_d04_02_g_extra_caveated_capability_narrows_cls_strip` — **required
+    D-04-02-g CLS-narrowing pin**: a caller holding both an unrestricted
+    `read` capability and a second `read` capability caveated `fields.deny:
+    ["ssn"]` on the same resource gets `ssn` stripped even from the
+    unrestricted grant's payload (today's over-restrictive union across
+    capabilities — mirrors the RLS variant Phase 2 already pinned in
+    `tests_fdae.rs`). Comment ties it to D-04-02-g and directs whoever fixes
+    it to flip the assertion to "ssn is present".
+- **No `wasm32-wasip2` guest rebuild, no through-the-guest E2E** — the WIT
+  change is additive and the reference-scenario E2E step needs a deployed
+  policy (Phase 4), both deliberately out of scope per the plan.
+
+### Decisions carried into this phase
+
+- **`HostState.fdae_policy` stays `None` in production.** Phase 3 proves
+  itself entirely with a hand-injected `Policy` in the new host tests
+  (per the phasing note in `slice-b2-implementation-plan.md` §9.3: "Phases
+  1-3 are testable with a policy injected directly… land 1-3 first"). **FDAE
+  still enforces nothing for a live deployed caller after this phase** — the
+  same informational caveat as Phase 2, now also true at the WIT boundary.
+  Loading a real policy at instantiation is Phase 4 (deploy/persist/manifest
+  plumbing), explicitly out of scope here.
+- **No capability gate on `check-access`.** Unlike `execute-ddl`/`query-raw`
+  (gated on `data-layer/admin`), `check-access` is itself the authorization
+  primitive a guest uses to ask "may I act on this row?" — it reveals only
+  the caller's own access and fails closed to `false`, so adding a gate on
+  top would be circular and would just turn every legitimate use into a
+  denial.
+- **CLS strip lives host-side, not in the store.** `strip_masked_fields` is a
+  `data_db`-exported utility the host calls after reading a `ReadOutcome`,
+  not something `ServiceStore` applies itself — this respects Phase 2's
+  recorded "the store never strips fields itself" contract and is why the
+  Phase 2 test `masked_fields_exposed_but_rows_unmasked_in_phase_2` stays
+  unchanged and still correctly documents the `data_db`-level contract.
+- **Native-path strip is a no-op today, by design.** Added for symmetry so
+  Phase 4's native policy wiring is a construction-site change only, not a
+  new call to wire in.
+
+### Explicitly out of Phase 3 scope (plan §4 — recorded, not silently dropped)
+
+- **Phase 4 — deploy/persist/manifest plumbing**: the `fdae`/`policy_path`
+  field on both `ServiceConfig` types + the SDK WIT mapper, deploy-time
+  read/validate + `strict:` author-time warning, the `fdae_policies` storage
+  table with `save`/`load_fdae_policy`, and `engine.rs` load-at-instantiation.
+- **Native-path real policy** — `synsvc_native.rs` gets the strip call but no
+  policy source until Phase 4.
+- **Decision trace** (ADR-0017 §9) — Phase 5.
+- **`strict:` mode enforcement wiring** — the deploy-path author-time warning
+  is Phase 4.
+- **B3 `anchor` terminal, B4-fdae stage-4 ABAC, B5-fdae write-path gate,
+  D-04-02-e native-admission TODO** — later slices, untouched.
+
+### Verification evidence
+
+- `cargo +nightly fmt --all` — clean.
+- `cargo clippy --workspace --all-targets --all-features` — zero warnings.
+- `cargo test -p syneroym-data-db` — **124 passed, 0 failed** (119 prior + 5
+  new `strip_masked_fields` unit tests).
+- `cargo test -p syneroym-sandbox-wasm` — **32 passed, 0 failed** (28 prior +
+  4 new FDAE host-wiring tests), plus all pre-existing integration test
+  binaries (`blob_store_integration`, `data_layer_integration`,
+  `lifecycle_hooks`, `messaging_integration`, `stream_integration`) green.
+- `cargo test -p syneroym-control-plane` — green (native-path strip is a
+  no-op on the `auth = None` path; no behavior change).
+- `cargo test --workspace` — all crates green. (`syneroym-coordinator-iroh`'s
+  `connection_limit::accepts_up_to_cap_and_rejects_the_rest` fails under
+  this CLI's default network sandbox — "Operation not permitted" binding a
+  UDP relay socket — pre-existing/environmental, unrelated to this change,
+  same as Phase 2.)
+- `mise run test:e2e` — not run, same reasoning as Phase 2: the WIT change is
+  additive and no call site's real behavior changes for a production caller
+  (`fdae_policy` is `None` everywhere real deployment happens), so there is
+  nothing new for the Playwright e2e suite to exercise. A deliberate skip,
+  recorded per the plan's own scoping (§2).

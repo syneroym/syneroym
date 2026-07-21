@@ -7957,6 +7957,7 @@ dependencies = [
  "syneroym-data-blob",
  "syneroym-data-db",
  "syneroym-data-keystore",
+ "syneroym-fdae",
  "syneroym-mqtt-broker",
  "syneroym-rpc",
  "syneroym-wit-interfaces",

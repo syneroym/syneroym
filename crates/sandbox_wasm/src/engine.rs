@@ -670,6 +670,7 @@ impl AppSandboxEngine {
             messaging,
             streaming,
             service_proxy,
+            None,
         );
 
         debug!("created wasi ctx and host state");
@@ -1207,6 +1208,7 @@ mod tests {
             test_messaging_context(),
             test_streaming_context(),
             test_service_proxy(),
+            None,
         );
 
         let mut store = Store::new(&engine, host_state);

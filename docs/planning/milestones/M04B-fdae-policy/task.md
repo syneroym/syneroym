@@ -194,14 +194,20 @@ and no longer gate B2; d/e remain as a deferral and a B7 hand-off.
   AND caveat₂)` — which the current flat `where_caveats: Vec<Json>` shape
   cannot express; fixing it is a `crates/fdae` (Phase 1) `CompiledSieve`
   contract change, not a Phase 2 `data_db` one. The same root cause makes CLS
-  `fields.deny` lists union across capabilities too (`compile_cls`) — lower
-  impact today since Phase 2 doesn't yet strip fields (that's Phase 3), but the
-  same "should an extra capability ever narrow?" question applies there as
-  well. **Pinned, not silently dropped:**
+  `fields.deny` lists union across capabilities too (`compile_cls`) — the RLS
+  variant was pinned in Phase 2; the CLS variant is now **live** (Phase 3
+  ships the host-side field-strip that actually applies `masked_fields` to a
+  returned payload, so a caller holding an unrestricted capability alongside
+  a second, `fields.deny`-caveated one on the same resource now observably
+  gets their unrestricted grant's payload stripped too — previously this was
+  latent, since Phase 2 exposed `masked_fields` but never applied it).
+  **Pinned, not silently dropped:**
   `tests_fdae.rs::two_capabilities_with_conflicting_caveats_currently_narrow_to_zero_rows`
-  asserts today's (undesired) behavior explicitly, with a comment directing
-  whoever fixes this to flip the assertion. Surfaced during Slice B2 Phase-2
-  review (independent re-review pass).
+  (RLS, Phase 2) and
+  `host_capabilities.rs::tests::fdae_d04_02_g_extra_caveated_capability_narrows_cls_strip`
+  (CLS, Phase 3) both assert today's (undesired) behavior explicitly, with a
+  comment directing whoever fixes this to flip the assertion. Surfaced during
+  Slice B2 Phase-2 review (independent re-review pass).
 
 ---
 
@@ -358,7 +364,7 @@ D-04-02) — minor bump, non-breaking. `wasm32-wasip2` must stay unbroken.
 
 ## Ordered Implementation Slices
 
-#### Slice B2: Local FDAE (SQL Pushdown Sieve) — Phase 1 ✅ (2026-07-20, PR #86); Phase 2 ✅ (2026-07-20)
+#### Slice B2: Local FDAE (SQL Pushdown Sieve) — Phase 1 ✅ (2026-07-20, PR #86); Phase 2 ✅ (2026-07-20); Phase 3 ✅ (2026-07-21)
 **Unblocked** (ADR D-04-02 Accepted; a/b/c resolved). **Depends on:** M04A (B1
 SessionContext, B0 identity).
 **Requirement:** `[FND-IAM]`.
@@ -379,10 +385,14 @@ implemented within this slice (-c).
 merged `main` @ PR #86. **Phase 2** (`crates/data_db` integration: `query`/
 `get`/`aggregate`/`delete_many` threaded with an `Option<QueryAuth>`, sieve
 spliced into SQL generation, new `check_access` Mode-A primitive, watchdog
-matrix wired) — done on `feat/m04b-slice-b2-data-db`. CLS is plumbed
-(`ReadOutcome::masked_fields` exposed) but **not yet stripped** — the
-host-side field-projection lands in **Phase 3**, so the Failure/Security
-matrix's CLS row stays open until then. Full evidence: `status.md`.
+matrix wired) — done on `feat/m04b-slice-b2-data-db`. **Phase 3** (WIT
+`check-access` + `HostState.fdae_policy` + real `QueryAuth` construction on
+the WASM read path + host-side CLS field-stripping, proven by
+`sandbox_wasm` host tests that inject a `Policy` by hand) — done on the same
+branch; `HostState.fdae_policy` stays `None` in production until Phase 4
+(deploy/persist/manifest plumbing) loads a real one, so FDAE still enforces
+nothing for a live deployed caller. The Failure/Security matrix's CLS "value
+never returned" row is now satisfied. Full evidence: `status.md`.
 
 #### Slice B3: Federated FDAE (Cross-Service Parameter Fetch)
 **Depends on:** B2, and M04A A1 (Universal Proxy). **Requirement:** `[FND-IAM]`.
@@ -457,7 +467,7 @@ Continues from M04A (steps 20–21, 24–25):
 |---|---|
 | FDAE query for a resource the caller's ReBAC chain doesn't reach (Mode B) | Row excluded from results, not an error (ADR-0007 "no result is a valid outcome") |
 | FDAE Point-In-Time check (Mode A) for an unreachable resource | Deny flag; no data leak |
-| CLS: caller lacks column permission | Column masked/projected out; value never returned |
+| CLS: caller lacks column permission | Column masked/projected out; value never returned — ✅ satisfied by Slice B2 Phase 3's host-side `strip_masked_fields` |
 | FDAE policy with a cyclic ReBAC relationship in user data | `visited_track` breaks recursion; no infinite loop (`system-architecture.md:1847`) |
 | Compiled FDAE query exceeds the policy time budget | Transaction rolled back, Default-Denied (`:1848`) |
 | Cross-service FDAE parameter fetch times out | Falls back to deny, not silent allow |
