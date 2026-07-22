@@ -183,25 +183,27 @@ fn validate_semantics(policy: &Policy) -> Result<(), PolicyError> {
 }
 
 /// The compiler resolves a query's `collection` string against either a
-/// definition's key or its `table` (`compile::find_definition`), taking the
-/// first match. If two definitions' keys/tables collide, that resolution
-/// would silently pick one and mask the other with no error -- reject the
-/// ambiguity at parse time instead.
+/// definition's key or its `table`, case-insensitively -- matching SQLite's
+/// own identifier resolution (`compile::find_definition`) -- taking the
+/// first match. If two definitions' keys/tables collide under that same
+/// case-insensitive rule, that resolution would silently pick one and mask
+/// the other with no error -- reject the ambiguity at parse time instead.
 fn validate_no_collection_ambiguity(policy: &Policy) -> Result<(), PolicyError> {
-    let mut owners: BTreeMap<&str, &str> = BTreeMap::new();
+    let mut owners: BTreeMap<String, &str> = BTreeMap::new();
     for (type_name, def) in &policy.definitions {
         for name in [type_name.as_str(), def.table.as_str()] {
-            match owners.get(name) {
+            let fold = name.to_ascii_lowercase();
+            match owners.get(fold.as_str()) {
                 Some(owner) if *owner != type_name.as_str() => {
                     return Err(PolicyError::Semantic(format!(
                         "'{name}' resolves ambiguously to both definition '{owner}' and \
                          '{type_name}' -- a definition's key or table must not collide with \
-                         another's"
+                         another's, even case-insensitively"
                     )));
                 }
                 Some(_) => {}
                 None => {
-                    owners.insert(name, type_name.as_str());
+                    owners.insert(fold, type_name.as_str());
                 }
             }
         }
@@ -296,6 +298,22 @@ fn validate_permissions(
                 "definition '{type_name}' permission '{perm_name}' declares fields.allow, which \
                  this slice does not enforce (only fields.deny is compiled) -- express the \
                  restriction as fields.deny instead"
+            )));
+        }
+        // `compile_cls`/`strip_masked_fields` treat every `fields.deny`
+        // entry as a flat top-level JSON key (a plain `Map::remove`, no
+        // path parsing). A dotted entry like "profile.ssn" would silently
+        // mask nothing -- the key never exists at the top level -- while
+        // reading as if nested-field masking were supported. Reject it
+        // loudly instead of letting it round-trip as a no-op.
+        if let Some(fields) = &perm.fields
+            && let Some(deny) = &fields.deny
+            && let Some(dotted) = deny.iter().find(|f| f.contains('.'))
+        {
+            return Err(PolicyError::Semantic(format!(
+                "definition '{type_name}' permission '{perm_name}' declares fields.deny entry \
+                 '{dotted}', which looks like a nested field path -- this slice only masks flat \
+                 top-level keys, so a dotted entry would silently mask nothing"
             )));
         }
     }
@@ -628,6 +646,17 @@ mod tests {
     }
 
     #[test]
+    fn rejects_fields_deny_with_a_dotted_nested_path() {
+        let doc = minimal_doc(
+            r#"{"user": {"table": "users", "principal_column": "did", "permissions": {
+                "view_self": {"paths": [["caller"]], "fields": {"deny": ["profile.ssn"]}}
+            }}}"#,
+        );
+        let err = parse_and_validate(&doc).unwrap_err();
+        assert!(matches!(err, PolicyError::Semantic(_)));
+    }
+
+    #[test]
     fn accepts_fields_deny_without_allow() {
         let doc = minimal_doc(
             r#"{"user": {"table": "users", "principal_column": "did", "permissions": {
@@ -661,6 +690,18 @@ mod tests {
             r#"{
                 "orders": {"table": "orders_tbl"},
                 "shipments": {"table": "orders"}
+            }"#,
+        );
+        let err = parse_and_validate(&doc).unwrap_err();
+        assert!(matches!(err, PolicyError::Semantic(_)));
+    }
+
+    #[test]
+    fn rejects_a_definitions_table_colliding_case_insensitively() {
+        let doc = minimal_doc(
+            r#"{
+                "orders": {"table": "orders_tbl"},
+                "shipments": {"table": "ORDERS_TBL"}
             }"#,
         );
         let err = parse_and_validate(&doc).unwrap_err();

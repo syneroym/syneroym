@@ -113,6 +113,60 @@ fn warn_on_policy_collection_mismatch(service_id: &str, policy: &Policy, collect
     }
 }
 
+/// Author-time lint, in the same additive warn-only class as
+/// `warn_on_policy_collection_mismatch`: flags a definition where an
+/// unconditionally-public permission (`paths: []`, compiles to `1=1`) shares
+/// a covering ability with a path-restricted sibling permission, and the two
+/// aren't linked by `includes`. The compiler ORs every covering permission
+/// together (`applicable_permissions`), so a caller holding a generic
+/// ability-scoped capability -- not a named `app/<type>.<permission>` grant
+/// -- that satisfies the restricted permission's ability is also admitted
+/// through the public one, silently widening access past the restricted
+/// permission's own `paths`. Sometimes intended (that's what `includes` is
+/// for, to make it explicit); often a policy-authoring mistake, so it's
+/// worth a loud warning even though nothing here justifies failing the
+/// deploy.
+fn warn_on_ambiguous_public_permission(service_id: &str, policy: &Policy) {
+    for (type_name, def) in &policy.definitions {
+        for (public_name, public_perm) in &def.permissions {
+            if !public_perm.paths.is_empty() {
+                continue;
+            }
+            for (restricted_name, restricted_perm) in &def.permissions {
+                if public_name == restricted_name || restricted_perm.paths.is_empty() {
+                    continue;
+                }
+                if public_perm.includes.contains(restricted_name)
+                    || restricted_perm.includes.contains(public_name)
+                {
+                    continue;
+                }
+                let shares_covering_ability = public_perm.allows.iter().any(|a| {
+                    restricted_perm.allows.iter().any(|b| {
+                        let (a, b) = (Ability(a.clone()), Ability(b.clone()));
+                        a.0 == b.0 || a.entails(&b) || b.entails(&a)
+                    })
+                });
+                if shares_covering_ability {
+                    tracing::warn!(
+                        service_id,
+                        definition = type_name.as_str(),
+                        public_permission = public_name.as_str(),
+                        restricted_permission = restricted_name.as_str(),
+                        "an unconditionally public permission (paths: []) shares a covering \
+                         ability with a path-restricted sibling permission and the two aren't \
+                         linked by `includes` -- any capability admitted for the restricted \
+                         permission is also admitted for the public one, silently granting \
+                         unrestricted access unless callers only ever hold a named \
+                         app/<type>.<permission> capability; link them with `includes` if this is \
+                         intended"
+                    );
+                }
+            }
+        }
+    }
+}
+
 impl ControlPlaneService {
     async fn register_wasm_endpoints(
         &self,
@@ -541,6 +595,7 @@ impl OrchestratorInterface for ControlPlaneService {
         // deploy's `init()` has created its tables. Warn-only in both
         // directions, never a deploy failure.
         if let Some((_, policy)) = &fdae_policy {
+            warn_on_ambiguous_public_permission(&service_id, policy);
             match self.storage_provider.open_service_db(&service_id, &self.key_store).await {
                 Ok(store) => match store.list_collections().await {
                     Ok(collections) => {
@@ -2406,6 +2461,98 @@ mod tests {
             !output.contains("collection=\"widgets\""),
             "a collection with a matching definition must not warn: {output}"
         );
+    }
+
+    #[test]
+    fn test_warn_on_ambiguous_public_permission() {
+        use std::io;
+
+        use tracing_subscriber::prelude::*;
+
+        struct MockWriter {
+            logs: Arc<Mutex<Vec<u8>>>,
+        }
+        impl io::Write for MockWriter {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.logs.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let run = |policy_json: &str| -> String {
+            let logs = Arc::new(Mutex::new(Vec::new()));
+            let logs_clone = logs.clone();
+            let make_writer = move || MockWriter { logs: logs_clone.clone() };
+            let layer = tracing_subscriber::fmt::layer().with_writer(make_writer).with_ansi(false);
+            let subscriber = tracing_subscriber::registry().with(layer);
+            let policy = syneroym_fdae::parse_and_validate(policy_json).unwrap();
+            tracing::subscriber::with_default(subscriber, || {
+                warn_on_ambiguous_public_permission("svc-a", &policy);
+            });
+            String::from_utf8(logs.lock().unwrap().clone()).unwrap()
+        };
+
+        // "audit" is unconditionally public and shares `data-layer/read`
+        // with the path-restricted "view", with no `includes` link between
+        // them -- exactly the shape that silently widens "view" for any
+        // caller holding a generic read capability.
+        let ambiguous = run(r#"{
+                "version": "fdae/v1",
+                "definitions": {
+                    "document": {
+                        "table": "documents",
+                        "relations": {"creator": {"target": "user", "join_column": "creator_uuid"}},
+                        "permissions": {
+                            "view": {"allows": ["data-layer/read"], "paths": [["creator", "caller"]]},
+                            "audit": {"allows": ["data-layer/read"], "paths": []}
+                        }
+                    },
+                    "user": {"table": "users", "principal_column": "did"}
+                }
+            }"#);
+        assert!(
+            ambiguous.contains("public_permission=\"audit\"")
+                && ambiguous.contains("restricted_permission=\"view\""),
+            "an unlinked public/restricted pair sharing an ability should warn: {ambiguous}"
+        );
+
+        // Same shape, but "audit" declares `includes: ["view"]` -- the
+        // author made the relationship explicit, so no warning.
+        let linked = run(r#"{
+                "version": "fdae/v1",
+                "definitions": {
+                    "document": {
+                        "table": "documents",
+                        "relations": {"creator": {"target": "user", "join_column": "creator_uuid"}},
+                        "permissions": {
+                            "view": {"allows": ["data-layer/read"], "paths": [["creator", "caller"]]},
+                            "audit": {"allows": ["data-layer/read"], "paths": [], "includes": ["view"]}
+                        }
+                    },
+                    "user": {"table": "users", "principal_column": "did"}
+                }
+            }"#);
+        assert!(linked.is_empty(), "an explicit `includes` link must not warn: {linked}");
+
+        // "audit" and "view" don't share a covering ability at all (write
+        // vs. read, and neither entails the other) -- no warning.
+        let disjoint = run(r#"{
+                "version": "fdae/v1",
+                "definitions": {
+                    "document": {
+                        "table": "documents",
+                        "relations": {"creator": {"target": "user", "join_column": "creator_uuid"}},
+                        "permissions": {
+                            "view": {"allows": ["rpc/move"], "paths": [["creator", "caller"]]},
+                            "audit": {"allows": ["data-layer/read"], "paths": []}
+                        }
+                    },
+                    "user": {"table": "users", "principal_column": "did"}
+                }
+            }"#);
+        assert!(disjoint.is_empty(), "disjoint abilities must not warn: {disjoint}");
     }
 
     /// M3B Slice 7: `deploy()` parses `http_routes` out of `custom_config`

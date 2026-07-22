@@ -480,6 +480,34 @@ async fn policy_absent_definition_is_unfiltered_when_not_strict() {
     assert_eq!(outcome.value.records.len(), 1);
 }
 
+/// Regression: a caller respelling the collection's case must not fall
+/// through to the "no definition for this collection" unfiltered path.
+/// SQLite resolves table names case-insensitively, so `FROM DOCUMENTS` and
+/// `FROM documents` hit the exact same physical table -- prior to the fix,
+/// `find_definition`'s case-sensitive lookup would miss `single_hop_policy`'s
+/// "document" definition for a differently-cased `collection` argument and
+/// return `Ok(None)` ("policy is silent, unfiltered"), skipping RLS
+/// entirely and skipping the capability check that precedes it too (`Ok(None)`
+/// is returned before any capability is even consulted). Mallory holds *no*
+/// capabilities at all -- the strongest demonstration that the bypass didn't
+/// depend on what she was granted, only on how she spelled the collection.
+#[tokio::test]
+async fn differently_cased_collection_name_does_not_bypass_the_sieve() {
+    let store = setup_store().await;
+    seed_creator_docs(store.as_ref()).await;
+    let policy = single_hop_policy();
+    let mallory = session("did:key:mallory", vec![]);
+    let auth = QueryAuth { policy: &policy, session: &mallory, service_id: SERVICE_ID };
+
+    let opts = QueryOptions { filter: None, limit: None, cursor: None };
+    let outcome = store.query("DOCUMENTS", &opts, Some(&auth)).await.unwrap();
+    assert!(
+        outcome.value.records.is_empty(),
+        "a differently-cased collection name must still resolve to the 'document' definition and \
+         deny an uncapable caller, not silently return every row"
+    );
+}
+
 /// Plan §11's "adversarial `subject_did`/caveat bound not interpolated
 /// (covered in `fdae`; add a data_db end-to-end row)" -- `fdae`'s own unit
 /// tests already prove `compile_read` binds these as `?` params; this proves

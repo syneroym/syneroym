@@ -101,8 +101,17 @@ pub fn compile_read(
     if applicable.is_empty() {
         let holding_caps: Vec<&Capability> =
             session.capabilities.iter().filter(|cap| cap.grants(&resource, operation)).collect();
+        // The default permission is only a fallback *within the same
+        // grant-intersection contract* every other route obeys: its own
+        // `allows` must cover `operation`, or a caller holding an unrelated
+        // (e.g. write) capability could ride a read-only (or ability-less)
+        // default permission's paths straight through a write-mode check.
+        let default_covers_operation =
+            def.default.as_ref().and_then(|name| def.permissions.get(name)).is_some_and(|perm| {
+                perm.allows.iter().any(|a| Ability(a.clone()).entails(operation))
+            });
         match &def.default {
-            Some(default_perm) if !holding_caps.is_empty() => {
+            Some(default_perm) if !holding_caps.is_empty() && default_covers_operation => {
                 applicable.insert(default_perm.clone());
                 for cap in holding_caps {
                     push_unique(&mut entitling_caps, cap);
@@ -133,7 +142,7 @@ pub fn compile_read(
         params.push(Value::Text(id.clone()));
     }
 
-    let masked_fields = compile_cls(def, &applicable, &entitling_caps);
+    let masked_fields = compile_cls(def, &applicable, &entitling_caps)?;
     let where_caveats: Vec<Json> = entitling_caps
         .iter()
         .filter_map(|cap| cap.caveats.as_ref()?.get("where").cloned())
@@ -142,11 +151,20 @@ pub fn compile_read(
     Ok(Some(CompiledSieve { where_clause, params, masked_fields, where_caveats }))
 }
 
+/// Matches case-insensitively (ASCII fold), mirroring SQLite's own
+/// identifier resolution: an unquoted table name is case-insensitive, so a
+/// case-sensitive lookup here would let a caller name the same physical
+/// table under a spelling this policy doesn't recognize and fall through to
+/// the unfiltered "no definition" path while the query still hits the real,
+/// policy-governed table.
 fn find_definition<'a>(policy: &'a Policy, collection: &str) -> Option<(&'a str, &'a Definition)> {
     policy
         .definitions
         .iter()
-        .find(|(key, def)| key.as_str() == collection || def.table == collection)
+        .find(|(key, def)| {
+            key.as_str().eq_ignore_ascii_case(collection)
+                || def.table.eq_ignore_ascii_case(collection)
+        })
         .map(|(key, def)| (key.as_str(), def))
 }
 
@@ -251,7 +269,7 @@ fn compile_cls(
     def: &Definition,
     applicable: &BTreeSet<String>,
     entitling_caps: &[&Capability],
-) -> Vec<String> {
+) -> Result<Vec<String>, PolicyError> {
     let mut denied: BTreeSet<String> = BTreeSet::new();
 
     for pname in applicable {
@@ -270,7 +288,20 @@ fn compile_cls(
         denied.extend(deny.iter().filter_map(|v| v.as_str().map(str::to_string)));
     }
 
-    denied.into_iter().collect()
+    // A dotted entry (from a runtime capability caveat, so it can't be
+    // rejected at policy parse time the way a policy `fields.deny` entry
+    // is) would silently mask nothing: `strip_masked_fields` only removes
+    // flat top-level keys. Fail closed rather than let it round-trip as an
+    // unenforced no-op.
+    if let Some(dotted) = denied.iter().find(|f| f.contains('.')) {
+        return Err(PolicyError::Semantic(format!(
+            "capability caveat fields.deny entry '{dotted}' looks like a nested field path -- \
+             this slice only masks flat top-level keys, so a dotted entry would silently mask \
+             nothing"
+        )));
+    }
+
+    Ok(denied.into_iter().collect())
 }
 
 fn compile_permission(
@@ -1512,6 +1543,7 @@ mod tests {
                         "default": "fallback",
                         "permissions": {
                             "fallback": {
+                                "allows": ["data-layer/read"],
                                 "paths": [["creator", "caller"]]
                             }
                         }
@@ -1521,12 +1553,6 @@ mod tests {
             }"#,
         )
         .unwrap();
-        // "fallback" declares no `allows` at all, so `applicable_permissions`
-        // always skips it (its `covering_abilities` filter is empty) --
-        // it is reachable *only* through `default`'s `holds_operation`
-        // check, which is what isolates this test to that branch
-        // specifically (the bug: `holds_operation` used to be a bare bool,
-        // discarding which capability satisfied it).
         let caveat_cap = Capability {
             with: ResourceUri::service(SERVICE_ID, SERVICE_ID),
             can: Ability(Ability::DATA_LAYER_READ.to_string()),
@@ -1545,5 +1571,104 @@ mod tests {
         .unwrap();
         assert_eq!(sieve.where_caveats, vec![json!({"region": "EU"})]);
         assert_eq!(sieve.masked_fields, vec!["ssn".to_string()]);
+    }
+
+    #[test]
+    fn default_permission_not_covering_operation_is_denied() {
+        // Regression for the escalation this review found: `default` used
+        // to apply regardless of whether its own permission's `allows`
+        // covered the requested operation, so a caller holding *only* a
+        // write capability could ride a read-only (or ability-less)
+        // default permission's paths straight through a write-mode check.
+        let policy = parse_and_validate(
+            r#"{
+                "version": "fdae/v1",
+                "definitions": {
+                    "document": {
+                        "table": "documents",
+                        "relations": {"creator": {"target": "user", "join_column": "creator_uuid"}},
+                        "default": "fallback",
+                        "permissions": {
+                            "fallback": {
+                                "allows": ["data-layer/read"],
+                                "paths": [["creator", "caller"]]
+                            }
+                        }
+                    },
+                    "user": {"table": "users", "principal_column": "did"}
+                }
+            }"#,
+        )
+        .unwrap();
+        let write_cap = Capability {
+            with: ResourceUri::service(SERVICE_ID, SERVICE_ID),
+            can: Ability(Ability::DATA_LAYER_WRITE.to_string()),
+            caveats: None,
+        };
+        let alice = session("did:key:alice", vec![write_cap]);
+        let sieve = compile_read(
+            &policy,
+            "document",
+            &alice,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_WRITE.to_string()),
+            Mode::PointInTime { id: "doc-1".to_string() },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            sieve.where_clause, "0=1",
+            "a write-mode check must not fall through a read-only default permission"
+        );
+    }
+
+    #[test]
+    fn collection_lookup_is_case_insensitive_like_sqlite() {
+        // Regression for the bypass this review found: SQLite resolves
+        // table names case-insensitively, so a case-sensitive
+        // `find_definition` let a caller spell the collection differently
+        // than the policy and fall through to the unfiltered "no
+        // definition" path against the *same* physical table.
+        let policy = single_hop_policy();
+        let alice = session("did:key:alice", vec![read_cap(Some("document"))]);
+        let sieve = compile_read(
+            &policy,
+            "DOCUMENT",
+            &alice,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::Filter,
+        )
+        .unwrap();
+        assert!(
+            sieve.is_some(),
+            "a differently-cased collection name must still resolve to the same definition, not \
+             fall through to unfiltered"
+        );
+    }
+
+    #[test]
+    fn caveat_fields_deny_with_a_dotted_path_fails_closed() {
+        // Regression: a runtime capability caveat can't be rejected at
+        // policy parse time the way a policy `fields.deny` entry is, but a
+        // dotted entry would silently mask nothing the same way -- fail
+        // the compile instead of returning an unenforced mask.
+        let policy = single_hop_policy();
+        let cap = Capability {
+            with: resource("document"),
+            can: Ability(Ability::DATA_LAYER_READ.to_string()),
+            caveats: Some(json!({"fields": {"deny": ["profile.ssn"]}})),
+        };
+        let alice = session("did:key:alice", vec![cap]);
+        let err = compile_read(
+            &policy,
+            "document",
+            &alice,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::Filter,
+        )
+        .unwrap_err();
+        assert!(matches!(err, PolicyError::Semantic(_)));
     }
 }
