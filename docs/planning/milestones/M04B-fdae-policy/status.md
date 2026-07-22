@@ -1042,3 +1042,205 @@ post-commit review.
   (`coordinator-iroh`, `mqtt-broker`, `sdk`'s `connect_timeout`,
   `substrate`'s HTTP/messaging/stream e2e binaries) reproduce identically;
   confirmed unrelated by the sandbox-disabled runs above.
+
+### Post-commit review, third pass (2026-07-22)
+
+A full-slice inline review of Phases 1-4 together (not a single commit's
+diff), independently re-verified finding-by-finding against current code
+before addressing. One Critical, eight High, and a page of Medium/Low
+findings; disposition below. `C1`/`H1`-`H8` naming is the reviewing
+session's own, kept here for continuity with that review rather than
+renumbered into this file's `F`/`N` sequence.
+
+**Addressed, code changed (commit 1 — `crates/fdae`, `crates/data_db`):**
+
+- **C1 (Critical) — a case-variant collection name disabled RLS/CLS
+  entirely.** `find_definition` matched a query's `collection` string
+  against a definition's key/table case-*sensitively*, but SQLite resolves
+  unquoted table names case-*insensitively* -- `query("DOCUMENTS")` against
+  a policy defining `"documents"` found no definition, took the
+  policy-absent "unfiltered" branch, and still hit the real, governed
+  table. Fixed by matching case-insensitively (`eq_ignore_ascii_case`),
+  with `validate_no_collection_ambiguity` updated to the same
+  case-insensitive rule so two definitions can't collide under it. New
+  tests: `compile::tests::collection_lookup_is_case_insensitive_like_sqlite`,
+  `policy::tests::rejects_a_definitions_table_colliding_case_insensitively`,
+  and an end-to-end `data_db` regression
+  (`differently_cased_collection_name_does_not_bypass_the_sieve`) proving
+  it against real SQLite with a zero-capability caller.
+- **H1 (High) — `default:` escalation past its own `allows`.** The
+  `default` permission fallback checked only that some held capability
+  granted the requested operation, never that `default`'s own `allows`
+  covered it -- a caller holding an unrelated (e.g. write) capability could
+  ride a read-only default permission's paths through a write-mode check.
+  Fixed by gating the fallback on `default_perm.allows` entailing
+  `operation`, the same grant∩policy contract every other permission route
+  already obeys. New test:
+  `compile::tests::default_permission_not_covering_operation_is_denied`.
+- **H3 (High) — a dotted `fields.deny` entry silently masked nothing.**
+  `strip_masked_fields` only ever removes a flat top-level JSON key;
+  `"profile.ssn"` passed schema validation, `compile_cls` copied it
+  verbatim, and the anti-oracle filter guard independently collapsed a
+  matching filter key to `"profile"` (`referenced_top_level_fields` splits
+  on `.`) -- so neither the mask nor the oracle guard ever matched.
+  Fixed at both layers: a policy `fields.deny` entry containing `.` is now
+  a parse-time `PolicyError::Semantic` (same "loud error, not a silent
+  no-op" treatment `fields.allow` already gets); a capability *caveat*'s
+  `fields.deny` (a runtime value, not parse-time checkable) gets the same
+  rejection inside `compile_cls`, failing the compile closed instead. New
+  tests: `policy::tests::rejects_fields_deny_with_a_dotted_nested_path`,
+  `compile::tests::caveat_fields_deny_with_a_dotted_path_fails_closed`.
+
+**Addressed, code changed (commit 2 — `crates/control_plane`,
+`crates/sandbox_wasm`):**
+
+- **H4 (High) — unbounded path-hop recursion could abort the process.**
+  `compile::emit_chain` recurses once per relation hop in a path with no
+  depth guard of its own, and neither the schema nor `policy.rs` capped
+  hop count -- a policy author (accidentally or otherwise) could drive a
+  path deep enough to blow the Rust stack, a `SIGABRT` that takes down
+  every service on the substrate, not just the misconfigured one. Fixed
+  with a `MAX_PATH_HOPS = 32` cap in `policy::validate_path` (rejected at
+  parse time, before any query ever compiles against the policy) and a
+  matching `maxItems: 33` on the schema's `paths` item, kept as two
+  independent gates since `Policy`'s public fields let a caller construct
+  one bypassing `parse_and_validate` entirely (see Medium items, not
+  itself closed this pass). New tests:
+  `rejects_a_path_exceeding_the_max_hop_count_via_schema` and
+  `..._at_the_semantic_layer_too` (the latter calls `validate_semantics`
+  directly on a hand-built `Policy`, proving the semantic gate holds
+  independently of the schema one).
+- **H6 (High) — the TCP deploy arm had no FDAE rollback.**
+  `deploy_wasm_service`/`deploy_container_service` both take
+  `previous_fdae_policy`/`new_gen` and roll back on failure;
+  `deploy_tcp_service` took neither and let `registry.register`'s error
+  propagate bare -- a failed TCP redeploy left the new policy persisted
+  and the config generation bumped, same shape H1/H2's rollback gaps had
+  already closed for the other two arms. Fixed by giving it the identical
+  parameters and rollback calls. New test:
+  `test_deploy_tcp_endpoint_registration_failure_rolls_back_gen_and_policy`
+  (reuses the existing `FailingEndpointStorage` fixture to force the
+  failure deterministically).
+- **H7 (High) — rollback restored the DB row but never invalidated the
+  WASM engine's policy cache.** `rollback_fdae_policy` only touched
+  `storage_provider`; a failed `deploy_wasm_service` attempt can reach it
+  *after* `compile_and_cache_wasm`/`resolve_fdae_policy` already cached
+  the new (about-to-be-rolled-back) policy, leaving the engine serving it
+  for the rest of the process's uptime while storage says otherwise. Fixed
+  by having `rollback_fdae_policy` also call `app_sandbox_engine.
+  stop_wasm(service_id)` -- its cache-eviction side effect, safe to call
+  unconditionally since it no-ops for a `service_id` the engine never
+  cached anything for (the TCP/container rollback paths). Not covered by a
+  new automated assertion: `AppSandboxEngine`'s resolved-policy cache is a
+  private field of a different crate, so nothing outside `sandbox_wasm`
+  can observe eviction directly without a real data-layer-touching WASM
+  fixture exercising the difference end to end, which is a materially
+  larger undertaking than this fix; the underlying `stop_wasm` eviction
+  mechanism itself is independently covered by
+  `engine::tests::fdae_policy_cache_evicted_on_stop_wasm_and_recompile`,
+  and the full workspace suite (including that test) stayed green with
+  this change in place.
+- **H8 (High) — a transient storage error was cached as "no policy."**
+  `resolve_fdae_policy`'s `Err` branch (a storage read failure, e.g. one
+  `SQLITE_BUSY`) collapsed to `None` and was cached exactly like a
+  genuine absence, silently disabling FDAE for the service until the next
+  redeploy over what may be a one-off blip -- in contrast to the adjacent
+  generation-race branch, which already declines to cache an uncertain
+  read. Fixed by returning uncached (an early `return None`, skipping the
+  `fdae_policies.insert`) on a storage error specifically, leaving the
+  malformed-policy-in-storage case (a different, genuinely
+  fail-closed-absent scenario, per that branch's own doc comment)
+  unchanged. New test:
+  `engine::tests::fdae_policy_transient_storage_error_is_not_cached`
+  (a `FlakyStorageProvider` fixture fails `load_fdae_policy` exactly
+  once, then succeeds; asserts the first call resolves `None` uncached
+  and a retry resolves and caches the real policy).
+
+**Reviewed and disagreed on remediation shape, code changed differently
+than proposed (H2):**
+
+- **H2 (High, review's framing) — "platform-ability grants select every
+  covering branch; `default:` is never consulted."** The underlying
+  mechanism is real and reviewed as such: a capability scoped to a
+  platform ability (not a named `app/<type>.<permission>` grant) is
+  admitted through *every* permission whose `allows` covers that ability
+  (`applicable_permissions` ORs them together), so an unconditionally
+  public sibling permission (`paths: []`) silently widens a
+  path-restricted one sharing the same ability. But this is ADR-0017's own
+  resolved, tested design (the direct route for a platform-ability
+  capability), not a compiler bug -- fixing it in `applicable_permissions`
+  would abandon the grant∩policy intersection contract entirely and break
+  the documented entailment case (a write-capable grant also satisfying a
+  read check, `write_capable_permission_also_covers_a_read_check`). The
+  review's own framing ("`default:` is never consulted") is also
+  imprecise: `default` is a separate fallback, reachable only when *no*
+  permission's `allows` covers the operation at all, and this finding
+  doesn't route through it. Addressed two ways instead of a compiler
+  change: (1) an additive, warn-only author-time lint,
+  `warn_on_ambiguous_public_permission`, alongside `strict:`'s own
+  deploy-time check, flagging exactly this shape (public + restricted
+  permissions sharing a covering ability with no `includes` link) so an
+  author can link them or scope capability issuance to the named
+  permission instead; (2) ADR-0017's default-permission bullet tightened
+  to state explicitly when it's consulted and that it never overrides
+  what other permissions grant, plus a new bullet recording this trade
+  as a deliberate decision rather than an oversight. New test:
+  `service::orchestration::tests::test_warn_on_ambiguous_public_permission`
+  (fires on an unlinked public/restricted pair sharing an ability, silent
+  when `includes`-linked, silent when abilities are disjoint).
+
+**Reviewed and confirmed, not yet addressed (open):**
+
+- **H5 (High) — the recursive CTE's `UNION ALL` plus a non-unique
+  `from_key`/`to_key` join column lets row count blow up combinatorially
+  (branching factor `b`, depth-64 bound → up to `b^64` rows) instead of
+  being deduplicated, since `MAX_RECURSION_DEPTH` bounds path *length*,
+  not row count.** Confirmed structurally (the CTE's `UNION ALL` and the
+  guest-writable, non-unique join columns are both real), but the review's
+  own suggested fix -- swap to plain `UNION` -- almost certainly does not
+  work as stated: the CTE's rows carry `depth` and `seen` (the full
+  visited-path string), so two branches reaching the same node rarely
+  produce byte-identical tuples for `UNION`'s dedup to collapse. A real
+  fix needs the recursion restructured to dedupe on visited `id` (or
+  `id`+shortest-`depth`) independent of path, not a one-keyword swap --
+  logged here as open rather than attempted as part of this pass. The
+  `FDAE_MAX_VM_OPS` progress-handler watchdog (`install_watchdog`, wraps
+  every sieved query including the recursive-CTE ones) does bound
+  worst-case compute per query today, so the practical impact is
+  reader-pool resource exhaustion under concurrent abuse of a
+  guest-writable relation, not a true unbounded hang -- lower urgency than
+  it would be without that backstop, but still open. Track as a follow-up
+  before this compiler shape is relied on for a policy with guest-writable
+  recursive relations at any real scale.
+- **Medium/Low findings from the same review, not yet addressed:** `check_
+  access`'s no-sieve path ignores `operation` (`do_check_access`,
+  `sqlite.rs`); `delete_many` lacks the CLS anti-oracle predicate guard
+  `do_query` has (`do_delete_many`, `sqlite.rs`); `drop-collection`/
+  `create-collection` carry no `data-layer/admin` capability gate while
+  `execute-ddl`/`query-raw` do (`synsvc_native.rs`); the path-guard TOCTOU
+  in `reject_path_escape` (computes `resolved`, then reads the original
+  relative path); a non-object payload fails an entire query page instead
+  of just that record (`host_capabilities.rs`); no size bound on a policy
+  document before it's read/persisted/re-parsed per cache miss
+  (`orchestration.rs`); `Policy`'s public fields/public `Deserialize` let
+  a caller bypass `parse_and_validate`'s schema+semantic gates entirely
+  (the residual H4's defense-in-depth fix above is deliberately guarding
+  against); `ResourceUri::service(service_id, service_id)` in `compile.rs`
+  diverges from the workspace's `app_instance.unwrap_or(service_id)`
+  convention used elsewhere. Recorded here rather than silently dropped;
+  none attempted this pass.
+
+### Verification evidence (post third-pass review)
+
+- `cargo +nightly fmt --check --all` — clean.
+- `cargo clippy --workspace --all-targets --all-features` — zero warnings.
+- `cargo test -p syneroym-fdae` — 50 passed, 0 failed.
+- `cargo test -p syneroym-data-db` — 133 passed, 0 failed.
+- `cargo test -p syneroym-control-plane` — 41 passed, 0 failed.
+- `cargo test -p syneroym-sandbox-wasm` — 7 (FDAE-cache-specific) + full
+  crate suite passed, 0 failed.
+- `cargo test --workspace` — clean except the same pre-existing,
+  environmental `coordinator-iroh::connection_limit` socket-bind failure
+  (`Failed to bind server socket to 127.0.0.1:0: Operation not permitted`)
+  every prior phase's verification has already recorded as sandbox-caused,
+  not code-caused.

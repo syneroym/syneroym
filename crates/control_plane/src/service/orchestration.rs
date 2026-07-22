@@ -207,6 +207,18 @@ impl ControlPlaneService {
     /// restore the previous value rather than unconditionally delete, in
     /// both directions (a new/changed policy, or the manifest dropping the
     /// block entirely). Best-effort, same as `rollback_config_generation`.
+    ///
+    /// Also evicts the WASM engine's own resolved-policy cache
+    /// (`stop_wasm`'s side effect, alongside the component cache it exists
+    /// to evict) for `service_id`. A failed `deploy_wasm_service` attempt
+    /// can reach this point *after* `compile_and_cache_wasm`/
+    /// `resolve_fdae_policy` already cached the new (about-to-be-rolled-
+    /// back) policy -- restoring the DB row alone would leave the engine
+    /// serving that cached policy for the rest of the process's uptime,
+    /// diverging from what storage now says. Safe to call unconditionally:
+    /// `stop_wasm` no-ops for a `service_id` the engine never cached
+    /// anything for (the TCP/container rollback paths, and the ordinary
+    /// case of nothing having been cached yet).
     async fn rollback_fdae_policy(&self, service_id: &str, previous: &Option<String>) {
         let result = match previous {
             Some(doc) => self.storage_provider.save_fdae_policy(service_id, doc).await,
@@ -215,6 +227,13 @@ impl ControlPlaneService {
         if let Err(e) = result {
             tracing::error!(
                 "Failed to roll back FDAE policy for service {} after deploy error: {}",
+                service_id,
+                e
+            );
+        }
+        if let Err(e) = self.app_sandbox_engine.stop_wasm(service_id).await {
+            tracing::error!(
+                "Failed to evict cached FDAE policy for service {} after deploy error: {}",
                 service_id,
                 e
             );
@@ -249,13 +268,16 @@ impl ControlPlaneService {
         &self,
         service_id: &str,
         tcp_manifest: &TcpManifest,
+        new_gen: u64,
+        previous_fdae_policy: &Option<String>,
     ) -> Result<(), String> {
         for endpoint in &tcp_manifest.endpoints {
             info!(
                 "Deploying TCP service {} endpoint {}: {}:{}",
                 service_id, endpoint.interface_name, endpoint.host, endpoint.port
             );
-            self.registry
+            if let Err(e) = self
+                .registry
                 .register(
                     service_id.to_string(),
                     endpoint.interface_name.clone(),
@@ -265,7 +287,11 @@ impl ControlPlaneService {
                     },
                 )
                 .await
-                .map_err(|e| format!("Endpoint registration failed: {e}"))?;
+            {
+                self.rollback_config_generation(service_id, new_gen).await;
+                self.rollback_fdae_policy(service_id, previous_fdae_policy).await;
+                return Err(format!("Endpoint registration failed: {e}"));
+            }
         }
         Ok(())
     }
@@ -574,7 +600,8 @@ impl OrchestratorInterface for ControlPlaneService {
                 .await?;
             }
             WitServiceType::Tcp(tcp_manifest) => {
-                self.deploy_tcp_service(&service_id, tcp_manifest).await?;
+                self.deploy_tcp_service(&service_id, tcp_manifest, new_gen, &previous_fdae_policy)
+                    .await?;
             }
             WitServiceType::Container(container_manifest) => {
                 self.deploy_container_service(
@@ -2078,6 +2105,149 @@ mod tests {
             gen_after, gen_before,
             "a register_wasm_endpoints failure must roll back the config generation this deploy \
              attempt saved, not leave it in force alongside a rolled-back policy"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_deploy_tcp_endpoint_registration_failure_rolls_back_gen_and_policy() {
+        // Regression: `deploy_tcp_service` used to have no rollback at all
+        // -- a failed TCP redeploy left the new policy (P2) persisted and
+        // the config generation bumped, with the previous, still-running
+        // version's policy row silently replaced. Same shape as the
+        // already-covered WASM/container arms, using the same
+        // `FailingEndpointStorage` fixture to force the failure
+        // deterministically instead of a real network error.
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+            )
+            .await
+            .unwrap(),
+        );
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+        let registry = EndpointRegistry::new(Arc::new(FailingEndpointStorage {
+            inner: MockStorage::new(),
+            fail_interface: "fails-to-register".to_string(),
+        }))
+        .await
+        .unwrap();
+
+        let native_dispatch = NativeDispatchRegistry::default();
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider.clone(),
+            blob_provider.clone(),
+            messaging_broker.clone(),
+            native_dispatch.clone(),
+            Arc::new(DashMap::new()),
+        )
+        .await
+        .unwrap();
+
+        let caller = node_wide_caller("test-caller");
+
+        // First, a successful TCP deploy with policy P1, using an interface
+        // name the registry accepts.
+        let policy_1_filename = format!("test_tcp_rollback_p1_{}.json", std::process::id());
+        fs::write(&policy_1_filename, r#"{"version": "fdae/v1", "definitions": {}}"#).unwrap();
+        let first = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema_path: None,
+                rotation_policy: None,
+                fdae_policy_path: Some(policy_1_filename.clone()),
+            },
+            service_type: WitServiceType::Tcp(TcpManifest {
+                endpoints: vec![NetworkEndpoint {
+                    interface_name: "safe-interface".to_string(),
+                    host: "127.0.0.1".to_string(),
+                    port: 9000,
+                }],
+            }),
+            registry_certificate: None,
+        };
+        service.deploy("tcp_rollback_svc".to_string(), first, &caller).await.unwrap();
+        let _ = fs::remove_file(&policy_1_filename);
+        assert_eq!(
+            storage_provider.load_fdae_policy("tcp_rollback_svc").await.unwrap(),
+            Some(r#"{"version": "fdae/v1", "definitions": {}}"#.to_string())
+        );
+        let (gen_before, _) = storage_provider
+            .get_latest_config_generation("tcp_rollback_svc")
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Re-deploy the same TCP service with a new policy P2, declaring the
+        // interface name the registry is rigged to reject.
+        let policy_2_filename = format!("test_tcp_rollback_p2_{}.json", std::process::id());
+        fs::write(
+            &policy_2_filename,
+            r#"{"version": "fdae/v1", "strict": true, "definitions": {}}"#,
+        )
+        .unwrap();
+        let second = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema_path: None,
+                rotation_policy: None,
+                fdae_policy_path: Some(policy_2_filename.clone()),
+            },
+            service_type: WitServiceType::Tcp(TcpManifest {
+                endpoints: vec![NetworkEndpoint {
+                    interface_name: "fails-to-register".to_string(),
+                    host: "127.0.0.1".to_string(),
+                    port: 9001,
+                }],
+            }),
+            registry_certificate: None,
+        };
+        let result = service.deploy("tcp_rollback_svc".to_string(), second, &caller).await;
+        let _ = fs::remove_file(&policy_2_filename);
+        assert!(result.is_err(), "TCP endpoint registration must fail: {result:?}");
+        assert!(result.unwrap_err().contains("Endpoint registration failed"));
+
+        assert_eq!(
+            storage_provider.load_fdae_policy("tcp_rollback_svc").await.unwrap(),
+            Some(r#"{"version": "fdae/v1", "definitions": {}}"#.to_string()),
+            "a failed TCP redeploy must restore the previous policy, not leave the new one (P2) \
+             in force"
+        );
+        let (gen_after, _) = storage_provider
+            .get_latest_config_generation("tcp_rollback_svc")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            gen_after, gen_before,
+            "a failed TCP redeploy must roll back the config generation this attempt saved"
         );
     }
 

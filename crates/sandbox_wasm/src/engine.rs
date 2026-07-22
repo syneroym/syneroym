@@ -655,7 +655,12 @@ impl AppSandboxEngine {
     /// means the DB was tampered with or the crate's schema moved since
     /// deploy, and the alternative (denying every read) would take a
     /// previously-working service down on a substrate upgrade rather than on
-    /// the bad edit that actually caused it.
+    /// the bad edit that actually caused it. A storage *read* failure is a
+    /// different case and is **not** cached at all (see the `Err` arm
+    /// below): unlike a genuinely absent or malformed row, it says nothing
+    /// about whether a policy exists, so treating it as "no policy" and
+    /// remembering that would silently disable FDAE for the service until
+    /// the next redeploy over what may be a one-off transient error.
     async fn resolve_fdae_policy(&self, service_id: &str) -> Option<Arc<Policy>> {
         if let Some(cached) = self.fdae_policies.get(service_id) {
             return cached.clone();
@@ -681,8 +686,16 @@ impl AppSandboxEngine {
             },
             Ok(None) => None,
             Err(e) => {
+                // A transient storage failure (a busy connection under load,
+                // say) is not "this service has no policy" -- caching it as
+                // such would silently disable FDAE for the service for the
+                // rest of the process's uptime on one blip. Return uncached
+                // instead, the same "don't trust an uncertain read" treatment
+                // the generation-race branch below gives a load that lost to
+                // a concurrent eviction, so the next call retries against
+                // storage rather than serving this one's answer forever.
                 error!("Failed to load FDAE policy for service {}: {}", service_id, e);
-                None
+                return None;
             }
         };
         let generation_after = self.fdae_policy_generation.get(service_id).map(|g| *g).unwrap_or(0);
@@ -1450,6 +1463,147 @@ mod tests {
             "a load that raced a concurrent eviction must not repopulate the cache -- doing so \
              would silently undo the eviction and serve a possibly-stale policy indefinitely"
         );
+    }
+
+    /// Wraps a real `StorageProvider`, failing `load_fdae_policy` exactly
+    /// once (then delegating normally) -- simulates a transient storage
+    /// error, like a busy connection under load, that clears up on retry.
+    struct FlakyStorageProvider {
+        inner: Arc<dyn StorageProvider>,
+        fail_next: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl StorageProvider for FlakyStorageProvider {
+        async fn open_service_db(
+            &self,
+            service_id: &str,
+            key_store: &Arc<KeyStore>,
+        ) -> anyhow::Result<Box<dyn ServiceStore>> {
+            self.inner.open_service_db(service_id, key_store).await
+        }
+        async fn rotate_kek(
+            &self,
+            key_store: &Arc<KeyStore>,
+            new_kek: [u8; 32],
+        ) -> anyhow::Result<()> {
+            self.inner.rotate_kek(key_store, new_kek).await
+        }
+        async fn load_service_dek(
+            &self,
+            service_id: &str,
+            key_store: &Arc<KeyStore>,
+        ) -> anyhow::Result<Option<zeroize::Zeroizing<[u8; 32]>>> {
+            self.inner.load_service_dek(service_id, key_store).await
+        }
+        async fn service_exists(&self, service_id: &str) -> anyhow::Result<bool> {
+            self.inner.service_exists(service_id).await
+        }
+        async fn save_config_generation(
+            &self,
+            service_id: &str,
+            config_blob: &str,
+        ) -> anyhow::Result<u64> {
+            self.inner.save_config_generation(service_id, config_blob).await
+        }
+        async fn delete_config_generation(
+            &self,
+            service_id: &str,
+            generation: u64,
+        ) -> anyhow::Result<()> {
+            self.inner.delete_config_generation(service_id, generation).await
+        }
+        async fn get_config_generation(
+            &self,
+            service_id: &str,
+            generation: u64,
+        ) -> anyhow::Result<Option<String>> {
+            self.inner.get_config_generation(service_id, generation).await
+        }
+        async fn get_latest_config_generation(
+            &self,
+            service_id: &str,
+        ) -> anyhow::Result<Option<(u64, String)>> {
+            self.inner.get_latest_config_generation(service_id).await
+        }
+        async fn save_messaging_subscription(
+            &self,
+            service_id: &str,
+            topic: &str,
+        ) -> anyhow::Result<()> {
+            self.inner.save_messaging_subscription(service_id, topic).await
+        }
+        async fn delete_messaging_subscription(
+            &self,
+            service_id: &str,
+            topic: &str,
+        ) -> anyhow::Result<()> {
+            self.inner.delete_messaging_subscription(service_id, topic).await
+        }
+        async fn delete_all_messaging_subscriptions_for_service(
+            &self,
+            service_id: &str,
+        ) -> anyhow::Result<()> {
+            self.inner.delete_all_messaging_subscriptions_for_service(service_id).await
+        }
+        async fn list_all_messaging_subscriptions(&self) -> anyhow::Result<Vec<(String, String)>> {
+            self.inner.list_all_messaging_subscriptions().await
+        }
+        async fn save_fdae_policy(
+            &self,
+            service_id: &str,
+            policy_json: &str,
+        ) -> anyhow::Result<()> {
+            self.inner.save_fdae_policy(service_id, policy_json).await
+        }
+        async fn load_fdae_policy(&self, service_id: &str) -> anyhow::Result<Option<String>> {
+            if self.fail_next.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                anyhow::bail!("simulated transient storage failure");
+            }
+            self.inner.load_fdae_policy(service_id).await
+        }
+        async fn delete_fdae_policy(&self, service_id: &str) -> anyhow::Result<()> {
+            self.inner.delete_fdae_policy(service_id).await
+        }
+    }
+
+    /// A transient storage error (e.g. one `SQLITE_BUSY`) must not be
+    /// remembered as "this service has no policy" -- unlike a genuinely
+    /// absent or malformed row, it says nothing about whether a policy
+    /// exists, and caching it as absent would silently disable FDAE for the
+    /// service until the next redeploy over what may be a one-off blip.
+    #[tokio::test]
+    async fn fdae_policy_transient_storage_error_is_not_cached() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let real_provider: Arc<dyn StorageProvider> =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        real_provider
+            .save_fdae_policy("svc-flaky", r#"{"version": "fdae/v1", "definitions": {}}"#)
+            .await
+            .unwrap();
+        let flaky_provider: Arc<dyn StorageProvider> = Arc::new(FlakyStorageProvider {
+            inner: real_provider,
+            fail_next: std::sync::atomic::AtomicBool::new(true),
+        });
+        let app_engine = test_app_engine(flaky_provider);
+
+        // First resolution hits the simulated transient failure.
+        assert!(
+            app_engine.resolve_fdae_policy("svc-flaky").await.is_none(),
+            "a storage error must resolve to None for this call, same as a genuine absence"
+        );
+        assert!(
+            app_engine.fdae_policies.get("svc-flaky").is_none(),
+            "a transient storage error must not be cached as 'no policy'"
+        );
+
+        // The failure was one-shot; a retry reaches real storage and finds
+        // the policy that was there all along.
+        assert!(
+            app_engine.resolve_fdae_policy("svc-flaky").await.is_some(),
+            "a retry after the transient failure clears must resolve the real policy"
+        );
+        assert!(app_engine.fdae_policies.get("svc-flaky").is_some());
     }
 
     /// `prepare_wasm_execution` is the ordinary dispatch path reached from

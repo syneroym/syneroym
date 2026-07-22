@@ -6,6 +6,17 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Deserialize;
 
+/// Upper bound on a path's relation-hop count (excluding the terminal),
+/// matching the schema's `paths` item `maxItems: 33` (32 hops + 1
+/// terminal). `compile::emit_chain` recurses once per hop with no other
+/// depth guard of its own, so an unbounded path would let a policy author
+/// (accidentally or otherwise) drive that recursion deep enough to blow the
+/// Rust stack -- a process abort (`SIGABRT`), not a catchable error, taking
+/// down every service on the substrate, not just the one whose policy this
+/// is. Rejected here, at parse time, rather than left to be discovered at
+/// first query-compile time against a already-deployed policy.
+const MAX_PATH_HOPS: usize = 32;
+
 /// A parsed and validated `fdae/v1` policy document.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -379,6 +390,13 @@ fn validate_path(
              '{terminal}' (expected 'caller' or 'anchor')"
         )));
     }
+    if rel_names.len() > MAX_PATH_HOPS {
+        return Err(PolicyError::Semantic(format!(
+            "definition '{start_type}' permission '{perm_name}' path has {} relation hops, \
+             exceeding the {MAX_PATH_HOPS} maximum",
+            rel_names.len()
+        )));
+    }
 
     let mut current_type: &str = start_type;
     for rel_name in rel_names {
@@ -705,6 +723,56 @@ mod tests {
             }"#,
         );
         let err = parse_and_validate(&doc).unwrap_err();
+        assert!(matches!(err, PolicyError::Semantic(_)));
+    }
+
+    #[test]
+    fn rejects_a_path_exceeding_the_max_hop_count_via_schema() {
+        let hops: Vec<String> = (0..40).map(|i| format!("\"hop{i}\"")).collect();
+        let path = format!("[{}, \"caller\"]", hops.join(", "));
+        let doc = minimal_doc(&format!(
+            r#"{{"user": {{"table": "users", "principal_column": "did", "permissions": {{
+                "view": {{"paths": [{path}]}}
+            }}}}}}"#
+        ));
+        let err = parse_and_validate(&doc).unwrap_err();
+        assert!(matches!(err, PolicyError::Schema(_)));
+    }
+
+    #[test]
+    fn rejects_a_path_exceeding_the_max_hop_count_at_the_semantic_layer_too() {
+        // Defense in depth: even a `Policy` constructed directly --
+        // bypassing `parse_and_validate`'s schema gate entirely, which
+        // nothing stops a caller from doing since every field here is
+        // `pub` -- must still be caught by `validate_semantics`'s own
+        // hop-count check, not just the schema's `maxItems`.
+        let mut path: Vec<String> = (0..=MAX_PATH_HOPS).map(|i| format!("hop{i}")).collect();
+        path.push("caller".to_string());
+        let mut permissions = BTreeMap::new();
+        permissions.insert(
+            "view".to_string(),
+            Permission {
+                allows: vec![],
+                operator: Operator::default(),
+                paths: vec![path],
+                conditions: vec![],
+                includes: vec![],
+                fields: None,
+            },
+        );
+        let mut definitions = BTreeMap::new();
+        definitions.insert(
+            "user".to_string(),
+            Definition {
+                table: "users".to_string(),
+                principal_column: Some("did".to_string()),
+                relations: BTreeMap::new(),
+                permissions,
+                default: None,
+            },
+        );
+        let policy = Policy { version: "fdae/v1".to_string(), strict: false, definitions };
+        let err = validate_semantics(&policy).unwrap_err();
         assert!(matches!(err, PolicyError::Semantic(_)));
     }
 }
