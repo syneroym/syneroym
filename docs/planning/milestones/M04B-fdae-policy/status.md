@@ -1244,3 +1244,180 @@ than proposed (H2):**
   (`Failed to bind server socket to 127.0.0.1:0: Operation not permitted`)
   every prior phase's verification has already recorded as sandbox-caused,
   not code-caused.
+
+## Phase 5 — Decision Trace, Bench, Failure/Security Matrix, Gate ✅ (2026-07-22)
+
+Branch: `feat/m04b-slice-b2-data-db` (same branch/PR as Phases 1-4). Plan:
+[slice-b2-implementation-plan.md](slice-b2-implementation-plan.md) §10, §11,
+§13 item 5. `crates/fdae`'s `Policy`/`compile_read`/`CompiledSieve` and
+`crates/data_db`'s `QueryAuth`/`do_check_access` are unchanged ground truth
+going in, extended (not restructured) by this phase.
+
+### What was delivered
+
+- **Decision trace** (ADR-0017 §9) — a new `fdae::DecisionTrace` struct
+  (`crates/fdae/src/trace.rs`): `tier` (always 3), `held` (the evaluated
+  grants, `<resource>::<ability>`), `operation_admitted`,
+  `applicable_permissions`, `compiled_predicate`, `rows_reached` (Mode A
+  only — `None` at compile time, since `compile_read` never executes SQL),
+  `path_failed`, `caveats_applied`. `CompiledSieve` gained a `trace: 
+  DecisionTrace` field so every caller already holding a compiled sieve can
+  see the same trace `compile_read` logged. `compile_read` builds and
+  `tracing::info!`/`debug!`s one at every return point (`info` on a deny,
+  `debug` on an allow) — the strict-unknown-collection early return, the
+  no-applicable-permission-and-no-default early return, and the main body
+  (detecting a claim-absent deny by the literal `"0=1"` string
+  `compile_permission` returns only from that one path). `do_check_access`
+  (`data_db/src/sqlite.rs`) clones `sieve.trace` after actually running the
+  Mode A predicate, fills in `rows_reached`, and — the one deny reason
+  `compile_read` cannot know at compile time — sets `path_failed` when an
+  admitted operation's predicate still matched no row, then emits a second,
+  execution-aware trace.
+- **Criterion bench** (`crates/data_db/benches/fdae_bench.rs`, wired into
+  `Cargo.toml`) — the task.md perf-budget row: FDAE pushdown `query` (Mode
+  B), single-hop ReBAC, 100 seeded records (50 visible/50 excluded, so the
+  bench does real row-pruning work), end to end through the real
+  `ServiceStore` against real SQLite. Measured **~80 µs** mean, far under
+  the 25 ms p99 budget — no sign of H5's recursive-CTE blowup (this shape is
+  non-recursive, single-hop, so H5 doesn't apply here; H5 stays open,
+  tracked separately).
+- **Failure/Security matrix** (`task.md`) — the table gained a 4th
+  "Outcome" column with evidence (test names) for B2's five rows (Mode B
+  exclusion, Mode A deny, CLS, cyclic ReBAC, watchdog timeout); the B3 row
+  and the three stage-4 rows are marked explicitly deferred (not yet
+  implemented) rather than left silently blank. A new "Security review
+  findings" table documents the `C1`/`H1`-`H8` third-pass review findings
+  (614756f/3df969f) with their fix/status and evidence, including `H5` and
+  `H2` as open/differently-addressed rather than silently marked done.
+- **`mise run test:e2e`** — run for the first time since Phase 1 (per this
+  phase's own scope, since it hadn't been run for Phases 2-4). All five
+  `wasm32-wasip2` `test-components` (`greeter`, `data-layer-test`,
+  `messaging-pubsub-test`, `stream-test`, `proxy-test`) rebuilt cleanly via
+  `cargo component build --target wasm32-wasip2` first, confirming the
+  additive Phase 3 WIT change (`check-access`) left the guest-imported
+  surface unbroken. Both Playwright configs green: 8/8 (main), 4/4
+  (multi-hop) — 12/12 total, including reference-scenario step 22's
+  filtering half (exercised transitively through `miniapp-demo1-web`'s
+  passthrough deploy, not a data-layer-specific spec — same scoping note
+  Phase 4 recorded).
+- **`traceability-matrix.md`** — the `[FND-IAM]` (M4B: FDAE) row flipped
+  from `Planned` to `In Progress (Slice B2 complete)`, with evidence links
+  covering the compiler, store integration, host wiring, deploy plumbing,
+  decision trace, and bench, plus explicit call-outs for the two known gaps
+  (D-04-02-h, H5) and the three slices (B3/B4-fdae/B5-fdae) still needed
+  before this row can flip to `Complete`.
+
+### Tests
+
+- **`crates/fdae`** (`compile.rs`, new `#[test]`s) — one regression test
+  per decision-trace deny reason that `compile_read` can determine at
+  compile time: `decision_trace_records_operation_not_admitted` (caller
+  holds no capability granting the operation at all),
+  `decision_trace_records_strict_unknown_collection` (`strict: true`, no
+  matching definition), `decision_trace_records_claim_absent` (a
+  `conditions` entry whose claim is absent from `session.claims`) — plus
+  `decision_trace_records_allow_with_no_path_failed` pinning the non-deny
+  shape (`path_failed: None`, `compiled_predicate` equal to the sieve's own
+  `where_clause`). All four assert on `sieve.trace` fields directly (the
+  same `DecisionTrace` `compile_read` already logged), not on captured
+  `tracing` output — `CompiledSieve::trace` makes that the simpler, more
+  direct test.
+- **`data_db`** (`sqlite.rs`'s existing private `tests` module, new
+  `#[test]`) — the fourth deny reason, "rows not reached", is only
+  knowable after Mode A actually executes: `decision_trace_records_rows_
+  not_reached_after_check_access_executes` builds a real single-hop policy
+  and a real `EXISTS(...)` predicate (Bob holding a read capability but not
+  being the seeded row's creator), calls `do_check_access` directly under a
+  captured `tracing_subscriber` layer (the `test_insecure_mode_warning`
+  pattern, `.with_ansi(false)` so the field text is greppable), and asserts
+  the emitted line carries `rows_reached=Some(false)` and the "no row
+  satisfied the compiled predicate" reason.
+- **Unchanged and stays green** — every Phase 1-4 test, plus the two new
+  Phase 5 files (`trace.rs`, `fdae_bench.rs`) and the one `CompiledSieve`
+  literal-construction test helper (`sqlite.rs`'s `pathological_sieve`)
+  updated for the new `trace` field.
+
+### Decisions carried into this phase
+
+- **`CompiledSieve` gained a `trace` field instead of `compile_read`
+  gaining a second return value** — every existing call site already holds
+  a `CompiledSieve` (or `Option<CompiledSieve>`); a sibling `DecisionTrace`
+  return would have meant threading a second value through `data_db`,
+  `host_capabilities.rs`, and every test/bench call site for information
+  only `do_check_access` (Mode A, post-execution) actually needs beyond
+  what `compile_read` already logs. Attaching it to the sieve keeps the
+  signature `compile_read` shipped in Phase 1 stable.
+- **Claim-absent detection by string match on `"0=1"`, not a new enum
+  variant** — `compile_permission` returns that literal in exactly one
+  place (an absent `conditions` claim); every other branch builds `"1=1"`
+  or an `EXISTS(...)` predicate. Adding a typed reason would have meant
+  threading a new return shape through `compile_permission`'s call sites
+  for a distinction only the decision trace needs; the string match is
+  documented in place and pinned by
+  `compile::tests::decision_trace_records_claim_absent`.
+- **The bench measures `ServiceStore::query`, not `compile_read` alone** —
+  the task.md budget row is explicitly end-to-end ("`criterion` integration
+  bench"), so `crates/data_db/benches` (not `crates/fdae/benches`) matches
+  both the plan's own suggestion and this workspace's existing bench
+  convention (`security_config_bench.rs` benches the store, not the
+  crypto primitives in isolation).
+- **`traceability-matrix.md` status is `In Progress`, not `Complete`** —
+  B2 is done, but B3 (cross-service fetch), B4-fdae (stage-4 ABAC), and
+  B5-fdae (write-side Mode A) are unstarted; flipping the milestone-level
+  `[FND-IAM]` (M4B) row to `Complete` before those land would misstate the
+  requirement's actual coverage.
+
+### Explicitly out of Phase 5 scope (recorded, not silently dropped)
+
+- **B3 cross-service fetch, B4-fdae stage-4 ABAC, B5-fdae write-side Mode
+  A** — later slices; the Failure/Security matrix rows naming them are
+  marked deferred, not fabricated as passing.
+- **H5 (recursive-CTE row-count blowup)** — confirmed open in the
+  third-pass review (2026-07-22), explicitly out of this phase's scope per
+  the task brief; not attempted. The new bench's single-hop shape doesn't
+  exercise the recursive path, so it provides no new evidence either way.
+- **A queryable decision-trace API** — ADR-0017 §9 scopes B2 to `tracing`
+  emission only ("a queryable trace API is later"); not built.
+- **Policy-configurable watchdog budget** — still the interim
+  `FDAE_MAX_VM_OPS` constant, unchanged this phase.
+
+### Verification evidence
+
+- `cargo +nightly fmt --all` — clean.
+- `cargo clippy --workspace --all-targets --all-features` — zero warnings.
+- `cargo test -p syneroym-fdae` — 54 passed, 0 failed (50 prior + 4 new
+  decision-trace tests).
+- `cargo test -p syneroym-data-db` — 134 passed, 0 failed (133 prior + 1
+  new decision-trace test).
+- `cargo test -p syneroym-control-plane --lib` — 40 passed, 0 failed
+  (unchanged from Phase 4/third-pass; untouched this phase).
+- `cargo test -p syneroym-sandbox-wasm --lib --tests` — 71 passed, 0
+  failed across the lib (42) and all five integration test binaries (5 +
+  2 + 6 + 3 + 13); unchanged this phase.
+- `cargo test -p syneroym-router --lib --tests` — 116 passed, 0 failed
+  across the lib (71) and all six test binaries, unchanged this phase.
+  One run hit the same class of one-off resource-contention flake Phase 4
+  documented (`proxy_dispatch`'s
+  `guest_self_proxy_data_layer_returns_empty_when_policy_present` failed
+  with a WASM-execution error under full-workspace parallel load); reran
+  clean twice, both in isolation and as the full `proxy_dispatch` binary
+  and the full six-binary `router` suite -- a flake, not a regression (no
+  code this phase touches that test's path).
+- `cargo test --workspace` — under this CLI's default network sandbox, the
+  same class of pre-existing socket-bind failures Phase 4 documented
+  recur (`coordinator-iroh`, `mqtt-broker`, `sdk::connect_timeout`,
+  `substrate`'s e2e-adjacent integration tests) — none of these crates'
+  files were touched this phase. Rerunning with the sandbox disabled
+  passed with zero failures (confirmed twice, including the router
+  flake's isolated rerun above).
+- `mise run test:e2e` — green: 8/8 (`playwright.config.ts`) + 4/4
+  (`playwright-multihop.config.ts`), 12/12 total. Required the sandbox
+  disabled (the substrate binary binds real ports); this is the CLI
+  environment's network restriction, not a code issue -- documented the
+  same way prior phases documented the `coordinator-iroh` socket-bind
+  class.
+- `wasm32-wasip2` — unbroken. All five `test-components` crates
+  (`greeter`, `data-layer-test`, `messaging-pubsub-test`, `stream-test`,
+  `proxy-test`) rebuilt cleanly via `cargo component build --target
+  wasm32-wasip2` before running `test:e2e`; no WIT files changed this
+  phase (Phase 5 touched only `crates/fdae`, `crates/data_db`, and docs).

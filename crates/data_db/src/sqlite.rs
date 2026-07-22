@@ -482,10 +482,27 @@ fn do_check_access(
         })
     })();
 
-    match outcome {
-        Ok(Ok(exists)) => Ok(exists),
-        Ok(Err(_)) | Err(_) => Ok(false),
+    let result = match outcome {
+        Ok(Ok(exists)) => exists,
+        Ok(Err(_)) | Err(_) => false,
+    };
+
+    // ADR-0017 §9: `compile_read` already emitted a compile-time trace on
+    // `sieve.trace` (`rows_reached: None` -- it never executes SQL). Now
+    // that the predicate has actually run against `id`, emit a second,
+    // execution-aware trace recording the real outcome -- this is the only
+    // place "rows not reached" (an admitted operation whose compiled
+    // predicate matched no row) becomes knowable.
+    if let Some(s) = sieve {
+        let mut trace = s.trace.clone();
+        trace.rows_reached = Some(result);
+        if !result && trace.path_failed.is_none() {
+            trace.path_failed = Some("no row satisfied the compiled predicate".to_string());
+        }
+        trace.emit();
     }
+
+    Ok(result)
 }
 
 /// Lists the service's collections (user tables) for the deploy-time
@@ -1918,6 +1935,7 @@ impl ServiceStore for Arc<SqliteServiceStore> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
+    use syneroym_fdae::{DecisionTrace, parse_and_validate};
     use tempfile::tempdir;
 
     use super::*;
@@ -2400,6 +2418,7 @@ mod tests {
             params: Vec::new(),
             masked_fields: Vec::new(),
             where_caveats: Vec::new(),
+            trace: DecisionTrace::default(),
         }
     }
 
@@ -2447,6 +2466,113 @@ mod tests {
         // never as an `Err` a caller could misread as "allowed".
         assert!(!do_check_access(&conn, "documents", "doc-1", Some(&sieve)).unwrap());
         assert!(do_check_access(&conn, "documents", "doc-1", None).unwrap());
+    }
+
+    /// ADR-0017 §9 decision trace, "rows not reached" (M04B Slice B2
+    /// Phase 5): `compile_read` cannot know whether a row actually
+    /// satisfies its compiled predicate -- it only produces SQL. Only
+    /// `do_check_access`, after running that predicate against a real row,
+    /// can know. This is the one deny reason that isn't knowable at compile
+    /// time, so it's tested here (post-execution) rather than in
+    /// `syneroym-fdae`'s own compile-time decision-trace tests.
+    #[test]
+    fn decision_trace_records_rows_not_reached_after_check_access_executes() {
+        use std::io;
+
+        use syneroym_ucan::{Capability, ResourceUri, SessionContext};
+        use tracing_subscriber::prelude::*;
+
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE users (id TEXT PRIMARY KEY, payload TEXT NOT NULL DEFAULT '{}');
+             CREATE TABLE documents (id TEXT PRIMARY KEY, payload TEXT NOT NULL DEFAULT '{}');
+             INSERT INTO users (id, payload) VALUES ('u-alice', '{\"did\":\"did:key:alice\"}');
+             INSERT INTO documents (id, payload) VALUES ('doc-1', \
+             '{\"creator_uuid\":\"u-alice\"}');",
+        )
+        .unwrap();
+
+        let policy = parse_and_validate(
+            r#"{
+                "version": "fdae/v1",
+                "definitions": {
+                    "document": {
+                        "table": "documents",
+                        "relations": {"creator": {"target": "user", "join_column": "creator_uuid"}},
+                        "permissions": {
+                            "view": {"allows": ["data-layer/read"], "paths": [["creator", "caller"]]}
+                        }
+                    },
+                    "user": {"table": "users", "principal_column": "did"}
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let resource = ResourceUri(format!(
+            "{}/collection/document",
+            ResourceUri::service("svc-a", "svc-a").0
+        ));
+        // Bob holds a read capability (the operation is admitted) but is
+        // not doc-1's creator -- the compiled predicate is a real
+        // `EXISTS(...)`, not a compile-time "0=1", so only execution can
+        // tell the two apart.
+        let bob = SessionContext {
+            subject_did: "did:key:bob".to_string(),
+            capabilities: vec![Capability {
+                with: resource,
+                can: Ability(Ability::DATA_LAYER_READ.to_string()),
+                caveats: None,
+            }],
+            claims: serde_json::Map::new(),
+            verified_at_secs: 0,
+        };
+        let sieve = compile_read(
+            &policy,
+            "document",
+            &bob,
+            "svc-a",
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::PointInTime { id: "doc-1".to_string() },
+        )
+        .unwrap()
+        .unwrap();
+        assert!(sieve.trace.operation_admitted);
+        assert!(
+            sieve.trace.path_failed.is_none(),
+            "compile time cannot know this row is unreachable"
+        );
+
+        let logs = Arc::new(Mutex::new(Vec::new()));
+        let logs_clone = logs.clone();
+        struct MockWriter {
+            logs: Arc<Mutex<Vec<u8>>>,
+        }
+        impl io::Write for MockWriter {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.logs.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let make_writer = move || MockWriter { logs: logs_clone.clone() };
+        let layer = tracing_subscriber::fmt::layer().with_ansi(false).with_writer(make_writer);
+        let subscriber = tracing_subscriber::registry().with(layer);
+
+        let allowed = tracing::subscriber::with_default(subscriber, || {
+            do_check_access(&conn, "documents", "doc-1", Some(&sieve)).unwrap()
+        });
+        assert!(!allowed, "bob is not doc-1's creator");
+
+        let logs_content = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+        assert!(logs_content.contains("fdae decision: deny"), "logs were: {logs_content}");
+        assert!(logs_content.contains("rows_reached=Some(false)"), "logs were: {logs_content}");
+        assert!(
+            logs_content.contains("no row satisfied the compiled predicate"),
+            "logs were: {logs_content}"
+        );
     }
 
     #[test]

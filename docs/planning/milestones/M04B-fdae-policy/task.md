@@ -408,7 +408,7 @@ D-04-02) — minor bump, non-breaking. `wasm32-wasip2` must stay unbroken.
 
 ## Ordered Implementation Slices
 
-#### Slice B2: Local FDAE (SQL Pushdown Sieve) — Phase 1 ✅ (2026-07-20, PR #86); Phase 2 ✅ (2026-07-20); Phase 3 ✅ (2026-07-21); Phase 4 ✅ (2026-07-21, manifest/deploy/persist/native-enforcement plumbing shipped -- FDAE is enforced for a router-verified external caller reaching native dispatch, and the mechanism is loaded at WASM instantiation, but a guest-originated read (WASM host functions or same-service self-proxy) still carries a capability-less synthesized identity and returns empty, per D-04-02-h)
+#### Slice B2: Local FDAE (SQL Pushdown Sieve) — Phase 1 ✅ (2026-07-20, PR #86); Phase 2 ✅ (2026-07-20); Phase 3 ✅ (2026-07-21); Phase 4 ✅ (2026-07-21, manifest/deploy/persist/native-enforcement plumbing shipped -- FDAE is enforced for a router-verified external caller reaching native dispatch, and the mechanism is loaded at WASM instantiation, but a guest-originated read (WASM host functions or same-service self-proxy) still carries a capability-less synthesized identity and returns empty, per D-04-02-h); Phase 5 ✅ (2026-07-22, decision trace, `criterion` bench, Failure/Security matrix + C1/H1-H8 findings documented, `mise run test:e2e` green, `traceability-matrix.md` flipped to In Progress) — **Slice B2 complete**
 **Unblocked** (ADR D-04-02 Accepted; a/b/c resolved). **Depends on:** M04A (B1
 SessionContext, B0 identity).
 **Requirement:** `[FND-IAM]`.
@@ -436,7 +436,15 @@ the WASM read path + host-side CLS field-stripping, proven by
 branch; `HostState.fdae_policy` stays `None` in production until Phase 4
 (deploy/persist/manifest plumbing) loads a real one, so FDAE still enforces
 nothing for a live deployed caller. The Failure/Security matrix's CLS "value
-never returned" row is now satisfied. Full evidence: `status.md`.
+never returned" row is now satisfied. **Phase 5** (`fdae::DecisionTrace`
+emitted via `tracing` from `compile_read`/`check_access`, one regression
+test per deny reason; a `criterion` bench proving the pushdown query stays
+well under the 25 ms p99 budget; the Failure/Security matrix's B2 rows and
+the `C1`/`H1`-`H8` third-pass review findings documented with evidence;
+`mise run test:e2e` green (12/12) with all five `wasm32-wasip2`
+`test-components` rebuilt first; `traceability-matrix.md`'s `[FND-IAM]`
+(M4B) row flipped `Planned` → `In Progress (Slice B2 complete)`) — done on
+the same branch, closing out Slice B2. Full evidence: `status.md`.
 
 #### Slice B3: Federated FDAE (Cross-Service Parameter Fetch)
 **Depends on:** B2, and M04A A1 (Universal Proxy). **Requirement:** `[FND-IAM]`.
@@ -516,17 +524,40 @@ Continues from M04A (steps 20–21, 24–25):
 
 ## Failure and Security Tests
 
-| Test | Expected Outcome |
-|---|---|
-| FDAE query for a resource the caller's ReBAC chain doesn't reach (Mode B) | Row excluded from results, not an error (ADR-0007 "no result is a valid outcome") |
-| FDAE Point-In-Time check (Mode A) for an unreachable resource | Deny flag; no data leak |
-| CLS: caller lacks column permission | Column masked/projected out; value never returned — ✅ satisfied by Slice B2 Phase 3's host-side `strip_masked_fields` |
-| FDAE policy with a cyclic ReBAC relationship in user data | `visited_track` breaks recursion; no infinite loop (`system-architecture.md:1847`) |
-| Compiled FDAE query exceeds the policy time budget | Transaction rolled back, Default-Denied (`:1848`) |
-| Cross-service FDAE parameter fetch times out | Falls back to deny, not silent allow |
-| Stage-4 ABAC attempts to **widen** access beyond ReBAC | Rejected — restrict-only enforced; a widen decision cannot grant a row the sieve excluded (ADR-0017 §7) |
-| Stage-4 ABAC read-only lookup (§7) exceeds its fuel/time budget | Aborted, row Default-Denied; the lookup cannot run unmetered |
-| Stage-4 ABAC returns `redact(fields)` | Named fields removed from the row before it reaches the guest |
+B2's rows (1-5) are done, with evidence below. Rows 6 (B3) and 7-9
+(B4-fdae) name mechanisms this slice does not implement yet — recorded as
+deferred, not silently dropped, per those slices' own task.md entries.
+
+| # | Test | Expected Outcome | Outcome |
+|---|---|---|---|
+| 1 | FDAE query for a resource the caller's ReBAC chain doesn't reach (Mode B) | Row excluded from results, not an error (ADR-0007 "no result is a valid outcome") | ✅ `tests_fdae::mode_b_query_excludes_unreachable_rows_not_error` (`data_db`); `compile::tests::single_hop_denies_a_stranger`, `..._recursive_relation_terminates_on_a_cyclic_manager_graph` (`fdae`) |
+| 2 | FDAE Point-In-Time check (Mode A) for an unreachable resource | Deny flag; no data leak | ✅ `tests_fdae::mode_a_check_access_denies_unreachable_row`, `..._get_of_unreachable_row_returns_none_not_error` (`data_db`) |
+| 3 | CLS: caller lacks column permission | Column masked/projected out; value never returned | ✅ satisfied by Slice B2 Phase 3's host-side `strip_masked_fields`; sieve-level union computed by `compile::tests::cls_masked_fields_union_policy_and_capability_deny_lists` |
+| 4 | FDAE policy with a cyclic ReBAC relationship in user data | `visited_track` breaks recursion; no infinite loop (`system-architecture.md:1847`) | ✅ `compile::tests::recursive_relation_terminates_on_a_cyclic_manager_graph` — a deliberately cyclic manager graph (eve→frank→eve) terminates and returns the correct membership |
+| 5 | Compiled FDAE query exceeds the policy time budget | Transaction rolled back, Default-Denied (`:1848`) | ✅ `sqlite::tests::fdae_watchdog_interrupts_do_query_as_quota_exceeded`, `..._do_get_as_quota_exceeded`, `fdae_watchdog_interrupt_denies_do_check_access` (Mode A → `Ok(false)`), `..._do_delete_many_on_the_writer_conn` (`data_db`) — `FDAE_MAX_VM_OPS` progress-handler backstop, per ADR-0017 §8 plan resolution (§12.8) |
+| 6 | Cross-service FDAE parameter fetch times out | Falls back to deny, not silent allow | ⛔ Deferred — Slice B3 (pipeline stage 2, not yet implemented) |
+| 7 | Stage-4 ABAC attempts to **widen** access beyond ReBAC | Rejected — restrict-only enforced; a widen decision cannot grant a row the sieve excluded (ADR-0017 §7) | ⛔ Deferred — Slice B4-fdae (stage 4, not yet implemented) |
+| 8 | Stage-4 ABAC read-only lookup (§7) exceeds its fuel/time budget | Aborted, row Default-Denied; the lookup cannot run unmetered | ⛔ Deferred — Slice B4-fdae (not yet implemented) |
+| 9 | Stage-4 ABAC returns `redact(fields)` | Named fields removed from the row before it reaches the guest | ⛔ Deferred — Slice B4-fdae (not yet implemented) |
+
+### Security review findings (Slice B2, post-commit third pass)
+
+Rows added for the `C1`/`H1`-`H8` findings from `status.md`'s "Post-commit
+review, third pass" (2026-07-22, commits 614756f/3df969f) — the naming is
+that review's own, kept for continuity with `status.md` rather than
+renumbered.
+
+| # | Finding | Outcome |
+|---|---|---|
+| C1 | A case-variant collection name (`query("DOCUMENTS")` vs. a policy defining `"documents"`) disabled RLS/CLS entirely — SQLite resolves table names case-insensitively, but `find_definition` matched case-sensitively | ✅ Fixed — case-insensitive lookup + a matching `validate_no_collection_ambiguity` rule. `compile::tests::collection_lookup_is_case_insensitive_like_sqlite`, `policy::tests::rejects_a_definitions_table_colliding_case_insensitively`, `differently_cased_collection_name_does_not_bypass_the_sieve` (`data_db`) |
+| H1 | `default:` fallback escalated past its own `allows` — a caller holding an unrelated (e.g. write) capability could ride a read-only default permission's paths through a write-mode check | ✅ Fixed — the fallback now also requires `default`'s own `allows` to cover the operation. `compile::tests::default_permission_not_covering_operation_is_denied` |
+| H2 | "Platform-ability grants select every covering branch; `default:` is never consulted" — a capability scoped to a platform ability is admitted through every permission whose `allows` covers it, silently widening a path-restricted sibling permission | ⚠️ Reviewed and disagreed on remediation shape — this is ADR-0017's own resolved, tested grant∩policy design, not a compiler bug. Addressed via an additive author-time lint (`warn_on_ambiguous_public_permission`) instead of a compiler change. `service::orchestration::tests::test_warn_on_ambiguous_public_permission` (`control_plane`) |
+| H3 | A dotted `fields.deny` entry (e.g. `"profile.ssn"`) silently masked nothing — `strip_masked_fields` only removes flat top-level keys | ✅ Fixed — a dotted policy `fields.deny` entry is now a parse-time `Semantic` error; a dotted capability-caveat `fields.deny` entry fails the compile closed. `policy::tests::rejects_fields_deny_with_a_dotted_nested_path`, `compile::tests::caveat_fields_deny_with_a_dotted_path_fails_closed` |
+| H4 | Unbounded path-hop recursion in `emit_chain` could blow the Rust stack (`SIGABRT`, taking down the whole substrate) | ✅ Fixed — `MAX_PATH_HOPS = 32` enforced independently at both the JSON-Schema layer and `validate_semantics`. `policy::tests::rejects_a_path_exceeding_the_max_hop_count_via_schema`, `..._at_the_semantic_layer_too` |
+| H5 | The recursive CTE's `UNION ALL` plus a non-unique `from_key`/`to_key` join column lets row count blow up combinatorially (branching factor `b`, depth-64 bound → up to `b^64` rows) instead of deduplicating | ⛔ **Open, known issue** — confirmed structurally; the review's suggested `UNION` swap does not work as stated (rows carry `depth`/`seen`, rarely byte-identical). `FDAE_MAX_VM_OPS` bounds worst-case compute per query today, so impact is reader-pool exhaustion under abuse of a guest-writable recursive relation, not an unbounded hang — lower urgency, but a real fix (dedupe on visited `id`, not path) is still needed before relying on this shape at scale |
+| H6 | The TCP deploy arm (`deploy_tcp_service`) had no FDAE rollback on a failed redeploy — unlike the WASM/container arms | ✅ Fixed — given the same rollback parameters/calls as the other two arms. `test_deploy_tcp_endpoint_registration_failure_rolls_back_gen_and_policy` (`control_plane`) |
+| H7 | Rollback restored the persisted policy row but never invalidated the WASM engine's cached policy, leaving it served for the rest of the process's uptime | ✅ Fixed — `rollback_fdae_policy` also calls `stop_wasm(service_id)` for its cache-eviction side effect. Eviction mechanism covered by `engine::tests::fdae_policy_cache_evicted_on_stop_wasm_and_recompile`; the cross-crate rollback interaction itself has no new automated assertion (see `status.md`) |
+| H8 | A transient storage error (e.g. `SQLITE_BUSY`) reading the policy was cached as "no policy," silently disabling FDAE until the next redeploy | ✅ Fixed — a storage error now resolves uncached instead of caching `None`. `engine::tests::fdae_policy_transient_storage_error_is_not_cached` |
 
 ---
 

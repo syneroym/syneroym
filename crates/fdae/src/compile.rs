@@ -12,7 +12,10 @@ use rusqlite::types::Value;
 use serde_json::Value as Json;
 use syneroym_ucan::{Ability, Capability, ResourceUri, SessionContext};
 
-use crate::policy::{CondOp, Definition, Operator, Permission, Policy, PolicyError, Relation};
+use crate::{
+    policy::{CondOp, Definition, Operator, Permission, Policy, PolicyError, Relation},
+    trace::DecisionTrace,
+};
 
 /// Depth backstop for a recursive relation's self-join, bound as a `?`
 /// param (never interpolated). The `visited_track` path-concatenation guard
@@ -48,6 +51,12 @@ pub struct CompiledSieve {
     /// ADR-0007 MongoDB-style filter), for the caller to compile via
     /// `data_db`'s `filter::compile_filter` and AND onto this sieve.
     pub where_caveats: Vec<Json>,
+    /// ADR-0017 §9 decision trace for this compilation, already emitted via
+    /// `tracing` by `compile_read`. Carried on the sieve so a Mode A caller
+    /// (`check_access`) can clone it, fill in `rows_reached` once the
+    /// predicate has actually been run, and emit a second, execution-aware
+    /// trace.
+    pub trace: DecisionTrace,
 }
 
 /// Which of ADR-0017 §4's two compilation modes to produce.
@@ -86,7 +95,20 @@ pub fn compile_read(
     mode: Mode,
 ) -> Result<Option<CompiledSieve>, PolicyError> {
     let Some((object_type, def)) = find_definition(policy, collection) else {
-        return if policy.strict { Ok(Some(deny_all())) } else { Ok(None) };
+        if !policy.strict {
+            return Ok(None);
+        }
+        let trace = DecisionTrace {
+            tier: 3,
+            operation_admitted: false,
+            path_failed: Some(format!(
+                "no policy definition matches collection '{collection}' and the policy is strict"
+            )),
+            compiled_predicate: Some("0=1".to_string()),
+            ..DecisionTrace::default()
+        };
+        trace.emit();
+        return Ok(Some(CompiledSieve { trace, ..deny_all() }));
     };
 
     let resource = ResourceUri(format!(
@@ -101,6 +123,7 @@ pub fn compile_read(
     if applicable.is_empty() {
         let holding_caps: Vec<&Capability> =
             session.capabilities.iter().filter(|cap| cap.grants(&resource, operation)).collect();
+        let operation_admitted = !holding_caps.is_empty();
         // The default permission is only a fallback *within the same
         // grant-intersection contract* every other route obeys: its own
         // `allows` must cover `operation`, or a caller holding an unrelated
@@ -111,18 +134,40 @@ pub fn compile_read(
                 perm.allows.iter().any(|a| Ability(a.clone()).entails(operation))
             });
         match &def.default {
-            Some(default_perm) if !holding_caps.is_empty() && default_covers_operation => {
+            Some(default_perm) if operation_admitted && default_covers_operation => {
                 applicable.insert(default_perm.clone());
                 for cap in holding_caps {
                     push_unique(&mut entitling_caps, cap);
                 }
             }
-            _ => return Ok(Some(deny_all())),
+            _ => {
+                let path_failed = if !operation_admitted {
+                    format!(
+                        "no held capability grants operation '{}' on this resource",
+                        operation.0
+                    )
+                } else {
+                    "operation is granted by a held capability, but no permission's allows covers \
+                     it and no applicable default permission is configured"
+                        .to_string()
+                };
+                let trace = DecisionTrace {
+                    tier: 3,
+                    held: describe_caps(&holding_caps),
+                    operation_admitted,
+                    path_failed: Some(path_failed),
+                    compiled_predicate: Some("0=1".to_string()),
+                    ..DecisionTrace::default()
+                };
+                trace.emit();
+                return Ok(Some(CompiledSieve { trace, ..deny_all() }));
+            }
         }
     }
 
     let mut params: Vec<Value> = Vec::new();
     let mut clauses: Vec<String> = Vec::with_capacity(applicable.len());
+    let mut claim_absent_for: Vec<String> = Vec::new();
     for pname in &applicable {
         let Some(perm) = def.permissions.get(pname) else {
             // `default` is validated at parse time to name a real
@@ -133,9 +178,19 @@ pub fn compile_read(
                 "permission '{pname}' not found on definition '{object_type}'"
             )));
         };
-        clauses.push(compile_permission(policy, object_type, perm, session, &mut params)?);
+        let clause = compile_permission(policy, object_type, perm, session, &mut params)?;
+        // `compile_permission` returns exactly the literal string "0=1" in
+        // one place: a condition whose claim is absent from
+        // `session.claims`. Every other branch builds "1=1" or an `EXISTS`
+        // predicate, so this text match unambiguously identifies the
+        // claim-absent fail-closed case for the decision trace below.
+        if clause == "0=1" {
+            claim_absent_for.push(pname.clone());
+        }
+        clauses.push(clause);
     }
-    let mut where_clause = format!("({})", clauses.join(" OR "));
+    let base_where_clause = format!("({})", clauses.join(" OR "));
+    let mut where_clause = base_where_clause.clone();
 
     if let Mode::PointInTime { id } = &mode {
         where_clause = format!("({where_clause}) AND {}.id = ?", def.table);
@@ -148,7 +203,38 @@ pub fn compile_read(
         .filter_map(|cap| cap.caveats.as_ref()?.get("where").cloned())
         .collect();
 
-    Ok(Some(CompiledSieve { where_clause, params, masked_fields, where_caveats }))
+    let path_failed = (base_where_clause == "(0=1)").then(|| {
+        if claim_absent_for.is_empty() {
+            "no applicable permission's path predicate is satisfiable".to_string()
+        } else {
+            format!("condition claim absent for permission(s): {}", claim_absent_for.join(", "))
+        }
+    });
+    let caveats_applied: Vec<String> = masked_fields
+        .iter()
+        .map(|f| format!("fields.deny:{f}"))
+        .chain(where_caveats.iter().map(|c| format!("where:{c}")))
+        .collect();
+    let trace = DecisionTrace {
+        tier: 3,
+        held: describe_caps(&entitling_caps),
+        operation_admitted: true,
+        applicable_permissions: applicable.iter().cloned().collect(),
+        compiled_predicate: Some(where_clause.clone()),
+        rows_reached: None,
+        path_failed,
+        caveats_applied,
+    };
+    trace.emit();
+
+    Ok(Some(CompiledSieve { where_clause, params, masked_fields, where_caveats, trace }))
+}
+
+/// `held` descriptors for a decision trace: `<resource>::<ability>` per
+/// evaluated capability, cheap and stable enough to log without exposing
+/// caveat contents.
+fn describe_caps(caps: &[&Capability]) -> Vec<String> {
+    caps.iter().map(|cap| format!("{}::{}", cap.with.0, cap.can.0)).collect()
 }
 
 /// Matches case-insensitively (ASCII fold), mirroring SQLite's own
@@ -174,6 +260,7 @@ fn deny_all() -> CompiledSieve {
         params: Vec::new(),
         masked_fields: Vec::new(),
         where_caveats: Vec::new(),
+        trace: DecisionTrace::default(),
     }
 }
 
@@ -1670,5 +1757,132 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, PolicyError::Semantic(_)));
+    }
+
+    // -- ADR-0017 §9 decision trace (M04B Slice B2 Phase 5) -----------------
+    //
+    // `compile_read` returns the same `DecisionTrace` it emits via `tracing`
+    // on `CompiledSieve::trace`, so these assert on the struct directly
+    // rather than capturing log output. `do_check_access`'s "rows not
+    // reached" trace (the fourth deny reason -- known only after Mode A
+    // actually executes the compiled predicate against a row) is covered in
+    // `data_db`, the layer that runs that query.
+
+    #[test]
+    fn decision_trace_records_operation_not_admitted() {
+        // No capabilities at all: nothing grants the operation on this
+        // resource, distinct from holding a grant but reaching no row.
+        let policy = single_hop_policy();
+        let alice = session("did:key:alice", vec![]);
+        let sieve = compile_read(
+            &policy,
+            "document",
+            &alice,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::Filter,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(sieve.trace.tier, 3);
+        assert!(!sieve.trace.operation_admitted);
+        assert!(sieve.trace.held.is_empty());
+        assert!(
+            sieve.trace.path_failed.as_deref().is_some_and(|r| r.contains("no held capability")),
+            "path_failed was: {:?}",
+            sieve.trace.path_failed
+        );
+    }
+
+    #[test]
+    fn decision_trace_records_strict_unknown_collection() {
+        let policy =
+            parse_and_validate(r#"{"version": "fdae/v1", "strict": true, "definitions": {}}"#)
+                .unwrap();
+        let alice = session("did:key:alice", vec![]);
+        let sieve = compile_read(
+            &policy,
+            "unrelated_collection",
+            &alice,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::Filter,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(sieve.trace.tier, 3);
+        assert!(!sieve.trace.operation_admitted);
+        assert!(
+            sieve.trace.path_failed.as_deref().is_some_and(|r| r.contains("strict")),
+            "path_failed was: {:?}",
+            sieve.trace.path_failed
+        );
+    }
+
+    #[test]
+    fn decision_trace_records_claim_absent() {
+        let policy = parse_and_validate(
+            r#"{
+                "version": "fdae/v1",
+                "definitions": {
+                    "user": {
+                        "table": "users",
+                        "principal_column": "did",
+                        "permissions": {
+                            "view_self": {
+                                "allows": ["data-layer/read"],
+                                "paths": [["caller"]],
+                                "conditions": [{"column": "region", "claim": "region"}]
+                            }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let alice = session("did:key:alice", vec![read_cap(Some("user"))]);
+        let sieve = compile_read(
+            &policy,
+            "user",
+            &alice,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::Filter,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(sieve.trace.operation_admitted);
+        assert_eq!(sieve.trace.applicable_permissions, vec!["view_self".to_string()]);
+        assert!(
+            sieve.trace.path_failed.as_deref().is_some_and(|r| r.contains("claim absent")),
+            "path_failed was: {:?}",
+            sieve.trace.path_failed
+        );
+    }
+
+    #[test]
+    fn decision_trace_records_allow_with_no_path_failed() {
+        let conn = Connection::open_in_memory().unwrap();
+        seed_schema(&conn);
+        insert_user(&conn, "u-alice", "did:key:alice", None);
+        insert_document(&conn, "doc-1", "u-alice");
+
+        let policy = single_hop_policy();
+        let alice = session("did:key:alice", vec![read_cap(Some("document"))]);
+        let sieve = compile_read(
+            &policy,
+            "document",
+            &alice,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::Filter,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(sieve.trace.operation_admitted);
+        assert_eq!(sieve.trace.applicable_permissions, vec!["view".to_string()]);
+        assert!(sieve.trace.path_failed.is_none());
+        assert_eq!(sieve.trace.compiled_predicate.as_deref(), Some(sieve.where_clause.as_str()));
+        assert_eq!(run_sieve(&conn, "documents", &sieve), vec!["doc-1"]);
     }
 }

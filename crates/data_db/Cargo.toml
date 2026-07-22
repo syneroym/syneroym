@@ -44,5 +44,9 @@ sha2.workspace = true
 name = "security_config_bench"
 harness = false
 
+[[bench]]
+name = "fdae_bench"
+harness = false
+
 [lints]
 workspace = true
