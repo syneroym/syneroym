@@ -72,6 +72,7 @@ pub async fn run_scenario() -> Result<()> {
             messaging_context.clone(),
             streaming_context.clone(),
             empty_service_proxy(),
+            None,
         );
         let mut store = Store::new(&engine, host_state);
         let instance = linker.instantiate_async(&mut store, &component).await?;
@@ -105,6 +106,7 @@ pub async fn run_scenario() -> Result<()> {
             messaging_context.clone(),
             streaming_context.clone(),
             empty_service_proxy(),
+            None,
         );
         let mut store = Store::new(&engine, host_state);
         let instance = linker.instantiate_async(&mut store, &component).await?;

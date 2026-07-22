@@ -66,6 +66,7 @@ pub async fn handle(
                             quota: None,
                             schema_path: None,
                             rotation_policy: Default::default(),
+                            fdae: None,
                         },
                         depends_on: vec![],
                     },

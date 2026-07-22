@@ -134,6 +134,15 @@ interface store {
     /// would mutate the DB is rejected. `params` are bound via `?`
     /// placeholders in order.
     query-raw: func(sql: string, params: list<sql-value>) -> result<raw-query-result, data-layer-error>;
+
+    /// Mode A point-in-time authorization check (ADR-0017 §4). Whether the
+    /// caller's compiled FDAE policy authorizes `operation` on record `id` in
+    /// `collection`. Fail-closed: any evaluation error/timeout returns false,
+    /// never an error a caller could read as allow. `operation` is a platform
+    /// ability string ("data-layer/read"/"data-layer/write") or an app-permission
+    /// ref.
+    check-access: func(collection: string, id: string, operation: string)
+        -> result<bool, data-layer-error>;
 }
 
 world data-layer-guest {

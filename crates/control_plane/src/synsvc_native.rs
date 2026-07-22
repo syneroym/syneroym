@@ -13,7 +13,7 @@
 //! data-layer/blob-store access must work even in builds without the WASM
 //! sandbox feature enabled.
 
-use std::{collections::HashMap, fmt, sync::Arc};
+use std::{collections::HashMap, fmt, mem, sync::Arc};
 
 use serde_json::Value;
 use syneroym_data_blob::{
@@ -25,8 +25,13 @@ use syneroym_data_blob::{
     },
     traits::{DownloadSession, UploadSession},
 };
-use syneroym_data_db::traits::{ServiceStore, StorageProvider};
+use syneroym_data_db::{
+    auth,
+    auth::QueryAuth,
+    traits::{ServiceStore, StorageProvider},
+};
 use syneroym_data_keystore::KeyStore;
+use syneroym_fdae::Policy;
 use syneroym_mqtt_broker::{MqttBroker, namespace_topic_for_publish};
 use syneroym_rpc::{
     Ability, NativeInvocation, NativeResponse, NativeService, ResourceUri, RpcError, RpcResult,
@@ -35,7 +40,7 @@ use syneroym_wit_interfaces::host::syneroym::{
     app_config::app_config::ConfigError,
     data_layer::store::{
         CollectionSchema, DataLayerError, IndexDefinition, IndexType, Mutation, PatchMutation,
-        QueryOptions, RawQueryResult, RecordWriteValue, SqlValue,
+        QueryOptions, RawQueryResult, RecordReadValue, RecordWriteValue, SqlValue,
     },
     vault::vault::VaultError,
 };
@@ -51,6 +56,12 @@ pub struct SynSvcNativeService {
     messaging_broker: Arc<MqttBroker>,
     upload_sessions: Mutex<HashMap<String, Box<dyn UploadSession>>>,
     download_sessions: Mutex<HashMap<String, Box<dyn DownloadSession>>>,
+    /// `None` = unfiltered (today's behavior for a service deployed without
+    /// a policy). Set once at construction from the `Arc<Policy>` `deploy`
+    /// already parsed/validated (ADR-0017) -- no load, no cache, no parse on
+    /// this hot path. A re-deploy reconstructs the service, so a policy edit
+    /// takes effect with the deploy that carries it.
+    fdae_policy: Option<Arc<Policy>>,
 }
 
 impl fmt::Debug for SynSvcNativeService {
@@ -111,6 +122,22 @@ fn data_layer_error(e: DataLayerError) -> RpcError {
         }
         DataLayerError::Internal(msg) => internal(msg),
     }
+}
+
+/// Applies the host-side CLS field-mask projection to a single read record
+/// (ADR-0017 §4). `query_auth` builds a real `QueryAuth` from `fdae_policy` +
+/// the invocation's verified caller session, so
+/// `outcome.masked_fields` is live here exactly as it is on the WASM host
+/// path -- this is no longer a no-op for a policy-carrying service reached by
+/// a router-verified external caller (`dispatch.rs`'s native arm). It stays
+/// a no-op for a service deployed without a policy (`fdae_policy: None`),
+/// unchanged from before.
+fn strip_record(
+    mut record: RecordReadValue,
+    masked_fields: &[String],
+) -> Result<RecordReadValue, DataLayerError> {
+    record.payload = auth::strip_masked_fields(record.payload, masked_fields)?;
+    Ok(record)
 }
 
 fn parse_params<T: serde::de::DeserializeOwned>(invocation: &NativeInvocation) -> RpcResult<T> {
@@ -176,6 +203,7 @@ impl SynSvcNativeService {
         storage_provider: Arc<dyn StorageProvider>,
         blob_provider: Arc<dyn BlobProvider>,
         messaging_broker: Arc<MqttBroker>,
+        fdae_policy: Option<Arc<Policy>>,
     ) -> Self {
         Self {
             service_id,
@@ -185,6 +213,7 @@ impl SynSvcNativeService {
             messaging_broker,
             upload_sessions: Mutex::new(HashMap::new()),
             download_sessions: Mutex::new(HashMap::new()),
+            fdae_policy,
         }
     }
 
@@ -193,6 +222,28 @@ impl SynSvcNativeService {
             .open_service_db(&self.service_id, &self.key_store)
             .await
             .map_err(|e| DataLayerError::Internal(e.to_string()))
+    }
+
+    /// Builds the `QueryAuth` for the current invocation from `fdae_policy` +
+    /// the invocation's `caller.session`, mirroring `HostState::query_auth`.
+    ///
+    /// **No `AuthLevel` carve-out.** This deliberately does not branch on
+    /// `AuthLevel::System` (or a `"system:"`-prefixed `caller_did`) to fall
+    /// back to `auth = None`. Doing so would make a guest's self-proxy route
+    /// (`ProxyRouter::invoke_local`'s `NativeHostChannel` branch, which
+    /// synthesizes `CallerContext::service_system` for a guest calling its
+    /// own service) *more* permissive than its direct WIT `store::Host`
+    /// route under the same policy -- i.e. a guest under a policy could
+    /// proxy to itself to escape it. The synthesized-identity ingress
+    /// returning empty is over-restriction, which is correct; a carve-out
+    /// here would be a bypass. Do not "simplify" this away -- see
+    /// D-04-02-h in `task.md`'s Decision Register.
+    fn query_auth<'a>(&'a self, invocation: &'a NativeInvocation) -> Option<QueryAuth<'a>> {
+        self.fdae_policy.as_ref().map(|policy| QueryAuth {
+            policy,
+            session: &invocation.caller.session,
+            service_id: &self.service_id,
+        })
     }
 
     async fn resolve_blob_dek(&self) -> RpcResult<Option<Zeroizing<[u8; 32]>>> {
@@ -281,7 +332,16 @@ impl SynSvcNativeService {
                     id: String,
                 }
                 let req: Req = parse_params(&invocation)?;
-                let result = store.get(&req.collection, &req.id).await.map_err(data_layer_error)?;
+                let auth = self.query_auth(&invocation);
+                let outcome = store
+                    .get(&req.collection, &req.id, auth.as_ref())
+                    .await
+                    .map_err(data_layer_error)?;
+                let result = outcome
+                    .value
+                    .map(|record| strip_record(record, &outcome.masked_fields))
+                    .transpose()
+                    .map_err(data_layer_error)?;
                 to_payload(&result)
             }
             "query" => {
@@ -291,9 +351,18 @@ impl SynSvcNativeService {
                     opts: QueryOptions,
                 }
                 let req: Req = parse_params(&invocation)?;
-                let result =
-                    store.query(&req.collection, &req.opts).await.map_err(data_layer_error)?;
-                to_payload(&result)
+                let auth = self.query_auth(&invocation);
+                let mut outcome = store
+                    .query(&req.collection, &req.opts, auth.as_ref())
+                    .await
+                    .map_err(data_layer_error)?;
+                let records = mem::take(&mut outcome.value.records)
+                    .into_iter()
+                    .map(|record| strip_record(record, &outcome.masked_fields))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(data_layer_error)?;
+                outcome.value.records = records;
+                to_payload(&outcome.value)
             }
             "delete" => {
                 #[derive(serde::Deserialize)]
@@ -315,8 +384,9 @@ impl SynSvcNativeService {
                     filter: Option<String>,
                 }
                 let req: Req = parse_params(&invocation)?;
+                let auth = self.query_auth(&invocation);
                 let affected = store
-                    .delete_many(&req.collection, req.filter.as_deref())
+                    .delete_many(&req.collection, req.filter.as_deref(), auth.as_ref())
                     .await
                     .map_err(|e| internal(e.to_string()))?;
                 to_payload(&affected)
@@ -428,8 +498,9 @@ impl SynSvcNativeService {
                     pipeline: String,
                 }
                 let req: Req = parse_params(&invocation)?;
+                let auth = self.query_auth(&invocation);
                 let result = store
-                    .aggregate(&req.collection, &req.pipeline)
+                    .aggregate(&req.collection, &req.pipeline, auth.as_ref())
                     .await
                     .map_err(data_layer_error)?;
                 raw_query_result_payload(result)

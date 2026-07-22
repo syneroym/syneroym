@@ -74,6 +74,7 @@ fn wasm_deploy_manifest(bytes: Vec<u8>) -> DeployManifest {
             quota: None,
             schema_path: None,
             rotation_policy: None,
+            fdae_policy_path: None,
         },
         service_type: ServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(bytes),
@@ -202,6 +203,33 @@ async fn test_guest_delivery_latency_budget() {
     let fully_qualified_topic = format!("svc/{SERVICE_A}/orders/new");
     call(&engine, SERVICE_B, "subscribe-to", serde_json::json!([fully_qualified_topic])).await;
 
+    // Warm up the path before measuring: the first couple of deliveries pay
+    // a one-off cold-start cost (first cross-service dispatch, subscription
+    // indexing, first fresh-`Store` instantiation for each service) that
+    // isn't representative of steady-state guest delivery latency and,
+    // left in the sample, single-handedly decides the p99 assertion below
+    // for small n -- the same reasoning
+    // `messaging_client_e2e.rs`'s native-subscriber budget test applies to
+    // its own warm-up. Discard these from the budget measurement.
+    const WARMUP: u32 = 3;
+    for i in 0..WARMUP {
+        call(&engine, SERVICE_A, "publish-to", serde_json::json!(["orders/new", format!("w{i}")]))
+            .await;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let received =
+                call(&engine, SERVICE_B, "get-received-messages", serde_json::json!([])).await;
+            if received.lines().count() == (i + 1) as usize {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for warm-up delivery #{i}"
+            );
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    }
+
     let mut latencies = Vec::new();
     for i in 0..20u32 {
         let publish_start = tokio::time::Instant::now();
@@ -212,7 +240,7 @@ async fn test_guest_delivery_latency_budget() {
         loop {
             let received =
                 call(&engine, SERVICE_B, "get-received-messages", serde_json::json!([])).await;
-            if received.lines().count() == (i + 1) as usize {
+            if received.lines().count() == (WARMUP + i + 1) as usize {
                 latencies.push(publish_start.elapsed());
                 break;
             }

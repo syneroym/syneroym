@@ -226,6 +226,17 @@ pub struct ServiceConfig {
     pub schema_path: Option<String>,
     #[serde(default)]
     pub rotation_policy: RotationPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fdae: Option<FdaeManifest>,
+}
+
+/// Optional declarative ReBAC policy for this service (ADR-0017 §1).
+/// `#[serde(default)]` on the field above keeps every existing manifest
+/// parsing unchanged -- a service with no policy is unfiltered, which is
+/// the policy layer's default-*absent* (ADR-0017 §2.1).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FdaeManifest {
+    pub policy_path: String,
 }
 
 /// Represents the spec of a service in the application manifest.
@@ -437,6 +448,37 @@ mod tests {
         let serialized = manifest.to_toml().unwrap();
         let deserialized = SynAppManifest::from_toml(&serialized).unwrap();
         assert_eq!(manifest, deserialized);
+
+        // A manifest with no [services.x.fdae] block parses with fdae: None.
+        assert_eq!(identity.config.fdae, None);
+    }
+
+    #[test]
+    fn test_manifest_parsing_toml_with_fdae_policy() {
+        let toml_str = r#"
+            id = "syneroym:guild-app"
+            version = "0.1.0"
+
+            [services.identity]
+            service_type = "wasm"
+            source = "crates/sandbox_wasm/benches/identity.wasm"
+            interfaces = ["syneroym:identity/identity"]
+            depends_on = []
+
+            [services.identity.fdae]
+            policy_path = "fdae-policy.json"
+        "#;
+
+        let manifest = SynAppManifest::from_toml(toml_str).unwrap();
+        let identity = manifest.services.get(&LogicalServiceName::new("identity")).unwrap();
+        assert_eq!(
+            identity.config.fdae,
+            Some(FdaeManifest { policy_path: "fdae-policy.json".to_string() })
+        );
+
+        let serialized = manifest.to_toml().unwrap();
+        let deserialized = SynAppManifest::from_toml(&serialized).unwrap();
+        assert_eq!(manifest, deserialized);
     }
 
     #[test]
@@ -506,6 +548,7 @@ mod tests {
                     quota: None,
                     schema_path: None,
                     rotation_policy: RotationPolicy::RestartOnRotation,
+                    fdae: None,
                 },
                 resolved_dependencies: vec![],
                 topology_mode: TopologyMode::Singleton,
@@ -619,6 +662,7 @@ mod tests {
                     quota: None,
                     schema_path: None,
                     rotation_policy: RotationPolicy::RestartOnRotation,
+                    fdae: None,
                 },
                 resolved_dependencies: vec![],
                 topology_mode: TopologyMode::Singleton,

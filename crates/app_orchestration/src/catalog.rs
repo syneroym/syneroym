@@ -56,6 +56,7 @@ impl LocalFilesystemCatalog {
             quota: None,
             schema_path: None,
             rotation_policy: Default::default(),
+            fdae: None,
         };
         services.insert(
             LogicalServiceName::new("legacy-main"),

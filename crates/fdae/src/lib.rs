@@ -4,9 +4,11 @@
 
 mod compile;
 mod policy;
+mod trace;
 
 pub use compile::{CompiledSieve, Mode, compile_read};
 pub use policy::{
     CondOp, Condition, Definition, FieldsPolicy, Operator, Permission, Policy, PolicyError,
     Relation, parse_and_validate,
 };
+pub use trace::DecisionTrace;

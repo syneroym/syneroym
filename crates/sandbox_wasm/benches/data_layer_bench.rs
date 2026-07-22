@@ -61,7 +61,7 @@ fn bench_data_layer_crud(c: &mut Criterion) {
         .unwrap();
     c.bench_function("data_layer_get", |b| {
         b.to_async(&runtime).iter(|| async {
-            let _ = store.get("bench", black_box("g1")).await.unwrap();
+            let _ = store.get("bench", black_box("g1"), None).await.unwrap();
         });
     });
 
@@ -82,7 +82,7 @@ fn bench_data_layer_crud(c: &mut Criterion) {
     };
     c.bench_function("data_layer_query_100_eq_filter", |b| {
         b.to_async(&runtime).iter(|| async {
-            let _ = store.query("bench", black_box(&query_opts)).await.unwrap();
+            let _ = store.query("bench", black_box(&query_opts), None).await.unwrap();
         });
     });
 
@@ -169,6 +169,7 @@ fn bench_lifecycle_hooks(c: &mut Criterion) {
             quota: None,
             schema_path: None,
             rotation_policy: None,
+            fdae_policy_path: None,
         },
         service_type: ServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(wasm_bytes),

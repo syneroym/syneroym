@@ -301,8 +301,15 @@ vs. row reachability* — both answered by the same `permissions:` block.
   `claims` keys and `caveat` leaves are named by the policy's `definitions:`/
   `permissions:` blocks (§1, §2), not hard-coded here.
 - **Default permission when a grant names a platform ability and a policy
-  exists** (§2). **Default-deny** unless the policy declares a default
-  permission. Conservative and fail-closed; consistent with §8's safety rails.
+  exists** (§2), **but no declared permission's `allows` covers the
+  requested operation** — this is the only condition that reaches it; it is
+  not consulted when some other permission already covers the operation, and
+  it does not override or widen what those permissions grant.
+  **Default-deny** unless the policy declares a default permission whose own
+  `allows` also covers the operation — the same grant∩policy intersection
+  contract every other permission route obeys, so a default permission can
+  never be used to pass a check its own `allows` doesn't cover. Conservative
+  and fail-closed; consistent with §8's safety rails.
 - **`strict: true` mode.** Confirmed **off by default and additive** (a resource
   with no `definitions:` entry stays grant-only, as today), with an author-time
   warning when a known collection lacks a definition, and opt-in `strict: true`
@@ -312,6 +319,20 @@ vs. row reachability* — both answered by the same `permissions:` block.
   The "additive-and-easy vs. fail-closed-by-construction" trade for whether
   `strict` should eventually flip to default-on is left to the point third-party
   developers author these policies.
+- **Ability-sharing across permissions is intentional, not a compiler bug —
+  but it's a real footgun, so it gets an author-time lint.** A capability
+  scoped to a platform ability (not a named `app/<type>.<permission>` grant)
+  is admitted through *every* permission on a definition whose `allows`
+  covers that ability (`applicable_permissions` ORs them together); an
+  unconditionally public sibling (`paths: []`) therefore silently widens a
+  path-restricted one unless they're deliberately connected via `includes`.
+  Fixing this in the compiler would mean abandoning the grant∩policy
+  intersection contract entirely (and would break the documented
+  entailment case, e.g. a write-capable grant also satisfying a read check).
+  Instead, deploy-time gets an additive, warn-only lint alongside `strict:`'s
+  own author-time check, flagging exactly this shape (public + restricted,
+  overlapping `allows`, no `includes` link) so an author can either link them
+  or scope capability issuance to the named permission instead.
 
 **Open — must be settled before or during implementation**:
 

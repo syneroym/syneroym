@@ -7,9 +7,9 @@
 //! routing table and the KEK/secret management calls it handles directly).
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fs,
-    path::{Component, PathBuf},
+    path::{Component, Path, PathBuf},
     sync::Arc,
 };
 
@@ -19,6 +19,7 @@ use syneroym_core::{
     local_registry::{NATIVE_CAPABILITY_INTERFACES, SubstrateEndpoint},
     util,
 };
+use syneroym_fdae::Policy;
 use syneroym_rpc::{Ability, CallerContext, NativeService, ResourceUri};
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, ContainerManifest, DeployManifest, DeployedService, DeploymentPlan,
@@ -43,6 +44,127 @@ pub trait OrchestratorInterface {
     async fn list(&self, caller: &CallerContext) -> Result<Vec<DeployedService>, String>;
     async fn deploy_plan(&self, plan: DeploymentPlan, caller: &CallerContext)
     -> Result<(), String>;
+}
+
+/// Rejects `path` if it's absolute, contains a `..` component, or -- once
+/// symlinks are resolved -- canonicalizes to somewhere outside the
+/// process's working directory. The component check alone doesn't catch a
+/// symlink placed under the working directory that itself points outside
+/// it (no `..` anywhere in `path`), so both `schema_path` and
+/// `fdae_policy_path` need this second, filesystem-resolving check too.
+/// `field_name` names the offending manifest field for the error message.
+fn reject_path_escape(path: &Path, field_name: &str) -> Result<(), String> {
+    if path.components().any(|c| matches!(c, Component::ParentDir)) || path.is_absolute() {
+        return Err(format!(
+            "Arbitrary file read prevented: Path traversal or absolute paths are not allowed in \
+             {field_name}: {:?}",
+            path
+        ));
+    }
+
+    let cwd = std::env::current_dir()
+        .map_err(|e| format!("Failed to resolve working directory: {}", e))?;
+    let canonical_cwd = fs::canonicalize(&cwd)
+        .map_err(|e| format!("Failed to resolve working directory: {}", e))?;
+    let resolved = fs::canonicalize(cwd.join(path))
+        .map_err(|e| format!("Failed to resolve {field_name} at {}: {}", path.display(), e))?;
+    if !resolved.starts_with(&canonical_cwd) {
+        return Err(format!(
+            "Arbitrary file read prevented: {field_name} resolves outside the working directory \
+             via a symlink: {:?}",
+            path
+        ));
+    }
+    Ok(())
+}
+
+/// D-04-02-c's deploy-time author-time warning: compares a deployed policy's
+/// `definitions:` against the service's actual collections (its own tables
+/// are the collection inventory -- a manifest declares no collection list of
+/// its own). Warn-only in both directions, never a hard failure:
+/// 1. a table with no matching `definitions:` entry is unfiltered today and
+///    would be denied under `strict: true`;
+/// 2. a `definitions:` entry whose `table` doesn't exist yet is expected for a
+///    TCP/container service whose collections are created lazily on first use,
+///    so it must not read as an error.
+fn warn_on_policy_collection_mismatch(service_id: &str, policy: &Policy, collections: &[String]) {
+    let defined_tables: BTreeSet<&str> =
+        policy.definitions.values().map(|d| d.table.as_str()).collect();
+    for collection in collections {
+        if !defined_tables.contains(collection.as_str()) {
+            tracing::warn!(
+                service_id,
+                collection,
+                "collection has no FDAE definition; it is unfiltered today and would be denied \
+                 under `strict: true`"
+            );
+        }
+    }
+    for (type_name, def) in &policy.definitions {
+        if !collections.iter().any(|c| c == &def.table) {
+            tracing::warn!(
+                service_id,
+                definition = type_name.as_str(),
+                table = def.table.as_str(),
+                "policy defines a collection but no such collection exists yet -- expected for a \
+                 TCP/container service whose collections are created lazily on first use"
+            );
+        }
+    }
+}
+
+/// Author-time lint, in the same additive warn-only class as
+/// `warn_on_policy_collection_mismatch`: flags a definition where an
+/// unconditionally-public permission (`paths: []`, compiles to `1=1`) shares
+/// a covering ability with a path-restricted sibling permission, and the two
+/// aren't linked by `includes`. The compiler ORs every covering permission
+/// together (`applicable_permissions`), so a caller holding a generic
+/// ability-scoped capability -- not a named `app/<type>.<permission>` grant
+/// -- that satisfies the restricted permission's ability is also admitted
+/// through the public one, silently widening access past the restricted
+/// permission's own `paths`. Sometimes intended (that's what `includes` is
+/// for, to make it explicit); often a policy-authoring mistake, so it's
+/// worth a loud warning even though nothing here justifies failing the
+/// deploy.
+fn warn_on_ambiguous_public_permission(service_id: &str, policy: &Policy) {
+    for (type_name, def) in &policy.definitions {
+        for (public_name, public_perm) in &def.permissions {
+            if !public_perm.paths.is_empty() {
+                continue;
+            }
+            for (restricted_name, restricted_perm) in &def.permissions {
+                if public_name == restricted_name || restricted_perm.paths.is_empty() {
+                    continue;
+                }
+                if public_perm.includes.contains(restricted_name)
+                    || restricted_perm.includes.contains(public_name)
+                {
+                    continue;
+                }
+                let shares_covering_ability = public_perm.allows.iter().any(|a| {
+                    restricted_perm.allows.iter().any(|b| {
+                        let (a, b) = (Ability(a.clone()), Ability(b.clone()));
+                        a.0 == b.0 || a.entails(&b) || b.entails(&a)
+                    })
+                });
+                if shares_covering_ability {
+                    tracing::warn!(
+                        service_id,
+                        definition = type_name.as_str(),
+                        public_permission = public_name.as_str(),
+                        restricted_permission = restricted_name.as_str(),
+                        "an unconditionally public permission (paths: []) shares a covering \
+                         ability with a path-restricted sibling permission and the two aren't \
+                         linked by `includes` -- any capability admitted for the restricted \
+                         permission is also admitted for the public one, silently granting \
+                         unrestricted access unless callers only ever hold a named \
+                         app/<type>.<permission> capability; link them with `includes` if this is \
+                         intended"
+                    );
+                }
+            }
+        }
+    }
 }
 
 impl ControlPlaneService {
@@ -79,34 +201,83 @@ impl ControlPlaneService {
         }
     }
 
+    /// Restores whatever FDAE policy (or absence) `service_id` had before
+    /// this deploy attempt's `save_fdae_policy`/`delete_fdae_policy` call --
+    /// see `previous_fdae_policy`'s capture in `deploy` for why this must
+    /// restore the previous value rather than unconditionally delete, in
+    /// both directions (a new/changed policy, or the manifest dropping the
+    /// block entirely). Best-effort, same as `rollback_config_generation`.
+    ///
+    /// Also evicts the WASM engine's own resolved-policy cache
+    /// (`stop_wasm`'s side effect, alongside the component cache it exists
+    /// to evict) for `service_id`. A failed `deploy_wasm_service` attempt
+    /// can reach this point *after* `compile_and_cache_wasm`/
+    /// `resolve_fdae_policy` already cached the new (about-to-be-rolled-
+    /// back) policy -- restoring the DB row alone would leave the engine
+    /// serving that cached policy for the rest of the process's uptime,
+    /// diverging from what storage now says. Safe to call unconditionally:
+    /// `stop_wasm` no-ops for a `service_id` the engine never cached
+    /// anything for (the TCP/container rollback paths, and the ordinary
+    /// case of nothing having been cached yet).
+    async fn rollback_fdae_policy(&self, service_id: &str, previous: &Option<String>) {
+        let result = match previous {
+            Some(doc) => self.storage_provider.save_fdae_policy(service_id, doc).await,
+            None => self.storage_provider.delete_fdae_policy(service_id).await,
+        };
+        if let Err(e) = result {
+            tracing::error!(
+                "Failed to roll back FDAE policy for service {} after deploy error: {}",
+                service_id,
+                e
+            );
+        }
+        if let Err(e) = self.app_sandbox_engine.stop_wasm(service_id).await {
+            tracing::error!(
+                "Failed to evict cached FDAE policy for service {} after deploy error: {}",
+                service_id,
+                e
+            );
+        }
+    }
+
     async fn deploy_wasm_service(
         &self,
         service_id: &str,
         manifest: &DeployManifest,
         wasm_manifest: &WasmManifest,
         new_gen: u64,
+        previous_fdae_policy: &Option<String>,
     ) -> Result<(), String> {
         if let Err(e) = self.app_sandbox_engine.deploy_wasm(service_id, manifest).await {
             self.rollback_config_generation(service_id, new_gen).await;
+            self.rollback_fdae_policy(service_id, previous_fdae_policy).await;
             return Err(format!("WASM deployment failed: {e}"));
         }
 
-        self.register_wasm_endpoints(service_id, wasm_manifest.interfaces.clone())
-            .await
-            .map_err(|e| format!("Endpoint registration failed: {e}"))
+        if let Err(e) =
+            self.register_wasm_endpoints(service_id, wasm_manifest.interfaces.clone()).await
+        {
+            self.rollback_config_generation(service_id, new_gen).await;
+            self.rollback_fdae_policy(service_id, previous_fdae_policy).await;
+            return Err(format!("Endpoint registration failed: {e}"));
+        }
+        Ok(())
     }
 
     async fn deploy_tcp_service(
         &self,
         service_id: &str,
         tcp_manifest: &TcpManifest,
+        new_gen: u64,
+        previous_fdae_policy: &Option<String>,
     ) -> Result<(), String> {
         for endpoint in &tcp_manifest.endpoints {
             info!(
                 "Deploying TCP service {} endpoint {}: {}:{}",
                 service_id, endpoint.interface_name, endpoint.host, endpoint.port
             );
-            self.registry
+            if let Err(e) = self
+                .registry
                 .register(
                     service_id.to_string(),
                     endpoint.interface_name.clone(),
@@ -116,7 +287,11 @@ impl ControlPlaneService {
                     },
                 )
                 .await
-                .map_err(|e| format!("Endpoint registration failed: {e}"))?;
+            {
+                self.rollback_config_generation(service_id, new_gen).await;
+                self.rollback_fdae_policy(service_id, previous_fdae_policy).await;
+                return Err(format!("Endpoint registration failed: {e}"));
+            }
         }
         Ok(())
     }
@@ -127,18 +302,21 @@ impl ControlPlaneService {
         manifest: &DeployManifest,
         container_manifest: &ContainerManifest,
         new_gen: u64,
+        previous_fdae_policy: &Option<String>,
     ) -> Result<(), String> {
         info!("Deploying container service {}: image={}", service_id, container_manifest.image);
         let actual_mappings = match self.podman_sandbox_engine.deploy(service_id, manifest).await {
             Ok(mappings) => mappings,
             Err(e) => {
                 self.rollback_config_generation(service_id, new_gen).await;
+                self.rollback_fdae_policy(service_id, previous_fdae_policy).await;
                 return Err(format!("Container deployment failed: {e}"));
             }
         };
 
         for (interface_name, host_port) in actual_mappings {
-            self.registry
+            if let Err(e) = self
+                .registry
                 .register(
                     service_id.to_string(),
                     interface_name,
@@ -148,7 +326,11 @@ impl ControlPlaneService {
                     },
                 )
                 .await
-                .map_err(|e| format!("Endpoint registration failed: {e}"))?;
+            {
+                self.rollback_config_generation(service_id, new_gen).await;
+                self.rollback_fdae_policy(service_id, previous_fdae_policy).await;
+                return Err(format!("Endpoint registration failed: {e}"));
+            }
         }
         Ok(())
     }
@@ -286,17 +468,7 @@ impl OrchestratorInterface for ControlPlaneService {
 
             if let Some(schema_path_str) = &manifest.config.schema_path {
                 let schema_path = PathBuf::from(schema_path_str);
-
-                // Path traversal check
-                if schema_path.components().any(|c| matches!(c, Component::ParentDir))
-                    || schema_path.is_absolute()
-                {
-                    return Err(format!(
-                        "Arbitrary file read prevented: Path traversal or absolute paths are not \
-                         allowed in schema_path: {:?}",
-                        schema_path
-                    ));
-                }
+                reject_path_escape(&schema_path, "schema_path")?;
 
                 let custom_json_clone = custom_json.clone();
                 task::spawn_blocking(move || -> Result<(), String> {
@@ -325,6 +497,43 @@ impl OrchestratorInterface for ControlPlaneService {
             config_utils::flatten_json_config(&custom_json, "", &mut flat_config);
         }
 
+        // FDAE policy: independent of `custom_config` (unlike `schema_path`
+        // above, which is only read when a `custom_config` is present) --
+        // deliberately not nested inside the block above, since a policy has
+        // nothing to do with config-schema validation. Validation is a hard
+        // deploy failure (ADR-0017 §1's "validated at deploy... the Cedar
+        // lesson"), and the document is read on the substrate's side,
+        // relative to its working directory, guarded against traversal
+        // exactly like `schema_path`.
+        let fdae_policy: Option<(String, Arc<Policy>)> = if let Some(policy_path_str) =
+            &manifest.config.fdae_policy_path
+        {
+            let policy_path = PathBuf::from(policy_path_str);
+            reject_path_escape(&policy_path, "fdae_policy_path")?;
+            let doc = task::spawn_blocking(move || {
+                fs::read_to_string(&policy_path).map_err(|e| {
+                    format!("Failed to read FDAE policy at {}: {}", policy_path.display(), e)
+                })
+            })
+            .await
+            .map_err(|e| format!("Failed to spawn blocking task: {}", e))??;
+            // The underlying `PolicyError` embeds the offending JSON
+            // *instance* (jsonschema's `ValidationError::Display`) --
+            // for `fdae_policy_path` that instance can be the policy
+            // file's own content (unlike `schema_path`, where the
+            // instance is always the caller's own `custom_config`), so
+            // it must never cross back out to the remote deploy caller.
+            // Logged in full server-side; the caller gets a generic
+            // failure.
+            let policy = syneroym_fdae::parse_and_validate(&doc).map_err(|e| {
+                tracing::warn!("FDAE policy validation failed for service {}: {}", service_id, e);
+                "FDAE policy validation failed: invalid policy document".to_string()
+            })?;
+            Some((doc, Arc::new(policy)))
+        } else {
+            None
+        };
+
         let config_blob = serde_json::to_string(&flat_config)
             .map_err(|e| format!("Failed to serialize flattened config: {}", e))?;
 
@@ -335,16 +544,101 @@ impl OrchestratorInterface for ControlPlaneService {
             .map_err(|e| format!("Failed to save config generation: {}", e))?;
         tracing::info!("Saved configuration generation {} for service {}", new_gen, service_id);
 
+        // Persist before the service is actually instantiated below, so the
+        // `init`/`migrate` lifecycle hook's first read already sees the row.
+        // Last-write-wins (no generation ladder, unlike config generations
+        // above) -- a policy edit binds late by design.
+        //
+        // `previous_fdae_policy` captures whatever was there *before* this
+        // deploy's write, for `rollback_fdae_policy` below, unconditionally
+        // and in both directions (a new/changed policy, or the manifest
+        // dropping the block entirely). Unlike config generations
+        // (append-only, so rolling back a failed attempt's row never
+        // touches an earlier one), `fdae_policies` is a single
+        // last-write-wins row per service -- on a re-deploy, a later step
+        // failing must restore the *previous* policy exactly, or an
+        // already-running previous version loses its policy to an
+        // unrelated failed re-deploy attempt the next time its engine cache
+        // re-resolves from storage. This applies just as much when the new
+        // manifest drops the policy block: capturing `previous` only in the
+        // save branch would let a later-step failure leave a deleted policy
+        // deleted, silently reopening the previous version's enforcement.
+        let previous_fdae_policy = self
+            .storage_provider
+            .load_fdae_policy(&service_id)
+            .await
+            .map_err(|e| format!("Failed to check existing FDAE policy: {}", e))?;
+        if let Some((policy_doc, _)) = &fdae_policy {
+            self.storage_provider
+                .save_fdae_policy(&service_id, policy_doc)
+                .await
+                .map_err(|e| format!("Failed to save FDAE policy: {}", e))?;
+        } else {
+            // A manifest that no longer declares `fdae_policy_path` clears
+            // any previously-declared policy -- a deploy's `config` fully
+            // declares this service's policy state, so absence means
+            // explicit removal, not "leave whatever was there" (the F2
+            // resurrection bug: without this, `AppSandboxEngine::
+            // resolve_fdae_policy` would reload the stale row on its next
+            // cache miss even though native dispatch has correctly gone
+            // unfiltered).
+            self.storage_provider
+                .delete_fdae_policy(&service_id)
+                .await
+                .map_err(|e| format!("Failed to clear FDAE policy: {}", e))?;
+        }
+
         match &manifest.service_type {
             WitServiceType::Wasm(wasm_manifest) => {
-                self.deploy_wasm_service(&service_id, &manifest, wasm_manifest, new_gen).await?;
+                self.deploy_wasm_service(
+                    &service_id,
+                    &manifest,
+                    wasm_manifest,
+                    new_gen,
+                    &previous_fdae_policy,
+                )
+                .await?;
             }
             WitServiceType::Tcp(tcp_manifest) => {
-                self.deploy_tcp_service(&service_id, tcp_manifest).await?;
+                self.deploy_tcp_service(&service_id, tcp_manifest, new_gen, &previous_fdae_policy)
+                    .await?;
             }
             WitServiceType::Container(container_manifest) => {
-                self.deploy_container_service(&service_id, &manifest, container_manifest, new_gen)
-                    .await?;
+                self.deploy_container_service(
+                    &service_id,
+                    &manifest,
+                    container_manifest,
+                    new_gen,
+                    &previous_fdae_policy,
+                )
+                .await?;
+            }
+        }
+
+        // D-04-02-c's author-time `strict:` warning: the service's own
+        // database is the collection inventory (a manifest declares no
+        // collection list -- collections come from the guest's `init()` or
+        // native calls), so this is the first point at which a first
+        // deploy's `init()` has created its tables. Warn-only in both
+        // directions, never a deploy failure.
+        if let Some((_, policy)) = &fdae_policy {
+            warn_on_ambiguous_public_permission(&service_id, policy);
+            match self.storage_provider.open_service_db(&service_id, &self.key_store).await {
+                Ok(store) => match store.list_collections().await {
+                    Ok(collections) => {
+                        warn_on_policy_collection_mismatch(&service_id, policy, &collections)
+                    }
+                    Err(e) => tracing::warn!(
+                        "Failed to list collections for FDAE strict-mode check on {}: {}",
+                        service_id,
+                        e
+                    ),
+                },
+                Err(e) => tracing::warn!(
+                    "Failed to open service db for FDAE strict-mode check on {}: {}",
+                    service_id,
+                    e
+                ),
             }
         }
 
@@ -371,6 +665,7 @@ impl OrchestratorInterface for ControlPlaneService {
                     );
                 }
                 self.rollback_config_generation(&service_id, new_gen).await;
+                self.rollback_fdae_policy(&service_id, &previous_fdae_policy).await;
                 return Err(format!("Native capability registration failed: {e}"));
             }
         }
@@ -383,6 +678,7 @@ impl OrchestratorInterface for ControlPlaneService {
                     self.storage_provider.clone(),
                     self.blob_provider.clone(),
                     self.messaging_broker.clone(),
+                    fdae_policy.as_ref().map(|(_, policy)| policy.clone()),
                 )) as Arc<dyn NativeService>,
             );
         } else {
@@ -405,7 +701,8 @@ impl OrchestratorInterface for ControlPlaneService {
         // see the doc comment there), so a crash/failure before this point
         // never leaves a stale owner row. Writing it first would leak an
         // owner row on the `deploy_wasm_service`/`deploy_container_service`
-        // failure paths, which only roll back the config generation.
+        // failure paths, which only roll back the config generation and any
+        // FDAE policy this deploy touched.
         //
         // Reviewed: on a *re-deploy* of an already-owned, already-running
         // service, a `set_owner` failure here rolls back via a full
@@ -431,6 +728,7 @@ impl OrchestratorInterface for ControlPlaneService {
                 );
             }
             self.rollback_config_generation(&service_id, new_gen).await;
+            self.rollback_fdae_policy(&service_id, &previous_fdae_policy).await;
             return Err(format!("Owner attribution failed: {e}"));
         }
 
@@ -560,6 +858,17 @@ impl OrchestratorInterface for ControlPlaneService {
         }
         if is_wasm {
             self.app_sandbox_engine.unsubscribe_all(&service_id);
+        }
+
+        // An `fdae_policies` row has no in-memory analogue that gets torn
+        // down for free elsewhere in this function -- `stop_wasm` above only
+        // evicts the WASM engine's *cache* of it, and native dispatch's copy
+        // dies with the `SynSvcNativeService` removed below. Without this, a
+        // later re-deploy of the same `service_id` with no `fdae` block
+        // would still have `AppSandboxEngine::resolve_fdae_policy` resurrect
+        // this row from storage on its next cache miss.
+        if let Err(e) = self.storage_provider.delete_fdae_policy(&service_id).await {
+            tracing::warn!("Failed to remove FDAE policy for service {}: {}", service_id, e);
         }
 
         // The endpoint-registry loop above already removed the 6 native
@@ -696,12 +1005,14 @@ impl OrchestratorInterface for ControlPlaneService {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     use dashmap::DashMap;
     use syneroym_core::{
-        config::SubstrateConfig, http_routes::HttpRouteRegistry, local_registry::EndpointRegistry,
-        storage::MockStorage,
+        config::SubstrateConfig,
+        http_routes::HttpRouteRegistry,
+        local_registry::EndpointRegistry,
+        storage::{EndpointStorage, MockStorage},
     };
     use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
     use syneroym_data_db::{SqliteStorageProvider, traits::StorageProvider};
@@ -814,6 +1125,7 @@ mod tests {
                         quota: None,
                         schema_path: None,
                         rotation_policy: None,
+                        fdae_policy_path: None,
                     },
                     service_type: WitServiceType::Wasm(WasmManifest {
                         source: ArtifactSource::Url("../../../../../etc/passwd".to_string()),
@@ -890,6 +1202,7 @@ mod tests {
                         quota: None,
                         schema_path: None,
                         rotation_policy: None,
+                        fdae_policy_path: None,
                     },
                     service_type: WitServiceType::Wasm(WasmManifest {
                         source: ArtifactSource::Url("/etc/passwd".to_string()),
@@ -971,6 +1284,7 @@ mod tests {
                 quota: None,
                 schema_path: Some(schema_filename.clone()),
                 rotation_policy: None,
+                fdae_policy_path: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -985,6 +1299,96 @@ mod tests {
         assert!(result.is_err());
         let err_msg = result.unwrap_err();
         assert!(err_msg.contains("Configuration validation failed"), "{}", err_msg);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_deploy_schema_path_symlink_escape_rejected() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+            )
+            .await
+            .unwrap(),
+        );
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+
+        let native_dispatch = NativeDispatchRegistry::default();
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider,
+            blob_provider.clone(),
+            messaging_broker.clone(),
+            native_dispatch.clone(),
+            Arc::new(DashMap::new()),
+        )
+        .await
+        .unwrap();
+
+        // A symlink under the working directory whose target lives outside
+        // it. No `..` component and not absolute, so the component check
+        // alone would let it through; only canonicalizing the resolved path
+        // catches it.
+        let outside_dir = tempfile::tempdir().unwrap();
+        let outside_schema = outside_dir.path().join("schema.json");
+        fs::write(&outside_schema, r#"{"type": "object"}"#).unwrap();
+
+        let symlink_name = format!("test_schema_symlink_{}.json", std::process::id());
+        std::os::unix::fs::symlink(&outside_schema, &symlink_name).unwrap();
+
+        let manifest = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: Some(r#"{"port": 8080}"#.to_string()),
+                quota: None,
+                schema_path: Some(symlink_name.clone()),
+                rotation_policy: None,
+                fdae_policy_path: None,
+            },
+            service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+            registry_certificate: None,
+        };
+
+        let result = service
+            .deploy(
+                "symlink_schema_service".to_string(),
+                manifest,
+                &node_wide_caller("test-caller"),
+            )
+            .await;
+
+        let _ = fs::remove_file(&symlink_name);
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err();
+        assert!(
+            err_msg.contains("resolves outside the working directory via a symlink"),
+            "{}",
+            err_msg
+        );
     }
 
     #[tokio::test]
@@ -1041,6 +1445,7 @@ mod tests {
                 quota: None,
                 schema_path: None,
                 rotation_policy: None,
+                fdae_policy_path: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Url("/does_not_exist.wasm".to_string()),
@@ -1059,6 +1464,1265 @@ mod tests {
         let latest =
             storage_provider.get_latest_config_generation("rollback_service").await.unwrap();
         assert!(latest.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_deploy_fdae_policy_validates_persists_and_is_loadable() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+            )
+            .await
+            .unwrap(),
+        );
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+
+        let native_dispatch = NativeDispatchRegistry::default();
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider.clone(),
+            blob_provider.clone(),
+            messaging_broker.clone(),
+            native_dispatch.clone(),
+            Arc::new(DashMap::new()),
+        )
+        .await
+        .unwrap();
+
+        // A policy with no `custom_config` on the manifest -- the regression
+        // test for the FDAE block's placement outside the `custom_config`
+        // block (unlike `schema_path`, which is only read inside it).
+        let policy_filename = format!("test_fdae_policy_{}.json", std::process::id());
+        fs::write(&policy_filename, r#"{"version": "fdae/v1", "definitions": {}}"#).unwrap();
+
+        let manifest = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema_path: None,
+                rotation_policy: None,
+                fdae_policy_path: Some(policy_filename.clone()),
+            },
+            service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+            registry_certificate: None,
+        };
+
+        let result = service
+            .deploy("fdae_test_service".to_string(), manifest, &node_wide_caller("test-caller"))
+            .await;
+
+        let _ = fs::remove_file(&policy_filename);
+
+        assert!(result.is_ok(), "{:?}", result);
+        let loaded = storage_provider.load_fdae_policy("fdae_test_service").await.unwrap();
+        assert_eq!(loaded, Some(r#"{"version": "fdae/v1", "definitions": {}}"#.to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_undeploy_removes_fdae_policy() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+            )
+            .await
+            .unwrap(),
+        );
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+
+        let native_dispatch = NativeDispatchRegistry::default();
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider.clone(),
+            blob_provider.clone(),
+            messaging_broker.clone(),
+            native_dispatch.clone(),
+            Arc::new(DashMap::new()),
+        )
+        .await
+        .unwrap();
+
+        let policy_filename = format!("test_fdae_undeploy_policy_{}.json", std::process::id());
+        fs::write(&policy_filename, r#"{"version": "fdae/v1", "definitions": {}}"#).unwrap();
+
+        let manifest = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema_path: None,
+                rotation_policy: None,
+                fdae_policy_path: Some(policy_filename.clone()),
+            },
+            service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+            registry_certificate: None,
+        };
+
+        let caller = node_wide_caller("test-caller");
+        service.deploy("undeploy_fdae_svc".to_string(), manifest, &caller).await.unwrap();
+        let _ = fs::remove_file(&policy_filename);
+        assert!(storage_provider.load_fdae_policy("undeploy_fdae_svc").await.unwrap().is_some());
+
+        service.undeploy("undeploy_fdae_svc".to_string(), &caller).await.unwrap();
+        assert_eq!(
+            storage_provider.load_fdae_policy("undeploy_fdae_svc").await.unwrap(),
+            None,
+            "undeploy must clear a service's persisted FDAE policy"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_redeploy_without_fdae_block_clears_previous_policy() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+            )
+            .await
+            .unwrap(),
+        );
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+
+        let native_dispatch = NativeDispatchRegistry::default();
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider.clone(),
+            blob_provider.clone(),
+            messaging_broker.clone(),
+            native_dispatch.clone(),
+            Arc::new(DashMap::new()),
+        )
+        .await
+        .unwrap();
+
+        let policy_filename = format!("test_fdae_redeploy_policy_{}.json", std::process::id());
+        fs::write(&policy_filename, r#"{"version": "fdae/v1", "definitions": {}}"#).unwrap();
+
+        let caller = node_wide_caller("test-caller");
+        let with_policy = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema_path: None,
+                rotation_policy: None,
+                fdae_policy_path: Some(policy_filename.clone()),
+            },
+            service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+            registry_certificate: None,
+        };
+        service.deploy("redeploy_fdae_svc".to_string(), with_policy, &caller).await.unwrap();
+        let _ = fs::remove_file(&policy_filename);
+        assert!(storage_provider.load_fdae_policy("redeploy_fdae_svc").await.unwrap().is_some());
+
+        // Re-deploy the same service_id with no `fdae` block at all.
+        let without_policy = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema_path: None,
+                rotation_policy: None,
+                fdae_policy_path: None,
+            },
+            service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+            registry_certificate: None,
+        };
+        service.deploy("redeploy_fdae_svc".to_string(), without_policy, &caller).await.unwrap();
+        assert_eq!(
+            storage_provider.load_fdae_policy("redeploy_fdae_svc").await.unwrap(),
+            None,
+            "a re-deploy whose manifest drops the fdae block must clear the previous policy, not \
+             leave it for the WASM engine to resurrect from storage"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_deploy_failure_restores_previous_fdae_policy_not_the_new_one() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+            )
+            .await
+            .unwrap(),
+        );
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+
+        let native_dispatch = NativeDispatchRegistry::default();
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider.clone(),
+            blob_provider.clone(),
+            messaging_broker.clone(),
+            native_dispatch.clone(),
+            Arc::new(DashMap::new()),
+        )
+        .await
+        .unwrap();
+
+        let caller = node_wide_caller("test-caller");
+
+        // First, a successful deploy with policy P1.
+        let policy_1_filename = format!("test_fdae_rollback_p1_{}.json", std::process::id());
+        fs::write(&policy_1_filename, r#"{"version": "fdae/v1", "definitions": {}}"#).unwrap();
+        let first = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema_path: None,
+                rotation_policy: None,
+                fdae_policy_path: Some(policy_1_filename.clone()),
+            },
+            service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+            registry_certificate: None,
+        };
+        service.deploy("rollback_fdae_svc".to_string(), first, &caller).await.unwrap();
+        let _ = fs::remove_file(&policy_1_filename);
+        assert_eq!(
+            storage_provider.load_fdae_policy("rollback_fdae_svc").await.unwrap(),
+            Some(r#"{"version": "fdae/v1", "definitions": {}}"#.to_string())
+        );
+
+        // Re-deploy the same service_id as WASM, with a new policy P2 and a
+        // WASM source that doesn't exist -- `deploy_wasm` fails, which must
+        // restore P1, not leave P2 (already persisted before the failure)
+        // or an empty row in place.
+        let policy_2_filename = format!("test_fdae_rollback_p2_{}.json", std::process::id());
+        fs::write(
+            &policy_2_filename,
+            r#"{"version": "fdae/v1", "strict": true, "definitions": {}}"#,
+        )
+        .unwrap();
+        let second = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema_path: None,
+                rotation_policy: None,
+                fdae_policy_path: Some(policy_2_filename.clone()),
+            },
+            service_type: WitServiceType::Wasm(WasmManifest {
+                source: ArtifactSource::Url("/does_not_exist.wasm".to_string()),
+                hash: None,
+                interfaces: vec![],
+            }),
+            registry_certificate: None,
+        };
+        let result = service.deploy("rollback_fdae_svc".to_string(), second, &caller).await;
+        let _ = fs::remove_file(&policy_2_filename);
+        assert!(result.is_err(), "the WASM deploy must fail: {result:?}");
+
+        assert_eq!(
+            storage_provider.load_fdae_policy("rollback_fdae_svc").await.unwrap(),
+            Some(r#"{"version": "fdae/v1", "definitions": {}}"#.to_string()),
+            "a failed re-deploy must restore the previous policy, not leave the new one in force \
+             or drop the row entirely -- the still-running previous version's engine cache would \
+             otherwise resurrect the failed deploy's policy on its next miss"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_deploy_failure_restores_a_policy_the_new_manifest_dropped() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+            )
+            .await
+            .unwrap(),
+        );
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+
+        let native_dispatch = NativeDispatchRegistry::default();
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider.clone(),
+            blob_provider.clone(),
+            messaging_broker.clone(),
+            native_dispatch.clone(),
+            Arc::new(DashMap::new()),
+        )
+        .await
+        .unwrap();
+
+        let caller = node_wide_caller("test-caller");
+
+        // First, a successful deploy with a policy.
+        let policy_filename = format!("test_fdae_dropped_rollback_{}.json", std::process::id());
+        fs::write(&policy_filename, r#"{"version": "fdae/v1", "definitions": {}}"#).unwrap();
+        let first = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema_path: None,
+                rotation_policy: None,
+                fdae_policy_path: Some(policy_filename.clone()),
+            },
+            service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+            registry_certificate: None,
+        };
+        service.deploy("dropped_rollback_svc".to_string(), first, &caller).await.unwrap();
+        let _ = fs::remove_file(&policy_filename);
+        assert_eq!(
+            storage_provider.load_fdae_policy("dropped_rollback_svc").await.unwrap(),
+            Some(r#"{"version": "fdae/v1", "definitions": {}}"#.to_string())
+        );
+
+        // Re-deploy the same service_id as WASM, with no `fdae` block at all
+        // (the new manifest's `config` fully declares this deploy's policy
+        // state, so absence deletes the previous row up front) and a WASM
+        // source that doesn't exist, so `deploy_wasm` fails after the
+        // deletion already happened. The failure must restore the policy
+        // that was there before this deploy attempt, not leave the row
+        // deleted -- an already-running previous version must not lose its
+        // policy to an unrelated failed re-deploy.
+        let second = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema_path: None,
+                rotation_policy: None,
+                fdae_policy_path: None,
+            },
+            service_type: WitServiceType::Wasm(WasmManifest {
+                source: ArtifactSource::Url("/does_not_exist.wasm".to_string()),
+                hash: None,
+                interfaces: vec![],
+            }),
+            registry_certificate: None,
+        };
+        let result = service.deploy("dropped_rollback_svc".to_string(), second, &caller).await;
+        assert!(result.is_err(), "the WASM deploy must fail: {result:?}");
+
+        assert_eq!(
+            storage_provider.load_fdae_policy("dropped_rollback_svc").await.unwrap(),
+            Some(r#"{"version": "fdae/v1", "definitions": {}}"#.to_string()),
+            "a failed re-deploy whose manifest dropped the fdae block must restore the policy \
+             that existed before this attempt, not leave it deleted -- the still-running previous \
+             version's engine cache would otherwise resolve no policy on its next miss"
+        );
+    }
+
+    /// Wraps `MockStorage`, failing `save` for one specific interface name --
+    /// lets a test deterministically fail `EndpointRegistry::register`
+    /// (used by `register_wasm_endpoints`/`deploy_container_service`'s
+    /// registration loop) without needing a real network/podman failure.
+    struct FailingEndpointStorage {
+        inner: MockStorage,
+        fail_interface: String,
+    }
+
+    #[async_trait::async_trait]
+    impl EndpointStorage for FailingEndpointStorage {
+        async fn load_all(&self) -> Result<Vec<(String, String, SubstrateEndpoint)>> {
+            self.inner.load_all().await
+        }
+        async fn save(
+            &self,
+            service_id: &str,
+            interface_name: &str,
+            endpoint: &SubstrateEndpoint,
+        ) -> Result<()> {
+            if interface_name == self.fail_interface {
+                anyhow::bail!("simulated registry storage failure for {interface_name}");
+            }
+            self.inner.save(service_id, interface_name, endpoint).await
+        }
+        async fn remove(&self, service_id: &str, interface_name: &str) -> Result<()> {
+            self.inner.remove(service_id, interface_name).await
+        }
+        async fn load_all_owners(&self) -> Result<Vec<(String, String)>> {
+            self.inner.load_all_owners().await
+        }
+        async fn save_owner(&self, service_id: &str, owner_did: &str) -> Result<()> {
+            self.inner.save_owner(service_id, owner_did).await
+        }
+        async fn remove_owner(&self, service_id: &str) -> Result<()> {
+            self.inner.remove_owner(service_id).await
+        }
+    }
+
+    #[tokio::test]
+    async fn test_deploy_failure_after_successful_wasm_compile_rolls_back_gen_and_policy() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+            )
+            .await
+            .unwrap(),
+        );
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+        // The endpoint registry itself fails to persist one specific
+        // interface -- simulating `register_wasm_endpoints` (called *after*
+        // `deploy_wasm` has already compiled/cached the component and run
+        // its lifecycle hook) hitting a real storage error.
+        let registry = EndpointRegistry::new(Arc::new(FailingEndpointStorage {
+            inner: MockStorage::new(),
+            fail_interface: "fails-to-register".to_string(),
+        }))
+        .await
+        .unwrap();
+
+        let native_dispatch = NativeDispatchRegistry::default();
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider.clone(),
+            blob_provider.clone(),
+            messaging_broker.clone(),
+            native_dispatch.clone(),
+            Arc::new(DashMap::new()),
+        )
+        .await
+        .unwrap();
+
+        let caller = node_wide_caller("test-caller");
+
+        // First, a successful TCP deploy with policy P1, establishing a
+        // baseline config generation and policy for the same service_id.
+        let policy_1_filename = format!("test_fdae_endpoint_reg_p1_{}.json", std::process::id());
+        fs::write(&policy_1_filename, r#"{"version": "fdae/v1", "definitions": {}}"#).unwrap();
+        let first = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema_path: None,
+                rotation_policy: None,
+                fdae_policy_path: Some(policy_1_filename.clone()),
+            },
+            service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+            registry_certificate: None,
+        };
+        service.deploy("endpoint_reg_svc".to_string(), first, &caller).await.unwrap();
+        let _ = fs::remove_file(&policy_1_filename);
+        let (gen_before, _) = storage_provider
+            .get_latest_config_generation("endpoint_reg_svc")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            storage_provider.load_fdae_policy("endpoint_reg_svc").await.unwrap(),
+            Some(r#"{"version": "fdae/v1", "definitions": {}}"#.to_string())
+        );
+
+        // Re-deploy as WASM with a real, minimal, valid component (so
+        // `deploy_wasm` itself succeeds) and a new policy P2, but declaring
+        // the interface name the registry is rigged to reject -- so the
+        // failure happens in `register_wasm_endpoints`, *after* the
+        // component was already compiled/cached and P2 already persisted.
+        let wat = r#"
+(component
+  (core module $m (func (export "noop")))
+  (core instance $i (instantiate $m))
+  (func $noop (canon lift (core func $i "noop")))
+  (instance $interface (export "greet" (func $noop)))
+  (export "test-interface" (instance $interface))
+)
+"#;
+        let policy_2_filename = format!("test_fdae_endpoint_reg_p2_{}.json", std::process::id());
+        fs::write(
+            &policy_2_filename,
+            r#"{"version": "fdae/v1", "strict": true, "definitions": {}}"#,
+        )
+        .unwrap();
+        let second = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema_path: None,
+                rotation_policy: None,
+                fdae_policy_path: Some(policy_2_filename.clone()),
+            },
+            service_type: WitServiceType::Wasm(WasmManifest {
+                source: ArtifactSource::Binary(wat.as_bytes().to_vec()),
+                hash: None,
+                interfaces: vec!["fails-to-register".to_string()],
+            }),
+            registry_certificate: None,
+        };
+        let result = service.deploy("endpoint_reg_svc".to_string(), second, &caller).await;
+        let _ = fs::remove_file(&policy_2_filename);
+        assert!(result.is_err(), "endpoint registration must fail: {result:?}");
+        assert!(result.unwrap_err().contains("Endpoint registration failed"));
+
+        assert_eq!(
+            storage_provider.load_fdae_policy("endpoint_reg_svc").await.unwrap(),
+            Some(r#"{"version": "fdae/v1", "definitions": {}}"#.to_string()),
+            "a register_wasm_endpoints failure -- after the component was already compiled and \
+             the new policy already persisted -- must restore the previous policy, not leave the \
+             new one (P2) in force"
+        );
+        let (gen_after, _) = storage_provider
+            .get_latest_config_generation("endpoint_reg_svc")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            gen_after, gen_before,
+            "a register_wasm_endpoints failure must roll back the config generation this deploy \
+             attempt saved, not leave it in force alongside a rolled-back policy"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_deploy_tcp_endpoint_registration_failure_rolls_back_gen_and_policy() {
+        // Regression: `deploy_tcp_service` used to have no rollback at all
+        // -- a failed TCP redeploy left the new policy (P2) persisted and
+        // the config generation bumped, with the previous, still-running
+        // version's policy row silently replaced. Same shape as the
+        // already-covered WASM/container arms, using the same
+        // `FailingEndpointStorage` fixture to force the failure
+        // deterministically instead of a real network error.
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+            )
+            .await
+            .unwrap(),
+        );
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+        let registry = EndpointRegistry::new(Arc::new(FailingEndpointStorage {
+            inner: MockStorage::new(),
+            fail_interface: "fails-to-register".to_string(),
+        }))
+        .await
+        .unwrap();
+
+        let native_dispatch = NativeDispatchRegistry::default();
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider.clone(),
+            blob_provider.clone(),
+            messaging_broker.clone(),
+            native_dispatch.clone(),
+            Arc::new(DashMap::new()),
+        )
+        .await
+        .unwrap();
+
+        let caller = node_wide_caller("test-caller");
+
+        // First, a successful TCP deploy with policy P1, using an interface
+        // name the registry accepts.
+        let policy_1_filename = format!("test_tcp_rollback_p1_{}.json", std::process::id());
+        fs::write(&policy_1_filename, r#"{"version": "fdae/v1", "definitions": {}}"#).unwrap();
+        let first = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema_path: None,
+                rotation_policy: None,
+                fdae_policy_path: Some(policy_1_filename.clone()),
+            },
+            service_type: WitServiceType::Tcp(TcpManifest {
+                endpoints: vec![NetworkEndpoint {
+                    interface_name: "safe-interface".to_string(),
+                    host: "127.0.0.1".to_string(),
+                    port: 9000,
+                }],
+            }),
+            registry_certificate: None,
+        };
+        service.deploy("tcp_rollback_svc".to_string(), first, &caller).await.unwrap();
+        let _ = fs::remove_file(&policy_1_filename);
+        assert_eq!(
+            storage_provider.load_fdae_policy("tcp_rollback_svc").await.unwrap(),
+            Some(r#"{"version": "fdae/v1", "definitions": {}}"#.to_string())
+        );
+        let (gen_before, _) = storage_provider
+            .get_latest_config_generation("tcp_rollback_svc")
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Re-deploy the same TCP service with a new policy P2, declaring the
+        // interface name the registry is rigged to reject.
+        let policy_2_filename = format!("test_tcp_rollback_p2_{}.json", std::process::id());
+        fs::write(
+            &policy_2_filename,
+            r#"{"version": "fdae/v1", "strict": true, "definitions": {}}"#,
+        )
+        .unwrap();
+        let second = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema_path: None,
+                rotation_policy: None,
+                fdae_policy_path: Some(policy_2_filename.clone()),
+            },
+            service_type: WitServiceType::Tcp(TcpManifest {
+                endpoints: vec![NetworkEndpoint {
+                    interface_name: "fails-to-register".to_string(),
+                    host: "127.0.0.1".to_string(),
+                    port: 9001,
+                }],
+            }),
+            registry_certificate: None,
+        };
+        let result = service.deploy("tcp_rollback_svc".to_string(), second, &caller).await;
+        let _ = fs::remove_file(&policy_2_filename);
+        assert!(result.is_err(), "TCP endpoint registration must fail: {result:?}");
+        assert!(result.unwrap_err().contains("Endpoint registration failed"));
+
+        assert_eq!(
+            storage_provider.load_fdae_policy("tcp_rollback_svc").await.unwrap(),
+            Some(r#"{"version": "fdae/v1", "definitions": {}}"#.to_string()),
+            "a failed TCP redeploy must restore the previous policy, not leave the new one (P2) \
+             in force"
+        );
+        let (gen_after, _) = storage_provider
+            .get_latest_config_generation("tcp_rollback_svc")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            gen_after, gen_before,
+            "a failed TCP redeploy must roll back the config generation this attempt saved"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_deploy_fdae_policy_schema_invalid_rejected_and_not_persisted() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+            )
+            .await
+            .unwrap(),
+        );
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+
+        let native_dispatch = NativeDispatchRegistry::default();
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider.clone(),
+            blob_provider.clone(),
+            messaging_broker.clone(),
+            native_dispatch.clone(),
+            Arc::new(DashMap::new()),
+        )
+        .await
+        .unwrap();
+
+        let policy_filename = format!("test_fdae_bad_policy_{}.json", std::process::id());
+        // Missing required "definitions" key -- fails JSON-Schema validation.
+        fs::write(&policy_filename, r#"{"version": "fdae/v1"}"#).unwrap();
+
+        let manifest = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema_path: None,
+                rotation_policy: None,
+                fdae_policy_path: Some(policy_filename.clone()),
+            },
+            service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+            registry_certificate: None,
+        };
+
+        let result = service
+            .deploy("fdae_bad_service".to_string(), manifest, &node_wide_caller("test-caller"))
+            .await;
+
+        let _ = fs::remove_file(&policy_filename);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("FDAE policy validation failed"));
+        assert_eq!(
+            storage_provider.load_fdae_policy("fdae_bad_service").await.unwrap(),
+            None,
+            "an invalid policy must never reach fdae_policies"
+        );
+    }
+
+    /// A schema-invalid document that is itself sensitive-looking content
+    /// (not a policy at all) must not have that content echoed back to the
+    /// remote deploy caller. `jsonschema::ValidationError`'s `Display` embeds
+    /// the offending JSON *instance* -- for a top-level type mismatch, that
+    /// instance is the whole file -- so `PolicyError::Schema`'s `to_string()`
+    /// must never be forwarded verbatim into the returned error.
+    #[tokio::test]
+    async fn test_deploy_fdae_policy_error_does_not_echo_file_contents() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+            )
+            .await
+            .unwrap(),
+        );
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+
+        let native_dispatch = NativeDispatchRegistry::default();
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider.clone(),
+            blob_provider.clone(),
+            messaging_broker.clone(),
+            native_dispatch.clone(),
+            Arc::new(DashMap::new()),
+        )
+        .await
+        .unwrap();
+
+        let policy_filename = format!("test_fdae_secret_leak_{}.json", std::process::id());
+        let secret = "SUPER_SECRET_API_KEY_abc123";
+        fs::write(&policy_filename, format!("\"{secret}\"")).unwrap();
+
+        let manifest = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema_path: None,
+                rotation_policy: None,
+                fdae_policy_path: Some(policy_filename.clone()),
+            },
+            service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+            registry_certificate: None,
+        };
+
+        let result = service
+            .deploy("fdae_leak_service".to_string(), manifest, &node_wide_caller("test-caller"))
+            .await;
+
+        let _ = fs::remove_file(&policy_filename);
+
+        let err = result.unwrap_err();
+        assert!(err.contains("FDAE policy validation failed"), "{err}");
+        assert!(!err.contains(secret), "policy file content leaked into the deploy error: {err}");
+    }
+
+    #[tokio::test]
+    async fn test_deploy_fdae_policy_path_traversal_and_absolute_rejected() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+            )
+            .await
+            .unwrap(),
+        );
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+
+        let native_dispatch = NativeDispatchRegistry::default();
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider.clone(),
+            blob_provider.clone(),
+            messaging_broker.clone(),
+            native_dispatch.clone(),
+            Arc::new(DashMap::new()),
+        )
+        .await
+        .unwrap();
+
+        for bad_path in ["../../../../etc/fdae-policy.json", "/etc/fdae-policy.json"] {
+            let manifest = DeployManifest {
+                config: ServiceConfig {
+                    env: vec![],
+                    args: vec![],
+                    custom_config: None,
+                    quota: None,
+                    schema_path: None,
+                    rotation_policy: None,
+                    fdae_policy_path: Some(bad_path.to_string()),
+                },
+                service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+                registry_certificate: None,
+            };
+
+            let result = service
+                .deploy("fdae_traversal_service".to_string(), manifest, &node_wide_caller("t"))
+                .await;
+            assert!(result.is_err(), "{bad_path} should be rejected");
+            assert!(
+                result.unwrap_err().contains("Arbitrary file read prevented: Path traversal"),
+                "{bad_path} should fail on the traversal guard"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_deploy_fdae_policy_path_symlink_escape_rejected() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+            )
+            .await
+            .unwrap(),
+        );
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+
+        let native_dispatch = NativeDispatchRegistry::default();
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider,
+            blob_provider.clone(),
+            messaging_broker.clone(),
+            native_dispatch.clone(),
+            Arc::new(DashMap::new()),
+        )
+        .await
+        .unwrap();
+
+        // Same symlink-escape gap as the schema_path guard, on the
+        // fdae_policy_path guard: no `..` component, not absolute, but the
+        // symlink target lives outside the working directory.
+        let outside_dir = tempfile::tempdir().unwrap();
+        let outside_policy = outside_dir.path().join("fdae-policy.json");
+        fs::write(&outside_policy, r#"{"version": "fdae/v1", "definitions": {}}"#).unwrap();
+
+        let symlink_name = format!("test_fdae_policy_symlink_{}.json", std::process::id());
+        std::os::unix::fs::symlink(&outside_policy, &symlink_name).unwrap();
+
+        let manifest = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema_path: None,
+                rotation_policy: None,
+                fdae_policy_path: Some(symlink_name.clone()),
+            },
+            service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+            registry_certificate: None,
+        };
+
+        let result = service
+            .deploy(
+                "symlink_fdae_policy_service".to_string(),
+                manifest,
+                &node_wide_caller("test-caller"),
+            )
+            .await;
+
+        let _ = fs::remove_file(&symlink_name);
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err();
+        assert!(
+            err_msg.contains("resolves outside the working directory via a symlink"),
+            "{}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_warn_on_policy_collection_mismatch_fires_in_both_directions() {
+        use std::io;
+
+        use tracing_subscriber::prelude::*;
+
+        let logs = Arc::new(Mutex::new(Vec::new()));
+        let logs_clone = logs.clone();
+
+        struct MockWriter {
+            logs: Arc<Mutex<Vec<u8>>>,
+        }
+        impl io::Write for MockWriter {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.logs.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let make_writer = move || MockWriter { logs: logs_clone.clone() };
+        let layer = tracing_subscriber::fmt::layer().with_writer(make_writer).with_ansi(false);
+        let subscriber = tracing_subscriber::registry().with(layer);
+
+        // "widget" -> "widgets" is present in `collections` (no warning
+        // expected). "gizmo" -> "gizmos" is a `definitions:` entry whose
+        // table doesn't exist yet (direction 2). "orphan_table" exists in
+        // `collections` with no matching definition (direction 1).
+        let policy = syneroym_fdae::parse_and_validate(
+            r#"{
+                "version": "fdae/v1",
+                "definitions": {
+                    "widget": { "table": "widgets" },
+                    "gizmo": { "table": "gizmos" }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        tracing::subscriber::with_default(subscriber, || {
+            warn_on_policy_collection_mismatch(
+                "svc-a",
+                &policy,
+                &["widgets".to_string(), "orphan_table".to_string()],
+            );
+        });
+
+        let output = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+        assert!(
+            output.contains("orphan_table") && output.contains("has no FDAE definition"),
+            "direction 1 (table with no definition) should warn: {output}"
+        );
+        assert!(
+            output.contains("gizmos") && output.contains("no such collection exists"),
+            "direction 2 (definition with no table) should warn: {output}"
+        );
+        assert!(
+            !output.contains("collection=\"widgets\""),
+            "a collection with a matching definition must not warn: {output}"
+        );
+    }
+
+    #[test]
+    fn test_warn_on_ambiguous_public_permission() {
+        use std::io;
+
+        use tracing_subscriber::prelude::*;
+
+        struct MockWriter {
+            logs: Arc<Mutex<Vec<u8>>>,
+        }
+        impl io::Write for MockWriter {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.logs.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let run = |policy_json: &str| -> String {
+            let logs = Arc::new(Mutex::new(Vec::new()));
+            let logs_clone = logs.clone();
+            let make_writer = move || MockWriter { logs: logs_clone.clone() };
+            let layer = tracing_subscriber::fmt::layer().with_writer(make_writer).with_ansi(false);
+            let subscriber = tracing_subscriber::registry().with(layer);
+            let policy = syneroym_fdae::parse_and_validate(policy_json).unwrap();
+            tracing::subscriber::with_default(subscriber, || {
+                warn_on_ambiguous_public_permission("svc-a", &policy);
+            });
+            String::from_utf8(logs.lock().unwrap().clone()).unwrap()
+        };
+
+        // "audit" is unconditionally public and shares `data-layer/read`
+        // with the path-restricted "view", with no `includes` link between
+        // them -- exactly the shape that silently widens "view" for any
+        // caller holding a generic read capability.
+        let ambiguous = run(r#"{
+                "version": "fdae/v1",
+                "definitions": {
+                    "document": {
+                        "table": "documents",
+                        "relations": {"creator": {"target": "user", "join_column": "creator_uuid"}},
+                        "permissions": {
+                            "view": {"allows": ["data-layer/read"], "paths": [["creator", "caller"]]},
+                            "audit": {"allows": ["data-layer/read"], "paths": []}
+                        }
+                    },
+                    "user": {"table": "users", "principal_column": "did"}
+                }
+            }"#);
+        assert!(
+            ambiguous.contains("public_permission=\"audit\"")
+                && ambiguous.contains("restricted_permission=\"view\""),
+            "an unlinked public/restricted pair sharing an ability should warn: {ambiguous}"
+        );
+
+        // Same shape, but "audit" declares `includes: ["view"]` -- the
+        // author made the relationship explicit, so no warning.
+        let linked = run(r#"{
+                "version": "fdae/v1",
+                "definitions": {
+                    "document": {
+                        "table": "documents",
+                        "relations": {"creator": {"target": "user", "join_column": "creator_uuid"}},
+                        "permissions": {
+                            "view": {"allows": ["data-layer/read"], "paths": [["creator", "caller"]]},
+                            "audit": {"allows": ["data-layer/read"], "paths": [], "includes": ["view"]}
+                        }
+                    },
+                    "user": {"table": "users", "principal_column": "did"}
+                }
+            }"#);
+        assert!(linked.is_empty(), "an explicit `includes` link must not warn: {linked}");
+
+        // "audit" and "view" don't share a covering ability at all (write
+        // vs. read, and neither entails the other) -- no warning.
+        let disjoint = run(r#"{
+                "version": "fdae/v1",
+                "definitions": {
+                    "document": {
+                        "table": "documents",
+                        "relations": {"creator": {"target": "user", "join_column": "creator_uuid"}},
+                        "permissions": {
+                            "view": {"allows": ["rpc/move"], "paths": [["creator", "caller"]]},
+                            "audit": {"allows": ["data-layer/read"], "paths": []}
+                        }
+                    },
+                    "user": {"table": "users", "principal_column": "did"}
+                }
+            }"#);
+        assert!(disjoint.is_empty(), "disjoint abilities must not warn: {disjoint}");
     }
 
     /// M3B Slice 7: `deploy()` parses `http_routes` out of `custom_config`
@@ -1130,6 +2794,7 @@ mod tests {
                 quota: None,
                 schema_path: None,
                 rotation_policy: None,
+                fdae_policy_path: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -1208,6 +2873,7 @@ mod tests {
                 quota: None,
                 schema_path: None,
                 rotation_policy: None,
+                fdae_policy_path: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -1229,6 +2895,7 @@ mod tests {
                 quota: None,
                 schema_path: None,
                 rotation_policy: None,
+                fdae_policy_path: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest {
                 endpoints: vec![NetworkEndpoint {

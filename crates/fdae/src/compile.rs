@@ -12,7 +12,10 @@ use rusqlite::types::Value;
 use serde_json::Value as Json;
 use syneroym_ucan::{Ability, Capability, ResourceUri, SessionContext};
 
-use crate::policy::{CondOp, Definition, Operator, Permission, Policy, PolicyError, Relation};
+use crate::{
+    policy::{CondOp, Definition, Operator, Permission, Policy, PolicyError, Relation},
+    trace::DecisionTrace,
+};
 
 /// Depth backstop for a recursive relation's self-join, bound as a `?`
 /// param (never interpolated). The `visited_track` path-concatenation guard
@@ -48,6 +51,12 @@ pub struct CompiledSieve {
     /// ADR-0007 MongoDB-style filter), for the caller to compile via
     /// `data_db`'s `filter::compile_filter` and AND onto this sieve.
     pub where_caveats: Vec<Json>,
+    /// ADR-0017 §9 decision trace for this compilation, already emitted via
+    /// `tracing` by `compile_read`. Carried on the sieve so a Mode A caller
+    /// (`check_access`) can clone it, fill in `rows_reached` once the
+    /// predicate has actually been run, and emit a second, execution-aware
+    /// trace.
+    pub trace: DecisionTrace,
 }
 
 /// Which of ADR-0017 §4's two compilation modes to produce.
@@ -86,7 +95,23 @@ pub fn compile_read(
     mode: Mode,
 ) -> Result<Option<CompiledSieve>, PolicyError> {
     let Some((object_type, def)) = find_definition(policy, collection) else {
-        return if policy.strict { Ok(Some(deny_all())) } else { Ok(None) };
+        if !policy.strict {
+            return Ok(None);
+        }
+        let trace = DecisionTrace {
+            tier: 3,
+            collection: collection.to_string(),
+            service_id: service_id.to_string(),
+            subject_did: session.subject_did.clone(),
+            operation_admitted: false,
+            path_failed: Some(format!(
+                "no policy definition matches collection '{collection}' and the policy is strict"
+            )),
+            compiled_predicate: Some("0=1".to_string()),
+            ..DecisionTrace::default()
+        };
+        trace.emit();
+        return Ok(Some(CompiledSieve { trace, ..deny_all() }));
     };
 
     let resource = ResourceUri(format!(
@@ -101,19 +126,54 @@ pub fn compile_read(
     if applicable.is_empty() {
         let holding_caps: Vec<&Capability> =
             session.capabilities.iter().filter(|cap| cap.grants(&resource, operation)).collect();
+        let operation_admitted = !holding_caps.is_empty();
+        // The default permission is only a fallback *within the same
+        // grant-intersection contract* every other route obeys: its own
+        // `allows` must cover `operation`, or a caller holding an unrelated
+        // (e.g. write) capability could ride a read-only (or ability-less)
+        // default permission's paths straight through a write-mode check.
+        let default_covers_operation =
+            def.default.as_ref().and_then(|name| def.permissions.get(name)).is_some_and(|perm| {
+                perm.allows.iter().any(|a| Ability(a.clone()).entails(operation))
+            });
         match &def.default {
-            Some(default_perm) if !holding_caps.is_empty() => {
+            Some(default_perm) if operation_admitted && default_covers_operation => {
                 applicable.insert(default_perm.clone());
                 for cap in holding_caps {
                     push_unique(&mut entitling_caps, cap);
                 }
             }
-            _ => return Ok(Some(deny_all())),
+            _ => {
+                let path_failed = if !operation_admitted {
+                    format!(
+                        "no held capability grants operation '{}' on this resource",
+                        operation.0
+                    )
+                } else {
+                    "operation is granted by a held capability, but no permission's allows covers \
+                     it and no applicable default permission is configured"
+                        .to_string()
+                };
+                let trace = DecisionTrace {
+                    tier: 3,
+                    collection: collection.to_string(),
+                    service_id: service_id.to_string(),
+                    subject_did: session.subject_did.clone(),
+                    held: describe_caps(&holding_caps),
+                    operation_admitted,
+                    path_failed: Some(path_failed),
+                    compiled_predicate: Some("0=1".to_string()),
+                    ..DecisionTrace::default()
+                };
+                trace.emit();
+                return Ok(Some(CompiledSieve { trace, ..deny_all() }));
+            }
         }
     }
 
     let mut params: Vec<Value> = Vec::new();
     let mut clauses: Vec<String> = Vec::with_capacity(applicable.len());
+    let mut claim_absent_for: Vec<String> = Vec::new();
     for pname in &applicable {
         let Some(perm) = def.permissions.get(pname) else {
             // `default` is validated at parse time to name a real
@@ -124,7 +184,16 @@ pub fn compile_read(
                 "permission '{pname}' not found on definition '{object_type}'"
             )));
         };
-        clauses.push(compile_permission(policy, object_type, perm, session, &mut params)?);
+        let clause = compile_permission(policy, object_type, perm, session, &mut params)?;
+        // `compile_permission` returns exactly the literal string "0=1" in
+        // one place: a condition whose claim is absent from
+        // `session.claims`. Every other branch builds "1=1" or an `EXISTS`
+        // predicate, so this text match unambiguously identifies the
+        // claim-absent fail-closed case for the decision trace below.
+        if clause == "0=1" {
+            claim_absent_for.push(pname.clone());
+        }
+        clauses.push(clause);
     }
     let mut where_clause = format!("({})", clauses.join(" OR "));
 
@@ -133,20 +202,80 @@ pub fn compile_read(
         params.push(Value::Text(id.clone()));
     }
 
-    let masked_fields = compile_cls(def, &applicable, &entitling_caps);
+    let masked_fields = compile_cls(def, &applicable, &entitling_caps)?;
     let where_caveats: Vec<Json> = entitling_caps
         .iter()
         .filter_map(|cap| cap.caveats.as_ref()?.get("where").cloned())
         .collect();
 
-    Ok(Some(CompiledSieve { where_clause, params, masked_fields, where_caveats }))
+    // A deny is knowable at compile time only when *every* applicable
+    // permission's own clause denied via the claim-absent fail-closed path
+    // -- checking the *joined* string instead (e.g. `base_where_clause ==
+    // "(0=1)"`) would miss a multi-permission deny: two "0=1" clauses OR
+    // together as "(0=1 OR 0=1)", never as the literal "(0=1)" a naive
+    // string match expects. `claim_absent_for` only ever grows to
+    // `applicable.len()` (one push per clause, at most), so equality here
+    // is exactly "every clause was 0=1".
+    let path_failed = (claim_absent_for.len() == applicable.len()).then(|| {
+        format!("condition claim absent for permission(s): {}", claim_absent_for.join(", "))
+    });
+    // Field names and caveat-filter *keys* are policy/grant shape, safe to
+    // log; the caveat filter's *values* (DIDs, tenant ids, row predicates)
+    // are not, so only their keys are recorded here.
+    let caveats_applied: Vec<String> = masked_fields
+        .iter()
+        .map(|f| format!("fields.deny:{f}"))
+        .chain(where_caveats.iter().map(|c| format!("where.keys:[{}]", json_object_keys(c))))
+        .collect();
+    let trace = DecisionTrace {
+        tier: 3,
+        collection: collection.to_string(),
+        service_id: service_id.to_string(),
+        subject_did: session.subject_did.clone(),
+        held: describe_caps(&entitling_caps),
+        operation_admitted: true,
+        applicable_permissions: applicable.iter().cloned().collect(),
+        compiled_predicate: Some(where_clause.clone()),
+        rows_reached: None,
+        path_failed,
+        caveats_applied,
+    };
+    trace.emit();
+
+    Ok(Some(CompiledSieve { where_clause, params, masked_fields, where_caveats, trace }))
 }
 
+/// Comma-joined top-level keys of a caveat `where` document, for the
+/// decision trace -- a summary of *which* fields a caveat filters on
+/// without echoing the filter's bound values.
+fn json_object_keys(doc: &Json) -> String {
+    match doc {
+        Json::Object(map) => map.keys().cloned().collect::<Vec<_>>().join(","),
+        _ => String::new(),
+    }
+}
+
+/// `held` descriptors for a decision trace: `<resource>::<ability>` per
+/// evaluated capability, cheap and stable enough to log without exposing
+/// caveat contents.
+fn describe_caps(caps: &[&Capability]) -> Vec<String> {
+    caps.iter().map(|cap| format!("{}::{}", cap.with.0, cap.can.0)).collect()
+}
+
+/// Matches case-insensitively (ASCII fold), mirroring SQLite's own
+/// identifier resolution: an unquoted table name is case-insensitive, so a
+/// case-sensitive lookup here would let a caller name the same physical
+/// table under a spelling this policy doesn't recognize and fall through to
+/// the unfiltered "no definition" path while the query still hits the real,
+/// policy-governed table.
 fn find_definition<'a>(policy: &'a Policy, collection: &str) -> Option<(&'a str, &'a Definition)> {
     policy
         .definitions
         .iter()
-        .find(|(key, def)| key.as_str() == collection || def.table == collection)
+        .find(|(key, def)| {
+            key.as_str().eq_ignore_ascii_case(collection)
+                || def.table.eq_ignore_ascii_case(collection)
+        })
         .map(|(key, def)| (key.as_str(), def))
 }
 
@@ -156,6 +285,7 @@ fn deny_all() -> CompiledSieve {
         params: Vec::new(),
         masked_fields: Vec::new(),
         where_caveats: Vec::new(),
+        trace: DecisionTrace::default(),
     }
 }
 
@@ -251,7 +381,7 @@ fn compile_cls(
     def: &Definition,
     applicable: &BTreeSet<String>,
     entitling_caps: &[&Capability],
-) -> Vec<String> {
+) -> Result<Vec<String>, PolicyError> {
     let mut denied: BTreeSet<String> = BTreeSet::new();
 
     for pname in applicable {
@@ -270,7 +400,20 @@ fn compile_cls(
         denied.extend(deny.iter().filter_map(|v| v.as_str().map(str::to_string)));
     }
 
-    denied.into_iter().collect()
+    // A dotted entry (from a runtime capability caveat, so it can't be
+    // rejected at policy parse time the way a policy `fields.deny` entry
+    // is) would silently mask nothing: `strip_masked_fields` only removes
+    // flat top-level keys. Fail closed rather than let it round-trip as an
+    // unenforced no-op.
+    if let Some(dotted) = denied.iter().find(|f| f.contains('.')) {
+        return Err(PolicyError::Semantic(format!(
+            "capability caveat fields.deny entry '{dotted}' looks like a nested field path -- \
+             this slice only masks flat top-level keys, so a dotted entry would silently mask \
+             nothing"
+        )));
+    }
+
+    Ok(denied.into_iter().collect())
 }
 
 fn compile_permission(
@@ -1512,6 +1655,7 @@ mod tests {
                         "default": "fallback",
                         "permissions": {
                             "fallback": {
+                                "allows": ["data-layer/read"],
                                 "paths": [["creator", "caller"]]
                             }
                         }
@@ -1521,12 +1665,6 @@ mod tests {
             }"#,
         )
         .unwrap();
-        // "fallback" declares no `allows` at all, so `applicable_permissions`
-        // always skips it (its `covering_abilities` filter is empty) --
-        // it is reachable *only* through `default`'s `holds_operation`
-        // check, which is what isolates this test to that branch
-        // specifically (the bug: `holds_operation` used to be a bare bool,
-        // discarding which capability satisfied it).
         let caveat_cap = Capability {
             with: ResourceUri::service(SERVICE_ID, SERVICE_ID),
             can: Ability(Ability::DATA_LAYER_READ.to_string()),
@@ -1545,5 +1683,411 @@ mod tests {
         .unwrap();
         assert_eq!(sieve.where_caveats, vec![json!({"region": "EU"})]);
         assert_eq!(sieve.masked_fields, vec!["ssn".to_string()]);
+    }
+
+    #[test]
+    fn default_permission_not_covering_operation_is_denied() {
+        // Regression for the escalation this review found: `default` used
+        // to apply regardless of whether its own permission's `allows`
+        // covered the requested operation, so a caller holding *only* a
+        // write capability could ride a read-only (or ability-less)
+        // default permission's paths straight through a write-mode check.
+        let policy = parse_and_validate(
+            r#"{
+                "version": "fdae/v1",
+                "definitions": {
+                    "document": {
+                        "table": "documents",
+                        "relations": {"creator": {"target": "user", "join_column": "creator_uuid"}},
+                        "default": "fallback",
+                        "permissions": {
+                            "fallback": {
+                                "allows": ["data-layer/read"],
+                                "paths": [["creator", "caller"]]
+                            }
+                        }
+                    },
+                    "user": {"table": "users", "principal_column": "did"}
+                }
+            }"#,
+        )
+        .unwrap();
+        let write_cap = Capability {
+            with: ResourceUri::service(SERVICE_ID, SERVICE_ID),
+            can: Ability(Ability::DATA_LAYER_WRITE.to_string()),
+            caveats: None,
+        };
+        let alice = session("did:key:alice", vec![write_cap]);
+        let sieve = compile_read(
+            &policy,
+            "document",
+            &alice,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_WRITE.to_string()),
+            Mode::PointInTime { id: "doc-1".to_string() },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            sieve.where_clause, "0=1",
+            "a write-mode check must not fall through a read-only default permission"
+        );
+    }
+
+    #[test]
+    fn collection_lookup_is_case_insensitive_like_sqlite() {
+        // Regression for the bypass this review found: SQLite resolves
+        // table names case-insensitively, so a case-sensitive
+        // `find_definition` let a caller spell the collection differently
+        // than the policy and fall through to the unfiltered "no
+        // definition" path against the *same* physical table.
+        let policy = single_hop_policy();
+        let alice = session("did:key:alice", vec![read_cap(Some("document"))]);
+        let sieve = compile_read(
+            &policy,
+            "DOCUMENT",
+            &alice,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::Filter,
+        )
+        .unwrap();
+        assert!(
+            sieve.is_some(),
+            "a differently-cased collection name must still resolve to the same definition, not \
+             fall through to unfiltered"
+        );
+    }
+
+    #[test]
+    fn caveat_fields_deny_with_a_dotted_path_fails_closed() {
+        // Regression: a runtime capability caveat can't be rejected at
+        // policy parse time the way a policy `fields.deny` entry is, but a
+        // dotted entry would silently mask nothing the same way -- fail
+        // the compile instead of returning an unenforced mask.
+        let policy = single_hop_policy();
+        let cap = Capability {
+            with: resource("document"),
+            can: Ability(Ability::DATA_LAYER_READ.to_string()),
+            caveats: Some(json!({"fields": {"deny": ["profile.ssn"]}})),
+        };
+        let alice = session("did:key:alice", vec![cap]);
+        let err = compile_read(
+            &policy,
+            "document",
+            &alice,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::Filter,
+        )
+        .unwrap_err();
+        assert!(matches!(err, PolicyError::Semantic(_)));
+    }
+
+    // -- ADR-0017 §9 decision trace (M04B Slice B2 Phase 5) -----------------
+    //
+    // `compile_read` returns the same `DecisionTrace` it emits via `tracing`
+    // on `CompiledSieve::trace`, so these assert on the struct directly
+    // rather than capturing log output. `do_check_access`'s "rows not
+    // reached" trace (the fourth deny reason -- known only after Mode A
+    // actually executes the compiled predicate against a row) is covered in
+    // `data_db`, the layer that runs that query.
+
+    #[test]
+    fn decision_trace_records_operation_not_admitted() {
+        // No capabilities at all: nothing grants the operation on this
+        // resource, distinct from holding a grant but reaching no row.
+        let policy = single_hop_policy();
+        let alice = session("did:key:alice", vec![]);
+        let sieve = compile_read(
+            &policy,
+            "document",
+            &alice,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::Filter,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(sieve.trace.tier, 3);
+        assert!(!sieve.trace.operation_admitted);
+        assert!(sieve.trace.held.is_empty());
+        assert!(
+            sieve.trace.path_failed.as_deref().is_some_and(|r| r.contains("no held capability")),
+            "path_failed was: {:?}",
+            sieve.trace.path_failed
+        );
+    }
+
+    #[test]
+    fn decision_trace_records_strict_unknown_collection() {
+        let policy =
+            parse_and_validate(r#"{"version": "fdae/v1", "strict": true, "definitions": {}}"#)
+                .unwrap();
+        let alice = session("did:key:alice", vec![]);
+        let sieve = compile_read(
+            &policy,
+            "unrelated_collection",
+            &alice,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::Filter,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(sieve.trace.tier, 3);
+        assert!(!sieve.trace.operation_admitted);
+        assert!(
+            sieve.trace.path_failed.as_deref().is_some_and(|r| r.contains("strict")),
+            "path_failed was: {:?}",
+            sieve.trace.path_failed
+        );
+    }
+
+    #[test]
+    fn decision_trace_records_claim_absent() {
+        let policy = parse_and_validate(
+            r#"{
+                "version": "fdae/v1",
+                "definitions": {
+                    "user": {
+                        "table": "users",
+                        "principal_column": "did",
+                        "permissions": {
+                            "view_self": {
+                                "allows": ["data-layer/read"],
+                                "paths": [["caller"]],
+                                "conditions": [{"column": "region", "claim": "region"}]
+                            }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let alice = session("did:key:alice", vec![read_cap(Some("user"))]);
+        let sieve = compile_read(
+            &policy,
+            "user",
+            &alice,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::Filter,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(sieve.trace.operation_admitted);
+        assert_eq!(sieve.trace.applicable_permissions, vec!["view_self".to_string()]);
+        assert!(
+            sieve.trace.path_failed.as_deref().is_some_and(|r| r.contains("claim absent")),
+            "path_failed was: {:?}",
+            sieve.trace.path_failed
+        );
+    }
+
+    #[test]
+    fn decision_trace_records_allow_with_no_path_failed() {
+        let conn = Connection::open_in_memory().unwrap();
+        seed_schema(&conn);
+        insert_user(&conn, "u-alice", "did:key:alice", None);
+        insert_document(&conn, "doc-1", "u-alice");
+
+        let policy = single_hop_policy();
+        let alice = session("did:key:alice", vec![read_cap(Some("document"))]);
+        let sieve = compile_read(
+            &policy,
+            "document",
+            &alice,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::Filter,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(sieve.trace.operation_admitted);
+        assert_eq!(sieve.trace.applicable_permissions, vec!["view".to_string()]);
+        assert!(sieve.trace.path_failed.is_none());
+        assert_eq!(sieve.trace.compiled_predicate.as_deref(), Some(sieve.where_clause.as_str()));
+        assert_eq!(run_sieve(&conn, "documents", &sieve), vec!["doc-1"]);
+    }
+
+    #[test]
+    fn decision_trace_claim_absent_across_multiple_permissions_is_detected() {
+        // Regression: the deny used to be detected by string-matching the
+        // *joined* predicate against the literal "(0=1)", which only holds
+        // for a single applicable permission. Two permissions that both
+        // fail claim resolution OR together as "(0=1 OR 0=1)" -- a
+        // different string -- so the old check silently missed this and
+        // logged the decision as an allow.
+        let policy = parse_and_validate(
+            r#"{
+                "version": "fdae/v1",
+                "definitions": {
+                    "document": {
+                        "table": "documents",
+                        "relations": {"creator": {"target": "user", "join_column": "creator_uuid"}},
+                        "permissions": {
+                            "view_a": {
+                                "allows": ["data-layer/read"],
+                                "paths": [["creator", "caller"]],
+                                "conditions": [{"column": "region", "claim": "region"}]
+                            },
+                            "view_b": {
+                                "allows": ["data-layer/read"],
+                                "paths": [["creator", "caller"]],
+                                "conditions": [{"column": "tier", "claim": "tier"}]
+                            }
+                        }
+                    },
+                    "user": {"table": "users", "principal_column": "did"}
+                }
+            }"#,
+        )
+        .unwrap();
+        // A plain platform-ability read capability makes both `view_a` and
+        // `view_b` applicable (each's `allows` covers `data-layer/read`);
+        // neither `region` nor `tier` is in the caller's claims, so both
+        // clauses fail closed independently.
+        let alice = session("did:key:alice", vec![read_cap(Some("document"))]);
+        let sieve = compile_read(
+            &policy,
+            "document",
+            &alice,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::Filter,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            sieve.where_clause, "(0=1 OR 0=1)",
+            "sanity: both permissions' paths must actually be OR'd, not deduplicated"
+        );
+        assert!(sieve.trace.operation_admitted);
+        assert_eq!(
+            sieve.trace.applicable_permissions,
+            vec!["view_a".to_string(), "view_b".to_string()]
+        );
+        let reason = sieve.trace.path_failed.expect("a fully claim-absent deny must be traced");
+        assert!(reason.contains("view_a") && reason.contains("view_b"), "reason was: {reason}");
+    }
+
+    #[test]
+    fn decision_trace_records_default_not_covering_operation() {
+        // The fifth deny reason (compile.rs's H1-hardened branch): the
+        // caller holds a grant for the operation, but no permission's
+        // `allows` covers it and the configured `default` doesn't either --
+        // distinct from "operation not admitted" (no grant at all). Same
+        // policy/capability shape as
+        // `default_permission_not_covering_operation_is_denied`, which pins
+        // the SQL; this test pins the trace.
+        let policy = parse_and_validate(
+            r#"{
+                "version": "fdae/v1",
+                "definitions": {
+                    "document": {
+                        "table": "documents",
+                        "relations": {"creator": {"target": "user", "join_column": "creator_uuid"}},
+                        "default": "fallback",
+                        "permissions": {
+                            "fallback": {
+                                "allows": ["data-layer/read"],
+                                "paths": [["creator", "caller"]]
+                            }
+                        }
+                    },
+                    "user": {"table": "users", "principal_column": "did"}
+                }
+            }"#,
+        )
+        .unwrap();
+        let write_cap = Capability {
+            with: ResourceUri::service(SERVICE_ID, SERVICE_ID),
+            can: Ability(Ability::DATA_LAYER_WRITE.to_string()),
+            caveats: None,
+        };
+        let alice = session("did:key:alice", vec![write_cap]);
+        let sieve = compile_read(
+            &policy,
+            "document",
+            &alice,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_WRITE.to_string()),
+            Mode::PointInTime { id: "doc-1".to_string() },
+        )
+        .unwrap()
+        .unwrap();
+        assert!(
+            sieve.trace.operation_admitted,
+            "the caller does hold a grant for the operation -- distinct from no grant at all"
+        );
+        assert!(sieve.trace.applicable_permissions.is_empty());
+        assert!(
+            sieve
+                .trace
+                .path_failed
+                .as_deref()
+                .is_some_and(|r| r.contains("no applicable default permission")),
+            "path_failed was: {:?}",
+            sieve.trace.path_failed
+        );
+    }
+
+    #[test]
+    fn compile_read_emits_a_deny_via_tracing() {
+        // Nothing else in this suite proves `compile_read` actually calls
+        // `trace.emit()` -- every other decision-trace test asserts on the
+        // `CompiledSieve::trace` field the function *returns*, which would
+        // stay green even if the `emit()` calls inside `compile_read` were
+        // deleted entirely. This test captures real `tracing` output around
+        // a call, the same way `data_db::sqlite::tests::decision_trace_
+        // records_rows_not_reached_after_check_access_executes` proves
+        // `do_check_access`'s own `emit()`.
+        use std::{
+            io,
+            sync::{Arc, Mutex},
+        };
+
+        use tracing_subscriber::prelude::*;
+
+        struct MockWriter {
+            logs: Arc<Mutex<Vec<u8>>>,
+        }
+        impl io::Write for MockWriter {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.logs.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let logs = Arc::new(Mutex::new(Vec::new()));
+        let logs_clone = logs.clone();
+        let make_writer = move || MockWriter { logs: logs_clone.clone() };
+        let layer = tracing_subscriber::fmt::layer().with_ansi(false).with_writer(make_writer);
+        let subscriber = tracing_subscriber::registry().with(layer);
+
+        let policy =
+            parse_and_validate(r#"{"version": "fdae/v1", "strict": true, "definitions": {}}"#)
+                .unwrap();
+        let alice = session("did:key:alice", vec![]);
+        tracing::subscriber::with_default(subscriber, || {
+            let _ = compile_read(
+                &policy,
+                "unrelated_collection",
+                &alice,
+                SERVICE_ID,
+                &Ability(Ability::DATA_LAYER_READ.to_string()),
+                Mode::Filter,
+            )
+            .unwrap();
+        });
+
+        let logs_content = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+        assert!(logs_content.contains("fdae decision: deny"), "logs were: {logs_content}");
+        assert!(logs_content.contains("unrelated_collection"), "logs were: {logs_content}");
+        assert!(logs_content.contains("did:key:alice"), "logs were: {logs_content}");
     }
 }

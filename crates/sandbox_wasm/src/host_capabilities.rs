@@ -9,6 +9,7 @@
 
 use std::{
     fmt::{self, Debug, Formatter},
+    mem,
     sync::{Arc, Weak},
     time::Duration,
 };
@@ -18,15 +19,19 @@ use syneroym_core::local_registry::SubstrateEndpoint;
 use syneroym_data_blob::{
     BlobError as BlobStoreError, HostDownloadSession, HostUploadSession, traits::BlobProvider,
 };
-use syneroym_data_db::traits::{ServiceStore, StorageProvider};
+use syneroym_data_db::{
+    QueryAuth, auth,
+    traits::{ServiceStore, StorageProvider},
+};
 use syneroym_data_keystore::KeyStore;
+use syneroym_fdae::Policy;
 use syneroym_mqtt_broker::{
     MessagingError as BrokerMessagingError, MqttBroker, namespace_topic,
     namespace_topic_for_publish,
 };
 use syneroym_rpc::{
-    Ability, CallOrigin, CallerContext, ProxyError as RpcProxyError, ProxyProtocol, ProxyRequest,
-    ResourceUri, ServiceProxy,
+    Ability, AuthLevel, CallOrigin, CallerContext, ProxyError as RpcProxyError, ProxyProtocol,
+    ProxyRequest, ResourceUri, ServiceProxy,
 };
 use syneroym_wit_interfaces::host::syneroym::{
     app_config::app_config::{self, ConfigError},
@@ -96,6 +101,10 @@ pub struct HostState {
     pub storage_provider: Arc<dyn StorageProvider>,
     pub blob_provider: Arc<dyn BlobProvider>,
     pub caller: CallerContext,
+    /// Compiled FDAE policy for this service, or `None` if policy-absent
+    /// (today's unfiltered behavior). Loading a real policy at instantiation
+    /// is Phase 4; Phase 3 only threads the field through.
+    pub fdae_policy: Option<Arc<Policy>>,
     pub config_generation: u64,
     pub messaging: MessagingContext,
     pub streaming: StreamContext,
@@ -132,6 +141,7 @@ impl HostState {
         messaging: MessagingContext,
         streaming: StreamContext,
         service_proxy: Weak<dyn ServiceProxy>,
+        fdae_policy: Option<Arc<Policy>>,
     ) -> Self {
         let wasi = WasiCtx::builder().build();
         let table = ResourceTable::new();
@@ -151,11 +161,44 @@ impl HostState {
             storage_provider,
             blob_provider,
             caller,
+            fdae_policy,
             config_generation,
             messaging,
             streaming,
             service_proxy,
         }
+    }
+
+    /// Builds the `QueryAuth` for the current request from `fdae_policy` +
+    /// `caller.session`, or `None` on the policy-absent path (today's
+    /// unfiltered behavior).
+    ///
+    /// **`AuthLevel::LocalElevated` is exempt.** This is not the
+    /// `AuthLevel::System` carve-out `synsvc_native.rs::query_auth`
+    /// deliberately refuses (that one would let a guest's self-proxy escape
+    /// its own policy) -- `LocalElevated` is a categorically different,
+    /// host-synthesized-only context: `engine.rs`'s `invoke_lifecycle_hook`
+    /// is the sole producer, for `init`/`migrate`, and no guest input can
+    /// ever request it. Its capability (`data-layer/admin` on the service's
+    /// own resource) already entails `data-layer/read` and covers every
+    /// collection, so a policy with a `caller`-terminal permission compiles
+    /// a *real* (non-`deny_all`) sieve here -- one bound to
+    /// `"system:local-elevated:<service_id>"`, a DID no principal row will
+    /// ever hold, so it silently returns zero rows rather than failing. A
+    /// migration that reads its own data to decide how to rewrite it would
+    /// see nothing and could act on that emptiness. Sieving this context
+    /// was never the intent -- `execute-ddl`/`query-raw`'s own admin gate
+    /// exists specifically so lifecycle hooks act with full authority over
+    /// their own service's data.
+    fn query_auth(&self) -> Option<QueryAuth<'_>> {
+        if self.caller.auth == AuthLevel::LocalElevated {
+            return None;
+        }
+        self.fdae_policy.as_ref().map(|policy| QueryAuth {
+            policy,
+            session: &self.caller.session,
+            service_id: &self.component_id,
+        })
     }
 }
 
@@ -289,6 +332,17 @@ async fn open_store(
         .open_service_db(&component_id, &key_store)
         .await
         .map_err(|e| DataLayerError::Internal(e.to_string()))
+}
+
+/// Applies the host-side CLS field-mask projection to a single read record
+/// (ADR-0017 §4, Phase 3). A fail-closed `Err` from `strip_masked_fields`
+/// propagates, never a leaked payload.
+fn strip_record(
+    mut record: RecordReadValue,
+    masked_fields: &[String],
+) -> Result<RecordReadValue, DataLayerError> {
+    record.payload = auth::strip_masked_fields(record.payload, masked_fields)?;
+    Ok(record)
 }
 
 impl app_config::Host for HostState {
@@ -426,7 +480,9 @@ impl store::Host for HostState {
             self.storage_provider.clone(),
         )
         .await?;
-        store.get(&collection, &id).await
+        let query_auth = self.query_auth();
+        let outcome = store.get(&collection, &id, query_auth.as_ref()).await?;
+        outcome.value.map(|record| strip_record(record, &outcome.masked_fields)).transpose()
     }
 
     async fn query(
@@ -440,7 +496,14 @@ impl store::Host for HostState {
             self.storage_provider.clone(),
         )
         .await?;
-        store.query(&collection, &opts).await
+        let query_auth = self.query_auth();
+        let mut outcome = store.query(&collection, &opts, query_auth.as_ref()).await?;
+        let records = mem::take(&mut outcome.value.records)
+            .into_iter()
+            .map(|record| strip_record(record, &outcome.masked_fields))
+            .collect::<Result<Vec<_>, _>>()?;
+        outcome.value.records = records;
+        Ok(outcome.value)
     }
 
     async fn aggregate(
@@ -454,7 +517,8 @@ impl store::Host for HostState {
             self.storage_provider.clone(),
         )
         .await?;
-        store.aggregate(&collection, &pipeline).await
+        let query_auth = self.query_auth();
+        store.aggregate(&collection, &pipeline, query_auth.as_ref()).await
     }
 
     async fn delete(&mut self, collection: String, id: String) -> Result<(), DataLayerError> {
@@ -478,7 +542,29 @@ impl store::Host for HostState {
             self.storage_provider.clone(),
         )
         .await?;
-        store.delete_many(&collection, Some(filter.as_str())).await
+        let query_auth = self.query_auth();
+        store.delete_many(&collection, Some(filter.as_str()), query_auth.as_ref()).await
+    }
+
+    /// Mode A point-in-time authorization check (ADR-0017 §4). No capability
+    /// gate, unlike `execute_ddl`/`query_raw`: `check-access` *is* the
+    /// authorization primitive, reveals only the caller's own access, and is
+    /// fail-closed to `false` inside the store -- gating it would be
+    /// circular.
+    async fn check_access(
+        &mut self,
+        collection: String,
+        id: String,
+        operation: String,
+    ) -> Result<bool, DataLayerError> {
+        let store = open_store(
+            self.component_id.clone(),
+            self.key_store.clone(),
+            self.storage_provider.clone(),
+        )
+        .await?;
+        let query_auth = self.query_auth();
+        store.check_access(&collection, &id, &operation, query_auth.as_ref()).await
     }
 
     async fn batch_mutate(
@@ -768,10 +854,13 @@ impl wasmtime::ResourceLimiter for HostState {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use serde_json::json;
     use syneroym_core::{local_registry::EndpointRegistry, storage::MockStorage};
     use syneroym_data_blob::ObjectStoreBlobProvider;
     use syneroym_data_db::SqliteStorageProvider;
+    use syneroym_fdae::parse_and_validate;
     use syneroym_mqtt_broker::MqttBrokerConfig;
+    use syneroym_rpc::{Capability, SessionContext};
 
     use super::*;
 
@@ -827,6 +916,7 @@ pub(crate) mod tests {
             test_messaging_context(),
             test_streaming_context(),
             test_service_proxy(),
+            None,
         );
 
         use app_config::Host as ConfigHost;
@@ -875,6 +965,7 @@ pub(crate) mod tests {
             test_messaging_context(),
             test_streaming_context(),
             test_service_proxy(),
+            None,
         );
         let mut host_b = HostState::new(
             "svc_b".to_string(),
@@ -887,6 +978,7 @@ pub(crate) mod tests {
             test_messaging_context(),
             test_streaming_context(),
             test_service_proxy(),
+            None,
         );
 
         let val_a = ConfigHost::get(&mut host_a_gen2, "mode".to_string()).await.unwrap().unwrap();
@@ -906,6 +998,7 @@ pub(crate) mod tests {
             test_messaging_context(),
             test_streaming_context(),
             test_service_proxy(),
+            None,
         );
         let val_a_old =
             ConfigHost::get(&mut host_a_gen1, "mode".to_string()).await.unwrap().unwrap();
@@ -933,9 +1026,463 @@ pub(crate) mod tests {
             test_messaging_context(),
             test_streaming_context(),
             test_service_proxy(),
+            None,
         );
 
         let result = vault::Host::reveal(&mut host_state, "does-not-exist".to_string()).await;
         assert!(matches!(result, Err(VaultError::NotFound)));
+    }
+
+    // -- FDAE host wiring (M04B Slice B2 Phase 3) --------------------------
+    //
+    // Real `QueryAuth` construction from `HostState.fdae_policy`/`caller`,
+    // `check-access`, and host-side CLS field-stripping, exercised through
+    // `store::Host` on a `HostState` built with a hand-injected `Policy`
+    // (`fdae_policy` stays `None` in production until Phase 4).
+
+    const FDAE_SERVICE_ID: &str = "svc-fdae-host-test";
+
+    fn fdae_resource(collection: &str) -> ResourceUri {
+        ResourceUri(format!(
+            "{}/collection/{collection}",
+            ResourceUri::service(FDAE_SERVICE_ID, FDAE_SERVICE_ID).0
+        ))
+    }
+
+    fn fdae_read_cap(collection: &str) -> Capability {
+        Capability {
+            with: fdae_resource(collection),
+            can: Ability(Ability::DATA_LAYER_READ.to_string()),
+            caveats: None,
+        }
+    }
+
+    fn fdae_caller(subject_did: &str, capabilities: Vec<Capability>) -> CallerContext {
+        CallerContext {
+            caller_did: subject_did.to_string(),
+            app_instance: None,
+            session: SessionContext {
+                subject_did: subject_did.to_string(),
+                capabilities,
+                ..Default::default()
+            },
+            auth: AuthLevel::Ucan,
+            proof: None,
+        }
+    }
+
+    /// `document` --creator--> `user`, `view` permission reachable only via
+    /// the creator relation. Mirrors `data_db::tests_fdae::single_hop_policy`.
+    fn fdae_single_hop_policy() -> Policy {
+        parse_and_validate(
+            r#"{
+                "version": "fdae/v1",
+                "definitions": {
+                    "document": {
+                        "table": "documents",
+                        "relations": {"creator": {"target": "user", "join_column": "creator_uuid"}},
+                        "permissions": {
+                            "view": {"allows": ["data-layer/read"], "paths": [["creator", "caller"]]}
+                        }
+                    },
+                    "user": {"table": "users", "principal_column": "did"}
+                }
+            }"#,
+        )
+        .unwrap()
+    }
+
+    /// Same shape as `fdae_single_hop_policy`, plus a CLS `fields.deny:
+    /// ["ssn"]`.
+    fn fdae_cls_policy() -> Policy {
+        parse_and_validate(
+            r#"{
+                "version": "fdae/v1",
+                "definitions": {
+                    "document": {
+                        "table": "documents",
+                        "relations": {"creator": {"target": "user", "join_column": "creator_uuid"}},
+                        "permissions": {
+                            "view": {
+                                "allows": ["data-layer/read"],
+                                "paths": [["creator", "caller"]],
+                                "fields": {"deny": ["ssn"]}
+                            }
+                        }
+                    },
+                    "user": {"table": "users", "principal_column": "did"}
+                }
+            }"#,
+        )
+        .unwrap()
+    }
+
+    /// A `manage` permission covering `data-layer/write`, reachable via the
+    /// same creator relation -- used to exercise `delete_many`'s write-mode
+    /// sieve. Mirrors `data_db::tests_fdae::write_policy`.
+    fn fdae_write_policy() -> Policy {
+        parse_and_validate(
+            r#"{
+                "version": "fdae/v1",
+                "definitions": {
+                    "document": {
+                        "table": "documents",
+                        "relations": {"creator": {"target": "user", "join_column": "creator_uuid"}},
+                        "permissions": {
+                            "manage": {"allows": ["data-layer/write"], "paths": [["creator", "caller"]]}
+                        }
+                    },
+                    "user": {"table": "users", "principal_column": "did"}
+                }
+            }"#,
+        )
+        .unwrap()
+    }
+
+    fn fdae_write_cap(collection: &str) -> Capability {
+        Capability {
+            with: fdae_resource(collection),
+            can: Ability(Ability::DATA_LAYER_WRITE.to_string()),
+            caveats: None,
+        }
+    }
+
+    fn fdae_host_state(
+        storage_provider: Arc<dyn StorageProvider>,
+        caller: CallerContext,
+        fdae_policy: Option<Arc<Policy>>,
+    ) -> HostState {
+        HostState::new(
+            FDAE_SERVICE_ID.to_string(),
+            None,
+            Arc::new(KeyStore::new()),
+            storage_provider,
+            test_blob_provider(),
+            caller,
+            0,
+            test_messaging_context(),
+            test_streaming_context(),
+            test_service_proxy(),
+            fdae_policy,
+        )
+    }
+
+    /// Seeds `users`/`documents` collections: `doc-1` created by alice,
+    /// `doc-2` created by bob, both carrying an `ssn` field for the CLS
+    /// tests. Uses a policy-absent `HostState` (`put`/`create_collection`
+    /// carry no FDAE gate).
+    async fn fdae_seed_documents(storage_provider: Arc<dyn StorageProvider>) {
+        let mut seeder =
+            fdae_host_state(storage_provider, CallerContext::service_system(FDAE_SERVICE_ID), None);
+        store::Host::create_collection(
+            &mut seeder,
+            CollectionSchema { name: "users".to_string(), indexes: vec![] },
+        )
+        .await
+        .unwrap();
+        store::Host::create_collection(
+            &mut seeder,
+            CollectionSchema { name: "documents".to_string(), indexes: vec![] },
+        )
+        .await
+        .unwrap();
+        store::Host::put(
+            &mut seeder,
+            "users".to_string(),
+            RecordWriteValue {
+                id: "u-alice".to_string(),
+                payload: json!({"did": "did:key:alice"}).to_string().into_bytes(),
+            },
+        )
+        .await
+        .unwrap();
+        store::Host::put(
+            &mut seeder,
+            "users".to_string(),
+            RecordWriteValue {
+                id: "u-bob".to_string(),
+                payload: json!({"did": "did:key:bob"}).to_string().into_bytes(),
+            },
+        )
+        .await
+        .unwrap();
+        store::Host::put(
+            &mut seeder,
+            "documents".to_string(),
+            RecordWriteValue {
+                id: "doc-1".to_string(),
+                payload: json!({"creator_uuid": "u-alice", "ssn": "111-11-1111"})
+                    .to_string()
+                    .into_bytes(),
+            },
+        )
+        .await
+        .unwrap();
+        store::Host::put(
+            &mut seeder,
+            "documents".to_string(),
+            RecordWriteValue {
+                id: "doc-2".to_string(),
+                payload: json!({"creator_uuid": "u-bob", "ssn": "222-22-2222"})
+                    .to_string()
+                    .into_bytes(),
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    fn payload_json(record: &RecordReadValue) -> Value {
+        serde_json::from_slice(&record.payload).unwrap()
+    }
+
+    /// RLS: `get`/`query` return only alice's own reachable row, and
+    /// `check_access` matches (reachable -> `true`, unreachable -> `false`).
+    #[tokio::test]
+    async fn fdae_rls_filters_get_query_and_check_access() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage_provider: Arc<dyn StorageProvider> =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        fdae_seed_documents(storage_provider.clone()).await;
+
+        let policy = Arc::new(fdae_single_hop_policy());
+        let alice = fdae_caller("did:key:alice", vec![fdae_read_cap("documents")]);
+        let mut host = fdae_host_state(storage_provider, alice, Some(policy));
+
+        let own = store::Host::get(&mut host, "documents".to_string(), "doc-1".to_string())
+            .await
+            .unwrap();
+        assert!(own.is_some(), "alice's own document must be reachable");
+        let other = store::Host::get(&mut host, "documents".to_string(), "doc-2".to_string())
+            .await
+            .unwrap();
+        assert!(other.is_none(), "bob's document is unreachable, not an error (ADR-0007)");
+
+        let opts = QueryOptions { filter: None, limit: None, cursor: None };
+        let result = store::Host::query(&mut host, "documents".to_string(), opts).await.unwrap();
+        let ids: Vec<_> = result.records.iter().map(|r| r.id.clone()).collect();
+        assert_eq!(ids, vec!["doc-1"], "bob's document must be excluded from query results");
+
+        assert!(
+            store::Host::check_access(
+                &mut host,
+                "documents".to_string(),
+                "doc-1".to_string(),
+                Ability::DATA_LAYER_READ.to_string(),
+            )
+            .await
+            .unwrap(),
+            "check_access must allow alice's own reachable row"
+        );
+        assert!(
+            !store::Host::check_access(
+                &mut host,
+                "documents".to_string(),
+                "doc-2".to_string(),
+                Ability::DATA_LAYER_READ.to_string(),
+            )
+            .await
+            .unwrap(),
+            "check_access must deny bob's unreachable row"
+        );
+    }
+
+    /// CLS: a policy with `fields.deny: ["ssn"]` strips `ssn` from the
+    /// payload returned by both `get` and `query` -- the Phase-3 host-side
+    /// projection task.md's "CLS: value never returned" row was waiting on.
+    #[tokio::test]
+    async fn fdae_cls_strips_masked_field_from_get_and_query() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage_provider: Arc<dyn StorageProvider> =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        fdae_seed_documents(storage_provider.clone()).await;
+
+        let policy = Arc::new(fdae_cls_policy());
+        let alice = fdae_caller("did:key:alice", vec![fdae_read_cap("documents")]);
+        let mut host = fdae_host_state(storage_provider, alice, Some(policy));
+
+        let own = store::Host::get(&mut host, "documents".to_string(), "doc-1".to_string())
+            .await
+            .unwrap()
+            .unwrap();
+        let payload = payload_json(&own);
+        assert!(payload.get("ssn").is_none(), "ssn must be stripped from get's payload");
+        assert_eq!(payload.get("creator_uuid").and_then(Value::as_str), Some("u-alice"));
+
+        let opts = QueryOptions { filter: None, limit: None, cursor: None };
+        let result = store::Host::query(&mut host, "documents".to_string(), opts).await.unwrap();
+        assert_eq!(result.records.len(), 1);
+        let payload = payload_json(&result.records[0]);
+        assert!(payload.get("ssn").is_none(), "ssn must be stripped from query's payload");
+    }
+
+    /// Pass-through: `fdae_policy: None` leaves rows and payloads unchanged
+    /// -- zero behavior change on the unconfigured (today's production)
+    /// path.
+    #[tokio::test]
+    async fn fdae_policy_absent_is_unfiltered_pass_through() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage_provider: Arc<dyn StorageProvider> =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        fdae_seed_documents(storage_provider.clone()).await;
+
+        let caller = CallerContext::service_system(FDAE_SERVICE_ID);
+        let mut host = fdae_host_state(storage_provider, caller, None);
+
+        let opts = QueryOptions { filter: None, limit: None, cursor: None };
+        let result = store::Host::query(&mut host, "documents".to_string(), opts).await.unwrap();
+        assert_eq!(result.records.len(), 2, "no policy means both rows are visible");
+        for record in &result.records {
+            assert!(
+                payload_json(record).get("ssn").is_some(),
+                "no policy means no CLS strip -- ssn must survive untouched"
+            );
+        }
+    }
+
+    /// Lifecycle-hook reads (`init`/`migrate`, which run as
+    /// `CallerContext::local_elevated`) must stay unfiltered even under a
+    /// deployed policy. Without `query_auth`'s `LocalElevated` exemption,
+    /// `local_elevated`'s `data-layer/admin` capability entails
+    /// `data-layer/read` and covers every collection, so `compile_read`
+    /// compiles a *real* sieve here -- bound to
+    /// `"system:local-elevated:<service_id>"`, a DID no principal row can
+    /// ever hold -- and both documents would silently vanish. A migration
+    /// that reads its own data to decide how to rewrite it would act on
+    /// that emptiness instead of erroring.
+    #[tokio::test]
+    async fn fdae_local_elevated_lifecycle_reads_stay_unfiltered_under_a_policy() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage_provider: Arc<dyn StorageProvider> =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        fdae_seed_documents(storage_provider.clone()).await;
+
+        let policy = Arc::new(fdae_single_hop_policy());
+        let caller = CallerContext::local_elevated(FDAE_SERVICE_ID);
+        let mut host = fdae_host_state(storage_provider, caller, Some(policy));
+
+        let opts = QueryOptions { filter: None, limit: None, cursor: None };
+        let result = store::Host::query(&mut host, "documents".to_string(), opts).await.unwrap();
+        assert_eq!(
+            result.records.len(),
+            2,
+            "a lifecycle hook must see every row regardless of the deployed policy"
+        );
+
+        let doc = store::Host::get(&mut host, "documents".to_string(), "doc-2".to_string())
+            .await
+            .unwrap();
+        assert!(
+            doc.is_some(),
+            "get during init/migrate must not be sieved against the synthesized local-elevated \
+             identity"
+        );
+    }
+
+    /// `aggregate` is row-filtered through the host layer identically to
+    /// `get`/`query` -- covers the `store::Host::aggregate` wiring seam this
+    /// phase adds, which no host test previously exercised with a real
+    /// `Some(policy)` (a dropped or `None`-replaced `query_auth()` call here
+    /// would have passed every prior test).
+    #[tokio::test]
+    async fn fdae_aggregate_is_row_filtered_through_host() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage_provider: Arc<dyn StorageProvider> =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        fdae_seed_documents(storage_provider.clone()).await;
+
+        let policy = Arc::new(fdae_single_hop_policy());
+        let alice = fdae_caller("did:key:alice", vec![fdae_read_cap("documents")]);
+        let mut host = fdae_host_state(storage_provider, alice, Some(policy));
+
+        let result = store::Host::aggregate(
+            &mut host,
+            "documents".to_string(),
+            r#"{"$group":{"_id":null,"n":{"$sum":1}}}"#.to_string(),
+        )
+        .await
+        .unwrap();
+        // `SqlValue` doesn't derive `PartialEq` -- compare via its
+        // already-derived `Serialize` impl.
+        assert_eq!(
+            serde_json::to_value(&result.rows).unwrap(),
+            serde_json::to_value(vec![vec![SqlValue::Integer(1)]]).unwrap(),
+            "only alice's own doc-1 is counted"
+        );
+    }
+
+    /// `delete_many` is filtered as a write operation through the host layer
+    /// -- same wiring-seam coverage gap as `aggregate` above.
+    #[tokio::test]
+    async fn fdae_delete_many_is_write_filtered_through_host() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage_provider: Arc<dyn StorageProvider> =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        fdae_seed_documents(storage_provider.clone()).await;
+        let policy = Arc::new(fdae_write_policy());
+
+        // A read-only capability must not satisfy the write-mode sieve.
+        let alice_read_only = fdae_caller("did:key:alice", vec![fdae_read_cap("documents")]);
+        let mut host_ro =
+            fdae_host_state(storage_provider.clone(), alice_read_only, Some(policy.clone()));
+        let deleted =
+            store::Host::delete_many(&mut host_ro, "documents".to_string(), String::new())
+                .await
+                .unwrap();
+        assert_eq!(deleted, 0, "a read-only capability must not delete anything");
+
+        // A write capability deletes only alice's own row.
+        let alice_write = fdae_caller("did:key:alice", vec![fdae_write_cap("documents")]);
+        let mut host_rw = fdae_host_state(storage_provider, alice_write, Some(policy));
+        let deleted =
+            store::Host::delete_many(&mut host_rw, "documents".to_string(), String::new())
+                .await
+                .unwrap();
+        assert_eq!(deleted, 1, "only alice's own document is deletable");
+    }
+
+    /// **D-04-02-g CLS-narrowing pin** (task.md Decision Register): the same
+    /// "an extra capability shouldn't narrow" defect that Phase 2 pinned for
+    /// RLS (`tests_fdae.rs::two_capabilities_with_conflicting_caveats_
+    /// currently_narrow_to_zero_rows`) applies to CLS `fields.deny` union
+    /// across capabilities too, and only becomes observable now that
+    /// field-stripping ships (Phase 3). Alice holds both an unrestricted
+    /// `read` capability and a second `read` capability caveated
+    /// `fields.deny: ["ssn"]` on the same resource; today's `compile_cls`
+    /// unions every entitling capability's deny-list, so even the
+    /// unrestricted grant's payload comes back stripped. If D-04-02-g is
+    /// fixed, this assertion should flip to `ssn` being **present** (the
+    /// unrestricted capability's caveat-free access should win).
+    #[tokio::test]
+    async fn fdae_d04_02_g_extra_caveated_capability_narrows_cls_strip() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage_provider: Arc<dyn StorageProvider> =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        fdae_seed_documents(storage_provider.clone()).await;
+
+        // `fdae_single_hop_policy` carries no policy-level `fields.deny` --
+        // the mask below comes entirely from the second capability's caveat.
+        let policy = Arc::new(fdae_single_hop_policy());
+        let unrestricted_cap = fdae_read_cap("documents");
+        let ssn_deny_cap = Capability {
+            with: fdae_resource("documents"),
+            can: Ability(Ability::DATA_LAYER_READ.to_string()),
+            caveats: Some(json!({"fields": {"deny": ["ssn"]}})),
+        };
+        let alice = fdae_caller("did:key:alice", vec![unrestricted_cap, ssn_deny_cap]);
+        let mut host = fdae_host_state(storage_provider, alice, Some(policy));
+
+        let own = store::Host::get(&mut host, "documents".to_string(), "doc-1".to_string())
+            .await
+            .unwrap()
+            .unwrap();
+        let payload = payload_json(&own);
+        assert!(
+            payload.get("ssn").is_none(),
+            "D-04-02-g: today, the caveated capability's fields.deny narrows the unrestricted \
+             capability's access too, so ssn is stripped even though the unrestricted grant alone \
+             should expose it. If this assertion starts failing, D-04-02-g has been fixed -- \
+             update this test to assert ssn IS present."
+        );
     }
 }

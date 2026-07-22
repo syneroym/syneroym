@@ -48,7 +48,7 @@ async fn test_put_get_patch_correctness() {
         .put("people", &write_value("p1", r#"{"name": "alice", "age": 30}"#), "creator-1")
         .await
         .unwrap();
-    let got = store.get("people", "p1").await.unwrap().unwrap();
+    let got = store.get("people", "p1", None).await.unwrap().value.unwrap();
     assert_eq!(got.id, "p1");
     assert_eq!(got.creator_id, "creator-1");
     let payload: Value = serde_json::from_slice(&got.payload).unwrap();
@@ -56,7 +56,7 @@ async fn test_put_get_patch_correctness() {
     assert_eq!(payload["age"], 30);
 
     store.patch("people", "p1", br#"{"age": 31, "nickname": "al"}"#).await.unwrap();
-    let patched = store.get("people", "p1").await.unwrap().unwrap();
+    let patched = store.get("people", "p1", None).await.unwrap().value.unwrap();
     let payload: Value = serde_json::from_slice(&patched.payload).unwrap();
     assert_eq!(payload["name"], "alice");
     assert_eq!(payload["age"], 31);
@@ -69,7 +69,7 @@ async fn test_put_get_patch_correctness() {
 async fn test_get_returns_ok_none_for_missing_record() {
     let store = setup_store().await;
     store.create_collection(&schema("people")).await.unwrap();
-    assert!(store.get("people", "does-not-exist").await.unwrap().is_none());
+    assert!(store.get("people", "does-not-exist", None).await.unwrap().value.is_none());
 }
 
 #[tokio::test]
@@ -85,7 +85,7 @@ async fn test_query_operators_end_to_end() {
         limit: None,
         cursor: None,
     };
-    let result = store.query("people", &opts).await.unwrap();
+    let result = store.query("people", &opts, None).await.unwrap().value;
     let mut ids: Vec<_> = result.records.iter().map(|r| r.id.clone()).collect();
     ids.sort();
     assert_eq!(ids, vec!["p1", "p3"]);
@@ -95,7 +95,7 @@ async fn test_query_operators_end_to_end() {
         limit: None,
         cursor: None,
     };
-    let result_in = store.query("people", &opts_in).await.unwrap();
+    let result_in = store.query("people", &opts_in, None).await.unwrap().value;
     let mut ids_in: Vec<_> = result_in.records.iter().map(|r| r.id.clone()).collect();
     ids_in.sort();
     assert_eq!(ids_in, vec!["p2", "p3"]);
@@ -105,7 +105,7 @@ async fn test_query_operators_end_to_end() {
         limit: None,
         cursor: None,
     };
-    let result_and = store.query("people", &opts_and).await.unwrap();
+    let result_and = store.query("people", &opts_and, None).await.unwrap().value;
     assert_eq!(result_and.records.len(), 1);
     assert_eq!(result_and.records[0].id, "p1");
 }
@@ -128,7 +128,7 @@ async fn test_query_dot_notation() {
         limit: None,
         cursor: None,
     };
-    let result = store.query("people", &opts).await.unwrap();
+    let result = store.query("people", &opts, None).await.unwrap().value;
     assert_eq!(result.records.len(), 1);
     assert_eq!(result.records[0].id, "p1");
 }
@@ -144,7 +144,7 @@ async fn test_query_empty_list_when_no_match() {
         limit: None,
         cursor: None,
     };
-    let result = store.query("people", &opts).await.unwrap();
+    let result = store.query("people", &opts, None).await.unwrap().value;
     assert!(result.records.is_empty());
     assert_eq!(result.next_cursor, None);
 }
@@ -158,16 +158,18 @@ async fn test_query_cursor_pagination_disjoint_pages() {
     }
 
     let page1 = store
-        .query("people", &QueryOptions { filter: None, limit: Some(4), cursor: None })
+        .query("people", &QueryOptions { filter: None, limit: Some(4), cursor: None }, None)
         .await
-        .unwrap();
+        .unwrap()
+        .value;
     assert_eq!(page1.records.len(), 4);
     let cursor = page1.next_cursor.clone().expect("expected a next cursor for page 1");
 
     let page2 = store
-        .query("people", &QueryOptions { filter: None, limit: Some(4), cursor: Some(cursor) })
+        .query("people", &QueryOptions { filter: None, limit: Some(4), cursor: Some(cursor) }, None)
         .await
-        .unwrap();
+        .unwrap()
+        .value;
     assert_eq!(page2.records.len(), 4);
 
     let page1_ids: Vec<_> = page1.records.iter().map(|r| r.id.clone()).collect();
@@ -193,7 +195,7 @@ async fn test_batch_mutate_rolls_back_all_on_one_failure() {
     let err = store.batch_mutate("people", &mutations, "c").await.unwrap_err();
     assert!(matches!(err, DataLayerError::SchemaViolation(_)));
     assert!(
-        store.get("people", "new-1").await.unwrap().is_none(),
+        store.get("people", "new-1", None).await.unwrap().value.is_none(),
         "partial batch must not persist"
     );
 }
@@ -217,10 +219,11 @@ async fn test_delete_many_returns_affected_row_count() {
     store.put("people", &write_value("p2", r#"{"age": 20}"#), "c").await.unwrap();
     store.put("people", &write_value("p3", r#"{"age": 30}"#), "c").await.unwrap();
 
-    let deleted = store.delete_many("people", Some(r#"{"age": {"$gte": 20}}"#)).await.unwrap();
+    let deleted =
+        store.delete_many("people", Some(r#"{"age": {"$gte": 20}}"#), None).await.unwrap();
     assert_eq!(deleted, 2);
-    assert!(store.get("people", "p1").await.unwrap().is_some());
-    assert!(store.get("people", "p2").await.unwrap().is_none());
+    assert!(store.get("people", "p1", None).await.unwrap().value.is_some());
+    assert!(store.get("people", "p2", None).await.unwrap().value.is_none());
 }
 
 #[tokio::test]
@@ -239,7 +242,7 @@ async fn test_unsupported_operator_returns_schema_violation() {
         limit: None,
         cursor: None,
     };
-    let err = store.query("people", &opts).await.unwrap_err();
+    let err = store.query("people", &opts, None).await.unwrap_err();
     assert!(
         matches!(err, DataLayerError::SchemaViolation(msg) if msg.contains("unsupported operator"))
     );
@@ -256,11 +259,11 @@ async fn test_sql_injection_via_filter_value_is_safely_bound() {
         limit: None,
         cursor: None,
     };
-    let result = store.query("people", &opts).await.unwrap();
+    let result = store.query("people", &opts, None).await.unwrap().value;
     assert!(result.records.is_empty());
 
     // The table must still exist and be queryable afterwards.
-    assert!(store.get("people", "p1").await.unwrap().is_some());
+    assert!(store.get("people", "p1", None).await.unwrap().value.is_some());
 }
 
 #[tokio::test]
@@ -272,7 +275,7 @@ async fn test_filter_nested_over_10_levels_rejected() {
         json = format!(r#"{{"f{i}": {json}}}"#);
     }
     let opts = QueryOptions { filter: Some(json), limit: None, cursor: None };
-    let err = store.query("people", &opts).await.unwrap_err();
+    let err = store.query("people", &opts, None).await.unwrap_err();
     assert!(
         matches!(err, DataLayerError::SchemaViolation(msg) if msg.contains("too deeply nested"))
     );
@@ -283,13 +286,13 @@ async fn test_updated_at_is_host_injected_discarding_guest_value() {
     let store = setup_store().await;
     store.create_collection(&schema("people")).await.unwrap();
     store.put("people", &write_value("p1", "{}"), "c").await.unwrap();
-    let before = store.get("people", "p1").await.unwrap().unwrap();
+    let before = store.get("people", "p1", None).await.unwrap().value.unwrap();
 
     // The guest embeds an `updated_at` key inside the merge-patch payload
     // itself -- this must have no effect on the host-injected `updated-at`
     // column, which is unconditionally recomputed from the host clock.
     store.patch("people", "p1", br#"{"updated_at": 1}"#).await.unwrap();
-    let after = store.get("people", "p1").await.unwrap().unwrap();
+    let after = store.get("people", "p1", None).await.unwrap().value.unwrap();
     assert!(after.updated_at >= before.updated_at);
     assert_ne!(after.updated_at, 1);
 }
@@ -300,7 +303,7 @@ async fn test_execute_ddl_succeeds_and_is_queryable() {
     store.create_collection(&schema("people")).await.unwrap();
     store.execute_ddl("ALTER TABLE people ADD COLUMN nickname TEXT").await.unwrap();
     store.put("people", &write_value("p1", "{}"), "c").await.unwrap();
-    assert!(store.get("people", "p1").await.unwrap().is_some());
+    assert!(store.get("people", "p1", None).await.unwrap().value.is_some());
 }
 
 #[tokio::test]
@@ -316,7 +319,7 @@ async fn test_creator_id_is_always_host_supplied() {
     let store = setup_store().await;
     store.create_collection(&schema("people")).await.unwrap();
     store.put("people", &write_value("p1", "{}"), "the-deploying-service-id").await.unwrap();
-    let got = store.get("people", "p1").await.unwrap().unwrap();
+    let got = store.get("people", "p1", None).await.unwrap().value.unwrap();
     assert_eq!(got.creator_id, "the-deploying-service-id");
 }
 
@@ -324,7 +327,7 @@ async fn test_creator_id_is_always_host_supplied() {
 async fn test_query_missing_collection_is_an_error_not_empty_list() {
     let store = setup_store().await;
     let opts = QueryOptions { filter: None, limit: None, cursor: None };
-    let err = store.query("never_created", &opts).await.unwrap_err();
+    let err = store.query("never_created", &opts, None).await.unwrap_err();
     assert!(matches!(err, DataLayerError::CollectionNotFound));
 }
 
@@ -560,7 +563,11 @@ async fn seeded_categorized_people_store() -> Box<dyn ServiceStore> {
 async fn test_aggregate_group_count() {
     let store = seeded_categorized_people_store().await;
     let result = store
-        .aggregate("people", r#"{"$group":{"_id":"category","n":{"$sum":1}},"$sort":{"_id":1}}"#)
+        .aggregate(
+            "people",
+            r#"{"$group":{"_id":"category","n":{"$sum":1}},"$sort":{"_id":1}}"#,
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(result.columns, vec!["_id".to_string(), "n".to_string()]);
@@ -581,6 +588,7 @@ async fn test_aggregate_sum_and_having() {
             "people",
             r#"{"$group":{"_id":"category","total":{"$sum":"amount"}},
                "$having":{"total":{"$gt":20}},"$sort":{"_id":1}}"#,
+            None,
         )
         .await
         .unwrap();
@@ -599,6 +607,7 @@ async fn test_aggregate_project_subset() {
             "people",
             r#"{"$group":{"_id":"category","n":{"$sum":1},"total":{"$sum":"amount"}},
                "$project":["total","_id"],"$sort":{"_id":1}}"#,
+            None,
         )
         .await
         .unwrap();
@@ -621,6 +630,7 @@ async fn test_aggregate_avg_min_max_end_to_end() {
             r#"{"$group":{"_id":"category","avg_amount":{"$avg":"amount"},
                "min_amount":{"$min":"amount"},"max_amount":{"$max":"amount"}},
                "$sort":{"_id":1}}"#,
+            None,
         )
         .await
         .unwrap();
@@ -669,8 +679,10 @@ async fn test_aggregate_default_order_is_ascending_by_id() {
             .unwrap();
     }
 
-    let result =
-        store.aggregate("people", r#"{"$group":{"_id":"category","n":{"$sum":1}}}"#).await.unwrap();
+    let result = store
+        .aggregate("people", r#"{"$group":{"_id":"category","n":{"$sum":1}}}"#, None)
+        .await
+        .unwrap();
     let ids: Vec<String> = result
         .rows
         .iter()
@@ -692,8 +704,10 @@ async fn test_aggregate_over_page_cap_quota_exceeded() {
             .await
             .unwrap();
     }
-    let err =
-        store.aggregate("people", r#"{"$group":{"_id":"k","n":{"$sum":1}}}"#).await.unwrap_err();
+    let err = store
+        .aggregate("people", r#"{"$group":{"_id":"k","n":{"$sum":1}}}"#, None)
+        .await
+        .unwrap_err();
     assert!(matches!(err, DataLayerError::QuotaExceeded));
 }
 
@@ -712,6 +726,7 @@ async fn test_aggregate_skip_limit_pages_groups() {
         .aggregate(
             "people",
             r#"{"$group":{"_id":"k","n":{"$sum":1}},"$sort":{"_id":1},"$limit":6}"#,
+            None,
         )
         .await
         .unwrap();
@@ -719,6 +734,7 @@ async fn test_aggregate_skip_limit_pages_groups() {
         .aggregate(
             "people",
             r#"{"$group":{"_id":"k","n":{"$sum":1}},"$sort":{"_id":1},"$skip":6,"$limit":6}"#,
+            None,
         )
         .await
         .unwrap();
@@ -739,7 +755,7 @@ async fn test_aggregate_skip_limit_pages_groups() {
 #[tokio::test]
 async fn test_aggregate_malformed_pipeline_is_schema_violation() {
     let store = seeded_categorized_people_store().await;
-    let err = store.aggregate("people", "not json").await.unwrap_err();
+    let err = store.aggregate("people", "not json", None).await.unwrap_err();
     assert!(matches!(err, DataLayerError::SchemaViolation(_)));
 }
 
@@ -748,11 +764,11 @@ async fn test_aggregate_injection_bound_not_interpolated() {
     let store = seeded_categorized_people_store().await;
     let pipeline = r#"{"$match":{"category":"'; DROP TABLE people; --"},
         "$group":{"_id":"category","n":{"$sum":1}}}"#;
-    let result = store.aggregate("people", pipeline).await.unwrap();
+    let result = store.aggregate("people", pipeline, None).await.unwrap();
     assert!(result.rows.is_empty());
 
     // The table must still exist and be fully queryable afterwards.
     let count =
-        store.aggregate("people", r#"{"$group":{"_id":null,"n":{"$sum":1}}}"#).await.unwrap();
+        store.aggregate("people", r#"{"$group":{"_id":null,"n":{"$sum":1}}}"#, None).await.unwrap();
     assert_eq!(rows_as_json(&count.rows), rows_as_json(&[vec![SqlValue::Integer(5)]]));
 }

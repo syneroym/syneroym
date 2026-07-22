@@ -23,6 +23,7 @@ use syneroym_core::{
 use syneroym_data_blob::traits::BlobProvider;
 use syneroym_data_db::traits::StorageProvider;
 use syneroym_data_keystore::KeyStore;
+use syneroym_fdae::Policy;
 use syneroym_mqtt_broker::{MqttBroker, SubscriptionHandle};
 use syneroym_rpc::{CallerContext, JsonRpcRequest, ServiceProxy};
 use syneroym_wit_interfaces::{
@@ -91,6 +92,40 @@ pub struct AppSandboxEngine {
     linker: Linker<HostState>,
     // Cache of pre-linked instances for fast instantiation
     components: DashMap<String, (InstancePre<HostState>, Option<WasmResourceQuota>)>,
+    /// Resolved-policy cache, keyed by `service_id`, next to `components`.
+    /// The value is itself an `Option` so that *"resolved: this service has
+    /// no policy"* -- the common case -- is cached too, instead of
+    /// re-querying `substrate.db` per invocation (ADR-0017).
+    /// `parse_and_validate` compiles the embedded JSON Schema and
+    /// re-validates on every call, which would put schema compilation on the
+    /// hot path of every guest invocation if this weren't cached. Evicted on
+    /// `stop_wasm` and `compile_and_cache_wasm` so a re-deploy re-resolves
+    /// rather than serving the previous policy.
+    fdae_policies: DashMap<String, Option<Arc<Policy>>>,
+    /// Per-service generation counter, bumped by every `fdae_policies`
+    /// eviction (`stop_wasm`, `compile_and_cache_wasm`). `resolve_fdae_policy`
+    /// captures it before its (possibly slow, cross-await) storage read and
+    /// compares after: if an eviction raced the read, the read is stale and
+    /// must not be cached. Without this, a redeploy's eviction can fire
+    /// against a key that isn't cached yet (the racing load hasn't inserted
+    /// it), and the racing load then inserts its *old* result afterward --
+    /// resurrecting a policy the redeploy should have replaced, indefinitely
+    /// (until the next `stop_wasm`/redeploy). See `resolve_fdae_policy`.
+    ///
+    /// Two known, accepted residuals, both narrower than the race above:
+    /// (1) the generation comparison and the `fdae_policies` insert in
+    /// `resolve_fdae_policy` are still two separate `DashMap` operations
+    /// (no `await` between them, unlike the wide window this counter
+    /// closes), so an eviction landing in that narrow gap is still
+    /// silently undone; and (2) entries here are only ever inserted or
+    /// bumped, never removed (`stop_wasm` evicts `fdae_policies` but not
+    /// this map), so the map grows by one entry per distinct `service_id`
+    /// this process has ever seen, for the process's lifetime. Neither has
+    /// an observed impact -- closing (1) fully would need the two maps
+    /// merged behind one lock (a real redesign for a race narrower than
+    /// the one already closed), and (2) is bounded by service churn, not
+    /// request volume.
+    fdae_policy_generation: DashMap<String, u64>,
     default_max_instructions: Option<u64>,
     default_max_memory_bytes: Option<u64>,
     _shutdown_tx: Option<oneshot::Sender<()>>,
@@ -262,6 +297,8 @@ impl AppSandboxEngine {
             engine,
             linker,
             components,
+            fdae_policies: DashMap::new(),
+            fdae_policy_generation: DashMap::new(),
             default_max_instructions,
             default_max_memory_bytes,
             _shutdown_tx: Some(shutdown_tx),
@@ -606,6 +643,79 @@ impl AppSandboxEngine {
         Ok(wasm_results)
     }
 
+    /// Resolves a service's FDAE policy for `build_store_and_instantiate`,
+    /// via `fdae_policies` next to the component cache. On a cache miss,
+    /// loads from `substrate.db` (durable across a substrate restart --
+    /// `load_cached_wasm` recompiles from disk and the next instantiation
+    /// re-resolves from here, not from any in-memory deploy result) and
+    /// parses once. A parse failure here is fail-closed-**absent**: log and
+    /// cache `None` rather than deny every read for the service. The deploy
+    /// path (`control_plane`'s `orchestration.rs`) is what rejects a bad
+    /// policy before it's ever persisted -- a row that fails to parse *here*
+    /// means the DB was tampered with or the crate's schema moved since
+    /// deploy, and the alternative (denying every read) would take a
+    /// previously-working service down on a substrate upgrade rather than on
+    /// the bad edit that actually caused it. A storage *read* failure is a
+    /// different case and is **not** cached at all (see the `Err` arm
+    /// below): unlike a genuinely absent or malformed row, it says nothing
+    /// about whether a policy exists, so treating it as "no policy" and
+    /// remembering that would silently disable FDAE for the service until
+    /// the next redeploy over what may be a one-off transient error.
+    async fn resolve_fdae_policy(&self, service_id: &str) -> Option<Arc<Policy>> {
+        if let Some(cached) = self.fdae_policies.get(service_id) {
+            return cached.clone();
+        }
+        // Captured *before* the cross-await storage read, so a concurrent
+        // eviction (redeploy) that races this load can be detected below --
+        // see `fdae_policy_generation`'s doc comment. `.get()` immutably
+        // borrows a shard just long enough to copy the `u64` out; the shard
+        // is not held across the `.await`.
+        let generation_before =
+            self.fdae_policy_generation.get(service_id).map(|g| *g).unwrap_or(0);
+        let resolved = match self.storage_provider.load_fdae_policy(service_id).await {
+            Ok(Some(doc)) => match syneroym_fdae::parse_and_validate(&doc) {
+                Ok(policy) => Some(Arc::new(policy)),
+                Err(e) => {
+                    error!(
+                        "FDAE policy for service {} failed to parse from storage (treating as \
+                         policy-absent): {}",
+                        service_id, e
+                    );
+                    None
+                }
+            },
+            Ok(None) => None,
+            Err(e) => {
+                // A transient storage failure (a busy connection under load,
+                // say) is not "this service has no policy" -- caching it as
+                // such would silently disable FDAE for the service for the
+                // rest of the process's uptime on one blip. Return uncached
+                // instead, the same "don't trust an uncertain read" treatment
+                // the generation-race branch below gives a load that lost to
+                // a concurrent eviction, so the next call retries against
+                // storage rather than serving this one's answer forever.
+                error!("Failed to load FDAE policy for service {}: {}", service_id, e);
+                return None;
+            }
+        };
+        let generation_after = self.fdae_policy_generation.get(service_id).map(|g| *g).unwrap_or(0);
+        if generation_before == generation_after {
+            self.fdae_policies.insert(service_id.to_string(), resolved.clone());
+        } else {
+            // An eviction (redeploy) landed while this load was in flight --
+            // this result may already be stale. Return it for *this* call
+            // (it was the correct answer at some point during the read, and
+            // returning it beats blocking or erroring), but do not cache it:
+            // the next call re-resolves fresh rather than serving a policy a
+            // redeploy already superseded.
+            debug!(
+                service_id,
+                "FDAE policy resolution raced a redeploy; serving uncached this time"
+            );
+        }
+        resolved
+    }
+
     /// Helper shared by `prepare_wasm_execution` and `invoke_lifecycle_hook`:
     /// looks up the pre-linked component, resolves its resource quotas,
     /// builds a fresh `HostState`/`Store`, and instantiates it.
@@ -659,6 +769,7 @@ impl AppSandboxEngine {
             .get()
             .cloned()
             .unwrap_or_else(crate::host_capabilities::empty_service_proxy);
+        let fdae_policy = self.resolve_fdae_policy(service_id).await;
         let host_state = HostState::new(
             service_id.to_string(),
             max_memory_bytes,
@@ -670,6 +781,7 @@ impl AppSandboxEngine {
             messaging,
             streaming,
             service_proxy,
+            fdae_policy,
         );
 
         debug!("created wasi ctx and host state");
@@ -702,24 +814,18 @@ impl AppSandboxEngine {
         interface_name: &str,
         method_name: &str,
     ) -> Result<(Store<HostState>, Func, usize, ComponentItem)> {
-        // Lifecycle hooks run substrate-elevated (carrying `data-layer/admin`
-        // for `execute-ddl`) and get the larger lifecycle-hook epoch budget;
-        // an ordinary invocation is the component acting as itself, with no
-        // elevated capability, and the tighter dispatch budget
-        // (ADR-0015/0016).
-        let is_lifecycle_hook = method_name == "init" || method_name == "migrate";
-        let caller = if is_lifecycle_hook {
-            CallerContext::local_elevated(service_id)
-        } else {
-            CallerContext::service_system(service_id)
-        };
-        let epoch_deadline_ticks = if is_lifecycle_hook {
-            self.lifecycle_hook_epoch_ticks
-        } else {
-            self.dispatch_epoch_ticks
-        };
+        // This is the ordinary dispatch path -- reached from wire-originated
+        // JSON-RPC (`dispatch.rs`) and guest-to-guest proxy calls, both of
+        // which let the caller pick `method_name` freely. It must never
+        // grant `local_elevated` (the `data-layer/admin`-bearing, FDAE-exempt
+        // context): a caller simply naming their request "init" or "migrate"
+        // would otherwise self-elevate. `local_elevated` is reserved for
+        // `invoke_lifecycle_hook`, which the deploy path calls directly
+        // (never through this function) and builds its own caller/epoch
+        // budget without consulting `method_name` at all.
+        let caller = CallerContext::service_system(service_id);
         let (mut store, instance, _max_instructions) =
-            self.build_store_and_instantiate(service_id, caller, epoch_deadline_ticks).await?;
+            self.build_store_and_instantiate(service_id, caller, self.dispatch_epoch_ticks).await?;
 
         // Use the helper to extract the function
         let (func, results_len, item) =
@@ -893,11 +999,21 @@ impl AppSandboxEngine {
         self.execute_wasm(service_id, component_id, &request).await
     }
 
+    /// Bumps `fdae_policy_generation` for `service_id`, marking any
+    /// `resolve_fdae_policy` load currently in flight for it as stale --
+    /// called alongside every `fdae_policies` eviction. See
+    /// `fdae_policy_generation`'s doc comment.
+    fn bump_fdae_policy_generation(&self, service_id: &str) {
+        *self.fdae_policy_generation.entry(service_id.to_string()).or_insert(0) += 1;
+    }
+
     /// Stop and evict a running Wasm component from the in-memory cache.
     pub async fn stop_wasm(&self, service_id: &str) -> Result<()> {
         Self::validate_service_id(service_id)?;
         info!(service_id = %service_id, "AppSandboxEngine: stopping Wasm component");
         self.components.remove(service_id);
+        self.fdae_policies.remove(service_id);
+        self.bump_fdae_policy_generation(service_id);
         self.abort_streams(service_id);
         metrics::gauge!("substrate.wasm.component_cache_size").set(self.components.len() as f64);
         Ok(())
@@ -961,6 +1077,11 @@ impl AppSandboxEngine {
             .map_err(|e| anyhow::anyhow!("Failed to pre-link WASM component: {e}"))?;
 
         self.components.insert(service_id.to_string(), (instance_pre, quota));
+        // A re-deploy compiles and re-caches the component here; evict any
+        // previously resolved policy so the next instantiation re-resolves
+        // from `substrate.db` rather than serving a stale one.
+        self.fdae_policies.remove(service_id);
+        self.bump_fdae_policy_generation(service_id);
         info!("WASM component compiled and cached for {}", service_id);
         metrics::gauge!("substrate.wasm.component_cache_size").set(self.components.len() as f64);
         Ok(())
@@ -1178,14 +1299,361 @@ mod tests {
     use std::{env, fs};
 
     use syneroym_core::{storage::MockStorage, test_constants};
-    use syneroym_data_db::SqliteStorageProvider;
+    use syneroym_data_db::{ServiceStore, SqliteStorageProvider};
     use syneroym_mqtt_broker::MqttBrokerConfig;
+    use syneroym_rpc::AuthLevel;
+    use tokio::{sync::Notify, task};
     use wasmtime::component::Component;
 
     use super::*;
     use crate::host_capabilities::tests::{
         test_blob_provider, test_messaging_context, test_service_proxy, test_streaming_context,
     };
+
+    /// Wraps a real `StorageProvider`, pausing `load_fdae_policy` on
+    /// `release` before delegating -- lets a test deterministically land a
+    /// `bump_fdae_policy_generation` call inside `resolve_fdae_policy`'s
+    /// cross-await race window, rather than relying on incidental thread
+    /// scheduling (which would make the test flaky in either direction).
+    /// Every other method delegates straight through; `resolve_fdae_policy`
+    /// only ever calls `load_fdae_policy`.
+    struct RacingStorageProvider {
+        inner: Arc<dyn StorageProvider>,
+        release: Arc<Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl StorageProvider for RacingStorageProvider {
+        async fn open_service_db(
+            &self,
+            service_id: &str,
+            key_store: &Arc<KeyStore>,
+        ) -> anyhow::Result<Box<dyn ServiceStore>> {
+            self.inner.open_service_db(service_id, key_store).await
+        }
+        async fn rotate_kek(
+            &self,
+            key_store: &Arc<KeyStore>,
+            new_kek: [u8; 32],
+        ) -> anyhow::Result<()> {
+            self.inner.rotate_kek(key_store, new_kek).await
+        }
+        async fn load_service_dek(
+            &self,
+            service_id: &str,
+            key_store: &Arc<KeyStore>,
+        ) -> anyhow::Result<Option<zeroize::Zeroizing<[u8; 32]>>> {
+            self.inner.load_service_dek(service_id, key_store).await
+        }
+        async fn service_exists(&self, service_id: &str) -> anyhow::Result<bool> {
+            self.inner.service_exists(service_id).await
+        }
+        async fn save_config_generation(
+            &self,
+            service_id: &str,
+            config_blob: &str,
+        ) -> anyhow::Result<u64> {
+            self.inner.save_config_generation(service_id, config_blob).await
+        }
+        async fn delete_config_generation(
+            &self,
+            service_id: &str,
+            generation: u64,
+        ) -> anyhow::Result<()> {
+            self.inner.delete_config_generation(service_id, generation).await
+        }
+        async fn get_config_generation(
+            &self,
+            service_id: &str,
+            generation: u64,
+        ) -> anyhow::Result<Option<String>> {
+            self.inner.get_config_generation(service_id, generation).await
+        }
+        async fn get_latest_config_generation(
+            &self,
+            service_id: &str,
+        ) -> anyhow::Result<Option<(u64, String)>> {
+            self.inner.get_latest_config_generation(service_id).await
+        }
+        async fn save_messaging_subscription(
+            &self,
+            service_id: &str,
+            topic: &str,
+        ) -> anyhow::Result<()> {
+            self.inner.save_messaging_subscription(service_id, topic).await
+        }
+        async fn delete_messaging_subscription(
+            &self,
+            service_id: &str,
+            topic: &str,
+        ) -> anyhow::Result<()> {
+            self.inner.delete_messaging_subscription(service_id, topic).await
+        }
+        async fn delete_all_messaging_subscriptions_for_service(
+            &self,
+            service_id: &str,
+        ) -> anyhow::Result<()> {
+            self.inner.delete_all_messaging_subscriptions_for_service(service_id).await
+        }
+        async fn list_all_messaging_subscriptions(&self) -> anyhow::Result<Vec<(String, String)>> {
+            self.inner.list_all_messaging_subscriptions().await
+        }
+        async fn save_fdae_policy(
+            &self,
+            service_id: &str,
+            policy_json: &str,
+        ) -> anyhow::Result<()> {
+            self.inner.save_fdae_policy(service_id, policy_json).await
+        }
+        async fn load_fdae_policy(&self, service_id: &str) -> anyhow::Result<Option<String>> {
+            self.release.notified().await;
+            self.inner.load_fdae_policy(service_id).await
+        }
+        async fn delete_fdae_policy(&self, service_id: &str) -> anyhow::Result<()> {
+            self.inner.delete_fdae_policy(service_id).await
+        }
+    }
+
+    /// Reproduces the lost-invalidation race directly: a `resolve_fdae_policy`
+    /// load is paused (via `RacingStorageProvider`) after it has already
+    /// captured `generation_before`, a concurrent eviction (simulating a
+    /// redeploy) fires while it's still in flight, and only then is the load
+    /// allowed to complete. The in-flight call must still return the correct
+    /// (if now possibly stale) answer, but must **not** repopulate the cache
+    /// -- otherwise the eviction it raced would be silently undone, and the
+    /// stale policy would be served indefinitely until the next
+    /// `stop_wasm`/redeploy.
+    #[tokio::test]
+    async fn fdae_policy_resolution_racing_an_eviction_is_not_cached() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let real_provider: Arc<dyn StorageProvider> =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        real_provider
+            .save_fdae_policy("svc-race", r#"{"version": "fdae/v1", "definitions": {}}"#)
+            .await
+            .unwrap();
+
+        let release = Arc::new(Notify::new());
+        let racing_provider: Arc<dyn StorageProvider> =
+            Arc::new(RacingStorageProvider { inner: real_provider, release: release.clone() });
+        let app_engine = Arc::new(test_app_engine(racing_provider));
+
+        let resolver = {
+            let app_engine = app_engine.clone();
+            tokio::spawn(async move { app_engine.resolve_fdae_policy("svc-race").await })
+        };
+
+        // Let the spawned task run up through its `generation_before`
+        // snapshot and into `load_fdae_policy`'s `release.notified().await`
+        // suspension point, before the eviction below fires.
+        task::yield_now().await;
+        task::yield_now().await;
+
+        // The eviction half of a concurrent redeploy, landing while the load
+        // above is still paused.
+        app_engine.fdae_policies.remove("svc-race");
+        app_engine.bump_fdae_policy_generation("svc-race");
+
+        release.notify_one();
+        let resolved = resolver.await.unwrap();
+
+        assert!(resolved.is_some(), "the in-flight call must still return the correct answer");
+        assert!(
+            app_engine.fdae_policies.get("svc-race").is_none(),
+            "a load that raced a concurrent eviction must not repopulate the cache -- doing so \
+             would silently undo the eviction and serve a possibly-stale policy indefinitely"
+        );
+    }
+
+    /// Wraps a real `StorageProvider`, failing `load_fdae_policy` exactly
+    /// once (then delegating normally) -- simulates a transient storage
+    /// error, like a busy connection under load, that clears up on retry.
+    struct FlakyStorageProvider {
+        inner: Arc<dyn StorageProvider>,
+        fail_next: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl StorageProvider for FlakyStorageProvider {
+        async fn open_service_db(
+            &self,
+            service_id: &str,
+            key_store: &Arc<KeyStore>,
+        ) -> anyhow::Result<Box<dyn ServiceStore>> {
+            self.inner.open_service_db(service_id, key_store).await
+        }
+        async fn rotate_kek(
+            &self,
+            key_store: &Arc<KeyStore>,
+            new_kek: [u8; 32],
+        ) -> anyhow::Result<()> {
+            self.inner.rotate_kek(key_store, new_kek).await
+        }
+        async fn load_service_dek(
+            &self,
+            service_id: &str,
+            key_store: &Arc<KeyStore>,
+        ) -> anyhow::Result<Option<zeroize::Zeroizing<[u8; 32]>>> {
+            self.inner.load_service_dek(service_id, key_store).await
+        }
+        async fn service_exists(&self, service_id: &str) -> anyhow::Result<bool> {
+            self.inner.service_exists(service_id).await
+        }
+        async fn save_config_generation(
+            &self,
+            service_id: &str,
+            config_blob: &str,
+        ) -> anyhow::Result<u64> {
+            self.inner.save_config_generation(service_id, config_blob).await
+        }
+        async fn delete_config_generation(
+            &self,
+            service_id: &str,
+            generation: u64,
+        ) -> anyhow::Result<()> {
+            self.inner.delete_config_generation(service_id, generation).await
+        }
+        async fn get_config_generation(
+            &self,
+            service_id: &str,
+            generation: u64,
+        ) -> anyhow::Result<Option<String>> {
+            self.inner.get_config_generation(service_id, generation).await
+        }
+        async fn get_latest_config_generation(
+            &self,
+            service_id: &str,
+        ) -> anyhow::Result<Option<(u64, String)>> {
+            self.inner.get_latest_config_generation(service_id).await
+        }
+        async fn save_messaging_subscription(
+            &self,
+            service_id: &str,
+            topic: &str,
+        ) -> anyhow::Result<()> {
+            self.inner.save_messaging_subscription(service_id, topic).await
+        }
+        async fn delete_messaging_subscription(
+            &self,
+            service_id: &str,
+            topic: &str,
+        ) -> anyhow::Result<()> {
+            self.inner.delete_messaging_subscription(service_id, topic).await
+        }
+        async fn delete_all_messaging_subscriptions_for_service(
+            &self,
+            service_id: &str,
+        ) -> anyhow::Result<()> {
+            self.inner.delete_all_messaging_subscriptions_for_service(service_id).await
+        }
+        async fn list_all_messaging_subscriptions(&self) -> anyhow::Result<Vec<(String, String)>> {
+            self.inner.list_all_messaging_subscriptions().await
+        }
+        async fn save_fdae_policy(
+            &self,
+            service_id: &str,
+            policy_json: &str,
+        ) -> anyhow::Result<()> {
+            self.inner.save_fdae_policy(service_id, policy_json).await
+        }
+        async fn load_fdae_policy(&self, service_id: &str) -> anyhow::Result<Option<String>> {
+            if self.fail_next.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                anyhow::bail!("simulated transient storage failure");
+            }
+            self.inner.load_fdae_policy(service_id).await
+        }
+        async fn delete_fdae_policy(&self, service_id: &str) -> anyhow::Result<()> {
+            self.inner.delete_fdae_policy(service_id).await
+        }
+    }
+
+    /// A transient storage error (e.g. one `SQLITE_BUSY`) must not be
+    /// remembered as "this service has no policy" -- unlike a genuinely
+    /// absent or malformed row, it says nothing about whether a policy
+    /// exists, and caching it as absent would silently disable FDAE for the
+    /// service until the next redeploy over what may be a one-off blip.
+    #[tokio::test]
+    async fn fdae_policy_transient_storage_error_is_not_cached() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let real_provider: Arc<dyn StorageProvider> =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        real_provider
+            .save_fdae_policy("svc-flaky", r#"{"version": "fdae/v1", "definitions": {}}"#)
+            .await
+            .unwrap();
+        let flaky_provider: Arc<dyn StorageProvider> = Arc::new(FlakyStorageProvider {
+            inner: real_provider,
+            fail_next: std::sync::atomic::AtomicBool::new(true),
+        });
+        let app_engine = test_app_engine(flaky_provider);
+
+        // First resolution hits the simulated transient failure.
+        assert!(
+            app_engine.resolve_fdae_policy("svc-flaky").await.is_none(),
+            "a storage error must resolve to None for this call, same as a genuine absence"
+        );
+        assert!(
+            app_engine.fdae_policies.get("svc-flaky").is_none(),
+            "a transient storage error must not be cached as 'no policy'"
+        );
+
+        // The failure was one-shot; a retry reaches real storage and finds
+        // the policy that was there all along.
+        assert!(
+            app_engine.resolve_fdae_policy("svc-flaky").await.is_some(),
+            "a retry after the transient failure clears must resolve the real policy"
+        );
+        assert!(app_engine.fdae_policies.get("svc-flaky").is_some());
+    }
+
+    /// `prepare_wasm_execution` is the ordinary dispatch path reached from
+    /// wire-originated JSON-RPC (`dispatch.rs`) and guest-to-guest proxy
+    /// calls, both of which let the caller pick `method_name` freely.
+    /// Naming a request "init" or "migrate" must not synthesize
+    /// `CallerContext::local_elevated` -- the `data-layer/admin`-bearing
+    /// context `HostState::query_auth` exempts from the FDAE sieve entirely
+    /// -- or any caller could self-elevate by choosing that method name.
+    /// Only `invoke_lifecycle_hook` (called directly by the deploy path,
+    /// never through this function) may synthesize that context.
+    #[tokio::test]
+    async fn prepare_wasm_execution_grants_no_elevation_for_init_or_migrate_method_names() {
+        let wat = r#"
+(component
+  (core module $m
+    (func (export "noop"))
+  )
+  (core instance $i (instantiate $m))
+  (func $noop (canon lift (core func $i "noop")))
+  (instance $interface
+    (export "init" (func $noop))
+    (export "migrate" (func $noop))
+  )
+  (export "test-interface" (instance $interface))
+)
+"#;
+        let storage_provider: Arc<dyn StorageProvider> = Arc::new(
+            SqliteStorageProvider::new(tempfile::tempdir().unwrap().path(), false).unwrap(),
+        );
+        let app_engine = test_app_engine(storage_provider);
+        app_engine.compile_and_cache_wasm("svc-n1", wat.as_bytes(), None).unwrap();
+
+        for method in ["init", "migrate"] {
+            let (store, _func, _results_len, _item) = app_engine
+                .prepare_wasm_execution("svc-n1", "test-interface", method)
+                .await
+                .unwrap();
+            assert_eq!(
+                store.data().caller.auth,
+                AuthLevel::System,
+                "a wire-dispatched call naming its method {method:?} must not be granted \
+                 LocalElevated -- only invoke_lifecycle_hook may synthesize that context"
+            );
+            assert!(
+                !store.data().caller.caller_did.contains("local-elevated"),
+                "caller_did leaked a local-elevated identity for method {method:?}"
+            );
+        }
+    }
 
     #[tokio::test]
     async fn test_list_interfaces() {
@@ -1207,6 +1675,7 @@ mod tests {
             test_messaging_context(),
             test_streaming_context(),
             test_service_proxy(),
+            None,
         );
 
         let mut store = Store::new(&engine, host_state);
@@ -1299,6 +1768,8 @@ mod tests {
             engine,
             linker,
             components: DashMap::new(),
+            fdae_policies: DashMap::new(),
+            fdae_policy_generation: DashMap::new(),
             default_max_instructions: Some(10_000),
             default_max_memory_bytes: Some(1024 * 1024), // 1MB
             _shutdown_tx: None,
@@ -1350,5 +1821,128 @@ mod tests {
             "expected MemoryFault or failed to grow memory, got: {}",
             err_msg
         );
+    }
+
+    fn test_app_engine(storage_provider: Arc<dyn StorageProvider>) -> AppSandboxEngine {
+        let engine = AppSandboxEngine::build_wasm_engine(None, None).unwrap();
+        let linker = AppSandboxEngine::build_wasm_linker(&engine).unwrap();
+        AppSandboxEngine {
+            blobs_dir: env::temp_dir(),
+            engine,
+            linker,
+            components: DashMap::new(),
+            fdae_policies: DashMap::new(),
+            fdae_policy_generation: DashMap::new(),
+            default_max_instructions: Some(10_000),
+            default_max_memory_bytes: Some(1024 * 1024),
+            _shutdown_tx: None,
+            key_store: Arc::new(KeyStore::new()),
+            storage_provider,
+            blob_provider: test_blob_provider(),
+            messaging_broker: Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap()),
+            self_weak: OnceLock::new(),
+            service_proxy: OnceLock::new(),
+            subscriptions: DashMap::new(),
+            endpoint_registry: EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+            stream_registry: StreamRegistry::new(),
+            max_concurrent_streams_per_service: 8,
+            stream_instance_permits: Arc::new(Semaphore::new(8)),
+            dispatch_epoch_ticks: ticks_for_secs(5),
+            lifecycle_hook_epoch_ticks: ticks_for_secs(30),
+        }
+    }
+
+    /// A policy-absent service resolves `None` and caches it -- the common
+    /// case -- without re-querying `substrate.db` on a subsequent call.
+    #[tokio::test]
+    async fn fdae_policy_absent_resolves_none_and_caches() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage_provider: Arc<dyn StorageProvider> =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let app_engine = test_app_engine(storage_provider);
+
+        assert!(app_engine.fdae_policies.get("svc-none").is_none(), "nothing resolved yet");
+        assert!(app_engine.resolve_fdae_policy("svc-none").await.is_none());
+        assert!(
+            app_engine.fdae_policies.get("svc-none").is_some(),
+            "the absence itself must be cached, not just a miss"
+        );
+        assert!(app_engine.fdae_policies.get("svc-none").unwrap().is_none());
+    }
+
+    /// A persisted policy resolves to `Some`, is cached, and a cache hit does
+    /// not re-query storage (proven by mutating storage to an unparseable
+    /// document after the first resolution and confirming the second call
+    /// still returns the original, cached policy).
+    #[tokio::test]
+    async fn fdae_policy_present_resolves_some_and_cache_hit_skips_storage() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage_provider: Arc<dyn StorageProvider> =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        storage_provider
+            .save_fdae_policy("svc-some", r#"{"version": "fdae/v1", "definitions": {}}"#)
+            .await
+            .unwrap();
+        let app_engine = test_app_engine(storage_provider.clone());
+
+        let policy = app_engine.resolve_fdae_policy("svc-some").await;
+        assert!(policy.is_some(), "a valid persisted policy must resolve to Some");
+        assert!(app_engine.fdae_policies.get("svc-some").is_some());
+
+        // Corrupt storage after the first resolution; a cache hit must not
+        // observe this -- if it did, the second call would return None.
+        storage_provider.save_fdae_policy("svc-some", "not valid json").await.unwrap();
+        let cached = app_engine.resolve_fdae_policy("svc-some").await;
+        assert!(cached.is_some(), "a cache hit must not re-query storage");
+    }
+
+    /// `stop_wasm` and `compile_and_cache_wasm` (a re-deploy) both evict the
+    /// resolved-policy cache, so the next instantiation re-resolves from
+    /// storage rather than serving a stale value.
+    #[tokio::test]
+    async fn fdae_policy_cache_evicted_on_stop_wasm_and_recompile() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage_provider: Arc<dyn StorageProvider> =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        storage_provider
+            .save_fdae_policy("svc-evict", r#"{"version": "fdae/v1", "definitions": {}}"#)
+            .await
+            .unwrap();
+        let app_engine = test_app_engine(storage_provider);
+
+        assert!(app_engine.resolve_fdae_policy("svc-evict").await.is_some());
+        assert!(app_engine.fdae_policies.get("svc-evict").is_some());
+
+        app_engine.stop_wasm("svc-evict").await.unwrap();
+        assert!(
+            app_engine.fdae_policies.get("svc-evict").is_none(),
+            "stop_wasm must evict the cached policy"
+        );
+
+        assert!(app_engine.resolve_fdae_policy("svc-evict").await.is_some());
+        assert!(app_engine.fdae_policies.get("svc-evict").is_some());
+
+        let minimal_component = b"(component)";
+        app_engine.compile_and_cache_wasm("svc-evict", minimal_component, None).unwrap();
+        assert!(
+            app_engine.fdae_policies.get("svc-evict").is_none(),
+            "a re-deploy's recompile must evict the cached policy"
+        );
+    }
+
+    /// A malformed persisted policy is fail-closed-*absent*:
+    /// `resolve_fdae_policy` logs and caches `None` rather than propagating
+    /// an error that would deny every read for the service (the deploy path
+    /// is what rejects a bad policy before it's ever persisted).
+    #[tokio::test]
+    async fn fdae_policy_unparseable_in_storage_resolves_none_not_error() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage_provider: Arc<dyn StorageProvider> =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        storage_provider.save_fdae_policy("svc-bad", "not valid json").await.unwrap();
+        let app_engine = test_app_engine(storage_provider);
+
+        assert!(app_engine.resolve_fdae_policy("svc-bad").await.is_none());
+        assert!(app_engine.fdae_policies.get("svc-bad").unwrap().is_none());
     }
 }

@@ -16,6 +16,8 @@ use regex::Regex;
 use rusqlite::{Connection, Error as SqliteError, params, types::Value as SqlValue};
 use serde_json::{Map, Value};
 use syneroym_data_keystore::{KeyStore, KeyStoreError};
+use syneroym_fdae::{CompiledSieve, Mode, compile_read};
+use syneroym_ucan::Ability;
 use tokio::{
     sync::{mpsc, oneshot},
     task,
@@ -24,6 +26,7 @@ use zeroize::Zeroizing;
 
 use crate::{
     aggregate,
+    auth::{QueryAuth, ReadOutcome},
     errors::map_rusqlite_error,
     filter, host_store,
     traits::{ServiceStore, StorageProvider},
@@ -239,19 +242,37 @@ fn do_delete_many(
     conn: &Connection,
     collection: &str,
     filter_json: Option<&str>,
+    sieve: Option<&CompiledSieve>,
 ) -> Result<u64, host_store::DataLayerError> {
     validate_identifier(collection)?;
     let compiled = filter::compile_filter(filter_json)?;
-    let (where_sql, bound_params) = match &compiled {
-        Some(cf) => (format!("WHERE {}", cf.where_clause), cf.params.clone()),
-        None => (String::new(), Vec::new()),
+
+    let mut where_clauses = Vec::new();
+    let mut bound_params: Vec<SqlValue> = Vec::new();
+    let _watchdog = if let Some(s) = sieve {
+        let (clause, params) = merge_sieve(s)?;
+        where_clauses.push(clause);
+        bound_params.extend(params);
+        Some(install_watchdog(conn)?)
+    } else {
+        None
     };
+    if let Some(cf) = &compiled {
+        where_clauses.push(cf.where_clause.clone());
+        bound_params.extend(cf.params.iter().cloned());
+    }
+    let where_sql = if where_clauses.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", where_clauses.join(" AND "))
+    };
+
     let affected = conn
         .execute(
             &format!("DELETE FROM {collection} {where_sql}"),
             rusqlite::params_from_iter(bound_params.iter()),
         )
-        .map_err(map_rusqlite_error)?;
+        .map_err(map_query_raw_step_error)?;
     Ok(affected as u64)
 }
 
@@ -281,28 +302,61 @@ fn do_batch_mutate(
     Ok(())
 }
 
+/// `sieve` is `Some` only for `Mode::PointInTime{id}` (`compile_read` already
+/// appends `... AND {table}.id = ?` to the RLS), so a sieve'd fetch is a
+/// self-contained `WHERE` -- no separate `id = ?1` alongside it, which would
+/// double-bind the id.
 fn do_get(
     conn: &Connection,
     collection: &str,
     id: &str,
+    sieve: Option<&CompiledSieve>,
 ) -> Result<Option<host_store::RecordReadValue>, host_store::DataLayerError> {
     validate_identifier(collection)?;
-    let result = conn.query_row(
-        &format!(
-            "SELECT payload, creator_id, created_at, updated_at FROM {collection} WHERE id = ?1"
-        ),
-        params![id],
-        |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, i64>(3)?,
-            ))
+
+    // Wrapped in the same "capture every error, decide after" shape
+    // `do_check_access` uses, so a watchdog interrupt or a malformed caveat
+    // can be told apart from a genuine `QueryReturnedNoRows` for the
+    // decision trace below -- both used to `?`-propagate identically,
+    // leaving no evaluation-aborted case for the trace to fill in at all.
+    let outcome: Result<rusqlite::Result<(String, String, i64, i64)>, host_store::DataLayerError> =
+        (|| {
+            Ok(match sieve {
+                None => conn.query_row(
+                    &format!(
+                        "SELECT payload, creator_id, created_at, updated_at FROM {collection} \
+                         WHERE id = ?1"
+                    ),
+                    params![id],
+                    read_record_row,
+                ),
+                Some(s) => {
+                    let _watchdog = install_watchdog(conn)?;
+                    let (clause, sieve_params) = merge_sieve(s)?;
+                    conn.query_row(
+                        &format!(
+                            "SELECT payload, creator_id, created_at, updated_at FROM {collection} \
+                             WHERE {clause}"
+                        ),
+                        rusqlite::params_from_iter(sieve_params.iter()),
+                        read_record_row,
+                    )
+                }
+            })
+        })();
+
+    emit_mode_a_execution_trace(
+        sieve,
+        match &outcome {
+            Ok(Ok(_)) => ModeAOutcome::Matched,
+            Ok(Err(SqliteError::QueryReturnedNoRows)) => ModeAOutcome::NotMatched,
+            Ok(Err(e)) => ModeAOutcome::Aborted(format!("{e}")),
+            Err(e) => ModeAOutcome::Aborted(format!("{e:?}")),
         },
     );
-    match result {
-        Ok((payload, creator_id, created_at, updated_at)) => {
+
+    match outcome {
+        Ok(Ok((payload, creator_id, created_at, updated_at))) => {
             Ok(Some(host_store::RecordReadValue {
                 id: id.to_string(),
                 payload: payload.into_bytes(),
@@ -311,22 +365,103 @@ fn do_get(
                 updated_at: updated_at as u64,
             }))
         }
-        Err(SqliteError::QueryReturnedNoRows) => Ok(None),
-        Err(e) => Err(map_rusqlite_error(e)),
+        // Unauthorized-but-existing and genuinely-missing are
+        // indistinguishable here by design (ADR-0007 "no result is a valid
+        // outcome").
+        Ok(Err(SqliteError::QueryReturnedNoRows)) => Ok(None),
+        Ok(Err(e)) => Err(map_query_raw_step_error(e)),
+        Err(e) => Err(e),
     }
+}
+
+/// The real, post-execution outcome of a Mode A (point-in-time) predicate
+/// run -- the distinction `compile_read`'s compile-time trace cannot make,
+/// since it never executes SQL (ADR-0017 §9).
+enum ModeAOutcome {
+    /// The predicate matched a row.
+    Matched,
+    /// The predicate ran to completion and matched no row -- a genuine,
+    /// admitted-but-unreachable deny.
+    NotMatched,
+    /// The predicate never ran to a real answer: a watchdog interrupt, a
+    /// malformed caveat, a missing target table, or similar. Must not be
+    /// recorded as `NotMatched` -- that would claim a fact about the data
+    /// ("no row satisfied the predicate") that was never established, and
+    /// would make a compute-budget abort indistinguishable in the trace
+    /// from an ordinary deny.
+    Aborted(String),
+}
+
+/// Emits `sieve.trace` a second time with the real, post-execution Mode A
+/// outcome filled in. `compile_read` already emitted a compile-time trace
+/// on `sieve.trace` (`rows_reached: None` -- it never executes SQL); this is
+/// the only place "rows not reached" (an admitted operation whose compiled
+/// predicate matched no row) -- or a policy-evaluation abort -- becomes
+/// knowable.
+fn emit_mode_a_execution_trace(sieve: Option<&CompiledSieve>, outcome: ModeAOutcome) {
+    let Some(s) = sieve else { return };
+    let mut trace = s.trace.clone();
+    match outcome {
+        ModeAOutcome::Matched => trace.rows_reached = Some(true),
+        ModeAOutcome::NotMatched => {
+            trace.rows_reached = Some(false);
+            if trace.path_failed.is_none() {
+                trace.path_failed = Some("no row satisfied the compiled predicate".to_string());
+            }
+        }
+        ModeAOutcome::Aborted(reason) => {
+            trace.path_failed = Some(format!("policy evaluation aborted: {reason}"));
+        }
+    }
+    trace.emit();
+}
+
+fn read_record_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<(String, String, i64, i64)> {
+    Ok((
+        row.get::<_, String>(0)?,
+        row.get::<_, String>(1)?,
+        row.get::<_, i64>(2)?,
+        row.get::<_, i64>(3)?,
+    ))
 }
 
 fn do_query(
     conn: &Connection,
     collection: &str,
     opts: &host_store::QueryOptions,
+    sieve: Option<&CompiledSieve>,
 ) -> Result<host_store::QueryResult, host_store::DataLayerError> {
     validate_identifier(collection)?;
+
+    // A CLS-masked field must not be filterable either -- otherwise masking
+    // only the projection turns the predicate into an oracle that recovers
+    // the value via presence/absence (or, with `$regex`/comparison
+    // operators, full extraction) even though it never appears in a
+    // returned payload.
+    if let Some(s) = sieve
+        && !s.masked_fields.is_empty()
+    {
+        let referenced = filter::referenced_top_level_fields(opts.filter.as_deref())?;
+        if s.masked_fields.iter().any(|f| referenced.contains(f)) {
+            return Err(host_store::DataLayerError::PermissionDenied);
+        }
+    }
+
     let compiled = filter::compile_filter(opts.filter.as_deref())?;
     let limit = opts.limit.unwrap_or(MAX_QUERY_PAGE_SIZE).min(MAX_QUERY_PAGE_SIZE);
 
     let mut where_clauses = Vec::new();
     let mut bound_params: Vec<SqlValue> = Vec::new();
+
+    // Sieve first (RLS ∧ caveats), ahead of the caller's filter/cursor/limit.
+    let _watchdog = if let Some(s) = sieve {
+        let (clause, sieve_params) = merge_sieve(s)?;
+        where_clauses.push(clause);
+        bound_params.extend(sieve_params);
+        Some(install_watchdog(conn)?)
+    } else {
+        None
+    };
     if let Some(cf) = &compiled {
         where_clauses.push(cf.where_clause.clone());
         bound_params.extend(cf.params.iter().cloned());
@@ -361,7 +496,7 @@ fn do_query(
         })
         .map_err(map_rusqlite_error)?
         .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(map_rusqlite_error)?;
+        .map_err(map_query_raw_step_error)?;
 
     let next_cursor = if records.len() as u32 > limit {
         records.truncate(limit as usize);
@@ -370,6 +505,83 @@ fn do_query(
         None
     };
     Ok(host_store::QueryResult { records, next_cursor })
+}
+
+/// Mode A `check-access`: `sieve` is `None` either because the caller passed
+/// no `auth` or because the policy names no definition for `collection` (an
+/// unfiltered read); either way that's D3's existence check. `Some(sieve)`
+/// (possibly the `deny_all` `0=1`) is a self-contained `id`-bound predicate
+/// (`Mode::PointInTime`), same shape as `do_get`'s sieve branch.
+fn do_check_access(
+    conn: &Connection,
+    collection: &str,
+    id: &str,
+    sieve: Option<&CompiledSieve>,
+) -> Result<bool, host_store::DataLayerError> {
+    validate_identifier(collection)?;
+
+    // Fail-closed past this point: a malformed caveat, a watchdog-install
+    // failure, a missing target table, or a watchdog interrupt must never be
+    // mistaken for "allowed" -- only a real `true`/`false` existence answer
+    // is trusted.
+    let outcome: Result<rusqlite::Result<bool>, host_store::DataLayerError> = (|| {
+        Ok(match sieve {
+            None => conn.query_row(
+                &format!("SELECT EXISTS(SELECT 1 FROM {collection} WHERE id = ?1)"),
+                params![id],
+                |row| row.get::<_, bool>(0),
+            ),
+            Some(s) => {
+                let _watchdog = install_watchdog(conn)?;
+                let (clause, sieve_params) = merge_sieve(s)?;
+                conn.query_row(
+                    &format!("SELECT EXISTS(SELECT 1 FROM {collection} WHERE {clause})"),
+                    rusqlite::params_from_iter(sieve_params.iter()),
+                    |row| row.get::<_, bool>(0),
+                )
+            }
+        })
+    })();
+
+    emit_mode_a_execution_trace(
+        sieve,
+        match &outcome {
+            Ok(Ok(true)) => ModeAOutcome::Matched,
+            Ok(Ok(false)) => ModeAOutcome::NotMatched,
+            Ok(Err(e)) => ModeAOutcome::Aborted(format!("{e}")),
+            Err(e) => ModeAOutcome::Aborted(format!("{e:?}")),
+        },
+    );
+
+    Ok(match outcome {
+        Ok(Ok(exists)) => exists,
+        Ok(Err(_)) | Err(_) => false,
+    })
+}
+
+/// Lists the service's collections (user tables) for the deploy-time
+/// `strict:` author-time warning (ADR-0017 §1/D-04-02-c): excludes SQLite
+/// internals (`sqlite_%`) and the host's own `_vault` table, since those are
+/// never `definitions:` targets in a policy document.
+fn do_list_collections(conn: &mut Connection) -> Result<Vec<String>, host_store::DataLayerError> {
+    // Excludes SQLite's own internal tables and the host's own `_vault` by
+    // exact name -- not the whole `_%` namespace. `IDENTIFIER_REGEX` permits
+    // a leading underscore (`^[a-zA-Z_]...`), so a guest-created collection
+    // like `_audit` is a legal name that must still appear here for the
+    // `strict:` warning to see it correctly in both directions.
+    let mut stmt = conn
+        .prepare(
+            "SELECT name FROM sqlite_master
+             WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'
+               AND name != '_vault'",
+        )
+        .map_err(|e| host_store::DataLayerError::Internal(format!("list_collections: {e}")))?;
+    let names = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| host_store::DataLayerError::Internal(format!("list_collections: {e}")))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| host_store::DataLayerError::Internal(format!("list_collections: {e}")))?;
+    Ok(names)
 }
 
 /// Runs an `aggregate` call (ADR-0007, Slice B4) on the reader pool. The
@@ -383,13 +595,33 @@ fn do_query(
 /// `LIMIT`, a `GROUP BY`/`ORDER BY` does its scanning/hashing/sorting work
 /// over the *whole* collection before `$limit`/`$skip` ever apply, so the
 /// row-count page cap alone does not bound compute here either.
+/// `sieve.masked_fields` non-empty (a CLS-active policy) fails the whole
+/// aggregate closed rather than attempting a CLS-safe aggregation -- an
+/// aggregate's `SUM`/`AVG`/etc. can leak a masked field's value through its
+/// output even without projecting the raw column, and there is no general
+/// way to tell which accumulators are "safe" over a masked field. RLS,
+/// unlike CLS, injects cleanly into the inner query's `WHERE`.
 fn do_aggregate(
     conn: &Connection,
     collection: &str,
     pipeline_json: &str,
+    sieve: Option<&CompiledSieve>,
 ) -> Result<host_store::RawQueryResult, host_store::DataLayerError> {
     validate_identifier(collection)?;
-    let compiled = aggregate::compile(collection, pipeline_json)?;
+
+    // Check CLS denial *before* compiling caveat filters: a CLS-active sieve
+    // denies the whole call regardless of what its caveats say, so there is
+    // no reason to pay a caveat-filter compile (or surface its error, if the
+    // caveat is malformed) on a call that is about to be denied anyway.
+    if let Some(s) = sieve
+        && !s.masked_fields.is_empty()
+    {
+        return Err(host_store::DataLayerError::PermissionDenied);
+    }
+    let merged = sieve.map(merge_sieve).transpose()?;
+    let sieve_arg = merged.as_ref().map(|(clause, params)| (clause.as_str(), params.as_slice()));
+
+    let compiled = aggregate::compile(collection, pipeline_json, sieve_arg)?;
     conn.progress_handler(QUERY_RAW_MAX_VM_OPS, Some(|| true)).map_err(map_rusqlite_error)?;
     let _guard = QueryRawGuard { conn };
     run_query_raw(conn, "aggregate", &compiled.sql, &compiled.params)
@@ -467,10 +699,12 @@ fn map_sql_prepare_error(op: &str, e: rusqlite::Error) -> host_store::DataLayerE
     host_store::DataLayerError::SchemaViolation(format!("{op} prepare failed: {e}"))
 }
 
+fn is_operation_interrupted(e: &rusqlite::Error) -> bool {
+    matches!(e, rusqlite::Error::SqliteFailure(ffi_err, _) if ffi_err.code == rusqlite::ErrorCode::OperationInterrupted)
+}
+
 fn map_query_raw_step_error(e: rusqlite::Error) -> host_store::DataLayerError {
-    if let rusqlite::Error::SqliteFailure(ffi_err, _) = &e
-        && ffi_err.code == rusqlite::ErrorCode::OperationInterrupted
-    {
+    if is_operation_interrupted(&e) {
         return host_store::DataLayerError::QuotaExceeded;
     }
     map_rusqlite_error(e)
@@ -508,6 +742,96 @@ impl Drop for QueryRawGuard<'_> {
             );
         let _ = self.conn.progress_handler(0, None::<fn() -> bool>);
     }
+}
+
+/// The FDAE watchdog budget (ADR-0017 §8): a hard-coded interim default,
+/// aliased to `QUERY_RAW_MAX_VM_OPS` since neither the policy schema nor
+/// substrate config carries a budget field yet (deferred -- an `fdae`
+/// schema change plus substrate-config plumbing, not this crate's call to
+/// make). Recorded so the fixed constant isn't mistaken for "configurable,
+/// done".
+const FDAE_MAX_VM_OPS: i32 = QUERY_RAW_MAX_VM_OPS;
+
+/// Clears only the progress handler on drop -- unlike `QueryRawGuard`, the
+/// FDAE sieve paths install no authorizer (they emit only host-generated,
+/// parameterized SQL, never arbitrary caller SQL), so clearing one here
+/// would be dead noise. Needed on both reader-pool connections (reused
+/// across calls) and the persistent writer connection (`delete_many`) so a
+/// sieve'd call never leaves its budget installed for the next borrower.
+struct ProgressGuard<'c> {
+    conn: &'c Connection,
+}
+
+impl Drop for ProgressGuard<'_> {
+    fn drop(&mut self) {
+        let _ = self.conn.progress_handler(0, None::<fn() -> bool>);
+    }
+}
+
+fn install_watchdog(conn: &Connection) -> Result<ProgressGuard<'_>, host_store::DataLayerError> {
+    conn.progress_handler(FDAE_MAX_VM_OPS, Some(|| true)).map_err(map_rusqlite_error)?;
+    Ok(ProgressGuard { conn })
+}
+
+/// Returns `(clause, params)` = RLS ∧ each compiled caveat's `where`. RLS
+/// and caveat `where` filters are both intersective and must AND together
+/// -- dropping `where_caveats` would let a `caveats.where={"region":"EU"}`
+/// caller see every region (Phase-1 dropped-caveat bug class).
+fn merge_sieve(
+    sieve: &CompiledSieve,
+) -> Result<(String, Vec<SqlValue>), host_store::DataLayerError> {
+    let mut clauses = vec![format!("({})", sieve.where_clause)];
+    let mut params: Vec<SqlValue> = sieve.params.clone();
+    for caveat in &sieve.where_caveats {
+        let raw = serde_json::to_string(caveat)
+            .map_err(|e| host_store::DataLayerError::Internal(format!("caveat serialize: {e}")))?;
+        if let Some(cf) = filter::compile_filter(Some(&raw))? {
+            clauses.push(format!("({})", cf.where_clause));
+            params.extend(cf.params);
+        }
+    }
+    Ok((clauses.join(" AND "), params))
+}
+
+/// Compiles the FDAE sieve for a `data-layer/read` operation, or `Ok(None)`
+/// when `auth` is absent (today's unfiltered behavior). A compile error is
+/// loud (`Err`), never silently treated as unfiltered -- Mode B/A's own
+/// caller decides whether that maps to a hard error or fail-closed `false`.
+fn compile_sieve_for(
+    auth: Option<&QueryAuth<'_>>,
+    collection: &str,
+    mode: Mode,
+) -> Result<Option<CompiledSieve>, host_store::DataLayerError> {
+    compile_sieve_for_op(auth, collection, Ability::DATA_LAYER_READ, mode)
+}
+
+fn compile_sieve_for_op(
+    auth: Option<&QueryAuth<'_>>,
+    collection: &str,
+    operation: &str,
+    mode: Mode,
+) -> Result<Option<CompiledSieve>, host_store::DataLayerError> {
+    let Some(auth) = auth else { return Ok(None) };
+    // Validated here, before `collection` reaches `compile_read` and a
+    // strict-mode deny logs it verbatim into `path_failed` (an `info!`
+    // line) -- otherwise a WASM guest could inject newlines/escapes into
+    // the operator log through an unvalidated collection name before
+    // `do_get`/`do_query` get a chance to validate it downstream on the
+    // pool thread.
+    validate_identifier(collection)?;
+    compile_read(
+        auth.policy,
+        collection,
+        auth.session,
+        auth.service_id,
+        &Ability(operation.to_string()),
+        mode,
+    )
+    .map_err(|e| host_store::DataLayerError::Internal(e.to_string()))
+}
+
+fn sieve_masked_fields(sieve: &Option<CompiledSieve>) -> Vec<String> {
+    sieve.as_ref().map(|s| s.masked_fields.clone()).unwrap_or_default()
 }
 
 /// Executes a privileged read-only raw-SQL query (ADR-0011) on the reader
@@ -632,6 +956,7 @@ impl SqliteStorageProvider {
         }
         Self::run_m3a_migration(&tx)?;
         Self::run_m3b_migration(&tx)?;
+        Self::run_fdae_migration(&tx)?;
         let updated =
             tx.execute("UPDATE schema_version SET version = ?1", [SUBSTRATE_SCHEMA_VERSION])?;
         if updated == 0 {
@@ -680,6 +1005,18 @@ impl SqliteStorageProvider {
                 topic      TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
                 PRIMARY KEY (service_id, topic)
+            )",
+            [],
+        )?;
+        Ok(())
+    }
+
+    fn run_fdae_migration(conn: &Connection) -> rusqlite::Result<()> {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS fdae_policies (
+                service_id  TEXT PRIMARY KEY,
+                policy_json TEXT NOT NULL,
+                updated_at  INTEGER NOT NULL
             )",
             [],
         )?;
@@ -798,6 +1135,11 @@ enum DbCommand {
     DeleteMany {
         collection: String,
         filter: Option<String>,
+        // Boxed: `CompiledSieve` (now carrying a `DecisionTrace`) made this
+        // the largest `DbCommand` variant by a wide margin --
+        // `clippy::large_enum_variant` flags every other variant paying its
+        // stack size on every `DbCommand` value.
+        sieve: Option<Box<CompiledSieve>>,
         resp: oneshot::Sender<Result<u64, host_store::DataLayerError>>,
     },
     BatchMutate {
@@ -891,8 +1233,13 @@ fn run_writer_loop(
             DbCommand::Delete { collection, id, resp } => {
                 let _ = resp.send(do_delete(&conn, &collection, &id));
             }
-            DbCommand::DeleteMany { collection, filter, resp } => {
-                let _ = resp.send(do_delete_many(&conn, &collection, filter.as_deref()));
+            DbCommand::DeleteMany { collection, filter, sieve, resp } => {
+                let _ = resp.send(do_delete_many(
+                    &conn,
+                    &collection,
+                    filter.as_deref(),
+                    sieve.as_deref(),
+                ));
             }
             DbCommand::BatchMutate { collection, mutations, creator_id, resp } => {
                 let _ = resp.send(do_batch_mutate(&mut conn, &collection, &mutations, &creator_id));
@@ -1202,6 +1549,50 @@ impl StorageProvider for SqliteStorageProvider {
         })
         .await?
     }
+
+    async fn save_fdae_policy(&self, service_id: &str, policy_json: &str) -> anyhow::Result<()> {
+        let conn_arc = self.substrate_conn.clone();
+        let s_id = service_id.to_string();
+        let policy = policy_json.to_string();
+        task::spawn_blocking(move || -> anyhow::Result<()> {
+            let conn = conn_arc.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {}", e))?;
+            let now = Utc::now().timestamp_millis();
+            conn.execute(
+                "INSERT INTO fdae_policies (service_id, policy_json, updated_at)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT (service_id) DO UPDATE SET
+                     policy_json = excluded.policy_json,
+                     updated_at = excluded.updated_at",
+                params![s_id, policy, now],
+            )?;
+            Ok(())
+        })
+        .await?
+    }
+
+    async fn load_fdae_policy(&self, service_id: &str) -> anyhow::Result<Option<String>> {
+        let conn_arc = self.substrate_conn.clone();
+        let s_id = service_id.to_string();
+        task::spawn_blocking(move || -> anyhow::Result<Option<String>> {
+            let conn = conn_arc.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {}", e))?;
+            let mut stmt =
+                conn.prepare("SELECT policy_json FROM fdae_policies WHERE service_id = ?1")?;
+            let mut rows = stmt.query(params![s_id])?;
+            if let Some(row) = rows.next()? { Ok(Some(row.get(0)?)) } else { Ok(None) }
+        })
+        .await?
+    }
+
+    async fn delete_fdae_policy(&self, service_id: &str) -> anyhow::Result<()> {
+        let conn_arc = self.substrate_conn.clone();
+        let s_id = service_id.to_string();
+        task::spawn_blocking(move || -> anyhow::Result<()> {
+            let conn = conn_arc.lock().map_err(|e| anyhow::anyhow!("Mutex poisoned: {}", e))?;
+            conn.execute("DELETE FROM fdae_policies WHERE service_id = ?1", params![s_id])?;
+            Ok(())
+        })
+        .await?
+    }
 }
 
 pub struct SqliteServiceStore {
@@ -1313,7 +1704,10 @@ impl ServiceStore for SqliteServiceStore {
         &self,
         collection: &str,
         id: &str,
-    ) -> Result<Option<host_store::RecordReadValue>, host_store::DataLayerError> {
+        auth: Option<&QueryAuth<'_>>,
+    ) -> Result<ReadOutcome<Option<host_store::RecordReadValue>>, host_store::DataLayerError> {
+        let sieve = compile_sieve_for(auth, collection, Mode::PointInTime { id: id.to_string() })?;
+        let masked_fields = sieve_masked_fields(&sieve);
         let collection = collection.to_string();
         let id = id.to_string();
         let conn = self
@@ -1321,16 +1715,23 @@ impl ServiceStore for SqliteServiceStore {
             .get()
             .await
             .map_err(|e| host_store::DataLayerError::Internal(format!("reader pool: {e}")))?;
-        conn.interact(move |conn| do_get(conn, &collection, &id)).await.map_err(|e| {
-            host_store::DataLayerError::Internal(format!("reader pool interact: {e}"))
-        })?
+        let value = conn
+            .interact(move |conn| do_get(conn, &collection, &id, sieve.as_ref()))
+            .await
+            .map_err(|e| {
+                host_store::DataLayerError::Internal(format!("reader pool interact: {e}"))
+            })??;
+        Ok(ReadOutcome { value, masked_fields })
     }
 
     async fn query(
         &self,
         collection: &str,
         opts: &host_store::QueryOptions,
-    ) -> Result<host_store::QueryResult, host_store::DataLayerError> {
+        auth: Option<&QueryAuth<'_>>,
+    ) -> Result<ReadOutcome<host_store::QueryResult>, host_store::DataLayerError> {
+        let sieve = compile_sieve_for(auth, collection, Mode::Filter)?;
+        let masked_fields = sieve_masked_fields(&sieve);
         let collection = collection.to_string();
         let opts = opts.clone();
         let conn = self
@@ -1338,16 +1739,22 @@ impl ServiceStore for SqliteServiceStore {
             .get()
             .await
             .map_err(|e| host_store::DataLayerError::Internal(format!("reader pool: {e}")))?;
-        conn.interact(move |conn| do_query(conn, &collection, &opts)).await.map_err(|e| {
-            host_store::DataLayerError::Internal(format!("reader pool interact: {e}"))
-        })?
+        let value = conn
+            .interact(move |conn| do_query(conn, &collection, &opts, sieve.as_ref()))
+            .await
+            .map_err(|e| {
+                host_store::DataLayerError::Internal(format!("reader pool interact: {e}"))
+            })??;
+        Ok(ReadOutcome { value, masked_fields })
     }
 
     async fn aggregate(
         &self,
         collection: &str,
         pipeline: &str,
+        auth: Option<&QueryAuth<'_>>,
     ) -> Result<host_store::RawQueryResult, host_store::DataLayerError> {
+        let sieve = compile_sieve_for(auth, collection, Mode::Filter)?;
         let collection = collection.to_string();
         let pipeline = pipeline.to_string();
         let conn = self
@@ -1355,9 +1762,11 @@ impl ServiceStore for SqliteServiceStore {
             .get()
             .await
             .map_err(|e| host_store::DataLayerError::Internal(format!("reader pool: {e}")))?;
-        conn.interact(move |conn| do_aggregate(conn, &collection, &pipeline)).await.map_err(
-            |e| host_store::DataLayerError::Internal(format!("reader pool interact: {e}")),
-        )?
+        conn.interact(move |conn| do_aggregate(conn, &collection, &pipeline, sieve.as_ref()))
+            .await
+            .map_err(|e| {
+                host_store::DataLayerError::Internal(format!("reader pool interact: {e}"))
+            })?
     }
 
     async fn delete(&self, collection: &str, id: &str) -> Result<(), host_store::DataLayerError> {
@@ -1370,12 +1779,19 @@ impl ServiceStore for SqliteServiceStore {
         &self,
         collection: &str,
         filter: Option<&str>,
+        auth: Option<&QueryAuth<'_>>,
     ) -> Result<u64, host_store::DataLayerError> {
+        // Deleting is a write (D2): a read-only permission's `paths` must not
+        // become "these rows are deletable" through this path.
+        let sieve =
+            compile_sieve_for_op(auth, collection, Ability::DATA_LAYER_WRITE, Mode::Filter)?
+                .map(Box::new);
         let collection = collection.to_string();
         let filter = filter.map(str::to_string);
         send_write_command(&self.writer_tx, |resp| DbCommand::DeleteMany {
             collection,
             filter,
+            sieve,
             resp,
         })
         .await
@@ -1412,6 +1828,56 @@ impl ServiceStore for SqliteServiceStore {
             .await
             .map_err(|e| host_store::DataLayerError::Internal(format!("reader pool: {e}")))?;
         conn.interact(move |conn| do_query_raw(conn, &sql, &params)).await.map_err(|e| {
+            host_store::DataLayerError::Internal(format!("reader pool interact: {e}"))
+        })?
+    }
+
+    async fn check_access(
+        &self,
+        collection: &str,
+        id: &str,
+        operation: &str,
+        auth: Option<&QueryAuth<'_>>,
+    ) -> Result<bool, host_store::DataLayerError> {
+        // Fail-closed (ADR-0017 §4): a malformed policy must never be
+        // mistaken for "allowed", so a `PolicyError` here returns `Ok(false)`
+        // rather than propagating -- unlike Mode B's `query`/`get`, where a
+        // compile error is a loud `Err` (a broken policy isn't "zero rows").
+        let sieve = match auth {
+            Some(a) => match compile_read(
+                a.policy,
+                collection,
+                a.session,
+                a.service_id,
+                &Ability(operation.to_string()),
+                Mode::PointInTime { id: id.to_string() },
+            ) {
+                Ok(s) => s,
+                Err(_) => return Ok(false),
+            },
+            None => None,
+        };
+        let collection = collection.to_string();
+        let id = id.to_string();
+        let conn = self
+            .reader_pool
+            .get()
+            .await
+            .map_err(|e| host_store::DataLayerError::Internal(format!("reader pool: {e}")))?;
+        conn.interact(move |conn| do_check_access(conn, &collection, &id, sieve.as_ref()))
+            .await
+            .map_err(|e| {
+                host_store::DataLayerError::Internal(format!("reader pool interact: {e}"))
+            })?
+    }
+
+    async fn list_collections(&self) -> Result<Vec<String>, host_store::DataLayerError> {
+        let conn = self
+            .reader_pool
+            .get()
+            .await
+            .map_err(|e| host_store::DataLayerError::Internal(format!("reader pool: {e}")))?;
+        conn.interact(do_list_collections).await.map_err(|e| {
             host_store::DataLayerError::Internal(format!("reader pool interact: {e}"))
         })?
     }
@@ -1464,24 +1930,27 @@ impl ServiceStore for Arc<SqliteServiceStore> {
         &self,
         collection: &str,
         id: &str,
-    ) -> Result<Option<host_store::RecordReadValue>, host_store::DataLayerError> {
-        self.as_ref().get(collection, id).await
+        auth: Option<&QueryAuth<'_>>,
+    ) -> Result<ReadOutcome<Option<host_store::RecordReadValue>>, host_store::DataLayerError> {
+        self.as_ref().get(collection, id, auth).await
     }
 
     async fn query(
         &self,
         collection: &str,
         opts: &host_store::QueryOptions,
-    ) -> Result<host_store::QueryResult, host_store::DataLayerError> {
-        self.as_ref().query(collection, opts).await
+        auth: Option<&QueryAuth<'_>>,
+    ) -> Result<ReadOutcome<host_store::QueryResult>, host_store::DataLayerError> {
+        self.as_ref().query(collection, opts, auth).await
     }
 
     async fn aggregate(
         &self,
         collection: &str,
         pipeline: &str,
+        auth: Option<&QueryAuth<'_>>,
     ) -> Result<host_store::RawQueryResult, host_store::DataLayerError> {
-        self.as_ref().aggregate(collection, pipeline).await
+        self.as_ref().aggregate(collection, pipeline, auth).await
     }
 
     async fn delete(&self, collection: &str, id: &str) -> Result<(), host_store::DataLayerError> {
@@ -1492,8 +1961,9 @@ impl ServiceStore for Arc<SqliteServiceStore> {
         &self,
         collection: &str,
         filter: Option<&str>,
+        auth: Option<&QueryAuth<'_>>,
     ) -> Result<u64, host_store::DataLayerError> {
-        self.as_ref().delete_many(collection, filter).await
+        self.as_ref().delete_many(collection, filter, auth).await
     }
 
     async fn batch_mutate(
@@ -1512,11 +1982,26 @@ impl ServiceStore for Arc<SqliteServiceStore> {
     ) -> Result<host_store::RawQueryResult, host_store::DataLayerError> {
         self.as_ref().query_raw(sql, params).await
     }
+
+    async fn check_access(
+        &self,
+        collection: &str,
+        id: &str,
+        operation: &str,
+        auth: Option<&QueryAuth<'_>>,
+    ) -> Result<bool, host_store::DataLayerError> {
+        self.as_ref().check_access(collection, id, operation, auth).await
+    }
+
+    async fn list_collections(&self) -> Result<Vec<String>, host_store::DataLayerError> {
+        self.as_ref().list_collections().await
+    }
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
+    use syneroym_fdae::{DecisionTrace, parse_and_validate};
     use tempfile::tempdir;
 
     use super::*;
@@ -1848,6 +2333,89 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn test_fdae_policy_save_load_roundtrip_and_replace() {
+        let dir = tempdir().unwrap();
+        let provider = SqliteStorageProvider::new(dir.path(), false).unwrap();
+
+        assert_eq!(provider.load_fdae_policy("svc-a").await.unwrap(), None);
+
+        provider.save_fdae_policy("svc-a", r#"{"version":1}"#).await.unwrap();
+        assert_eq!(
+            provider.load_fdae_policy("svc-a").await.unwrap(),
+            Some(r#"{"version":1}"#.to_string())
+        );
+
+        // A second save for the same service_id replaces (last-write-wins, one row).
+        provider.save_fdae_policy("svc-a", r#"{"version":2}"#).await.unwrap();
+        assert_eq!(
+            provider.load_fdae_policy("svc-a").await.unwrap(),
+            Some(r#"{"version":2}"#.to_string())
+        );
+
+        assert_eq!(provider.load_fdae_policy("svc-unknown").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn test_fdae_policy_delete_is_idempotent_and_removes_the_row() {
+        let dir = tempdir().unwrap();
+        let provider = SqliteStorageProvider::new(dir.path(), false).unwrap();
+
+        // Deleting a row that was never saved is not an error.
+        provider.delete_fdae_policy("svc-never-saved").await.unwrap();
+
+        provider.save_fdae_policy("svc-a", r#"{"version":1}"#).await.unwrap();
+        provider.delete_fdae_policy("svc-a").await.unwrap();
+        assert_eq!(provider.load_fdae_policy("svc-a").await.unwrap(), None);
+
+        // Deleting the same row again is still not an error.
+        provider.delete_fdae_policy("svc-a").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_list_collections_returns_created_tables_excludes_vault_and_sqlite_internals() {
+        let dir = tempdir().unwrap();
+        let provider = SqliteStorageProvider::new(dir.path(), true).unwrap();
+        let key_store = Arc::new(KeyStore::new());
+        key_store.inject_kek([21u8; 32]).unwrap();
+
+        let store = provider.open_service_db("list-collections-svc", &key_store).await.unwrap();
+
+        store
+            .create_collection(&host_store::CollectionSchema {
+                name: "widgets".to_string(),
+                indexes: vec![],
+            })
+            .await
+            .unwrap();
+        store
+            .create_collection(&host_store::CollectionSchema {
+                name: "gadgets".to_string(),
+                indexes: vec![],
+            })
+            .await
+            .unwrap();
+        // A leading underscore is a legal collection identifier
+        // (`IDENTIFIER_REGEX` is `^[a-zA-Z_]...`) and must not be swept up
+        // by an overly broad `_%` exclusion meant only for `_vault`.
+        store
+            .create_collection(&host_store::CollectionSchema {
+                name: "_audit".to_string(),
+                indexes: vec![],
+            })
+            .await
+            .unwrap();
+        // A vault write forces `_vault` to exist alongside the collections.
+        store.write_secret("k", b"v").await.unwrap();
+
+        let mut collections = store.list_collections().await.unwrap();
+        collections.sort();
+        assert_eq!(
+            collections,
+            vec!["_audit".to_string(), "gadgets".to_string(), "widgets".to_string()]
+        );
+    }
+
     #[test]
     fn test_insecure_mode_warning() {
         use std::io;
@@ -1895,5 +2463,342 @@ mod tests {
         assert!(!provider.service_exists("svc-a").await.unwrap());
         let _ = provider.open_service_db("svc-a", &key_store).await.unwrap();
         assert!(provider.service_exists("svc-a").await.unwrap());
+    }
+
+    // -- FDAE watchdog matrix (ADR-0017 §8, M04B Slice B2 Phase 2) ----------
+    //
+    // Hand-builds a `CompiledSieve` whose `where_clause` is a pathological
+    // scalar subquery (mirroring `test_query_raw_bounds_compute_independent_
+    // of_row_count`'s trick), rather than going through `compile_read` --
+    // `MAX_RECURSION_DEPTH` bounds any policy-compiled recursive relation to
+    // 64 steps, far too cheap to ever approach `FDAE_MAX_VM_OPS`. What's
+    // under test here is `data_db`'s own watchdog *wiring* around the
+    // sieve, not the compiler.
+
+    fn pathological_sieve() -> CompiledSieve {
+        CompiledSieve {
+            where_clause: "(SELECT 1 FROM (WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT \
+                           x+1 FROM cnt WHERE x < 2000000000) SELECT x FROM cnt WHERE x >= \
+                           2000000000)) IS NOT NULL"
+                .to_string(),
+            params: Vec::new(),
+            masked_fields: Vec::new(),
+            where_caveats: Vec::new(),
+            trace: DecisionTrace::default(),
+        }
+    }
+
+    fn seed_one_row_documents(conn: &Connection) {
+        conn.execute_batch(
+            "CREATE TABLE documents (id TEXT PRIMARY KEY, payload JSON NOT NULL, creator_id TEXT \
+             NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+             INSERT INTO documents (id, payload, creator_id, created_at, updated_at) VALUES \
+             ('doc-1', '{}', 'c', 0, 0);",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn fdae_watchdog_interrupts_do_query_as_quota_exceeded() {
+        let conn = Connection::open_in_memory().unwrap();
+        seed_one_row_documents(&conn);
+        let sieve = pathological_sieve();
+        let opts = host_store::QueryOptions { filter: None, limit: None, cursor: None };
+        let err = do_query(&conn, "documents", &opts, Some(&sieve)).unwrap_err();
+        assert!(matches!(err, host_store::DataLayerError::QuotaExceeded));
+
+        // The guard cleared the progress handler on drop -- the connection
+        // remains fully usable for an ordinary (unsieved) query afterwards.
+        let result = do_query(&conn, "documents", &opts, None).unwrap();
+        assert_eq!(result.records.len(), 1);
+    }
+
+    #[test]
+    fn fdae_watchdog_interrupts_do_get_as_quota_exceeded() {
+        let conn = Connection::open_in_memory().unwrap();
+        seed_one_row_documents(&conn);
+        let sieve = pathological_sieve();
+        let err = do_get(&conn, "documents", "doc-1", Some(&sieve)).unwrap_err();
+        assert!(matches!(err, host_store::DataLayerError::QuotaExceeded));
+        assert!(do_get(&conn, "documents", "doc-1", None).unwrap().is_some());
+    }
+
+    #[test]
+    fn fdae_watchdog_interrupt_denies_do_check_access() {
+        let conn = Connection::open_in_memory().unwrap();
+        seed_one_row_documents(&conn);
+        let sieve = pathological_sieve();
+        // Fail-closed: a watchdog interrupt must surface as `Ok(false)`,
+        // never as an `Err` a caller could misread as "allowed".
+        assert!(!do_check_access(&conn, "documents", "doc-1", Some(&sieve)).unwrap());
+        assert!(do_check_access(&conn, "documents", "doc-1", None).unwrap());
+    }
+
+    /// ADR-0017 §9 decision trace, "rows not reached" (M04B Slice B2
+    /// Phase 5): `compile_read` cannot know whether a row actually
+    /// satisfies its compiled predicate -- it only produces SQL. Only
+    /// `do_check_access`, after running that predicate against a real row,
+    /// can know. This is the one deny reason that isn't knowable at compile
+    /// time, so it's tested here (post-execution) rather than in
+    /// `syneroym-fdae`'s own compile-time decision-trace tests.
+    #[test]
+    fn decision_trace_records_rows_not_reached_after_check_access_executes() {
+        use std::io;
+
+        use syneroym_ucan::{Capability, ResourceUri, SessionContext};
+        use tracing_subscriber::prelude::*;
+
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE users (id TEXT PRIMARY KEY, payload TEXT NOT NULL DEFAULT '{}');
+             CREATE TABLE documents (id TEXT PRIMARY KEY, payload TEXT NOT NULL DEFAULT '{}');
+             INSERT INTO users (id, payload) VALUES ('u-alice', '{\"did\":\"did:key:alice\"}');
+             INSERT INTO documents (id, payload) VALUES ('doc-1', \
+             '{\"creator_uuid\":\"u-alice\"}');",
+        )
+        .unwrap();
+
+        let policy = parse_and_validate(
+            r#"{
+                "version": "fdae/v1",
+                "definitions": {
+                    "document": {
+                        "table": "documents",
+                        "relations": {"creator": {"target": "user", "join_column": "creator_uuid"}},
+                        "permissions": {
+                            "view": {"allows": ["data-layer/read"], "paths": [["creator", "caller"]]}
+                        }
+                    },
+                    "user": {"table": "users", "principal_column": "did"}
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let resource = ResourceUri(format!(
+            "{}/collection/document",
+            ResourceUri::service("svc-a", "svc-a").0
+        ));
+        // Bob holds a read capability (the operation is admitted) but is
+        // not doc-1's creator -- the compiled predicate is a real
+        // `EXISTS(...)`, not a compile-time "0=1", so only execution can
+        // tell the two apart.
+        let bob = SessionContext {
+            subject_did: "did:key:bob".to_string(),
+            capabilities: vec![Capability {
+                with: resource,
+                can: Ability(Ability::DATA_LAYER_READ.to_string()),
+                caveats: None,
+            }],
+            claims: serde_json::Map::new(),
+            verified_at_secs: 0,
+        };
+        let sieve = compile_read(
+            &policy,
+            "document",
+            &bob,
+            "svc-a",
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::PointInTime { id: "doc-1".to_string() },
+        )
+        .unwrap()
+        .unwrap();
+        assert!(sieve.trace.operation_admitted);
+        assert!(
+            sieve.trace.path_failed.is_none(),
+            "compile time cannot know this row is unreachable"
+        );
+
+        let logs = Arc::new(Mutex::new(Vec::new()));
+        let logs_clone = logs.clone();
+        struct MockWriter {
+            logs: Arc<Mutex<Vec<u8>>>,
+        }
+        impl io::Write for MockWriter {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.logs.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let make_writer = move || MockWriter { logs: logs_clone.clone() };
+        let layer = tracing_subscriber::fmt::layer().with_ansi(false).with_writer(make_writer);
+        let subscriber = tracing_subscriber::registry().with(layer);
+
+        let allowed = tracing::subscriber::with_default(subscriber, || {
+            do_check_access(&conn, "documents", "doc-1", Some(&sieve)).unwrap()
+        });
+        assert!(!allowed, "bob is not doc-1's creator");
+
+        let logs_content = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+        assert!(logs_content.contains("fdae decision: deny"), "logs were: {logs_content}");
+        assert!(logs_content.contains("rows_reached=Some(false)"), "logs were: {logs_content}");
+        assert!(
+            logs_content.contains("no row satisfied the compiled predicate"),
+            "logs were: {logs_content}"
+        );
+    }
+
+    /// Regression: a watchdog interrupt used to be folded into the same
+    /// `rows_reached: Some(false)` / "no row satisfied the compiled
+    /// predicate" trace as a genuine empty result, so a compute-budget
+    /// abort was indistinguishable in the logs from an ordinary deny. The
+    /// aborted case must stay `rows_reached: None` and get its own
+    /// `path_failed` reason.
+    #[test]
+    fn decision_trace_distinguishes_an_aborted_evaluation_from_a_real_no_row() {
+        use std::io;
+
+        use tracing_subscriber::prelude::*;
+
+        let conn = Connection::open_in_memory().unwrap();
+        seed_one_row_documents(&conn);
+        let sieve = pathological_sieve();
+
+        let logs = Arc::new(Mutex::new(Vec::new()));
+        let logs_clone = logs.clone();
+        struct MockWriter {
+            logs: Arc<Mutex<Vec<u8>>>,
+        }
+        impl io::Write for MockWriter {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.logs.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let make_writer = move || MockWriter { logs: logs_clone.clone() };
+        let layer = tracing_subscriber::fmt::layer().with_ansi(false).with_writer(make_writer);
+        let subscriber = tracing_subscriber::registry().with(layer);
+
+        let allowed = tracing::subscriber::with_default(subscriber, || {
+            do_check_access(&conn, "documents", "doc-1", Some(&sieve)).unwrap()
+        });
+        assert!(!allowed, "fail-closed on a watchdog interrupt");
+
+        let logs_content = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+        assert!(logs_content.contains("fdae decision: deny"), "logs were: {logs_content}");
+        assert!(logs_content.contains("policy evaluation aborted"), "logs were: {logs_content}");
+        assert!(
+            !logs_content.contains("no row satisfied the compiled predicate"),
+            "an aborted evaluation must not claim a fact about the data it never reached: logs \
+             were: {logs_content}"
+        );
+        assert!(
+            logs_content.contains("rows_reached=None"),
+            "an aborted evaluation never learned whether a row matched: logs were: {logs_content}"
+        );
+    }
+
+    /// ADR-0017 §9 decision trace: `do_get` is the other Mode A
+    /// (`PointInTime`) execution path besides `check_access`, and must emit
+    /// its own execution-aware trace on an unreachable row -- previously
+    /// only `do_check_access` did, so a denied `get` logged as an
+    /// undiagnosable "allow".
+    #[test]
+    fn decision_trace_records_rows_not_reached_after_do_get_executes() {
+        use std::io;
+
+        use syneroym_ucan::{Capability, ResourceUri, SessionContext};
+        use tracing_subscriber::prelude::*;
+
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE users (id TEXT PRIMARY KEY, payload TEXT NOT NULL DEFAULT '{}');
+             CREATE TABLE documents (id TEXT PRIMARY KEY, payload TEXT NOT NULL DEFAULT '{}', \
+             creator_id TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+             INSERT INTO users (id, payload) VALUES ('u-alice', '{\"did\":\"did:key:alice\"}');
+             INSERT INTO documents (id, payload, creator_id, created_at, updated_at) VALUES \
+             ('doc-1', '{\"creator_uuid\":\"u-alice\"}', 'svc', 0, 0);",
+        )
+        .unwrap();
+
+        let policy = parse_and_validate(
+            r#"{
+                "version": "fdae/v1",
+                "definitions": {
+                    "document": {
+                        "table": "documents",
+                        "relations": {"creator": {"target": "user", "join_column": "creator_uuid"}},
+                        "permissions": {
+                            "view": {"allows": ["data-layer/read"], "paths": [["creator", "caller"]]}
+                        }
+                    },
+                    "user": {"table": "users", "principal_column": "did"}
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let resource = ResourceUri(format!(
+            "{}/collection/document",
+            ResourceUri::service("svc-a", "svc-a").0
+        ));
+        let bob = SessionContext {
+            subject_did: "did:key:bob".to_string(),
+            capabilities: vec![Capability {
+                with: resource,
+                can: Ability(Ability::DATA_LAYER_READ.to_string()),
+                caveats: None,
+            }],
+            claims: serde_json::Map::new(),
+            verified_at_secs: 0,
+        };
+        let sieve = compile_read(
+            &policy,
+            "document",
+            &bob,
+            "svc-a",
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::PointInTime { id: "doc-1".to_string() },
+        )
+        .unwrap()
+        .unwrap();
+
+        let logs = Arc::new(Mutex::new(Vec::new()));
+        let logs_clone = logs.clone();
+        struct MockWriter {
+            logs: Arc<Mutex<Vec<u8>>>,
+        }
+        impl io::Write for MockWriter {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.logs.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let make_writer = move || MockWriter { logs: logs_clone.clone() };
+        let layer = tracing_subscriber::fmt::layer().with_ansi(false).with_writer(make_writer);
+        let subscriber = tracing_subscriber::registry().with(layer);
+
+        let record = tracing::subscriber::with_default(subscriber, || {
+            do_get(&conn, "documents", "doc-1", Some(&sieve)).unwrap()
+        });
+        assert!(record.is_none(), "bob is not doc-1's creator");
+
+        let logs_content = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+        assert!(logs_content.contains("fdae decision: deny"), "logs were: {logs_content}");
+        assert!(logs_content.contains("rows_reached=Some(false)"), "logs were: {logs_content}");
+    }
+
+    #[test]
+    fn fdae_watchdog_interrupts_do_delete_many_on_the_writer_conn() {
+        let conn = Connection::open_in_memory().unwrap();
+        seed_one_row_documents(&conn);
+        let sieve = pathological_sieve();
+        let err = do_delete_many(&conn, "documents", None, Some(&sieve)).unwrap_err();
+        assert!(matches!(err, host_store::DataLayerError::QuotaExceeded));
+
+        // The writer connection is persistent (never returned to a pool) --
+        // the guard clearing the progress handler on drop is what keeps the
+        // *next* command on this same connection unaffected.
+        let deleted = do_delete_many(&conn, "documents", None, None).unwrap();
+        assert_eq!(deleted, 1);
     }
 }

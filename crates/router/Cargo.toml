@@ -50,6 +50,7 @@ quinn = "0.11.11"
 syneroym-core = { workspace = true, features = ["test-utils"] }
 syneroym-control-plane.workspace = true
 syneroym-wit-interfaces.workspace = true
+syneroym-fdae.workspace = true
 criterion.workspace = true
 tempfile.workspace = true
 

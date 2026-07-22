@@ -1,10 +1,12 @@
 pub mod aggregate;
+pub mod auth;
 pub mod errors;
 pub mod filter;
 pub mod registry_store;
 pub mod sqlite;
 pub mod traits;
 
+pub use auth::{QueryAuth, ReadOutcome};
 pub use sqlite::SqliteStorageProvider;
 /// Re-export the wasmtime-host-generated WIT types: this crate runs only on
 /// the host (never compiled to a WASM guest), so it speaks the same types
@@ -35,6 +37,8 @@ impl Default for DataLayerService {
 
 #[cfg(test)]
 mod tests_crud;
+#[cfg(test)]
+mod tests_fdae;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]

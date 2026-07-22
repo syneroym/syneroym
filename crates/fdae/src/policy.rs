@@ -6,6 +6,17 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Deserialize;
 
+/// Upper bound on a path's relation-hop count (excluding the terminal),
+/// matching the schema's `paths` item `maxItems: 33` (32 hops + 1
+/// terminal). `compile::emit_chain` recurses once per hop with no other
+/// depth guard of its own, so an unbounded path would let a policy author
+/// (accidentally or otherwise) drive that recursion deep enough to blow the
+/// Rust stack -- a process abort (`SIGABRT`), not a catchable error, taking
+/// down every service on the substrate, not just the one whose policy this
+/// is. Rejected here, at parse time, rather than left to be discovered at
+/// first query-compile time against a already-deployed policy.
+const MAX_PATH_HOPS: usize = 32;
+
 /// A parsed and validated `fdae/v1` policy document.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -183,25 +194,27 @@ fn validate_semantics(policy: &Policy) -> Result<(), PolicyError> {
 }
 
 /// The compiler resolves a query's `collection` string against either a
-/// definition's key or its `table` (`compile::find_definition`), taking the
-/// first match. If two definitions' keys/tables collide, that resolution
-/// would silently pick one and mask the other with no error -- reject the
-/// ambiguity at parse time instead.
+/// definition's key or its `table`, case-insensitively -- matching SQLite's
+/// own identifier resolution (`compile::find_definition`) -- taking the
+/// first match. If two definitions' keys/tables collide under that same
+/// case-insensitive rule, that resolution would silently pick one and mask
+/// the other with no error -- reject the ambiguity at parse time instead.
 fn validate_no_collection_ambiguity(policy: &Policy) -> Result<(), PolicyError> {
-    let mut owners: BTreeMap<&str, &str> = BTreeMap::new();
+    let mut owners: BTreeMap<String, &str> = BTreeMap::new();
     for (type_name, def) in &policy.definitions {
         for name in [type_name.as_str(), def.table.as_str()] {
-            match owners.get(name) {
+            let fold = name.to_ascii_lowercase();
+            match owners.get(fold.as_str()) {
                 Some(owner) if *owner != type_name.as_str() => {
                     return Err(PolicyError::Semantic(format!(
                         "'{name}' resolves ambiguously to both definition '{owner}' and \
                          '{type_name}' -- a definition's key or table must not collide with \
-                         another's"
+                         another's, even case-insensitively"
                     )));
                 }
                 Some(_) => {}
                 None => {
-                    owners.insert(name, type_name.as_str());
+                    owners.insert(fold, type_name.as_str());
                 }
             }
         }
@@ -298,6 +311,22 @@ fn validate_permissions(
                  restriction as fields.deny instead"
             )));
         }
+        // `compile_cls`/`strip_masked_fields` treat every `fields.deny`
+        // entry as a flat top-level JSON key (a plain `Map::remove`, no
+        // path parsing). A dotted entry like "profile.ssn" would silently
+        // mask nothing -- the key never exists at the top level -- while
+        // reading as if nested-field masking were supported. Reject it
+        // loudly instead of letting it round-trip as a no-op.
+        if let Some(fields) = &perm.fields
+            && let Some(deny) = &fields.deny
+            && let Some(dotted) = deny.iter().find(|f| f.contains('.'))
+        {
+            return Err(PolicyError::Semantic(format!(
+                "definition '{type_name}' permission '{perm_name}' declares fields.deny entry \
+                 '{dotted}', which looks like a nested field path -- this slice only masks flat \
+                 top-level keys, so a dotted entry would silently mask nothing"
+            )));
+        }
     }
     if let Some(default) = &def.default
         && !def.permissions.contains_key(default)
@@ -359,6 +388,13 @@ fn validate_path(
         return Err(PolicyError::Semantic(format!(
             "definition '{start_type}' permission '{perm_name}' path ends in unknown terminal \
              '{terminal}' (expected 'caller' or 'anchor')"
+        )));
+    }
+    if rel_names.len() > MAX_PATH_HOPS {
+        return Err(PolicyError::Semantic(format!(
+            "definition '{start_type}' permission '{perm_name}' path has {} relation hops, \
+             exceeding the {MAX_PATH_HOPS} maximum",
+            rel_names.len()
         )));
     }
 
@@ -628,6 +664,17 @@ mod tests {
     }
 
     #[test]
+    fn rejects_fields_deny_with_a_dotted_nested_path() {
+        let doc = minimal_doc(
+            r#"{"user": {"table": "users", "principal_column": "did", "permissions": {
+                "view_self": {"paths": [["caller"]], "fields": {"deny": ["profile.ssn"]}}
+            }}}"#,
+        );
+        let err = parse_and_validate(&doc).unwrap_err();
+        assert!(matches!(err, PolicyError::Semantic(_)));
+    }
+
+    #[test]
     fn accepts_fields_deny_without_allow() {
         let doc = minimal_doc(
             r#"{"user": {"table": "users", "principal_column": "did", "permissions": {
@@ -664,6 +711,68 @@ mod tests {
             }"#,
         );
         let err = parse_and_validate(&doc).unwrap_err();
+        assert!(matches!(err, PolicyError::Semantic(_)));
+    }
+
+    #[test]
+    fn rejects_a_definitions_table_colliding_case_insensitively() {
+        let doc = minimal_doc(
+            r#"{
+                "orders": {"table": "orders_tbl"},
+                "shipments": {"table": "ORDERS_TBL"}
+            }"#,
+        );
+        let err = parse_and_validate(&doc).unwrap_err();
+        assert!(matches!(err, PolicyError::Semantic(_)));
+    }
+
+    #[test]
+    fn rejects_a_path_exceeding_the_max_hop_count_via_schema() {
+        let hops: Vec<String> = (0..40).map(|i| format!("\"hop{i}\"")).collect();
+        let path = format!("[{}, \"caller\"]", hops.join(", "));
+        let doc = minimal_doc(&format!(
+            r#"{{"user": {{"table": "users", "principal_column": "did", "permissions": {{
+                "view": {{"paths": [{path}]}}
+            }}}}}}"#
+        ));
+        let err = parse_and_validate(&doc).unwrap_err();
+        assert!(matches!(err, PolicyError::Schema(_)));
+    }
+
+    #[test]
+    fn rejects_a_path_exceeding_the_max_hop_count_at_the_semantic_layer_too() {
+        // Defense in depth: even a `Policy` constructed directly --
+        // bypassing `parse_and_validate`'s schema gate entirely, which
+        // nothing stops a caller from doing since every field here is
+        // `pub` -- must still be caught by `validate_semantics`'s own
+        // hop-count check, not just the schema's `maxItems`.
+        let mut path: Vec<String> = (0..=MAX_PATH_HOPS).map(|i| format!("hop{i}")).collect();
+        path.push("caller".to_string());
+        let mut permissions = BTreeMap::new();
+        permissions.insert(
+            "view".to_string(),
+            Permission {
+                allows: vec![],
+                operator: Operator::default(),
+                paths: vec![path],
+                conditions: vec![],
+                includes: vec![],
+                fields: None,
+            },
+        );
+        let mut definitions = BTreeMap::new();
+        definitions.insert(
+            "user".to_string(),
+            Definition {
+                table: "users".to_string(),
+                principal_column: Some("did".to_string()),
+                relations: BTreeMap::new(),
+                permissions,
+                default: None,
+            },
+        );
+        let policy = Policy { version: "fdae/v1".to_string(), strict: false, definitions };
+        let err = validate_semantics(&policy).unwrap_err();
         assert!(matches!(err, PolicyError::Semantic(_)));
     }
 }

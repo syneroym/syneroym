@@ -152,6 +152,13 @@ and no longer gate B2; d/e remain as a deferral and a B7 hand-off.
   with an author-time warning; implementation **sequenced inside B2, not ahead of
   it** (it only ever tightens, so it can't block the slice start). Whether
   `strict` eventually flips default-on is left to the third-party-authoring point.
+  The compiler side (`strict:` parsed, additive, no runtime enforcement change)
+  shipped in Phase 1; the deploy-path author-time warning shipped in Phase 4,
+  checked against the service's own database as the collection inventory (a
+  manifest declares no collection list of its own) -- warns when a table has
+  no matching `definitions:` entry (would be denied under `strict: true`) and
+  when a `definitions:` entry's table doesn't exist yet (expected for a
+  lazily-initialized TCP/container service).
 - **D-04-02-d — Stale relationship data / Zanzibar "new enemy"** (ADR-0017 §9).
   **Deliberately deferred to M7** (replication); recorded here so it is a
   decision, not an M7 surprise. §6's TTL'd proofs bound the cross-service window.
@@ -177,6 +184,69 @@ and no longer gate B2; d/e remain as a deferral and a B7 hand-off.
   can still `delete(id)`/`patch(id)` it — pre-existing, since host write paths run
   under service authority and carry no capability gate today). Surfaced during
   Slice B2 Phase-2 review.
+- **D-04-02-g — Multi-capability caveat semantics (additive vs.
+  intersective).** ⛳ **Open — not a B2 blocker (over-restrictive, not a
+  leak).** `compile_read` collects `entitling_caps` as *every* capability
+  whose `grants()` covers the operation (caveats play no part in `grants()`),
+  then flattens each one's `caveats.where` into `CompiledSieve.where_caveats`
+  — a single list ANDed together by `data_db`'s `merge_sieve`, with no
+  per-OR-branch association back to the capability that earned it. Concrete
+  failure: a caller holding both an unrestricted `read` capability and a
+  second, narrower-caveated one (e.g. `region: EU`) on the same resource gets
+  **the intersection** of both caveats, not the union each capability should
+  independently grant — the unrestricted capability's access is narrowed by
+  the mere presence of the second one. Capabilities are meant to be additive;
+  this is accidentally intersective. Correct semantics need each path/OR-branch
+  to carry *its own* entitling capability's caveat — `(P1 AND caveat₁) OR (P2
+  AND caveat₂)` — which the current flat `where_caveats: Vec<Json>` shape
+  cannot express; fixing it is a `crates/fdae` (Phase 1) `CompiledSieve`
+  contract change, not a Phase 2 `data_db` one. The same root cause makes CLS
+  `fields.deny` lists union across capabilities too (`compile_cls`) — the RLS
+  variant was pinned in Phase 2; the CLS variant is now **live** (Phase 3
+  ships the host-side field-strip that actually applies `masked_fields` to a
+  returned payload, so a caller holding an unrestricted capability alongside
+  a second, `fields.deny`-caveated one on the same resource now observably
+  gets their unrestricted grant's payload stripped too — previously this was
+  latent, since Phase 2 exposed `masked_fields` but never applied it).
+  **Pinned, not silently dropped:**
+  `tests_fdae.rs::two_capabilities_with_conflicting_caveats_currently_narrow_to_zero_rows`
+  (RLS, Phase 2) and
+  `host_capabilities.rs::tests::fdae_d04_02_g_extra_caveated_capability_narrows_cls_strip`
+  (CLS, Phase 3) both assert today's (undesired) behavior explicitly, with a
+  comment directing whoever fixes this to flip the assertion. Surfaced during
+  Slice B2 Phase-2 review (independent re-review pass).
+- **D-04-02-h — Guest-originated reads carry no principal.** ⛳ **Open —
+  expected to be resolved alongside B3's `anchor_did`, not as a slice of its
+  own.** Every read a guest originates runs under a synthesized
+  `CallerContext::service_system(service_id)` — "the callee acts as itself",
+  settled in M04A B0/A1 — whose `SessionContext` holds no capabilities, so
+  `compile_read` falls to `deny_all()` and the read returns empty (Mode B) /
+  `false` (Mode A) for any permission requiring an external principal.
+  **Two ingresses**, and the distinction is per-ingress, not native-vs-WASM:
+  (i) the WASM engine path, `prepare_wasm_execution` (`engine.rs:711-716`),
+  reaching the store through `HostState`; and (ii) a guest's
+  `syneroym:proxy` call into its **own** service's native `data-layer` --
+  `proxy::Host::call` synthesizes the same identity
+  (`host_capabilities.rs:670`), the proxy gate's same-service exception
+  deliberately permits it (`proxy.rs:224-231`), and `ProxyRouter::invoke_local`
+  hands it to `SynSvcNativeService` (`proxy.rs:251-265`). Ingress (ii) is a
+  **behavior change** introduced by Phase 4 on a path that previously read
+  unfiltered; it fails over-restrictive, never open. Phase 4 ships the
+  deploy/persist/load mechanism but does not thread real caller identity:
+  that is cross-cutting through `crates/router` and collides with the
+  proxy's deliberate "callee acts as itself" semantics for cross-service
+  calls — the same original-principal question **Slice B3 is already
+  solving via ADR-0015 A5's `anchor_did`**. Deliberately **not** worked
+  around by exempting `AuthLevel::System` callers from the sieve: that would
+  make ingress (ii) a bypass of ingress (i)'s enforcement. What **is**
+  enforced as of Phase 4 is an external, router-verified caller reaching
+  native dispatch through `dispatch_json_rpc_once` (`dispatch.rs:99-105`) —
+  that ingress, and only that one. Pinned by
+  `sandbox_wasm/tests/data_layer_integration.rs::test_deployed_policy_yields_empty_guest_originated_query_d04_02_h`
+  (ingress i) and
+  `router/tests/proxy_dispatch.rs::guest_self_proxy_data_layer_returns_empty_when_policy_present`
+  (ingress ii), each asserting today's empty result explicitly. Surfaced
+  during Slice B2 Phase 4 planning.
 
 ---
 
@@ -314,12 +384,17 @@ Mode-A enforcement, depends on B2's `check_access` + D-04-02-f).
 
 ## Migration Strategy
 
-### `ServiceManifest` Extension
+### `ServiceConfig` Extension
+Shipped in Phase 4 (the `ServiceManifest` heading below was stale -- there is
+no `ServiceManifest` struct; the field lives on `ServiceConfig`, per
+`slice-b2-implementation-plan.md` §12.6):
 ```toml
 [services.my-svc.fdae]
 policy_path = "fdae-policy.json"   # optional declarative ReBAC policy (D-04-02 schema)
 ```
-`#[serde(default)]`; existing manifests parse cleanly.
+`#[serde(default)]`; existing manifests parse cleanly. The policy document
+itself is **JSON**, not YAML (`parse_and_validate` is `serde_json::from_str`)
+-- ADR-0017's examples are YAML for readability only.
 
 ### No Data Migration
 Policy enforcement is additive at the query-compilation layer, not a stored-data
@@ -333,7 +408,7 @@ D-04-02) — minor bump, non-breaking. `wasm32-wasip2` must stay unbroken.
 
 ## Ordered Implementation Slices
 
-#### Slice B2: Local FDAE (SQL Pushdown Sieve)
+#### Slice B2: Local FDAE (SQL Pushdown Sieve) — Phase 1 ✅ (2026-07-20, PR #86); Phase 2 ✅ (2026-07-20); Phase 3 ✅ (2026-07-21); Phase 4 ✅ (2026-07-21, manifest/deploy/persist/native-enforcement plumbing shipped -- FDAE is enforced for a router-verified external caller reaching native dispatch, and the mechanism is loaded at WASM instantiation, but a guest-originated read (WASM host functions or same-service self-proxy) still carries a capability-less synthesized identity and returns empty, per D-04-02-h); Phase 5 ✅ (2026-07-22, decision trace, `criterion` bench, Failure/Security matrix + C1/H1-H8 findings documented, `mise run test:e2e` green, `traceability-matrix.md` flipped to In Progress) — **Slice B2 complete**
 **Unblocked** (ADR D-04-02 Accepted; a/b/c resolved). **Depends on:** M04A (B1
 SessionContext, B0 identity).
 **Requirement:** `[FND-IAM]`.
@@ -349,6 +424,27 @@ stage 4 is Slice B4-fdae). Applies the ADR-0017 resolutions: bind `claims` +
 capability `caveats` while `with`/`can` select the branch (D-04-02-a);
 **default-deny** when no permission is named (-b); `strict:` off by default and
 implemented within this slice (-c).
+
+**Phase 1** (`crates/fdae`: policy model, JSON Schema, ReBAC→SQL compiler) —
+merged `main` @ PR #86. **Phase 2** (`crates/data_db` integration: `query`/
+`get`/`aggregate`/`delete_many` threaded with an `Option<QueryAuth>`, sieve
+spliced into SQL generation, new `check_access` Mode-A primitive, watchdog
+matrix wired) — done on `feat/m04b-slice-b2-data-db`. **Phase 3** (WIT
+`check-access` + `HostState.fdae_policy` + real `QueryAuth` construction on
+the WASM read path + host-side CLS field-stripping, proven by
+`sandbox_wasm` host tests that inject a `Policy` by hand) — done on the same
+branch; `HostState.fdae_policy` stays `None` in production until Phase 4
+(deploy/persist/manifest plumbing) loads a real one, so FDAE still enforces
+nothing for a live deployed caller. The Failure/Security matrix's CLS "value
+never returned" row is now satisfied. **Phase 5** (`fdae::DecisionTrace`
+emitted via `tracing` from `compile_read`/`check_access`, one regression
+test per deny reason; a `criterion` bench proving the pushdown query stays
+well under the 25 ms p99 budget; the Failure/Security matrix's B2 rows and
+the `C1`/`H1`-`H8` third-pass review findings documented with evidence;
+`mise run test:e2e` green (12/12) with all five `wasm32-wasip2`
+`test-components` rebuilt first; `traceability-matrix.md`'s `[FND-IAM]`
+(M4B) row flipped `Planned` → `In Progress (Slice B2 complete)`) — done on
+the same branch, closing out Slice B2. Full evidence: `status.md`.
 
 #### Slice B3: Federated FDAE (Cross-Service Parameter Fetch)
 **Depends on:** B2, and M04A A1 (Universal Proxy). **Requirement:** `[FND-IAM]`.
@@ -411,7 +507,16 @@ deployments relying on FDAE for write integrity must wait for B5-fdae.
 Continues from M04A (steps 20–21, 24–25):
 
 22. A `data-layer::query` call is transparently filtered by FDAE's SQL pushdown
-    sieve — unauthorized rows never reach the WASM guest (B2, Mode B).
+    sieve — unauthorized rows never reach the WASM guest (B2, Mode B). **The
+    filtering half is closed** as of Phase 4, end to end from a real
+    router-verified caller into native dispatch
+    (`router/tests/native_dispatch_identity.rs::native_fdae_policy_row_filters_and_masks_for_two_distinct_verified_callers`).
+    **The "…never reach the WASM guest" half stays open**, blocked on
+    D-04-02-h: a guest-originated read (either ingress) carries no external
+    principal, so it cannot yet be *shown* to be correctly filtered for a
+    real caller reaching the WASM guest specifically — it is provably empty
+    instead, which is a different (over-restrictive) claim. Resolves
+    alongside B3's `anchor_did`.
 23. A ReBAC check requiring a remote relationship proof triggers a cross-service
     fetch via the Universal Proxy mid-query (B3, pipeline stage 2).
 
@@ -419,17 +524,40 @@ Continues from M04A (steps 20–21, 24–25):
 
 ## Failure and Security Tests
 
-| Test | Expected Outcome |
-|---|---|
-| FDAE query for a resource the caller's ReBAC chain doesn't reach (Mode B) | Row excluded from results, not an error (ADR-0007 "no result is a valid outcome") |
-| FDAE Point-In-Time check (Mode A) for an unreachable resource | Deny flag; no data leak |
-| CLS: caller lacks column permission | Column masked/projected out; value never returned |
-| FDAE policy with a cyclic ReBAC relationship in user data | `visited_track` breaks recursion; no infinite loop (`system-architecture.md:1847`) |
-| Compiled FDAE query exceeds the policy time budget | Transaction rolled back, Default-Denied (`:1848`) |
-| Cross-service FDAE parameter fetch times out | Falls back to deny, not silent allow |
-| Stage-4 ABAC attempts to **widen** access beyond ReBAC | Rejected — restrict-only enforced; a widen decision cannot grant a row the sieve excluded (ADR-0017 §7) |
-| Stage-4 ABAC read-only lookup (§7) exceeds its fuel/time budget | Aborted, row Default-Denied; the lookup cannot run unmetered |
-| Stage-4 ABAC returns `redact(fields)` | Named fields removed from the row before it reaches the guest |
+B2's rows (1-5) are done, with evidence below. Rows 6 (B3) and 7-9
+(B4-fdae) name mechanisms this slice does not implement yet — recorded as
+deferred, not silently dropped, per those slices' own task.md entries.
+
+| # | Test | Expected Outcome | Outcome |
+|---|---|---|---|
+| 1 | FDAE query for a resource the caller's ReBAC chain doesn't reach (Mode B) | Row excluded from results, not an error (ADR-0007 "no result is a valid outcome") | ✅ `tests_fdae::mode_b_query_excludes_unreachable_rows_not_error` (`data_db`); `compile::tests::single_hop_denies_a_stranger`, `..._recursive_relation_terminates_on_a_cyclic_manager_graph` (`fdae`) |
+| 2 | FDAE Point-In-Time check (Mode A) for an unreachable resource | Deny flag; no data leak | ✅ `tests_fdae::mode_a_check_access_denies_unreachable_row`, `..._get_of_unreachable_row_returns_none_not_error` (`data_db`) |
+| 3 | CLS: caller lacks column permission | Column masked/projected out; value never returned | ✅ satisfied by Slice B2 Phase 3's host-side `strip_masked_fields`; sieve-level union computed by `compile::tests::cls_masked_fields_union_policy_and_capability_deny_lists` |
+| 4 | FDAE policy with a cyclic ReBAC relationship in user data | `visited_track` breaks recursion; no infinite loop (`system-architecture.md:1847`) | ✅ `compile::tests::recursive_relation_terminates_on_a_cyclic_manager_graph` — a deliberately cyclic manager graph (eve→frank→eve) terminates and returns the correct membership |
+| 5 | Compiled FDAE query exceeds the policy time budget | Transaction rolled back, Default-Denied (`:1848`) | ✅ `sqlite::tests::fdae_watchdog_interrupts_do_query_as_quota_exceeded`, `..._do_get_as_quota_exceeded`, `fdae_watchdog_interrupt_denies_do_check_access` (Mode A → `Ok(false)`), `..._do_delete_many_on_the_writer_conn` (`data_db`) — `FDAE_MAX_VM_OPS` progress-handler backstop, per ADR-0017 §8 plan resolution (§12.8) |
+| 6 | Cross-service FDAE parameter fetch times out | Falls back to deny, not silent allow | ⛔ Deferred — Slice B3 (pipeline stage 2, not yet implemented) |
+| 7 | Stage-4 ABAC attempts to **widen** access beyond ReBAC | Rejected — restrict-only enforced; a widen decision cannot grant a row the sieve excluded (ADR-0017 §7) | ⛔ Deferred — Slice B4-fdae (stage 4, not yet implemented) |
+| 8 | Stage-4 ABAC read-only lookup (§7) exceeds its fuel/time budget | Aborted, row Default-Denied; the lookup cannot run unmetered | ⛔ Deferred — Slice B4-fdae (not yet implemented) |
+| 9 | Stage-4 ABAC returns `redact(fields)` | Named fields removed from the row before it reaches the guest | ⛔ Deferred — Slice B4-fdae (not yet implemented) |
+
+### Security review findings (Slice B2, post-commit third pass)
+
+Rows added for the `C1`/`H1`-`H8` findings from `status.md`'s "Post-commit
+review, third pass" (2026-07-22, commits 614756f/3df969f) — the naming is
+that review's own, kept for continuity with `status.md` rather than
+renumbered.
+
+| # | Finding | Outcome |
+|---|---|---|
+| C1 | A case-variant collection name (`query("DOCUMENTS")` vs. a policy defining `"documents"`) disabled RLS/CLS entirely — SQLite resolves table names case-insensitively, but `find_definition` matched case-sensitively | ✅ Fixed — case-insensitive lookup + a matching `validate_no_collection_ambiguity` rule. `compile::tests::collection_lookup_is_case_insensitive_like_sqlite`, `policy::tests::rejects_a_definitions_table_colliding_case_insensitively`, `differently_cased_collection_name_does_not_bypass_the_sieve` (`data_db`) |
+| H1 | `default:` fallback escalated past its own `allows` — a caller holding an unrelated (e.g. write) capability could ride a read-only default permission's paths through a write-mode check | ✅ Fixed — the fallback now also requires `default`'s own `allows` to cover the operation. `compile::tests::default_permission_not_covering_operation_is_denied` |
+| H2 | "Platform-ability grants select every covering branch; `default:` is never consulted" — a capability scoped to a platform ability is admitted through every permission whose `allows` covers it, silently widening a path-restricted sibling permission | ⚠️ Reviewed and disagreed on remediation shape — this is ADR-0017's own resolved, tested grant∩policy design, not a compiler bug. Addressed via an additive author-time lint (`warn_on_ambiguous_public_permission`) instead of a compiler change. `service::orchestration::tests::test_warn_on_ambiguous_public_permission` (`control_plane`) |
+| H3 | A dotted `fields.deny` entry (e.g. `"profile.ssn"`) silently masked nothing — `strip_masked_fields` only removes flat top-level keys | ✅ Fixed — a dotted policy `fields.deny` entry is now a parse-time `Semantic` error; a dotted capability-caveat `fields.deny` entry fails the compile closed. `policy::tests::rejects_fields_deny_with_a_dotted_nested_path`, `compile::tests::caveat_fields_deny_with_a_dotted_path_fails_closed` |
+| H4 | Unbounded path-hop recursion in `emit_chain` could blow the Rust stack (`SIGABRT`, taking down the whole substrate) | ✅ Fixed — `MAX_PATH_HOPS = 32` enforced independently at both the JSON-Schema layer and `validate_semantics`. `policy::tests::rejects_a_path_exceeding_the_max_hop_count_via_schema`, `..._at_the_semantic_layer_too` |
+| H5 | The recursive CTE's `UNION ALL` plus a non-unique `from_key`/`to_key` join column lets row count blow up combinatorially (branching factor `b`, depth-64 bound → up to `b^64` rows) instead of deduplicating | ⛔ **Open, known issue** — confirmed structurally; the review's suggested `UNION` swap does not work as stated (rows carry `depth`/`seen`, rarely byte-identical). `FDAE_MAX_VM_OPS` bounds worst-case compute per query today, so impact is reader-pool exhaustion under abuse of a guest-writable recursive relation, not an unbounded hang — lower urgency, but a real fix (dedupe on visited `id`, not path) is still needed before relying on this shape at scale |
+| H6 | The TCP deploy arm (`deploy_tcp_service`) had no FDAE rollback on a failed redeploy — unlike the WASM/container arms | ✅ Fixed — given the same rollback parameters/calls as the other two arms. `test_deploy_tcp_endpoint_registration_failure_rolls_back_gen_and_policy` (`control_plane`) |
+| H7 | Rollback restored the persisted policy row but never invalidated the WASM engine's cached policy, leaving it served for the rest of the process's uptime | ✅ Fixed — `rollback_fdae_policy` also calls `stop_wasm(service_id)` for its cache-eviction side effect. Eviction mechanism covered by `engine::tests::fdae_policy_cache_evicted_on_stop_wasm_and_recompile`; the cross-crate rollback interaction itself has no new automated assertion (see `status.md`) |
+| H8 | A transient storage error (e.g. `SQLITE_BUSY`) reading the policy was cached as "no policy," silently disabling FDAE until the next redeploy | ✅ Fixed — a storage error now resolves uncached instead of caching `None`. `engine::tests::fdae_policy_transient_storage_error_is_not_cached` |
 
 ---
 

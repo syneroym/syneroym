@@ -10,6 +10,8 @@ repository.workspace = true
 syneroym-core.workspace = true
 syneroym-wit-interfaces.workspace = true
 syneroym-data-keystore.workspace = true
+syneroym-fdae.workspace = true
+syneroym-ucan.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 rusqlite.workspace = true
@@ -40,6 +42,10 @@ sha2.workspace = true
 
 [[bench]]
 name = "security_config_bench"
+harness = false
+
+[[bench]]
+name = "fdae_bench"
 harness = false
 
 [lints]
