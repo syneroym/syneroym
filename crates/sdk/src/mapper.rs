@@ -1,13 +1,52 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use syneroym_app_orchestration::models::{DeploymentPlan, RotationPolicy, ServiceType};
+use syneroym_app_orchestration::models::{
+    DeploymentPlan, DocumentRef, RotationPolicy, ServiceType,
+};
 use syneroym_core::util;
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
-    ArtifactSource, ContainerManifest, ContainerPortMapping, ContainerVolumeMapping,
-    DeployManifest, DeploymentPlan as WitDeploymentPlan, NetworkEndpoint, PlannedService,
-    ResourceQuota, RotationPolicy as WitRotationPolicy, ServiceConfig as WitServiceConfig,
-    ServiceType as WitServiceType, TcpManifest, WasmManifest,
+    ArtifactSource, ContainerManifest, ContainerPortMapping, ContainerVolumeFile,
+    ContainerVolumeMapping, DeployManifest, DeploymentPlan as WitDeploymentPlan, DocumentSource,
+    NetworkEndpoint, PlannedService, ResourceQuota, RotationPolicy as WitRotationPolicy,
+    ServiceConfig as WitServiceConfig, ServiceType as WitServiceType, TcpManifest, WasmManifest,
 };
+
+/// Author-side container volume, mirroring the wire record but with `files`
+/// optional (so a volume that only needs an empty directory stays as terse as
+/// it was) and file contents still unresolved.
+#[derive(serde::Deserialize)]
+struct VolumeSpec {
+    host_path: String,
+    container_path: String,
+    #[serde(default)]
+    files: Vec<VolumeFileSpec>,
+}
+
+#[derive(serde::Deserialize)]
+struct VolumeFileSpec {
+    relative_path: String,
+    content: DocumentRef,
+}
+
+/// Resolves an author-side document reference for the wire.
+///
+/// A bare path is read here, client-side, and travels inline -- the same
+/// treatment `source` already gets for a Wasm component just below, and the
+/// reason a deploy works against a substrate with nothing pre-staged. An
+/// explicit `remote_path` is passed through untouched for the substrate to
+/// resolve against its own filesystem.
+fn map_document_ref(doc: &DocumentRef, field_name: &str) -> anyhow::Result<DocumentSource> {
+    match doc {
+        DocumentRef::Local(path) => {
+            let bytes = util::read_local_artifact(Path::new(path))?;
+            let content = String::from_utf8(bytes).map_err(|e| {
+                anyhow::anyhow!("{field_name} at {path} is not valid UTF-8 text: {e}")
+            })?;
+            Ok(DocumentSource::Inline(content))
+        }
+        DocumentRef::Remote { remote_path } => Ok(DocumentSource::Path(remote_path.clone())),
+    }
+}
 
 pub fn map_deployment_plan_to_wit(plan: DeploymentPlan) -> anyhow::Result<WitDeploymentPlan> {
     let mut services = Vec::new();
@@ -20,12 +59,22 @@ pub fn map_deployment_plan_to_wit(plan: DeploymentPlan) -> anyhow::Result<WitDep
                 max_instructions: q.max_instructions,
                 max_memory_bytes: q.max_memory_bytes,
             }),
-            schema_path: svc.config.schema_path.clone(),
+            schema: svc
+                .config
+                .schema
+                .as_ref()
+                .map(|d| map_document_ref(d, "schema"))
+                .transpose()?,
             rotation_policy: Some(match svc.config.rotation_policy {
                 RotationPolicy::RestartOnRotation => WitRotationPolicy::RestartOnRotation,
                 RotationPolicy::None => WitRotationPolicy::None,
             }),
-            fdae_policy_path: svc.config.fdae.as_ref().map(|f| f.policy_path.clone()),
+            fdae_policy: svc
+                .config
+                .fdae
+                .as_ref()
+                .map(|f| map_document_ref(&f.policy, "fdae policy"))
+                .transpose()?,
         };
 
         let service_type = match svc.config.service_type {
@@ -88,11 +137,31 @@ pub fn map_deployment_plan_to_wit(plan: DeploymentPlan) -> anyhow::Result<WitDep
                     {
                         ports = p_vec;
                     }
-                    if let Some(v) = cfg.get("volumes")
-                        && let Ok(v_vec) =
-                            serde_json::from_value::<Vec<ContainerVolumeMapping>>(v.clone())
-                    {
-                        volumes = v_vec;
+                    if let Some(v) = cfg.get("volumes") {
+                        let specs: Vec<VolumeSpec> = serde_json::from_value(v.clone())
+                            .map_err(|e| anyhow::anyhow!("invalid container volumes: {e}"))?;
+                        volumes = specs
+                            .into_iter()
+                            .map(|spec| {
+                                Ok(ContainerVolumeMapping {
+                                    host_path: spec.host_path,
+                                    container_path: spec.container_path,
+                                    files: spec
+                                        .files
+                                        .iter()
+                                        .map(|f| {
+                                            Ok(ContainerVolumeFile {
+                                                relative_path: f.relative_path.clone(),
+                                                content: map_document_ref(
+                                                    &f.content,
+                                                    "volume file",
+                                                )?,
+                                            })
+                                        })
+                                        .collect::<anyhow::Result<Vec<_>>>()?,
+                                })
+                            })
+                            .collect::<anyhow::Result<Vec<_>>>()?;
                     }
                 }
 
@@ -151,7 +220,7 @@ mod tests {
             args: vec![],
             custom_config: None,
             quota: None,
-            schema_path: None,
+            schema: None,
             rotation_policy: Default::default(),
             fdae: None,
         }
@@ -175,21 +244,55 @@ mod tests {
         }
     }
 
+    /// The point of the whole change: a bare manifest path is resolved here,
+    /// on the client, so the deploy call carries the document and the
+    /// substrate needs nothing pre-staged.
     #[test]
-    fn map_deployment_plan_to_wit_copies_fdae_policy_path() {
+    fn local_document_ref_is_read_and_shipped_inline() {
+        let dir = tempfile::tempdir().unwrap();
+        let policy = dir.path().join("fdae-policy.json");
+        std::fs::write(&policy, r#"{"version":"fdae/v1"}"#).unwrap();
+
         let mut config = base_config();
-        config.fdae = Some(FdaeManifest { policy_path: "fdae-policy.json".to_string() });
+        config.fdae = Some(FdaeManifest {
+            policy: DocumentRef::Local(policy.to_string_lossy().into_owned()),
+        });
 
         let wit_plan = map_deployment_plan_to_wit(plan_with_config(config)).unwrap();
-        assert_eq!(
-            wit_plan.services[0].manifest.config.fdae_policy_path,
-            Some("fdae-policy.json".to_string())
-        );
+        match &wit_plan.services[0].manifest.config.fdae_policy {
+            Some(DocumentSource::Inline(content)) => {
+                assert_eq!(content, r#"{"version":"fdae/v1"}"#);
+            }
+            other => panic!("expected inline content, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn remote_document_ref_passes_through_for_the_substrate_to_resolve() {
+        let mut config = base_config();
+        config.fdae = Some(FdaeManifest {
+            policy: DocumentRef::Remote { remote_path: "policies/shared.json".to_string() },
+        });
+
+        let wit_plan = map_deployment_plan_to_wit(plan_with_config(config)).unwrap();
+        match &wit_plan.services[0].manifest.config.fdae_policy {
+            Some(DocumentSource::Path(path)) => assert_eq!(path, "policies/shared.json"),
+            other => panic!("expected a host path, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn local_document_ref_missing_file_fails_the_deploy() {
+        let mut config = base_config();
+        config.fdae =
+            Some(FdaeManifest { policy: DocumentRef::Local("does-not-exist.json".to_string()) });
+
+        assert!(map_deployment_plan_to_wit(plan_with_config(config)).is_err());
     }
 
     #[test]
     fn map_deployment_plan_to_wit_maps_absent_fdae_to_none() {
         let wit_plan = map_deployment_plan_to_wit(plan_with_config(base_config())).unwrap();
-        assert_eq!(wit_plan.services[0].manifest.config.fdae_policy_path, None);
+        assert!(wit_plan.services[0].manifest.config.fdae_policy.is_none());
     }
 }

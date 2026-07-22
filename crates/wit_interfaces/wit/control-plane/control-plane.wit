@@ -9,6 +9,18 @@ interface orchestrator {
         binary(list<u8>),
     }
 
+    /// Where a deploy-time text document (a JSON Schema, an FDAE policy, a
+    /// container's config file) comes from. Inline is what lets a client
+    /// deploy with nothing pre-staged on the substrate host; path is for
+    /// large or shared assets and operator-managed directories.
+    variant document-source {
+        /// A path on the substrate host's own filesystem, resolved relative
+        /// to its working directory and guarded against traversal.
+        path(string),
+        /// The document's content, carried in the deploy call itself.
+        inline(string),
+    }
+
     record resource-quota {
         max-instructions: option<u64>,
         max-memory-bytes: option<u64>,
@@ -28,12 +40,13 @@ interface orchestrator {
         /// Arbitrary nested configuration (e.g., serialized JSON).
         custom-config: option<string>,
         quota: option<resource-quota>,
-        schema-path: option<string>,
+        /// JSON Schema validating `custom-config`, applied at deploy.
+        schema: option<document-source>,
         rotation-policy: option<rotation-policy>,
-        /// Path to this service's declarative FDAE ReBAC policy document
-        /// (ADR-0017 §1), read and validated at deploy. Absent = no row/column
+        /// This service's declarative FDAE ReBAC policy document (ADR-0017
+        /// §1), read and validated at deploy. Absent = no row/column
         /// filtering for this service.
-        fdae-policy-path: option<string>,
+        fdae-policy: option<document-source>,
     }
 
     /// Manifest details for a Wasm component deployment.
@@ -51,10 +64,22 @@ interface orchestrator {
         protocol: string,
     }
 
+    /// A file materialized inside a container volume before the container
+    /// starts, for images that read configuration from a mounted file rather
+    /// than environment variables.
+    record container-volume-file {
+        /// Path relative to the volume root. Must not escape it.
+        relative-path: string,
+        content: document-source,
+    }
+
     /// Volume mapping for container
     record container-volume-mapping {
         host-path: string,
         container-path: string,
+        /// When non-empty, these files are written into the volume and the
+        /// mount is read-only. Empty leaves an empty writable directory.
+        files: list<container-volume-file>,
     }
 
     /// Manifest details for a container (Podman) deployment.

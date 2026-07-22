@@ -213,6 +213,46 @@ foundation. Carries no M3 debt — it is purely the new engine.
 
 **Native-dispatch authentication gap (gate item — closed by M4A, item 2 above).** `RouteHandler::handle_stream` (`crates/router/src/route_handler/io.rs`) only runs `HandshakeVerifier::verify_preamble` — the sole point that checks caller identity against `preamble.service_id` — when `preamble.delegation` is present, and the native-capability interfaces added across M3A/M3B/M3C (`data-layer`, `vault`, `app-config`, `blob-store`, `messaging`; plus the HTTP-bridge call path) never require one. Concretely: any peer that can open an Iroh connection to a node (the QUIC listener binds `0.0.0.0` by default — *not* bounded by `client_gateway`'s `127.0.0.1`-only convenience proxy) and knows a target service's DID can act "as" that service on every native-capability interface and the M3C HTTP bridge, with no cryptographic proof of being it — `data-layer` writes, `messaging::publish`, SSE eavesdrop, blob access. Recorded as an explicit, tracked interim posture at M3C close (see `docs/planning/milestones/M03B-messaging/status.md`, "Interim HTTP-write security posture," and [ADR-0010](../decisions/0010-mqtt-broker-rumqttd.md) Finding B9). M4A's B0 slice wires delegation/capability verification into this exact dispatch path (native-dispatch **and** the shared HTTP-bridge routes) before M4A can be considered closed.
 
+### Interstitial: `[FND-CFG]` Deploy-Time Artifact Delivery (2026-07-22)
+
+> Executed **between M04B Slice B2 and Slice B3**, tracked in
+> [fnd-cfg-artifact-delivery-plan.md](fnd-cfg-artifact-delivery-plan.md) and
+> decided in [ADR-0019](../decisions/0019-deploy-time-artifact-delivery.md).
+> This follows the *Interstitial maintenance (2026-07-09)* precedent above —
+> work owned by no single milestone, given its own ADR and plan doc — with one
+> honest difference: the crate rename was "No behavior change," this is a
+> behavior change and a breaking WIT change.
+
+Deploy-time artifacts split into two groups by accident of build order, not by
+design. WASM bytes (`artifact-source::binary`) and `custom-config` travel
+**inside** the deploy call; the JSON Schema (`schema-path`), the FDAE policy
+document (`fdae-policy-path`), and Podman volume contents are **assumed to
+already exist on the substrate host's filesystem**, with no upload path
+anywhere in the WIT, the SDK mapper, or the deploy handling. A deploy needing
+any of the three only succeeds if someone with direct filesystem access staged
+the file out of band — which defeats the point of a deploy API. For Podman
+volumes the gap is total: `create_dir_all` produces an *empty* bind-mounted
+directory, so an off-the-shelf image that reads its config from a mounted file
+rather than `-e KEY=VALUE` env vars cannot be deployed through the API at all.
+
+The fix adds a shared `document-source { path, inline }` variant used at all
+three sites, plus per-file content on container volumes mounted read-only.
+
+**Why it is not an M04B slice.** Two of the three gaps are `[FND-CFG]` debt
+from M3A Slice 4, whose scope included "Podman env-var **and file-mount**
+fallback" — only the env-var half shipped. M04B's charter is explicitly "purely
+the new engine" and "carries no M3 debt" (M04A is the milestone designated to
+carry M3 debt). Only `fdae-policy-path` is FDAE's, and even that is a delivery
+mechanism rather than engine work.
+
+**Why here rather than after M04B closes.** It is independent of B3/B4/B5 in
+both directions, so sequencing it after them would couple it to B5 — which is
+itself gated on the unresolved **D-04-02-f** create-authorization sub-decision.
+It also breaks the `service-config` WIT record across ~30 construction sites,
+and a breaking schema change is cheapest at a quiescent point with no slice in
+flight. Secondary: B2 shipped `fdae_policy_path`, which is API-undeployable
+until this lands.
+
 ---
 
 ## Build-Order Amendment: M5–M7 Resequencing (2026-07-16)

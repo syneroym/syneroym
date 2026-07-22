@@ -2,6 +2,7 @@
 //! Core traits and types for Syneroym.
 
 pub mod config;
+pub mod deploy_docs;
 pub mod dht_registry;
 pub mod http_routes;
 pub mod local_registry;

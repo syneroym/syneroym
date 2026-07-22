@@ -167,9 +167,9 @@ fn bench_lifecycle_hooks(c: &mut Criterion) {
             args: vec![],
             custom_config: None,
             quota: None,
-            schema_path: None,
+            schema: None,
             rotation_policy: None,
-            fdae_policy_path: None,
+            fdae_policy: None,
         },
         service_type: ServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(wasm_bytes),

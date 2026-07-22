@@ -435,9 +435,11 @@ Feeds D-04-02. Deltas against `docs/archive/authorization-engine-spec.md`.
 
 ### 6.1 One section, deployed with the service
 
-One document per service, referenced from the manifest (`policy_path`, per
-M04B's migration strategy), versioned and JSON-Schema-validated at deploy — the
-Cedar lesson from §3.
+One document per service, referenced from the manifest (`fdae.policy` — a bare
+path is read client-side and shipped inline, `{ remote_path = "..." }` defers
+to the substrate's filesystem, per
+[ADR-0019](../decisions/0019-deploy-time-artifact-delivery.md)), versioned and
+JSON-Schema-validated at deploy — the Cedar lesson from §3.
 
 After the removals below and the unification in §9.1, the whole schema is
 `version` plus **one** section — object types, each declaring where it lives,

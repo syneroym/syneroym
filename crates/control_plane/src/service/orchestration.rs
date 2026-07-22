@@ -9,13 +9,14 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fs,
-    path::{Component, Path, PathBuf},
+    path::{Component, PathBuf},
     sync::Arc,
 };
 
 use anyhow::Result;
 use serde_json::Value;
 use syneroym_core::{
+    deploy_docs,
     local_registry::{NATIVE_CAPABILITY_INTERFACES, SubstrateEndpoint},
     util,
 };
@@ -23,7 +24,7 @@ use syneroym_fdae::Policy;
 use syneroym_rpc::{Ability, CallerContext, NativeService, ResourceUri};
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, ContainerManifest, DeployManifest, DeployedService, DeploymentPlan,
-    ServiceType as WitServiceType, TcpManifest, WasmManifest,
+    DocumentSource, ServiceType as WitServiceType, TcpManifest, WasmManifest,
 };
 use tokio::task;
 use tracing::info;
@@ -46,36 +47,26 @@ pub trait OrchestratorInterface {
     -> Result<(), String>;
 }
 
-/// Rejects `path` if it's absolute, contains a `..` component, or -- once
-/// symlinks are resolved -- canonicalizes to somewhere outside the
-/// process's working directory. The component check alone doesn't catch a
-/// symlink placed under the working directory that itself points outside
-/// it (no `..` anywhere in `path`), so both `schema_path` and
-/// `fdae_policy_path` need this second, filesystem-resolving check too.
-/// `field_name` names the offending manifest field for the error message.
-fn reject_path_escape(path: &Path, field_name: &str) -> Result<(), String> {
-    if path.components().any(|c| matches!(c, Component::ParentDir)) || path.is_absolute() {
-        return Err(format!(
-            "Arbitrary file read prevented: Path traversal or absolute paths are not allowed in \
-             {field_name}: {:?}",
-            path
-        ));
+/// Resolves a manifest document to its content. `Inline` arrives with the
+/// deploy call itself; `Path` is read from the substrate host's own
+/// filesystem, under `deploy_docs`' traversal and size guards, on a blocking
+/// thread since it touches the disk.
+async fn resolve_document(
+    source: &DocumentSource,
+    field_name: &'static str,
+) -> Result<String, String> {
+    match source {
+        DocumentSource::Inline(content) => {
+            deploy_docs::check_inline_size(content, field_name)?;
+            Ok(content.clone())
+        }
+        DocumentSource::Path(path) => {
+            let path = PathBuf::from(path);
+            task::spawn_blocking(move || deploy_docs::read_host_document(&path, field_name))
+                .await
+                .map_err(|e| format!("Failed to spawn blocking task: {}", e))?
+        }
     }
-
-    let cwd = std::env::current_dir()
-        .map_err(|e| format!("Failed to resolve working directory: {}", e))?;
-    let canonical_cwd = fs::canonicalize(&cwd)
-        .map_err(|e| format!("Failed to resolve working directory: {}", e))?;
-    let resolved = fs::canonicalize(cwd.join(path))
-        .map_err(|e| format!("Failed to resolve {field_name} at {}: {}", path.display(), e))?;
-    if !resolved.starts_with(&canonical_cwd) {
-        return Err(format!(
-            "Arbitrary file read prevented: {field_name} resolves outside the working directory \
-             via a symlink: {:?}",
-            path
-        ));
-    }
-    Ok(())
 }
 
 /// D-04-02-c's deploy-time author-time warning: compares a deployed policy's
@@ -466,15 +457,11 @@ impl OrchestratorInterface for ControlPlaneService {
                 .map_err(|e| format!("custom_config is not valid JSON: {}", e))?;
             http_routes = http_routes::parse_http_routes(&custom_json)?;
 
-            if let Some(schema_path_str) = &manifest.config.schema_path {
-                let schema_path = PathBuf::from(schema_path_str);
-                reject_path_escape(&schema_path, "schema_path")?;
+            if let Some(schema_source) = &manifest.config.schema {
+                let schema_str = resolve_document(schema_source, "schema").await?;
 
                 let custom_json_clone = custom_json.clone();
                 task::spawn_blocking(move || -> Result<(), String> {
-                    let schema_str = fs::read_to_string(&schema_path).map_err(|e| {
-                        format!("Failed to read JSON schema at {}: {}", schema_path.display(), e)
-                    })?;
                     let schema_json: Value = serde_json::from_str(&schema_str)
                         .map_err(|e| format!("JSON schema is not valid JSON: {}", e))?;
 
@@ -497,32 +484,23 @@ impl OrchestratorInterface for ControlPlaneService {
             config_utils::flatten_json_config(&custom_json, "", &mut flat_config);
         }
 
-        // FDAE policy: independent of `custom_config` (unlike `schema_path`
-        // above, which is only read when a `custom_config` is present) --
+        // FDAE policy: independent of `custom_config` (unlike `schema`
+        // above, which is only resolved when a `custom_config` is present) --
         // deliberately not nested inside the block above, since a policy has
         // nothing to do with config-schema validation. Validation is a hard
         // deploy failure (ADR-0017 §1's "validated at deploy... the Cedar
-        // lesson"), and the document is read on the substrate's side,
-        // relative to its working directory, guarded against traversal
-        // exactly like `schema_path`.
-        let fdae_policy: Option<(String, Arc<Policy>)> = if let Some(policy_path_str) =
-            &manifest.config.fdae_policy_path
+        // lesson").
+        let fdae_policy: Option<(String, Arc<Policy>)> = if let Some(policy_source) =
+            &manifest.config.fdae_policy
         {
-            let policy_path = PathBuf::from(policy_path_str);
-            reject_path_escape(&policy_path, "fdae_policy_path")?;
-            let doc = task::spawn_blocking(move || {
-                fs::read_to_string(&policy_path).map_err(|e| {
-                    format!("Failed to read FDAE policy at {}: {}", policy_path.display(), e)
-                })
-            })
-            .await
-            .map_err(|e| format!("Failed to spawn blocking task: {}", e))??;
+            let doc = resolve_document(policy_source, "fdae_policy").await?;
             // The underlying `PolicyError` embeds the offending JSON
             // *instance* (jsonschema's `ValidationError::Display`) --
-            // for `fdae_policy_path` that instance can be the policy
-            // file's own content (unlike `schema_path`, where the
-            // instance is always the caller's own `custom_config`), so
-            // it must never cross back out to the remote deploy caller.
+            // for a policy that instance can be the document's own
+            // content (unlike `schema`, where the instance is always the
+            // caller's own `custom_config`), so it must never cross back
+            // out to the remote deploy caller. This matters more now that
+            // the document can arrive inline from that same caller.
             // Logged in full server-side; the caller gets a generic
             // failure.
             let policy = syneroym_fdae::parse_and_validate(&doc).map_err(|e| {
@@ -574,7 +552,7 @@ impl OrchestratorInterface for ControlPlaneService {
                 .await
                 .map_err(|e| format!("Failed to save FDAE policy: {}", e))?;
         } else {
-            // A manifest that no longer declares `fdae_policy_path` clears
+            // A manifest that no longer declares `fdae_policy` clears
             // any previously-declared policy -- a deploy's `config` fully
             // declares this service's policy state, so absence means
             // explicit removal, not "leave whatever was there" (the F2
@@ -1123,9 +1101,9 @@ mod tests {
                         args: vec![],
                         custom_config: None,
                         quota: None,
-                        schema_path: None,
+                        schema: None,
                         rotation_policy: None,
-                        fdae_policy_path: None,
+                        fdae_policy: None,
                     },
                     service_type: WitServiceType::Wasm(WasmManifest {
                         source: ArtifactSource::Url("../../../../../etc/passwd".to_string()),
@@ -1200,9 +1178,9 @@ mod tests {
                         args: vec![],
                         custom_config: None,
                         quota: None,
-                        schema_path: None,
+                        schema: None,
                         rotation_policy: None,
-                        fdae_policy_path: None,
+                        fdae_policy: None,
                     },
                     service_type: WitServiceType::Wasm(WasmManifest {
                         source: ArtifactSource::Url("/etc/passwd".to_string()),
@@ -1282,9 +1260,9 @@ mod tests {
                 args: vec![],
                 custom_config: Some(r#"{"port": "8080"}"#.to_string()), // string instead of int
                 quota: None,
-                schema_path: Some(schema_filename.clone()),
+                schema: Some(DocumentSource::Path(schema_filename.clone())),
                 rotation_policy: None,
-                fdae_policy_path: None,
+                fdae_policy: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -1303,7 +1281,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn test_deploy_schema_path_symlink_escape_rejected() {
+    async fn test_deploy_schema_symlink_escape_rejected() {
         let temp_dir = tempfile::tempdir().unwrap();
         let config = SubstrateConfig::default();
         let key_store = Arc::new(KeyStore::new());
@@ -1364,9 +1342,9 @@ mod tests {
                 args: vec![],
                 custom_config: Some(r#"{"port": 8080}"#.to_string()),
                 quota: None,
-                schema_path: Some(symlink_name.clone()),
+                schema: Some(DocumentSource::Path(symlink_name.clone())),
                 rotation_policy: None,
-                fdae_policy_path: None,
+                fdae_policy: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -1443,9 +1421,9 @@ mod tests {
                 args: vec![],
                 custom_config: Some(r#"{"key": "value"}"#.to_string()),
                 quota: None,
-                schema_path: None,
+                schema: None,
                 rotation_policy: None,
-                fdae_policy_path: None,
+                fdae_policy: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Url("/does_not_exist.wasm".to_string()),
@@ -1513,7 +1491,7 @@ mod tests {
 
         // A policy with no `custom_config` on the manifest -- the regression
         // test for the FDAE block's placement outside the `custom_config`
-        // block (unlike `schema_path`, which is only read inside it).
+        // block (unlike `schema`, which is only read inside it).
         let policy_filename = format!("test_fdae_policy_{}.json", std::process::id());
         fs::write(&policy_filename, r#"{"version": "fdae/v1", "definitions": {}}"#).unwrap();
 
@@ -1523,9 +1501,9 @@ mod tests {
                 args: vec![],
                 custom_config: None,
                 quota: None,
-                schema_path: None,
+                schema: None,
                 rotation_policy: None,
-                fdae_policy_path: Some(policy_filename.clone()),
+                fdae_policy: Some(DocumentSource::Path(policy_filename.clone())),
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -1596,9 +1574,9 @@ mod tests {
                 args: vec![],
                 custom_config: None,
                 quota: None,
-                schema_path: None,
+                schema: None,
                 rotation_policy: None,
-                fdae_policy_path: Some(policy_filename.clone()),
+                fdae_policy: Some(DocumentSource::Path(policy_filename.clone())),
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -1672,9 +1650,9 @@ mod tests {
                 args: vec![],
                 custom_config: None,
                 quota: None,
-                schema_path: None,
+                schema: None,
                 rotation_policy: None,
-                fdae_policy_path: Some(policy_filename.clone()),
+                fdae_policy: Some(DocumentSource::Path(policy_filename.clone())),
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -1690,9 +1668,9 @@ mod tests {
                 args: vec![],
                 custom_config: None,
                 quota: None,
-                schema_path: None,
+                schema: None,
                 rotation_policy: None,
-                fdae_policy_path: None,
+                fdae_policy: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -1762,9 +1740,9 @@ mod tests {
                 args: vec![],
                 custom_config: None,
                 quota: None,
-                schema_path: None,
+                schema: None,
                 rotation_policy: None,
-                fdae_policy_path: Some(policy_1_filename.clone()),
+                fdae_policy: Some(DocumentSource::Path(policy_1_filename.clone())),
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -1792,9 +1770,9 @@ mod tests {
                 args: vec![],
                 custom_config: None,
                 quota: None,
-                schema_path: None,
+                schema: None,
                 rotation_policy: None,
-                fdae_policy_path: Some(policy_2_filename.clone()),
+                fdae_policy: Some(DocumentSource::Path(policy_2_filename.clone())),
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Url("/does_not_exist.wasm".to_string()),
@@ -1872,9 +1850,9 @@ mod tests {
                 args: vec![],
                 custom_config: None,
                 quota: None,
-                schema_path: None,
+                schema: None,
                 rotation_policy: None,
-                fdae_policy_path: Some(policy_filename.clone()),
+                fdae_policy: Some(DocumentSource::Path(policy_filename.clone())),
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -1900,9 +1878,9 @@ mod tests {
                 args: vec![],
                 custom_config: None,
                 quota: None,
-                schema_path: None,
+                schema: None,
                 rotation_policy: None,
-                fdae_policy_path: None,
+                fdae_policy: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Url("/does_not_exist.wasm".to_string()),
@@ -2028,9 +2006,9 @@ mod tests {
                 args: vec![],
                 custom_config: None,
                 quota: None,
-                schema_path: None,
+                schema: None,
                 rotation_policy: None,
-                fdae_policy_path: Some(policy_1_filename.clone()),
+                fdae_policy: Some(DocumentSource::Path(policy_1_filename.clone())),
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -2073,9 +2051,9 @@ mod tests {
                 args: vec![],
                 custom_config: None,
                 quota: None,
-                schema_path: None,
+                schema: None,
                 rotation_policy: None,
-                fdae_policy_path: Some(policy_2_filename.clone()),
+                fdae_policy: Some(DocumentSource::Path(policy_2_filename.clone())),
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(wat.as_bytes().to_vec()),
@@ -2177,9 +2155,9 @@ mod tests {
                 args: vec![],
                 custom_config: None,
                 quota: None,
-                schema_path: None,
+                schema: None,
                 rotation_policy: None,
-                fdae_policy_path: Some(policy_1_filename.clone()),
+                fdae_policy: Some(DocumentSource::Path(policy_1_filename.clone())),
             },
             service_type: WitServiceType::Tcp(TcpManifest {
                 endpoints: vec![NetworkEndpoint {
@@ -2216,9 +2194,9 @@ mod tests {
                 args: vec![],
                 custom_config: None,
                 quota: None,
-                schema_path: None,
+                schema: None,
                 rotation_policy: None,
-                fdae_policy_path: Some(policy_2_filename.clone()),
+                fdae_policy: Some(DocumentSource::Path(policy_2_filename.clone())),
             },
             service_type: WitServiceType::Tcp(TcpManifest {
                 endpoints: vec![NetworkEndpoint {
@@ -2306,9 +2284,9 @@ mod tests {
                 args: vec![],
                 custom_config: None,
                 quota: None,
-                schema_path: None,
+                schema: None,
                 rotation_policy: None,
-                fdae_policy_path: Some(policy_filename.clone()),
+                fdae_policy: Some(DocumentSource::Path(policy_filename.clone())),
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -2390,9 +2368,9 @@ mod tests {
                 args: vec![],
                 custom_config: None,
                 quota: None,
-                schema_path: None,
+                schema: None,
                 rotation_policy: None,
-                fdae_policy_path: Some(policy_filename.clone()),
+                fdae_policy: Some(DocumentSource::Path(policy_filename.clone())),
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -2410,7 +2388,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_deploy_fdae_policy_path_traversal_and_absolute_rejected() {
+    async fn test_deploy_fdae_policy_traversal_and_absolute_rejected() {
         let temp_dir = tempfile::tempdir().unwrap();
         let config = SubstrateConfig::default();
         let key_store = Arc::new(KeyStore::new());
@@ -2461,9 +2439,9 @@ mod tests {
                     args: vec![],
                     custom_config: None,
                     quota: None,
-                    schema_path: None,
+                    schema: None,
                     rotation_policy: None,
-                    fdae_policy_path: Some(bad_path.to_string()),
+                    fdae_policy: Some(DocumentSource::Path(bad_path.to_string())),
                 },
                 service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
                 registry_certificate: None,
@@ -2482,7 +2460,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn test_deploy_fdae_policy_path_symlink_escape_rejected() {
+    async fn test_deploy_fdae_policy_symlink_escape_rejected() {
         let temp_dir = tempfile::tempdir().unwrap();
         let config = SubstrateConfig::default();
         let key_store = Arc::new(KeyStore::new());
@@ -2526,8 +2504,8 @@ mod tests {
         .await
         .unwrap();
 
-        // Same symlink-escape gap as the schema_path guard, on the
-        // fdae_policy_path guard: no `..` component, not absolute, but the
+        // Same symlink-escape gap as the schema guard, on the
+        // fdae_policy guard: no `..` component, not absolute, but the
         // symlink target lives outside the working directory.
         let outside_dir = tempfile::tempdir().unwrap();
         let outside_policy = outside_dir.path().join("fdae-policy.json");
@@ -2542,9 +2520,9 @@ mod tests {
                 args: vec![],
                 custom_config: None,
                 quota: None,
-                schema_path: None,
+                schema: None,
                 rotation_policy: None,
-                fdae_policy_path: Some(symlink_name.clone()),
+                fdae_policy: Some(DocumentSource::Path(symlink_name.clone())),
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -2792,9 +2770,9 @@ mod tests {
                 args: vec![],
                 custom_config: Some(custom_config),
                 quota: None,
-                schema_path: None,
+                schema: None,
                 rotation_policy: None,
-                fdae_policy_path: None,
+                fdae_policy: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -2871,9 +2849,9 @@ mod tests {
                 args: vec![],
                 custom_config: None,
                 quota: None,
-                schema_path: None,
+                schema: None,
                 rotation_policy: None,
-                fdae_policy_path: None,
+                fdae_policy: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -2893,9 +2871,9 @@ mod tests {
                 args: vec![],
                 custom_config: None,
                 quota: None,
-                schema_path: None,
+                schema: None,
                 rotation_policy: None,
-                fdae_policy_path: None,
+                fdae_policy: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest {
                 endpoints: vec![NetworkEndpoint {
@@ -2970,5 +2948,172 @@ mod tests {
 
         service.undeploy(service_id.clone(), &caller).await.unwrap();
         assert_eq!(registry.owner_of(&service_id), None);
+    }
+
+    /// Builds a service rooted at `temp_dir`, for the inline-document tests
+    /// below. They care about nothing in the wiring except that the working
+    /// directory holds no schema or policy file.
+    async fn service_for_inline_tests(temp_dir: &std::path::Path) -> ControlPlaneService {
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider = Arc::new(SqliteStorageProvider::new(temp_dir, false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+            )
+            .await
+            .unwrap(),
+        );
+
+        ControlPlaneService::init(
+            "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
+            app_sandbox,
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir, None)),
+            EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+            temp_dir.to_path_buf(),
+            key_store,
+            storage_provider,
+            blob_provider,
+            messaging_broker,
+            NativeDispatchRegistry::default(),
+            Arc::new(DashMap::new()),
+        )
+        .await
+        .unwrap()
+    }
+
+    fn inline_manifest(
+        custom_config: Option<&str>,
+        schema: Option<DocumentSource>,
+        fdae_policy: Option<DocumentSource>,
+    ) -> DeployManifest {
+        DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: custom_config.map(str::to_string),
+                quota: None,
+                schema,
+                rotation_policy: None,
+                fdae_policy,
+            },
+            service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+            registry_certificate: None,
+        }
+    }
+
+    /// The whole point: nothing is staged on the substrate's filesystem, and
+    /// the deploy still validates against a schema that arrived in the call.
+    #[tokio::test]
+    async fn test_deploy_inline_schema_validates_without_a_staged_file() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+
+        let schema = DocumentSource::Inline(
+            r#"{"type":"object","properties":{"port":{"type":"integer"}}}"#.to_string(),
+        );
+        let result = service
+            .deploy(
+                "inline_schema_ok".to_string(),
+                inline_manifest(Some(r#"{"port": 8080}"#), Some(schema), None),
+                &node_wide_caller("test-caller"),
+            )
+            .await;
+
+        assert!(result.is_ok(), "{:?}", result.unwrap_err());
+    }
+
+    #[tokio::test]
+    async fn test_deploy_inline_schema_rejects_violating_config() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+
+        let schema = DocumentSource::Inline(
+            r#"{"type":"object","properties":{"port":{"type":"integer"}}}"#.to_string(),
+        );
+        let err = service
+            .deploy(
+                "inline_schema_bad".to_string(),
+                // A string where the schema demands an integer.
+                inline_manifest(Some(r#"{"port": "8080"}"#), Some(schema), None),
+                &node_wide_caller("test-caller"),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(err.contains("Configuration validation failed"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn test_deploy_inline_fdae_policy_without_a_staged_file() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+
+        let policy =
+            DocumentSource::Inline(r#"{"version":"fdae/v1","definitions":{}}"#.to_string());
+        let result = service
+            .deploy(
+                "inline_policy_ok".to_string(),
+                inline_manifest(None, None, Some(policy)),
+                &node_wide_caller("test-caller"),
+            )
+            .await;
+
+        assert!(result.is_ok(), "{:?}", result.unwrap_err());
+    }
+
+    /// An inline policy is caller-supplied, so the rule that a policy
+    /// validation error never echoes the offending document back matters more
+    /// here than it did for a host-side file.
+    #[tokio::test]
+    async fn test_deploy_inline_fdae_policy_error_does_not_echo_the_document() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+
+        let secret = "s3cret-marker-in-policy";
+        let policy = DocumentSource::Inline(format!(
+            r#"{{"version":"fdae/v1","definitions":{{"{secret}":"not-an-object"}}}}"#
+        ));
+        let err = service
+            .deploy(
+                "inline_policy_bad".to_string(),
+                inline_manifest(None, None, Some(policy)),
+                &node_wide_caller("test-caller"),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(err.contains("FDAE policy validation failed"), "{err}");
+        assert!(!err.contains(secret), "policy content leaked to the caller: {err}");
+    }
+
+    #[tokio::test]
+    async fn test_deploy_rejects_oversize_inline_document() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+
+        let oversize = DocumentSource::Inline(
+            "x".repeat(syneroym_core::deploy_docs::MAX_DEPLOY_DOCUMENT_BYTES as usize + 1),
+        );
+        let err = service
+            .deploy(
+                "oversize_schema".to_string(),
+                inline_manifest(Some(r#"{"port": 8080}"#), Some(oversize), None),
+                &node_wide_caller("test-caller"),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(err.contains("exceeding the"), "{err}");
     }
 }

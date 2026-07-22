@@ -168,6 +168,7 @@ async fn test_podman_lifecycle() {
     let volumes = vec![ContainerVolumeMapping {
         host_path: "html".to_string(),
         container_path: "/usr/share/nginx/html".to_string(),
+        files: vec![],
     }];
 
     debug!(">>> Deploying nginx container");

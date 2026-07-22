@@ -396,6 +396,18 @@ policy_path = "fdae-policy.json"   # optional declarative ReBAC policy (D-04-02 
 itself is **JSON**, not YAML (`parse_and_validate` is `serde_json::from_str`)
 -- ADR-0017's examples are YAML for readability only.
 
+> **Amended by the `[FND-CFG]` interstitial (2026-07-22).** As shipped in Phase
+> 4, `policy_path` is a path on the **substrate host's** filesystem with no
+> upload path, so a policy can only be deployed if someone with direct
+> filesystem access staged it out of band. The interstitial replaces the field
+> with a `document-source { path, inline }` variant and makes a bare manifest
+> path inline client-side, so a policy deploys against a remote substrate with
+> nothing pre-staged. Not an M04B slice (this milestone carries no M3 debt, and
+> two of the three gaps it closes are `[FND-CFG]` debt from M3A Slice 4) --
+> tracked in
+> [fnd-cfg-artifact-delivery-plan.md](../../fnd-cfg-artifact-delivery-plan.md),
+> decided in [ADR-0019](../../../decisions/0019-deploy-time-artifact-delivery.md).
+
 ### No Data Migration
 Policy enforcement is additive at the query-compilation layer, not a stored-data
 change. No existing `SynSvc` DB needs schema migration.
