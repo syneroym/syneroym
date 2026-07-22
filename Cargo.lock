@@ -7781,6 +7781,7 @@ dependencies = [
  "syneroym-ucan",
  "thiserror 2.0.18",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

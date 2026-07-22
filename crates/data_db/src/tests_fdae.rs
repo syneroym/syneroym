@@ -596,3 +596,64 @@ async fn two_capabilities_with_conflicting_caveats_currently_narrow_to_zero_rows
          failing, D-04-02-g has been fixed -- update this test to assert doc-1 IS visible."
     );
 }
+
+/// Regression: under `strict: true`, `compile_read`'s deny path used to
+/// interpolate the caller-supplied `collection` string verbatim into
+/// `path_failed`, which `tracing::info!` then logged -- before
+/// `validate_identifier` ever ran (it only ran later, inside `do_query` on
+/// the reader-pool thread). A WASM guest passes `collection` straight
+/// through from its own `query`/`get` call, so an unvalidated string could
+/// carry a newline or ANSI escape into the substrate's operator log,
+/// forging log lines. `compile_sieve_for_op` now validates before
+/// `compile_read` ever sees the string, so the malformed name never reaches
+/// a trace at all -- it fails the call outright instead.
+#[tokio::test]
+async fn strict_mode_never_logs_an_unvalidated_collection_name() {
+    use std::{io, sync::Mutex};
+
+    use tracing_subscriber::prelude::*;
+
+    let store = setup_store().await;
+    let policy =
+        parse_and_validate(r#"{"version": "fdae/v1", "strict": true, "definitions": {}}"#).unwrap();
+    let alice = session("did:key:alice", vec![]);
+    let auth = QueryAuth { policy: &policy, session: &alice, service_id: SERVICE_ID };
+
+    let logs = Arc::new(Mutex::new(Vec::new()));
+    let logs_clone = logs.clone();
+    struct MockWriter {
+        logs: Arc<Mutex<Vec<u8>>>,
+    }
+    impl io::Write for MockWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.logs.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let make_writer = move || MockWriter { logs: logs_clone.clone() };
+    let layer = tracing_subscriber::fmt::layer().with_ansi(false).with_writer(make_writer);
+    let subscriber = tracing_subscriber::registry().with(layer);
+
+    let malicious = "evil\nFORGED LOG LINE injected=true";
+    let opts = QueryOptions { filter: None, limit: None, cursor: None };
+    // `#[tokio::test]` defaults to the current-thread flavor, so a
+    // thread-local subscriber guard held across the `.await` below stays
+    // valid for the whole call -- no task migration to another OS thread
+    // can happen underneath it.
+    let guard = tracing::subscriber::set_default(subscriber);
+    let result = store.query(malicious, &opts, Some(&auth)).await;
+    drop(guard);
+    assert!(
+        matches!(result, Err(DataLayerError::SchemaViolation(_))),
+        "an invalid identifier must be rejected before compiling, not passed through: {result:?}"
+    );
+
+    let logs_content = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+    assert!(
+        !logs_content.contains("injected=true") && !logs_content.contains("FORGED LOG LINE"),
+        "the unvalidated collection name must never reach a trace log: logs were: {logs_content}"
+    );
+}

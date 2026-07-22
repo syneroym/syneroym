@@ -314,31 +314,49 @@ fn do_get(
 ) -> Result<Option<host_store::RecordReadValue>, host_store::DataLayerError> {
     validate_identifier(collection)?;
 
-    let result = match sieve {
-        None => conn.query_row(
-            &format!(
-                "SELECT payload, creator_id, created_at, updated_at FROM {collection} WHERE id = \
-                 ?1"
-            ),
-            params![id],
-            read_record_row,
-        ),
-        Some(s) => {
-            let _watchdog = install_watchdog(conn)?;
-            let (clause, sieve_params) = merge_sieve(s)?;
-            conn.query_row(
-                &format!(
-                    "SELECT payload, creator_id, created_at, updated_at FROM {collection} WHERE \
-                     {clause}"
+    // Wrapped in the same "capture every error, decide after" shape
+    // `do_check_access` uses, so a watchdog interrupt or a malformed caveat
+    // can be told apart from a genuine `QueryReturnedNoRows` for the
+    // decision trace below -- both used to `?`-propagate identically,
+    // leaving no evaluation-aborted case for the trace to fill in at all.
+    let outcome: Result<rusqlite::Result<(String, String, i64, i64)>, host_store::DataLayerError> =
+        (|| {
+            Ok(match sieve {
+                None => conn.query_row(
+                    &format!(
+                        "SELECT payload, creator_id, created_at, updated_at FROM {collection} \
+                         WHERE id = ?1"
+                    ),
+                    params![id],
+                    read_record_row,
                 ),
-                rusqlite::params_from_iter(sieve_params.iter()),
-                read_record_row,
-            )
-        }
-    };
+                Some(s) => {
+                    let _watchdog = install_watchdog(conn)?;
+                    let (clause, sieve_params) = merge_sieve(s)?;
+                    conn.query_row(
+                        &format!(
+                            "SELECT payload, creator_id, created_at, updated_at FROM {collection} \
+                             WHERE {clause}"
+                        ),
+                        rusqlite::params_from_iter(sieve_params.iter()),
+                        read_record_row,
+                    )
+                }
+            })
+        })();
 
-    match result {
-        Ok((payload, creator_id, created_at, updated_at)) => {
+    emit_mode_a_execution_trace(
+        sieve,
+        match &outcome {
+            Ok(Ok(_)) => ModeAOutcome::Matched,
+            Ok(Err(SqliteError::QueryReturnedNoRows)) => ModeAOutcome::NotMatched,
+            Ok(Err(e)) => ModeAOutcome::Aborted(format!("{e}")),
+            Err(e) => ModeAOutcome::Aborted(format!("{e:?}")),
+        },
+    );
+
+    match outcome {
+        Ok(Ok((payload, creator_id, created_at, updated_at))) => {
             Ok(Some(host_store::RecordReadValue {
                 id: id.to_string(),
                 payload: payload.into_bytes(),
@@ -350,9 +368,52 @@ fn do_get(
         // Unauthorized-but-existing and genuinely-missing are
         // indistinguishable here by design (ADR-0007 "no result is a valid
         // outcome").
-        Err(SqliteError::QueryReturnedNoRows) => Ok(None),
-        Err(e) => Err(map_query_raw_step_error(e)),
+        Ok(Err(SqliteError::QueryReturnedNoRows)) => Ok(None),
+        Ok(Err(e)) => Err(map_query_raw_step_error(e)),
+        Err(e) => Err(e),
     }
+}
+
+/// The real, post-execution outcome of a Mode A (point-in-time) predicate
+/// run -- the distinction `compile_read`'s compile-time trace cannot make,
+/// since it never executes SQL (ADR-0017 §9).
+enum ModeAOutcome {
+    /// The predicate matched a row.
+    Matched,
+    /// The predicate ran to completion and matched no row -- a genuine,
+    /// admitted-but-unreachable deny.
+    NotMatched,
+    /// The predicate never ran to a real answer: a watchdog interrupt, a
+    /// malformed caveat, a missing target table, or similar. Must not be
+    /// recorded as `NotMatched` -- that would claim a fact about the data
+    /// ("no row satisfied the predicate") that was never established, and
+    /// would make a compute-budget abort indistinguishable in the trace
+    /// from an ordinary deny.
+    Aborted(String),
+}
+
+/// Emits `sieve.trace` a second time with the real, post-execution Mode A
+/// outcome filled in. `compile_read` already emitted a compile-time trace
+/// on `sieve.trace` (`rows_reached: None` -- it never executes SQL); this is
+/// the only place "rows not reached" (an admitted operation whose compiled
+/// predicate matched no row) -- or a policy-evaluation abort -- becomes
+/// knowable.
+fn emit_mode_a_execution_trace(sieve: Option<&CompiledSieve>, outcome: ModeAOutcome) {
+    let Some(s) = sieve else { return };
+    let mut trace = s.trace.clone();
+    match outcome {
+        ModeAOutcome::Matched => trace.rows_reached = Some(true),
+        ModeAOutcome::NotMatched => {
+            trace.rows_reached = Some(false);
+            if trace.path_failed.is_none() {
+                trace.path_failed = Some("no row satisfied the compiled predicate".to_string());
+            }
+        }
+        ModeAOutcome::Aborted(reason) => {
+            trace.path_failed = Some(format!("policy evaluation aborted: {reason}"));
+        }
+    }
+    trace.emit();
 }
 
 fn read_record_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<(String, String, i64, i64)> {
@@ -482,27 +543,20 @@ fn do_check_access(
         })
     })();
 
-    let result = match outcome {
+    emit_mode_a_execution_trace(
+        sieve,
+        match &outcome {
+            Ok(Ok(true)) => ModeAOutcome::Matched,
+            Ok(Ok(false)) => ModeAOutcome::NotMatched,
+            Ok(Err(e)) => ModeAOutcome::Aborted(format!("{e}")),
+            Err(e) => ModeAOutcome::Aborted(format!("{e:?}")),
+        },
+    );
+
+    Ok(match outcome {
         Ok(Ok(exists)) => exists,
         Ok(Err(_)) | Err(_) => false,
-    };
-
-    // ADR-0017 §9: `compile_read` already emitted a compile-time trace on
-    // `sieve.trace` (`rows_reached: None` -- it never executes SQL). Now
-    // that the predicate has actually run against `id`, emit a second,
-    // execution-aware trace recording the real outcome -- this is the only
-    // place "rows not reached" (an admitted operation whose compiled
-    // predicate matched no row) becomes knowable.
-    if let Some(s) = sieve {
-        let mut trace = s.trace.clone();
-        trace.rows_reached = Some(result);
-        if !result && trace.path_failed.is_none() {
-            trace.path_failed = Some("no row satisfied the compiled predicate".to_string());
-        }
-        trace.emit();
-    }
-
-    Ok(result)
+    })
 }
 
 /// Lists the service's collections (user tables) for the deploy-time
@@ -758,6 +812,13 @@ fn compile_sieve_for_op(
     mode: Mode,
 ) -> Result<Option<CompiledSieve>, host_store::DataLayerError> {
     let Some(auth) = auth else { return Ok(None) };
+    // Validated here, before `collection` reaches `compile_read` and a
+    // strict-mode deny logs it verbatim into `path_failed` (an `info!`
+    // line) -- otherwise a WASM guest could inject newlines/escapes into
+    // the operator log through an unvalidated collection name before
+    // `do_get`/`do_query` get a chance to validate it downstream on the
+    // pool thread.
+    validate_identifier(collection)?;
     compile_read(
         auth.policy,
         collection,
@@ -1074,7 +1135,11 @@ enum DbCommand {
     DeleteMany {
         collection: String,
         filter: Option<String>,
-        sieve: Option<CompiledSieve>,
+        // Boxed: `CompiledSieve` (now carrying a `DecisionTrace`) made this
+        // the largest `DbCommand` variant by a wide margin --
+        // `clippy::large_enum_variant` flags every other variant paying its
+        // stack size on every `DbCommand` value.
+        sieve: Option<Box<CompiledSieve>>,
         resp: oneshot::Sender<Result<u64, host_store::DataLayerError>>,
     },
     BatchMutate {
@@ -1173,7 +1238,7 @@ fn run_writer_loop(
                     &conn,
                     &collection,
                     filter.as_deref(),
-                    sieve.as_ref(),
+                    sieve.as_deref(),
                 ));
             }
             DbCommand::BatchMutate { collection, mutations, creator_id, resp } => {
@@ -1719,7 +1784,8 @@ impl ServiceStore for SqliteServiceStore {
         // Deleting is a write (D2): a read-only permission's `paths` must not
         // become "these rows are deletable" through this path.
         let sieve =
-            compile_sieve_for_op(auth, collection, Ability::DATA_LAYER_WRITE, Mode::Filter)?;
+            compile_sieve_for_op(auth, collection, Ability::DATA_LAYER_WRITE, Mode::Filter)?
+                .map(Box::new);
         let collection = collection.to_string();
         let filter = filter.map(str::to_string);
         send_write_command(&self.writer_tx, |resp| DbCommand::DeleteMany {
@@ -2573,6 +2639,152 @@ mod tests {
             logs_content.contains("no row satisfied the compiled predicate"),
             "logs were: {logs_content}"
         );
+    }
+
+    /// Regression: a watchdog interrupt used to be folded into the same
+    /// `rows_reached: Some(false)` / "no row satisfied the compiled
+    /// predicate" trace as a genuine empty result, so a compute-budget
+    /// abort was indistinguishable in the logs from an ordinary deny. The
+    /// aborted case must stay `rows_reached: None` and get its own
+    /// `path_failed` reason.
+    #[test]
+    fn decision_trace_distinguishes_an_aborted_evaluation_from_a_real_no_row() {
+        use std::io;
+
+        use tracing_subscriber::prelude::*;
+
+        let conn = Connection::open_in_memory().unwrap();
+        seed_one_row_documents(&conn);
+        let sieve = pathological_sieve();
+
+        let logs = Arc::new(Mutex::new(Vec::new()));
+        let logs_clone = logs.clone();
+        struct MockWriter {
+            logs: Arc<Mutex<Vec<u8>>>,
+        }
+        impl io::Write for MockWriter {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.logs.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let make_writer = move || MockWriter { logs: logs_clone.clone() };
+        let layer = tracing_subscriber::fmt::layer().with_ansi(false).with_writer(make_writer);
+        let subscriber = tracing_subscriber::registry().with(layer);
+
+        let allowed = tracing::subscriber::with_default(subscriber, || {
+            do_check_access(&conn, "documents", "doc-1", Some(&sieve)).unwrap()
+        });
+        assert!(!allowed, "fail-closed on a watchdog interrupt");
+
+        let logs_content = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+        assert!(logs_content.contains("fdae decision: deny"), "logs were: {logs_content}");
+        assert!(logs_content.contains("policy evaluation aborted"), "logs were: {logs_content}");
+        assert!(
+            !logs_content.contains("no row satisfied the compiled predicate"),
+            "an aborted evaluation must not claim a fact about the data it never reached: logs \
+             were: {logs_content}"
+        );
+        assert!(
+            logs_content.contains("rows_reached=None"),
+            "an aborted evaluation never learned whether a row matched: logs were: {logs_content}"
+        );
+    }
+
+    /// ADR-0017 §9 decision trace: `do_get` is the other Mode A
+    /// (`PointInTime`) execution path besides `check_access`, and must emit
+    /// its own execution-aware trace on an unreachable row -- previously
+    /// only `do_check_access` did, so a denied `get` logged as an
+    /// undiagnosable "allow".
+    #[test]
+    fn decision_trace_records_rows_not_reached_after_do_get_executes() {
+        use std::io;
+
+        use syneroym_ucan::{Capability, ResourceUri, SessionContext};
+        use tracing_subscriber::prelude::*;
+
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE users (id TEXT PRIMARY KEY, payload TEXT NOT NULL DEFAULT '{}');
+             CREATE TABLE documents (id TEXT PRIMARY KEY, payload TEXT NOT NULL DEFAULT '{}', \
+             creator_id TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+             INSERT INTO users (id, payload) VALUES ('u-alice', '{\"did\":\"did:key:alice\"}');
+             INSERT INTO documents (id, payload, creator_id, created_at, updated_at) VALUES \
+             ('doc-1', '{\"creator_uuid\":\"u-alice\"}', 'svc', 0, 0);",
+        )
+        .unwrap();
+
+        let policy = parse_and_validate(
+            r#"{
+                "version": "fdae/v1",
+                "definitions": {
+                    "document": {
+                        "table": "documents",
+                        "relations": {"creator": {"target": "user", "join_column": "creator_uuid"}},
+                        "permissions": {
+                            "view": {"allows": ["data-layer/read"], "paths": [["creator", "caller"]]}
+                        }
+                    },
+                    "user": {"table": "users", "principal_column": "did"}
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let resource = ResourceUri(format!(
+            "{}/collection/document",
+            ResourceUri::service("svc-a", "svc-a").0
+        ));
+        let bob = SessionContext {
+            subject_did: "did:key:bob".to_string(),
+            capabilities: vec![Capability {
+                with: resource,
+                can: Ability(Ability::DATA_LAYER_READ.to_string()),
+                caveats: None,
+            }],
+            claims: serde_json::Map::new(),
+            verified_at_secs: 0,
+        };
+        let sieve = compile_read(
+            &policy,
+            "document",
+            &bob,
+            "svc-a",
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::PointInTime { id: "doc-1".to_string() },
+        )
+        .unwrap()
+        .unwrap();
+
+        let logs = Arc::new(Mutex::new(Vec::new()));
+        let logs_clone = logs.clone();
+        struct MockWriter {
+            logs: Arc<Mutex<Vec<u8>>>,
+        }
+        impl io::Write for MockWriter {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.logs.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let make_writer = move || MockWriter { logs: logs_clone.clone() };
+        let layer = tracing_subscriber::fmt::layer().with_ansi(false).with_writer(make_writer);
+        let subscriber = tracing_subscriber::registry().with(layer);
+
+        let record = tracing::subscriber::with_default(subscriber, || {
+            do_get(&conn, "documents", "doc-1", Some(&sieve)).unwrap()
+        });
+        assert!(record.is_none(), "bob is not doc-1's creator");
+
+        let logs_content = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+        assert!(logs_content.contains("fdae decision: deny"), "logs were: {logs_content}");
+        assert!(logs_content.contains("rows_reached=Some(false)"), "logs were: {logs_content}");
     }
 
     #[test]

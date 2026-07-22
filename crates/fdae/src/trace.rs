@@ -6,12 +6,18 @@
 use tracing::{debug, info};
 
 /// One FDAE tier-3 decision, built by `compile_read` at compile time and,
-/// for Mode A, augmented by `check_access` once the compiled predicate has
-/// actually been run against a row.
+/// for Mode A, augmented by `check_access`/`get` once the compiled
+/// predicate has actually been run against a row.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DecisionTrace {
     /// Always 3 -- the ADR-0017 pipeline stage this compiler implements.
     pub tier: u8,
+    /// The collection this decision was compiled for.
+    pub collection: String,
+    /// The service the collection belongs to.
+    pub service_id: String,
+    /// The caller's DID, so a deny line is attributable to a principal.
+    pub subject_did: String,
     /// The grant(s) (`with::can`) evaluated for this decision.
     pub held: Vec<String>,
     /// Whether any held capability grants the requested operation on this
@@ -25,16 +31,19 @@ pub struct DecisionTrace {
     /// returned row satisfies.
     pub compiled_predicate: Option<String>,
     /// Mode A only: whether the compiled predicate actually matched a row,
-    /// known only once `check_access` executes it. `None` at compile time,
-    /// and always `None` for Mode B (a per-row question, not one boolean).
+    /// known only once `check_access`/`get` executes it. `None` at compile
+    /// time, and always `None` for Mode B (a per-row question, not one
+    /// boolean).
     pub rows_reached: Option<bool>,
     /// Set when this decision is a known deny: at compile time (operation
     /// not admitted, a strict-mode unknown collection, or a condition
     /// referencing an absent claim) or, for Mode A, after execution finds
-    /// no matching row.
+    /// no matching row or aborts before reaching one.
     pub path_failed: Option<String>,
-    /// Human-readable caveats (capability `caveats.where` / `fields.deny`)
-    /// folded into this decision.
+    /// Which caveat *kinds* were folded into this decision -- field names
+    /// and caveat-filter keys, deliberately not the caveat *values*
+    /// (capability caveats can carry DIDs, tenant ids, and other row-level
+    /// data that has no business in an operator log).
     pub caveats_applied: Vec<String>,
 }
 
@@ -46,6 +55,9 @@ impl DecisionTrace {
         if let Some(reason) = &self.path_failed {
             info!(
                 tier = self.tier,
+                collection = %self.collection,
+                service_id = %self.service_id,
+                subject_did = %self.subject_did,
                 held = ?self.held,
                 operation_admitted = self.operation_admitted,
                 applicable_permissions = ?self.applicable_permissions,
@@ -58,6 +70,9 @@ impl DecisionTrace {
         } else {
             debug!(
                 tier = self.tier,
+                collection = %self.collection,
+                service_id = %self.service_id,
+                subject_did = %self.subject_did,
                 held = ?self.held,
                 operation_admitted = self.operation_admitted,
                 applicable_permissions = ?self.applicable_permissions,

@@ -1296,10 +1296,15 @@ going in, extended (not restructured) by this phase.
   `cargo component build --target wasm32-wasip2` first, confirming the
   additive Phase 3 WIT change (`check-access`) left the guest-imported
   surface unbroken. Both Playwright configs green: 8/8 (main), 4/4
-  (multi-hop) — 12/12 total, including reference-scenario step 22's
-  filtering half (exercised transitively through `miniapp-demo1-web`'s
-  passthrough deploy, not a data-layer-specific spec — same scoping note
-  Phase 4 recorded).
+  (multi-hop) — 12/12 total. This is a regression/compat gate on Phase 5's
+  own changes, not step-22 evidence: the harness (`global-setup.ts`) deploys
+  only a TCP passthrough service (`miniapp-demo1-web`, `svc deploy --tcp`)
+  with no WASM component and no FDAE policy, so it exercises zero FDAE
+  code, transitively or otherwise. Step 22's filtering half is proven by
+  `native_dispatch_identity.rs`'s
+  `native_fdae_policy_row_filters_and_masks_for_two_distinct_verified_callers`
+  (Phase 4) instead — same scoping this section already noted for Phases 2
+  and 3.
 - **`traceability-matrix.md`** — the `[FND-IAM]` (M4B: FDAE) row flipped
   from `Planned` to `In Progress (Slice B2 complete)`, with evidence links
   covering the compiler, store integration, host wiring, deploy plumbing,
