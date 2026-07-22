@@ -232,11 +232,18 @@ pub struct ServiceConfig {
 
 /// Author-side declaration of a deploy-time document.
 ///
-/// A bare string is a path relative to the manifest, read by the client and
-/// shipped inline -- the same thing a bare `source` already means for a Wasm
-/// component, and what makes a deploy work against a substrate with nothing
-/// pre-staged. `{ remote_path = "..." }` defers resolution to the substrate
-/// host instead, for large or shared assets and operator-managed directories.
+/// A bare string is read by the client and shipped inline -- the same thing a
+/// bare `source` already means for a Wasm component, and what makes a deploy
+/// work against a substrate with nothing pre-staged. `{ remote_path = "..." }`
+/// defers resolution to the substrate host instead, for large or shared assets
+/// and operator-managed directories.
+///
+/// A relative bare path resolves against the **client process's working
+/// directory**, not the manifest's own directory, matching `source` exactly
+/// (`util::read_local_artifact`). Rebasing both onto the manifest's parent
+/// would be friendlier, but doing it for documents alone would leave two
+/// sibling manifest fields resolving differently, which is worse than either
+/// rule on its own.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum DocumentRef {

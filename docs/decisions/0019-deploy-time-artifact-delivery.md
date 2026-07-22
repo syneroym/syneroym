@@ -118,11 +118,32 @@ record container-volume-mapping {
 }
 ```
 
-When `files` is non-empty the engine writes each entry beneath the already
-sandboxed volume directory and mounts the volume `:ro`, satisfying `[FND-CFG]`'s
-"mount them read-only". When `files` is empty the behavior is exactly today's:
-an empty, writable directory — so existing scratch and data volumes are
-untouched.
+When `files` is non-empty the engine materializes the set and mounts the volume
+`:ro`, satisfying `[FND-CFG]`'s "mount them read-only". When `files` is empty
+the behavior is exactly today's: an empty, writable directory — so existing
+scratch and data volumes are untouched.
+
+**Volume content must be `inline`; the `path` arm is refused here.** For
+`schema` and `fdae-policy` a host-side path is safe because the resolved bytes
+stay server-side. A volume file is different in kind: it is copied into a
+directory bind-mounted into a container whose image the deploy caller chose, so
+resolving a host path would hand that caller the contents of any file the
+substrate can read. Bounding the read to the working directory does not help —
+that is exactly where the substrate's own database and state live. The arm
+stays in the shared `document-source` type (one concept, three sites) and is
+rejected at this one call site, with the reason stated in code. Reintroducing
+it needs an operator-configured document root, which is a different feature.
+
+**Materialization is staged, not in-place.** The file set is resolved and
+checked in full before a single byte is written, then built in a sibling
+staging directory that replaces the live one in one `rename`. Three properties
+follow from the shape rather than from separate guards: a failure leaves the
+running container's mount untouched (so a redeploy whose `podman run` fails
+cannot strand a half-rewritten config directory), nothing stale survives (the
+directory is replaced whole, so there is no pruning pass to get wrong), and a
+symlink planted in a previously-writable volume cannot redirect a write (the
+staging directory is new, and each file is created with `O_CREAT|O_EXCL`, which
+fails on a symlink where `fs::write` would follow it).
 
 A list of files rather than one `content` field, because a container's config
 directory is routinely more than one file (`config.yaml` + `certs/ca.pem`), and
@@ -137,7 +158,7 @@ has. `custom-config`'s existing env-var flattening is unchanged.
 ## 3. The author-side manifest inlines by default
 
 In the `SynAppManifest` TOML, a bare relative path now means "read this file
-next to my manifest and ship it inline":
+client-side and ship it inline":
 
 ```toml
 [services.my-svc]
@@ -171,6 +192,16 @@ case is a schema and a policy living beside the manifest in the app's own
 repository, and that case must work against a remote substrate with nothing
 pre-staged.
 
+**Resolution is client-working-directory-relative, not manifest-relative.** A
+bare path goes through `util::read_local_artifact`, which tries the literal
+path and then `current_dir().join(path)`; the manifest's own directory is never
+consulted. This is inherited from `source` and kept deliberately: rebasing
+documents onto the manifest's parent while `source` stayed
+working-directory-relative would leave two sibling fields in the same manifest
+resolving differently, which is a worse trap than the one it fixes. Rebasing
+*both* is a reasonable follow-up, and would be a behavior change for `source`
+as well — out of scope here.
+
 The host-side path arm is kept, not deprecated: large or shared assets and an
 operator-managed policy directory are legitimate, and an operator who wants
 policy documents to live under their control rather than in each app's manifest
@@ -183,9 +214,13 @@ should be able to say so.
   deploy manifest is not a blob store (`artifact-source::url` exists for
   anything large); `path`, because the path is chosen by a remote caller, so an
   unbounded `read_to_string` is a memory-exhaustion lever. Host-side reads
-  check file metadata before reading, so an oversized file is never loaded. A
-  volume's file set is additionally capped in aggregate, since a per-file cap
-  alone still permits many files.
+  check file metadata before reading, so an oversized file is never loaded.
+  The client checks the same cap before the UTF-8 conversion and the RPC
+  round-trip, so an oversized document fails locally and instantly.
+- **Volume aggregate cap.** `MAX_DEPLOY_VOLUME_BYTES` (4 MiB) is a **deploy-wide**
+  budget carried across every volume, not a per-volume limit. A per-volume cap
+  bounds one volume while leaving a manifest free to declare two hundred of
+  them and multiply its way past it.
 - **Traversal.** `path` keeps the existing `reject_path_escape` +
   filesystem-resolving check. `relative-path` on a volume file is rejected if it
   contains `..`, a root, or a prefix component, in addition to the existing

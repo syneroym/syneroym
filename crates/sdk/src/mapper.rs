@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use syneroym_app_orchestration::models::{
     DeploymentPlan, DocumentRef, RotationPolicy, ServiceType,
 };
-use syneroym_core::util;
+use syneroym_core::{deploy_docs, util};
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, ContainerManifest, ContainerPortMapping, ContainerVolumeFile,
     ContainerVolumeMapping, DeployManifest, DeploymentPlan as WitDeploymentPlan, DocumentSource,
@@ -39,6 +39,11 @@ fn map_document_ref(doc: &DocumentRef, field_name: &str) -> anyhow::Result<Docum
     match doc {
         DocumentRef::Local(path) => {
             let bytes = util::read_local_artifact(Path::new(path))?;
+            // Checked here, before the UTF-8 copy and the RPC round-trip, so
+            // an oversized document is an instant local error rather than a
+            // payload the substrate rejects after receiving all of it.
+            deploy_docs::check_inline_size_bytes(bytes.len(), field_name)
+                .map_err(|e| anyhow::anyhow!("{path}: {e}"))?;
             let content = String::from_utf8(bytes).map_err(|e| {
                 anyhow::anyhow!("{field_name} at {path} is not valid UTF-8 text: {e}")
             })?;
@@ -131,11 +136,12 @@ pub fn map_deployment_plan_to_wit(plan: DeploymentPlan) -> anyhow::Result<WitDep
                     if let Some(img) = cfg.get("image").and_then(|v| v.as_str()) {
                         image = img.to_string();
                     }
-                    if let Some(p) = cfg.get("ports")
-                        && let Ok(p_vec) =
-                            serde_json::from_value::<Vec<ContainerPortMapping>>(p.clone())
-                    {
-                        ports = p_vec;
+                    // Strict, like `volumes` below: silently discarding a
+                    // mistyped port list deploys a container that is simply
+                    // unreachable, with nothing anywhere saying why.
+                    if let Some(p) = cfg.get("ports") {
+                        ports = serde_json::from_value::<Vec<ContainerPortMapping>>(p.clone())
+                            .map_err(|e| anyhow::anyhow!("invalid container ports: {e}"))?;
                     }
                     if let Some(v) = cfg.get("volumes") {
                         let specs: Vec<VolumeSpec> = serde_json::from_value(v.clone())
@@ -294,5 +300,94 @@ mod tests {
     fn map_deployment_plan_to_wit_maps_absent_fdae_to_none() {
         let wit_plan = map_deployment_plan_to_wit(plan_with_config(base_config())).unwrap();
         assert!(wit_plan.services[0].manifest.config.fdae_policy.is_none());
+    }
+
+    fn container_config(custom: &str) -> ServiceConfig {
+        let mut config = base_config();
+        config.service_type = ServiceType::Container;
+        config.source = "docker.io/library/nginx:1.27".to_string();
+        config.custom_config = Some(custom.to_string());
+        config
+    }
+
+    fn container_manifest_of(plan: &WitDeploymentPlan) -> &ContainerManifest {
+        match &plan.services[0].manifest.service_type {
+            WitServiceType::Container(m) => m,
+            other => panic!("expected a container manifest, got {other:?}"),
+        }
+    }
+
+    /// Guards the field names the developer guide documents: a mismatch here
+    /// would only surface at a live deploy.
+    #[test]
+    fn container_volume_files_are_parsed_and_inlined() {
+        let dir = tempfile::tempdir().unwrap();
+        let conf = dir.path().join("nginx.conf");
+        std::fs::write(&conf, "server { listen 80; }").unwrap();
+
+        let custom = format!(
+            r#"{{"volumes":[{{"host_path":"conf","container_path":"/etc/nginx/conf.d",
+                 "files":[{{"relative_path":"default.conf","content":{}}}]}}]}}"#,
+            serde_json::to_string(&conf.to_string_lossy().into_owned()).unwrap()
+        );
+
+        let wit_plan = map_deployment_plan_to_wit(plan_with_config(container_config(&custom)))
+            .expect("volumes should parse");
+        let volumes = &container_manifest_of(&wit_plan).volumes;
+
+        assert_eq!(volumes.len(), 1);
+        assert_eq!(volumes[0].host_path, "conf");
+        assert_eq!(volumes[0].container_path, "/etc/nginx/conf.d");
+        assert_eq!(volumes[0].files.len(), 1);
+        assert_eq!(volumes[0].files[0].relative_path, "default.conf");
+        match &volumes[0].files[0].content {
+            DocumentSource::Inline(c) => assert_eq!(c, "server { listen 80; }"),
+            other => panic!("expected inline content, got {other:?}"),
+        }
+    }
+
+    /// A volume that only wants an empty directory stays as terse as it was
+    /// before `files` existed.
+    #[test]
+    fn container_volume_without_files_still_parses() {
+        let custom = r#"{"volumes":[{"host_path":"data","container_path":"/data"}]}"#;
+        let wit_plan =
+            map_deployment_plan_to_wit(plan_with_config(container_config(custom))).unwrap();
+        let volumes = &container_manifest_of(&wit_plan).volumes;
+
+        assert_eq!(volumes.len(), 1);
+        assert!(volumes[0].files.is_empty());
+    }
+
+    /// Both sibling keys fail loudly. Silently dropping either one deploys a
+    /// container that is broken in a way nothing reports.
+    #[test]
+    fn malformed_volumes_and_ports_both_fail_the_deploy() {
+        let bad_volumes = r#"{"volumes":[{"host_path":"data"}]}"#;
+        let err = map_deployment_plan_to_wit(plan_with_config(container_config(bad_volumes)))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("invalid container volumes"), "{err}");
+
+        let bad_ports = r#"{"ports":[{"interface_name":"default","port":80,"protocol":"tcp"}]}"#;
+        let err = map_deployment_plan_to_wit(plan_with_config(container_config(bad_ports)))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("invalid container ports"), "{err}");
+    }
+
+    #[test]
+    fn oversize_local_document_fails_before_the_deploy_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let big = dir.path().join("big-policy.json");
+        std::fs::write(&big, "x".repeat(deploy_docs::MAX_DEPLOY_DOCUMENT_BYTES as usize + 1))
+            .unwrap();
+
+        let mut config = base_config();
+        config.fdae =
+            Some(FdaeManifest { policy: DocumentRef::Local(big.to_string_lossy().into_owned()) });
+
+        let err = map_deployment_plan_to_wit(plan_with_config(config)).unwrap_err().to_string();
+        assert!(err.contains("exceeding the"), "{err}");
     }
 }

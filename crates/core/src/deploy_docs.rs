@@ -27,11 +27,14 @@ use std::{
 /// config file.
 pub const MAX_DEPLOY_DOCUMENT_BYTES: u64 = 1024 * 1024;
 
-/// Upper bound on the combined size of one container volume's files.
+/// Upper bound on the combined size of every container volume file in a
+/// single deploy.
 ///
-/// [`MAX_DEPLOY_DOCUMENT_BYTES`] alone bounds each file but not how many, and
-/// a volume is the one place a manifest can name an unbounded number of them.
-pub const MAX_VOLUME_TOTAL_BYTES: u64 = 4 * 1024 * 1024;
+/// [`MAX_DEPLOY_DOCUMENT_BYTES`] alone bounds each file but neither how many
+/// files a volume names nor how many volumes a manifest declares. The budget
+/// is deploy-wide rather than per-volume precisely because a per-volume cap
+/// still lets a manifest with many volumes multiply its way past it.
+pub const MAX_DEPLOY_VOLUME_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Rejects `path` if it's absolute, contains a `..` component, or -- once
 /// symlinks are resolved -- canonicalizes to somewhere outside the process's
@@ -89,11 +92,17 @@ pub fn read_host_document(path: &Path, field_name: &str) -> Result<String, Strin
 
 /// Enforces [`MAX_DEPLOY_DOCUMENT_BYTES`] on caller-supplied inline content.
 pub fn check_inline_size(content: &str, field_name: &str) -> Result<(), String> {
-    if content.len() as u64 > MAX_DEPLOY_DOCUMENT_BYTES {
+    check_inline_size_bytes(content.len(), field_name)
+}
+
+/// Byte-length form of [`check_inline_size`], for callers that hold raw bytes
+/// and would rather reject an oversized document before paying for the UTF-8
+/// conversion.
+pub fn check_inline_size_bytes(len: usize, field_name: &str) -> Result<(), String> {
+    if len as u64 > MAX_DEPLOY_DOCUMENT_BYTES {
         return Err(format!(
-            "inline {field_name} is {} bytes, exceeding the {} byte limit",
-            content.len(),
-            MAX_DEPLOY_DOCUMENT_BYTES
+            "inline {field_name} is {len} bytes, exceeding the {MAX_DEPLOY_DOCUMENT_BYTES} byte \
+             limit"
         ));
     }
     Ok(())

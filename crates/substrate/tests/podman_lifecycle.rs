@@ -155,7 +155,7 @@ async fn test_podman_lifecycle() {
     // or just nginx to test port mapping.
     // Nginx is small and runs an HTTP server on port 80.
     use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
-        ContainerPortMapping, ContainerVolumeMapping,
+        ContainerPortMapping, ContainerVolumeFile, ContainerVolumeMapping, DocumentSource,
     };
 
     let ports = vec![ContainerPortMapping {
@@ -165,10 +165,18 @@ async fn test_podman_lifecycle() {
         protocol: "tcp".to_string(),
     }];
 
+    // The capability this whole path exists for: an off-the-shelf image
+    // served content that came in the deploy call, with nothing staged on the
+    // substrate host beforehand.
+    const INDEX_HTML: &str = "<h1>served from the deploy manifest</h1>";
+
     let volumes = vec![ContainerVolumeMapping {
         host_path: "html".to_string(),
         container_path: "/usr/share/nginx/html".to_string(),
-        files: vec![],
+        files: vec![ContainerVolumeFile {
+            relative_path: "index.html".to_string(),
+            content: DocumentSource::Inline(INDEX_HTML.to_string()),
+        }],
     }];
 
     debug!(">>> Deploying nginx container");
@@ -197,6 +205,30 @@ async fn test_podman_lifecycle() {
         .request("orchestrator", "readyz", serde_json::json!([app_service_id.clone()]))
         .await
         .expect("readiness check failed");
+
+    // The manifest-supplied file reached the container's filesystem.
+    let container_name = app_service_id.replace(':', "_");
+    let served = Command::new("podman")
+        .args(["exec", &container_name, "cat", "/usr/share/nginx/html/index.html"])
+        .output()
+        .expect("podman exec failed to run");
+    assert!(
+        served.status.success(),
+        "reading the mounted file failed: {}",
+        String::from_utf8_lossy(&served.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&served.stdout).trim(), INDEX_HTML);
+
+    // And the mount is read-only, so the container cannot rewrite config the
+    // substrate owns.
+    let write_attempt = Command::new("podman")
+        .args(["exec", &container_name, "sh", "-c", "touch /usr/share/nginx/html/breakin 2>&1"])
+        .output()
+        .expect("podman exec failed to run");
+    assert!(
+        !write_attempt.status.success(),
+        "a volume carrying manifest files was writable by the container"
+    );
 
     // Undeploy
     debug!(">>> Undeploying nginx container");

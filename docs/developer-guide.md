@@ -264,10 +264,14 @@ block naming a declarative ReBAC policy document, validated at deploy:
 [services.my-svc.fdae]
 policy = "fdae-policy.json"
 ```
-A bare path is read **client-side**, relative to the manifest, and the
-document travels inside the deploy call — the same treatment a bare
-`source` already gets for a Wasm component. That is what lets a deploy
-against a remote substrate work with nothing pre-staged on it.
+A bare path is read **client-side** and the document travels inside the
+deploy call — the same treatment a bare `source` already gets for a Wasm
+component. That is what lets a deploy against a remote substrate work
+with nothing pre-staged on it.
+
+Like `source`, a relative path resolves against **your shell's working
+directory**, not the manifest's location — so run `roymctl` from the
+directory the paths are written relative to (usually the app's root).
 
 To point at a document the substrate already holds instead — a large or
 shared asset, or an operator-managed policy directory — say so explicitly

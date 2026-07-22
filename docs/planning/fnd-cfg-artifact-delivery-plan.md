@@ -268,29 +268,49 @@ uses — into `DocumentSource::Inline`, and passes `Remote` through as
 
 ### 4.4 Podman volume materialization
 
-In [engine.rs:87-94](../../crates/sandbox_podman/src/engine.rs#L87):
+Volume file content must be `inline`; the `path` arm is refused at this call
+site (ADR-0019 §2). Unlike `schema`/`fdae-policy`, a volume file is copied into
+a directory a caller-chosen container image can read, so a host-side read would
+be an exfiltration channel rather than a convenience — and a working-directory
+bound does not fix that, since that is where the substrate's own state lives.
 
-1. `resolve_host_path` + `create_dir_all` as today.
-2. For each `files` entry: validate `relative_path` via
-   `core::deploy_docs::reject_relative_escape`, resolve `content`, join onto the
-   volume root, `create_dir_all` the parent, write the file.
-3. Mount `:ro` when `files` is non-empty; unchanged writable mount when empty.
+Materialization is **staged**, not in-place:
 
-The `relative_path` guard is additive to `resolve_host_path`'s existing
-sandboxing — the two catch different things (lexical escape vs. resolved
-containment), so both run.
+1. Resolve and check every file first — relative-path escape, per-file cap,
+   deploy-wide byte budget, duplicates. No filesystem writes yet.
+2. Write the set into a sibling `<volume>.staging` directory, each file created
+   with `O_CREAT|O_EXCL`.
+3. Replace the live directory with one `rename`, moving the old one aside first
+   so a mid-swap failure restores it rather than leaving the mount point gone.
 
-**Redeploy:** for a volume that declares files, they are rewritten each deploy
-and stale entries pruned, so the mounted directory is a function of the current
-manifest rather than deploy history.
+The whole thing runs on `spawn_blocking` — it is several MiB of synchronous
+file I/O, and the tokio worker it would otherwise occupy also carries router
+dispatch, health, and metrics.
 
-A volume with an **empty** `files` list is left strictly alone — not pruned —
-because that is the scratch/data case and wiping it on redeploy would destroy
-whatever the container wrote. The accepted cost: a volume converted from config
-back to scratch keeps its old files and reverts to a writable mount, since a
-deploy cannot distinguish that transition from a plain data volume without
-per-volume state we deliberately don't keep. Documented in the developer guide
-rather than solved.
+Three properties fall out of that shape instead of needing their own guards:
+
+- **No partial writes.** A rejected file set writes nothing, because validation
+  completes before step 2.
+- **No mutation of a live mount.** A redeploy whose `podman run` later fails
+  cannot strand a half-rewritten config directory under a container still
+  serving from it, which the previous write-then-prune approach could.
+- **No symlink redirect.** A container that planted a symlink in a
+  previously-writable volume cannot redirect a later write out of it: the
+  staging directory is new, and `O_CREAT|O_EXCL` fails on a symlink where
+  `fs::write` follows it. Guarding only the parent directory was not enough —
+  the final path component is the one that matters.
+
+Stale-file pruning disappears entirely, along with its recursion-depth cap: the
+directory is replaced whole, so the mount is exactly what the manifest
+declares.
+
+**Redeploy:** a volume with an **empty** `files` list is left strictly alone —
+not replaced — because that is the scratch/data case and wiping it would
+destroy whatever the container wrote. The accepted cost: a volume converted
+from config back to scratch keeps its old files and reverts to a writable
+mount, since a deploy cannot distinguish that transition from a plain data
+volume without per-volume state we deliberately don't keep. Documented in the
+developer guide rather than solved.
 
 ### 4.5 Preserved invariants
 
@@ -364,12 +384,22 @@ Phases 1-6 implemented 2026-07-22 on `feat/fnd-cfg-artifact-delivery`.
 | `path` absolute | Deploy rejected, no read |
 | `path` via symlink escaping cwd | Deploy rejected, no read |
 | Inline document > 1 MiB | Deploy rejected before parse |
+| Local document > 1 MiB | Rejected client-side, before the RPC |
 | Volume `relative_path` with `..` / absolute / prefix | Deploy rejected, nothing written |
+| Volume file content via `path` | Rejected — inline only, no host read |
+| Symlink planted in a writable volume, then a deploy naming that file | Write lands in the volume, symlink target untouched |
+| Volume file set over the deploy-wide budget | Rejected, nothing written (no partial set) |
+| Duplicate `relative_path` in one volume | Rejected |
+| Failed materialization on a redeploy | Live volume byte-identical to before |
 | Invalid inline FDAE policy | Deploy fails; generic message to caller, full detail server-side only |
 | Invalid inline schema | Deploy fails; violation detail returned (caller's own config) |
 | Redeploy with shrunk `files` | Removed files absent from the mount |
+| Malformed `volumes` or `ports` JSON | Deploy fails loudly, neither silently dropped |
 
----
+Added after review (findings 1-5, 8-10). The `path`-arm refusal, the symlink
+redirect, the partial-write case, and the shared budget each have a dedicated
+test in `sandbox_podman`; the client-side cap and the strict `volumes`/`ports`
+parsing in `sdk`.
 
 ## 7. Exit Criteria
 
