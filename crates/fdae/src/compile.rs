@@ -524,13 +524,16 @@ fn col(qualifier: &str, name: &str, params: &mut Vec<Value>) -> String {
     }
 }
 
+/// `anchor` resolves to the original principal the chain acts for
+/// (`SessionContext.anchor_did`), not the immediate presenting caller --
+/// the confused-deputy defense (ADR-0015 A5, amended). A direct call has no
+/// distinct anchor (`anchor_did == None`), and that falls back to
+/// `subject_did` -- a direct caller *is* the anchor -- rather than denying
+/// the policy outright.
 fn terminal_value(terminal: &str, session: &SessionContext) -> Result<String, PolicyError> {
     match terminal {
         "caller" => Ok(session.subject_did.clone()),
-        "anchor" => Err(PolicyError::Semantic(
-            "the 'anchor' path terminal is not implemented in this slice (B3); use 'caller'"
-                .to_string(),
-        )),
+        "anchor" => Ok(session.anchor_did.clone().unwrap_or_else(|| session.subject_did.clone())),
         other => Err(PolicyError::Semantic(format!("unknown path terminal '{other}'"))),
     }
 }
@@ -778,6 +781,21 @@ mod tests {
     fn session(subject_did: &str, capabilities: Vec<Capability>) -> SessionContext {
         SessionContext {
             subject_did: subject_did.to_string(),
+            anchor_did: None,
+            capabilities,
+            claims: Map::new(),
+            verified_at_secs: 0,
+        }
+    }
+
+    fn session_with_anchor(
+        subject_did: &str,
+        anchor_did: &str,
+        capabilities: Vec<Capability>,
+    ) -> SessionContext {
+        SessionContext {
+            subject_did: subject_did.to_string(),
+            anchor_did: Some(anchor_did.to_string()),
             capabilities,
             claims: Map::new(),
             verified_at_secs: 0,
@@ -894,6 +912,109 @@ mod tests {
             &policy,
             "document",
             &mallory,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::Filter,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert!(run_sieve(&conn, "documents", &sieve).is_empty());
+    }
+
+    fn single_hop_anchor_policy() -> Policy {
+        parse_and_validate(
+            r#"{
+                "version": "fdae/v1",
+                "definitions": {
+                    "document": {
+                        "table": "documents",
+                        "relations": {"creator": {"target": "user", "join_column": "creator_uuid"}},
+                        "permissions": {
+                            "view": {"allows": ["data-layer/read"], "paths": [["creator", "anchor"]]}
+                        }
+                    },
+                    "user": {"table": "users", "principal_column": "did"}
+                }
+            }"#,
+        )
+        .unwrap()
+    }
+
+    /// ADR-0015 A5 (amended): `anchor` filters by the original principal a
+    /// proxying caller acts for, not the presenting caller itself -- the
+    /// confused-deputy defense. A caller presenting `subject_did = svc_1`
+    /// but anchored to `did:key:alice` reaches alice's row.
+    #[test]
+    fn anchor_terminal_filters_by_the_original_principal_not_the_caller() {
+        let conn = Connection::open_in_memory().unwrap();
+        seed_schema(&conn);
+        insert_user(&conn, "u-alice", "did:key:alice", None);
+        insert_document(&conn, "doc-1", "u-alice");
+
+        let policy = single_hop_anchor_policy();
+        let proxying_service =
+            session_with_anchor("did:key:svc-1", "did:key:alice", vec![read_cap(Some("document"))]);
+        let sieve = compile_read(
+            &policy,
+            "document",
+            &proxying_service,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::Filter,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(run_sieve(&conn, "documents", &sieve), vec!["doc-1"]);
+    }
+
+    /// A direct call carries no distinct anchor (`anchor_did == None`) --
+    /// the compiler falls back to `subject_did` (a direct caller *is* the
+    /// anchor) rather than denying the policy.
+    #[test]
+    fn anchor_terminal_falls_back_to_subject_did_when_anchor_is_absent() {
+        let conn = Connection::open_in_memory().unwrap();
+        seed_schema(&conn);
+        insert_user(&conn, "u-alice", "did:key:alice", None);
+        insert_document(&conn, "doc-1", "u-alice");
+
+        let policy = single_hop_anchor_policy();
+        let alice = session("did:key:alice", vec![read_cap(Some("document"))]);
+        let sieve = compile_read(
+            &policy,
+            "document",
+            &alice,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::Filter,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(run_sieve(&conn, "documents", &sieve), vec!["doc-1"]);
+    }
+
+    /// The mirror of the filtering test: a proxying caller anchored to a
+    /// stranger reaches nothing, even though the *caller* is otherwise
+    /// unremarkable.
+    #[test]
+    fn anchor_terminal_denies_when_the_anchor_is_a_stranger() {
+        let conn = Connection::open_in_memory().unwrap();
+        seed_schema(&conn);
+        insert_user(&conn, "u-alice", "did:key:alice", None);
+        insert_document(&conn, "doc-1", "u-alice");
+
+        let policy = single_hop_anchor_policy();
+        let proxying_service = session_with_anchor(
+            "did:key:svc-1",
+            "did:key:mallory",
+            vec![read_cap(Some("document"))],
+        );
+        let sieve = compile_read(
+            &policy,
+            "document",
+            &proxying_service,
             SERVICE_ID,
             &Ability(Ability::DATA_LAYER_READ.to_string()),
             Mode::Filter,
@@ -1021,6 +1142,7 @@ mod tests {
             claims.insert("region".to_string(), json!(region));
             SessionContext {
                 subject_did: "did:key:alice".to_string(),
+                anchor_did: None,
                 capabilities: vec![read_cap(Some("document"))],
                 claims,
                 verified_at_secs: 0,

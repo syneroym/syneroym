@@ -2585,6 +2585,7 @@ mod tests {
         // tell the two apart.
         let bob = SessionContext {
             subject_did: "did:key:bob".to_string(),
+            anchor_did: None,
             capabilities: vec![Capability {
                 with: resource,
                 can: Ability(Ability::DATA_LAYER_READ.to_string()),
@@ -2740,6 +2741,7 @@ mod tests {
         ));
         let bob = SessionContext {
             subject_did: "did:key:bob".to_string(),
+            anchor_did: None,
             capabilities: vec![Capability {
                 with: resource,
                 can: Ability(Ability::DATA_LAYER_READ.to_string()),

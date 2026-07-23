@@ -236,6 +236,43 @@ call chain), and the **path** is the chain itself. Surface them; let policies
 bind either `caller` or `anchor` as a terminal. This is confused-deputy
 prevention at the cost of not discarding data already verified.
 
+**Amended 2026-07-23 (Slice B3 Phase 1): the anchor is an explicit signed
+stamp, not a structural derivation.** The paragraph above's "audience of the
+first non-root token" is a derivation heuristic, and it is **wrong**: the
+principal sits in a *different structural slot* per root shape (the root's
+**audience** in an admin-rooted chain, the root's **issuer** in an
+owner-rooted chain), and no shape-walk satisfies both without a
+human-vs-service type tag DIDs don't carry. Replaced with the industry
+pattern (OAuth 2.0 Token Exchange / On-Behalf-Of `sub` vs `act`; Kerberos
+S4U): **the principal stamps itself as the anchor at origination, and the
+stamp propagates immutably down the chain, protected by each issuer's
+signature.**
+
+`CapabilityToken` gains a **signed** `anchor_did: Option<String>` (covered by
+`signing_value()`, so a middle service cannot rewrite it without invalidating
+its own signature). `verify_chain` enforces the propagation invariant,
+fail-closed: for every token in the chain, a `Some(a)` anchor must be either
+**self-declared** (`a == token.issuer_did` — how a principal originates, or
+how a service legitimately downgrades to "acting as myself") or **inherited**
+unchanged from a continuity-respecting proof (`p.audience_did ==
+token.issuer_did && p.anchor_did == Some(a)`). Any other value — a service
+asserting an anchor it was never delegated — is a hard `Err`, rejecting the
+whole presentation; there is no partial "drop just this claim" here, because
+the anchor is a single chain-wide provenance assertion, not one authority
+claim among many. `SessionContext.anchor_did = leaf.anchor_did` directly (no
+separate walk, no derivation heuristic). A direct call has no distinct
+anchor (`anchor_did == None`); consumers reading "who does this act for"
+use `anchor_did.unwrap_or(subject_did)` — a direct caller **is** its own
+anchor, not a denial.
+
+This single stamp-and-inherit invariant covers all three chain shapes named
+above with no per-shape special-casing: owner-rooted (the owner self-declares
+at first delegation), admin/platform-rooted (the admin→user grant carries no
+anchor; the user self-declares only when *it* first delegates to a service),
+and system-as-itself (no anchor, or a self-declared one — a system cannot
+stamp `anchor = user_A` without `user_A`'s own delegated consent, exactly
+OAuth's model).
+
 ### A6. `is_trusted_root` becomes resource-scoped
 
 Today's `|iss, _res| iss == admin_root` makes one node-wide admin DID the only

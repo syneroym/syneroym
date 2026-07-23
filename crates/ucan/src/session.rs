@@ -15,6 +15,12 @@ use crate::{
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionContext {
     pub subject_did: String,
+    /// The original principal the chain acts for, when it differs from
+    /// `subject_did` (ADR-0015 A5, amended). `None` for a direct call --
+    /// callers that need "who is this really for" should read
+    /// `anchor_did.unwrap_or(subject_did)`, not this field alone (a direct
+    /// caller *is* its own anchor, not an absent one).
+    pub anchor_did: Option<String>,
     pub capabilities: Vec<Capability>,
     pub claims: serde_json::Map<String, serde_json::Value>,
     pub verified_at_secs: u64,
@@ -63,6 +69,7 @@ impl SessionContext {
             if leaf_issuer_is_trusted_root { leaf.facts.clone() } else { serde_json::Map::new() };
         Ok(Self {
             subject_did: leaf.audience_did.clone(),
+            anchor_did: leaf.anchor_did.clone(),
             capabilities,
             claims,
             verified_at_secs: opts.now_secs,

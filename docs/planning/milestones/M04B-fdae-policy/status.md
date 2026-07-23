@@ -1426,3 +1426,132 @@ going in, extended (not restructured) by this phase.
   `proxy-test`) rebuilt cleanly via `cargo component build --target
   wasm32-wasip2` before running `test:e2e`; no WIT files changed this
   phase (Phase 5 touched only `crates/fdae`, `crates/data_db`, and docs).
+
+## Slice B3 — Federated FDAE (Cross-Service Parameter Fetch)
+
+### Phase 1 — Anchor stamp (ADR-0015 A5, amended) ✅ (2026-07-23)
+
+Branch: `feat/m04b-slice-b3-anchor`. Plan:
+[slice-b3-implementation-plan.md](slice-b3-implementation-plan.md) §2, §7
+(D-B3-1/-2/-7), §8 item 1. Self-contained, no-network half of Slice B3 —
+`crates/fdae` gains no async/proxy dependency; the cross-service fetch
+(pipeline stage 2) is a later phase.
+
+### What was delivered
+
+- **Signed `anchor_did` on `CapabilityToken`** (`crates/ucan/src/token.rs`)
+  — `Option<String>`, included in `signing_value()` so a middle service
+  cannot rewrite it without invalidating its own signature.
+  `CapabilityToken::issue` is unchanged (still issues `anchor_did: None`);
+  a new `CapabilityToken::issue_with_anchor` takes the field explicitly for
+  the two legitimate shapes: self-declaration (`anchor_did = Some(own
+  DID)`) at origination, and unmodified propagation through onward
+  delegation.
+- **Propagation invariant in `verify_chain`** — a new `validate_anchor`
+  check, run for every token in the chain alongside the existing
+  `verify_self`: a `Some(a)` anchor must be either self-declared (`a ==
+  token.issuer_did`) or inherited unchanged from a continuity-respecting
+  proof (`p.audience_did == token.issuer_did && p.anchor_did == Some(a)`).
+  Any other value — a service asserting an anchor it was never delegated —
+  is a hard `Err`, aborting the whole chain verification (D-B3-7: the
+  anchor is a single chain-wide provenance assertion, not one authority
+  claim among many that could be dropped in isolation).
+- **`SessionContext.anchor_did`** (`crates/ucan/src/session.rs`) —
+  populated directly as `leaf.anchor_did.clone()` in `from_verified_chain`;
+  no derivation walk. `None` for a direct call.
+- **`anchor` path terminal** (`crates/fdae/src/compile.rs`) — replaces the
+  B2-era compile-time stub. Resolves to
+  `session.anchor_did.unwrap_or(session.subject_did)` (D-B3-1: a direct
+  caller with no distinct anchor *is* the anchor, not a denial).
+- **ADR-0015 A5 amendment** (`docs/decisions/0015-ucan-capability-model.md`)
+  — dated 2026-07-23 block recording the D-B3-2 decision: the anchor is an
+  explicit signed stamp (OAuth Token Exchange / Kerberos S4U pattern), not
+  a structural derivation from "audience of the first non-root token" (the
+  original A5 wording, which was ambiguous across owner-rooted vs.
+  admin-rooted chain shapes). Supersedes that wording in place, following
+  the ADR's own prior-amendment convention.
+- **Doc-hygiene** — the same stale "audience of the first non-root token"
+  wording corrected in `task.md`'s Slice B3 paragraph and
+  `access-control-design.md`'s §11 milestone-mapping table (both flagged
+  by the plan as needing this update); `task.md`'s Current State Inventory
+  corrected to stop listing `route_handler/dispatch.rs`'s `TODO` as an
+  FDAE seam (the code already reworded it to `TODO(B7b / post-B7)` and
+  disclaims itself as not an FDAE question).
+
+### Explicitly out of Phase 1 scope (recorded, not silently dropped)
+
+- **The cross-service fetch itself** (pipeline stage 2: `plan_read`/
+  `finalize`, the `resolve-relation` WIT export, the `ServiceProxy`
+  orchestration seam, timeout→deny, decision-trace provenance) — Phases
+  2-4 of the plan.
+- **D-04-02-h ingress closure** — `router/tests/proxy_dispatch.rs`'s
+  `guest_self_proxy_data_layer_returns_empty_when_policy_present` and
+  `sandbox_wasm/tests/data_layer_integration.rs`'s
+  `test_deployed_policy_yields_empty_guest_originated_query_d04_02_h`
+  still assert today's over-restrictive empty result; flipping them
+  requires the orchestration seam (Phase 4, D-B3-4) to actually thread an
+  anchor through a real request, not just the token/session mechanism this
+  phase adds. Both still pass unchanged.
+- **Reference scenario steps 22-23, the federated-fetch perf budget, and
+  the Failure/Security matrix row 6 flip** — depend on the cross-service
+  fetch (Phase 4/5), not the anchor stamp alone.
+- **`traceability-matrix.md`** — left at B2's "In Progress (Slice B2
+  complete)"; not updated this phase, since Slice B3 as a whole isn't done
+  (Phase 1 of 5).
+
+### Tests
+
+- **`crates/ucan`** (`token.rs`, new `#[test]`s) — chain-shape table:
+  `owner_rooted_anchor_propagates_through_two_service_hops`,
+  `admin_rooted_anchor_self_stamps_at_first_service_delegation`,
+  `three_hop_pass_through_anchor_survives_every_hop`,
+  `direct_grant_with_no_anchor_leaves_session_anchor_did_none`. Attack
+  cases: `middle_service_rewriting_anchor_to_an_undelegated_principal_is_rejected`
+  (hard `Err`), `self_declared_downgrade_to_acting_as_self_is_accepted`,
+  `anchor_did_tamper_after_signing_fails_signature_verification` (signature
+  covers `anchor_did`).
+- **`crates/fdae`** (`compile.rs`, new `#[test]`s) —
+  `anchor_terminal_filters_by_the_original_principal_not_the_caller`
+  (a proxying caller's `subject_did` differs from its `anchor_did`; the
+  sieve filters by the anchor), `anchor_terminal_falls_back_to_subject_did_when_anchor_is_absent`
+  (D-B3-1), `anchor_terminal_denies_when_the_anchor_is_a_stranger`.
+- Every `SessionContext` struct literal enumerating all fields explicitly
+  (rather than using `..Default::default()`) needed `anchor_did` added to
+  compile: `crates/fdae/src/compile.rs` (2 sites), `crates/data_db/src/tests_fdae.rs`,
+  `crates/data_db/benches/fdae_bench.rs`, `crates/data_db/src/sqlite.rs`
+  (2 sites) — no behavior change, all were already covered by existing
+  tests that continue to pass.
+
+### Verification evidence
+
+- `cargo +nightly fmt --all` — clean.
+- `cargo clippy --workspace --all-targets --all-features` — zero warnings
+  (one `doc_lazy_continuation` warning surfaced and was fixed by adding a
+  blank line before `issue_with_anchor`'s trailing paragraph).
+- `cargo test -p syneroym-ucan` — 53 passed, 0 failed (46 prior + 7 new
+  anchor-stamp tests).
+- `cargo test -p syneroym-fdae` — 60 passed, 0 failed (57 prior + 3 new
+  anchor-terminal tests).
+- `cargo test -p syneroym-data-db` — 137 passed, 0 failed, unchanged
+  (only `SessionContext` literal updates, no behavior change).
+- `cargo test --workspace --no-fail-fast` — every crate this phase
+  touched or that constructs a `SessionContext`/`CapabilityToken` passes
+  100%: `syneroym-ucan` (53), `syneroym-fdae` (60), `syneroym-data-db`
+  (137), `syneroym-control-plane` (45), `syneroym-router` (71 lib + 9 + 18
+  + 4 + 10 + 2 + 2 across its six integration binaries),
+  `syneroym-sandbox-wasm` (42 lib + 5 + 2 + 6 + 3 + 13 across its five
+  integration binaries). The only failures are the same pre-existing
+  sandbox socket-bind class Phase 4/5 documented — `Operation not
+  permitted` / `PermissionDenied` binding a real port under this CLI's
+  default network sandbox: `coordinator-iroh` (`connection_limit`,
+  `multi_hop_relay`, `tls_rotation`), `mqtt-broker`
+  (`no_network_listener_is_bound`), `sdk` (`connect_timeout`), and
+  `substrate`'s e2e-adjacent binaries (`basic_lifecycle`,
+  `http_passthrough_e2e`, `messaging_client_e2e`, `stream_client_e2e`) —
+  none of these crates were touched this phase.
+- `mise run test:e2e` — not run this phase. Phase 1 has no e2e-visible
+  behavior: no WIT change, no orchestration wiring, no `wasm32-wasip2`
+  rebuild needed (`crates/fdae` and `crates/ucan` are host-only, per
+  ADR-0015's own implementation notes). The plan's e2e reference-scenario
+  steps (22-23) are Phase 4/5 deliverables, gated on the cross-service
+  fetch existing.

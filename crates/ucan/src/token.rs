@@ -48,6 +48,17 @@ fn now_secs() -> Result<u64> {
 pub struct CapabilityToken {
     pub issuer_did: String,
     pub audience_did: String,
+    /// The original principal this token's chain acts for, when that differs
+    /// from `issuer_did`/`audience_did` (ADR-0015 A5, amended). Signed, so a
+    /// middle service cannot rewrite it without invalidating its own
+    /// signature; `verify_chain` enforces the propagation invariant: every
+    /// `Some(a)` is either self-declared (`a == issuer_did`) or inherited
+    /// unchanged from a continuity-respecting proof. `None` means "no anchor
+    /// asserted" -- a direct caller is implicitly its own anchor
+    /// (`SessionContext::anchor_did` falls back to `subject_did`, not a hard
+    /// requirement here).
+    #[serde(default)]
+    pub anchor_did: Option<String>,
     pub capabilities: Vec<Capability>,
     /// Proven claims surfaced into `SessionContext.claims` (co-design seam
     /// #1: M04B binds these as SQL `?` params). Empty by default.
@@ -73,6 +84,7 @@ impl CapabilityToken {
         serde_json::json!({
             "issuer_did": self.issuer_did,
             "audience_did": self.audience_did,
+            "anchor_did": self.anchor_did,
             "capabilities": self.capabilities,
             "facts": self.facts,
             "not_before_secs": self.not_before_secs,
@@ -80,10 +92,44 @@ impl CapabilityToken {
         }) // canonicalization happens inside sign_json / verify_json_signature
     }
 
-    /// Issue a new signed `CapabilityToken`.
+    /// Issue a new signed `CapabilityToken` with no anchor assertion
+    /// (`anchor_did: None`). A direct grant this shape falls back to
+    /// treating its audience as its own anchor (`SessionContext`). Use
+    /// [`Self::issue_with_anchor`] to self-declare or propagate an anchor.
     pub fn issue(
         issuer: &Identity,
         audience_did: &str,
+        capabilities: Vec<Capability>,
+        facts: Map<String, Value>,
+        expires_in_secs: u64,
+        proofs: Vec<CapabilityToken>,
+    ) -> Result<Self> {
+        Self::issue_with_anchor(
+            issuer,
+            audience_did,
+            None,
+            capabilities,
+            facts,
+            expires_in_secs,
+            proofs,
+        )
+    }
+
+    /// Issue a new signed `CapabilityToken` carrying an explicit
+    /// `anchor_did` (ADR-0015 A5, amended: an explicit signed stamp, not
+    /// structural derivation). Two legitimate calls:
+    /// - **Origination** — `anchor_did = Some(issuer's own DID)`: the principal
+    ///   self-declares itself as the anchor.
+    /// - **Propagation** — `anchor_did` copied unchanged from the DID this
+    ///   issuer received in its own parent proof: a proxying service passes its
+    ///   anchor through without alteration.
+    ///
+    /// `verify_chain` enforces this is the only shape a verifier will
+    /// accept; asserting any other value makes the whole chain reject.
+    pub fn issue_with_anchor(
+        issuer: &Identity,
+        audience_did: &str,
+        anchor_did: Option<String>,
         capabilities: Vec<Capability>,
         facts: Map<String, Value>,
         expires_in_secs: u64,
@@ -94,6 +140,7 @@ impl CapabilityToken {
         let mut token = Self {
             issuer_did,
             audience_did: audience_did.to_string(),
+            anchor_did,
             capabilities,
             facts,
             not_before_secs: now,
@@ -196,11 +243,40 @@ fn total_chain_nodes(token: &CapabilityToken) -> usize {
     1 + token.proofs.iter().map(total_chain_nodes).sum::<usize>()
 }
 
+/// Enforces the anchor-stamp propagation invariant (ADR-0015 A5, amended): a
+/// token asserting `anchor_did: Some(a)` must either self-declare (`a ==
+/// token.issuer_did`) or inherit `a` unchanged from a continuity-respecting
+/// proof (`p.audience_did == token.issuer_did` and `p.anchor_did ==
+/// Some(a)`). Any other value is rejected with a hard `Err`, aborting the
+/// whole verification -- a chain-wide provenance assertion gets no "keep the
+/// valid siblings" partial-drop; an unsubstantiated anchor makes the whole
+/// presentation untrustworthy.
+fn validate_anchor(token: &CapabilityToken) -> Result<()> {
+    let Some(anchor) = &token.anchor_did else {
+        return Ok(());
+    };
+    let self_declared = anchor == &token.issuer_did;
+    let inherited = token
+        .proofs
+        .iter()
+        .any(|p| p.audience_did == token.issuer_did && p.anchor_did.as_ref() == Some(anchor));
+    if self_declared || inherited {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "token issued by {} asserts anchor_did '{anchor}' that is neither self-declared nor \
+             inherited from a continuity-respecting proof",
+            token.issuer_did
+        ))
+    }
+}
+
 fn granted_capabilities(
     token: &CapabilityToken,
     opts: &ChainVerifyOpts<'_>,
 ) -> Result<Vec<Capability>> {
     token.verify_self(opts.now_secs)?; // fail-closed: bad link aborts
+    validate_anchor(token)?; // fail-closed: unsubstantiated anchor aborts
     let mut effective = Vec::new();
     // Verify proofs once; a proof that fails structurally makes the whole
     // presentation invalid (do not silently ignore a tampered proof).
@@ -843,5 +919,309 @@ mod tests {
         assert_eq!(session.capabilities.len(), 1);
         assert_eq!(session.claims, facts);
         assert_eq!(session.verified_at_secs, now);
+    }
+
+    // -- ADR-0015 A5 (amended): anchor-stamp propagation invariant, over a
+    // -- table of chain shapes plus the attack cases.
+
+    #[test]
+    fn owner_rooted_anchor_propagates_through_two_service_hops() {
+        use crate::session::SessionContext;
+
+        let user_a = Identity::generate().unwrap();
+        let svc_1 = Identity::generate().unwrap();
+        let user_a_did = derive_did_key(&user_a.public_key());
+        let svc_1_did = derive_did_key(&svc_1.public_key());
+        let svc_2_did = "did:key:zSvc2Placeholder";
+        let resource = ResourceUri::service("app1", "s1");
+
+        let user_a_to_svc1 = CapabilityToken::issue_with_anchor(
+            &user_a,
+            &svc_1_did,
+            Some(user_a_did.clone()),
+            vec![cap(resource.clone(), Ability::DATA_LAYER_READ)],
+            Map::new(),
+            3600,
+            vec![],
+        )
+        .unwrap();
+        let svc1_to_svc2 = CapabilityToken::issue_with_anchor(
+            &svc_1,
+            svc_2_did,
+            Some(user_a_did.clone()),
+            vec![cap(resource, Ability::DATA_LAYER_READ)],
+            Map::new(),
+            3600,
+            vec![user_a_to_svc1],
+        )
+        .unwrap();
+
+        let opts = ChainVerifyOpts {
+            expected_audience_did: svc_2_did,
+            is_trusted_root: &no_root,
+            now_secs: now_secs().unwrap(),
+        };
+        assert!(verify_chain(&svc1_to_svc2, &opts).is_ok());
+        let session = SessionContext::from_verified_chain(&svc1_to_svc2, &opts).unwrap();
+        assert_eq!(session.anchor_did, Some(user_a_did));
+    }
+
+    #[test]
+    fn admin_rooted_anchor_self_stamps_at_first_service_delegation() {
+        use crate::session::SessionContext;
+
+        let root_admin = Identity::generate().unwrap();
+        let user_a = Identity::generate().unwrap();
+        let svc_1 = Identity::generate().unwrap();
+        let user_a_did = derive_did_key(&user_a.public_key());
+        let svc_1_did = derive_did_key(&svc_1.public_key());
+        let svc_2_did = "did:key:zSvc2Placeholder";
+        let resource = ResourceUri::service("app1", "s1");
+
+        // The admin->user_A grant carries no anchor -- user_A self-stamps
+        // only when it first delegates to a service.
+        let root_admin_to_user_a = CapabilityToken::issue(
+            &root_admin,
+            &user_a_did,
+            vec![cap(resource.clone(), Ability::DATA_LAYER_ADMIN)],
+            Map::new(),
+            3600,
+            vec![],
+        )
+        .unwrap();
+        let user_a_to_svc1 = CapabilityToken::issue_with_anchor(
+            &user_a,
+            &svc_1_did,
+            Some(user_a_did.clone()),
+            vec![cap(resource.clone(), Ability::DATA_LAYER_READ)],
+            Map::new(),
+            3600,
+            vec![root_admin_to_user_a],
+        )
+        .unwrap();
+        let svc1_to_svc2 = CapabilityToken::issue_with_anchor(
+            &svc_1,
+            svc_2_did,
+            Some(user_a_did.clone()),
+            vec![cap(resource, Ability::DATA_LAYER_READ)],
+            Map::new(),
+            3600,
+            vec![user_a_to_svc1],
+        )
+        .unwrap();
+
+        let opts = ChainVerifyOpts {
+            expected_audience_did: svc_2_did,
+            is_trusted_root: &no_root,
+            now_secs: now_secs().unwrap(),
+        };
+        assert!(verify_chain(&svc1_to_svc2, &opts).is_ok());
+        let session = SessionContext::from_verified_chain(&svc1_to_svc2, &opts).unwrap();
+        assert_eq!(session.anchor_did, Some(user_a_did));
+    }
+
+    #[test]
+    fn three_hop_pass_through_anchor_survives_every_hop() {
+        use crate::session::SessionContext;
+
+        let user_a = Identity::generate().unwrap();
+        let svc_1 = Identity::generate().unwrap();
+        let svc_2 = Identity::generate().unwrap();
+        let user_a_did = derive_did_key(&user_a.public_key());
+        let svc_1_did = derive_did_key(&svc_1.public_key());
+        let svc_2_did = derive_did_key(&svc_2.public_key());
+        let svc_3_did = "did:key:zSvc3Placeholder";
+        let resource = ResourceUri::service("app1", "s1");
+
+        let hop1 = CapabilityToken::issue_with_anchor(
+            &user_a,
+            &svc_1_did,
+            Some(user_a_did.clone()),
+            vec![cap(resource.clone(), Ability::DATA_LAYER_READ)],
+            Map::new(),
+            3600,
+            vec![],
+        )
+        .unwrap();
+        let hop2 = CapabilityToken::issue_with_anchor(
+            &svc_1,
+            &svc_2_did,
+            Some(user_a_did.clone()),
+            vec![cap(resource.clone(), Ability::DATA_LAYER_READ)],
+            Map::new(),
+            3600,
+            vec![hop1],
+        )
+        .unwrap();
+        let hop3 = CapabilityToken::issue_with_anchor(
+            &svc_2,
+            svc_3_did,
+            Some(user_a_did.clone()),
+            vec![cap(resource, Ability::DATA_LAYER_READ)],
+            Map::new(),
+            3600,
+            vec![hop2],
+        )
+        .unwrap();
+
+        let opts = ChainVerifyOpts {
+            expected_audience_did: svc_3_did,
+            is_trusted_root: &no_root,
+            now_secs: now_secs().unwrap(),
+        };
+        assert!(verify_chain(&hop3, &opts).is_ok());
+        let session = SessionContext::from_verified_chain(&hop3, &opts).unwrap();
+        assert_eq!(session.anchor_did, Some(user_a_did));
+    }
+
+    #[test]
+    fn direct_grant_with_no_anchor_leaves_session_anchor_did_none() {
+        use crate::session::SessionContext;
+
+        let owner = Identity::generate().unwrap();
+        let alice_did = "did:key:zAlicePlaceholder";
+        let resource = ResourceUri::service("app1", "s1");
+
+        let token = CapabilityToken::issue(
+            &owner,
+            alice_did,
+            vec![cap(resource, Ability::DATA_LAYER_READ)],
+            Map::new(),
+            3600,
+            vec![],
+        )
+        .unwrap();
+
+        let opts = ChainVerifyOpts {
+            expected_audience_did: alice_did,
+            is_trusted_root: &no_root,
+            now_secs: now_secs().unwrap(),
+        };
+        let session = SessionContext::from_verified_chain(&token, &opts).unwrap();
+        assert_eq!(session.anchor_did, None);
+    }
+
+    /// The confused-deputy defense's crux: a middle service cannot upgrade
+    /// the anchor to a principal it was never delegated from. `svc_1`
+    /// receives no anchor grant for `mallory` yet asserts
+    /// `anchor_did = mallory` when delegating to `svc_2` -- neither
+    /// self-declared (`mallory != svc_1`) nor inherited (its proof carries
+    /// no `mallory` anchor), so the whole chain rejects with a hard `Err`.
+    #[test]
+    fn middle_service_rewriting_anchor_to_an_undelegated_principal_is_rejected() {
+        let user_a = Identity::generate().unwrap();
+        let svc_1 = Identity::generate().unwrap();
+        let mallory = Identity::generate().unwrap();
+        let user_a_did = derive_did_key(&user_a.public_key());
+        let svc_1_did = derive_did_key(&svc_1.public_key());
+        let mallory_did = derive_did_key(&mallory.public_key());
+        let svc_2_did = "did:key:zSvc2Placeholder";
+        let resource = ResourceUri::service("app1", "s1");
+
+        let user_a_to_svc1 = CapabilityToken::issue_with_anchor(
+            &user_a,
+            &svc_1_did,
+            Some(user_a_did),
+            vec![cap(resource.clone(), Ability::DATA_LAYER_READ)],
+            Map::new(),
+            3600,
+            vec![],
+        )
+        .unwrap();
+        // svc_1 asserts an anchor it was never delegated -- an escalation
+        // attempt, not a legitimate self-declared downgrade or inheritance.
+        let svc1_to_svc2 = CapabilityToken::issue_with_anchor(
+            &svc_1,
+            svc_2_did,
+            Some(mallory_did),
+            vec![cap(resource, Ability::DATA_LAYER_READ)],
+            Map::new(),
+            3600,
+            vec![user_a_to_svc1],
+        )
+        .unwrap();
+
+        let opts = ChainVerifyOpts {
+            expected_audience_did: svc_2_did,
+            is_trusted_root: &no_root,
+            now_secs: now_secs().unwrap(),
+        };
+        let err = verify_chain(&svc1_to_svc2, &opts).unwrap_err();
+        assert!(err.to_string().contains("anchor_did"));
+    }
+
+    /// A service *can* self-declare `anchor = itself`, discarding an
+    /// inherited anchor -- "acting as myself" is harmless (never an
+    /// escalation), unlike asserting someone else's principal.
+    #[test]
+    fn self_declared_downgrade_to_acting_as_self_is_accepted() {
+        use crate::session::SessionContext;
+
+        let user_a = Identity::generate().unwrap();
+        let svc_1 = Identity::generate().unwrap();
+        let user_a_did = derive_did_key(&user_a.public_key());
+        let svc_1_did = derive_did_key(&svc_1.public_key());
+        let svc_2_did = "did:key:zSvc2Placeholder";
+        let resource = ResourceUri::service("app1", "s1");
+
+        let user_a_to_svc1 = CapabilityToken::issue_with_anchor(
+            &user_a,
+            &svc_1_did,
+            Some(user_a_did),
+            vec![cap(resource.clone(), Ability::DATA_LAYER_READ)],
+            Map::new(),
+            3600,
+            vec![],
+        )
+        .unwrap();
+        let svc1_to_svc2 = CapabilityToken::issue_with_anchor(
+            &svc_1,
+            svc_2_did,
+            Some(svc_1_did.clone()),
+            vec![cap(resource, Ability::DATA_LAYER_READ)],
+            Map::new(),
+            3600,
+            vec![user_a_to_svc1],
+        )
+        .unwrap();
+
+        let opts = ChainVerifyOpts {
+            expected_audience_did: svc_2_did,
+            is_trusted_root: &no_root,
+            now_secs: now_secs().unwrap(),
+        };
+        assert!(verify_chain(&svc1_to_svc2, &opts).is_ok());
+        let session = SessionContext::from_verified_chain(&svc1_to_svc2, &opts).unwrap();
+        assert_eq!(session.anchor_did, Some(svc_1_did));
+    }
+
+    /// `anchor_did` is part of `signing_value()`, so tampering it after
+    /// issuance breaks the signature exactly like tampering any other field.
+    #[test]
+    fn anchor_did_tamper_after_signing_fails_signature_verification() {
+        let owner = Identity::generate().unwrap();
+        let mallory = Identity::generate().unwrap();
+        let alice_did = "did:key:zAlicePlaceholder";
+        let mallory_did = derive_did_key(&mallory.public_key());
+        let resource = ResourceUri::service("app1", "s1");
+
+        let mut token = CapabilityToken::issue_with_anchor(
+            &owner,
+            alice_did,
+            Some(derive_did_key(&owner.public_key())),
+            vec![cap(resource, Ability::DATA_LAYER_READ)],
+            Map::new(),
+            3600,
+            vec![],
+        )
+        .unwrap();
+        token.anchor_did = Some(mallory_did);
+
+        let opts = ChainVerifyOpts {
+            expected_audience_did: alice_did,
+            is_trusted_root: &no_root,
+            now_secs: now_secs().unwrap(),
+        };
+        assert!(verify_chain(&token, &opts).is_err());
     }
 }

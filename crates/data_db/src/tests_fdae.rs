@@ -60,6 +60,7 @@ fn read_cap(collection: &str) -> Capability {
 fn session(subject_did: &str, capabilities: Vec<Capability>) -> SessionContext {
     SessionContext {
         subject_did: subject_did.to_string(),
+        anchor_did: None,
         capabilities,
         claims: serde_json::Map::new(),
         verified_at_secs: 0,

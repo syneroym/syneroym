@@ -66,6 +66,7 @@ fn resource(collection: &str) -> ResourceUri {
 fn session(subject_did: &str) -> SessionContext {
     SessionContext {
         subject_did: subject_did.to_string(),
+        anchor_did: None,
         // Scoped to the physical collection name ("documents", the string
         // `store.query` is actually called with below) -- `compile_read`
         // builds the resource it checks capabilities against from the
