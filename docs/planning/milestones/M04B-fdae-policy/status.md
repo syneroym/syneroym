@@ -1701,3 +1701,379 @@ first draft of this entry cited):
   ADR-0015's own implementation notes). The plan's e2e reference-scenario
   steps (22-23) are Phase 4/5 deliverables, gated on the cross-service
   fetch existing.
+
+### Phase 2 — Two-phase compile (`plan_read`/`finalize`) ✅ (2026-07-23)
+
+Branch: `feat/m04b-slice-b3-fetch`. Plan:
+[slice-b3-implementation-plan.md](slice-b3-implementation-plan.md) §1.1, §8
+item 2. Pure `crates/fdae` work — no async, no `ServiceProxy` dependency
+(plan §1.1's "keep `crates/fdae` async-free and proxy-free" decision),
+exactly the split the plan calls for: `plan_read` produces either a
+finished local sieve (the B2 case) or a `PendingSieve` plus the
+`RemoteFetch`es it needs; `finalize` binds fetched id-sets back in.
+
+#### What was delivered
+
+- **`ReadPlan`/`RemoteFetch`/`FetchResult`/`PendingSieve`/`FetchSlot`**
+  (`crates/fdae/src/compile.rs`) — the plan's own sketch, implemented
+  close to the letter: `RemoteFetch{service, relation, principal_did,
+  slot}` (`principal_did` is always the **anchor**
+  `session.anchor_did.unwrap_or(subject_did)`, never the path's own
+  declared terminal word -- the confused-deputy defense holds regardless
+  of whether a remote hop's path says `caller` or `anchor`); `FetchResult{
+  slot, ids}`; `PendingSieve` opaque outside the module (only `finalize`
+  reads it).
+- **`plan_read`** — `compile_read`'s exact body, refactored to thread a new
+  `FetchCtx` (fetches collected so far, deduped per distinct `(service,
+  relation)` pair per plan §5, plus the SQL-text markers standing in for
+  each occurrence's eventual `IN (...)` list) through `compile_permission`/
+  `compile_path`/`emit_chain` alongside the existing `params: &mut
+  Vec<Value>`. Zero behavior change for a fully-local policy: when
+  `fetch_ctx.fetches` stays empty, `plan_read` returns exactly the
+  `CompiledSieve` `compile_read` always built, byte for byte -- confirmed
+  by every pre-existing `compile::tests` test passing unmodified.
+- **`compile_read` becomes a thin wrapper** — calls `plan_read`, and errors
+  (`PolicyError::Semantic`) if any fetches are needed, since `compile_read`
+  is the synchronous/local-only entry point B2 shipped and has no way to
+  perform a fetch itself. A caller needing to resolve a policy with remote
+  relations must call `plan_read`/`finalize` directly. This preserves
+  `remote_relation_fails_closed_at_compile_time`'s pinned `Err` outcome
+  (renamed `compile_read_fails_closed_when_a_remote_fetch_is_needed` for
+  accuracy: the *reason* changed from "remote relations unsupported at
+  all" to "compile_read specifically can't resolve one", not the
+  fail-closed behavior itself).
+- **`emit_remote_terminal`** (new, `compile.rs`) — the terminal-hop
+  compilation for a remote relation: `{col_expr} IN (<fetch marker>)`
+  instead of local `EXISTS (SELECT ... FROM target_table)`, since there is
+  no local table to join through. Registers the fetch (or reuses an
+  already-registered one for the same `(service, relation)`) via
+  `FetchCtx::register`, which returns a unique per-occurrence text token
+  (`@@FDAE_FETCH_<slot>_<occurrence>@@`) -- unique per occurrence, not per
+  slot, since the *same* remote relation can be reached by multiple OR'd
+  permission paths at different text positions, each needing its own
+  `replacen` target.
+- **`finalize`** — walks `PendingSieve`'s markers in ascending
+  `params_index` order (the position in the flat `params: Vec<Value>`
+  sequence each marker's id-set belongs, captured at plan time), replacing
+  each marker's token with a bound `?, ?, ...` list (or the literal `NULL`
+  for an empty id-set -- `IN ()` is invalid SQL, `IN (NULL)` is valid and
+  always false) and splicing the corresponding `Value::Text` entries into
+  `params` at the right offset, tracking a cumulative `shift` so a later
+  marker's insertion point accounts for every earlier one's effect on the
+  vector. Fails closed (`PolicyError::Semantic`) on a missing `FetchResult`
+  for a slot the plan actually needs, and on an id-set exceeding the new
+  `pub const MAX_FETCH_IDS: usize = 1000` cap (plan §5 fan-out
+  containment; matches `data_db`'s existing `MAX_QUERY_PAGE_SIZE`) --
+  never silently truncates.
+- **Schema: a remote relation may now also declare `join_column`**
+  (`crates/fdae/src/policy.rs`) -- required by design, not optional: every
+  other hop shape in this compiler needs to know which *local* column
+  correlates to the target, and a bare `{target, service}` remote relation
+  (accepted, but always fail-closed, since B2) had no way to say that. A
+  join-based relation (`join_column` set, optionally paired with `service`
+  for a remote target) and a recursive self-join (`from_key`+`to_key`)
+  remain the only two shapes, mutually exclusive; `validate_relation_shape`
+  changed from "exactly one of {local, recursive, remote}" to "exactly one
+  of {join-based, recursive}", with `service` an orthogonal tag on the
+  join-based shape rather than a third exclusive category. **This changes
+  previously-passing test semantics**: `rejects_relation_with_two_shapes`
+  (asserted `join_column`+`service` together was an error) is replaced by
+  `accepts_remote_relation_with_join_column` (now valid) and
+  `rejects_relation_with_join_and_recursive_shapes`/
+  `rejects_recursive_relation_that_is_also_remote` (the shapes that *are*
+  still mutually exclusive); `accepts_remote_relation_target_unresolved_locally`
+  gained a `join_column`, with a new sibling
+  `rejects_remote_relation_missing_join_column` pinning the now-required
+  field. Confirmed with the user before implementing (this session) --
+  a deliberate, narrow, pre-release schema tightening of behavior that had
+  never actually worked (every remote-relation path failed closed until
+  this phase).
+- **`resolve_hops`/`policy::validate_path`** -- a remote relation must be
+  the *last* hop before the path terminal (enforced at both the
+  parse-time semantic-validation layer and defensively again at
+  compile-time in `resolve_hops`): a remote hop's fetched id-set answers
+  "which of *my* rows are reachable", which is inherently terminal --
+  there is no local row on the far side to keep joining through. `Hop`'s
+  `target_def` field became `Option<&Definition>` (`None` only for a
+  remote hop, which -- by the last-hop invariant -- is only ever the sole
+  remaining element `emit_chain` recurses down to); every other read
+  fails closed with an "internal: ..." `PolicyError::Semantic` rather than
+  panicking, matching this module's existing defensive style
+  (`emit_fused_recursive`'s own `target_def` resolution got the same
+  treatment, since a recursive relation is now also structurally
+  guaranteed non-remote).
+- **D-B3-5 (remote-inside-recursive) guard** -- confirmed already
+  structurally impossible: `validate_relation_shape`'s "join-based XOR
+  recursive" rule means a single `Relation` can never carry both
+  `service` and `recursive: true`. Pinned by
+  `policy::rejects_recursive_relation_that_is_also_remote` (schema layer)
+  and `compile::remote_and_recursive_on_the_same_relation_cannot_reach_plan_read`
+  (confirms no `Policy` value bypassing `parse_and_validate` could reach
+  `plan_read` with the combination either).
+
+#### Tests
+
+`crates/fdae/src/compile.rs` (new): `compile_read_fails_closed_when_a_remote_fetch_is_needed`
+(renamed/re-asserted, see above), `plan_read_collects_a_remote_fetch_instead_of_failing_closed`
+(the fetch's `principal_did` is the anchor, not the proxying `subject_did`),
+`plan_read_of_a_fully_local_policy_has_no_fetches` (B2 shape preserved),
+`finalize_binds_the_fetched_id_set_and_runs_correctly` (real SQL execution
+against seeded rows, not just string assertion),
+`finalize_binds_an_empty_id_set_as_in_null_not_invalid_sql`,
+`finalize_rejects_an_oversized_id_set`, `finalize_fails_closed_on_a_missing_fetch_result`,
+`remote_and_recursive_on_the_same_relation_cannot_reach_plan_read`,
+`plan_read_dedupes_repeated_fetches_to_the_same_remote_relation`.
+`crates/fdae/src/policy.rs` (new): `accepts_remote_relation_with_join_column`,
+`rejects_relation_with_join_and_recursive_shapes`,
+`rejects_recursive_relation_that_is_also_remote`,
+`rejects_remote_relation_missing_join_column`.
+
+#### Explicitly out of Phase 2 scope (recorded, not silently dropped)
+
+- **The actual fetch** -- resolving a `RemoteFetch.service` to a DID,
+  issuing the `ProxyRequest`, timeout→deny, `DecisionTrace` provenance for
+  a successful fetch. Phase 4's orchestration seam.
+- **The WIT `resolve-relation` wire method + host impl** -- Phase 3
+  (below).
+- **`anchor`/`caller` terminal resolution downstream of a remote hop** --
+  not applicable: a remote hop is always the path's terminal-adjacent
+  step (the new last-hop invariant), so there is no "downstream" local
+  hop after it to resolve a terminal against in this phase.
+
+### Phase 3 — `resolve-relation` native method (D-B3-3, the receiving side) ✅ (2026-07-23)
+
+Branch: `feat/m04b-slice-b3-fetch` (same branch/PR as Phase 2). Plan:
+[slice-b3-implementation-plan.md](slice-b3-implementation-plan.md) §3.2, §8
+item 3, with D-B3-3 resolved via a session confirmation (this conversation,
+2026-07-23) rather than picked unilaterally -- see "Decisions" below.
+
+**Scope note, a deliberate narrowing from the plan's literal phase-list
+wording ("WIT `resolve-relation`"):** confirmed with the user before
+implementing. `dispatch_json_rpc_once`'s routing (`crates/router/src/route_handler/dispatch.rs`)
+only ever reaches a WASM-hosted service's *guest-exported* functions for an
+external caller (`data-layer-guest` exports only `init`/`migrate`; `store`
+is guest-*imported*, callable only from inside the guest's own execution,
+never from outside) -- so a cross-service fetch's receiving end can only
+ever land on a **native** `data-layer` service (`SynSvcNativeService`).
+Adding `resolve-relation` to the WIT `store` interface would add a
+guest-introspection surface nothing in B3 consumes, since no external
+caller can reach it that way. Native-only, no WIT/`wasm32-wasip2` change
+this phase.
+
+#### What was delivered
+
+- **`Definition.resolvable_without_capability: bool`** (`crates/fdae/src/policy.rs`
+  + `schema/fdae-v1.json`, `#[serde(default)]`) -- D-B3-3's authorization
+  fork, resolved this session: **A1** (reuse the existing capability-gated
+  sieve via `ServiceStore::query`, requiring the anchor to hold a real
+  capability on *this* service -- zero new authorization surface) is the
+  default; **A2** (a bare `principal_column` match, gated only by the
+  requesting identity's re-verification, no capability needed) is an
+  explicit **per-definition** opt-in, matching every other FDAE
+  trust-boundary declaration's own granularity (`principal_column`,
+  `fields.deny`, `strict` are all per-`Definition`/`Permission`, never a
+  substrate-wide flag). **Mutually exclusive per request, not a fallback
+  chain**: A2 applies only when the caller holds *zero* capabilities at
+  all (A1 was never attempted), so a real A1 deny (a capability that
+  grants nothing on this specific resource) can never be second-guessed
+  by the looser A2 model.
+- **`resolve_structural`/`StructuralQuery`** (`crates/fdae/src/compile.rs`)
+  -- the A2 primitive: a raw `<principal_column> = ?` predicate, reusing
+  the same reserved-column-vs-JSON-payload addressing every other
+  predicate in this compiler uses (a `principal_column` of `"creator_id"`
+  resolves to the physical column, not `json_extract(payload,
+  '$.creator_id')`). Pure, no capability check of its own (it has no
+  `SessionContext` to check one against) -- the caller gates its use on
+  `resolvable_without_capability` and zero capabilities.
+- **`definition_table`** (`compile.rs`) -- resolves a `relation` string
+  (policy definition key *or* table, case-insensitively, matching
+  `find_definition`) to the definition's physical table. Needed because
+  `ServiceStore::query`/`query_raw` address a collection **literally**
+  (unlike `compile_read`'s own permissive key-or-table matching) -- passing
+  a definition key that isn't also the table's own name would otherwise
+  spuriously fail `collection-not-found` (caught by this session's own
+  test failures before shipping, see "Post-implementation fixes" below).
+  Doubles as the **hard pre-check** that `relation` names a real
+  definition at all: unlike an ordinary read, where "no definition" means
+  "the grant layer already admitted this, run unfiltered"
+  (`compile_read`'s `Ok(None)`), a cross-service relationship ask has no
+  such backing admission, so an unrecognized `relation` must deny, never
+  fall through to `ServiceStore::query`'s ordinary unfiltered pass-through.
+- **`RelationshipProof` + `sign_relationship_proof`**
+  (`crates/control_plane/src/synsvc_native.rs`) -- the signed, TTL'd
+  record ADR-0017 §6 specifies: `{asserter_did, relation, principal, ids,
+  valid_until_secs, signature}`, signed via `Identity::sign_json` (RFC
+  8785 canonicalization, already existed in `crates/identity`) with the
+  `signature` field itself zeroed for the signing pass. TTL is a fixed
+  `RELATIONSHIP_PROOF_TTL_SECS = 60` (the ADR's own worked example),
+  policy-configurable budgeting deferred (no consumer yet -- Phase 4/5's
+  cache, D-B3-6, is the first).
+- **`SynSvcNativeService.node_identity: Arc<Identity>`** (new field/
+  constructor param) -- signing requires the node's own key material,
+  which neither `SynSvcNativeService` nor `AppSandboxEngine` held before
+  this phase (only `router::proxy::ProxyRouter` did). Threaded from
+  `crates/substrate/src/runtime.rs`'s `setup_connection_router` (which
+  already holds `secret_key: [u8; 32]` from `setup_identity_and_storage`)
+  through a new `secret_key` parameter on `build_route_handler_deps`,
+  constructing `Arc::new(Identity::from_bytes(&secret_key))` once and
+  passing it into `ControlPlaneService::init` (new trailing param, new
+  `node_identity` field) and on into every `SynSvcNativeService::new` call
+  at deploy time. New `syneroym-identity` dependency added to
+  `control_plane`'s `Cargo.toml`. All ~29 test construction sites (`
+  ControlPlaneService::init` in `service.rs`/`orchestration.rs` and its
+  three router/coordinator-iroh integration-test call sites;
+  `SynSvcNativeService::new` in `router`'s test binaries) updated
+  mechanically to pass a fresh `Arc::new(Identity::generate().unwrap())`
+  -- zero behavior change to any pre-existing assertion, confirmed by
+  every pre-existing test passing unmodified.
+- **`resolve_relation` dispatch method**
+  (`SynSvcNativeService::dispatch_data_layer`, `"resolve-relation"` /
+  `"resolve_relation"`) -- the full receiving-side flow: (1) `principal`
+  must equal `invocation.caller.session.subject_did` -- the router has
+  already re-verified whatever proof this request carried into
+  `invocation.caller` (identical to every other native-dispatch method),
+  so that identity is the only trustworthy source of "who is asking";
+  `principal` is a caller-declared label that must match it, never a free
+  parameter letting a verified caller ask about an arbitrary third
+  party's relationships; (2) no policy deployed, or `relation` names no
+  definition (`definition_table` returns `None`) -> an empty, signed
+  proof, never an error and never `ServiceStore::query`'s unfiltered
+  pass-through; (3) the caller holds capabilities -> **A1**: `ServiceStore::query`
+  against the resolved table, `auth = Some(QueryAuth{policy, session,
+  service_id})`, `limit = MAX_FETCH_IDS`, and `next_cursor.is_some()`
+  (more rows than the cap) -> `QuotaExceeded`; (4) zero capabilities ->
+  **A2**: `resolve_structural`, and if the definition hasn't opted in,
+  `Ok(None)` -> empty (deny), never a fallback; a structural match runs
+  via `store.query_raw` with an explicit `LIMIT {MAX_FETCH_IDS + 1}` (raw
+  SQL has no automatic page cap the way `query` does) so an overflow is
+  actually observable, not silently truncated.
+
+#### Decisions confirmed this session (D-B3-3)
+
+Two architectural forks, both confirmed with the user before implementing
+(not decided unilaterally, since both diverge from a first-glance reading
+of the plan doc):
+
+1. **A1-default / A2-opt-in-per-definition**, mutually exclusive per
+   request -- see "What was delivered" above. Rejected alternatives:
+   a substrate-wide config flag (wrong granularity -- every other FDAE
+   trust knob is per-`Definition`/`Permission`) and a fallback chain
+   (A1-then-A2, which risks a real A1 deny being silently widened by the
+   looser A2 model).
+2. **Native-only, no WIT addition** -- see "Scope note" above. Rejected:
+   adding `resolve-relation` to the WIT `store` interface for symmetry
+   with `check-access`'s Phase-3-B2 precedent, since (unlike
+   `check-access`, which a *guest* calls about *itself*) `resolve-relation`
+   is answered *to* a remote caller, and no WASM-hosted service is
+   externally reachable that way regardless.
+
+#### Post-implementation fixes (found by this session's own tests, before landing)
+
+Both caught by the new `native_dispatch_identity.rs` integration tests
+failing on first run, not by inspection -- recorded so the fixes read as
+verified, not asserted:
+
+- **A1's `store.query` call used the wire `relation` string directly as
+  the collection**, which fails `collection-not-found` whenever a
+  policy's definition key differs from its table name (the common case,
+  e.g. `"employee"` vs. table `"employees"`) -- `ServiceStore::query`
+  addresses a collection literally, unlike `compile_read`'s own permissive
+  key-or-table resolution. Fixed by resolving through the new
+  `definition_table` (see above) before calling `store.query`.
+- **The test double `test_caller()`** (pre-existing, `crates/router/tests/native_dispatch_identity.rs`)
+  builds a `CallerContext` with `session: SessionContext::default()` --
+  `subject_did` stays empty, unlike `build_caller`'s real production
+  behavior (`crates/router/src/route_handler/io.rs`), which always
+  populates it. `resolve_relation`'s principal-match check correctly
+  rejected every test using it, surfacing the double's incompleteness for
+  this new use rather than a bug in the check itself. Added
+  `zero_capability_caller` (mirrors `build_caller`'s real shape: a
+  populated `subject_did`, no capabilities) instead of reusing
+  `test_caller` for `resolve-relation`'s zero-capability test cases.
+
+#### Tests
+
+`crates/fdae` (`compile.rs`, `policy.rs`): `resolve_structural_runs_correctly_against_a_json_payload_principal_column`,
+`resolve_structural_addresses_a_reserved_column_directly`,
+`resolve_structural_is_none_when_not_opted_in`,
+`resolve_structural_is_none_for_an_unknown_relation`,
+`definition_table_resolves_by_key_or_table_case_insensitively`,
+`parses_resolvable_without_capability_when_declared`.
+
+`crates/router/tests/native_dispatch_identity.rs` (new, driven through real
+`RouteHandler::dispatch_json_rpc_once` -- not a hand-called method,
+matching this file's own established convention): `resolve_relation_a1_resolves_via_the_capability_gated_sieve_and_verifies`
+(also verifies the returned `RelationshipProof`'s signature against its
+own `asserter_did` via `syneroym_identity::substrate::verify_json_signature`,
+not just that a signature string is present), `resolve_relation_a1_deny_is_not_rescued_by_a2`
+(an unrelated capability -- non-empty, but grants nothing on the resource
+-- must not trigger the A2 fallback), `resolve_relation_a2_resolves_structurally_with_zero_capabilities`,
+`resolve_relation_denies_when_not_opted_in_and_no_capabilities` (zero
+capabilities *and* no opt-in -- neither model applies), `resolve_relation_denies_for_an_undeclared_relation_not_unfiltered`
+(pins the `definition_table` pre-check specifically: must never leak an
+unfiltered dump), `resolve_relation_denies_when_principal_does_not_match_the_caller`,
+`resolve_relation_is_empty_when_no_policy_is_deployed`.
+
+#### Explicitly out of Phase 3 scope (recorded, not silently dropped)
+
+- **The calling side of the fetch** -- `resolve_fetches`/orchestration,
+  resolving a logical `service` name to a DID via the app-context
+  registry, issuing the `ProxyRequest` with `origin: Native`, timeout→deny,
+  wiring `plan_read`→fetch→`finalize` into the WASM and native read
+  ingresses, `DecisionTrace` provenance for a successful fetch. Phase 4.
+- **D-04-02-h ingress closure** -- both pinned empty-result regression
+  tests (`proxy_dispatch.rs`'s `guest_self_proxy_data_layer_returns_empty_when_policy_present`,
+  `data_layer_integration.rs`'s
+  `test_deployed_policy_yields_empty_guest_originated_query_d04_02_h`)
+  still pass unchanged; closing (ii) per D-B3-4 needs Phase 4's real
+  anchor-threading, not just the receiving-side primitive this phase adds.
+- **Reference scenario steps 22-23, the federated-fetch perf budget
+  (< 50 ms p99), the Failure/Security matrix row 6 flip, and
+  `traceability-matrix.md`'s update** -- all depend on Phase 4's real
+  cross-node fetch existing, not the receiving side alone.
+- **D-B3-6 (fetch result caching)** -- the signed, TTL'd `RelationshipProof`
+  shape lands now specifically so a future cache is a pure additive follow-
+  up with no wire-format churn (plan §3.2's own reasoning); no cache
+  itself this phase.
+
+#### Verification evidence
+
+- `cargo +nightly fmt --all` -- clean.
+- `cargo clippy --workspace --all-targets --all-features` -- zero warnings.
+- `cargo test -p syneroym-fdae` -- **81 passed**, 0 failed (64 Phase-1
+  baseline + 15 Phase 2 + 6 Phase 3 new: `resolve_structural`/
+  `definition_table`/`resolvable_without_capability` coverage above -- 6
+  is the net after also accounting for the Phase 2 rename of one existing
+  test).
+- `cargo test -p syneroym-control-plane --lib` -- **45 passed**, 0 failed
+  (unchanged from Phase-1 baseline -- this phase only added a constructor
+  parameter and a new dispatch arm, no new `control_plane`-crate unit
+  tests; the integration coverage lives in `router`'s
+  `native_dispatch_identity.rs`, per that file's own established
+  convention for native-dispatch behavior).
+- `cargo test -p syneroym-router --lib --tests` -- **124 passed**, 0
+  failed across the lib (72, unchanged) and all six integration binaries
+  (`deploy_grant` 9, `native_dispatch_identity` 25 -- 18 baseline + 7 new
+  `resolve_relation_*` tests, `proxy_dispatch` 4, `service_ownership` 10,
+  `ucan_context` 2, `unsupported_protocol` 2 -- all unchanged from the
+  Phase-1 baseline).
+- `cargo test -p syneroym-ucan` / `-p syneroym-data-db` / `-p syneroym-sandbox-wasm`
+  -- unchanged from Phase-1 baseline (56 / 138 / 42 lib respectively;
+  neither crate's source was touched this phase), confirming zero
+  regression from the identity-threading plumbing that passed through
+  `crates/substrate`/`crates/control_plane`/`crates/router` alone.
+- `cargo test --workspace --no-fail-fast` -- the only failures are the
+  same pre-existing sandbox socket-bind class every prior phase
+  documented, in the identical nine targets: `coordinator-iroh`
+  (`connection_limit`, `multi_hop_relay`, `tls_rotation`), `mqtt-broker`
+  (`no_network_listener_is_bound`), `sdk` (`connect_timeout`), and
+  `substrate`'s e2e-adjacent binaries (`basic_lifecycle`,
+  `http_passthrough_e2e`, `messaging_client_e2e`, `stream_client_e2e`) --
+  `Operation not permitted`/`PermissionDenied` binding a real port under
+  this CLI's default network sandbox, none of these crates touched by
+  Phase 2 or 3.
+- `mise run test:e2e` -- not run. Phase 2 is pure `crates/fdae` logic;
+  Phase 3 adds a native JSON-RPC method with no WIT/`wasm32-wasip2`
+  change and no reference-scenario-visible behavior yet (the actual
+  cross-service fetch a Playwright spec could observe is Phase 4). Same
+  reasoning and precedent as every prior phase's own skip.

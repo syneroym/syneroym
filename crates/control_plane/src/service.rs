@@ -17,6 +17,7 @@ use syneroym_core::{http_routes::HttpRouteRegistry, local_registry::EndpointRegi
 use syneroym_data_blob::BlobProvider;
 use syneroym_data_db::traits::StorageProvider;
 use syneroym_data_keystore::KeyStore;
+use syneroym_identity::Identity;
 use syneroym_mqtt_broker::MqttBroker;
 use syneroym_rpc::{
     Ability, CallerContext, NativeDispatchRegistry, NativeInvocation, NativeResponse,
@@ -55,6 +56,12 @@ pub struct ControlPlaneService {
     storage_provider: Arc<dyn StorageProvider>,
     blob_provider: Arc<dyn BlobProvider>,
     messaging_broker: Arc<MqttBroker>,
+    /// This node's own signing identity -- threaded to each deployed
+    /// service's `SynSvcNativeService` so it can sign Slice B3's
+    /// relationship-proof records as this node's asserter DID
+    /// (`node_identity.to_doc(..).id`). Distinct from `node_did` above,
+    /// which is only the DID string; this carries the actual key material.
+    node_identity: Arc<Identity>,
     // `Weak`, not `NativeDispatchRegistry` -- see the cycle explained in
     // `syneroym_rpc::dispatch_registry`'s module docs. `RouteHandlerInner`
     // owns the strong clone for as long as the router itself is alive.
@@ -92,6 +99,7 @@ impl ControlPlaneService {
         messaging_broker: Arc<MqttBroker>,
         native_dispatch: NativeDispatchRegistry,
         http_routes: HttpRouteRegistry,
+        node_identity: Arc<Identity>,
     ) -> Result<Self> {
         info!("Initializing ControlPlaneService (Orchestrator)...");
 
@@ -110,6 +118,7 @@ impl ControlPlaneService {
             storage_provider,
             blob_provider,
             messaging_broker,
+            node_identity,
             native_dispatch: Arc::downgrade(&native_dispatch),
             http_routes,
         })
@@ -471,6 +480,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
         )
         .await
         .unwrap();
@@ -538,6 +548,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
         )
         .await
         .unwrap();
@@ -627,6 +638,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
         )
         .await
         .unwrap();
@@ -890,6 +902,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
         )
         .await
         .unwrap();
@@ -1026,6 +1039,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
         )
         .await
         .unwrap();
@@ -1134,6 +1148,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
         )
         .await
         .unwrap();
@@ -1221,6 +1236,7 @@ mod tests {
             messaging_broker,
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
         )
         .await
         .unwrap();
@@ -1464,6 +1480,7 @@ mod tests {
             messaging_broker,
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
         )
         .await
         .unwrap();

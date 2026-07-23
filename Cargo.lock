@@ -7554,6 +7554,7 @@ dependencies = [
  "syneroym-data-db",
  "syneroym-data-keystore",
  "syneroym-fdae",
+ "syneroym-identity",
  "syneroym-mqtt-broker",
  "syneroym-rpc",
  "syneroym-sandbox-podman",

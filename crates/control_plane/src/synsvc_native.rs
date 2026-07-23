@@ -31,7 +31,8 @@ use syneroym_data_db::{
     traits::{ServiceStore, StorageProvider},
 };
 use syneroym_data_keystore::KeyStore;
-use syneroym_fdae::Policy;
+use syneroym_fdae::{MAX_FETCH_IDS, Policy};
+use syneroym_identity::{Identity, substrate::derive_did_key};
 use syneroym_mqtt_broker::{MqttBroker, namespace_topic_for_publish};
 use syneroym_rpc::{
     Ability, NativeInvocation, NativeResponse, NativeService, ResourceUri, RpcError, RpcResult,
@@ -62,6 +63,12 @@ pub struct SynSvcNativeService {
     /// this hot path. A re-deploy reconstructs the service, so a policy edit
     /// takes effect with the deploy that carries it.
     fdae_policy: Option<Arc<Policy>>,
+    /// This node's own signing identity (Slice B3): `resolve-relation`
+    /// signs its returned `RelationshipProof` as this node's asserter DID
+    /// (`derive_did_key(&node_identity.public_key())`), so the requesting
+    /// node can verify *this specific node* asserted it, not merely that
+    /// some transport-authenticated peer answered.
+    node_identity: Arc<Identity>,
 }
 
 impl fmt::Debug for SynSvcNativeService {
@@ -195,6 +202,84 @@ fn to_payload<T: serde::Serialize>(value: &T) -> RpcResult<NativeResponse> {
         .map_err(|e| internal(format!("failed to serialize response: {e}")))
 }
 
+/// A signed, TTL'd assertion answering "which rows does `principal` reach
+/// via `relation`" (Slice B3, ADR-0017 §6): the wire response of
+/// `resolve-relation`. Signing (not just transport authentication) is what
+/// makes the id-set self-authenticating for the `DecisionTrace` provenance
+/// a *successful* fetch records (Phase 4) and for any future cache (D-B3-6,
+/// deferred) -- both need to know *which node* asserted this, independent
+/// of the connection it arrived over.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct RelationshipProof {
+    asserter_did: String,
+    relation: String,
+    principal: String,
+    ids: Vec<String>,
+    valid_until_secs: u64,
+    /// z-base-32-encoded signature over the JSON-canonicalized form of this
+    /// struct with `signature` itself set to `""` -- mirrors
+    /// `Identity::sign_json`'s existing use elsewhere (e.g.
+    /// `EndpointInfo::sign`), never re-deriving a bespoke signing scheme.
+    signature: String,
+}
+
+/// How long a `resolve-relation` answer is valid for (ADR-0017 §6's own
+/// worked example: "valid 60s"). A fixed constant, not policy-configurable,
+/// in this phase -- the fetch is used immediately by the same request that
+/// triggered it (Phase 4); a cache honoring this TTL is a pure future
+/// addition (D-B3-6), not something this phase relies on.
+const RELATIONSHIP_PROOF_TTL_SECS: u64 = 60;
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Signs `ids` as a [`RelationshipProof`] asserted by `identity`. The
+/// signature covers every field except itself (set to `""` for signing,
+/// matching the canonicalize-then-sign convention `Identity::sign_json`'s
+/// other callers use).
+fn sign_relationship_proof(
+    identity: &Identity,
+    relation: &str,
+    principal: &str,
+    ids: Vec<String>,
+) -> RpcResult<RelationshipProof> {
+    let mut proof = RelationshipProof {
+        asserter_did: derive_did_key(&identity.public_key()),
+        relation: relation.to_string(),
+        principal: principal.to_string(),
+        ids,
+        valid_until_secs: now_secs() + RELATIONSHIP_PROOF_TTL_SECS,
+        signature: String::new(),
+    };
+    let unsigned = serde_json::to_value(&proof)
+        .map_err(|e| internal(format!("failed to serialize relationship proof: {e}")))?;
+    proof.signature = identity
+        .sign_json(&unsigned)
+        .map_err(|e| internal(format!("failed to sign relationship proof: {e}")))?;
+    Ok(proof)
+}
+
+/// Extracts the single `id` column from a `SELECT id FROM ... WHERE ...`
+/// [`RawQueryResult`] (the A2 structural-resolution query). Fails closed on
+/// a shape this query never produces (a non-text id, or more/fewer than one
+/// column) rather than silently coercing or dropping rows.
+fn extract_id_column(result: RawQueryResult) -> RpcResult<Vec<String>> {
+    result
+        .rows
+        .into_iter()
+        .map(|row| match row.as_slice() {
+            [SqlValue::Text(id)] => Ok(id.clone()),
+            _ => {
+                Err(internal("resolve-relation: structural query returned an unexpected row shape"))
+            }
+        })
+        .collect()
+}
+
 impl SynSvcNativeService {
     #[must_use]
     pub fn new(
@@ -204,6 +289,7 @@ impl SynSvcNativeService {
         blob_provider: Arc<dyn BlobProvider>,
         messaging_broker: Arc<MqttBroker>,
         fdae_policy: Option<Arc<Policy>>,
+        node_identity: Arc<Identity>,
     ) -> Self {
         Self {
             service_id,
@@ -214,6 +300,7 @@ impl SynSvcNativeService {
             upload_sessions: Mutex::new(HashMap::new()),
             download_sessions: Mutex::new(HashMap::new()),
             fdae_policy,
+            node_identity,
         }
     }
 
@@ -244,6 +331,122 @@ impl SynSvcNativeService {
             session: &invocation.caller.session,
             service_id: &self.service_id,
         })
+    }
+
+    /// Slice B3 pipeline stage 2, the *receiving* (data-owning) side: "which
+    /// rows does `principal` reach via `relation`," signed as a
+    /// [`RelationshipProof`]. The *sending* side (issuing the fetch, timeout
+    /// handling, `plan_read`/`finalize` wiring) is Phase 4 -- this method
+    /// only answers the question, over whatever transport already got the
+    /// request here (native dispatch, `dispatch_json_rpc_once`).
+    ///
+    /// **A1 vs. A2 (D-B3-3), mutually exclusive per request, not a fallback
+    /// chain:** if the caller holds *any* capability at all, only **A1**
+    /// (the existing capability-gated sieve, via `ServiceStore::query`) is
+    /// attempted -- an empty result is a real, final deny, never silently
+    /// widened by A2. **A2** (a bare `principal_column` match, gated only by
+    /// the definition's own `resolvable_without_capability` opt-in) applies
+    /// only when the caller holds zero capabilities, so a real-but-denied
+    /// A1 decision can never be second-guessed by the looser A2 model.
+    async fn resolve_relation(
+        &self,
+        invocation: &NativeInvocation,
+        store: &dyn ServiceStore,
+    ) -> RpcResult<NativeResponse> {
+        #[derive(serde::Deserialize)]
+        struct Req {
+            relation: String,
+            principal: String,
+        }
+        let req: Req = parse_params(invocation)?;
+
+        // The wire caller must be re-verified as exactly the principal
+        // being asked about. The router has already re-verified whatever
+        // proof this request carried into `invocation.caller.session`
+        // (identical to every other native-dispatch method), so that
+        // identity is the only trustworthy source of "who is asking" --
+        // `principal` is a caller-declared label that must match it, never
+        // a free parameter naming an arbitrary third party.
+        if req.principal != invocation.caller.session.subject_did {
+            return Err(data_layer_error(DataLayerError::PermissionDenied));
+        }
+
+        let Some(policy) = self.fdae_policy.as_ref() else {
+            let proof = sign_relationship_proof(
+                &self.node_identity,
+                &req.relation,
+                &req.principal,
+                Vec::new(),
+            )?;
+            return to_payload(&proof);
+        };
+
+        // No definition matches `relation` at all: unlike an ordinary read,
+        // where "no definition" correctly falls through to unfiltered
+        // (grant-layer-admitted) access, a cross-service relationship ask
+        // has no backing grant-layer admission -- deny outright rather than
+        // let `ServiceStore::query`'s own no-definition pass-through leak
+        // the whole collection. Also resolves the definition's *physical
+        // table* -- `ServiceStore::query` addresses a collection literally
+        // (unlike `compile_read`'s own permissive key-or-table matching),
+        // so a `relation` naming a policy *key* (B3's convention, e.g.
+        // `RemoteFetch.relation`) must be translated before it reaches A1's
+        // `store.query`, or a key that isn't also the table's own name
+        // spuriously fails `collection-not-found`.
+        let Some(table) = syneroym_fdae::definition_table(policy, &req.relation) else {
+            let proof = sign_relationship_proof(
+                &self.node_identity,
+                &req.relation,
+                &req.principal,
+                Vec::new(),
+            )?;
+            return to_payload(&proof);
+        };
+
+        let ids = if invocation.caller.session.capabilities.is_empty() {
+            match syneroym_fdae::resolve_structural(policy, &req.relation, &req.principal) {
+                Ok(Some(resolved)) => {
+                    let sql = format!(
+                        "SELECT id FROM {} WHERE {} LIMIT {}",
+                        resolved.table,
+                        resolved.where_clause,
+                        MAX_FETCH_IDS + 1
+                    );
+                    let params: Vec<SqlValue> =
+                        resolved.params.into_iter().map(SqlValue::Text).collect();
+                    let raw = store.query_raw(&sql, &params).await.map_err(data_layer_error)?;
+                    extract_id_column(raw)?
+                }
+                // Not opted into `resolvable_without_capability` -- deny,
+                // never treated as "found nothing to structurally resolve
+                // so fall back to something looser."
+                Ok(None) => Vec::new(),
+                Err(e) => return Err(internal(e.to_string())),
+            }
+        } else {
+            let auth = QueryAuth {
+                policy,
+                session: &invocation.caller.session,
+                service_id: &self.service_id,
+            };
+            let opts = QueryOptions {
+                filter: None,
+                limit: Some(u32::try_from(MAX_FETCH_IDS).unwrap_or(u32::MAX)),
+                cursor: None,
+            };
+            let outcome = store.query(table, &opts, Some(&auth)).await.map_err(data_layer_error)?;
+            if outcome.value.next_cursor.is_some() {
+                return Err(data_layer_error(DataLayerError::QuotaExceeded));
+            }
+            outcome.value.records.into_iter().map(|r| r.id).collect()
+        };
+
+        if ids.len() > MAX_FETCH_IDS {
+            return Err(data_layer_error(DataLayerError::QuotaExceeded));
+        }
+        let proof =
+            sign_relationship_proof(&self.node_identity, &req.relation, &req.principal, ids)?;
+        to_payload(&proof)
     }
 
     async fn resolve_blob_dek(&self) -> RpcResult<Option<Zeroizing<[u8; 32]>>> {
@@ -504,6 +707,9 @@ impl SynSvcNativeService {
                     .await
                     .map_err(data_layer_error)?;
                 raw_query_result_payload(result)
+            }
+            "resolve-relation" | "resolve_relation" => {
+                self.resolve_relation(&invocation, store.as_ref()).await
             }
             other => Err(RpcError::MethodNotFound(format!("data-layer/{other}"))),
         }

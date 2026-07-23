@@ -231,6 +231,7 @@ async fn authenticated_caller_identity_becomes_creator_id_not_service_id() {
         blob_provider,
         messaging_broker,
         None,
+        Arc::new(syneroym_identity::Identity::generate().unwrap()),
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -292,6 +293,7 @@ async fn execute_ddl_denied_for_ordinary_native_caller() {
         blob_provider,
         messaging_broker,
         None,
+        Arc::new(syneroym_identity::Identity::generate().unwrap()),
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -332,6 +334,7 @@ async fn execute_ddl_allowed_for_admin_ucan_root_native_caller() {
         blob_provider,
         messaging_broker,
         None,
+        Arc::new(syneroym_identity::Identity::generate().unwrap()),
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -368,6 +371,7 @@ async fn ordinary_caller_denied_query_raw() {
         blob_provider,
         messaging_broker,
         None,
+        Arc::new(syneroym_identity::Identity::generate().unwrap()),
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -408,6 +412,7 @@ async fn admin_caller_admitted_query_raw() {
         blob_provider,
         messaging_broker,
         None,
+        Arc::new(syneroym_identity::Identity::generate().unwrap()),
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -447,6 +452,7 @@ async fn query_raw_binds_params_no_injection() {
         blob_provider,
         messaging_broker,
         None,
+        Arc::new(syneroym_identity::Identity::generate().unwrap()),
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -526,6 +532,7 @@ async fn query_raw_null_param_round_trips() {
         blob_provider,
         messaging_broker,
         None,
+        Arc::new(syneroym_identity::Identity::generate().unwrap()),
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -580,6 +587,7 @@ async fn query_raw_result_cells_are_round_trippable_as_params() {
         blob_provider,
         messaging_broker,
         None,
+        Arc::new(syneroym_identity::Identity::generate().unwrap()),
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -789,6 +797,7 @@ async fn ordinary_caller_admitted_aggregate() {
         blob_provider,
         messaging_broker,
         None,
+        Arc::new(syneroym_identity::Identity::generate().unwrap()),
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -860,6 +869,7 @@ async fn aggregate_malformed_pipeline_is_schema_violation() {
         blob_provider,
         messaging_broker,
         None,
+        Arc::new(syneroym_identity::Identity::generate().unwrap()),
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -974,6 +984,7 @@ async fn native_fdae_policy_row_filters_and_masks_for_two_distinct_verified_call
         blob_provider,
         messaging_broker,
         Some(policy),
+        Arc::new(syneroym_identity::Identity::generate().unwrap()),
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -1151,6 +1162,7 @@ async fn native_delete_many_is_row_filtered_as_a_write_operation() {
         blob_provider,
         messaging_broker,
         Some(policy),
+        Arc::new(syneroym_identity::Identity::generate().unwrap()),
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -1238,6 +1250,7 @@ async fn native_aggregate_is_row_filtered_through_native_dispatch() {
         blob_provider,
         messaging_broker,
         Some(policy),
+        Arc::new(syneroym_identity::Identity::generate().unwrap()),
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -1286,4 +1299,321 @@ async fn native_aggregate_is_row_filtered_through_native_dispatch() {
         json!([[{"type": "integer", "value": 1}]]),
         "alice's aggregate must count only her own reachable document: {resp:?}"
     );
+}
+
+// -- Slice B3 Phase 3: native `resolve-relation` (the cross-service
+// relationship-proof fetch's receiving side, D-B3-3) --------------------
+
+/// A single `employee` definition supporting both D-B3-3 authorization
+/// models: `view_self`'s zero-hop `paths: [["caller"]]` is what A1 (the
+/// existing capability-gated sieve) evaluates, and
+/// `resolvable_without_capability: true` is the explicit per-definition
+/// opt-in A2 (bare `principal_column` match) requires.
+fn resolvable_employee_policy() -> Policy {
+    parse_and_validate(
+        r#"{
+            "version": "fdae/v1",
+            "definitions": {
+                "employee": {
+                    "table": "employees",
+                    "principal_column": "did",
+                    "resolvable_without_capability": true,
+                    "permissions": {
+                        "view_self": {"allows": ["data-layer/read"], "paths": [["caller"]]}
+                    }
+                }
+            }
+        }"#,
+    )
+    .unwrap()
+}
+
+/// A verified caller entitled to `data-layer/read` on the `employee`
+/// resource -- the A1 path.
+fn employee_reader_caller(subject_did: &str, service_id: &str) -> CallerContext {
+    CallerContext {
+        caller_did: subject_did.to_string(),
+        app_instance: None,
+        session: SessionContext {
+            subject_did: subject_did.to_string(),
+            capabilities: vec![Capability {
+                // Scoped to the physical table ("employees"), not the
+                // policy definition key ("employee") -- `compile_read`
+                // builds its resource URI from whatever `collection` string
+                // actually reaches it, which is the resolved table
+                // (`definition_table`), matching every other capability
+                // scoping convention in this file (e.g. `fdae_reader_caller`
+                // above uses "documents", not "document").
+                with: native_fdae_resource(service_id, "employees"),
+                can: Ability(Ability::DATA_LAYER_READ.to_string()),
+                caveats: None,
+            }],
+            ..Default::default()
+        },
+        auth: AuthLevel::Delegated,
+        proof: None,
+    }
+}
+
+/// A verified caller holding a capability that grants nothing on
+/// `employee` -- exercises A1's real (not-A2-rescued) deny.
+fn unrelated_capability_caller(subject_did: &str, service_id: &str) -> CallerContext {
+    CallerContext {
+        caller_did: subject_did.to_string(),
+        app_instance: None,
+        session: SessionContext {
+            subject_did: subject_did.to_string(),
+            capabilities: vec![Capability {
+                with: native_fdae_resource(service_id, "some_other_collection"),
+                can: Ability(Ability::DATA_LAYER_READ.to_string()),
+                caveats: None,
+            }],
+            ..Default::default()
+        },
+        auth: AuthLevel::Delegated,
+        proof: None,
+    }
+}
+
+/// A verified caller holding **zero** capabilities -- a real
+/// `session.subject_did` (unlike `test_caller`, whose `SessionContext`
+/// default leaves it empty), the shape `build_caller`
+/// (`crates/router/src/route_handler/io.rs`) always produces for any
+/// verified connection, capability-laden or not.
+fn zero_capability_caller(subject_did: &str) -> CallerContext {
+    CallerContext {
+        caller_did: subject_did.to_string(),
+        app_instance: None,
+        session: SessionContext { subject_did: subject_did.to_string(), ..Default::default() },
+        auth: AuthLevel::Delegated,
+        proof: None,
+    }
+}
+
+async fn resolve_relation_service_and_pipeline(
+    service_id: &str,
+    policy: Option<Policy>,
+) -> (RouteHandler, RoutePipeline, RoutePreamble, tempfile::TempDir) {
+    let (route_handler, _http_routes) = test_route_handler().await;
+    let key_store = Arc::new(KeyStore::new());
+    let temp_dir = tempfile::tempdir().unwrap();
+    let storage_provider = Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+    let blob_provider: Arc<dyn BlobProvider> =
+        Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+    let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+    let data_service = Arc::new(SynSvcNativeService::new(
+        service_id.to_string(),
+        key_store,
+        storage_provider,
+        blob_provider,
+        messaging_broker,
+        policy.map(Arc::new),
+        Arc::new(syneroym_identity::Identity::generate().unwrap()),
+    ));
+    route_handler.register_native_service(service_id.to_string(), data_service);
+
+    let pipeline = raw_pipeline(service_id);
+    let preamble = preamble_for(service_id, "data-layer");
+
+    // Seed via an elevated, unentitled-by-policy caller -- `put`/
+    // `create-collection` carry no FDAE gate (write-side Tier 3 is Slice
+    // B5-fdae).
+    let seeder = test_caller("did:key:z6MkResolveRelationSeeder");
+    for (id, did) in [("emp-alice", "did:key:alice"), ("emp-bob", "did:key:bob")] {
+        let create_body = json_rpc_body("create-collection", json!({"name": "employees"}));
+        let _ = route_handler
+            .dispatch_json_rpc_once(&pipeline, &preamble, Some(&seeder), &create_body)
+            .await;
+        let put_body = json_rpc_body(
+            "put",
+            json!({
+                "collection": "employees",
+                "value": {"id": id, "payload": json!({"did": did}).to_string().into_bytes()}
+            }),
+        );
+        let resp = route_handler
+            .dispatch_json_rpc_once(&pipeline, &preamble, Some(&seeder), &put_body)
+            .await
+            .unwrap();
+        let resp: Value = serde_json::from_slice(&resp).unwrap();
+        assert!(resp.get("error").is_none(), "seeding employees/{id} failed: {resp:?}");
+    }
+
+    (route_handler, pipeline, preamble, temp_dir)
+}
+
+fn resolve_relation_body(relation: &str, principal: &str) -> Vec<u8> {
+    json_rpc_body("resolve-relation", json!({"relation": relation, "principal": principal}))
+}
+
+/// A1: a caller holding a real capability entitling `employee`'s
+/// `view_self` permission resolves to their own row via the existing
+/// capability-gated sieve -- and the returned `RelationshipProof` verifies
+/// against its own `asserter_did`.
+#[tokio::test]
+async fn resolve_relation_a1_resolves_via_the_capability_gated_sieve_and_verifies() {
+    let service_id = "resolve-relation-a1-svc";
+    let (route_handler, pipeline, preamble, _temp_dir) =
+        resolve_relation_service_and_pipeline(service_id, Some(resolvable_employee_policy())).await;
+
+    let alice = employee_reader_caller("did:key:alice", service_id);
+    let body = resolve_relation_body("employee", "did:key:alice");
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&alice), &body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert!(resp.get("error").is_none(), "resolve-relation must succeed: {resp:?}");
+    let result = &resp["result"];
+    assert_eq!(result["ids"], json!(["emp-alice"]), "A1 must resolve only alice's own row");
+    assert_eq!(result["relation"], "employee");
+    assert_eq!(result["principal"], "did:key:alice");
+
+    let asserter_did = result["asserter_did"].as_str().unwrap();
+    let signature = result["signature"].as_str().unwrap();
+    let mut unsigned = result.clone();
+    unsigned["signature"] = json!("");
+    syneroym_identity::substrate::verify_json_signature(asserter_did, &unsigned, signature)
+        .expect("the returned proof must verify against its own asserter_did");
+}
+
+/// A1's real deny (a capability that grants nothing on `employee`) is
+/// final -- it must **not** be rescued by A2, even though the definition
+/// has opted into `resolvable_without_capability`. Mutually exclusive per
+/// request, not a fallback chain (D-B3-3).
+#[tokio::test]
+async fn resolve_relation_a1_deny_is_not_rescued_by_a2() {
+    let service_id = "resolve-relation-a1-deny-svc";
+    let (route_handler, pipeline, preamble, _temp_dir) =
+        resolve_relation_service_and_pipeline(service_id, Some(resolvable_employee_policy())).await;
+
+    let mallory = unrelated_capability_caller("did:key:alice", service_id);
+    let body = resolve_relation_body("employee", "did:key:alice");
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&mallory), &body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert!(resp.get("error").is_none(), "resolve-relation must still succeed with an empty set");
+    assert_eq!(
+        resp["result"]["ids"],
+        json!([]),
+        "an unrelated capability must not trigger A1 grant, nor fall through to A2: {resp:?}"
+    );
+}
+
+/// A2: a caller holding **zero** capabilities structurally resolves via
+/// the bare `principal_column` match, since `employee` opted into
+/// `resolvable_without_capability`.
+#[tokio::test]
+async fn resolve_relation_a2_resolves_structurally_with_zero_capabilities() {
+    let service_id = "resolve-relation-a2-svc";
+    let (route_handler, pipeline, preamble, _temp_dir) =
+        resolve_relation_service_and_pipeline(service_id, Some(resolvable_employee_policy())).await;
+
+    let bob = zero_capability_caller("did:key:bob");
+    let body = resolve_relation_body("employee", "did:key:bob");
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&bob), &body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert!(resp.get("error").is_none(), "resolve-relation must succeed: {resp:?}");
+    assert_eq!(resp["result"]["ids"], json!(["emp-bob"]), "A2 must resolve bob's own row");
+}
+
+/// A caller with zero capabilities against a definition that has **not**
+/// opted into `resolvable_without_capability` gets an empty result --
+/// neither A1 (no capabilities to evaluate) nor A2 (not opted in) applies.
+#[tokio::test]
+async fn resolve_relation_denies_when_not_opted_in_and_no_capabilities() {
+    let service_id = "resolve-relation-not-opted-in-svc";
+    let policy = parse_and_validate(
+        r#"{
+            "version": "fdae/v1",
+            "definitions": {
+                "employee": {"table": "employees", "principal_column": "did"}
+            }
+        }"#,
+    )
+    .unwrap();
+    let (route_handler, pipeline, preamble, _temp_dir) =
+        resolve_relation_service_and_pipeline(service_id, Some(policy)).await;
+
+    let bob = zero_capability_caller("did:key:bob");
+    let body = resolve_relation_body("employee", "did:key:bob");
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&bob), &body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert!(resp.get("error").is_none());
+    assert_eq!(resp["result"]["ids"], json!([]));
+}
+
+/// A `relation` naming no definition at all must deny outright, never fall
+/// through to `ServiceStore::query`'s ordinary no-definition-means-
+/// unfiltered pass-through -- there is no grant-layer admission backing a
+/// cross-service relationship ask the way there is for an ordinary read.
+#[tokio::test]
+async fn resolve_relation_denies_for_an_undeclared_relation_not_unfiltered() {
+    let service_id = "resolve-relation-undeclared-svc";
+    let (route_handler, pipeline, preamble, _temp_dir) =
+        resolve_relation_service_and_pipeline(service_id, Some(resolvable_employee_policy())).await;
+
+    let bob = zero_capability_caller("did:key:bob");
+    let body = resolve_relation_body("nonexistent_relation", "did:key:bob");
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&bob), &body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert!(resp.get("error").is_none());
+    assert_eq!(
+        resp["result"]["ids"],
+        json!([]),
+        "an unrecognized relation name must never leak an unfiltered dump: {resp:?}"
+    );
+}
+
+/// `principal` is a caller-declared label that must match the wire
+/// caller's own re-verified identity -- a caller cannot ask about a
+/// different principal's relationships.
+#[tokio::test]
+async fn resolve_relation_denies_when_principal_does_not_match_the_caller() {
+    let service_id = "resolve-relation-mismatch-svc";
+    let (route_handler, pipeline, preamble, _temp_dir) =
+        resolve_relation_service_and_pipeline(service_id, Some(resolvable_employee_policy())).await;
+
+    let alice = employee_reader_caller("did:key:alice", service_id);
+    let body = resolve_relation_body("employee", "did:key:bob");
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&alice), &body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert_eq!(
+        resp["error"]["code"], -32010,
+        "asking about a principal other than the verified caller must be denied: {resp:?}"
+    );
+}
+
+/// No policy deployed: nothing to resolve against, an empty (not error)
+/// result -- the same "no definition" treatment an unpoliced service gives
+/// every other FDAE-aware method.
+#[tokio::test]
+async fn resolve_relation_is_empty_when_no_policy_is_deployed() {
+    let service_id = "resolve-relation-no-policy-svc";
+    let (route_handler, pipeline, preamble, _temp_dir) =
+        resolve_relation_service_and_pipeline(service_id, None).await;
+
+    let bob = zero_capability_caller("did:key:bob");
+    let body = resolve_relation_body("employee", "did:key:bob");
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&bob), &body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert!(resp.get("error").is_none());
+    assert_eq!(resp["result"]["ids"], json!([]));
 }

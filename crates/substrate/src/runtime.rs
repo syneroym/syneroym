@@ -419,7 +419,7 @@ async fn setup_router(
         .await?;
 
     let route_handler_deps =
-        build_route_handler_deps(config, service_id, &endpoint_registry).await?;
+        build_route_handler_deps(config, service_id, &endpoint_registry, secret_key).await?;
 
     ConnectionRouter::init(
         endpoint_registry,
@@ -440,7 +440,14 @@ async fn build_route_handler_deps(
     config: &SubstrateConfig,
     service_id: &str,
     registry: &EndpointRegistry,
+    secret_key: [u8; 32],
 ) -> anyhow::Result<RouteHandlerDeps> {
+    // Shared with `ControlPlaneService`'s native `data-layer` dispatch
+    // (`SynSvcNativeService`), which signs Slice B3's relationship-proof
+    // records as this node's own asserter identity -- the same key material
+    // `ConnectionRouter::init` (below, in the caller) separately constructs
+    // its own `Identity` from for `ProxyRouter`'s `node_identity`.
+    let node_identity = Arc::new(Identity::from_bytes(&secret_key));
     let key_store = Arc::new(KeyStore::new());
     let storage_provider: Arc<dyn StorageProvider> =
         Arc::new(SqliteStorageProvider::new(&config.storage.db_dir, config.storage.encryption)?);
@@ -502,6 +509,7 @@ async fn build_route_handler_deps(
         messaging_broker.clone(),
         native_dispatch.clone(),
         http_routes.clone(),
+        node_identity,
     )
     .await?;
 

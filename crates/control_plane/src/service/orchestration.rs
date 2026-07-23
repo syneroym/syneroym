@@ -657,6 +657,7 @@ impl OrchestratorInterface for ControlPlaneService {
                     self.blob_provider.clone(),
                     self.messaging_broker.clone(),
                     fdae_policy.as_ref().map(|(_, policy)| policy.clone()),
+                    self.node_identity.clone(),
                 )) as Arc<dyn NativeService>,
             );
         } else {
@@ -1083,6 +1084,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
         )
         .await
         .unwrap();
@@ -1161,6 +1163,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
         )
         .await
         .unwrap();
@@ -1242,6 +1245,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
         )
         .await
         .unwrap();
@@ -1321,6 +1325,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
         )
         .await
         .unwrap();
@@ -1410,6 +1415,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
         )
         .await
         .unwrap();
@@ -1485,6 +1491,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
         )
         .await
         .unwrap();
@@ -1561,6 +1568,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
         )
         .await
         .unwrap();
@@ -1636,6 +1644,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
         )
         .await
         .unwrap();
@@ -1725,6 +1734,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
         )
         .await
         .unwrap();
@@ -1835,6 +1845,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
         )
         .await
         .unwrap();
@@ -1990,6 +2001,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
         )
         .await
         .unwrap();
@@ -2139,6 +2151,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
         )
         .await
         .unwrap();
@@ -2270,6 +2283,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
         )
         .await
         .unwrap();
@@ -2354,6 +2368,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
         )
         .await
         .unwrap();
@@ -2428,6 +2443,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
         )
         .await
         .unwrap();
@@ -2500,6 +2516,7 @@ mod tests {
             messaging_broker.clone(),
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
         )
         .await
         .unwrap();
@@ -2750,6 +2767,7 @@ mod tests {
             messaging_broker,
             native_dispatch,
             http_routes.clone(),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
         )
         .await
         .unwrap();
@@ -2838,6 +2856,7 @@ mod tests {
             messaging_broker,
             native_dispatch,
             http_routes.clone(),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
         )
         .await
         .unwrap();
@@ -2936,6 +2955,7 @@ mod tests {
             messaging_broker,
             native_dispatch,
             Arc::new(DashMap::new()),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
         )
         .await
         .unwrap();
@@ -2987,6 +3007,7 @@ mod tests {
             messaging_broker,
             NativeDispatchRegistry::default(),
             Arc::new(DashMap::new()),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
         )
         .await
         .unwrap()
