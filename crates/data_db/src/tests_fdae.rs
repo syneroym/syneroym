@@ -67,6 +67,20 @@ fn session(subject_did: &str, capabilities: Vec<Capability>) -> SessionContext {
     }
 }
 
+fn session_with_anchor(
+    subject_did: &str,
+    anchor_did: &str,
+    capabilities: Vec<Capability>,
+) -> SessionContext {
+    SessionContext {
+        subject_did: subject_did.to_string(),
+        anchor_did: Some(anchor_did.to_string()),
+        capabilities,
+        claims: serde_json::Map::new(),
+        verified_at_secs: 0,
+    }
+}
+
 /// `document` --creator--> `user` (principal_column `did`), `view` permission
 /// reachable only via the creator relation.
 fn single_hop_policy() -> Policy {
@@ -79,6 +93,27 @@ fn single_hop_policy() -> Policy {
                     "relations": {"creator": {"target": "user", "join_column": "creator_uuid"}},
                     "permissions": {
                         "view": {"allows": ["data-layer/read"], "paths": [["creator", "caller"]]}
+                    }
+                },
+                "user": {"table": "users", "principal_column": "did"}
+            }
+        }"#,
+    )
+    .unwrap()
+}
+
+/// Same shape as `single_hop_policy`, but the `view` path terminates in
+/// `anchor` rather than `caller`.
+fn single_hop_anchor_policy() -> Policy {
+    parse_and_validate(
+        r#"{
+            "version": "fdae/v1",
+            "definitions": {
+                "document": {
+                    "table": "documents",
+                    "relations": {"creator": {"target": "user", "join_column": "creator_uuid"}},
+                    "permissions": {
+                        "view": {"allows": ["data-layer/read"], "paths": [["creator", "anchor"]]}
                     }
                 },
                 "user": {"table": "users", "principal_column": "did"}
@@ -199,6 +234,32 @@ async fn mode_b_query_excludes_unreachable_rows_not_error() {
     let ids: Vec<_> = outcome.value.records.iter().map(|r| r.id.clone()).collect();
     assert_eq!(ids, vec!["doc-1"], "bob's document must be excluded, not erred");
     assert!(outcome.masked_fields.is_empty());
+}
+
+/// The anchor terminal reaching real SQL execution end to end, not just the
+/// compiled predicate string: a proxying caller (`svc-1`) whose own DID
+/// matches nobody's rows still reaches alice's document when anchored to
+/// alice, and reaches nothing when anchored to a stranger.
+#[tokio::test]
+async fn mode_b_query_filters_by_anchor_not_by_the_proxying_caller() {
+    let store = setup_store().await;
+    seed_creator_docs(store.as_ref()).await;
+    let policy = single_hop_anchor_policy();
+    let opts = QueryOptions { filter: None, limit: None, cursor: None };
+
+    let proxying_for_alice =
+        session_with_anchor("did:key:svc-1", "did:key:alice", vec![read_cap("documents")]);
+    let auth = QueryAuth { policy: &policy, session: &proxying_for_alice, service_id: SERVICE_ID };
+    let outcome = store.query("documents", &opts, Some(&auth)).await.unwrap();
+    let ids: Vec<_> = outcome.value.records.iter().map(|r| r.id.clone()).collect();
+    assert_eq!(ids, vec!["doc-1"], "anchored to alice, must reach alice's document");
+
+    let proxying_for_a_stranger =
+        session_with_anchor("did:key:svc-1", "did:key:mallory", vec![read_cap("documents")]);
+    let auth =
+        QueryAuth { policy: &policy, session: &proxying_for_a_stranger, service_id: SERVICE_ID };
+    let outcome = store.query("documents", &opts, Some(&auth)).await.unwrap();
+    assert!(outcome.value.records.is_empty(), "anchored to a stranger, must reach nothing");
 }
 
 #[tokio::test]

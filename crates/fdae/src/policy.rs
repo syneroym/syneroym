@@ -569,8 +569,8 @@ mod tests {
     #[test]
     fn accepts_anchor_terminal_at_parse_time() {
         // `anchor` is a syntactically valid terminal at parse time
-        // regardless of compile-time support -- compile.rs (now B3) is
-        // where it resolves to a bound value.
+        // regardless of compile-time support -- compile.rs is where it
+        // resolves to a bound value.
         let doc = minimal_doc(
             r#"{"user": {"table": "users", "principal_column": "did", "permissions": {
                 "view": {"paths": [["anchor"]]}

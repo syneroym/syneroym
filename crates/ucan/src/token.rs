@@ -243,40 +243,11 @@ fn total_chain_nodes(token: &CapabilityToken) -> usize {
     1 + token.proofs.iter().map(total_chain_nodes).sum::<usize>()
 }
 
-/// Enforces the anchor-stamp propagation invariant (ADR-0015 A5, amended): a
-/// token asserting `anchor_did: Some(a)` must either self-declare (`a ==
-/// token.issuer_did`) or inherit `a` unchanged from a continuity-respecting
-/// proof (`p.audience_did == token.issuer_did` and `p.anchor_did ==
-/// Some(a)`). Any other value is rejected with a hard `Err`, aborting the
-/// whole verification -- a chain-wide provenance assertion gets no "keep the
-/// valid siblings" partial-drop; an unsubstantiated anchor makes the whole
-/// presentation untrustworthy.
-fn validate_anchor(token: &CapabilityToken) -> Result<()> {
-    let Some(anchor) = &token.anchor_did else {
-        return Ok(());
-    };
-    let self_declared = anchor == &token.issuer_did;
-    let inherited = token
-        .proofs
-        .iter()
-        .any(|p| p.audience_did == token.issuer_did && p.anchor_did.as_ref() == Some(anchor));
-    if self_declared || inherited {
-        Ok(())
-    } else {
-        Err(anyhow!(
-            "token issued by {} asserts anchor_did '{anchor}' that is neither self-declared nor \
-             inherited from a continuity-respecting proof",
-            token.issuer_did
-        ))
-    }
-}
-
 fn granted_capabilities(
     token: &CapabilityToken,
     opts: &ChainVerifyOpts<'_>,
 ) -> Result<Vec<Capability>> {
     token.verify_self(opts.now_secs)?; // fail-closed: bad link aborts
-    validate_anchor(token)?; // fail-closed: unsubstantiated anchor aborts
     let mut effective = Vec::new();
     // Verify proofs once; a proof that fails structurally makes the whole
     // presentation invalid (do not silently ignore a tampered proof).
@@ -291,6 +262,17 @@ fn granted_capabilities(
             granted_capabilities(p, opts)
         })
         .collect::<Result<_>>()?;
+    // ADR-0015 A5 (amended): a `Some(a)` anchor is self-declared (`a ==
+    // token.issuer_did`) or must be substantiated by the *same* proof that
+    // backs each admitted capability -- not merely present on some sibling
+    // proof. Otherwise a token could combine a capability from one
+    // delegation lineage with an anchor borrowed from an unrelated one (the
+    // anchor's own lineage never actually authorized this capability). A
+    // rooted capability has no delegation lineage at all, so it can never
+    // substantiate a non-self-declared anchor -- exactly the shape that
+    // matters, since a root's unconditional trust says nothing about who a
+    // *different*, delegated anchor is acting for.
+    let self_declared_anchor = token.anchor_did.as_deref() == Some(token.issuer_did.as_str());
     for cap in &token.capabilities {
         let rooted = (opts.is_trusted_root)(&token.issuer_did, cap);
         // ADR-0015 A3/A4: a parent capability only backs a child's if the
@@ -299,12 +281,30 @@ fn granted_capabilities(
         // intersective like `where`/`fields`) -- once a held capability
         // carries `can_delegate: false`, nothing derived from it can
         // attenuate any further, no matter how many hops re-wrap it.
-        let backed = parent_grants.iter().flatten().any(|pc| pc.covers(cap) && pc.can_delegate());
-        if rooted || backed {
-            effective.push(cap.clone());
+        let backing_proofs: Vec<&CapabilityToken> = token
+            .proofs
+            .iter()
+            .zip(&parent_grants)
+            .filter(|(_, grants)| grants.iter().any(|pc| pc.covers(cap) && pc.can_delegate()))
+            .map(|(p, _)| p)
+            .collect();
+        let backed = !backing_proofs.is_empty();
+        if !(rooted || backed) {
+            // dropped (fail-closed) — issuer is neither a trusted root nor
+            // holds a proof entailing this capability.
+            continue;
         }
-        // else: dropped (fail-closed) — issuer is neither a trusted root nor
-        // holds a proof entailing this capability.
+        if let Some(anchor) = &token.anchor_did
+            && !self_declared_anchor
+            && !backing_proofs.iter().any(|p| p.anchor_did.as_deref() == Some(anchor.as_str()))
+        {
+            return Err(anyhow!(
+                "token issued by {} admits capability {cap:?} under anchor_did '{anchor}', but no \
+                 proof backing that capability carries the same anchor",
+                token.issuer_did
+            ));
+        }
+        effective.push(cap.clone());
     }
     Ok(effective)
 }
@@ -1121,7 +1121,7 @@ mod tests {
         let user_a_to_svc1 = CapabilityToken::issue_with_anchor(
             &user_a,
             &svc_1_did,
-            Some(user_a_did),
+            Some(user_a_did.clone()),
             vec![cap(resource.clone(), Ability::DATA_LAYER_READ)],
             Map::new(),
             3600,
@@ -1141,12 +1141,77 @@ mod tests {
         )
         .unwrap();
 
+        // user_a roots its own grant so the capability is actually admitted
+        // (and the anchor check, which only runs against admitted
+        // capabilities, gets a chance to fire).
+        let is_root = |iss: &str, _cap: &Capability| iss == user_a_did;
         let opts = ChainVerifyOpts {
             expected_audience_did: svc_2_did,
-            is_trusted_root: &no_root,
+            is_trusted_root: &is_root,
             now_secs: now_secs().unwrap(),
         };
         let err = verify_chain(&svc1_to_svc2, &opts).unwrap_err();
+        assert!(err.to_string().contains("anchor_did"));
+    }
+
+    /// Anchor inheritance must be substantiated by the *same* proof that
+    /// backs the capability being exercised, not by an unrelated sibling
+    /// proof. `svc_1` genuinely holds two independent grants -- `medical`
+    /// from the admin root (no anchor involved) and `calendar` from
+    /// `user_a` (anchor = `user_a`) -- and combines them into one
+    /// self-issued leaf asserting `medical` under `anchor = user_a`. The
+    /// `user_a` proof never actually authorized anything about `medical`,
+    /// so this must reject even though every individual proof in the
+    /// presentation is genuine and validly signed.
+    #[test]
+    fn anchor_inherited_from_an_unrelated_capabilitys_proof_is_rejected() {
+        let admin_root = Identity::generate().unwrap();
+        let user_a = Identity::generate().unwrap();
+        let svc_1 = Identity::generate().unwrap();
+        let admin_root_did = derive_did_key(&admin_root.public_key());
+        let user_a_did = derive_did_key(&user_a.public_key());
+        let svc_1_did = derive_did_key(&svc_1.public_key());
+        let svc_2_did = "did:key:zSvc2Placeholder";
+        let medical = ResourceUri::service("app1", "medical");
+        let calendar = ResourceUri::service("app1", "calendar");
+
+        let admin_root_to_svc1 = CapabilityToken::issue(
+            &admin_root,
+            &svc_1_did,
+            vec![cap(medical.clone(), Ability::DATA_LAYER_READ)],
+            Map::new(),
+            3600,
+            vec![],
+        )
+        .unwrap();
+        let user_a_to_svc1 = CapabilityToken::issue_with_anchor(
+            &user_a,
+            &svc_1_did,
+            Some(user_a_did.clone()),
+            vec![cap(calendar, Ability::DATA_LAYER_READ)],
+            Map::new(),
+            3600,
+            vec![],
+        )
+        .unwrap();
+        let svc1_leaf = CapabilityToken::issue_with_anchor(
+            &svc_1,
+            svc_2_did,
+            Some(user_a_did),
+            vec![cap(medical, Ability::DATA_LAYER_READ)],
+            Map::new(),
+            3600,
+            vec![admin_root_to_svc1, user_a_to_svc1],
+        )
+        .unwrap();
+
+        let is_root = |iss: &str, _cap: &Capability| iss == admin_root_did;
+        let opts = ChainVerifyOpts {
+            expected_audience_did: svc_2_did,
+            is_trusted_root: &is_root,
+            now_secs: now_secs().unwrap(),
+        };
+        let err = verify_chain(&svc1_leaf, &opts).unwrap_err();
         assert!(err.to_string().contains("anchor_did"));
     }
 
@@ -1223,5 +1288,129 @@ mod tests {
             now_secs: now_secs().unwrap(),
         };
         assert!(verify_chain(&token, &opts).is_err());
+    }
+
+    /// Anchor validation runs on *every* node of the chain, not only the
+    /// presented leaf -- a mid-chain unsubstantiated-anchor rewrite must
+    /// abort the whole verification even when the leaf being verified is
+    /// two hops downstream of the violation, not the violator itself.
+    #[test]
+    fn mid_chain_anchor_rewrite_aborts_the_whole_chain_not_just_the_leaf() {
+        let user_a = Identity::generate().unwrap();
+        let svc_1 = Identity::generate().unwrap();
+        let svc_2 = Identity::generate().unwrap();
+        let mallory = Identity::generate().unwrap();
+        let user_a_did = derive_did_key(&user_a.public_key());
+        let svc_1_did = derive_did_key(&svc_1.public_key());
+        let svc_2_did = derive_did_key(&svc_2.public_key());
+        let mallory_did = derive_did_key(&mallory.public_key());
+        let svc_3_did = "did:key:zSvc3Placeholder";
+        let resource = ResourceUri::service("app1", "s1");
+
+        let user_a_to_svc1 = CapabilityToken::issue_with_anchor(
+            &user_a,
+            &svc_1_did,
+            Some(user_a_did.clone()),
+            vec![cap(resource.clone(), Ability::DATA_LAYER_READ)],
+            Map::new(),
+            3600,
+            vec![],
+        )
+        .unwrap();
+        // Mid-chain violation: svc_1 asserts an anchor it was never
+        // delegated. Not the leaf being verified below.
+        let svc1_to_svc2 = CapabilityToken::issue_with_anchor(
+            &svc_1,
+            &svc_2_did,
+            Some(mallory_did),
+            vec![cap(resource.clone(), Ability::DATA_LAYER_READ)],
+            Map::new(),
+            3600,
+            vec![user_a_to_svc1],
+        )
+        .unwrap();
+        // The leaf itself inherits consistently from its own immediate
+        // proof (svc1_to_svc2) -- its own local check would pass in
+        // isolation; only recursing into svc1_to_svc2's own violation
+        // catches this.
+        let svc2_to_svc3 = CapabilityToken::issue_with_anchor(
+            &svc_2,
+            svc_3_did,
+            Some(svc_1_did.clone()),
+            vec![cap(resource, Ability::DATA_LAYER_READ)],
+            Map::new(),
+            3600,
+            vec![svc1_to_svc2],
+        )
+        .unwrap();
+
+        let is_root = |iss: &str, _cap: &Capability| iss == user_a_did || iss == svc_1_did;
+        let opts = ChainVerifyOpts {
+            expected_audience_did: svc_3_did,
+            is_trusted_root: &is_root,
+            now_secs: now_secs().unwrap(),
+        };
+        let err = verify_chain(&svc2_to_svc3, &opts).unwrap_err();
+        assert!(err.to_string().contains("anchor_did"));
+    }
+
+    /// A continuity-broken proof cannot substantiate an inherited anchor no
+    /// matter what value it carries -- it is addressed to a third party
+    /// (`mallory`, not this token's issuer), so it never actually delegated
+    /// anything to the issuer asserting the anchor.
+    #[test]
+    fn continuity_broken_proof_cannot_substantiate_an_inherited_anchor() {
+        let user_a = Identity::generate().unwrap();
+        let svc_1 = Identity::generate().unwrap();
+        let mallory = Identity::generate().unwrap();
+        let user_a_did = derive_did_key(&user_a.public_key());
+        let svc_1_did = derive_did_key(&svc_1.public_key());
+        let mallory_did = derive_did_key(&mallory.public_key());
+        let svc_2_did = "did:key:zSvc2Placeholder";
+        let resource = ResourceUri::service("app1", "s1");
+
+        // Legitimate backing for the capability -- carries no anchor.
+        let user_a_to_svc1 = CapabilityToken::issue(
+            &user_a,
+            &svc_1_did,
+            vec![cap(resource.clone(), Ability::DATA_LAYER_READ)],
+            Map::new(),
+            3600,
+            vec![],
+        )
+        .unwrap();
+        // A real, validly-signed, correctly self-declared anchored token --
+        // but addressed to mallory, not svc_1. Continuity-broken relative
+        // to svc_1: it cannot be evidence for svc_1's anchor claim no
+        // matter what value it carries.
+        let user_a_to_mallory = CapabilityToken::issue_with_anchor(
+            &user_a,
+            &mallory_did,
+            Some(user_a_did.clone()),
+            vec![cap(resource.clone(), Ability::DATA_LAYER_READ)],
+            Map::new(),
+            3600,
+            vec![],
+        )
+        .unwrap();
+        let svc1_leaf = CapabilityToken::issue_with_anchor(
+            &svc_1,
+            svc_2_did,
+            Some(user_a_did.clone()),
+            vec![cap(resource, Ability::DATA_LAYER_READ)],
+            Map::new(),
+            3600,
+            vec![user_a_to_svc1, user_a_to_mallory],
+        )
+        .unwrap();
+
+        let is_root = |iss: &str, _cap: &Capability| iss == user_a_did;
+        let opts = ChainVerifyOpts {
+            expected_audience_did: svc_2_did,
+            is_trusted_root: &is_root,
+            now_secs: now_secs().unwrap(),
+        };
+        let err = verify_chain(&svc1_leaf, &opts).unwrap_err();
+        assert!(err.to_string().contains("anchor_did"));
     }
 }

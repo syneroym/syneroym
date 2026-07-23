@@ -1447,18 +1447,32 @@ Branch: `feat/m04b-slice-b3-anchor`. Plan:
   the two legitimate shapes: self-declaration (`anchor_did = Some(own
   DID)`) at origination, and unmodified propagation through onward
   delegation.
-- **Propagation invariant in `verify_chain`** — a new `validate_anchor`
-  check, run for every token in the chain alongside the existing
-  `verify_self`: a `Some(a)` anchor must be either self-declared (`a ==
-  token.issuer_did`) or inherited unchanged from a continuity-respecting
-  proof (`p.audience_did == token.issuer_did && p.anchor_did == Some(a)`).
-  Any other value — a service asserting an anchor it was never delegated —
-  is a hard `Err`, aborting the whole chain verification (D-B3-7: the
-  anchor is a single chain-wide provenance assertion, not one authority
-  claim among many that could be dropped in isolation).
+- **Propagation invariant in `verify_chain`** — enforced inline in
+  `granted_capabilities`, per admitted capability: a `Some(a)` anchor must
+  be either self-declared (`a == token.issuer_did`) or substantiated by the
+  *same* continuity-respecting proof that backs that specific capability
+  (`p.audience_did == token.issuer_did && p.anchor_did == Some(a) &&
+  p`'s grants cover the capability). Any other value — including an anchor
+  inherited from an unrelated sibling proof that never actually authorized
+  this capability — is a hard `Err`, aborting the whole chain verification
+  (D-B3-7: the anchor is a single chain-wide provenance assertion, not one
+  authority claim among many that could be dropped in isolation). A rooted
+  capability has no delegation lineage at all, so it can never substantiate
+  a non-self-declared anchor. *(Tightened post-review — see below; the
+  original cut bound the anchor to "any sibling proof addressed to this
+  issuer," which admitted a confused-deputy gap of its own.)*
 - **`SessionContext.anchor_did`** (`crates/ucan/src/session.rs`) —
   populated directly as `leaf.anchor_did.clone()` in `from_verified_chain`;
-  no derivation walk. `None` for a direct call.
+  no derivation walk. `None` for a direct call. Threaded into the real
+  request path: `router/src/route_handler/io.rs`'s `build_caller` — the
+  only place an inbound UCAN chain becomes a production `SessionContext` —
+  now copies `verified.anchor_did` across alongside `capabilities`/`claims`
+  (see below; missing initially).
+- **`fdae::DecisionTrace.anchor_did`** (`crates/fdae/src/trace.rs`) —
+  surfaced unconditionally alongside `subject_did` and included in both the
+  `info!`/`debug!` `tracing` emission, so an operator reading a deny/allow
+  line can tell whether a decision was made for the caller or for a
+  different principal it was proxying for.
 - **`anchor` path terminal** (`crates/fdae/src/compile.rs`) — replaces the
   B2-era compile-time stub. Resolves to
   `session.anchor_did.unwrap_or(session.subject_did)` (D-B3-1: a direct
@@ -1477,6 +1491,107 @@ Branch: `feat/m04b-slice-b3-anchor`. Plan:
   corrected to stop listing `route_handler/dispatch.rs`'s `TODO` as an
   FDAE seam (the code already reworded it to `TODO(B7b / post-B7)` and
   disclaims itself as not an FDAE question).
+
+### Post-review hardening (2026-07-23)
+
+An independent implementation review against commit `a8462d4` re-ran fmt/
+clippy/test/e2e rather than trusting this file's self-report (all
+independently confirmed green, matching the counts below), then reproduced
+several issues directly against the shipped code.
+
+**Addressed, code changed (this session, still Phase 1 scope):**
+
+- **The verified anchor never reached a production session** (critical) —
+  `build_caller` built `session` from `Default::default()` and merged only
+  `capabilities`/`claims` from the verified chain; `verified.anchor_did` was
+  never copied. Consequence: `session.anchor_did` was `None` on every real
+  request, so the `anchor` terminal always took its `subject_did` fallback
+  — a policy written with `anchor` was byte-for-byte identical to one
+  written with `caller`, silently, with no test observing it. Fixed with
+  one assignment (`session.anchor_did = verified.anchor_did;`); pinned by
+  `build_caller_threads_the_verified_anchor_did_into_the_session`, a
+  two-hop anchored chain presented end to end through `build_caller`.
+- **Anchor inheritance was not bound to the capability it travels with**
+  (high) — `validate_anchor` accepted an inherited anchor from *any*
+  sibling proof addressed to the issuer, not specifically the proof backing
+  the capability being exercised. A service could combine a capability
+  obtained from one root/lineage with an anchor obtained from an entirely
+  unrelated one. Reproduced: a service holding an admin-root-granted
+  `medical` capability and a separately-obtained `user_a`-anchored
+  `calendar` capability could self-issue a leaf asserting `medical` under
+  `anchor = user_a`, and it verified. Fixed by folding the anchor check
+  into the per-capability admission walk (see above); pinned by
+  `anchor_inherited_from_an_unrelated_capabilitys_proof_is_rejected`.
+- **The proof set sits outside the token signature, so an unsubstantiated
+  anchor could be "rescued" post-issuance** (high) — `signing_value()`
+  deliberately excludes `proofs` (documented performance tradeoff), so
+  stapling an unrelated-but-genuine anchored proof onto an already-signed
+  token could flip an anchor claim from rejected to accepted without any
+  re-signing. The capability-binding fix above closes this for the
+  reproduced shape too: a stapled proof must actually back the specific
+  capability being asserted, not merely carry a matching anchor value.
+- **The negative anchor-terminal test could not fail for the right
+  reason** (medium) — `anchor_terminal_denies_when_the_anchor_is_a_stranger`
+  used a `subject_did` that was itself a stranger to the only seeded row,
+  so the empty result proved nothing about which field the sieve actually
+  bound. Fixed: `subject_did` is now the row's real owner (`alice`), so a
+  wrongly-`caller`-bound sieve would leak and the test would catch it.
+- **Two load-bearing halves of the propagation invariant were unpinned**
+  (medium) — mid-chain enforcement (the check runs on every node via
+  `granted_capabilities`' recursion, not only the presented leaf) and the
+  continuity clause (a proof addressed to a third party cannot substantiate
+  *this* issuer's anchor, regardless of the value it carries) were both
+  correct but untested. Added
+  `mid_chain_anchor_rewrite_aborts_the_whole_chain_not_just_the_leaf` and
+  `continuity_broken_proof_cannot_substantiate_an_inherited_anchor`.
+- **The decision trace could not distinguish an anchor decision from a
+  caller decision** (medium) — see `DecisionTrace.anchor_did` above; pinned
+  by `decision_trace_records_the_anchor_did`.
+- **Anchor coverage stopped at Mode B, single-hop, unit level** (medium) —
+  added `anchor_terminal_holds_in_point_in_time_mode` (Mode A/
+  `check_access`, a boolean allow/deny rather than a missing row),
+  `anchor_terminal_holds_across_a_multi_hop_chain` (`emit_chain`'s terminal
+  resolution, a separate code path from the single-hop case),
+  `anchor_terminal_holds_on_a_recursive_relation` (`emit_fused_recursive`,
+  reusing the cyclic eve/frank/mallory manager graph), and
+  `crates/data_db/src/tests_fdae.rs`'s
+  `mode_b_query_filters_by_anchor_not_by_the_proxying_caller` (the anchor
+  reaching real SQL execution through `ServiceStore`, not just the compiled
+  predicate string — `tests_fdae.rs` previously never constructed a session
+  with a non-`None` anchor at all).
+- **Planning-doc identifiers in code, including one in a user-visible
+  error** (low) — `policy.rs`'s `accepts_anchor_terminal_at_parse_time`
+  comment and `compile.rs`'s `resolve_hops` doc comment dropped their
+  slice-ID references (AGENTS.md); `compile.rs`'s remote-relation error
+  string ("cross-service relations require B3", surfaced to a policy
+  author) reworded to "are not yet supported."
+
+**Recorded, not code changes:**
+
+- **The token wire-format break plan §2.2 asked to be called out was
+  unrecorded** (low) — `anchor_did` joining `signing_value()` changes the
+  signed payload (`canonicalize_json_value` preserves null-valued keys, so
+  `"anchor_did": null` is now part of every signed body), so **no token
+  issued before this phase verifies against the code in this branch**. No
+  fixtures in the tree are affected, and this is acceptable pre-release
+  (no migrations policy), but it is a real break for any externally-saved
+  token (e.g. from `roymctl identity issue-grant`) and is called out here
+  per the plan's explicit request, not silently absorbed into "the anchor
+  field is new."
+- **No operator-facing way to mint an anchored token** (low) —
+  `apps/roymctl/src/commands/identity.rs`'s `issue-grant` calls
+  `CapabilityToken::issue` with no anchor argument or flag; nothing outside
+  the unit/integration tests in this repo can produce or consume an
+  anchored chain today. Out of this phase's scope (the plan asked only for
+  the library API), but a **Phase 4 prerequisite**: the e2e reference
+  scenario for steps 22-23 will need a way to issue an anchored grant from
+  the CLI.
+
+Verification after the code changes above:
+`cargo test -p syneroym-ucan` (56/56), `-p syneroym-fdae` (64/64), `-p
+syneroym-data-db` (138/138) — see the updated counts below;
+`cargo +nightly fmt --all` clean; `cargo clippy --workspace --all-targets
+--all-features` zero warnings.
 
 ### Explicitly out of Phase 1 scope (recorded, not silently dropped)
 
@@ -1501,7 +1616,7 @@ Branch: `feat/m04b-slice-b3-anchor`. Plan:
 
 ### Tests
 
-- **`crates/ucan`** (`token.rs`, new `#[test]`s) — chain-shape table:
+- **`crates/ucan`** (`token.rs`, 10 new `#[test]`s) — chain-shape table:
   `owner_rooted_anchor_propagates_through_two_service_hops`,
   `admin_rooted_anchor_self_stamps_at_first_service_delegation`,
   `three_hop_pass_through_anchor_survives_every_hop`,
@@ -1509,12 +1624,29 @@ Branch: `feat/m04b-slice-b3-anchor`. Plan:
   cases: `middle_service_rewriting_anchor_to_an_undelegated_principal_is_rejected`
   (hard `Err`), `self_declared_downgrade_to_acting_as_self_is_accepted`,
   `anchor_did_tamper_after_signing_fails_signature_verification` (signature
-  covers `anchor_did`).
-- **`crates/fdae`** (`compile.rs`, new `#[test]`s) —
+  covers `anchor_did`),
+  `anchor_inherited_from_an_unrelated_capabilitys_proof_is_rejected` (the
+  post-review capability-binding fix),
+  `mid_chain_anchor_rewrite_aborts_the_whole_chain_not_just_the_leaf`,
+  `continuity_broken_proof_cannot_substantiate_an_inherited_anchor`.
+- **`crates/router`** (`route_handler/io.rs`, 1 new `#[test]`) —
+  `build_caller_threads_the_verified_anchor_did_into_the_session`: a real
+  two-hop anchored chain presented end to end through `build_caller`,
+  asserting `CallerContext.session.anchor_did`.
+- **`crates/fdae`** (`compile.rs`, 7 new `#[test]`s) —
   `anchor_terminal_filters_by_the_original_principal_not_the_caller`
   (a proxying caller's `subject_did` differs from its `anchor_did`; the
   sieve filters by the anchor), `anchor_terminal_falls_back_to_subject_did_when_anchor_is_absent`
-  (D-B3-1), `anchor_terminal_denies_when_the_anchor_is_a_stranger`.
+  (D-B3-1), `anchor_terminal_denies_when_the_anchor_is_a_stranger`
+  (discriminating: `subject_did` is the row's real owner, so a
+  wrongly-`caller`-bound sieve would leak), `decision_trace_records_the_anchor_did`,
+  `anchor_terminal_holds_in_point_in_time_mode`,
+  `anchor_terminal_holds_across_a_multi_hop_chain`,
+  `anchor_terminal_holds_on_a_recursive_relation`.
+- **`crates/data_db`** (`tests_fdae.rs`, 1 new `#[test]`) —
+  `mode_b_query_filters_by_anchor_not_by_the_proxying_caller`: the anchor
+  terminal reaching real SQL execution through `ServiceStore`, not just the
+  compiled predicate string.
 - Every `SessionContext` struct literal enumerating all fields explicitly
   (rather than using `..Default::default()`) needed `anchor_did` added to
   compile: `crates/fdae/src/compile.rs` (2 sites), `crates/data_db/src/tests_fdae.rs`,
@@ -1524,27 +1656,41 @@ Branch: `feat/m04b-slice-b3-anchor`. Plan:
 
 ### Verification evidence
 
+Final, post-review-hardening numbers (superseding the pre-review figures the
+first draft of this entry cited):
+
 - `cargo +nightly fmt --all` — clean.
-- `cargo clippy --workspace --all-targets --all-features` — zero warnings
-  (one `doc_lazy_continuation` warning surfaced and was fixed by adding a
-  blank line before `issue_with_anchor`'s trailing paragraph).
-- `cargo test -p syneroym-ucan` — 53 passed, 0 failed (46 prior + 7 new
-  anchor-stamp tests).
-- `cargo test -p syneroym-fdae` — 60 passed, 0 failed (57 prior + 3 new
-  anchor-terminal tests).
-- `cargo test -p syneroym-data-db` — 137 passed, 0 failed, unchanged
-  (only `SessionContext` literal updates, no behavior change).
-- `cargo test --workspace --no-fail-fast` — every crate this phase
-  touched or that constructs a `SessionContext`/`CapabilityToken` passes
-  100%: `syneroym-ucan` (53), `syneroym-fdae` (60), `syneroym-data-db`
-  (137), `syneroym-control-plane` (45), `syneroym-router` (71 lib + 9 + 18
-  + 4 + 10 + 2 + 2 across its six integration binaries),
-  `syneroym-sandbox-wasm` (42 lib + 5 + 2 + 6 + 3 + 13 across its five
-  integration binaries). The only failures are the same pre-existing
-  sandbox socket-bind class Phase 4/5 documented — `Operation not
-  permitted` / `PermissionDenied` binding a real port under this CLI's
-  default network sandbox: `coordinator-iroh` (`connection_limit`,
-  `multi_hop_relay`, `tls_rotation`), `mqtt-broker`
+- `cargo clippy --workspace --all-targets --all-features` — zero warnings.
+  Two warnings surfaced and were fixed during this phase: a
+  `doc_lazy_continuation` in `issue_with_anchor`'s doc comment (missing
+  blank line before its trailing paragraph), and a `collapsible_if` in the
+  post-review anchor-substantiation check (folded into a single `if let …
+  && …` chain).
+- `cargo test -p syneroym-ucan` — **56 passed**, 0 failed (46 original +
+  7 Phase 1 anchor-stamp tests + 3 post-review: the capability-binding
+  attack case, mid-chain enforcement, continuity-clause enforcement).
+- `cargo test -p syneroym-fdae` — **64 passed**, 0 failed (57 original + 3
+  Phase 1 anchor-terminal tests + 4 post-review: decision-trace anchor,
+  Mode A, multi-hop, recursive).
+- `cargo test -p syneroym-data-db` — **138 passed**, 0 failed (137 original
+  `SessionContext`-literal-only change + 1 post-review: the anchor reaching
+  real SQL execution through `ServiceStore`).
+- `cargo test -p syneroym-router --lib` — **72 passed**, 0 failed (71
+  original + 1 post-review: `build_caller` threading `anchor_did`).
+- `cargo test --workspace --no-fail-fast` — every crate this phase touched
+  passes 100%: `syneroym-ucan` (56), `syneroym-fdae` (64),
+  `syneroym-data-db` (138), `syneroym-control-plane` (45),
+  `syneroym-router` (72 lib + 9 + 18 + 4 + 10 + 2 + 2 across its six
+  integration binaries, including `guest_self_proxy_data_layer_returns_empty_when_policy_present`
+  confirmed still passing unchanged — D-04-02-h ingress (ii) is not closed
+  by this phase), `syneroym-sandbox-wasm` (42 lib + 5 + 2 + 6 + 3 + 13
+  across its five integration binaries, including
+  `test_deployed_policy_yields_empty_guest_originated_query_d04_02_h`
+  likewise confirmed unchanged). The only failures are the same
+  pre-existing sandbox socket-bind class Phase 4/5 documented —
+  `Operation not permitted` / `PermissionDenied` binding a real port under
+  this CLI's default network sandbox: `coordinator-iroh`
+  (`connection_limit`, `multi_hop_relay`, `tls_rotation`), `mqtt-broker`
   (`no_network_listener_is_bound`), `sdk` (`connect_timeout`), and
   `substrate`'s e2e-adjacent binaries (`basic_lifecycle`,
   `http_passthrough_e2e`, `messaging_client_e2e`, `stream_client_e2e`) —

@@ -18,6 +18,15 @@ pub struct DecisionTrace {
     pub service_id: String,
     /// The caller's DID, so a deny line is attributable to a principal.
     pub subject_did: String,
+    /// `session.anchor_did` (ADR-0015 A5, amended), surfaced unconditionally
+    /// alongside `subject_did` -- mirroring how `subject_did` itself is
+    /// recorded regardless of whether any evaluated permission's path
+    /// actually terminates in it. `None` for a direct call with no distinct
+    /// anchor. Without this, an operator reading the trace has no way to
+    /// tell whether a decision was made for `subject_did` or for a
+    /// different principal it was proxying for -- exactly the distinction
+    /// the anchor mechanism exists to make auditable.
+    pub anchor_did: Option<String>,
     /// The grant(s) (`with::can`) evaluated for this decision.
     pub held: Vec<String>,
     /// Whether any held capability grants the requested operation on this
@@ -58,6 +67,7 @@ impl DecisionTrace {
                 collection = %self.collection,
                 service_id = %self.service_id,
                 subject_did = %self.subject_did,
+                anchor_did = ?self.anchor_did,
                 held = ?self.held,
                 operation_admitted = self.operation_admitted,
                 applicable_permissions = ?self.applicable_permissions,
@@ -73,6 +83,7 @@ impl DecisionTrace {
                 collection = %self.collection,
                 service_id = %self.service_id,
                 subject_did = %self.subject_did,
+                anchor_did = ?self.anchor_did,
                 held = ?self.held,
                 operation_admitted = self.operation_admitted,
                 applicable_permissions = ?self.applicable_permissions,
