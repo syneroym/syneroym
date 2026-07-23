@@ -230,11 +230,19 @@ struct RelationshipProof {
 /// addition (D-B3-6), not something this phase relies on.
 const RELATIONSHIP_PROOF_TTL_SECS: u64 = 60;
 
-fn now_secs() -> u64 {
+/// B3-09: returns an error rather than a bogus timestamp on failure. The
+/// only way `duration_since(UNIX_EPOCH)` fails is a system clock set
+/// before 1970 -- vanishingly unlikely, but this value feeds a
+/// cryptographically **signed** artifact, unlike an ordinary internal
+/// timestamp field: silently minting `valid_until_secs = 60` (Unix epoch +
+/// the TTL) would leave the node's own signature attesting to a claim it
+/// never intended, and any TTL-checking consumer would see an
+/// inexplicably-decades-stale proof instead of the actual clock fault.
+fn now_secs() -> RpcResult<u64> {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .map_err(|e| internal(format!("system clock is before the Unix epoch: {e}")))
 }
 
 /// Signs `ids` as a [`RelationshipProof`] asserted by `identity`. The
@@ -252,7 +260,7 @@ fn sign_relationship_proof(
         relation: relation.to_string(),
         principal: principal.to_string(),
         ids,
-        valid_until_secs: now_secs() + RELATIONSHIP_PROOF_TTL_SECS,
+        valid_until_secs: now_secs()? + RELATIONSHIP_PROOF_TTL_SECS,
         signature: String::new(),
     };
     let unsigned = serde_json::to_value(&proof)
@@ -341,13 +349,16 @@ impl SynSvcNativeService {
     /// request here (native dispatch, `dispatch_json_rpc_once`).
     ///
     /// **A1 vs. A2 (D-B3-3), mutually exclusive per request, not a fallback
-    /// chain:** if the caller holds *any* capability at all, only **A1**
-    /// (the existing capability-gated sieve, via `ServiceStore::query`) is
+    /// chain:** if the caller holds a capability scoped to *this resource*
+    /// (§ B3-07: not merely *any* capability -- an unrelated grant on some
+    /// other collection must not change the answer), only **A1** (the
+    /// existing capability-gated sieve, via `ServiceStore::query`) is
     /// attempted -- an empty result is a real, final deny, never silently
     /// widened by A2. **A2** (a bare `principal_column` match, gated only by
     /// the definition's own `resolvable_without_capability` opt-in) applies
-    /// only when the caller holds zero capabilities, so a real-but-denied
-    /// A1 decision can never be second-guessed by the looser A2 model.
+    /// only when the caller holds no capability scoped here, so a
+    /// real-but-denied A1 decision can never be second-guessed by the
+    /// looser A2 model.
     async fn resolve_relation(
         &self,
         invocation: &NativeInvocation,
@@ -361,13 +372,24 @@ impl SynSvcNativeService {
         let req: Req = parse_params(invocation)?;
 
         // The wire caller must be re-verified as exactly the principal
-        // being asked about. The router has already re-verified whatever
-        // proof this request carried into `invocation.caller.session`
-        // (identical to every other native-dispatch method), so that
-        // identity is the only trustworthy source of "who is asking" --
-        // `principal` is a caller-declared label that must match it, never
-        // a free parameter naming an arbitrary third party.
-        if req.principal != invocation.caller.session.subject_did {
+        // being asked about -- either the direct verified identity or the
+        // anchor it's proxying for (`anchor_did.unwrap_or(subject_did)`,
+        // the same fallback `compile::terminal_value`/`emit_remote_terminal`
+        // use). B3 exists precisely because `caller != anchor`: a forwarded
+        // chain `alice -> svc-A` re-verifies here with `subject_did =
+        // svc-A` (whoever actually authenticated this connection) and
+        // `anchor_did = alice`, while `RemoteFetch.principal_did` is always
+        // the anchor -- comparing against `subject_did` alone would reject
+        // every genuinely cross-service ask. `principal` is still a
+        // caller-declared label that must match one of these, never a free
+        // parameter naming an arbitrary third party.
+        let effective_principal = invocation
+            .caller
+            .session
+            .anchor_did
+            .as_deref()
+            .unwrap_or(&invocation.caller.session.subject_did);
+        if req.principal != effective_principal {
             return Err(data_layer_error(DataLayerError::PermissionDenied));
         }
 
@@ -403,7 +425,23 @@ impl SynSvcNativeService {
             return to_payload(&proof);
         };
 
-        let ids = if invocation.caller.session.capabilities.is_empty() {
+        // B3-07: the A1/A2 fork is keyed on whether the caller holds *any*
+        // capability scoped to *this resource* -- not on whether they hold
+        // capabilities at all, which would make the fork's outcome depend
+        // on unrelated grants a chain happens to carry. Mirrors the same
+        // resource-matching `Capability::grants` uses internally.
+        let resource = ResourceUri(format!(
+            "{}/collection/{table}",
+            ResourceUri::service(&self.service_id, &self.service_id).0
+        ));
+        let has_scoped_capability = invocation
+            .caller
+            .session
+            .capabilities
+            .iter()
+            .any(|cap| cap.with.is_substrate_scope() || cap.with.covers_resource(&resource));
+
+        let ids = if !has_scoped_capability {
             match syneroym_fdae::resolve_structural(policy, &req.relation, &req.principal) {
                 Ok(Some(resolved)) => {
                     let sql = format!(
@@ -414,6 +452,24 @@ impl SynSvcNativeService {
                     );
                     let params: Vec<SqlValue> =
                         resolved.params.into_iter().map(SqlValue::Text).collect();
+                    // B3-06: `query_raw`'s own doc comment documents itself
+                    // as privileged ("callers must have already verified
+                    // `data-layer/admin`"), a contract this call
+                    // deliberately does not satisfy -- the caller reaching
+                    // this branch holds *no* relevant capability at all
+                    // (that's the A2 fork condition above). Safe anyway,
+                    // for reasons specific to this one call site, not a
+                    // general precedent: (1) the SQL text and every bound
+                    // identifier come from `resolve_structural`, whose
+                    // `table`/`principal_column`/`join_column` are all
+                    // constrained by the policy schema's
+                    // `^[A-Za-z_][A-Za-z0-9_]*$` `sql_identifier` pattern,
+                    // so there is no caller-controlled string reaching the
+                    // query text; (2) the actual authorization gate is
+                    // `Definition::resolvable_without_capability`, an
+                    // explicit per-definition opt-in the *policy author*
+                    // controls -- `query_raw`'s admin check would be
+                    // redundant with, not a replacement for, that gate.
                     let raw = store.query_raw(&sql, &params).await.map_err(data_layer_error)?;
                     extract_id_column(raw)?
                 }
@@ -424,11 +480,17 @@ impl SynSvcNativeService {
                 Err(e) => return Err(internal(e.to_string())),
             }
         } else {
-            let auth = QueryAuth {
-                policy,
-                session: &invocation.caller.session,
-                service_id: &self.service_id,
-            };
+            // The evaluation session presents the *effective principal*
+            // (already validated above) as `subject_did`, not necessarily
+            // the immediate connection identity -- resolve-relation answers
+            // "what can the principal reach," so a `caller`-terminal path in
+            // the remote's *own* policy must bind to that principal, per
+            // the same confused-deputy reasoning `emit_remote_terminal`
+            // documents. The real capabilities present on the connection are
+            // unchanged; only the identity they're evaluated against shifts.
+            let mut session = invocation.caller.session.clone();
+            session.subject_did = req.principal.clone();
+            let auth = QueryAuth { policy, session: &session, service_id: &self.service_id };
             let opts = QueryOptions {
                 filter: None,
                 limit: Some(u32::try_from(MAX_FETCH_IDS).unwrap_or(u32::MAX)),

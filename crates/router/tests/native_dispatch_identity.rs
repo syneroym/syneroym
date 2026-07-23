@@ -31,7 +31,7 @@ use syneroym_core::{
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
 use syneroym_data_db::SqliteStorageProvider;
 use syneroym_data_keystore::KeyStore;
-use syneroym_fdae::{Policy, parse_and_validate};
+use syneroym_fdae::{FetchResult, MAX_FETCH_IDS, Mode, Policy, parse_and_validate};
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
 use syneroym_router::{
     AdaptationStage, EncryptionStage, RouteHandler, RouteHandlerDeps, RoutePipeline, RoutePreamble,
@@ -1355,9 +1355,12 @@ fn employee_reader_caller(subject_did: &str, service_id: &str) -> CallerContext 
     }
 }
 
-/// A verified caller holding a capability that grants nothing on
-/// `employee` -- exercises A1's real (not-A2-rescued) deny.
-fn unrelated_capability_caller(subject_did: &str, service_id: &str) -> CallerContext {
+/// A verified caller holding a capability scoped to a **different**
+/// resource entirely -- B3-07: the A1/A2 fork must key on capabilities
+/// scoped to *this* resource, not "holds any capability at all", so this
+/// caller correctly routes to A2 (as if capability-less for `employees`),
+/// not to a real-but-unrelated A1 grant check.
+fn unrelated_resource_capability_caller(subject_did: &str, service_id: &str) -> CallerContext {
     CallerContext {
         caller_did: subject_did.to_string(),
         app_instance: None,
@@ -1366,6 +1369,38 @@ fn unrelated_capability_caller(subject_did: &str, service_id: &str) -> CallerCon
             capabilities: vec![Capability {
                 with: native_fdae_resource(service_id, "some_other_collection"),
                 can: Ability(Ability::DATA_LAYER_READ.to_string()),
+                caveats: None,
+            }],
+            ..Default::default()
+        },
+        auth: AuthLevel::Delegated,
+        proof: None,
+    }
+}
+
+/// A verified caller holding a capability scoped to the **right**
+/// resource (`employees`) but for an ability `view_self`'s `allows:
+/// ["data-layer/read"]` doesn't cover -- routes to A1 (a capability *is*
+/// scoped here), which then genuinely denies via the grant∩policy
+/// intersection. Exercises A1's real (not-A2-rescued) deny.
+///
+/// Must be an ability data-layer/read doesn't entail: the `data-layer`
+/// namespace is a *tiered* hierarchy (`admin ⊇ write ⊇ read`,
+/// `Ability::entails`), so `data-layer/write` would actually cover
+/// `data-layer/read` here -- a flat, unrelated ability (`blob/read`) is
+/// what genuinely fails to entail it.
+fn wrong_ability_on_the_right_resource_caller(
+    subject_did: &str,
+    service_id: &str,
+) -> CallerContext {
+    CallerContext {
+        caller_did: subject_did.to_string(),
+        app_instance: None,
+        session: SessionContext {
+            subject_did: subject_did.to_string(),
+            capabilities: vec![Capability {
+                with: native_fdae_resource(service_id, "employees"),
+                can: Ability(Ability::BLOB_READ.to_string()),
                 caveats: None,
             }],
             ..Default::default()
@@ -1442,6 +1477,97 @@ async fn resolve_relation_service_and_pipeline(
     (route_handler, pipeline, preamble, temp_dir)
 }
 
+/// Seeds `count` employee rows, all sharing `did` (so a single principal's
+/// `view_self`/structural lookup reaches all of them), via `batch-mutate`
+/// calls capped at `data_db`'s own `MAX_BATCH_SIZE` (200) per call --
+/// needed to construct an id-set bigger than `MAX_FETCH_IDS` (1000) for
+/// the overflow tests below.
+async fn seed_many_employees(
+    route_handler: &RouteHandler,
+    pipeline: &RoutePipeline,
+    preamble: &RoutePreamble,
+    did: &str,
+    count: usize,
+) {
+    const BATCH: usize = 200;
+    let seeder = test_caller("did:key:z6MkBulkSeeder");
+    let mut seeded = 0usize;
+    while seeded < count {
+        let this_batch = BATCH.min(count - seeded);
+        let mutations: Vec<Value> = (0..this_batch)
+            .map(|i| {
+                let id = format!("emp-bulk-{}", seeded + i);
+                json!({
+                    "type": "put",
+                    "value": {"id": id, "payload": json!({"did": did}).to_string().into_bytes()}
+                })
+            })
+            .collect();
+        let body = json_rpc_body(
+            "batch-mutate",
+            json!({"collection": "employees", "mutations": mutations}),
+        );
+        let resp = route_handler
+            .dispatch_json_rpc_once(pipeline, preamble, Some(&seeder), &body)
+            .await
+            .unwrap();
+        let resp: Value = serde_json::from_slice(&resp).unwrap();
+        assert!(resp.get("error").is_none(), "bulk seeding failed: {resp:?}");
+        seeded += this_batch;
+    }
+}
+
+/// B3 plan §5 fan-out containment: A1's `ServiceStore::query` limit is
+/// `MAX_FETCH_IDS` (1000); when more rows are actually reachable,
+/// `next_cursor` comes back `Some`, and `resolve_relation` must map that
+/// to `quota-exceeded`, not silently return a truncated -- and therefore
+/// incomplete but misleadingly-final-looking -- 1000-id answer.
+#[tokio::test]
+async fn resolve_relation_a1_overflow_maps_to_quota_exceeded() {
+    let service_id = "resolve-relation-a1-overflow-svc";
+    let (route_handler, pipeline, preamble, _temp_dir) =
+        resolve_relation_service_and_pipeline(service_id, Some(resolvable_employee_policy())).await;
+    seed_many_employees(&route_handler, &pipeline, &preamble, "did:key:alice", MAX_FETCH_IDS + 1)
+        .await;
+
+    let alice = employee_reader_caller("did:key:alice", service_id);
+    let body = resolve_relation_body("employee", "did:key:alice");
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&alice), &body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert_eq!(
+        resp["error"]["code"], -32013,
+        "an A1 result exceeding MAX_FETCH_IDS must map to quota-exceeded: {resp:?}"
+    );
+}
+
+/// The A2 mirror: `query_raw`'s explicit `LIMIT MAX_FETCH_IDS + 1` is what
+/// makes the overflow observable at all (raw SQL has no automatic page cap
+/// the way `query` does) -- confirms it's actually wired up, not merely
+/// present in the SQL text.
+#[tokio::test]
+async fn resolve_relation_a2_overflow_maps_to_quota_exceeded() {
+    let service_id = "resolve-relation-a2-overflow-svc";
+    let (route_handler, pipeline, preamble, _temp_dir) =
+        resolve_relation_service_and_pipeline(service_id, Some(resolvable_employee_policy())).await;
+    seed_many_employees(&route_handler, &pipeline, &preamble, "did:key:bob", MAX_FETCH_IDS + 1)
+        .await;
+
+    let bob = zero_capability_caller("did:key:bob");
+    let body = resolve_relation_body("employee", "did:key:bob");
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&bob), &body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert_eq!(
+        resp["error"]["code"], -32013,
+        "an A2 result exceeding MAX_FETCH_IDS must map to quota-exceeded: {resp:?}"
+    );
+}
+
 fn resolve_relation_body(relation: &str, principal: &str) -> Vec<u8> {
     json_rpc_body("resolve-relation", json!({"relation": relation, "principal": principal}))
 }
@@ -1477,17 +1603,43 @@ async fn resolve_relation_a1_resolves_via_the_capability_gated_sieve_and_verifie
         .expect("the returned proof must verify against its own asserter_did");
 }
 
-/// A1's real deny (a capability that grants nothing on `employee`) is
-/// final -- it must **not** be rescued by A2, even though the definition
-/// has opted into `resolvable_without_capability`. Mutually exclusive per
-/// request, not a fallback chain (D-B3-3).
+/// B3-07: a capability scoped to a completely unrelated resource must not
+/// change the answer relative to holding zero capabilities -- it routes to
+/// A2 (structural resolution), the same as `zero_capability_caller` would,
+/// not to a real-but-irrelevant A1 grant check.
+#[tokio::test]
+async fn resolve_relation_an_unrelated_resource_capability_still_gets_a2() {
+    let service_id = "resolve-relation-unrelated-resource-svc";
+    let (route_handler, pipeline, preamble, _temp_dir) =
+        resolve_relation_service_and_pipeline(service_id, Some(resolvable_employee_policy())).await;
+
+    let caller = unrelated_resource_capability_caller("did:key:alice", service_id);
+    let body = resolve_relation_body("employee", "did:key:alice");
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&caller), &body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert!(resp.get("error").is_none(), "resolve-relation must succeed: {resp:?}");
+    assert_eq!(
+        resp["result"]["ids"],
+        json!(["emp-alice"]),
+        "an unrelated-resource capability must not block A2's structural resolution: {resp:?}"
+    );
+}
+
+/// A1's real deny (a capability scoped to `employees` but for an ability
+/// `view_self` doesn't cover) is final -- it must **not** be rescued by
+/// A2, even though the definition has opted into
+/// `resolvable_without_capability`. Mutually exclusive per request, not a
+/// fallback chain (D-B3-3).
 #[tokio::test]
 async fn resolve_relation_a1_deny_is_not_rescued_by_a2() {
     let service_id = "resolve-relation-a1-deny-svc";
     let (route_handler, pipeline, preamble, _temp_dir) =
         resolve_relation_service_and_pipeline(service_id, Some(resolvable_employee_policy())).await;
 
-    let mallory = unrelated_capability_caller("did:key:alice", service_id);
+    let mallory = wrong_ability_on_the_right_resource_caller("did:key:alice", service_id);
     let body = resolve_relation_body("employee", "did:key:alice");
     let resp = route_handler
         .dispatch_json_rpc_once(&pipeline, &preamble, Some(&mallory), &body)
@@ -1616,4 +1768,161 @@ async fn resolve_relation_is_empty_when_no_policy_is_deployed() {
     let resp: Value = serde_json::from_slice(&resp).unwrap();
     assert!(resp.get("error").is_none());
     assert_eq!(resp["result"]["ids"], json!([]));
+}
+
+/// The join the review calls out as missing: `plan_read` (`crates/fdae`)
+/// -> `resolve-relation` (native dispatch on a *second*, distinct service)
+/// -> `finalize`, wired together by hand -- there is no `ServiceProxy`
+/// orchestration yet (Phase 4), so this test plays that role manually --
+/// proving the sender and receiver actually agree on what they're asking
+/// each other, not just that each half is correct in isolation. This is
+/// exactly the test that would have caught B3-01 (principal mismatch) and
+/// B3-02 (relation namespace mismatch) immediately; both are fixed, and
+/// this pins the fix at the seam where they were found.
+#[tokio::test]
+async fn plan_read_resolve_relation_finalize_join_end_to_end() {
+    // -- the remote (data-owning) service: hr-svc. `resolvable_employee_policy`
+    // seeds emp-alice (did:key:alice) and emp-bob (did:key:bob).
+    let hr_service_id = "hr-svc-join-test";
+    let (hr_route_handler, hr_pipeline, hr_preamble, _hr_temp_dir) =
+        resolve_relation_service_and_pipeline(hr_service_id, Some(resolvable_employee_policy()))
+            .await;
+
+    // -- the local (requesting) service: app-svc, whose own policy names a
+    // remote relation pointing at hr-svc.
+    let local_service_id = "app-svc-join-test";
+    let local_policy = parse_and_validate(
+        r#"{
+            "version": "fdae/v1",
+            "definitions": {
+                "document": {
+                    "table": "documents",
+                    "relations": {"owner": {
+                        "target": "employee", "service": "hr-svc", "join_column": "owner_uuid"
+                    }},
+                    "permissions": {
+                        "view": {"allows": ["data-layer/read"], "paths": [["owner", "anchor"]]}
+                    }
+                }
+            }
+        }"#,
+    )
+    .unwrap();
+
+    // A caller presenting as `svc-A` (whoever actually authenticated this
+    // connection to app-svc) proxying for anchor `alice`.
+    let proxying_service = SessionContext {
+        subject_did: "did:key:svc-A".to_string(),
+        anchor_did: Some("did:key:alice".to_string()),
+        capabilities: vec![Capability {
+            // Scoped to "document" (the `collection` string this test
+            // passes to `plan_read` below), not "documents" -- `plan_read`
+            // builds its resource URI from whatever `collection` argument
+            // it's called with directly, unlike `ServiceStore::query`'s
+            // literal-table-name addressing.
+            with: native_fdae_resource(local_service_id, "document"),
+            can: Ability(Ability::DATA_LAYER_READ.to_string()),
+            caveats: None,
+        }],
+        ..Default::default()
+    };
+
+    // Step 1: `plan_read` on the *local* policy -- must produce a
+    // `RemoteFetch` (B2's old behavior was to fail closed here), asking
+    // about the anchor, never the proxying caller.
+    let mut plan = syneroym_fdae::plan_read(
+        &local_policy,
+        "document",
+        &proxying_service,
+        local_service_id,
+        &Ability(Ability::DATA_LAYER_READ.to_string()),
+        Mode::Filter,
+    )
+    .unwrap();
+    assert!(
+        plan.local.is_none(),
+        "a policy needing a remote fetch must not resolve to a local sieve"
+    );
+    assert_eq!(plan.fetches.len(), 1);
+    let fetch = plan.fetches[0].clone();
+    assert_eq!(fetch.service, "hr-svc");
+    assert_eq!(fetch.relation, "employee", "B3-02: the wire relation is the remote object type");
+    assert_eq!(fetch.principal_did, "did:key:alice", "B3-01: the fetch asks about the anchor");
+
+    // Step 2: issue the fetch as a *real* resolve-relation call against
+    // hr-svc's native dispatch -- standing in for Phase 4's orchestration,
+    // which would forward the anchor's own re-verified identity as the
+    // wire caller of this specific request (the piece Phase 4 still needs
+    // to build; here it's constructed by hand to close the loop).
+    let anchor_as_direct_caller = test_caller(&fetch.principal_did);
+    let anchor_as_direct_caller = CallerContext {
+        session: SessionContext {
+            subject_did: fetch.principal_did.clone(),
+            ..anchor_as_direct_caller.session
+        },
+        ..anchor_as_direct_caller
+    };
+    let resolve_body = resolve_relation_body(&fetch.relation, &fetch.principal_did);
+    let resolve_resp = hr_route_handler
+        .dispatch_json_rpc_once(
+            &hr_pipeline,
+            &hr_preamble,
+            Some(&anchor_as_direct_caller),
+            &resolve_body,
+        )
+        .await
+        .unwrap();
+    let resolve_resp: Value = serde_json::from_slice(&resolve_resp).unwrap();
+    assert!(resolve_resp.get("error").is_none(), "resolve-relation must succeed: {resolve_resp:?}");
+    let ids: Vec<String> = resolve_resp["result"]["ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["emp-alice"],
+        "hr-svc must resolve alice's own employee row: {resolve_resp:?}"
+    );
+
+    // Step 3: `finalize` the plan with the real fetched id-set, and run
+    // the resulting sieve against a locally-seeded `documents` table --
+    // the same raw-SQL verification `crates/fdae`'s own `finalize` tests
+    // use, proving the compiled predicate is not just well-typed but
+    // actually correct.
+    let pending = plan.pending.take().unwrap();
+    let sieve = syneroym_fdae::finalize(pending, &[FetchResult { slot: fetch.slot, ids }]).unwrap();
+
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE documents (
+            id TEXT PRIMARY KEY, creator_id TEXT, created_at INTEGER, updated_at INTEGER,
+            payload TEXT NOT NULL DEFAULT '{}'
+        );",
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO documents (id, payload) VALUES ('doc-1', ?1)",
+        [json!({"owner_uuid": "emp-alice"}).to_string()],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO documents (id, payload) VALUES ('doc-2', ?1)",
+        [json!({"owner_uuid": "emp-bob"}).to_string()],
+    )
+    .unwrap();
+
+    let sql = format!("SELECT id FROM documents WHERE {} ORDER BY id", sieve.where_clause);
+    let mut stmt = conn.prepare(&sql).unwrap();
+    let visible: Vec<String> = stmt
+        .query_map(rusqlite::params_from_iter(sieve.params.iter()), |row| row.get(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert_eq!(
+        visible,
+        vec!["doc-1"],
+        "only alice's own document is reachable through the full plan -> fetch -> finalize join"
+    );
 }

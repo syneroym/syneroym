@@ -451,6 +451,24 @@ fn validate_path(
                      table to keep joining through past a cross-service relation)"
                 )));
             }
+            // `caller` is rejected outright here, not silently reinterpreted
+            // as `anchor` -- a remote fetch always asks the data-owning node
+            // about the original principal (`compile::emit_remote_terminal`
+            // unconditionally binds `session.anchor_did.unwrap_or(subject_did)`,
+            // ignoring whatever terminal word the path names), so a policy
+            // author who writes `caller` on a remote path would otherwise
+            // get `anchor` semantics -- a strictly *broader* principal in any
+            // proxied chain -- with no error and no warning. The
+            // confused-deputy defense this exists for is exactly the reason
+            // this must be a loud parse-time error instead of an invisible
+            // substitution.
+            if terminal != "anchor" {
+                return Err(PolicyError::Semantic(format!(
+                    "definition '{start_type}' permission '{perm_name}' path's remote relation \
+                     '{rel_name}' must terminate in 'anchor', not '{terminal}' -- a remote fetch \
+                     always resolves against the original principal, never the proxying caller"
+                )));
+            }
             // A remote relation's target isn't locally resolvable (it lives
             // in another service's policy), so the rest of this path can't
             // be validated here (there is none left, per the check above).
@@ -607,6 +625,38 @@ mod tests {
         );
         let err = parse_and_validate(&doc).unwrap_err();
         assert!(matches!(err, PolicyError::Semantic(_)));
+    }
+
+    /// B3-04: a `caller` terminal on a path whose last hop is remote is a
+    /// parse-time error, not a silent substitution of `anchor` --
+    /// `compile::emit_remote_terminal` unconditionally binds the anchor
+    /// regardless of the declared terminal word, so accepting `caller` here
+    /// would let a policy author write one thing and get another
+    /// (`anchor` is the *broader* principal in any proxied chain).
+    #[test]
+    fn rejects_a_caller_terminal_on_a_remote_relation_path() {
+        let doc = minimal_doc(
+            r#"{"document": {"table": "documents", "relations": {"owner": {
+                "target": "employee", "service": "hr-svc", "join_column": "owner_uuid"
+            }}, "permissions": {"view": {
+                "allows": ["data-layer/read"], "paths": [["owner", "caller"]]
+            }}}}"#,
+        );
+        let err = parse_and_validate(&doc).unwrap_err();
+        assert!(matches!(err, PolicyError::Semantic(_)));
+    }
+
+    /// The mirror: `anchor` on the same shape is accepted.
+    #[test]
+    fn accepts_an_anchor_terminal_on_a_remote_relation_path() {
+        let doc = minimal_doc(
+            r#"{"document": {"table": "documents", "relations": {"owner": {
+                "target": "employee", "service": "hr-svc", "join_column": "owner_uuid"
+            }}, "permissions": {"view": {
+                "allows": ["data-layer/read"], "paths": [["owner", "anchor"]]
+            }}}}"#,
+        );
+        parse_and_validate(&doc).unwrap();
     }
 
     #[test]

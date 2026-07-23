@@ -2077,3 +2077,215 @@ unfiltered dump), `resolve_relation_denies_when_principal_does_not_match_the_cal
   change and no reference-scenario-visible behavior yet (the actual
   cross-service fetch a Playwright spec could observe is Phase 4). Same
   reasoning and precedent as every prior phase's own skip.
+
+### Post-review hardening (2026-07-24)
+
+Independent review against commit `279d284`, delivered as a rendered
+findings artifact rather than inline comments. Re-ran fmt/clippy/`cargo
+test --workspace`/`mise run test:e2e` independently rather than trusting
+this file's self-report before reviewing, and verified several claims by
+hand against SQLite directly (`sqlite3` CLI), not just by reading the code.
+Nine findings, two blocking, five correctness, two hygiene. All nine were
+independently re-verified against the code in this session before being
+addressed -- none were pushed back on; the review's reasoning held up in
+every case, including two places where my own earlier design summary
+(stated to the user before implementing) didn't match what the code
+actually did (B3-01, B3-07).
+
+**B3-01 (Blocking) -- `resolve_relation` rejected exactly the request the
+planning side builds.** The principal check compared `req.principal`
+against `session.subject_did` alone, but `RemoteFetch.principal_did` is
+unconditionally the anchor -- B3 exists precisely because `caller !=
+anchor`. A forwarded chain `alice -> svc-A` re-verifies on the receiving
+node with `subject_did = svc-A` (whoever authenticated the connection) and
+`anchor_did = alice`; comparing only against `subject_did` denied every
+genuinely cross-service ask, unconditionally. Fixed: compare against
+`anchor_did.unwrap_or(subject_did)`, the same fallback
+`terminal_value`/`emit_remote_terminal` already use. A1's `QueryAuth`
+session also hands `invocation.caller.session` straight through, which
+would bind a remote policy's own `caller`-terminal paths to the relaying
+connection's identity rather than the principal being asked about --
+fixed by evaluating A1 under a session whose `subject_did` is the already-
+validated effective principal, leaving the real capabilities on the
+connection untouched.
+
+**B3-02 (Blocking) -- sender and receiver disagreed on what `relation`
+names.** The sender put `hop.name` (the *local* relation edge name, a key
+in the requesting policy's own `Definition.relations`) on the wire; the
+receiver resolved that same string through `definition_table`/
+`resolve_structural`, which match the *remote's own* object-type keys and
+table names -- two different namespaces, silently. An ordinary
+`document.owner -> {service: "hr-svc", target: "employee"}` sent
+`"owner"`; hr-svc has no definition called `owner`, so it returned an
+empty id-set indistinguishable from a legitimate deny. Fixed: the sender
+now registers `hop.relation.target` (the remote object type) instead of
+`hop.name` -- matches the plan's own "the remote maps logical->physical
+with its own `definitions:`" framing, and is the value a remote operator
+can actually be told to declare a matching definition for.
+
+**B3-03 (Correctness) -- `IN (NULL)` is `NULL`, not `false`, and inverts
+under `NOT`.** `finalize`'s empty-id-set substitution was `{col} IN
+(NULL)`, which the doc comment claimed was "always false" -- under
+SQLite's three-valued logic it's `NULL`, indistinguishable from `false` in
+a bare `WHERE` but **not** inverting under `NOT` (`NOT NULL` is `NULL`,
+never `true`). An `exclusion`-operator permission with a remote hop that
+legitimately resolves to nobody would deny every row instead of excluding
+none. Verified against `sqlite3` directly (`SELECT typeof('x' IN
+(NULL))` -- `'null'`). Fixed: the marker now stands for the whole `{expr}
+IN (...)` predicate, and an empty id-set substitutes `IN (SELECT 1 WHERE
+0)` -- an empty-subquery membership test, unambiguously `false` (also
+verified directly: `SELECT 'x' IN (SELECT 1 WHERE 0), NOT (...)` -- `0,
+1`). Fails toward over-restriction, never a leak, but a real
+wrong-answer path with no prior test coverage.
+
+**B3-04 (Correctness) -- a `caller` terminal on a remote path silently
+meant `anchor`.** `emit_remote_terminal` never received the path's
+declared terminal word at all, and unconditionally bound the anchor --
+correct for *security* (a remote fetch must always resolve against the
+original principal), but it meant a policy author writing `["owner",
+"caller"]` got `anchor` semantics (the *broader* principal in any proxied
+chain) with no error and no warning. The pre-fix dedupe test actually
+depended on this silent substitution to produce its result. Fixed:
+`policy::validate_path` now rejects `caller` as the terminal of a
+remote-relation-terminated path at parse time -- the confused-deputy
+argument is exactly the argument for a loud error, not an invisible
+rewrite.
+
+**B3-05 (Correctness) -- fetch dedupe dropped the remote object type.**
+`FetchCtx::register` deduped on `(service, relation)` where `relation` was
+the local edge name; `document.owner -> hr-svc:employee` and
+`folder.owner -> hr-svc:employee` (different local names, same remote
+type) needed to collapse, but `document.owner -> hr-svc:employee` and
+`document.department -> hr-svc:team` (different remote types) did not --
+and the old key couldn't tell the two apart. Resolved as a direct
+consequence of B3-02's fix: `relation` is now the remote type, so the
+existing dedupe key is automatically correct. Pinned by two new tests
+(same-type-different-local-name collapses to one fetch;
+different-remote-types stay distinct).
+
+**B3-06 (Correctness) -- A2 calls `query_raw` without the capability it
+documents itself as requiring.** `ServiceStore::query_raw`'s own doc
+comment: "callers must have already verified the `data-layer/admin`
+capability." The A2 structural branch reaches it for a caller holding no
+relevant capability at all. Not exploitable as written -- the SQL and
+every interpolated identifier come from `resolve_structural`, constrained
+by the policy schema's `sql_identifier` pattern -- but an undocumented
+exception to a stated security contract is exactly the kind of thing that
+rots under later edits. Fixed: documented at the call site (why this one
+exception is safe) and in `query_raw`'s own trait doc comment (so the
+contract stays honest for the next reader, not silently narrower than it
+states).
+
+**B3-07 (Correctness) -- A1 vs. A2 was selected by "holds any capability
+at all."** `invocation.caller.session.capabilities.is_empty()` meant a
+capability for a completely unrelated collection on an unrelated service
+routed a caller to A1 (a real-but-irrelevant grant check, empty result)
+instead of A2 (which might resolve). The identical principal asking the
+identical question with zero capabilities got a different answer than
+with an unrelated one -- and this actually diverged from what I'd told the
+user the design would do ("zero capabilities *scoped to this remote
+service*") before implementing it. Fixed: the fork now checks whether any
+capability's `with` covers the resolved resource (or is substrate-scoped),
+mirroring `Capability::grants`'s own resource-matching predicate, not
+merely whether the list is empty.
+
+**B3-08 (Hygiene) -- a fail-closed `compile_read` left only an allow-shaped
+trace.** `plan_read` emits its `DecisionTrace` unconditionally, before its
+caller decides what to do with a non-empty `fetches` -- so when
+`compile_read` immediately turns that into a hard deny, the only log
+record was `operation_admitted: true`, `path_failed: None`, and a
+`compiled_predicate` full of raw `@@FDAE_FETCH_...@@` markers. Fixed:
+`compile_read` now emits a second, correctly-shaped deny trace naming the
+unresolved fetch when it rejects a plan.
+
+**B3-09 (Hygiene) -- a clock failure minted a proof stamped 1970 + 60s.**
+`now_secs()` swallowed a `SystemTime` error with `unwrap_or(0)`; any real
+clock fault would silently sign a `RelationshipProof` with a `valid_until_secs`
+decades in the past instead of surfacing the fault. Safe direction (any
+TTL-checking consumer treats it as expired), but a signed artifact
+attesting to a claim the node never intended to make is a different class
+of problem than an internal bookkeeping field -- fixed by propagating the
+error instead of signing a known-bogus timestamp.
+
+**Test coverage added, beyond fixing the nine findings:**
+- `plan_read_resolve_relation_finalize_join_end_to_end`
+  (`crates/router/tests/native_dispatch_identity.rs`) -- the join the
+  review named as the single biggest gap: `plan_read` (real `crates/fdae`
+  call) -> `resolve-relation` (real native dispatch against a *second*,
+  distinct registered service) -> `finalize` -> real SQLite execution,
+  wired by hand since there is no `ServiceProxy` orchestration yet (Phase
+  4). This is the test that would have caught B3-01 and B3-02
+  immediately; it now pins both fixes at the seam where they were found.
+- `finalize_binds_two_distinct_remote_fetches_at_the_correct_offsets` /
+  `..._regardless_of_result_order` -- the `params_index + shift` insertion
+  arithmetic under two genuinely distinct remote fetches (different
+  target types, an `intersection` permission), previously verified only
+  by hand-tracing, not a test.
+- `finalize_holds_in_point_in_time_mode_over_a_remote_relation` -- plan
+  §1.2's "one fetch shape serves both modes" claim, actually run for Mode
+  A, not just asserted.
+- `finalize_exclusion_operator_with_an_empty_remote_fetch_excludes_nobody`
+  -- the B3-03 regression.
+- `resolve_relation_a1_overflow_maps_to_quota_exceeded` /
+  `..._a2_overflow_maps_to_quota_exceeded` -- 1001-row fan-out over both
+  the A1 (`next_cursor`) and A2 (explicit `LIMIT MAX_FETCH_IDS + 1`)
+  paths, seeded via `batch-mutate` rather than 1001 individual calls.
+- `resolve_relation_an_unrelated_resource_capability_still_gets_a2` /
+  `resolve_relation_a1_deny_is_not_rescued_by_a2` (rewritten) -- B3-07's
+  fixed fork predicate, both directions: an unrelated-resource capability
+  now correctly gets A2 (previously it incorrectly got a real-but-empty
+  A1); a same-resource-but-non-covering-ability capability (`blob/read`
+  scoped to `employees` -- `data-layer/write` was tried first and
+  rejected as a test case, since the `data-layer` namespace's tiered
+  hierarchy means `write` actually entails `read`) still correctly routes
+  to A1 and is denied there, not rescued by A2.
+- `rejects_a_caller_terminal_on_a_remote_relation_path` /
+  `accepts_an_anchor_terminal_on_a_remote_relation_path` -- B3-04's parse-
+  time rejection.
+- `plan_read_does_not_dedupe_fetches_to_different_remote_target_types` --
+  B3-05, alongside a strengthened
+  `plan_read_dedupes_repeated_fetches_to_the_same_remote_relation` (now
+  exercises dedup via two distinct local relation names converging on the
+  same remote type, instead of relying on the caller/anchor substitution
+  B3-04 removed).
+- `compile_read_emits_its_own_deny_trace_when_a_remote_fetch_is_needed` --
+  B3-08, using the same `tracing`-capture pattern
+  `compile_read_emits_a_deny_via_tracing` already established.
+- `definition_table_resolves_by_key_or_table_case_insensitively` -- the
+  new helper B3-01/B3-07's fixes both depend on.
+
+Also renamed for accuracy (no behavior change): `compile_read`'s pinned
+remote-relation test (`remote_relation_fails_closed_at_compile_time` ->
+`compile_read_fails_closed_when_a_remote_fetch_is_needed`, since the
+*reason* changed from "unsupported" to "compile_read specifically can't
+resolve it") and `finalize`'s empty-id-set test (`..._as_in_null_...` ->
+`..._as_a_false_empty_subquery_...`, matching B3-03's fix).
+
+**`crates/router/Cargo.toml`** gained a `rusqlite` dev-dependency (already
+deep in the workspace via `data_db`/`fdae`, not previously exposed to
+`router`'s own test binaries) -- needed for the join test's final
+real-SQL verification step.
+
+Verification after all nine fixes and the new tests above: `cargo
++nightly fmt --all` clean; `cargo clippy --workspace --all-targets
+--all-features` zero warnings; `cargo test -p syneroym-fdae` -- **89
+passed**, 0 failed; `cargo test -p syneroym-control-plane --lib` -- **45
+passed**, 0 failed (unchanged -- this pass touched no new
+`control_plane`-crate unit tests, only integration coverage in `router`);
+`cargo test -p syneroym-router --lib --tests` -- **158 passed**, 0 failed
+across the lib (72, unchanged) and all six integration binaries
+(`deploy_grant` 9, `native_dispatch_identity` 29 -- 25 baseline + 4 new:
+the join test, the unrelated-resource-capability pin, and the two
+overflow tests, `proxy_dispatch` 4, `service_ownership` 10, `ucan_context`
+2, `unsupported_protocol` 2 -- all unchanged); `cargo test -p
+syneroym-ucan` / `-p syneroym-data-db` / `-p syneroym-sandbox-wasm` --
+unchanged from the pre-review baseline (56 / 138 / 42 lib respectively).
+`cargo test --workspace --no-fail-fast` -- the same nine pre-existing,
+sandbox-environmental targets fail (`coordinator-iroh`'s
+`connection_limit`/`multi_hop_relay`/`tls_rotation`, `mqtt-broker`'s lib
+tests, `sdk`'s `connect_timeout`, `substrate`'s
+`basic_lifecycle`/`http_passthrough_e2e`/`messaging_client_e2e`/`stream_client_e2e`),
+identical to every prior phase's own documented list -- nothing new,
+nothing in a crate this review's fixes touched. `mise run test:e2e` --
+not run, same reasoning as the phase's own entry above: still no
+WIT/`wasm32-wasip2` change, still no reference-scenario-visible behavior.
