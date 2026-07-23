@@ -118,9 +118,9 @@ fn tcp_manifest(port: u16) -> DeployManifest {
             args: vec![],
             custom_config: None,
             quota: None,
-            schema_path: None,
+            schema: None,
             rotation_policy: None,
-            fdae_policy_path: None,
+            fdae_policy: None,
         },
         service_type: ServiceType::Tcp(TcpManifest {
             endpoints: vec![NetworkEndpoint {

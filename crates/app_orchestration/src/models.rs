@@ -223,11 +223,32 @@ pub struct ServiceConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quota: Option<ResourceQuota>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub schema_path: Option<String>,
+    pub schema: Option<DocumentRef>,
     #[serde(default)]
     pub rotation_policy: RotationPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fdae: Option<FdaeManifest>,
+}
+
+/// Author-side declaration of a deploy-time document.
+///
+/// A bare string is read by the client and shipped inline -- the same thing a
+/// bare `source` already means for a Wasm component, and what makes a deploy
+/// work against a substrate with nothing pre-staged. `{ remote_path = "..." }`
+/// defers resolution to the substrate host instead, for large or shared assets
+/// and operator-managed directories.
+///
+/// A relative bare path resolves against the **client process's working
+/// directory**, not the manifest's own directory, matching `source` exactly
+/// (`util::read_local_artifact`). Rebasing both onto the manifest's parent
+/// would be friendlier, but doing it for documents alone would leave two
+/// sibling manifest fields resolving differently, which is worse than either
+/// rule on its own.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum DocumentRef {
+    Local(String),
+    Remote { remote_path: String },
 }
 
 /// Optional declarative ReBAC policy for this service (ADR-0017 §1).
@@ -236,7 +257,7 @@ pub struct ServiceConfig {
 /// the policy layer's default-*absent* (ADR-0017 §2.1).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FdaeManifest {
-    pub policy_path: String,
+    pub policy: DocumentRef,
 }
 
 /// Represents the spec of a service in the application manifest.
@@ -466,14 +487,54 @@ mod tests {
             depends_on = []
 
             [services.identity.fdae]
-            policy_path = "fdae-policy.json"
+            policy = "fdae-policy.json"
         "#;
 
         let manifest = SynAppManifest::from_toml(toml_str).unwrap();
         let identity = manifest.services.get(&LogicalServiceName::new("identity")).unwrap();
         assert_eq!(
             identity.config.fdae,
-            Some(FdaeManifest { policy_path: "fdae-policy.json".to_string() })
+            Some(FdaeManifest { policy: DocumentRef::Local("fdae-policy.json".to_string()) })
+        );
+
+        let serialized = manifest.to_toml().unwrap();
+        let deserialized = SynAppManifest::from_toml(&serialized).unwrap();
+        assert_eq!(manifest, deserialized);
+    }
+
+    /// The bare-string and explicit-`remote_path` forms are one field, so a
+    /// manifest can say "ship this with the deploy" or "the substrate already
+    /// has it" without a second key that has to be kept mutually exclusive.
+    #[test]
+    fn test_manifest_parsing_toml_with_remote_document_refs() {
+        let toml_str = r#"
+            id = "syneroym:guild-app"
+            version = "0.1.0"
+
+            [services.identity]
+            service_type = "wasm"
+            source = "crates/sandbox_wasm/benches/identity.wasm"
+            schema = { remote_path = "/etc/syneroym/schemas/shared.json" }
+
+            [services.identity.fdae]
+            policy = { remote_path = "/etc/syneroym/policies/guild.json" }
+        "#;
+
+        let manifest = SynAppManifest::from_toml(toml_str).unwrap();
+        let identity = manifest.services.get(&LogicalServiceName::new("identity")).unwrap();
+        assert_eq!(
+            identity.config.schema,
+            Some(DocumentRef::Remote {
+                remote_path: "/etc/syneroym/schemas/shared.json".to_string()
+            })
+        );
+        assert_eq!(
+            identity.config.fdae,
+            Some(FdaeManifest {
+                policy: DocumentRef::Remote {
+                    remote_path: "/etc/syneroym/policies/guild.json".to_string()
+                }
+            })
         );
 
         let serialized = manifest.to_toml().unwrap();
@@ -546,7 +607,7 @@ mod tests {
                     args: vec![],
                     custom_config: None,
                     quota: None,
-                    schema_path: None,
+                    schema: None,
                     rotation_policy: RotationPolicy::RestartOnRotation,
                     fdae: None,
                 },
@@ -660,7 +721,7 @@ mod tests {
                     args: vec![],
                     custom_config: None,
                     quota: None,
-                    schema_path: None,
+                    schema: None,
                     rotation_policy: RotationPolicy::RestartOnRotation,
                     fdae: None,
                 },

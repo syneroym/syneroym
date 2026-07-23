@@ -77,10 +77,17 @@ On `deploy`, the orchestrator:
 
 ### Schema Validation
 
-If `ServiceManifest.config.schema_path` is set, the orchestrator validates
-`custom_config` against the referenced JSON Schema using the `jsonschema` crate
-before writing the generation row. Deployment fails with a structured error
-listing all violations. Validation fires at deploy time, not at runtime.
+If `config.schema` is set, the orchestrator validates `custom_config` against
+the referenced JSON Schema using the `jsonschema` crate before writing the
+generation row. Deployment fails with a structured error listing all
+violations. Validation fires at deploy time, not at runtime.
+
+> **Amended by [ADR-0019](0019-deploy-time-artifact-delivery.md) (2026-07-22).**
+> This field was `schema_path: option<string>` — a path on the substrate host,
+> with no way to upload the document, so a schema could only be used if
+> someone staged it out of band. It is now `schema: option<document-source>`,
+> carrying either inline content or a host-side path. Nothing about the
+> validation itself changed.
 
 ### Podman Compatibility
 

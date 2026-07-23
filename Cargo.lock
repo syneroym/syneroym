@@ -7939,6 +7939,7 @@ dependencies = [
  "syneroym-core",
  "syneroym-data-db",
  "syneroym-wit-interfaces",
+ "tempfile",
  "tokio",
  "tracing",
 ]
@@ -7993,6 +7994,7 @@ dependencies = [
  "syneroym-router",
  "syneroym-rpc",
  "syneroym-wit-interfaces",
+ "tempfile",
  "tokio",
  "tracing",
 ]

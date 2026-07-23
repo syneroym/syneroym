@@ -19,3 +19,6 @@ async-trait.workspace = true
 serde_json.workspace = true
 metrics.workspace = true
 syneroym-data-db.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

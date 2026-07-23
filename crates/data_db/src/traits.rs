@@ -106,7 +106,7 @@ pub trait StorageProvider: Send + Sync {
 
     /// Removes a service's persisted FDAE policy, if any. Idempotent:
     /// deleting an absent row is not an error. Called from `undeploy` and
-    /// from a `deploy` whose manifest no longer declares `fdae_policy_path`
+    /// from a `deploy` whose manifest no longer declares `fdae_policy`
     /// -- without this, a service's `fdae_policies` row outlives the
     /// manifest that declared it, and `AppSandboxEngine::resolve_fdae_policy`
     /// resurrects it from storage on the next cache miss even though native

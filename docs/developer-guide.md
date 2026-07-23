@@ -262,15 +262,38 @@ Any deployed service (WASM, TCP, or container) may declare a `config.fdae`
 block naming a declarative ReBAC policy document, validated at deploy:
 ```toml
 [services.my-svc.fdae]
-policy_path = "fdae-policy.json"
+policy = "fdae-policy.json"
 ```
-or, in the raw `deploy` JSON-RPC `config` above:
+A bare path is read **client-side** and the document travels inside the
+deploy call — the same treatment a bare `source` already gets for a Wasm
+component. That is what lets a deploy against a remote substrate work
+with nothing pre-staged on it.
+
+Like `source`, a relative path resolves against **your shell's working
+directory**, not the manifest's location — so run `roymctl` from the
+directory the paths are written relative to (usually the app's root).
+
+To point at a document the substrate already holds instead — a large or
+shared asset, or an operator-managed policy directory — say so explicitly
+under the same key:
+```toml
+[services.my-svc.fdae]
+policy = { remote_path = "/etc/syneroym/policies/guild.json" }
+```
+That path is resolved on the substrate's side, relative to its working
+directory, under a path-traversal guard. `config.schema` (the JSON Schema
+validating `custom_config`) takes exactly the same two forms.
+
+In the raw `deploy` JSON-RPC `config` above, the two arms are tagged:
 ```json
-"config": { "env": [], "args": [], "custom_config": null, "fdae_policy_path": "fdae-policy.json" }
+"config": { "env": [], "args": [], "custom_config": null,
+            "fdae_policy": { "inline": "{\"version\":\"fdae/v1\", ...}" } }
 ```
-The path is read **on the substrate's side**, relative to its working
-directory (identical resolution to `schema_path`, with the same
-path-traversal guard) — not fetched from the caller. The document itself
+```json
+"config": { "env": [], "args": [], "custom_config": null,
+            "fdae_policy": { "path": "/etc/syneroym/policies/guild.json" } }
+```
+Either way the document itself
 must be **JSON** (ADR-0017's own examples are YAML for readability only; the
 compiler is `serde_json::from_str`). A malformed or schema-invalid policy is
 a hard deploy failure, so an author finds out at deploy time, not the first
@@ -352,7 +375,8 @@ curl -X POST http://localhost:7960/ \
             "volumes": [
               {
                 "host_path": "html",
-                "container_path": "/usr/share/nginx/html"
+                "container_path": "/usr/share/nginx/html",
+                "files": []
               }
             ]
           }
@@ -362,6 +386,49 @@ curl -X POST http://localhost:7960/ \
     "id": 1
   }'
 ```
+
+##### Mounting Configuration Files into a Container
+
+Many off-the-shelf images read their configuration from a file rather than
+from environment variables (which is all `custom_config` gives them — it is
+flattened into `-e KEY=VALUE`). Such a service is deployed by giving the
+volume a `files` list; the substrate writes each entry into the volume
+before the container starts:
+
+```json
+"volumes": [
+  {
+    "host_path": "conf",
+    "container_path": "/etc/nginx/conf.d",
+    "files": [
+      {
+        "relative_path": "default.conf",
+        "content": { "inline": "server { listen 80; }" }
+      }
+    ]
+  }
+]
+```
+
+`content` takes the same two arms as `fdae_policy` above — `inline` for a
+document carried in the deploy call, `path` for one the substrate already
+holds. In a `SynApp` manifest the client resolves a bare path for you:
+
+```toml
+files = [ { relative_path = "default.conf", content = "./nginx.conf" } ]
+```
+
+Three behaviors worth knowing:
+- A volume with a non-empty `files` list is mounted **read-only** — it is
+  configuration the substrate owns, not scratch space.
+- Such a volume is materialized fresh on every deploy, so a file dropped
+  from the manifest disappears from the mount.
+- A volume with an empty `files` list is left alone entirely — an empty,
+  writable directory on first deploy, and untouched on later ones, so a
+  container's own data survives a redeploy. The one edge this leaves: if a
+  volume *had* files and a later deploy drops the list, the old files stay
+  on disk and the mount reverts to writable. Use a different `host_path`,
+  or undeploy first, when converting a config volume back to scratch.
 
 #### Developing Podman Services Locally
 When developing a Podman container service for Syneroym:
