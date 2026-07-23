@@ -493,7 +493,7 @@ dependencies = [
  "http 1.4.2",
  "http-body 1.1.0",
  "http-body-util",
- "hyper 1.10.1",
+ "hyper 1.11.0",
  "hyper-util",
  "itoa",
  "matchit 0.7.3",
@@ -528,7 +528,7 @@ dependencies = [
  "http 1.4.2",
  "http-body 1.1.0",
  "http-body-util",
- "hyper 1.10.1",
+ "hyper 1.11.0",
  "hyper-util",
  "itoa",
  "matchit 0.8.4",
@@ -603,7 +603,7 @@ dependencies = [
  "fs-err",
  "http 1.4.2",
  "http-body 1.1.0",
- "hyper 1.10.1",
+ "hyper 1.11.0",
  "hyper-util",
  "pin-project-lite",
  "rustls",
@@ -2066,7 +2066,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.2",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2350,7 +2350,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3176,9 +3176,9 @@ dependencies = [
 
 [[package]]
 name = "hyper"
-version = "1.10.1"
+version = "1.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "55281c53a1894c864990125767da440a4e630446785086f52523b20033b74498"
+checksum = "d22053281f852e11534f5198498373cbb59295120a20771d90f7ed1897490a72"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -3203,7 +3203,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "33ca68d021ef39cf6463ab54c1d0f5daf03377b70561305bb89a8f83aab66e0f"
 dependencies = [
  "http 1.4.2",
- "hyper 1.10.1",
+ "hyper 1.11.0",
  "hyper-util",
  "rustls",
  "rustls-native-certs",
@@ -3225,12 +3225,12 @@ dependencies = [
  "futures-util",
  "http 1.4.2",
  "http-body 1.1.0",
- "hyper 1.10.1",
+ "hyper 1.11.0",
  "ipnet",
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "system-configuration",
  "tokio",
  "tower-service",
@@ -3401,7 +3401,7 @@ dependencies = [
  "futures",
  "http 1.4.2",
  "http-body-util",
- "hyper 1.10.1",
+ "hyper 1.11.0",
  "hyper-util",
  "log",
  "rand 0.9.5",
@@ -3568,7 +3568,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "761b45ba046134b11eb3e432fa501616b45c4bf3a30c21717578bc07aa6461dd"
 dependencies = [
  "http-body-util",
- "hyper 1.10.1",
+ "hyper 1.11.0",
  "hyper-util",
  "iroh-metrics-derive",
  "itoa",
@@ -3612,7 +3612,7 @@ dependencies = [
  "hickory-resolver",
  "http 1.4.2",
  "http-body-util",
- "hyper 1.10.1",
+ "hyper 1.11.0",
  "hyper-util",
  "iroh-base",
  "iroh-metrics",
@@ -3675,7 +3675,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4196,7 +4196,7 @@ dependencies = [
  "axum 0.8.9",
  "chrono",
  "clap",
- "hyper 1.10.1",
+ "hyper 1.11.0",
  "hyper-util",
  "mime_guess",
  "rusqlite",
@@ -4526,7 +4526,7 @@ dependencies = [
  "pin-project-lite",
  "rustc-hash",
  "rustls",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
@@ -4570,7 +4570,7 @@ checksum = "bb9be4fedd6b98f3ba82ccd3506f4d0219fb723c3f97c67e12fe1494aa020e44"
 dependencies = [
  "cfg_aliases",
  "libc",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "tracing",
  "windows-sys 0.61.2",
 ]
@@ -4611,7 +4611,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4822,7 +4822,7 @@ dependencies = [
  "http 1.4.2",
  "http-body-util",
  "humantime",
- "hyper 1.10.1",
+ "hyper 1.11.0",
  "itertools 0.14.0",
  "md-5",
  "parking_lot",
@@ -5598,7 +5598,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -5639,9 +5639,9 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6009,7 +6009,7 @@ dependencies = [
  "http 1.4.2",
  "http-body 1.1.0",
  "http-body-util",
- "hyper 1.10.1",
+ "hyper 1.11.0",
  "hyper-rustls",
  "hyper-util",
  "js-sys",
@@ -6052,7 +6052,7 @@ dependencies = [
  "http 1.4.2",
  "http-body 1.1.0",
  "http-body-util",
- "hyper 1.10.1",
+ "hyper 1.11.0",
  "hyper-rustls",
  "hyper-util",
  "js-sys",
@@ -6332,7 +6332,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6435,7 +6435,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6456,7 +6456,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6581,7 +6581,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5b55fb86dfd3a2f5f76ea78310a88f96c4ea21a3031f8d212443d56123fd0521"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -7879,7 +7879,7 @@ dependencies = [
  "futures",
  "hex",
  "http-body-util",
- "hyper 1.10.1",
+ "hyper 1.11.0",
  "hyper-util",
  "iroh",
  "iroh-relay",
@@ -8177,7 +8177,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -9814,7 +9814,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
