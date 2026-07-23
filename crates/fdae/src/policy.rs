@@ -568,9 +568,9 @@ mod tests {
 
     #[test]
     fn accepts_anchor_terminal_at_parse_time() {
-        // B2 defers `anchor` to B3 at *compile* time (compile.rs), not
-        // parse time -- the schema/model accept it as a syntactically valid
-        // terminal so a B3 policy document round-trips through B2's parser.
+        // `anchor` is a syntactically valid terminal at parse time
+        // regardless of compile-time support -- compile.rs is where it
+        // resolves to a bound value.
         let doc = minimal_doc(
             r#"{"user": {"table": "users", "principal_column": "did", "permissions": {
                 "view": {"paths": [["anchor"]]}

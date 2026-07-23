@@ -376,7 +376,7 @@ Mode-A enforcement, depends on B2's `check_access` + D-04-02-f).
 | `crates/data_db/src/sqlite.rs` | CRUD/query building, single-writer + reader-pool model. Query path is where the compiled `WHERE EXISTS` block is injected |
 | `crates/rpc/src/native.rs` | **Shipped (B0):** `NativeInvocation.caller: CallerContext` carries the verified `caller_did` + `SessionContext` Tier 3 filters against |
 | `crates/rpc/src/proxy.rs:51` | **Shipped (A1):** Substrate-internal proxy path already reserved for "the FDAE policy engine's relationship-proof fetch" — B3's stage-2 transport |
-| In-code seams | `TODO(M04B/FDAE)` markers mark the wire-in points: `router/src/route_handler/dispatch.rs` (Tier-1 admission — see D-04-02-e), `router/src/proxy.rs` (interim coarse gate → FDAE), `control_plane/src/service.rs` (security-op authz) |
+| In-code seams | `TODO(M04B/FDAE)` markers mark the wire-in points: `router/src/proxy.rs` (interim coarse gate → FDAE, closed by Slice B3's cross-service fetch), `control_plane/src/service.rs` (security-op authz, a Tier-2 grant-layer gate out of B3 scope — see the B3 plan §4.1). *(Stale as of B3: `router/src/route_handler/dispatch.rs`'s marker was reworded in code to `TODO(B7b / post-B7)` and explicitly disclaims itself as not an FDAE/M04B question — it was never a third FDAE seam.)* |
 | [ADR-0007](../../../decisions/0007-data-layer-wit-interface.md) | "No result is a valid outcome" principle — unauthorized rows are *excluded*, not errored |
 | — | **Gaps:** no FDAE policy model, no ReBAC→SQL compiler, no RLS/CLS, no cross-service fetch, no stage-4 ABAC — no `fdae` crate or `policy`/`rebac` module exists in `crates/data_db/src/` |
 
@@ -471,12 +471,24 @@ deferred `anchor_did` to real UCAN chains, B7.md:1119-1124). B3 is A5's first
 real consumer: cross-service chains are the first place `caller ≠ anchor` is
 real and e2e-testable, and a row policy on the data-owning node must filter by
 the **original principal (`anchor`)**, not the proxying service (`caller`) — the
-confused-deputy defense. Adds `SessionContext.anchor_did: Option<String>`
-(populated in `from_verified_chain` as the audience of the first non-root token)
-and the compiler's `anchor` path-terminal (B2 ships `caller` only and errors on
-`anchor`). A5's full `path` *list* binding stays deferred (no near-term
-consumer). *(This supersedes access-control-design.md:996's "B7 is the first
-real consumer" line for A5 specifically.)*
+confused-deputy defense. Adds `SessionContext.anchor_did: Option<String>`,
+populated in `from_verified_chain` directly from `leaf.anchor_did` — an
+explicit **signed stamp** on `CapabilityToken`, self-declared at origination
+and propagated immutably by each issuer's signature, per ADR-0015 A5's
+2026-07-23 amendment (this supersedes the ADR's original "audience of the
+first non-root token" derivation wording, which was ambiguous across chain
+shapes) — and the compiler's `anchor` path-terminal (B2 ships `caller` only
+and errors on `anchor`). A5's full `path` *list* binding stays deferred (no
+near-term consumer). *(This supersedes access-control-design.md:996's "B7 is
+the first real consumer" line for A5 specifically.)*
+
+**Phase 1** (the anchor stamp: signed `CapabilityToken.anchor_did` +
+`verify_chain`'s propagation invariant, `SessionContext.anchor_did`, the
+`anchor` path-terminal, the ADR-0015 A5 amendment) — done on
+`feat/m04b-slice-b3-anchor`. Self-contained: no cross-service fetch, no
+`ServiceProxy`/WIT changes, and the D-04-02-h ingress tests are unchanged
+(closing them needs the orchestration seam, a later phase). Full evidence:
+`status.md`.
 
 #### Slice B4-fdae: Stage-4 WASM ABAC
 **Depends on:** B2 (candidate rows come from the sieve). May fold into B2's

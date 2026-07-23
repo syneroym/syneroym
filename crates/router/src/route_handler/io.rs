@@ -241,6 +241,7 @@ async fn build_caller(
                 for (k, v) in verified.claims {
                     session.claims.insert(k, v);
                 }
+                session.anchor_did = verified.anchor_did;
             }
             Ok(_) => tracing::warn!("UCAN chain rejected: a chain DID is revoked"),
             Err(e) => tracing::warn!("UCAN chain verification failed: {e}"),
@@ -673,6 +674,73 @@ mod tests {
                 .session
                 .has_capability(&resource, &Ability(Ability::DATA_LAYER_READ.to_string()))
         );
+    }
+
+    /// `SessionContext::from_verified_chain` verifies `anchor_did` (ADR-0015
+    /// A5, amended), but `build_caller` builds `session` from
+    /// `Default::default()` and only merges `capabilities`/`claims` from the
+    /// verified result -- `anchor_did` must be copied across too, or the
+    /// field never reaches a real `CallerContext` and the `anchor` policy
+    /// terminal is unreachable in production regardless of how correctly it
+    /// compiles. `user_a` self-declares as the anchor and delegates through
+    /// an intermediate service; the presenting client's own chain inherits
+    /// that anchor unchanged.
+    #[tokio::test]
+    async fn build_caller_threads_the_verified_anchor_did_into_the_session() {
+        let owner = Identity::generate().unwrap();
+        let user_a = Identity::generate().unwrap();
+        let intermediate = Identity::generate().unwrap();
+        let client = Identity::generate().unwrap();
+        let admin_root = derive_did_key(&owner.public_key());
+        let user_a_did = derive_did_key(&user_a.public_key());
+        let intermediate_did = derive_did_key(&intermediate.public_key());
+        let client_did = derive_did_key(&client.public_key());
+        let resource = ResourceUri::service("app1", "svc1");
+
+        let user_a_to_intermediate = CapabilityToken::issue_with_anchor(
+            &user_a,
+            &intermediate_did,
+            Some(user_a_did.clone()),
+            vec![Capability {
+                with: resource.clone(),
+                can: Ability(Ability::DATA_LAYER_READ.to_string()),
+                caveats: None,
+            }],
+            serde_json::Map::new(),
+            3600,
+            vec![],
+        )
+        .unwrap();
+        let intermediate_to_client = CapabilityToken::issue_with_anchor(
+            &intermediate,
+            &client_did,
+            Some(user_a_did.clone()),
+            vec![Capability {
+                with: resource,
+                can: Ability(Ability::DATA_LAYER_READ.to_string()),
+                caveats: None,
+            }],
+            serde_json::Map::new(),
+            3600,
+            vec![user_a_to_intermediate],
+        )
+        .unwrap();
+
+        let preamble = ucan_preamble(intermediate_to_client);
+        let id = VerifiedIdentity { master_did: client_did.clone(), temporary_did: client_did };
+        let resolver = MockResolver { revoked: HashMap::new() };
+
+        // `user_a` owns `svc1` and roots its own delegation so the
+        // capability -- and with it the anchor substantiation check --
+        // actually admits (ADR-0015 A6).
+        let registry = empty_registry();
+        registry.set_owner("svc1".to_string(), user_a_did.clone()).await.unwrap();
+
+        let caller =
+            build_caller(&preamble, &id, Some(&admin_root), "did:key:zNode", &registry, &resolver)
+                .await;
+
+        assert_eq!(caller.session.anchor_did, Some(user_a_did));
     }
 
     /// The same claim as
