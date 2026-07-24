@@ -69,6 +69,235 @@ pub enum Mode {
     PointInTime { id: String },
 }
 
+/// Upper bound on a single remote fetch's returned id-set, bound as the
+/// `IN (...)` list's cardinality (Slice B3 plan §5, fan-out containment). An
+/// unbounded id-set would let a misbehaving or compromised remote blow up
+/// the local query's `IN` list arbitrarily. Matches `data_db`'s existing
+/// per-page query cap.
+pub const MAX_FETCH_IDS: usize = 1000;
+
+/// Correlation key into a [`ReadPlan`]'s `fetches`: one per distinct
+/// `(service, relation)` pair a policy's selected paths need (deduped --
+/// multiple hops naming the same remote relation share one fetch).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FetchSlot(usize);
+
+/// One remote relationship-proof fetch [`plan_read`] needs before its sieve
+/// can be finalized (ADR-0017 §6 / pipeline stage 2, Slice B3). The
+/// orchestration that actually performs the fetch (resolving `service` to a
+/// DID, issuing the proxy call, enforcing the timeout) lives outside this
+/// crate (`crates/fdae` stays proxy-free, plan §1.1); this struct is only
+/// the *request* shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteFetch {
+    /// Logical service name from `Relation.service`, resolved to a DID by
+    /// the caller (this crate stays free of the app-context registry).
+    pub service: String,
+    /// The **remote object type** (`Relation.target`), not the local
+    /// relation edge name (`Relation`'s own key in `Definition.relations`).
+    /// The two live in different namespaces: `hop.name` is only meaningful
+    /// inside the *requesting* policy, while the remote resolves this
+    /// string against its *own* `definitions:` map (`definition_table` /
+    /// `resolve_structural`, which match object-type keys and physical
+    /// table names) -- sending the local edge name would ask the remote
+    /// about a name it likely has no definition for at all, silently
+    /// returning an empty (indistinguishable from a legitimate deny)
+    /// instead of resolving.
+    pub relation: String,
+    /// The principal the remote must evaluate for -- always the **anchor**
+    /// (`session.anchor_did`, falling back to `subject_did` for a direct
+    /// caller), never the presenting/proxying caller. The confused-deputy
+    /// defense (ADR-0015 A5): this holds regardless of whether the path's
+    /// own declared terminal word is `caller` or `anchor`.
+    pub principal_did: String,
+    pub slot: FetchSlot,
+}
+
+/// One fetched result, matched back to its [`RemoteFetch`] by `slot`.
+#[derive(Debug, Clone)]
+pub struct FetchResult {
+    pub slot: FetchSlot,
+    pub ids: Vec<String>,
+}
+
+/// One not-yet-resolved position in a [`PendingSieve`]'s SQL text: a unique
+/// text token standing in for a remote fetch's eventual `IN (?, ?, ...)`
+/// list, plus where in the flat `params` sequence that list's bound values
+/// belong once known.
+#[derive(Debug, Clone)]
+struct PendingMarker {
+    slot: FetchSlot,
+    /// Unique per *occurrence* (not per slot -- the same slot can appear at
+    /// multiple text positions when several OR'd permission paths reach the
+    /// same remote relation), so `finalize` can replace each occurrence
+    /// independently via a single, unambiguous `replacen`.
+    token: String,
+    /// The bound-column expression (`col()`'s output, e.g.
+    /// `documents.owner_uuid` or `json_extract(documents.payload, ?)`) this
+    /// marker's fetched id-set is checked against. The token stands in for
+    /// the **whole** `{expr} IN (...)` predicate, not just the
+    /// parenthesized list, so `finalize` can substitute a
+    /// definitively-`false` empty-subquery `IN (SELECT 1 WHERE 0)` for an
+    /// empty id-set -- see `finalize`'s doc comment for why `{expr} IN
+    /// (NULL)` is the wrong substitution (SQLite three-valued
+    /// logic: `NULL`, not `false`, which silently inverts under `NOT`).
+    correlate_expr: String,
+    /// Index into `PendingSieve.params` where this marker's id-set values
+    /// are inserted -- i.e. `params.len()` at the moment this marker was
+    /// emitted during path compilation, so binding order matches the `?`
+    /// occurrences' left-to-right text order.
+    params_index: usize,
+}
+
+/// A [`CompiledSieve`] that still needs one or more remote relationship
+/// fetches before it can run -- the "plan" half of the two-phase compile
+/// (Slice B3 plan §1.1). Opaque outside this module; the only thing a
+/// caller does with one is pass it to [`finalize`] alongside the fetched
+/// [`FetchResult`]s.
+#[derive(Debug, Clone)]
+pub struct PendingSieve {
+    where_clause: String,
+    params: Vec<Value>,
+    masked_fields: Vec<String>,
+    where_caveats: Vec<Json>,
+    trace: DecisionTrace,
+    markers: Vec<PendingMarker>,
+}
+
+/// The result of [`plan_read`]: either a fully-compiled local sieve (the B2
+/// case -- `fetches` empty, `pending` `None`, `local` mirrors
+/// `compile_read`'s `Option<CompiledSieve>` exactly), or a
+/// [`PendingSieve`] plus the [`RemoteFetch`]es it's waiting on.
+#[derive(Debug, Clone)]
+pub struct ReadPlan {
+    /// `Some` iff `fetches` is empty and a definition was found (or the
+    /// policy is unfiltered for this collection, in which case this is
+    /// `None` too -- identical three-way meaning to `compile_read`'s
+    /// `Ok(None)` / `Ok(Some(_))`, disambiguated from the "needs fetches"
+    /// case by `fetches` itself).
+    pub local: Option<CompiledSieve>,
+    pub fetches: Vec<RemoteFetch>,
+    /// `Some` iff `fetches` is non-empty.
+    pub pending: Option<PendingSieve>,
+}
+
+/// Mutable state threaded through path compilation alongside `params`: the
+/// distinct remote fetches this compilation has discovered so far (deduped
+/// per `(service, relation)` -- `relation` is the remote **object type**,
+/// so two hops naming the same service and target type share one fetch
+/// even if they arrived via different local relation names) and the text
+/// markers standing in for their eventual predicates.
+#[derive(Debug, Default)]
+struct FetchCtx {
+    fetches: Vec<RemoteFetch>,
+    markers: Vec<PendingMarker>,
+    next_marker: usize,
+}
+
+impl FetchCtx {
+    /// Registers one occurrence of a remote relation reached at the current
+    /// `params_index`, deduping the underlying fetch by `(service,
+    /// relation)` but always emitting a fresh, unique text token for this
+    /// occurrence. Returns the token to splice into the SQL text as the
+    /// **entire** boolean predicate (see [`PendingMarker::correlate_expr`]
+    /// for why the marker can't be scoped to just the `IN (...)` list).
+    fn register(
+        &mut self,
+        service: String,
+        relation: String,
+        principal_did: String,
+        correlate_expr: String,
+        params_index: usize,
+    ) -> String {
+        let slot =
+            match self.fetches.iter().find(|f| f.service == service && f.relation == relation) {
+                Some(existing) => existing.slot,
+                None => {
+                    let slot = FetchSlot(self.fetches.len());
+                    self.fetches.push(RemoteFetch { service, relation, principal_did, slot });
+                    slot
+                }
+            };
+        let token = format!("@@FDAE_FETCH_{}_{}@@", slot.0, self.next_marker);
+        self.next_marker += 1;
+        self.markers.push(PendingMarker {
+            slot,
+            token: token.clone(),
+            correlate_expr,
+            params_index,
+        });
+        token
+    }
+}
+
+/// Binds each [`PendingSieve`] marker's fetched id-set into its predicate
+/// text position and the corresponding `?` values into `params`, producing
+/// a finished [`CompiledSieve`] ready to run exactly like a fully-local one.
+/// Fails closed (never silently drops a fetch) if `results` is missing a
+/// slot `pending` needs, or if a fetch's id-set exceeds [`MAX_FETCH_IDS`].
+/// An empty id-set compiles to `{correlate_expr} IN (SELECT 1 WHERE 0)`
+/// (an empty-subquery membership test -- unambiguously `false`), **not**
+/// `{correlate_expr} IN (NULL)`: under SQLite's three-valued logic
+/// `x IN (NULL)` evaluates to `NULL`, which reads as `false` in a bare
+/// `WHERE` but does **not** invert under `NOT` the way `false` does -- an
+/// `exclusion`-operator permission with a remote hop that legitimately
+/// resolves to nobody would otherwise deny every row (`NOT NULL` is
+/// `NULL`, not `true`) instead of excluding none. `IN (<empty subquery>)`
+/// has no such ambiguity -- there is no candidate row to compare against,
+/// NULL or otherwise. Verified against SQLite directly during review:
+/// `SELECT typeof('x' IN (NULL))` -- `'null'`; `SELECT 'x' IN (SELECT 1
+/// WHERE 0), NOT ('x' IN (SELECT 1 WHERE 0))` -- `0, 1`.
+pub fn finalize(
+    pending: PendingSieve,
+    results: &[FetchResult],
+) -> Result<CompiledSieve, PolicyError> {
+    let PendingSieve { mut where_clause, mut params, masked_fields, where_caveats, trace, markers } =
+        pending;
+
+    // Markers are inserted in ascending `params_index` order so `shift`
+    // (the running count of ids already spliced in) correctly accounts for
+    // every earlier insertion's effect on later positions -- `Vec::insert`
+    // shifts everything at/after its index rightward, exactly matching how
+    // later `?` occurrences in the text sit after earlier ones.
+    let mut ordered = markers;
+    ordered.sort_by_key(|m| m.params_index);
+
+    let mut shift = 0usize;
+    for marker in &ordered {
+        let ids =
+            results.iter().find(|r| r.slot == marker.slot).map(|r| r.ids.as_slice()).ok_or_else(
+                || {
+                    PolicyError::Semantic(format!(
+                        "finalize: missing fetch result for slot {}",
+                        marker.slot.0
+                    ))
+                },
+            )?;
+        if ids.len() > MAX_FETCH_IDS {
+            return Err(PolicyError::Semantic(format!(
+                "remote fetch returned {} ids, exceeding the {MAX_FETCH_IDS} cap",
+                ids.len()
+            )));
+        }
+        let ids_sql = if ids.is_empty() {
+            "SELECT 1 WHERE 0".to_string()
+        } else {
+            vec!["?"; ids.len()].join(", ")
+        };
+        let replacement = format!("{} IN ({})", marker.correlate_expr, ids_sql);
+        where_clause = where_clause.replacen(&marker.token, &replacement, 1);
+        if !ids.is_empty() {
+            let insert_at = marker.params_index + shift;
+            for (i, id) in ids.iter().enumerate() {
+                params.insert(insert_at + i, Value::Text(id.clone()));
+            }
+            shift += ids.len();
+        }
+    }
+
+    Ok(CompiledSieve { where_clause, params, masked_fields, where_caveats, trace })
+}
+
 /// Compiles the row-security block for `operation` on `collection`, as seen
 /// by `session` under `policy`. `service_id` names the app-instance/service
 /// pair the collection belongs to (used to build the collection-qualified
@@ -84,8 +313,12 @@ pub enum Mode {
 /// - `Ok(None)` -- no definition for this collection and the policy is not
 ///   `strict`: the grant layer already admitted this read, no filtering.
 /// - `Ok(Some(sieve))` -- apply this block (may be a deny-all `0=1`).
-/// - `Err(PolicyError)` -- malformed/unsupported input; the caller must treat
-///   this as deny, never as unfiltered access.
+/// - `Err(PolicyError)` -- malformed/unsupported input, **or the policy's
+///   selected paths require a remote relationship fetch** (B3 pipeline stage
+///   2): this function is the synchronous/local-only entry point (unchanged
+///   from B2) and cannot itself resolve one -- a caller that needs to may call
+///   [`plan_read`] directly. Either way the caller must treat this as deny,
+///   never as unfiltered access.
 pub fn compile_read(
     policy: &Policy,
     collection: &str,
@@ -94,9 +327,59 @@ pub fn compile_read(
     operation: &Ability,
     mode: Mode,
 ) -> Result<Option<CompiledSieve>, PolicyError> {
+    let plan = plan_read(policy, collection, session, service_id, operation, mode)?;
+    if !plan.fetches.is_empty() {
+        // B3-08: `plan_read` already emitted a trace for this compilation,
+        // but it necessarily reads as an *allow* (`operation_admitted:
+        // true`, no `path_failed`, `compiled_predicate` full of unresolved
+        // `@@FDAE_FETCH_...@@` markers) -- it doesn't yet know the caller
+        // is `compile_read`, which is about to turn it into a hard deny.
+        // Emit a second trace recording the actual outcome, so an operator
+        // reading the log sees the deny and why, not just the earlier
+        // allow-shaped record.
+        let trace = DecisionTrace {
+            tier: 3,
+            collection: collection.to_string(),
+            service_id: service_id.to_string(),
+            subject_did: session.subject_did.clone(),
+            anchor_did: session.anchor_did.clone(),
+            operation_admitted: false,
+            path_failed: Some(format!(
+                "policy requires {} remote relationship fetch(es), which compile_read \
+                 (local-only) cannot resolve -- use plan_read/finalize (B3 pipeline stage 2) \
+                 instead",
+                plan.fetches.len()
+            )),
+            ..DecisionTrace::default()
+        };
+        trace.emit();
+        return Err(PolicyError::Semantic(format!(
+            "policy requires {} remote relationship fetch(es) to answer this read -- compile_read \
+             is local-only; use plan_read/finalize (B3 pipeline stage 2) instead",
+            plan.fetches.len()
+        )));
+    }
+    Ok(plan.local)
+}
+
+/// The two-phase counterpart of [`compile_read`] (Slice B3 plan §1.1): same
+/// inputs, but when a selected permission path needs a remote relation
+/// (`Relation.service.is_some()`), it is compiled with a placeholder `IN`
+/// predicate and recorded as a [`RemoteFetch`] instead of failing closed.
+/// `compile_read` is exactly `plan_read` plus "no remote fetches were
+/// needed, or error" -- see its doc comment for the three-way `local`
+/// meaning this shares.
+pub fn plan_read(
+    policy: &Policy,
+    collection: &str,
+    session: &SessionContext,
+    service_id: &str,
+    operation: &Ability,
+    mode: Mode,
+) -> Result<ReadPlan, PolicyError> {
     let Some((object_type, def)) = find_definition(policy, collection) else {
         if !policy.strict {
-            return Ok(None);
+            return Ok(ReadPlan { local: None, fetches: Vec::new(), pending: None });
         }
         let trace = DecisionTrace {
             tier: 3,
@@ -111,7 +394,11 @@ pub fn compile_read(
             ..DecisionTrace::default()
         };
         trace.emit();
-        return Ok(Some(CompiledSieve { trace, ..deny_all() }));
+        return Ok(ReadPlan {
+            local: Some(CompiledSieve { trace, ..deny_all() }),
+            fetches: Vec::new(),
+            pending: None,
+        });
     };
 
     let resource = ResourceUri(format!(
@@ -166,12 +453,17 @@ pub fn compile_read(
                     ..DecisionTrace::default()
                 };
                 trace.emit();
-                return Ok(Some(CompiledSieve { trace, ..deny_all() }));
+                return Ok(ReadPlan {
+                    local: Some(CompiledSieve { trace, ..deny_all() }),
+                    fetches: Vec::new(),
+                    pending: None,
+                });
             }
         }
     }
 
     let mut params: Vec<Value> = Vec::new();
+    let mut fetch_ctx = FetchCtx::default();
     let mut clauses: Vec<String> = Vec::with_capacity(applicable.len());
     let mut claim_absent_for: Vec<String> = Vec::new();
     for pname in &applicable {
@@ -184,7 +476,8 @@ pub fn compile_read(
                 "permission '{pname}' not found on definition '{object_type}'"
             )));
         };
-        let clause = compile_permission(policy, object_type, perm, session, &mut params)?;
+        let clause =
+            compile_permission(policy, object_type, perm, session, &mut params, &mut fetch_ctx)?;
         // `compile_permission` returns exactly the literal string "0=1" in
         // one place: a condition whose claim is absent from
         // `session.claims`. Every other branch builds "1=1" or an `EXISTS`
@@ -243,7 +536,32 @@ pub fn compile_read(
     };
     trace.emit();
 
-    Ok(Some(CompiledSieve { where_clause, params, masked_fields, where_caveats, trace }))
+    if fetch_ctx.fetches.is_empty() {
+        Ok(ReadPlan {
+            local: Some(CompiledSieve {
+                where_clause,
+                params,
+                masked_fields,
+                where_caveats,
+                trace,
+            }),
+            fetches: Vec::new(),
+            pending: None,
+        })
+    } else {
+        Ok(ReadPlan {
+            local: None,
+            fetches: fetch_ctx.fetches,
+            pending: Some(PendingSieve {
+                where_clause,
+                params,
+                masked_fields,
+                where_caveats,
+                trace,
+                markers: fetch_ctx.markers,
+            }),
+        })
+    }
 }
 
 /// Comma-joined top-level keys of a caveat `where` document, for the
@@ -278,6 +596,87 @@ fn find_definition<'a>(policy: &'a Policy, collection: &str) -> Option<(&'a str,
                 || def.table.eq_ignore_ascii_case(collection)
         })
         .map(|(key, def)| (key.as_str(), def))
+}
+
+/// The physical table backing the definition matching `collection`
+/// (case-insensitively, by key or table -- same rule as `find_definition`),
+/// or `None` if no definition matches. B3's native `resolve-relation` needs
+/// this for two reasons: (1) as a **hard pre-check** -- unlike an ordinary
+/// `compile_read` call, where "no definition" correctly means "the grant
+/// layer already admitted this read, run unfiltered" (`compile_read`'s
+/// `Ok(None)`), `resolve-relation` answers a cross-service relationship
+/// question with *no* backing grant-layer admission at all, so a `relation`
+/// name matching no definition must deny, never fall through to an
+/// unfiltered dump; and (2) because `ServiceStore::query` (unlike
+/// `compile_read`'s own permissive key-or-table matching) addresses a
+/// collection by its **literal physical table name** -- a caller passing a
+/// policy's *definition key* (e.g. B3's `RemoteFetch.relation`, which is a
+/// local relation name, not necessarily a table name) would otherwise hit
+/// `collection-not-found` even though the definition itself resolves fine.
+#[must_use]
+pub fn definition_table<'a>(policy: &'a Policy, collection: &str) -> Option<&'a str> {
+    find_definition(policy, collection).map(|(_, def)| def.table.as_str())
+}
+
+/// A raw `<principal_column> = ?` predicate for [`resolve_structural`] (B3
+/// D-B3-3, the A2 fallback): no `WHERE EXISTS`, no capability check, no
+/// `CompiledSieve` -- just enough to run `SELECT id FROM <table> WHERE
+/// <where_clause>` against the caller's own connection.
+#[derive(Debug, Clone)]
+pub struct StructuralQuery {
+    pub table: String,
+    pub where_clause: String,
+    /// Bound values, in binding order -- always text (a JSON path or the
+    /// principal DID itself), unlike `CompiledSieve::params` which can carry
+    /// any scalar claim value.
+    pub params: Vec<String>,
+}
+
+/// B3 D-B3-3 (A2): the raw `<principal_column> = ?` predicate for a
+/// definition that has explicitly opted into
+/// [`Definition::resolvable_without_capability`], bypassing the capability/
+/// grant-intersection gate [`compile_read`] requires. The caller (native
+/// `resolve-relation`, Slice B3 Phase 3) uses this only when the requesting
+/// anchor holds zero capabilities scoped to the target service -- see that
+/// field's doc comment for the authorization-model tradeoff; this function
+/// itself performs no capability check, since it has no `SessionContext` to
+/// check one against.
+///
+/// Reuses the same reserved-column-vs-JSON-payload addressing as every
+/// other predicate this compiler emits (mirrors `col`), so a
+/// `principal_column` of `"creator_id"` resolves to the physical column,
+/// not `json_extract(payload, '$.creator_id')`.
+///
+/// Returns `Ok(None)` when `relation` names no definition, or a definition
+/// that hasn't opted in -- the caller treats that identically to "not
+/// resolvable," i.e. deny (an empty id-set), never an error a caller could
+/// misread as "resolved to nothing found" vs. "not permitted to ask".
+pub fn resolve_structural(
+    policy: &Policy,
+    relation: &str,
+    principal: &str,
+) -> Result<Option<StructuralQuery>, PolicyError> {
+    let Some((_, def)) = find_definition(policy, relation) else {
+        return Ok(None);
+    };
+    if !def.resolvable_without_capability {
+        return Ok(None);
+    }
+    let principal_col = def.principal_column.as_ref().ok_or_else(|| {
+        PolicyError::Semantic(format!(
+            "definition '{relation}' declares resolvable_without_capability but no \
+             principal_column, so it cannot be structurally resolved"
+        ))
+    })?;
+    let mut params: Vec<String> = Vec::new();
+    let where_clause = if RESERVED_COLUMNS.contains(&principal_col.as_str()) {
+        format!("{}.{principal_col} = ?", def.table)
+    } else {
+        params.push(format!("$.{principal_col}"));
+        format!("json_extract({}.payload, ?) = ?", def.table)
+    };
+    params.push(principal.to_string());
+    Ok(Some(StructuralQuery { table: def.table.clone(), where_clause, params }))
 }
 
 fn deny_all() -> CompiledSieve {
@@ -423,6 +822,7 @@ fn compile_permission(
     perm: &Permission,
     session: &SessionContext,
     params: &mut Vec<Value>,
+    fetches: &mut FetchCtx,
 ) -> Result<String, PolicyError> {
     // Resolve every condition's claim *before* compiling any path, so a
     // fail-closed short-circuit below never leaves params pushed by a path
@@ -440,7 +840,7 @@ fn compile_permission(
     } else {
         let mut clauses = Vec::with_capacity(perm.paths.len());
         for path in &perm.paths {
-            clauses.push(compile_path(policy, object_type, path, session, params)?);
+            clauses.push(compile_path(policy, object_type, path, session, params, fetches)?);
         }
         match perm.operator {
             Operator::Union => format!("({})", clauses.join(" OR ")),
@@ -539,16 +939,25 @@ fn terminal_value(terminal: &str, session: &SessionContext) -> Result<String, Po
     }
 }
 
-/// One resolved, validated hop of a path's relation walk.
+/// One resolved, validated hop of a path's relation walk. `target_def` is
+/// `None` for a remote hop (`relation.service.is_some()`): the target object
+/// type lives on another service's policy, not locally resolvable (mirrors
+/// `policy::validate_relations`' own skip). A remote hop is always the last
+/// element of `hops` -- `resolve_hops` rejects one anywhere else -- so
+/// `target_def` is `Some` everywhere `emit_chain`'s generic (non-terminal)
+/// branch reads it.
 struct Hop<'a> {
     name: &'a str,
     relation: &'a Relation,
-    target_def: &'a Definition,
+    target_def: Option<&'a Definition>,
 }
 
 /// Resolves and validates every non-terminal segment of a path in order,
-/// failing closed on a remote (cross-service) relation or a recursive
-/// relation anywhere but the last hop.
+/// failing closed on a recursive relation anywhere but the last hop, or a
+/// remote (cross-service) relation anywhere but the last hop (B3: a remote
+/// hop's fetched id-set is checked directly against the *preceding* local
+/// row, mirroring the last-local-hop terminal check -- there is no local
+/// table to keep joining through past it).
 fn resolve_hops<'a>(
     policy: &'a Policy,
     start_type: &str,
@@ -563,33 +972,43 @@ fn resolve_hops<'a>(
                 "relation '{rel_name}' not found on object type '{current_type}'"
             ))
         })?;
-        if let Some(service) = &relation.service {
+        let is_last = i == rel_names.len() - 1;
+        if relation.service.is_some() && !is_last {
             return Err(PolicyError::Semantic(format!(
-                "relation '{rel_name}' is remote (service: '{service}'); cross-service relations \
-                 are not yet supported"
+                "relation '{rel_name}' is remote (service: '{}'); a remote relation must be the \
+                 last hop before the path terminal",
+                relation.service.as_deref().unwrap_or_default()
             )));
         }
-        if relation.recursive && i != rel_names.len() - 1 {
+        if relation.recursive && !is_last {
             return Err(PolicyError::Semantic(format!(
                 "recursive relation '{rel_name}' must be the last hop before the path terminal"
             )));
         }
-        let target_def = get_def(policy, &relation.target)?;
+        let target_def = if relation.service.is_some() {
+            None
+        } else {
+            Some(get_def(policy, &relation.target)?)
+        };
         hops.push(Hop { name: rel_name.as_str(), relation, target_def });
-        current_type = &relation.target;
+        if relation.service.is_none() {
+            current_type = &relation.target;
+        }
     }
     Ok(hops)
 }
 
 /// Walks a path (`[relation..., terminal]`) into a correlated `EXISTS`
-/// subquery, or a single `EXISTS (WITH RECURSIVE ...)` block when the last
-/// relation is recursive (§3.4).
+/// subquery, a single `EXISTS (WITH RECURSIVE ...)` block when the last
+/// relation is recursive (§3.4), or -- when the last relation is remote (B3)
+/// -- a direct `IN (...)` membership check against a not-yet-fetched id-set.
 fn compile_path(
     policy: &Policy,
     start_type: &str,
     path: &[String],
     session: &SessionContext,
     params: &mut Vec<Value>,
+    fetches: &mut FetchCtx,
 ) -> Result<String, PolicyError> {
     let Some((terminal, rel_names)) = path.split_last() else {
         return Err(PolicyError::Semantic("path must have at least a terminal".to_string()));
@@ -624,14 +1043,13 @@ fn compile_path(
     }
 
     let mut alias_idx = 0usize;
-    emit_chain(&hops, &start_def.table, terminal, session, params, &mut alias_idx)
+    emit_chain(&hops, &start_def.table, terminal, session, params, &mut alias_idx, fetches)
 }
 
-/// Emits nested `EXISTS` for a chain of local-join hops, fusing the last
-/// two hops into a single `EXISTS (WITH RECURSIVE ...)` block when the
-/// final hop is recursive -- the seed of the recursive walk is exactly the
-/// row the immediately preceding local join reaches (worked example,
-/// ADR-0017 §3.4), so it is not wrapped in its own extra `EXISTS` layer.
+/// Emits nested `EXISTS` for a chain of local-join hops, fusing the last two
+/// hops into a single `EXISTS (WITH RECURSIVE ...)` block when the final hop
+/// is recursive (§3.4, ADR-0017), or emitting a direct `IN (...)`
+/// membership check when the final hop is remote (B3, §3).
 fn emit_chain(
     hops: &[Hop],
     correlate_qualifier: &str,
@@ -639,11 +1057,15 @@ fn emit_chain(
     session: &SessionContext,
     params: &mut Vec<Value>,
     alias_idx: &mut usize,
+    fetches: &mut FetchCtx,
 ) -> Result<String, PolicyError> {
     match hops {
         [] => Err(PolicyError::Semantic("internal: emit_chain called with no hops".to_string())),
         [leading, recursive] if recursive.relation.recursive => {
             emit_fused_recursive(leading, recursive, correlate_qualifier, terminal, session, params)
+        }
+        [remote] if remote.relation.service.is_some() => {
+            emit_remote_terminal(remote, correlate_qualifier, session, params, fetches)
         }
         [hop, rest @ ..] => {
             *alias_idx += 1;
@@ -655,8 +1077,19 @@ fn emit_chain(
                 ))
             })?;
             let correlate_expr = col(correlate_qualifier, join_column, params);
+            // Structurally guaranteed by `resolve_hops`: only the *last*
+            // hop of a chain can be remote (`target_def: None`), and a
+            // remote last hop is caught by the `[remote] if ...` arm above
+            // before reaching this generic one -- so `hop` here is always
+            // local. Fail closed rather than panic on the defensive case.
+            let target_def = hop.target_def.ok_or_else(|| {
+                PolicyError::Semantic(format!(
+                    "internal: non-terminal hop '{}' has no local target definition",
+                    hop.name
+                ))
+            })?;
             let inner = if rest.is_empty() {
-                let principal_col = hop.target_def.principal_column.as_ref().ok_or_else(|| {
+                let principal_col = target_def.principal_column.as_ref().ok_or_else(|| {
                     PolicyError::Semantic(format!(
                         "object type '{}' is used as a path terminal but declares no \
                          principal_column",
@@ -668,15 +1101,69 @@ fn emit_chain(
                 params.push(Value::Text(bound));
                 format!("{col_expr} = ?")
             } else {
-                emit_chain(rest, &alias, terminal, session, params, alias_idx)?
+                emit_chain(rest, &alias, terminal, session, params, alias_idx, fetches)?
             };
             Ok(format!(
                 "EXISTS (SELECT 1 FROM {} AS {alias} WHERE {alias}.id = {correlate_expr} AND \
                  {inner})",
-                hop.target_def.table
+                target_def.table
             ))
         }
     }
+}
+
+/// The terminal hop of a path whose last relation is remote (B3, plan §3):
+/// unlike a local hop, there is no local `target_table` to `EXISTS`-join
+/// against (the object lives on another service). Instead, the current
+/// row's own `join_column` value will be checked for membership in the
+/// id-set [`finalize`] later binds from the fetched relationship proof --
+/// this function only registers the fetch and returns a bare marker token
+/// standing in for the *entire* predicate (never resolved here; see
+/// [`PendingMarker::correlate_expr`] for why the marker can't be scoped to
+/// just the eventual `IN (...)` list).
+///
+/// The fetch's principal is always the **anchor**
+/// (`session.anchor_did`, falling back to `subject_did` for a direct
+/// caller), never the presenting caller -- the confused-deputy defense
+/// (ADR-0015 A5) -- regardless of whether this path's own declared terminal
+/// word is `caller` or `anchor`: a remote node must always be asked "what
+/// can the original principal reach," never "what can the proxying service
+/// reach."
+fn emit_remote_terminal(
+    hop: &Hop,
+    correlate_qualifier: &str,
+    session: &SessionContext,
+    params: &mut Vec<Value>,
+    fetches: &mut FetchCtx,
+) -> Result<String, PolicyError> {
+    let join_column = hop.relation.join_column.as_ref().ok_or_else(|| {
+        PolicyError::Semantic(format!(
+            "relation '{}' is remote but declares no join_column -- a remote relation needs one \
+             to identify which local column is checked against the fetched id-set",
+            hop.name
+        ))
+    })?;
+    let correlate_expr = col(correlate_qualifier, join_column, params);
+    let service = hop.relation.service.clone().ok_or_else(|| {
+        PolicyError::Semantic(format!("internal: relation '{}' is not remote", hop.name))
+    })?;
+    let principal_did = session.anchor_did.clone().unwrap_or_else(|| session.subject_did.clone());
+    // `hop.relation.target`, not `hop.name`: the wire `relation` names the
+    // remote **object type**, which the remote's own `definitions:` map
+    // resolves it against (`definition_table`/`resolve_structural`) -- the
+    // local edge name (`hop.name`, e.g. "owner") lives in a different
+    // namespace the remote has no reason to recognize.
+    let token = fetches.register(
+        service,
+        hop.relation.target.clone(),
+        principal_did,
+        correlate_expr,
+        params.len(),
+    );
+    // The marker stands for the whole predicate (see `PendingMarker::
+    // correlate_expr`), not just an `IN (...)` list -- `finalize` needs to
+    // be able to substitute a literal `0` for an empty id-set.
+    Ok(token)
 }
 
 fn emit_fused_recursive(
@@ -706,14 +1193,24 @@ fn emit_fused_recursive(
     let to_key = recursive.relation.to_key.as_ref().ok_or_else(|| {
         PolicyError::Semantic(format!("recursive relation '{}' missing to_key", recursive.name))
     })?;
-    let principal_col = recursive.target_def.principal_column.as_ref().ok_or_else(|| {
+    // A recursive relation is never remote (schema-enforced mutual
+    // exclusivity, `policy::validate_relation_shape`), so `target_def` is
+    // always `Some` here; fail closed rather than panic on the defensive
+    // case, matching `emit_chain`'s own guard.
+    let target_def = recursive.target_def.ok_or_else(|| {
+        PolicyError::Semantic(format!(
+            "internal: recursive relation '{}' has no local target definition",
+            recursive.name
+        ))
+    })?;
+    let principal_col = target_def.principal_column.as_ref().ok_or_else(|| {
         PolicyError::Semantic(format!(
             "object type '{}' is used as a path terminal but declares no principal_column",
             recursive.relation.target
         ))
     })?;
 
-    let seed_table = &recursive.target_def.table;
+    let seed_table = &target_def.table;
 
     // `from_key` under "u" and "u2" (and `principal_col`/`to_key`) each
     // appear several times in the text below. `col()` binds a non-reserved
@@ -1677,23 +2174,33 @@ mod tests {
         assert_ne!(sieve.where_clause, "0=1");
     }
 
-    #[test]
-    fn remote_relation_fails_closed_at_compile_time() {
-        let policy = parse_and_validate(
+    fn remote_relation_policy() -> Policy {
+        parse_and_validate(
             r#"{
                 "version": "fdae/v1",
                 "definitions": {
                     "document": {
                         "table": "documents",
-                        "relations": {"owner": {"target": "employee", "service": "hr-svc"}},
+                        "relations": {"owner": {
+                            "target": "employee", "service": "hr-svc", "join_column": "owner_uuid"
+                        }},
                         "permissions": {
-                            "view": {"allows": ["data-layer/read"], "paths": [["owner", "caller"]]}
+                            "view": {"allows": ["data-layer/read"], "paths": [["owner", "anchor"]]}
                         }
                     }
                 }
             }"#,
         )
-        .unwrap();
+        .unwrap()
+    }
+
+    /// `compile_read` (B2's synchronous, local-only entry point) still fails
+    /// closed on a policy whose selected path needs a remote fetch -- it has
+    /// no way to perform one itself. `plan_read` is the B3 entry point that
+    /// actually resolves it (see the tests below).
+    #[test]
+    fn compile_read_fails_closed_when_a_remote_fetch_is_needed() {
+        let policy = remote_relation_policy();
         let alice = session("did:key:alice", vec![read_cap(Some("document"))]);
         let err = compile_read(
             &policy,
@@ -1705,6 +2212,733 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, PolicyError::Semantic(_)));
+    }
+
+    /// `plan_read` splits a policy needing a remote relation into a
+    /// `RemoteFetch` (carrying the anchor as principal, per the
+    /// confused-deputy defense) plus a `PendingSieve`, instead of failing
+    /// closed -- the plan half of the two-phase compile (B3 plan §1.1).
+    #[test]
+    fn plan_read_collects_a_remote_fetch_instead_of_failing_closed() {
+        let policy = remote_relation_policy();
+        let proxying_service =
+            session_with_anchor("did:key:svc-1", "did:key:alice", vec![read_cap(Some("document"))]);
+        let plan = plan_read(
+            &policy,
+            "document",
+            &proxying_service,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::Filter,
+        )
+        .unwrap();
+
+        assert!(plan.local.is_none());
+        assert!(plan.pending.is_some());
+        assert_eq!(plan.fetches.len(), 1);
+        let fetch = &plan.fetches[0];
+        assert_eq!(fetch.service, "hr-svc");
+        assert_eq!(fetch.relation, "employee", "the wire relation is the remote object type");
+        assert_eq!(
+            fetch.principal_did, "did:key:alice",
+            "the fetch's principal is the anchor, not the proxying caller"
+        );
+    }
+
+    /// A fully-local policy plans identically to `compile_read` -- `local`
+    /// carries the finished sieve and `fetches`/`pending` are empty/`None`,
+    /// exactly B2's shape. Zero behavior change for every existing
+    /// local-only policy.
+    #[test]
+    fn plan_read_of_a_fully_local_policy_has_no_fetches() {
+        let policy = single_hop_policy();
+        let alice = session("did:key:alice", vec![read_cap(Some("document"))]);
+        let plan = plan_read(
+            &policy,
+            "document",
+            &alice,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::Filter,
+        )
+        .unwrap();
+        assert!(plan.fetches.is_empty());
+        assert!(plan.pending.is_none());
+        assert!(plan.local.is_some());
+    }
+
+    /// `finalize` binds a fetched id-set into the pending sieve's `IN (...)`
+    /// predicate and runs correctly against real seeded rows: the local row
+    /// whose `owner_uuid` is in the fetched set is visible; one that isn't,
+    /// isn't.
+    #[test]
+    fn finalize_binds_the_fetched_id_set_and_runs_correctly() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE documents (
+                id TEXT PRIMARY KEY, creator_id TEXT, created_at INTEGER, updated_at INTEGER,
+                payload TEXT NOT NULL DEFAULT '{}'
+            );",
+        )
+        .unwrap();
+        let insert = |id: &str, owner_uuid: &str| {
+            conn.execute(
+                "INSERT INTO documents (id, payload) VALUES (?1, ?2)",
+                (id, json!({"owner_uuid": owner_uuid}).to_string()),
+            )
+            .unwrap();
+        };
+        insert("doc-1", "emp-alice");
+        insert("doc-2", "emp-bob");
+
+        let policy = remote_relation_policy();
+        let proxying_service =
+            session_with_anchor("did:key:svc-1", "did:key:alice", vec![read_cap(Some("document"))]);
+        let mut plan = plan_read(
+            &policy,
+            "document",
+            &proxying_service,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::Filter,
+        )
+        .unwrap();
+        let slot = plan.fetches[0].slot;
+        let pending = plan.pending.take().unwrap();
+
+        let results = vec![FetchResult { slot, ids: vec!["emp-alice".to_string()] }];
+        let sieve = finalize(pending, &results).unwrap();
+        assert_eq!(run_sieve(&conn, "documents", &sieve), vec!["doc-1"]);
+    }
+
+    /// Mirrors the above with an empty fetched id-set: `IN (SELECT 1 WHERE
+    /// 0)` is valid SQL, unambiguously `false` (never `NULL`, unlike
+    /// `IN (NULL)`), and never the invalid `IN ()`.
+    #[test]
+    fn finalize_binds_an_empty_id_set_as_a_false_empty_subquery_not_invalid_sql() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE documents (
+                id TEXT PRIMARY KEY, creator_id TEXT, created_at INTEGER, updated_at INTEGER,
+                payload TEXT NOT NULL DEFAULT '{}'
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO documents (id, payload) VALUES ('doc-1', ?1)",
+            [json!({"owner_uuid": "emp-alice"}).to_string()],
+        )
+        .unwrap();
+
+        let policy = remote_relation_policy();
+        let proxying_service =
+            session_with_anchor("did:key:svc-1", "did:key:alice", vec![read_cap(Some("document"))]);
+        let mut plan = plan_read(
+            &policy,
+            "document",
+            &proxying_service,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::Filter,
+        )
+        .unwrap();
+        let slot = plan.fetches[0].slot;
+        let pending = plan.pending.take().unwrap();
+        let sieve = finalize(pending, &[FetchResult { slot, ids: Vec::new() }]).unwrap();
+        assert!(run_sieve(&conn, "documents", &sieve).is_empty());
+    }
+
+    /// B3-03 regression: an `exclusion`-operator permission with a remote
+    /// hop that legitimately resolves to nobody must exclude *nobody* (the
+    /// row stays visible) -- not deny every row, which `{col} IN (NULL)`'s
+    /// three-valued-logic inversion under `NOT` would have caused.
+    #[test]
+    fn finalize_exclusion_operator_with_an_empty_remote_fetch_excludes_nobody() {
+        let conn = Connection::open_in_memory().unwrap();
+        seed_schema(&conn);
+        insert_user(&conn, "u-alice", "did:key:alice", None);
+        insert_document(&conn, "doc-1", "u-alice");
+
+        let policy = parse_and_validate(
+            r#"{
+                "version": "fdae/v1",
+                "definitions": {
+                    "document": {
+                        "table": "documents",
+                        "relations": {
+                            "creator": {"target": "user", "join_column": "creator_uuid"},
+                            "embargoed_from": {
+                                "target": "employee", "service": "hr-svc",
+                                "join_column": "embargoed_uuid"
+                            }
+                        },
+                        "permissions": {
+                            "view": {
+                                "allows": ["data-layer/read"],
+                                "operator": "exclusion",
+                                "paths": [["creator", "caller"], ["embargoed_from", "anchor"]]
+                            }
+                        }
+                    },
+                    "user": {"table": "users", "principal_column": "did"}
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let alice = session("did:key:alice", vec![read_cap(Some("document"))]);
+        let mut plan = plan_read(
+            &policy,
+            "document",
+            &alice,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::Filter,
+        )
+        .unwrap();
+        let slot = plan.fetches[0].slot;
+        let pending = plan.pending.take().unwrap();
+        // The remote legitimately knows of nobody embargoed -- an honest
+        // empty answer, not a fetch failure.
+        let sieve = finalize(pending, &[FetchResult { slot, ids: Vec::new() }]).unwrap();
+        assert_eq!(
+            run_sieve(&conn, "documents", &sieve),
+            vec!["doc-1"],
+            "an empty embargo list must exclude nobody, not deny everyone"
+        );
+    }
+
+    /// `finalize`'s `params_index + shift` insertion arithmetic under two
+    /// *distinct* remote relations (different targets, so they don't dedupe
+    /// -- B3-05) at different text/param positions: `intersection` requires
+    /// both `owner` and `department` to match, each bound from its own
+    /// fetched id-set, spliced at the correct offset into a single flat
+    /// `params` vector. The delicate part -- verified by the assertion
+    /// below, not just traced by hand -- is that the *second* marker's ids
+    /// land after the *first* marker's already-inserted ids, not at the
+    /// position `params.len()` had *before* any insertion.
+    #[test]
+    fn finalize_binds_two_distinct_remote_fetches_at_the_correct_offsets() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE documents (
+                id TEXT PRIMARY KEY, creator_id TEXT, created_at INTEGER, updated_at INTEGER,
+                payload TEXT NOT NULL DEFAULT '{}'
+            );",
+        )
+        .unwrap();
+        let insert = |id: &str, owner_uuid: &str, department_uuid: &str| {
+            conn.execute(
+                "INSERT INTO documents (id, payload) VALUES (?1, ?2)",
+                (
+                    id,
+                    json!({"owner_uuid": owner_uuid, "department_uuid": department_uuid})
+                        .to_string(),
+                ),
+            )
+            .unwrap();
+        };
+        // doc-1 matches both fetches; doc-2 matches only the owner fetch;
+        // doc-3 matches only the department fetch -- only doc-1 should
+        // survive the `intersection`.
+        insert("doc-1", "emp-alice", "team-eng");
+        insert("doc-2", "emp-alice", "team-sales");
+        insert("doc-3", "emp-bob", "team-eng");
+
+        let policy = parse_and_validate(
+            r#"{
+                "version": "fdae/v1",
+                "definitions": {
+                    "document": {
+                        "table": "documents",
+                        "relations": {
+                            "owner": {
+                                "target": "employee", "service": "hr-svc",
+                                "join_column": "owner_uuid"
+                            },
+                            "department": {
+                                "target": "team", "service": "hr-svc",
+                                "join_column": "department_uuid"
+                            }
+                        },
+                        "permissions": {
+                            "view": {
+                                "allows": ["data-layer/read"],
+                                "operator": "intersection",
+                                "paths": [["owner", "anchor"], ["department", "anchor"]]
+                            }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let proxying_service =
+            session_with_anchor("did:key:svc-1", "did:key:alice", vec![read_cap(Some("document"))]);
+        let mut plan = plan_read(
+            &policy,
+            "document",
+            &proxying_service,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::Filter,
+        )
+        .unwrap();
+        assert_eq!(plan.fetches.len(), 2, "owner and department are different target types");
+        let owner_slot = plan.fetches.iter().find(|f| f.relation == "employee").unwrap().slot;
+        let dept_slot = plan.fetches.iter().find(|f| f.relation == "team").unwrap().slot;
+        let pending = plan.pending.take().unwrap();
+
+        let results = vec![
+            FetchResult { slot: owner_slot, ids: vec!["emp-alice".to_string()] },
+            FetchResult { slot: dept_slot, ids: vec!["team-eng".to_string()] },
+        ];
+        let sieve = finalize(pending, &results).unwrap();
+        assert_eq!(run_sieve(&conn, "documents", &sieve), vec!["doc-1"]);
+    }
+
+    /// The same shape as
+    /// `finalize_binds_two_distinct_remote_fetches_at_the_correct_offsets`,
+    /// but with the fetch results supplied in the *opposite* order --
+    /// `finalize` sorts by `params_index` internally, so the caller's
+    /// `results` ordering must not matter.
+    #[test]
+    fn finalize_binds_two_distinct_remote_fetches_regardless_of_result_order() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE documents (
+                id TEXT PRIMARY KEY, creator_id TEXT, created_at INTEGER, updated_at INTEGER,
+                payload TEXT NOT NULL DEFAULT '{}'
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO documents (id, payload) VALUES ('doc-1', ?1)",
+            [json!({"owner_uuid": "emp-alice", "department_uuid": "team-eng"}).to_string()],
+        )
+        .unwrap();
+
+        let policy = parse_and_validate(
+            r#"{
+                "version": "fdae/v1",
+                "definitions": {
+                    "document": {
+                        "table": "documents",
+                        "relations": {
+                            "owner": {
+                                "target": "employee", "service": "hr-svc",
+                                "join_column": "owner_uuid"
+                            },
+                            "department": {
+                                "target": "team", "service": "hr-svc",
+                                "join_column": "department_uuid"
+                            }
+                        },
+                        "permissions": {
+                            "view": {
+                                "allows": ["data-layer/read"],
+                                "operator": "intersection",
+                                "paths": [["owner", "anchor"], ["department", "anchor"]]
+                            }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let proxying_service =
+            session_with_anchor("did:key:svc-1", "did:key:alice", vec![read_cap(Some("document"))]);
+        let mut plan = plan_read(
+            &policy,
+            "document",
+            &proxying_service,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::Filter,
+        )
+        .unwrap();
+        let owner_slot = plan.fetches.iter().find(|f| f.relation == "employee").unwrap().slot;
+        let dept_slot = plan.fetches.iter().find(|f| f.relation == "team").unwrap().slot;
+        let pending = plan.pending.take().unwrap();
+
+        // Reversed vs. the sibling test.
+        let results = vec![
+            FetchResult { slot: dept_slot, ids: vec!["team-eng".to_string()] },
+            FetchResult { slot: owner_slot, ids: vec!["emp-alice".to_string()] },
+        ];
+        let sieve = finalize(pending, &results).unwrap();
+        assert_eq!(run_sieve(&conn, "documents", &sieve), vec!["doc-1"]);
+    }
+
+    /// Plan §1.2: "one fetch shape serves both [Mode A and Mode B]." Mode A
+    /// (point-in-time) over a remote relation was asserted in the plan but
+    /// never actually run -- this exercises it for real: the `id = ?`
+    /// predicate `Mode::PointInTime` ANDs on must survive alongside the
+    /// finalized remote predicate.
+    #[test]
+    fn finalize_holds_in_point_in_time_mode_over_a_remote_relation() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE documents (
+                id TEXT PRIMARY KEY, creator_id TEXT, created_at INTEGER, updated_at INTEGER,
+                payload TEXT NOT NULL DEFAULT '{}'
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO documents (id, payload) VALUES ('doc-1', ?1)",
+            [json!({"owner_uuid": "emp-alice"}).to_string()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO documents (id, payload) VALUES ('doc-2', ?1)",
+            [json!({"owner_uuid": "emp-alice"}).to_string()],
+        )
+        .unwrap();
+
+        let policy = remote_relation_policy();
+        let proxying_service =
+            session_with_anchor("did:key:svc-1", "did:key:alice", vec![read_cap(Some("document"))]);
+        let mut plan = plan_read(
+            &policy,
+            "document",
+            &proxying_service,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::PointInTime { id: "doc-1".to_string() },
+        )
+        .unwrap();
+        let slot = plan.fetches[0].slot;
+        let pending = plan.pending.take().unwrap();
+        let sieve =
+            finalize(pending, &[FetchResult { slot, ids: vec!["emp-alice".to_string()] }]).unwrap();
+
+        assert_eq!(
+            run_sieve(&conn, "documents", &sieve),
+            vec!["doc-1"],
+            "doc-1 is reachable and matches the point-in-time id"
+        );
+
+        // Both doc-1 and doc-2 are reachable via the fetch (same owner) --
+        // asking about doc-2 specifically must return doc-2, not doc-1 or
+        // both, proving the `id = ?` predicate still narrows correctly on
+        // top of the finalized remote predicate.
+        let mut plan2 = plan_read(
+            &policy,
+            "document",
+            &proxying_service,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::PointInTime { id: "doc-2".to_string() },
+        )
+        .unwrap();
+        let slot2 = plan2.fetches[0].slot;
+        let pending2 = plan2.pending.take().unwrap();
+        let sieve2 =
+            finalize(pending2, &[FetchResult { slot: slot2, ids: vec!["emp-alice".to_string()] }])
+                .unwrap();
+        assert_eq!(run_sieve(&conn, "documents", &sieve2), vec!["doc-2"]);
+    }
+
+    /// An id-set larger than `MAX_FETCH_IDS` is rejected rather than
+    /// silently truncated or spliced into an unbounded `IN (...)` list (B3
+    /// plan §5, fan-out containment).
+    #[test]
+    fn finalize_rejects_an_oversized_id_set() {
+        let policy = remote_relation_policy();
+        let proxying_service =
+            session_with_anchor("did:key:svc-1", "did:key:alice", vec![read_cap(Some("document"))]);
+        let mut plan = plan_read(
+            &policy,
+            "document",
+            &proxying_service,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::Filter,
+        )
+        .unwrap();
+        let slot = plan.fetches[0].slot;
+        let pending = plan.pending.take().unwrap();
+        let oversized: Vec<String> = (0..MAX_FETCH_IDS + 1).map(|i| format!("id-{i}")).collect();
+        let err = finalize(pending, &[FetchResult { slot, ids: oversized }]).unwrap_err();
+        assert!(matches!(err, PolicyError::Semantic(_)));
+    }
+
+    /// `finalize` fails closed, rather than panicking or silently leaving
+    /// the marker text in place, when `results` is missing a slot the
+    /// pending sieve actually needs.
+    #[test]
+    fn finalize_fails_closed_on_a_missing_fetch_result() {
+        let policy = remote_relation_policy();
+        let proxying_service =
+            session_with_anchor("did:key:svc-1", "did:key:alice", vec![read_cap(Some("document"))]);
+        let plan = plan_read(
+            &policy,
+            "document",
+            &proxying_service,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::Filter,
+        )
+        .unwrap()
+        .pending
+        .unwrap();
+        let err = finalize(plan, &[]).unwrap_err();
+        assert!(matches!(err, PolicyError::Semantic(_)));
+    }
+
+    /// D-B3-5: a `recursive: true` relation that is also remote
+    /// (`service` set) is rejected at parse time -- B3 does not support an
+    /// iterative cross-node transitive closure. Confirms the guard the
+    /// policy schema already enforces (`policy::` tests pin the schema
+    /// layer directly); this is the fdae-crate-level confirmation that a
+    /// `Policy` value with that combination can never reach `plan_read` at
+    /// all, since `Policy` is only ever constructed via `parse_and_validate`.
+    #[test]
+    fn remote_and_recursive_on_the_same_relation_cannot_reach_plan_read() {
+        let err = parse_and_validate(
+            r#"{
+                "version": "fdae/v1",
+                "definitions": {
+                    "user": {
+                        "table": "users",
+                        "principal_column": "did",
+                        "relations": {
+                            "management_chain": {
+                                "target": "user", "from_key": "id", "to_key": "manager_id",
+                                "recursive": true, "service": "hr-svc"
+                            }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap_err();
+        assert!(matches!(err, PolicyError::Semantic(_)));
+    }
+
+    /// Two OR'd permission paths that both reach the *same* remote relation
+    /// collapse into a single `RemoteFetch` (deduped by `(service,
+    /// relation)`, plan §5) even though the marker text appears twice.
+    #[test]
+    fn plan_read_dedupes_repeated_fetches_to_the_same_remote_relation() {
+        // Two *different* local relation names ("owner", "lead") both
+        // pointing at the same remote (service, target) pair -- the dedupe
+        // key is `(service, relation)` where `relation` is the remote
+        // object type (`Relation.target`, B3-02), not the local edge name,
+        // so these collapse into one fetch even though `hop.name` differs.
+        let policy = parse_and_validate(
+            r#"{
+                "version": "fdae/v1",
+                "definitions": {
+                    "document": {
+                        "table": "documents",
+                        "relations": {
+                            "owner": {
+                                "target": "employee", "service": "hr-svc",
+                                "join_column": "owner_uuid"
+                            },
+                            "lead": {
+                                "target": "employee", "service": "hr-svc",
+                                "join_column": "lead_uuid"
+                            }
+                        },
+                        "permissions": {
+                            "view": {
+                                "allows": ["data-layer/read"],
+                                "paths": [["owner", "anchor"], ["lead", "anchor"]]
+                            }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let proxying_service =
+            session_with_anchor("did:key:svc-1", "did:key:alice", vec![read_cap(Some("document"))]);
+        let plan = plan_read(
+            &policy,
+            "document",
+            &proxying_service,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::Filter,
+        )
+        .unwrap();
+        assert_eq!(
+            plan.fetches.len(),
+            1,
+            "both paths resolve to the same (service, target) pair despite different local names"
+        );
+    }
+
+    /// B3-05 regression: two remote relations naming the *same* service but
+    /// *different* target types must **not** dedupe -- each needs its own
+    /// fetch and its own `IN (...)` predicate bound to its own id-set.
+    #[test]
+    fn plan_read_does_not_dedupe_fetches_to_different_remote_target_types() {
+        let policy = parse_and_validate(
+            r#"{
+                "version": "fdae/v1",
+                "definitions": {
+                    "document": {
+                        "table": "documents",
+                        "relations": {
+                            "owner": {
+                                "target": "employee", "service": "hr-svc",
+                                "join_column": "owner_uuid"
+                            },
+                            "department": {
+                                "target": "team", "service": "hr-svc",
+                                "join_column": "department_uuid"
+                            }
+                        },
+                        "permissions": {
+                            "view": {
+                                "allows": ["data-layer/read"],
+                                "paths": [["owner", "anchor"], ["department", "anchor"]]
+                            }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let proxying_service =
+            session_with_anchor("did:key:svc-1", "did:key:alice", vec![read_cap(Some("document"))]);
+        let plan = plan_read(
+            &policy,
+            "document",
+            &proxying_service,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::Filter,
+        )
+        .unwrap();
+        assert_eq!(
+            plan.fetches.len(),
+            2,
+            "same service, different target types ('employee' vs 'team') must stay distinct \
+             fetches"
+        );
+        let targets: BTreeSet<&str> = plan.fetches.iter().map(|f| f.relation.as_str()).collect();
+        assert_eq!(targets, BTreeSet::from(["employee", "team"]));
+    }
+
+    fn resolvable_employee_policy(principal_col: &str) -> Policy {
+        parse_and_validate(&format!(
+            r#"{{
+                "version": "fdae/v1",
+                "definitions": {{
+                    "employee": {{
+                        "table": "employees",
+                        "principal_column": "{principal_col}",
+                        "resolvable_without_capability": true
+                    }}
+                }}
+            }}"#
+        ))
+        .unwrap()
+    }
+
+    /// D-B3-3 (A2): a definition opted into `resolvable_without_capability`
+    /// resolves via a bare `principal_column = ?` predicate, runnable
+    /// directly against the seeded table.
+    #[test]
+    fn resolve_structural_runs_correctly_against_a_json_payload_principal_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE employees (
+                id TEXT PRIMARY KEY, creator_id TEXT, created_at INTEGER, updated_at INTEGER,
+                payload TEXT NOT NULL DEFAULT '{}'
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO employees (id, payload) VALUES ('emp-1', ?1)",
+            [json!({"did": "did:key:alice"}).to_string()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO employees (id, payload) VALUES ('emp-2', ?1)",
+            [json!({"did": "did:key:bob"}).to_string()],
+        )
+        .unwrap();
+
+        let policy = resolvable_employee_policy("did");
+        let resolved = resolve_structural(&policy, "employee", "did:key:alice").unwrap().unwrap();
+        assert_eq!(resolved.table, "employees");
+
+        let sql = format!("SELECT id FROM {} WHERE {}", resolved.table, resolved.where_clause);
+        let mut stmt = conn.prepare(&sql).unwrap();
+        let ids: Vec<String> = stmt
+            .query_map(rusqlite::params_from_iter(resolved.params.iter()), |row| row.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(ids, vec!["emp-1"]);
+    }
+
+    /// A reserved `principal_column` (e.g. `creator_id`) resolves to the
+    /// physical column, not `json_extract(payload, '$.creator_id')` -- the
+    /// same reserved-column addressing every other predicate uses.
+    #[test]
+    fn resolve_structural_addresses_a_reserved_column_directly() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE employees (
+                id TEXT PRIMARY KEY, creator_id TEXT, created_at INTEGER, updated_at INTEGER,
+                payload TEXT NOT NULL DEFAULT '{}'
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO employees (id, creator_id) VALUES ('emp-1', 'did:key:alice')",
+            [],
+        )
+        .unwrap();
+
+        let policy = resolvable_employee_policy("creator_id");
+        let resolved = resolve_structural(&policy, "employee", "did:key:alice").unwrap().unwrap();
+        assert_eq!(resolved.where_clause, "employees.creator_id = ?");
+
+        let sql = format!("SELECT id FROM {} WHERE {}", resolved.table, resolved.where_clause);
+        let mut stmt = conn.prepare(&sql).unwrap();
+        let ids: Vec<String> = stmt
+            .query_map(rusqlite::params_from_iter(resolved.params.iter()), |row| row.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(ids, vec!["emp-1"]);
+    }
+
+    /// A definition that has *not* opted in resolves to `None`, not an
+    /// error -- the caller treats this identically to "not found," never
+    /// silently permitting structural resolution.
+    #[test]
+    fn resolve_structural_is_none_when_not_opted_in() {
+        let policy = single_hop_policy();
+        assert!(resolve_structural(&policy, "document", "did:key:alice").unwrap().is_none());
+    }
+
+    #[test]
+    fn resolve_structural_is_none_for_an_unknown_relation() {
+        let policy = resolvable_employee_policy("did");
+        assert!(resolve_structural(&policy, "nonexistent", "did:key:alice").unwrap().is_none());
+    }
+
+    /// `definition_table` resolves either the definition key or the
+    /// physical table name (case-insensitively) to the physical table --
+    /// B3's `resolve-relation` needs the *table*, since `ServiceStore::query`
+    /// addresses a collection literally, unlike `compile_read`'s own
+    /// permissive key-or-table matching.
+    #[test]
+    fn definition_table_resolves_by_key_or_table_case_insensitively() {
+        let policy = resolvable_employee_policy("did");
+        assert_eq!(definition_table(&policy, "employee"), Some("employees"));
+        assert_eq!(definition_table(&policy, "EMPLOYEE"), Some("employees"));
+        assert_eq!(definition_table(&policy, "employees"), Some("employees"));
+        assert_eq!(definition_table(&policy, "nonexistent"), None);
     }
 
     #[test]
@@ -2418,5 +3652,62 @@ mod tests {
         assert!(logs_content.contains("fdae decision: deny"), "logs were: {logs_content}");
         assert!(logs_content.contains("unrelated_collection"), "logs were: {logs_content}");
         assert!(logs_content.contains("did:key:alice"), "logs were: {logs_content}");
+    }
+
+    /// B3-08: when `compile_read` rejects a plan needing a remote fetch,
+    /// the trace record must say so -- `plan_read`'s own trace (emitted
+    /// first, before `compile_read` sees the fetch count) necessarily
+    /// reads as an allow, since `plan_read` itself doesn't fail; without
+    /// this fix an operator's log would show only that allow-shaped
+    /// record for a call that actually denied.
+    #[test]
+    fn compile_read_emits_its_own_deny_trace_when_a_remote_fetch_is_needed() {
+        use std::{
+            io,
+            sync::{Arc, Mutex},
+        };
+
+        use tracing_subscriber::prelude::*;
+
+        struct MockWriter {
+            logs: Arc<Mutex<Vec<u8>>>,
+        }
+        impl io::Write for MockWriter {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.logs.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let logs = Arc::new(Mutex::new(Vec::new()));
+        let logs_clone = logs.clone();
+        let make_writer = move || MockWriter { logs: logs_clone.clone() };
+        let layer = tracing_subscriber::fmt::layer().with_ansi(false).with_writer(make_writer);
+        let subscriber = tracing_subscriber::registry().with(layer);
+
+        let policy = remote_relation_policy();
+        let proxying_service =
+            session_with_anchor("did:key:svc-1", "did:key:alice", vec![read_cap(Some("document"))]);
+        tracing::subscriber::with_default(subscriber, || {
+            let _ = compile_read(
+                &policy,
+                "document",
+                &proxying_service,
+                SERVICE_ID,
+                &Ability(Ability::DATA_LAYER_READ.to_string()),
+                Mode::Filter,
+            )
+            .unwrap_err();
+        });
+
+        let logs_content = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+        assert!(logs_content.contains("fdae decision: deny"), "logs were: {logs_content}");
+        assert!(
+            logs_content.contains("remote relationship fetch"),
+            "the deny reason must name the unresolved fetch: {logs_content}"
+        );
     }
 }

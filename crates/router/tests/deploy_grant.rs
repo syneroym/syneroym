@@ -182,6 +182,7 @@ async fn test_service_with_registry(
         messaging_broker,
         native_dispatch,
         http_routes,
+        Arc::new(syneroym_identity::Identity::generate().unwrap()),
     )
     .await
     .unwrap()

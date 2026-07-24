@@ -31,7 +31,8 @@ use syneroym_data_db::{
     traits::{ServiceStore, StorageProvider},
 };
 use syneroym_data_keystore::KeyStore;
-use syneroym_fdae::Policy;
+use syneroym_fdae::{MAX_FETCH_IDS, Policy};
+use syneroym_identity::{Identity, substrate::derive_did_key};
 use syneroym_mqtt_broker::{MqttBroker, namespace_topic_for_publish};
 use syneroym_rpc::{
     Ability, NativeInvocation, NativeResponse, NativeService, ResourceUri, RpcError, RpcResult,
@@ -62,6 +63,27 @@ pub struct SynSvcNativeService {
     /// this hot path. A re-deploy reconstructs the service, so a policy edit
     /// takes effect with the deploy that carries it.
     fdae_policy: Option<Arc<Policy>>,
+    /// This *service's own* signing identity (Slice B3), derived from the
+    /// node's identity via
+    /// `Identity::derive_service_identity(owner_did, service_id)`
+    /// (ADR-0006 "Model A" pattern) -- **not** the shared node identity
+    /// directly. `resolve-relation` signs its returned `RelationshipProof`
+    /// as this service's asserter DID
+    /// (`derive_did_key(&service_identity.public_key())`), per ADR-0017
+    /// §6/§7's "`hr-svc` asserts..." / "the service's own identity" model:
+    /// a substrate node routinely hosts multiple, unrelated services
+    /// (multi-tenancy is the normal case), so a shared node-wide signing
+    /// identity would make every co-hosted service's assertions
+    /// cryptographically indistinguishable from one another, and would let
+    /// the node operator forge assertions on any hosted service's behalf.
+    /// `owner_did` (the deploying/owning DID recorded by
+    /// `ControlPlaneService`'s `registry.owner_of`/`set_owner`) is folded
+    /// into the derivation alongside `service_id` so that a `service_id`
+    /// freed by undeploy and later redeployed under a different owner gets
+    /// a distinct identity rather than inheriting the previous owner's key.
+    /// Deterministic and redeploy-stable for the *same* owner (same
+    /// derivation every time), so no new persisted key material is needed.
+    service_identity: Identity,
 }
 
 impl fmt::Debug for SynSvcNativeService {
@@ -195,8 +217,95 @@ fn to_payload<T: serde::Serialize>(value: &T) -> RpcResult<NativeResponse> {
         .map_err(|e| internal(format!("failed to serialize response: {e}")))
 }
 
+/// A signed, TTL'd assertion answering "which rows does `principal` reach
+/// via `relation`" (Slice B3, ADR-0017 §6): the wire response of
+/// `resolve-relation`. Signing (not just transport authentication) is what
+/// makes the id-set self-authenticating for the `DecisionTrace` provenance
+/// a *successful* fetch records (Phase 4) and for any future cache (D-B3-6,
+/// deferred) -- both need to know *which node* asserted this, independent
+/// of the connection it arrived over.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct RelationshipProof {
+    asserter_did: String,
+    relation: String,
+    principal: String,
+    ids: Vec<String>,
+    valid_until_secs: u64,
+    /// z-base-32-encoded signature over the JSON-canonicalized form of this
+    /// struct with `signature` itself set to `""` -- mirrors
+    /// `Identity::sign_json`'s existing use elsewhere (e.g.
+    /// `EndpointInfo::sign`), never re-deriving a bespoke signing scheme.
+    signature: String,
+}
+
+/// How long a `resolve-relation` answer is valid for (ADR-0017 §6's own
+/// worked example: "valid 60s"). A fixed constant, not policy-configurable,
+/// in this phase -- the fetch is used immediately by the same request that
+/// triggered it (Phase 4); a cache honoring this TTL is a pure future
+/// addition (D-B3-6), not something this phase relies on.
+const RELATIONSHIP_PROOF_TTL_SECS: u64 = 60;
+
+/// B3-09: returns an error rather than a bogus timestamp on failure. The
+/// only way `duration_since(UNIX_EPOCH)` fails is a system clock set
+/// before 1970 -- vanishingly unlikely, but this value feeds a
+/// cryptographically **signed** artifact, unlike an ordinary internal
+/// timestamp field: silently minting `valid_until_secs = 60` (Unix epoch +
+/// the TTL) would leave the node's own signature attesting to a claim it
+/// never intended, and any TTL-checking consumer would see an
+/// inexplicably-decades-stale proof instead of the actual clock fault.
+fn now_secs() -> RpcResult<u64> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .map_err(|e| internal(format!("system clock is before the Unix epoch: {e}")))
+}
+
+/// Signs `ids` as a [`RelationshipProof`] asserted by `identity`. The
+/// signature covers every field except itself (set to `""` for signing,
+/// matching the canonicalize-then-sign convention `Identity::sign_json`'s
+/// other callers use).
+fn sign_relationship_proof(
+    identity: &Identity,
+    relation: &str,
+    principal: &str,
+    ids: Vec<String>,
+) -> RpcResult<RelationshipProof> {
+    let mut proof = RelationshipProof {
+        asserter_did: derive_did_key(&identity.public_key()),
+        relation: relation.to_string(),
+        principal: principal.to_string(),
+        ids,
+        valid_until_secs: now_secs()? + RELATIONSHIP_PROOF_TTL_SECS,
+        signature: String::new(),
+    };
+    let unsigned = serde_json::to_value(&proof)
+        .map_err(|e| internal(format!("failed to serialize relationship proof: {e}")))?;
+    proof.signature = identity
+        .sign_json(&unsigned)
+        .map_err(|e| internal(format!("failed to sign relationship proof: {e}")))?;
+    Ok(proof)
+}
+
+/// Extracts the single `id` column from a `SELECT id FROM ... WHERE ...`
+/// [`RawQueryResult`] (the A2 structural-resolution query). Fails closed on
+/// a shape this query never produces (a non-text id, or more/fewer than one
+/// column) rather than silently coercing or dropping rows.
+fn extract_id_column(result: RawQueryResult) -> RpcResult<Vec<String>> {
+    result
+        .rows
+        .into_iter()
+        .map(|row| match row.as_slice() {
+            [SqlValue::Text(id)] => Ok(id.clone()),
+            _ => {
+                Err(internal("resolve-relation: structural query returned an unexpected row shape"))
+            }
+        })
+        .collect()
+}
+
 impl SynSvcNativeService {
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         service_id: String,
         key_store: Arc<KeyStore>,
@@ -204,7 +313,15 @@ impl SynSvcNativeService {
         blob_provider: Arc<dyn BlobProvider>,
         messaging_broker: Arc<MqttBroker>,
         fdae_policy: Option<Arc<Policy>>,
+        node_identity: Arc<Identity>,
+        owner_did: &str,
     ) -> Self {
+        // Derived here, once, rather than at every call site: every
+        // existing (and future) construction site already passes the
+        // shared node identity and the deploying owner's DID for exactly
+        // this purpose, so deriving internally means no caller needs to
+        // know this service-scoping happens at all.
+        let service_identity = node_identity.derive_service_identity(owner_did, &service_id);
         Self {
             service_id,
             key_store,
@@ -214,6 +331,7 @@ impl SynSvcNativeService {
             upload_sessions: Mutex::new(HashMap::new()),
             download_sessions: Mutex::new(HashMap::new()),
             fdae_policy,
+            service_identity,
         }
     }
 
@@ -244,6 +362,176 @@ impl SynSvcNativeService {
             session: &invocation.caller.session,
             service_id: &self.service_id,
         })
+    }
+
+    /// Slice B3 pipeline stage 2, the *receiving* (data-owning) side: "which
+    /// rows does `principal` reach via `relation`," signed as a
+    /// [`RelationshipProof`]. The *sending* side (issuing the fetch, timeout
+    /// handling, `plan_read`/`finalize` wiring) is Phase 4 -- this method
+    /// only answers the question, over whatever transport already got the
+    /// request here (native dispatch, `dispatch_json_rpc_once`).
+    ///
+    /// **A1 vs. A2 (D-B3-3), mutually exclusive per request, not a fallback
+    /// chain:** if the caller holds a capability scoped to *this resource*
+    /// (§ B3-07: not merely *any* capability -- an unrelated grant on some
+    /// other collection must not change the answer), only **A1** (the
+    /// existing capability-gated sieve, via `ServiceStore::query`) is
+    /// attempted -- an empty result is a real, final deny, never silently
+    /// widened by A2. **A2** (a bare `principal_column` match, gated only by
+    /// the definition's own `resolvable_without_capability` opt-in) applies
+    /// only when the caller holds no capability scoped here, so a
+    /// real-but-denied A1 decision can never be second-guessed by the
+    /// looser A2 model.
+    async fn resolve_relation(
+        &self,
+        invocation: &NativeInvocation,
+        store: &dyn ServiceStore,
+    ) -> RpcResult<NativeResponse> {
+        #[derive(serde::Deserialize)]
+        struct Req {
+            relation: String,
+            principal: String,
+        }
+        let req: Req = parse_params(invocation)?;
+
+        // The wire caller must be re-verified as exactly the principal
+        // being asked about -- either the direct verified identity or the
+        // anchor it's proxying for (`anchor_did.unwrap_or(subject_did)`,
+        // the same fallback `compile::terminal_value`/`emit_remote_terminal`
+        // use). B3 exists precisely because `caller != anchor`: a forwarded
+        // chain `alice -> svc-A` re-verifies here with `subject_did =
+        // svc-A` (whoever actually authenticated this connection) and
+        // `anchor_did = alice`, while `RemoteFetch.principal_did` is always
+        // the anchor -- comparing against `subject_did` alone would reject
+        // every genuinely cross-service ask. `principal` is still a
+        // caller-declared label that must match one of these, never a free
+        // parameter naming an arbitrary third party.
+        let effective_principal = invocation
+            .caller
+            .session
+            .anchor_did
+            .as_deref()
+            .unwrap_or(&invocation.caller.session.subject_did);
+        if req.principal != effective_principal {
+            return Err(data_layer_error(DataLayerError::PermissionDenied));
+        }
+
+        let Some(policy) = self.fdae_policy.as_ref() else {
+            let proof = sign_relationship_proof(
+                &self.service_identity,
+                &req.relation,
+                &req.principal,
+                Vec::new(),
+            )?;
+            return to_payload(&proof);
+        };
+
+        // No definition matches `relation` at all: unlike an ordinary read,
+        // where "no definition" correctly falls through to unfiltered
+        // (grant-layer-admitted) access, a cross-service relationship ask
+        // has no backing grant-layer admission -- deny outright rather than
+        // let `ServiceStore::query`'s own no-definition pass-through leak
+        // the whole collection. Also resolves the definition's *physical
+        // table* -- `ServiceStore::query` addresses a collection literally
+        // (unlike `compile_read`'s own permissive key-or-table matching),
+        // so a `relation` naming a policy *key* (B3's convention, e.g.
+        // `RemoteFetch.relation`) must be translated before it reaches A1's
+        // `store.query`, or a key that isn't also the table's own name
+        // spuriously fails `collection-not-found`.
+        let Some(table) = syneroym_fdae::definition_table(policy, &req.relation) else {
+            let proof = sign_relationship_proof(
+                &self.service_identity,
+                &req.relation,
+                &req.principal,
+                Vec::new(),
+            )?;
+            return to_payload(&proof);
+        };
+
+        // B3-07: the A1/A2 fork is keyed on whether the caller holds *any*
+        // capability scoped to *this resource* -- not on whether they hold
+        // capabilities at all, which would make the fork's outcome depend
+        // on unrelated grants a chain happens to carry. Mirrors the same
+        // resource-matching `Capability::grants` uses internally.
+        let resource = ResourceUri(format!(
+            "{}/collection/{table}",
+            ResourceUri::service(&self.service_id, &self.service_id).0
+        ));
+        let has_scoped_capability = invocation
+            .caller
+            .session
+            .capabilities
+            .iter()
+            .any(|cap| cap.with.is_substrate_scope() || cap.with.covers_resource(&resource));
+
+        let ids = if !has_scoped_capability {
+            match syneroym_fdae::resolve_structural(policy, &req.relation, &req.principal) {
+                Ok(Some(resolved)) => {
+                    let sql = format!(
+                        "SELECT id FROM {} WHERE {} LIMIT {}",
+                        resolved.table,
+                        resolved.where_clause,
+                        MAX_FETCH_IDS + 1
+                    );
+                    let params: Vec<SqlValue> =
+                        resolved.params.into_iter().map(SqlValue::Text).collect();
+                    // B3-06: `query_raw`'s own doc comment documents itself
+                    // as privileged ("callers must have already verified
+                    // `data-layer/admin`"), a contract this call
+                    // deliberately does not satisfy -- the caller reaching
+                    // this branch holds *no* relevant capability at all
+                    // (that's the A2 fork condition above). Safe anyway,
+                    // for reasons specific to this one call site, not a
+                    // general precedent: (1) the SQL text and every bound
+                    // identifier come from `resolve_structural`, whose
+                    // `table`/`principal_column`/`join_column` are all
+                    // constrained by the policy schema's
+                    // `^[A-Za-z_][A-Za-z0-9_]*$` `sql_identifier` pattern,
+                    // so there is no caller-controlled string reaching the
+                    // query text; (2) the actual authorization gate is
+                    // `Definition::resolvable_without_capability`, an
+                    // explicit per-definition opt-in the *policy author*
+                    // controls -- `query_raw`'s admin check would be
+                    // redundant with, not a replacement for, that gate.
+                    let raw = store.query_raw(&sql, &params).await.map_err(data_layer_error)?;
+                    extract_id_column(raw)?
+                }
+                // Not opted into `resolvable_without_capability` -- deny,
+                // never treated as "found nothing to structurally resolve
+                // so fall back to something looser."
+                Ok(None) => Vec::new(),
+                Err(e) => return Err(internal(e.to_string())),
+            }
+        } else {
+            // The evaluation session presents the *effective principal*
+            // (already validated above) as `subject_did`, not necessarily
+            // the immediate connection identity -- resolve-relation answers
+            // "what can the principal reach," so a `caller`-terminal path in
+            // the remote's *own* policy must bind to that principal, per
+            // the same confused-deputy reasoning `emit_remote_terminal`
+            // documents. The real capabilities present on the connection are
+            // unchanged; only the identity they're evaluated against shifts.
+            let mut session = invocation.caller.session.clone();
+            session.subject_did = req.principal.clone();
+            let auth = QueryAuth { policy, session: &session, service_id: &self.service_id };
+            let opts = QueryOptions {
+                filter: None,
+                limit: Some(u32::try_from(MAX_FETCH_IDS).unwrap_or(u32::MAX)),
+                cursor: None,
+            };
+            let outcome = store.query(table, &opts, Some(&auth)).await.map_err(data_layer_error)?;
+            if outcome.value.next_cursor.is_some() {
+                return Err(data_layer_error(DataLayerError::QuotaExceeded));
+            }
+            outcome.value.records.into_iter().map(|r| r.id).collect()
+        };
+
+        if ids.len() > MAX_FETCH_IDS {
+            return Err(data_layer_error(DataLayerError::QuotaExceeded));
+        }
+        let proof =
+            sign_relationship_proof(&self.service_identity, &req.relation, &req.principal, ids)?;
+        to_payload(&proof)
     }
 
     async fn resolve_blob_dek(&self) -> RpcResult<Option<Zeroizing<[u8; 32]>>> {
@@ -504,6 +792,9 @@ impl SynSvcNativeService {
                     .await
                     .map_err(data_layer_error)?;
                 raw_query_result_payload(result)
+            }
+            "resolve-relation" | "resolve_relation" => {
+                self.resolve_relation(&invocation, store.as_ref()).await
             }
             other => Err(RpcError::MethodNotFound(format!("data-layer/{other}"))),
         }

@@ -31,7 +31,7 @@ use syneroym_core::{
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
 use syneroym_data_db::SqliteStorageProvider;
 use syneroym_data_keystore::KeyStore;
-use syneroym_fdae::{Policy, parse_and_validate};
+use syneroym_fdae::{FetchResult, MAX_FETCH_IDS, Mode, Policy, parse_and_validate};
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
 use syneroym_router::{
     AdaptationStage, EncryptionStage, RouteHandler, RouteHandlerDeps, RoutePipeline, RoutePreamble,
@@ -231,6 +231,8 @@ async fn authenticated_caller_identity_becomes_creator_id_not_service_id() {
         blob_provider,
         messaging_broker,
         None,
+        Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        "did:key:zTestOwner",
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -292,6 +294,8 @@ async fn execute_ddl_denied_for_ordinary_native_caller() {
         blob_provider,
         messaging_broker,
         None,
+        Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        "did:key:zTestOwner",
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -332,6 +336,8 @@ async fn execute_ddl_allowed_for_admin_ucan_root_native_caller() {
         blob_provider,
         messaging_broker,
         None,
+        Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        "did:key:zTestOwner",
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -368,6 +374,8 @@ async fn ordinary_caller_denied_query_raw() {
         blob_provider,
         messaging_broker,
         None,
+        Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        "did:key:zTestOwner",
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -408,6 +416,8 @@ async fn admin_caller_admitted_query_raw() {
         blob_provider,
         messaging_broker,
         None,
+        Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        "did:key:zTestOwner",
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -447,6 +457,8 @@ async fn query_raw_binds_params_no_injection() {
         blob_provider,
         messaging_broker,
         None,
+        Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        "did:key:zTestOwner",
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -526,6 +538,8 @@ async fn query_raw_null_param_round_trips() {
         blob_provider,
         messaging_broker,
         None,
+        Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        "did:key:zTestOwner",
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -580,6 +594,8 @@ async fn query_raw_result_cells_are_round_trippable_as_params() {
         blob_provider,
         messaging_broker,
         None,
+        Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        "did:key:zTestOwner",
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -789,6 +805,8 @@ async fn ordinary_caller_admitted_aggregate() {
         blob_provider,
         messaging_broker,
         None,
+        Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        "did:key:zTestOwner",
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -860,6 +878,8 @@ async fn aggregate_malformed_pipeline_is_schema_violation() {
         blob_provider,
         messaging_broker,
         None,
+        Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        "did:key:zTestOwner",
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -974,6 +994,8 @@ async fn native_fdae_policy_row_filters_and_masks_for_two_distinct_verified_call
         blob_provider,
         messaging_broker,
         Some(policy),
+        Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        "did:key:zTestOwner",
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -1151,6 +1173,8 @@ async fn native_delete_many_is_row_filtered_as_a_write_operation() {
         blob_provider,
         messaging_broker,
         Some(policy),
+        Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        "did:key:zTestOwner",
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -1238,6 +1262,8 @@ async fn native_aggregate_is_row_filtered_through_native_dispatch() {
         blob_provider,
         messaging_broker,
         Some(policy),
+        Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        "did:key:zTestOwner",
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -1285,5 +1311,770 @@ async fn native_aggregate_is_row_filtered_through_native_dispatch() {
         resp["result"]["rows"],
         json!([[{"type": "integer", "value": 1}]]),
         "alice's aggregate must count only her own reachable document: {resp:?}"
+    );
+}
+
+// -- Slice B3 Phase 3: native `resolve-relation` (the cross-service
+// relationship-proof fetch's receiving side, D-B3-3) --------------------
+
+/// A single `employee` definition supporting both D-B3-3 authorization
+/// models: `view_self`'s zero-hop `paths: [["caller"]]` is what A1 (the
+/// existing capability-gated sieve) evaluates, and
+/// `resolvable_without_capability: true` is the explicit per-definition
+/// opt-in A2 (bare `principal_column` match) requires.
+fn resolvable_employee_policy() -> Policy {
+    parse_and_validate(
+        r#"{
+            "version": "fdae/v1",
+            "definitions": {
+                "employee": {
+                    "table": "employees",
+                    "principal_column": "did",
+                    "resolvable_without_capability": true,
+                    "permissions": {
+                        "view_self": {"allows": ["data-layer/read"], "paths": [["caller"]]}
+                    }
+                }
+            }
+        }"#,
+    )
+    .unwrap()
+}
+
+/// A verified caller entitled to `data-layer/read` on the `employee`
+/// resource -- the A1 path.
+fn employee_reader_caller(subject_did: &str, service_id: &str) -> CallerContext {
+    CallerContext {
+        caller_did: subject_did.to_string(),
+        app_instance: None,
+        session: SessionContext {
+            subject_did: subject_did.to_string(),
+            capabilities: vec![Capability {
+                // Scoped to the physical table ("employees"), not the
+                // policy definition key ("employee") -- `compile_read`
+                // builds its resource URI from whatever `collection` string
+                // actually reaches it, which is the resolved table
+                // (`definition_table`), matching every other capability
+                // scoping convention in this file (e.g. `fdae_reader_caller`
+                // above uses "documents", not "document").
+                with: native_fdae_resource(service_id, "employees"),
+                can: Ability(Ability::DATA_LAYER_READ.to_string()),
+                caveats: None,
+            }],
+            ..Default::default()
+        },
+        auth: AuthLevel::Delegated,
+        proof: None,
+    }
+}
+
+/// A verified caller holding a capability scoped to a **different**
+/// resource entirely -- B3-07: the A1/A2 fork must key on capabilities
+/// scoped to *this* resource, not "holds any capability at all", so this
+/// caller correctly routes to A2 (as if capability-less for `employees`),
+/// not to a real-but-unrelated A1 grant check.
+fn unrelated_resource_capability_caller(subject_did: &str, service_id: &str) -> CallerContext {
+    CallerContext {
+        caller_did: subject_did.to_string(),
+        app_instance: None,
+        session: SessionContext {
+            subject_did: subject_did.to_string(),
+            capabilities: vec![Capability {
+                with: native_fdae_resource(service_id, "some_other_collection"),
+                can: Ability(Ability::DATA_LAYER_READ.to_string()),
+                caveats: None,
+            }],
+            ..Default::default()
+        },
+        auth: AuthLevel::Delegated,
+        proof: None,
+    }
+}
+
+/// A verified caller holding a capability scoped to the **right**
+/// resource (`employees`) but for an ability `view_self`'s `allows:
+/// ["data-layer/read"]` doesn't cover -- routes to A1 (a capability *is*
+/// scoped here), which then genuinely denies via the grant∩policy
+/// intersection. Exercises A1's real (not-A2-rescued) deny.
+///
+/// Must be an ability data-layer/read doesn't entail: the `data-layer`
+/// namespace is a *tiered* hierarchy (`admin ⊇ write ⊇ read`,
+/// `Ability::entails`), so `data-layer/write` would actually cover
+/// `data-layer/read` here -- a flat, unrelated ability (`blob/read`) is
+/// what genuinely fails to entail it.
+fn wrong_ability_on_the_right_resource_caller(
+    subject_did: &str,
+    service_id: &str,
+) -> CallerContext {
+    CallerContext {
+        caller_did: subject_did.to_string(),
+        app_instance: None,
+        session: SessionContext {
+            subject_did: subject_did.to_string(),
+            capabilities: vec![Capability {
+                with: native_fdae_resource(service_id, "employees"),
+                can: Ability(Ability::BLOB_READ.to_string()),
+                caveats: None,
+            }],
+            ..Default::default()
+        },
+        auth: AuthLevel::Delegated,
+        proof: None,
+    }
+}
+
+/// A verified caller holding **zero** capabilities -- a real
+/// `session.subject_did` (unlike `test_caller`, whose `SessionContext`
+/// default leaves it empty), the shape `build_caller`
+/// (`crates/router/src/route_handler/io.rs`) always produces for any
+/// verified connection, capability-laden or not.
+fn zero_capability_caller(subject_did: &str) -> CallerContext {
+    CallerContext {
+        caller_did: subject_did.to_string(),
+        app_instance: None,
+        session: SessionContext { subject_did: subject_did.to_string(), ..Default::default() },
+        auth: AuthLevel::Delegated,
+        proof: None,
+    }
+}
+
+async fn resolve_relation_service_and_pipeline(
+    service_id: &str,
+    policy: Option<Policy>,
+) -> (RouteHandler, RoutePipeline, RoutePreamble, tempfile::TempDir) {
+    resolve_relation_service_and_pipeline_with(
+        service_id,
+        policy,
+        Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        "did:key:zTestOwner",
+    )
+    .await
+}
+
+/// Same as [`resolve_relation_service_and_pipeline`], but lets the caller
+/// pin `node_identity`/`owner_did` explicitly -- needed to construct two
+/// services that share one or the other while varying just the dimension
+/// under test (e.g. same node, different owner).
+async fn resolve_relation_service_and_pipeline_with(
+    service_id: &str,
+    policy: Option<Policy>,
+    node_identity: Arc<syneroym_identity::Identity>,
+    owner_did: &str,
+) -> (RouteHandler, RoutePipeline, RoutePreamble, tempfile::TempDir) {
+    let (route_handler, _http_routes) = test_route_handler().await;
+    let key_store = Arc::new(KeyStore::new());
+    let temp_dir = tempfile::tempdir().unwrap();
+    let storage_provider = Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+    let blob_provider: Arc<dyn BlobProvider> =
+        Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+    let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+    let data_service = Arc::new(SynSvcNativeService::new(
+        service_id.to_string(),
+        key_store,
+        storage_provider,
+        blob_provider,
+        messaging_broker,
+        policy.map(Arc::new),
+        node_identity,
+        owner_did,
+    ));
+    route_handler.register_native_service(service_id.to_string(), data_service);
+
+    let pipeline = raw_pipeline(service_id);
+    let preamble = preamble_for(service_id, "data-layer");
+
+    // Seed via an elevated, unentitled-by-policy caller -- `put`/
+    // `create-collection` carry no FDAE gate (write-side Tier 3 is Slice
+    // B5-fdae).
+    let seeder = test_caller("did:key:z6MkResolveRelationSeeder");
+    for (id, did) in [("emp-alice", "did:key:alice"), ("emp-bob", "did:key:bob")] {
+        let create_body = json_rpc_body("create-collection", json!({"name": "employees"}));
+        let _ = route_handler
+            .dispatch_json_rpc_once(&pipeline, &preamble, Some(&seeder), &create_body)
+            .await;
+        let put_body = json_rpc_body(
+            "put",
+            json!({
+                "collection": "employees",
+                "value": {"id": id, "payload": json!({"did": did}).to_string().into_bytes()}
+            }),
+        );
+        let resp = route_handler
+            .dispatch_json_rpc_once(&pipeline, &preamble, Some(&seeder), &put_body)
+            .await
+            .unwrap();
+        let resp: Value = serde_json::from_slice(&resp).unwrap();
+        assert!(resp.get("error").is_none(), "seeding employees/{id} failed: {resp:?}");
+    }
+
+    (route_handler, pipeline, preamble, temp_dir)
+}
+
+/// Seeds `count` employee rows, all sharing `did` (so a single principal's
+/// `view_self`/structural lookup reaches all of them), via `batch-mutate`
+/// calls capped at `data_db`'s own `MAX_BATCH_SIZE` (200) per call --
+/// needed to construct an id-set bigger than `MAX_FETCH_IDS` (1000) for
+/// the overflow tests below.
+async fn seed_many_employees(
+    route_handler: &RouteHandler,
+    pipeline: &RoutePipeline,
+    preamble: &RoutePreamble,
+    did: &str,
+    count: usize,
+) {
+    const BATCH: usize = 200;
+    let seeder = test_caller("did:key:z6MkBulkSeeder");
+    let mut seeded = 0usize;
+    while seeded < count {
+        let this_batch = BATCH.min(count - seeded);
+        let mutations: Vec<Value> = (0..this_batch)
+            .map(|i| {
+                let id = format!("emp-bulk-{}", seeded + i);
+                json!({
+                    "type": "put",
+                    "value": {"id": id, "payload": json!({"did": did}).to_string().into_bytes()}
+                })
+            })
+            .collect();
+        let body = json_rpc_body(
+            "batch-mutate",
+            json!({"collection": "employees", "mutations": mutations}),
+        );
+        let resp = route_handler
+            .dispatch_json_rpc_once(pipeline, preamble, Some(&seeder), &body)
+            .await
+            .unwrap();
+        let resp: Value = serde_json::from_slice(&resp).unwrap();
+        assert!(resp.get("error").is_none(), "bulk seeding failed: {resp:?}");
+        seeded += this_batch;
+    }
+}
+
+/// B3 plan §5 fan-out containment: A1's `ServiceStore::query` limit is
+/// `MAX_FETCH_IDS` (1000); when more rows are actually reachable,
+/// `next_cursor` comes back `Some`, and `resolve_relation` must map that
+/// to `quota-exceeded`, not silently return a truncated -- and therefore
+/// incomplete but misleadingly-final-looking -- 1000-id answer.
+#[tokio::test]
+async fn resolve_relation_a1_overflow_maps_to_quota_exceeded() {
+    let service_id = "resolve-relation-a1-overflow-svc";
+    let (route_handler, pipeline, preamble, _temp_dir) =
+        resolve_relation_service_and_pipeline(service_id, Some(resolvable_employee_policy())).await;
+    seed_many_employees(&route_handler, &pipeline, &preamble, "did:key:alice", MAX_FETCH_IDS + 1)
+        .await;
+
+    let alice = employee_reader_caller("did:key:alice", service_id);
+    let body = resolve_relation_body("employee", "did:key:alice");
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&alice), &body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert_eq!(
+        resp["error"]["code"], -32013,
+        "an A1 result exceeding MAX_FETCH_IDS must map to quota-exceeded: {resp:?}"
+    );
+}
+
+/// The A2 mirror: `query_raw`'s explicit `LIMIT MAX_FETCH_IDS + 1` is what
+/// makes the overflow observable at all (raw SQL has no automatic page cap
+/// the way `query` does) -- confirms it's actually wired up, not merely
+/// present in the SQL text.
+#[tokio::test]
+async fn resolve_relation_a2_overflow_maps_to_quota_exceeded() {
+    let service_id = "resolve-relation-a2-overflow-svc";
+    let (route_handler, pipeline, preamble, _temp_dir) =
+        resolve_relation_service_and_pipeline(service_id, Some(resolvable_employee_policy())).await;
+    seed_many_employees(&route_handler, &pipeline, &preamble, "did:key:bob", MAX_FETCH_IDS + 1)
+        .await;
+
+    let bob = zero_capability_caller("did:key:bob");
+    let body = resolve_relation_body("employee", "did:key:bob");
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&bob), &body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert_eq!(
+        resp["error"]["code"], -32013,
+        "an A2 result exceeding MAX_FETCH_IDS must map to quota-exceeded: {resp:?}"
+    );
+}
+
+fn resolve_relation_body(relation: &str, principal: &str) -> Vec<u8> {
+    json_rpc_body("resolve-relation", json!({"relation": relation, "principal": principal}))
+}
+
+/// A1: a caller holding a real capability entitling `employee`'s
+/// `view_self` permission resolves to their own row via the existing
+/// capability-gated sieve -- and the returned `RelationshipProof` verifies
+/// against its own `asserter_did`.
+#[tokio::test]
+async fn resolve_relation_a1_resolves_via_the_capability_gated_sieve_and_verifies() {
+    let service_id = "resolve-relation-a1-svc";
+    let (route_handler, pipeline, preamble, _temp_dir) =
+        resolve_relation_service_and_pipeline(service_id, Some(resolvable_employee_policy())).await;
+
+    let alice = employee_reader_caller("did:key:alice", service_id);
+    let body = resolve_relation_body("employee", "did:key:alice");
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&alice), &body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert!(resp.get("error").is_none(), "resolve-relation must succeed: {resp:?}");
+    let result = &resp["result"];
+    assert_eq!(result["ids"], json!(["emp-alice"]), "A1 must resolve only alice's own row");
+    assert_eq!(result["relation"], "employee");
+    assert_eq!(result["principal"], "did:key:alice");
+
+    let asserter_did = result["asserter_did"].as_str().unwrap();
+    let signature = result["signature"].as_str().unwrap();
+    let mut unsigned = result.clone();
+    unsigned["signature"] = json!("");
+    syneroym_identity::substrate::verify_json_signature(asserter_did, &unsigned, signature)
+        .expect("the returned proof must verify against its own asserter_did");
+}
+
+/// Two services co-hosted on the same node (same `node_identity`, same
+/// `owner_did`) but with distinct `service_id`s must sign their
+/// `RelationshipProof`s under distinct `asserter_did`s -- the multi-tenancy
+/// concern ADR-0017 §6/§7's "`hr-svc` asserts..." model is meant to
+/// address: a shared node-wide signing identity would make every co-hosted
+/// service's assertions cryptographically indistinguishable.
+#[tokio::test]
+async fn resolve_relation_co_hosted_services_sign_with_distinct_asserter_dids() {
+    let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
+    let owner_did = "did:key:zSharedOwner";
+
+    let (hr_handler, hr_pipeline, hr_preamble, _hr_dir) =
+        resolve_relation_service_and_pipeline_with(
+            "hr-svc",
+            Some(resolvable_employee_policy()),
+            node_identity.clone(),
+            owner_did,
+        )
+        .await;
+    let (finance_handler, finance_pipeline, finance_preamble, _finance_dir) =
+        resolve_relation_service_and_pipeline_with(
+            "finance-svc",
+            Some(resolvable_employee_policy()),
+            node_identity,
+            owner_did,
+        )
+        .await;
+
+    let bob = zero_capability_caller("did:key:bob");
+    let body = resolve_relation_body("employee", "did:key:bob");
+
+    let hr_resp = hr_handler
+        .dispatch_json_rpc_once(&hr_pipeline, &hr_preamble, Some(&bob), &body)
+        .await
+        .unwrap();
+    let hr_resp: Value = serde_json::from_slice(&hr_resp).unwrap();
+    assert!(hr_resp.get("error").is_none(), "resolve-relation must succeed: {hr_resp:?}");
+    let hr_asserter = hr_resp["result"]["asserter_did"].as_str().unwrap();
+
+    let finance_resp = finance_handler
+        .dispatch_json_rpc_once(&finance_pipeline, &finance_preamble, Some(&bob), &body)
+        .await
+        .unwrap();
+    let finance_resp: Value = serde_json::from_slice(&finance_resp).unwrap();
+    assert!(finance_resp.get("error").is_none(), "resolve-relation must succeed: {finance_resp:?}");
+    let finance_asserter = finance_resp["result"]["asserter_did"].as_str().unwrap();
+
+    assert_ne!(
+        hr_asserter, finance_asserter,
+        "two co-hosted services under the same owner must sign as distinct asserter_dids"
+    );
+
+    // Each proof must verify only against its own service's asserter_did.
+    let mut hr_unsigned = hr_resp["result"].clone();
+    hr_unsigned["signature"] = json!("");
+    let hr_signature = hr_resp["result"]["signature"].as_str().unwrap();
+    syneroym_identity::substrate::verify_json_signature(hr_asserter, &hr_unsigned, hr_signature)
+        .expect("hr-svc's proof must verify against its own asserter_did");
+    assert!(
+        syneroym_identity::substrate::verify_json_signature(
+            finance_asserter,
+            &hr_unsigned,
+            hr_signature
+        )
+        .is_err(),
+        "hr-svc's proof must not verify under finance-svc's asserter_did"
+    );
+}
+
+/// A `service_id` freed by undeploy and redeployed under a **different**
+/// owner must not inherit the old owner's signing key: same node, same
+/// `service_id`, different `owner_did` must still derive distinct
+/// `asserter_did`s. Otherwise a stale `RelationshipProof` cached from the
+/// old tenancy would still verify under the new tenant's identity.
+#[tokio::test]
+async fn resolve_relation_service_id_reused_by_a_different_owner_signs_distinctly() {
+    let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
+    let service_id = "reused-service-id-svc";
+
+    let (old_handler, old_pipeline, old_preamble, _old_dir) =
+        resolve_relation_service_and_pipeline_with(
+            service_id,
+            Some(resolvable_employee_policy()),
+            node_identity.clone(),
+            "did:key:zOldOwner",
+        )
+        .await;
+    let (new_handler, new_pipeline, new_preamble, _new_dir) =
+        resolve_relation_service_and_pipeline_with(
+            service_id,
+            Some(resolvable_employee_policy()),
+            node_identity,
+            "did:key:zNewOwner",
+        )
+        .await;
+
+    let bob = zero_capability_caller("did:key:bob");
+    let body = resolve_relation_body("employee", "did:key:bob");
+
+    let old_resp = old_handler
+        .dispatch_json_rpc_once(&old_pipeline, &old_preamble, Some(&bob), &body)
+        .await
+        .unwrap();
+    let old_resp: Value = serde_json::from_slice(&old_resp).unwrap();
+    let old_asserter = old_resp["result"]["asserter_did"].as_str().unwrap();
+
+    let new_resp = new_handler
+        .dispatch_json_rpc_once(&new_pipeline, &new_preamble, Some(&bob), &body)
+        .await
+        .unwrap();
+    let new_resp: Value = serde_json::from_slice(&new_resp).unwrap();
+    let new_asserter = new_resp["result"]["asserter_did"].as_str().unwrap();
+
+    assert_ne!(
+        old_asserter, new_asserter,
+        "a service_id reused under a different owner must derive a distinct asserter_did"
+    );
+}
+
+/// B3-07: a capability scoped to a completely unrelated resource must not
+/// change the answer relative to holding zero capabilities -- it routes to
+/// A2 (structural resolution), the same as `zero_capability_caller` would,
+/// not to a real-but-irrelevant A1 grant check.
+#[tokio::test]
+async fn resolve_relation_an_unrelated_resource_capability_still_gets_a2() {
+    let service_id = "resolve-relation-unrelated-resource-svc";
+    let (route_handler, pipeline, preamble, _temp_dir) =
+        resolve_relation_service_and_pipeline(service_id, Some(resolvable_employee_policy())).await;
+
+    let caller = unrelated_resource_capability_caller("did:key:alice", service_id);
+    let body = resolve_relation_body("employee", "did:key:alice");
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&caller), &body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert!(resp.get("error").is_none(), "resolve-relation must succeed: {resp:?}");
+    assert_eq!(
+        resp["result"]["ids"],
+        json!(["emp-alice"]),
+        "an unrelated-resource capability must not block A2's structural resolution: {resp:?}"
+    );
+}
+
+/// A1's real deny (a capability scoped to `employees` but for an ability
+/// `view_self` doesn't cover) is final -- it must **not** be rescued by
+/// A2, even though the definition has opted into
+/// `resolvable_without_capability`. Mutually exclusive per request, not a
+/// fallback chain (D-B3-3).
+#[tokio::test]
+async fn resolve_relation_a1_deny_is_not_rescued_by_a2() {
+    let service_id = "resolve-relation-a1-deny-svc";
+    let (route_handler, pipeline, preamble, _temp_dir) =
+        resolve_relation_service_and_pipeline(service_id, Some(resolvable_employee_policy())).await;
+
+    let mallory = wrong_ability_on_the_right_resource_caller("did:key:alice", service_id);
+    let body = resolve_relation_body("employee", "did:key:alice");
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&mallory), &body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert!(resp.get("error").is_none(), "resolve-relation must still succeed with an empty set");
+    assert_eq!(
+        resp["result"]["ids"],
+        json!([]),
+        "an unrelated capability must not trigger A1 grant, nor fall through to A2: {resp:?}"
+    );
+}
+
+/// A2: a caller holding **zero** capabilities structurally resolves via
+/// the bare `principal_column` match, since `employee` opted into
+/// `resolvable_without_capability`.
+#[tokio::test]
+async fn resolve_relation_a2_resolves_structurally_with_zero_capabilities() {
+    let service_id = "resolve-relation-a2-svc";
+    let (route_handler, pipeline, preamble, _temp_dir) =
+        resolve_relation_service_and_pipeline(service_id, Some(resolvable_employee_policy())).await;
+
+    let bob = zero_capability_caller("did:key:bob");
+    let body = resolve_relation_body("employee", "did:key:bob");
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&bob), &body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert!(resp.get("error").is_none(), "resolve-relation must succeed: {resp:?}");
+    assert_eq!(resp["result"]["ids"], json!(["emp-bob"]), "A2 must resolve bob's own row");
+}
+
+/// A caller with zero capabilities against a definition that has **not**
+/// opted into `resolvable_without_capability` gets an empty result --
+/// neither A1 (no capabilities to evaluate) nor A2 (not opted in) applies.
+#[tokio::test]
+async fn resolve_relation_denies_when_not_opted_in_and_no_capabilities() {
+    let service_id = "resolve-relation-not-opted-in-svc";
+    let policy = parse_and_validate(
+        r#"{
+            "version": "fdae/v1",
+            "definitions": {
+                "employee": {"table": "employees", "principal_column": "did"}
+            }
+        }"#,
+    )
+    .unwrap();
+    let (route_handler, pipeline, preamble, _temp_dir) =
+        resolve_relation_service_and_pipeline(service_id, Some(policy)).await;
+
+    let bob = zero_capability_caller("did:key:bob");
+    let body = resolve_relation_body("employee", "did:key:bob");
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&bob), &body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert!(resp.get("error").is_none());
+    assert_eq!(resp["result"]["ids"], json!([]));
+}
+
+/// A `relation` naming no definition at all must deny outright, never fall
+/// through to `ServiceStore::query`'s ordinary no-definition-means-
+/// unfiltered pass-through -- there is no grant-layer admission backing a
+/// cross-service relationship ask the way there is for an ordinary read.
+#[tokio::test]
+async fn resolve_relation_denies_for_an_undeclared_relation_not_unfiltered() {
+    let service_id = "resolve-relation-undeclared-svc";
+    let (route_handler, pipeline, preamble, _temp_dir) =
+        resolve_relation_service_and_pipeline(service_id, Some(resolvable_employee_policy())).await;
+
+    let bob = zero_capability_caller("did:key:bob");
+    let body = resolve_relation_body("nonexistent_relation", "did:key:bob");
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&bob), &body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert!(resp.get("error").is_none());
+    assert_eq!(
+        resp["result"]["ids"],
+        json!([]),
+        "an unrecognized relation name must never leak an unfiltered dump: {resp:?}"
+    );
+}
+
+/// `principal` is a caller-declared label that must match the wire
+/// caller's own re-verified identity -- a caller cannot ask about a
+/// different principal's relationships.
+#[tokio::test]
+async fn resolve_relation_denies_when_principal_does_not_match_the_caller() {
+    let service_id = "resolve-relation-mismatch-svc";
+    let (route_handler, pipeline, preamble, _temp_dir) =
+        resolve_relation_service_and_pipeline(service_id, Some(resolvable_employee_policy())).await;
+
+    let alice = employee_reader_caller("did:key:alice", service_id);
+    let body = resolve_relation_body("employee", "did:key:bob");
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&alice), &body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert_eq!(
+        resp["error"]["code"], -32010,
+        "asking about a principal other than the verified caller must be denied: {resp:?}"
+    );
+}
+
+/// No policy deployed: nothing to resolve against, an empty (not error)
+/// result -- the same "no definition" treatment an unpoliced service gives
+/// every other FDAE-aware method.
+#[tokio::test]
+async fn resolve_relation_is_empty_when_no_policy_is_deployed() {
+    let service_id = "resolve-relation-no-policy-svc";
+    let (route_handler, pipeline, preamble, _temp_dir) =
+        resolve_relation_service_and_pipeline(service_id, None).await;
+
+    let bob = zero_capability_caller("did:key:bob");
+    let body = resolve_relation_body("employee", "did:key:bob");
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&bob), &body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert!(resp.get("error").is_none());
+    assert_eq!(resp["result"]["ids"], json!([]));
+}
+
+/// The join the review calls out as missing: `plan_read` (`crates/fdae`)
+/// -> `resolve-relation` (native dispatch on a *second*, distinct service)
+/// -> `finalize`, wired together by hand -- there is no `ServiceProxy`
+/// orchestration yet (Phase 4), so this test plays that role manually --
+/// proving the sender and receiver actually agree on what they're asking
+/// each other, not just that each half is correct in isolation. This is
+/// exactly the test that would have caught B3-01 (principal mismatch) and
+/// B3-02 (relation namespace mismatch) immediately; both are fixed, and
+/// this pins the fix at the seam where they were found.
+#[tokio::test]
+async fn plan_read_resolve_relation_finalize_join_end_to_end() {
+    // -- the remote (data-owning) service: hr-svc. `resolvable_employee_policy`
+    // seeds emp-alice (did:key:alice) and emp-bob (did:key:bob).
+    let hr_service_id = "hr-svc-join-test";
+    let (hr_route_handler, hr_pipeline, hr_preamble, _hr_temp_dir) =
+        resolve_relation_service_and_pipeline(hr_service_id, Some(resolvable_employee_policy()))
+            .await;
+
+    // -- the local (requesting) service: app-svc, whose own policy names a
+    // remote relation pointing at hr-svc.
+    let local_service_id = "app-svc-join-test";
+    let local_policy = parse_and_validate(
+        r#"{
+            "version": "fdae/v1",
+            "definitions": {
+                "document": {
+                    "table": "documents",
+                    "relations": {"owner": {
+                        "target": "employee", "service": "hr-svc", "join_column": "owner_uuid"
+                    }},
+                    "permissions": {
+                        "view": {"allows": ["data-layer/read"], "paths": [["owner", "anchor"]]}
+                    }
+                }
+            }
+        }"#,
+    )
+    .unwrap();
+
+    // A caller presenting as `svc-A` (whoever actually authenticated this
+    // connection to app-svc) proxying for anchor `alice`.
+    let proxying_service = SessionContext {
+        subject_did: "did:key:svc-A".to_string(),
+        anchor_did: Some("did:key:alice".to_string()),
+        capabilities: vec![Capability {
+            // Scoped to "document" (the `collection` string this test
+            // passes to `plan_read` below), not "documents" -- `plan_read`
+            // builds its resource URI from whatever `collection` argument
+            // it's called with directly, unlike `ServiceStore::query`'s
+            // literal-table-name addressing.
+            with: native_fdae_resource(local_service_id, "document"),
+            can: Ability(Ability::DATA_LAYER_READ.to_string()),
+            caveats: None,
+        }],
+        ..Default::default()
+    };
+
+    // Step 1: `plan_read` on the *local* policy -- must produce a
+    // `RemoteFetch` (B2's old behavior was to fail closed here), asking
+    // about the anchor, never the proxying caller.
+    let mut plan = syneroym_fdae::plan_read(
+        &local_policy,
+        "document",
+        &proxying_service,
+        local_service_id,
+        &Ability(Ability::DATA_LAYER_READ.to_string()),
+        Mode::Filter,
+    )
+    .unwrap();
+    assert!(
+        plan.local.is_none(),
+        "a policy needing a remote fetch must not resolve to a local sieve"
+    );
+    assert_eq!(plan.fetches.len(), 1);
+    let fetch = plan.fetches[0].clone();
+    assert_eq!(fetch.service, "hr-svc");
+    assert_eq!(fetch.relation, "employee", "B3-02: the wire relation is the remote object type");
+    assert_eq!(fetch.principal_did, "did:key:alice", "B3-01: the fetch asks about the anchor");
+
+    // Step 2: issue the fetch as a *real* resolve-relation call against
+    // hr-svc's native dispatch -- standing in for Phase 4's orchestration,
+    // which would forward the anchor's own re-verified identity as the
+    // wire caller of this specific request (the piece Phase 4 still needs
+    // to build; here it's constructed by hand to close the loop).
+    let anchor_as_direct_caller = test_caller(&fetch.principal_did);
+    let anchor_as_direct_caller = CallerContext {
+        session: SessionContext {
+            subject_did: fetch.principal_did.clone(),
+            ..anchor_as_direct_caller.session
+        },
+        ..anchor_as_direct_caller
+    };
+    let resolve_body = resolve_relation_body(&fetch.relation, &fetch.principal_did);
+    let resolve_resp = hr_route_handler
+        .dispatch_json_rpc_once(
+            &hr_pipeline,
+            &hr_preamble,
+            Some(&anchor_as_direct_caller),
+            &resolve_body,
+        )
+        .await
+        .unwrap();
+    let resolve_resp: Value = serde_json::from_slice(&resolve_resp).unwrap();
+    assert!(resolve_resp.get("error").is_none(), "resolve-relation must succeed: {resolve_resp:?}");
+    let ids: Vec<String> = resolve_resp["result"]["ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["emp-alice"],
+        "hr-svc must resolve alice's own employee row: {resolve_resp:?}"
+    );
+
+    // Step 3: `finalize` the plan with the real fetched id-set, and run
+    // the resulting sieve against a locally-seeded `documents` table --
+    // the same raw-SQL verification `crates/fdae`'s own `finalize` tests
+    // use, proving the compiled predicate is not just well-typed but
+    // actually correct.
+    let pending = plan.pending.take().unwrap();
+    let sieve = syneroym_fdae::finalize(pending, &[FetchResult { slot: fetch.slot, ids }]).unwrap();
+
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE documents (
+            id TEXT PRIMARY KEY, creator_id TEXT, created_at INTEGER, updated_at INTEGER,
+            payload TEXT NOT NULL DEFAULT '{}'
+        );",
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO documents (id, payload) VALUES ('doc-1', ?1)",
+        [json!({"owner_uuid": "emp-alice"}).to_string()],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO documents (id, payload) VALUES ('doc-2', ?1)",
+        [json!({"owner_uuid": "emp-bob"}).to_string()],
+    )
+    .unwrap();
+
+    let sql = format!("SELECT id FROM documents WHERE {} ORDER BY id", sieve.where_clause);
+    let mut stmt = conn.prepare(&sql).unwrap();
+    let visible: Vec<String> = stmt
+        .query_map(rusqlite::params_from_iter(sieve.params.iter()), |row| row.get(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert_eq!(
+        visible,
+        vec!["doc-1"],
+        "only alice's own document is reachable through the full plan -> fetch -> finalize join"
     );
 }

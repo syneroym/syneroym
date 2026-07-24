@@ -221,6 +221,17 @@ pub trait ServiceStore: Send + Sync {
     /// itself: (1) `params` are bound via `?` placeholders, never
     /// interpolated; (2) the statement is read-only (a mutating statement
     /// returns `permission-denied`).
+    ///
+    /// **One narrow, deliberate exception**: Slice B3's `resolve-relation`
+    /// (`crates/control_plane/src/synsvc_native.rs`'s A2 branch) calls this
+    /// without an admin check, for a caller holding no relevant capability
+    /// at all. Safe there specifically because the SQL/params come from
+    /// `syneroym_fdae::resolve_structural`, whose identifiers are
+    /// schema-constrained (`sql_identifier`'s `^[A-Za-z_][A-Za-z0-9_]*$`),
+    /// and authorization is a *different* gate --
+    /// `Definition::resolvable_without_capability`, a policy-author opt-in
+    /// -- not this method's own admin check. Not a precedent for other
+    /// callers: everywhere else, the `data-layer/admin` precondition holds.
     async fn query_raw(
         &self,
         sql: &str,

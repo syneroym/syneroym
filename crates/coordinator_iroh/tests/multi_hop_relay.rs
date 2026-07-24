@@ -144,6 +144,7 @@ async fn build_test_route_handler_deps(
         messaging_broker.clone(),
         native_dispatch.clone(),
         http_routes.clone(),
+        Arc::new(syneroym_identity::Identity::generate().unwrap()),
     )
     .await?;
 

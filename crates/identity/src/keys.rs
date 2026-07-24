@@ -12,7 +12,9 @@ use std::{
 
 use anyhow::Context;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
-use zeroize::Zeroize;
+use hkdf::Hkdf;
+use sha2::Sha256;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::{IdentityDoc, substrate};
 
@@ -203,6 +205,57 @@ impl Identity {
         Ok(z32::encode(&signature.to_bytes()))
     }
 
+    /// Derives a per-service child identity from this one, scoped by both
+    /// `owner_did` (the DID that deployed/owns the service, per
+    /// `ControlPlaneService`'s deploy-time `registry.owner_of`/`set_owner`
+    /// bookkeeping) and `service_id` -- the same "Model A: derived, not
+    /// separately provisioned" pattern `syneroym-data-keystore`'s
+    /// `derive_instance_kek` uses for per-service DEKs (ADR-0006), applied
+    /// to signing identity instead of encryption. Needed because a
+    /// substrate node hosts multiple, potentially unrelated services
+    /// (multi-tenancy is the normal case, not the exception): assertions a
+    /// service signs -- e.g. Slice B3's `RelationshipProof` ("`hr-svc`
+    /// asserts...", ADR-0017 §6/§7) -- must be attributable to *that
+    /// service*, not to "some service hosted on this node," and a leaked
+    /// derived key must not compromise the node's own identity or any
+    /// sibling service's.
+    ///
+    /// `owner_did` is included, not just `service_id`, because `service_id`
+    /// is a reusable string: undeploying frees it, and a *different* owner
+    /// can later redeploy under the same name. Deriving from `service_id`
+    /// alone would hand that new, unrelated owner's service the exact same
+    /// signing key the old owner's service had -- letting a stale
+    /// `RelationshipProof` from the old tenancy still verify under the new
+    /// one's asserter DID. Keying on both makes an ownership change yield a
+    /// distinct identity even when the name is recycled, while still
+    /// distinguishing co-hosted services under the same owner from each
+    /// other.
+    ///
+    /// Deterministic: the same `(self, owner_did, service_id)` triple always
+    /// derives the same child identity, so a service's asserter DID stays
+    /// stable across redeploys by the same owner (matching how the node's
+    /// own identity is already stable across restarts) without any new
+    /// persisted key material.
+    #[must_use]
+    pub fn derive_service_identity(&self, owner_did: &str, service_id: &str) -> Self {
+        let hk = Hkdf::<Sha256>::new(None, &self.to_bytes());
+        // `owner_did`'s byte length is prefixed so the two variable-length
+        // fields can't be reassigned across their boundary -- DIDs contain
+        // `:` themselves, so a bare `{owner_did}:{service_id}` join would
+        // let e.g. owner_did="did:key:zA:x", service_id="y" collide with
+        // owner_did="did:key:zA", service_id="x:y".
+        let info = format!("syneroym:identity:v1:{}:{owner_did}:{service_id}", owner_did.len());
+        let mut derived = Zeroizing::new([0u8; 32]);
+        // `expect_used` is workspace warn-level; `data_keystore::key_store`'s
+        // `derive_instance_kek` sets the same precedent for this exact
+        // expect+allow pairing on a fixed-length HKDF expand, which cannot
+        // fail for a 32-byte SHA-256 OKM.
+        #[allow(clippy::expect_used)]
+        hk.expand(info.as_bytes(), derived.as_mut_slice())
+            .expect("32 bytes is a valid HKDF-SHA256 output length");
+        Self::from_bytes(&derived)
+    }
+
     /// Generate a public `IdentityDoc` for this node.
     #[must_use]
     pub fn to_doc(&self, created_at: u64) -> IdentityDoc {
@@ -240,6 +293,83 @@ mod tests {
         let v1 = json!({"x": {"b": 2, "a": 1}, "y": [3, 2, 1]});
         let s1 = identity.sign_json(&v1).unwrap();
         assert!(!s1.is_empty());
+    }
+
+    #[test]
+    fn derive_service_identity_is_deterministic() {
+        let node = Identity::from_bytes(&[7u8; 32]);
+        let a = node.derive_service_identity("did:key:zOwner", "hr-svc");
+        let b = node.derive_service_identity("did:key:zOwner", "hr-svc");
+        assert_eq!(
+            a.public_key(),
+            b.public_key(),
+            "same (node, owner_did, service_id) must derive identically"
+        );
+    }
+
+    #[test]
+    fn derive_service_identity_differs_per_service() {
+        let node = Identity::from_bytes(&[7u8; 32]);
+        let hr = node.derive_service_identity("did:key:zOwner", "hr-svc");
+        let finance = node.derive_service_identity("did:key:zOwner", "finance-svc");
+        assert_ne!(
+            hr.public_key(),
+            finance.public_key(),
+            "two co-hosted services under the same owner must derive distinct identities"
+        );
+    }
+
+    #[test]
+    fn derive_service_identity_differs_per_owner() {
+        // A service_id freed by undeploy and redeployed under the same name
+        // by a *different* owner must not inherit the old owner's signing
+        // key -- otherwise a stale RelationshipProof from the old tenancy
+        // would still verify under the new tenant's asserter DID.
+        let node = Identity::from_bytes(&[7u8; 32]);
+        let old_owner = node.derive_service_identity("did:key:zOldOwner", "hr-svc");
+        let new_owner = node.derive_service_identity("did:key:zNewOwner", "hr-svc");
+        assert_ne!(
+            old_owner.public_key(),
+            new_owner.public_key(),
+            "reusing a service_id under a different owner must derive a distinct identity"
+        );
+    }
+
+    #[test]
+    fn derive_service_identity_is_not_ambiguous_across_the_owner_service_boundary() {
+        // owner_did="did:key:zA:x", service_id="y" must not collide with
+        // owner_did="did:key:zA", service_id="x:y" -- both would naively
+        // concatenate to the same "did:key:zA:x:y" without the length
+        // prefix guarding the boundary.
+        let node = Identity::from_bytes(&[7u8; 32]);
+        let a = node.derive_service_identity("did:key:zA:x", "y");
+        let b = node.derive_service_identity("did:key:zA", "x:y");
+        assert_ne!(a.public_key(), b.public_key(), "owner/service boundary must be unambiguous");
+    }
+
+    #[test]
+    fn derive_service_identity_differs_from_the_node() {
+        let node = Identity::from_bytes(&[7u8; 32]);
+        let derived = node.derive_service_identity("did:key:zOwner", "hr-svc");
+        assert_ne!(
+            node.public_key(),
+            derived.public_key(),
+            "a service's derived identity must not equal the node's own"
+        );
+    }
+
+    #[test]
+    fn derive_service_identity_differs_across_distinct_nodes() {
+        // A leaked derived key must not reveal anything usable to forge a
+        // *sibling node's* same-named service's identity either -- the
+        // derivation is keyed by the node's own secret, not just
+        // owner_did/service_id.
+        let node_a = Identity::from_bytes(&[1u8; 32]);
+        let node_b = Identity::from_bytes(&[2u8; 32]);
+        assert_ne!(
+            node_a.derive_service_identity("did:key:zOwner", "hr-svc").public_key(),
+            node_b.derive_service_identity("did:key:zOwner", "hr-svc").public_key()
+        );
     }
 
     #[test]

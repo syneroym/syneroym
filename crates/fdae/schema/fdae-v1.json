@@ -33,7 +33,8 @@
           "type": "object",
           "additionalProperties": { "$ref": "#/$defs/permission" }
         },
-        "default": { "type": "string", "minLength": 1 }
+        "default": { "type": "string", "minLength": 1 },
+        "resolvable_without_capability": { "type": "boolean" }
       }
     },
     "relation": {

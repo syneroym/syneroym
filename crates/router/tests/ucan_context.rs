@@ -98,6 +98,8 @@ async fn test_route_handler(service_id: &str) -> RouteHandler {
         blob_provider.clone(),
         messaging_broker.clone(),
         None,
+        Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        "did:key:zTestOwner",
     ));
 
     let deps = RouteHandlerDeps {

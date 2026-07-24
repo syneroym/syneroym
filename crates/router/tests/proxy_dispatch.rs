@@ -373,6 +373,8 @@ async fn test_route_handler_with_self_native_data_layer(
         blob_provider.clone(),
         messaging_broker.clone(),
         fdae_policy,
+        Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        "did:key:zTestOwner",
     ));
     native_dispatch.insert("proxy-caller".to_string(), native_service as Arc<dyn NativeService>);
 

@@ -6,7 +6,11 @@ mod compile;
 mod policy;
 mod trace;
 
-pub use compile::{CompiledSieve, Mode, compile_read};
+pub use compile::{
+    CompiledSieve, FetchResult, FetchSlot, MAX_FETCH_IDS, Mode, PendingSieve, ReadPlan,
+    RemoteFetch, StructuralQuery, compile_read, definition_table, finalize, plan_read,
+    resolve_structural,
+};
 pub use policy::{
     CondOp, Condition, Definition, FieldsPolicy, Operator, Permission, Policy, PolicyError,
     Relation, parse_and_validate,

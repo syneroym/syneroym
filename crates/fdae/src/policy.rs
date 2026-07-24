@@ -49,6 +49,20 @@ pub struct Definition {
     /// within the policy.
     #[serde(default)]
     pub default: Option<String>,
+    /// B3 D-B3-3: opts this definition into structural cross-service
+    /// relationship resolution -- a remote node's `resolve-relation`
+    /// answering "which rows does `principal` reach" via a bare
+    /// `principal_column` match, gated only by the requesting anchor's
+    /// re-verified identity, **not** by a capability grant on this service.
+    /// This is a deliberately looser trust model than the default (reusing
+    /// the existing capability-gated sieve, which requires the anchor to
+    /// separately hold a real capability from this service): a definition's
+    /// own operator must explicitly opt in, per object type, exactly like
+    /// `principal_column` itself is an opt-in declaration. `false` by
+    /// default -- resolving a relation without this flag requires the
+    /// anchor to hold a real capability (the compile_read path).
+    #[serde(default)]
+    pub resolvable_without_capability: bool,
 }
 
 /// A named edge from one object type to another: a local single-hop join, a
@@ -58,11 +72,15 @@ pub struct Definition {
 pub struct Relation {
     pub target: String,
     /// Remote relation (ADR-0017 §1/§6): a logical service name resolved via
-    /// the app-context registry. Parsed here; compiling a path that
-    /// traverses it fails closed until cross-service fetch lands.
+    /// the app-context registry, fetched over the Universal Proxy at query
+    /// time (B3 pipeline stage 2, `compile::plan_read`). Requires
+    /// `join_column` too, exactly like a local join -- it names which local
+    /// column is checked (`IN (...)`) against the remote's returned id-set,
+    /// since there is no local `target` table to `EXISTS`-join through.
     #[serde(default)]
     pub service: Option<String>,
-    // -- local single-hop join --
+    // -- local single-hop join (or, with `service` set, the local column
+    // checked against a remote fetch's id-set) --
     #[serde(default)]
     pub join_column: Option<String>,
     // -- recursive self-join --
@@ -244,15 +262,21 @@ fn validate_relation_shape(
     rel_name: &str,
     rel: &Relation,
 ) -> Result<(), PolicyError> {
-    let is_local = rel.join_column.is_some();
+    let has_join = rel.join_column.is_some();
     let is_recursive_shape = rel.from_key.is_some() || rel.to_key.is_some();
     let is_remote = rel.service.is_some();
-    let shape_count =
-        [is_local, is_recursive_shape, is_remote].into_iter().filter(|shape| *shape).count();
+    // A join-based hop (local or remote) and a recursive self-join are the
+    // only two shapes -- `join_column` and `service` may coexist (B3:
+    // `join_column` names the *local* column checked against the remote
+    // fetch's returned id-set, exactly the role it plays for a local
+    // relation's `EXISTS (SELECT ... FROM target_table)`), but neither may
+    // combine with `recursive`.
+    let shape_count = [has_join, is_recursive_shape].into_iter().filter(|shape| *shape).count();
     if shape_count != 1 {
         return Err(PolicyError::Semantic(format!(
-            "definition '{type_name}' relation '{rel_name}' must be exactly one of: local \
-             (join_column), recursive (from_key + to_key), or remote (service)"
+            "definition '{type_name}' relation '{rel_name}' must be exactly one of: join-based \
+             (join_column, optionally with service for a remote target), or recursive (from_key + \
+             to_key)"
         )));
     }
     if is_recursive_shape {
@@ -266,6 +290,13 @@ fn validate_relation_shape(
             return Err(PolicyError::Semantic(format!(
                 "definition '{type_name}' relation '{rel_name}' declares from_key/to_key but not \
                  recursive: true"
+            )));
+        }
+        if is_remote {
+            return Err(PolicyError::Semantic(format!(
+                "definition '{type_name}' relation '{rel_name}' is recursive; a remote \
+                 (service-qualified) relation cannot also be recursive -- B3 does not support an \
+                 iterative cross-node transitive closure"
             )));
         }
     } else if rel.recursive {
@@ -399,7 +430,7 @@ fn validate_path(
     }
 
     let mut current_type: &str = start_type;
-    for rel_name in rel_names {
+    for (i, rel_name) in rel_names.iter().enumerate() {
         let current_def = policy.definitions.get(current_type).ok_or_else(|| {
             PolicyError::Semantic(format!(
                 "definition '{start_type}' permission '{perm_name}' path references unknown \
@@ -413,10 +444,35 @@ fn validate_path(
             ))
         })?;
         if rel.service.is_some() {
+            if i != rel_names.len() - 1 {
+                return Err(PolicyError::Semantic(format!(
+                    "definition '{start_type}' permission '{perm_name}' path's remote relation \
+                     '{rel_name}' must be the last hop before the terminal (B3: there is no local \
+                     table to keep joining through past a cross-service relation)"
+                )));
+            }
+            // `caller` is rejected outright here, not silently reinterpreted
+            // as `anchor` -- a remote fetch always asks the data-owning node
+            // about the original principal (`compile::emit_remote_terminal`
+            // unconditionally binds `session.anchor_did.unwrap_or(subject_did)`,
+            // ignoring whatever terminal word the path names), so a policy
+            // author who writes `caller` on a remote path would otherwise
+            // get `anchor` semantics -- a strictly *broader* principal in any
+            // proxied chain -- with no error and no warning. The
+            // confused-deputy defense this exists for is exactly the reason
+            // this must be a loud parse-time error instead of an invisible
+            // substitution.
+            if terminal != "anchor" {
+                return Err(PolicyError::Semantic(format!(
+                    "definition '{start_type}' permission '{perm_name}' path's remote relation \
+                     '{rel_name}' must terminate in 'anchor', not '{terminal}' -- a remote fetch \
+                     always resolves against the original principal, never the proxying caller"
+                )));
+            }
             // A remote relation's target isn't locally resolvable (it lives
             // in another service's policy), so the rest of this path can't
-            // be validated here. Compiling it fails closed instead
-            // (`compile::resolve_hops`); parsing accepts it.
+            // be validated here (there is none left, per the check above).
+            // Compiling it resolves the fetch instead (`compile::plan_read`).
             return Ok(());
         }
         current_type = &rel.target;
@@ -452,6 +508,19 @@ mod tests {
         assert_eq!(policy.version, "fdae/v1");
         assert!(!policy.strict);
         assert_eq!(policy.definitions.len(), 1);
+        assert!(!policy.definitions["user"].resolvable_without_capability);
+    }
+
+    #[test]
+    fn parses_resolvable_without_capability_when_declared() {
+        let doc = minimal_doc(
+            r#"{"employee": {
+                "table": "employees", "principal_column": "did",
+                "resolvable_without_capability": true
+            }}"#,
+        );
+        let policy = parse_and_validate(&doc).unwrap();
+        assert!(policy.definitions["employee"].resolvable_without_capability);
     }
 
     #[test]
@@ -478,11 +547,38 @@ mod tests {
     }
 
     #[test]
-    fn rejects_relation_with_two_shapes() {
+    fn accepts_remote_relation_with_join_column() {
         let doc = minimal_doc(
             r#"{"document": {"table": "documents", "relations": {"creator": {
                 "target": "user", "join_column": "creator_uuid", "service": "hr-svc"
             }}}}"#,
+        );
+        parse_and_validate(&doc).unwrap();
+    }
+
+    #[test]
+    fn rejects_relation_with_join_and_recursive_shapes() {
+        let doc = minimal_doc(
+            r#"{"user": {"table": "users", "principal_column": "did", "relations": {
+                "management_chain": {
+                    "target": "user", "join_column": "manager_id", "from_key": "id",
+                    "to_key": "manager_id", "recursive": true
+                }
+            }}}"#,
+        );
+        let err = parse_and_validate(&doc).unwrap_err();
+        assert!(matches!(err, PolicyError::Semantic(_)));
+    }
+
+    #[test]
+    fn rejects_recursive_relation_that_is_also_remote() {
+        let doc = minimal_doc(
+            r#"{"user": {"table": "users", "principal_column": "did", "relations": {
+                "management_chain": {
+                    "target": "user", "from_key": "id", "to_key": "manager_id",
+                    "recursive": true, "service": "hr-svc"
+                }
+            }}}"#,
         );
         let err = parse_and_validate(&doc).unwrap_err();
         assert!(matches!(err, PolicyError::Semantic(_)));
@@ -514,7 +610,50 @@ mod tests {
     fn accepts_remote_relation_target_unresolved_locally() {
         let doc = minimal_doc(
             r#"{"document": {"table": "documents", "relations": {"owner": {
+                "target": "employee", "service": "hr-svc", "join_column": "owner_uuid"
+            }}}}"#,
+        );
+        parse_and_validate(&doc).unwrap();
+    }
+
+    #[test]
+    fn rejects_remote_relation_missing_join_column() {
+        let doc = minimal_doc(
+            r#"{"document": {"table": "documents", "relations": {"owner": {
                 "target": "employee", "service": "hr-svc"
+            }}}}"#,
+        );
+        let err = parse_and_validate(&doc).unwrap_err();
+        assert!(matches!(err, PolicyError::Semantic(_)));
+    }
+
+    /// B3-04: a `caller` terminal on a path whose last hop is remote is a
+    /// parse-time error, not a silent substitution of `anchor` --
+    /// `compile::emit_remote_terminal` unconditionally binds the anchor
+    /// regardless of the declared terminal word, so accepting `caller` here
+    /// would let a policy author write one thing and get another
+    /// (`anchor` is the *broader* principal in any proxied chain).
+    #[test]
+    fn rejects_a_caller_terminal_on_a_remote_relation_path() {
+        let doc = minimal_doc(
+            r#"{"document": {"table": "documents", "relations": {"owner": {
+                "target": "employee", "service": "hr-svc", "join_column": "owner_uuid"
+            }}, "permissions": {"view": {
+                "allows": ["data-layer/read"], "paths": [["owner", "caller"]]
+            }}}}"#,
+        );
+        let err = parse_and_validate(&doc).unwrap_err();
+        assert!(matches!(err, PolicyError::Semantic(_)));
+    }
+
+    /// The mirror: `anchor` on the same shape is accepted.
+    #[test]
+    fn accepts_an_anchor_terminal_on_a_remote_relation_path() {
+        let doc = minimal_doc(
+            r#"{"document": {"table": "documents", "relations": {"owner": {
+                "target": "employee", "service": "hr-svc", "join_column": "owner_uuid"
+            }}, "permissions": {"view": {
+                "allows": ["data-layer/read"], "paths": [["owner", "anchor"]]
             }}}}"#,
         );
         parse_and_validate(&doc).unwrap();
@@ -769,6 +908,7 @@ mod tests {
                 relations: BTreeMap::new(),
                 permissions,
                 default: None,
+                resolvable_without_capability: false,
             },
         );
         let policy = Policy { version: "fdae/v1".to_string(), strict: false, definitions };
