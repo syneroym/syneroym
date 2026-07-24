@@ -812,6 +812,15 @@ fn compile_sieve_for_op(
     mode: Mode,
 ) -> Result<Option<CompiledSieve>, host_store::DataLayerError> {
     let Some(auth) = auth else { return Ok(None) };
+    // Slice B3 Phase 4: a caller that already ran `plan_read` + the
+    // `resolve_fetches` orchestration + `finalize` (because the policy's
+    // selected paths needed a remote relationship fetch) hands the
+    // already-compiled sieve straight through -- `compile_read` below would
+    // otherwise fail closed on exactly that case (it's the local-only
+    // entry point, unchanged since Phase 2/3).
+    if let Some(sieve) = &auth.resolved_sieve {
+        return Ok(Some(sieve.clone()));
+    }
     // Validated here, before `collection` reaches `compile_read` and a
     // strict-mode deny logs it verbatim into `path_failed` (an `info!`
     // line) -- otherwise a WASM guest could inject newlines/escapes into
@@ -1844,6 +1853,10 @@ impl ServiceStore for SqliteServiceStore {
         // rather than propagating -- unlike Mode B's `query`/`get`, where a
         // compile error is a loud `Err` (a broken policy isn't "zero rows").
         let sieve = match auth {
+            // Slice B3 Phase 4: honor a caller-pre-resolved sieve exactly
+            // like `compile_sieve_for_op` does, before ever calling the
+            // local-only `compile_read`.
+            Some(a) if a.resolved_sieve.is_some() => a.resolved_sieve.clone(),
             Some(a) => match compile_read(
                 a.policy,
                 collection,

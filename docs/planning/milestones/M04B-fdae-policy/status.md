@@ -2392,3 +2392,253 @@ caller *is* the effective principal, but Phase 4's real service-to-service
 proxy will make the connection's identity (the proxying service) diverge
 from the anchor's, so which principal's capability must gate A1 needs
 settling before the fetch orchestration ships (D-B3-9).
+
+### Phase 4 — Orchestration seam (`resolve_fetches`) ✅ (2026-07-24)
+
+Branch: `feat/m04b-slice-b3-phase4` (new; Phases 1-3 + hardening already
+merged to `main` via PR #89/#100). Plan:
+[slice-b3-implementation-plan.md](slice-b3-implementation-plan.md) §4, §8
+item 4. This is the phase that makes the cross-service fetch *real*: both
+read ingresses (WASM host path, native dispatch) now call `plan_read`
+themselves, resolve any remote fetch over the real Universal Proxy, and
+`finalize` before ever reaching `data_db` -- replacing every prior phase's
+hand-wired stand-in.
+
+#### Decisions corrected this session, before implementing
+
+Three of the plan's own recommendations were checked against `main` while
+starting this phase and found not to hold as written. All three are argued
+in full in `slice-b3-implementation-plan.md` §7 (D-B3-4, D-B3-8, D-B3-10) and
+the corresponding ADR/task.md entries; summarized here for the status record.
+
+- **No app-context registry exists (D-B3-10).** ADR-0017 §1 and task.md both
+  assert a remote relation's `service:` name "resolves through the
+  app-context registry that already exists." It doesn't.
+  `crates/app_orchestration`'s `AppRegistry`/`LogicalResolver` is the right
+  shape but has only a `StaticInventory` implementation with zero production
+  callers. **Not deferred-backlog material** (per the user's explicit
+  correction: this is committed platform work, not droppable debt) --
+  reserved as its own interstitial between Milestone 4 and Milestone 5
+  (`meta-implementation-plan.md`), owned by `app_orchestration`
+  (`[PLT-DAP-01]`), not FDAE. Phase 4's interim mechanism: `RemoteFetch.
+  service` resolves exactly like `ProxyRequest.target_service` already does
+  for every other proxied call -- directly, through the existing
+  `EndpointRegistry`/community-registry DID lookup.
+- **D-B3-8's literal recipe is cross-node-impossible.** The plan said the
+  verifier should independently *derive* the expected `asserter_did` via
+  `Identity::derive_service_identity(owner_did, service_id)`. Checked: that
+  derivation is keyed on `self.to_bytes()` -- the calling node's *own*
+  secret key. A different node can never reproduce it. Fixed by making the
+  trust anchor an explicit, policy-declared fact instead of a derivation: a
+  remote `Relation` now requires `expected_asserter_did: String` alongside
+  `service`, the same category of explicit trust knob as the already-shipped
+  `resolvable_without_capability`.
+- **D-B3-9 resolves for free.** Forwarding the local invocation's own
+  already-verified `CallerContext` (proof intact) as `ProxyRequest.caller`
+  for the fetch needs no new mechanism -- `invoke_remote_at` already forwards
+  `caller.proof` verbatim for any `CallOrigin::Native` call, so the remote's
+  own `verify_chain` naturally re-derives `subject_did`/`anchor_did` and A1
+  gates on whatever was legitimately delegated through the real chain.
+- **D-B3-4's ingress-(ii) closure doesn't work either (correction, not a
+  resolution).** The plan recommended closing D-04-02-h ingress (ii) (guest
+  self-proxy) in B3, forwarding `HostState.caller` instead of re-synthesizing
+  `service_system` in `proxy::Host::call`'s self-proxy branch. Checked:
+  `router/src/route_handler/dispatch.rs`'s `JsonRpcToWasm` branch calls
+  `AppSandboxEngine::execute_wasm_json` with **no `caller` argument at all**
+  -- the verified caller `dispatch_json_rpc_once` already holds is dropped
+  before `prepare_wasm_execution` ever runs. So `HostState.caller` is
+  `service_system` for *both* ingresses identically; forwarding it in
+  ingress (ii) would forward that same synthesized identity, closing
+  nothing. Confirmed with the user: Phase 4 does not attempt the larger
+  cross-cut (threading the real caller through `dispatch.rs` →
+  `execute_wasm_json`/`execute_wasm_vals` → `prepare_wasm_execution` →
+  `HostState`) needed to close *either* ingress for real. Both pinned
+  regression tests (`guest_self_proxy_data_layer_returns_empty_when_policy_
+  present`, `test_deployed_policy_yields_empty_guest_originated_query_
+  d04_02_h`) are unchanged, confirmed still passing.
+
+#### What was delivered
+
+- **`crates/fdae`** -- `Relation.expected_asserter_did: Option<String>`
+  (required whenever `service` is set, enforced in `validate_relation_shape`)
+  threaded onto `RemoteFetch`; `FetchCtx::register` fails closed if two hops
+  reaching the same `(service, relation)` declare conflicting values.
+  `trace::RemoteFetchTrace` (service, relation, principal, asserter, TTL) and
+  `DecisionTrace.remote_fetches: Vec<RemoteFetchTrace>`; `FetchResult` gains
+  a `trace: RemoteFetchTrace` field (the verified provenance the fetching
+  side already computed), and `finalize` folds each *distinct slot's* trace
+  into the sieve's own `DecisionTrace` (deduped, matching the existing
+  fetch-dedup key -- a remote relation reached by two OR'd local paths gets
+  one provenance record, not two).
+- **`crates/rpc`** (new modules) -- `relationship_proof::RelationshipProof`
+  (moved out of `control_plane`, now the shared wire type both the signing
+  side and the verifying side use) with `sign`/`verify`; `verify` checks the
+  policy-declared `expected_asserter_did` (never the proof's own
+  self-declared field) and the TTL, not just the signature. `fdae_fetch::
+  resolve_fetches(fetches, caller, proxy)` -- the orchestration seam itself:
+  issues each `RemoteFetch` as a real `ProxyRequest{origin: Native, caller:
+  caller.clone(), interface: "data-layer", method: "resolve-relation",
+  timeout: Some(FDAE_FETCH_TIMEOUT)}`, verifies the returned proof, and
+  cross-checks `proof.relation`/`proof.principal` against what was actually
+  asked (catches a receiving-side bug or a replayed proof answering a
+  different question, which a signature check alone can't). Sequential, not
+  parallel, across distinct fetches in one plan -- a scope-recorded perf
+  follow-up (`deferred-backlog.md`), not a correctness gap.
+- **`crates/data_db`** -- `QueryAuth.resolved_sieve: Option<CompiledSieve>`.
+  `None` (every existing call site) preserves the exact Phase 2 behavior:
+  `data_db` compiles the sieve itself via `compile_read`. `Some(sieve)` is
+  used verbatim, `compile_read` never consulted -- the path a caller who
+  already ran `plan_read`+`resolve_fetches`+`finalize` takes.
+- **`crates/sandbox_wasm`** -- `HostState::query_auth` replaced by an async
+  `resolve_query_auth(collection, operation, mode)`: runs `plan_read`
+  itself, and when fetches are needed, resolves them via `resolve_fetches`
+  through `self.service_proxy` before building `QueryAuth`. Fails closed to
+  `DataLayerError::PermissionDenied` on any fetch error for `get`/`query`/
+  `aggregate`/`delete_many`; `check_access` maps that further to `Ok(false)`
+  (Mode A's existing convention). **Had to change the receiver from `&self`
+  to `&mut self`**: `HostState` holds non-`Sync` WASI internals, so an async
+  method taking `&self` that awaits and then uses `self` again afterward
+  (to build the final `QueryAuth`, which borrows `&self.caller.session`)
+  forces the whole `&HostState` into the generator's state across the
+  `.await`, which the WIT-generated `Host` trait's `Send`-future requirement
+  rejects -- confirmed by `sample`-ing a hung test process (see below) before
+  landing the fix, not just reasoning about it.
+- **`crates/control_plane`** -- `synsvc_native.rs`'s `RelationshipProof`/
+  `sign_relationship_proof` now delegate to the shared `syneroym_rpc` type.
+  `SynSvcNativeService` gains a `service_proxy: Weak<dyn ServiceProxy>`
+  field (new trailing constructor param) and the same `resolve_query_auth`
+  treatment as `HostState`, wired into `get`/`query`/`delete-many`/
+  `aggregate`. `ControlPlaneService` gains a `pub service_proxy:
+  OnceLock<Weak<dyn ServiceProxy>>` (mirrors `AppSandboxEngine.service_proxy`
+  exactly, for the identical two-phase-construction reason: `ProxyRouter`
+  doesn't exist yet when either service is built at substrate startup).
+- **`crates/router`** -- `RouteHandlerDeps` gains `control_plane:
+  Option<Arc<ControlPlaneService>>` (concrete, alongside the existing
+  type-erased `control_plane_service: Arc<dyn NativeService>` used for
+  dispatch registration -- kept separate so every existing test double
+  substituting a fake `control_plane_service` needed only one mechanical
+  `control_plane: None` addition, not a rewrite). `RouteHandler::init` calls
+  `.set(...)` on it right where it already does for `AppSandboxEngine`'s.
+  `syneroym-control-plane` moved from `router`'s dev-dependencies to real
+  dependencies (needed to name the concrete type in production code; no
+  cycle -- `control_plane` doesn't depend on `router`).
+- **`crates/substrate`** -- `runtime.rs`'s `build_route_handler_deps` passes
+  the same `Arc<ControlPlaneService>` for both `RouteHandlerDeps` fields.
+
+#### Tests
+
+- **`crates/fdae`** (3 new): `plan_read_carries_the_policys_expected_
+  asserter_did_onto_the_fetch`, `plan_read_fails_closed_when_two_hops_
+  disagree_on_expected_asserter_did`, `finalize_records_one_trace_entry_
+  per_deduped_slot_not_per_occurrence`. `finalize_binds_the_fetched_id_set_
+  and_runs_correctly` extended to assert `sieve.trace.remote_fetches`
+  directly, not just SQL row visibility.
+- **`crates/rpc`** (new `relationship_proof`/`fdae_fetch` modules, 8 tests):
+  sign/verify round trip; rejects a mismatched `expected_asserter_did`;
+  rejects a tampered field (signature check); rejects an expired proof
+  (independent of signature validity); `resolve_fetches` forwards the
+  caller's own context and `CallOrigin::Native` (via a stub `ServiceProxy`);
+  denies on a proxy timeout/error, an asserter mismatch, and a mismatched
+  relation/principal answer.
+- **`crates/data_db`** (2 new): `resolved_sieve_preempts_compile_read_and_
+  is_used_verbatim` and its Mode-A sibling -- a stranger session
+  `compile_read` would deny outright still reaches every row when
+  `resolved_sieve` is supplied, proving it's used as-is, not silently
+  re-derived.
+- **`crates/sandbox_wasm`** (2 new): `fdae_remote_relation_fetch_succeeds_
+  through_host_state` (a stub `ServiceProxy` returning a real signed proof,
+  through the real `store::Host::get`) and `..._fetch_failure_denies_closed`
+  (a stub erroring -> `DataLayerError::PermissionDenied`, not `Ok(None)`
+  masquerading as "not found").
+- **`crates/router`** (`native_dispatch_identity.rs`, 3 new, replacing the
+  Phase 2/3 hand-wired stand-in): `plan_read_resolve_fetches_finalize_join_
+  end_to_end_through_a_real_proxy` -- a real `ProxyRouter` (hr-svc registered
+  as a `NativeHostChannel`, no `RouteHandler` needed since `resolve_fetches`
+  calls `ProxyRouter::invoke` directly), the full `plan_read` ->
+  `resolve_fetches` -> `finalize` -> real SQL join, and asserts the
+  successful fetch's `DecisionTrace` provenance (asserter DID,
+  `valid_until_secs > 0`) -- not just the deny path. `resolve_fetches_denies_
+  when_the_real_proxys_asserter_does_not_match_the_policy` -- a real,
+  correctly-signed proof from the *wrong* asserter, rejected through the
+  real proxy path (not just `rpc`'s own unit test of `RelationshipProof::
+  verify` in isolation). `native_dispatch_denies_closed_on_a_cross_service_
+  fetch_failure` -- the native-dispatch-path analogue of the `sandbox_wasm`
+  fail-closed tests, for ingress parity.
+
+**A genuine hang, found and fixed before landing.** The two new `router`
+tests using a real `ProxyRouter` initially hung indefinitely (confirmed via
+`sample` on the stuck process, not just a slow-test guess -- the earlier
+`lldb`-blocked-in-sandbox constraint meant `sample(1)` was the right tool).
+Root cause: the helper building hr-svc's `SynSvcNativeService` `Box::leak`ed
+its `NativeDispatchRegistry`/`TempDir` to satisfy `ProxyRouter`'s lifetime
+requirements -- but `SqliteStorageProvider` spawns a `spawn_blocking`
+writer-loop task on the *ambient* `#[tokio::test]` runtime, which only exits
+once its channel `Sender` (owned transitively through the leaked chain) is
+dropped. Leaking it meant the writer thread ran forever, and
+`#[tokio::test]`'s own runtime teardown (`BlockingPool::shutdown`) blocks
+until every spawned blocking task finishes -- a deadlock. Fixed by returning
+owned handles from the helper for the test function to hold until it
+returns (normal drop order) instead of leaking.
+
+#### Explicitly out of Phase 4 scope (recorded, not silently dropped)
+
+- **D-04-02-h (both ingresses)** -- stays open, jointly, per the corrected
+  D-B3-4 above. Recorded in `deferred-backlog.md` (not silently dropped, and
+  the user was explicit this is committed-but-deferred, tracked work, not
+  something to quietly skip).
+- **Reference scenario steps 22-23, the < 50 ms p99 federated-hop perf
+  budget, Failure/Security matrix row 6's ✅ flip, `traceability-matrix.md`'s
+  update** -- all Phase 5, per the plan's own phase split. Step 22's
+  "…never reaches the WASM guest" half stays open in full (D-04-02-h,
+  above).
+- **`resolve_fetches` fetch parallelism** -- sequential across distinct
+  fetches in one plan; recorded in `deferred-backlog.md` as a perf
+  follow-up, not a correctness dependency (mirrors D-B3-6's own
+  "correctness over scale" precedent for the fetch-result cache).
+- **D-B3-5/D-B3-6/D-B3-7** -- unaffected by this phase, already resolved in
+  Phases 1-2.
+
+#### Verification evidence
+
+- `cargo +nightly fmt --all` -- clean.
+- `cargo clippy --workspace --all-targets --all-features` -- zero warnings.
+- `cargo test -p syneroym-fdae` -- **93 passed**, 0 failed (89 prior + 4 new,
+  net after also extending one existing test in place).
+- `cargo test -p syneroym-rpc --lib` -- **22 passed**, 0 failed (14 prior +
+  8 new: 4 `relationship_proof` + 4 `fdae_fetch`).
+- `cargo test -p syneroym-data-db --lib` -- **140 passed**, 0 failed (138
+  prior + 2 new).
+- `cargo test -p syneroym-sandbox-wasm --lib --tests` -- all green across
+  the lib and every integration binary (44 lib, up from 42; all
+  pre-existing integration suites, including the D-04-02-h pin in
+  `data_layer_integration.rs`, unchanged and still passing).
+- `cargo test -p syneroym-control-plane --lib` -- **45 passed**, 0 failed
+  (unchanged -- this phase's `control_plane` changes are exercised by
+  `router`'s integration tests, per that crate's own established
+  convention for native-dispatch behavior).
+- `cargo test -p syneroym-router --lib --tests` -- **33 passed** in
+  `native_dispatch_identity` (29 prior + 4 new: the two-fetch join test
+  replacing the old hand-wired one is a net +1 over the test it replaced,
+  plus 2 wholly new), all green in isolation (`--test-threads=1`); under
+  default parallel execution, the same pre-existing `mainline` DHT-actor
+  flake every prior phase documented (`actor thread unexpectedly shutdown:
+  "SendError(..)"`) hit 2-3 unrelated tests, confirmed not a regression by
+  the isolated rerun. `proxy_dispatch`/`ucan_context`/`unsupported_
+  protocol`/`service_ownership`/`deploy_grant` all green, unchanged.
+- `cargo test --workspace --no-fail-fast` -- the same 9 pre-existing,
+  sandbox-environmental targets fail (`coordinator-iroh`'s
+  `connection_limit`/`multi_hop_relay`/`tls_rotation`, `mqtt-broker`'s lib
+  tests, `sdk`'s `connect_timeout`, `substrate`'s `basic_lifecycle`/
+  `http_passthrough_e2e`/`messaging_client_e2e`/`stream_client_e2e`), all
+  `"Operation not permitted (os error 1)"` binding a real port under this
+  CLI's default network sandbox -- identical set, identical error class, to
+  every prior phase's own documented list; none of these crates' test files
+  were touched this phase.
+- `mise run test:e2e` -- run (with the sandbox disabled, needed for real
+  port binds), **12/12 green** (8 `webrtc.spec.ts` + 4 `multi-hop.spec.ts`),
+  matching the established baseline. Run despite no WIT/guest-visible
+  change, since this phase touches `crates/substrate/src/runtime.rs`'s
+  startup wiring directly (the new `ControlPlaneService.service_proxy`
+  `OnceLock` set call) -- worth confirming the substrate itself still comes
+  up cleanly, not just that FDAE behavior is unchanged for these fixtures.
+- `wasm32-wasip2` -- unbroken; no WIT change this phase.

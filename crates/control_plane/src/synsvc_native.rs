@@ -13,7 +13,11 @@
 //! data-layer/blob-store access must work even in builds without the WASM
 //! sandbox feature enabled.
 
-use std::{collections::HashMap, fmt, mem, sync::Arc};
+use std::{
+    collections::HashMap,
+    fmt, mem,
+    sync::{Arc, Weak},
+};
 
 use serde_json::Value;
 use syneroym_data_blob::{
@@ -31,11 +35,12 @@ use syneroym_data_db::{
     traits::{ServiceStore, StorageProvider},
 };
 use syneroym_data_keystore::KeyStore;
-use syneroym_fdae::{MAX_FETCH_IDS, Policy};
-use syneroym_identity::{Identity, substrate::derive_did_key};
+use syneroym_fdae::{MAX_FETCH_IDS, Mode, Policy};
+use syneroym_identity::Identity;
 use syneroym_mqtt_broker::{MqttBroker, namespace_topic_for_publish};
 use syneroym_rpc::{
-    Ability, NativeInvocation, NativeResponse, NativeService, ResourceUri, RpcError, RpcResult,
+    Ability, NativeInvocation, NativeResponse, NativeService, RelationshipProof, ResourceUri,
+    RpcError, RpcResult, ServiceProxy,
 };
 use syneroym_wit_interfaces::host::syneroym::{
     app_config::app_config::ConfigError,
@@ -84,6 +89,16 @@ pub struct SynSvcNativeService {
     /// Deterministic and redeploy-stable for the *same* owner (same
     /// derivation every time), so no new persisted key material is needed.
     service_identity: Identity,
+    /// The Universal Proxy (M04A Slice A1), needed for Slice B3 Phase 4's
+    /// cross-service relationship-proof fetch: `resolve_query_auth` calls
+    /// out through this to a remote service's `resolve-relation`. `Weak`,
+    /// like `HostState.service_proxy` (`sandbox_wasm`) -- `ProxyRouter` is
+    /// constructed after `ControlPlaneService`/this struct at startup
+    /// (`crates/router/src/route_handler.rs`), so it is threaded in via
+    /// `ControlPlaneService.service_proxy`'s post-construction `OnceLock`,
+    /// the same two-phase wiring `AppSandboxEngine.service_proxy` already
+    /// uses for the identical ordering reason.
+    service_proxy: Weak<dyn ServiceProxy>,
 }
 
 impl fmt::Debug for SynSvcNativeService {
@@ -217,73 +232,18 @@ fn to_payload<T: serde::Serialize>(value: &T) -> RpcResult<NativeResponse> {
         .map_err(|e| internal(format!("failed to serialize response: {e}")))
 }
 
-/// A signed, TTL'd assertion answering "which rows does `principal` reach
-/// via `relation`" (Slice B3, ADR-0017 §6): the wire response of
-/// `resolve-relation`. Signing (not just transport authentication) is what
-/// makes the id-set self-authenticating for the `DecisionTrace` provenance
-/// a *successful* fetch records (Phase 4) and for any future cache (D-B3-6,
-/// deferred) -- both need to know *which node* asserted this, independent
-/// of the connection it arrived over.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct RelationshipProof {
-    asserter_did: String,
-    relation: String,
-    principal: String,
-    ids: Vec<String>,
-    valid_until_secs: u64,
-    /// z-base-32-encoded signature over the JSON-canonicalized form of this
-    /// struct with `signature` itself set to `""` -- mirrors
-    /// `Identity::sign_json`'s existing use elsewhere (e.g.
-    /// `EndpointInfo::sign`), never re-deriving a bespoke signing scheme.
-    signature: String,
-}
-
-/// How long a `resolve-relation` answer is valid for (ADR-0017 §6's own
-/// worked example: "valid 60s"). A fixed constant, not policy-configurable,
-/// in this phase -- the fetch is used immediately by the same request that
-/// triggered it (Phase 4); a cache honoring this TTL is a pure future
-/// addition (D-B3-6), not something this phase relies on.
-const RELATIONSHIP_PROOF_TTL_SECS: u64 = 60;
-
-/// B3-09: returns an error rather than a bogus timestamp on failure. The
-/// only way `duration_since(UNIX_EPOCH)` fails is a system clock set
-/// before 1970 -- vanishingly unlikely, but this value feeds a
-/// cryptographically **signed** artifact, unlike an ordinary internal
-/// timestamp field: silently minting `valid_until_secs = 60` (Unix epoch +
-/// the TTL) would leave the node's own signature attesting to a claim it
-/// never intended, and any TTL-checking consumer would see an
-/// inexplicably-decades-stale proof instead of the actual clock fault.
-fn now_secs() -> RpcResult<u64> {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .map_err(|e| internal(format!("system clock is before the Unix epoch: {e}")))
-}
-
-/// Signs `ids` as a [`RelationshipProof`] asserted by `identity`. The
-/// signature covers every field except itself (set to `""` for signing,
-/// matching the canonicalize-then-sign convention `Identity::sign_json`'s
-/// other callers use).
+/// Signs `ids` as a `syneroym_rpc::RelationshipProof` asserted by
+/// `identity`. Thin wrapper so this file's call sites don't need to know
+/// the proof lives in `syneroym-rpc` (shared with the requesting side,
+/// `syneroym_rpc::fdae_fetch::resolve_fetches`, which verifies one).
 fn sign_relationship_proof(
     identity: &Identity,
     relation: &str,
     principal: &str,
     ids: Vec<String>,
 ) -> RpcResult<RelationshipProof> {
-    let mut proof = RelationshipProof {
-        asserter_did: derive_did_key(&identity.public_key()),
-        relation: relation.to_string(),
-        principal: principal.to_string(),
-        ids,
-        valid_until_secs: now_secs()? + RELATIONSHIP_PROOF_TTL_SECS,
-        signature: String::new(),
-    };
-    let unsigned = serde_json::to_value(&proof)
-        .map_err(|e| internal(format!("failed to serialize relationship proof: {e}")))?;
-    proof.signature = identity
-        .sign_json(&unsigned)
-        .map_err(|e| internal(format!("failed to sign relationship proof: {e}")))?;
-    Ok(proof)
+    RelationshipProof::sign(identity, relation, principal, ids)
+        .map_err(|e| internal(format!("failed to sign relationship proof: {e}")))
 }
 
 /// Extracts the single `id` column from a `SELECT id FROM ... WHERE ...`
@@ -315,6 +275,7 @@ impl SynSvcNativeService {
         fdae_policy: Option<Arc<Policy>>,
         node_identity: Arc<Identity>,
         owner_did: &str,
+        service_proxy: Weak<dyn ServiceProxy>,
     ) -> Self {
         // Derived here, once, rather than at every call site: every
         // existing (and future) construction site already passes the
@@ -332,6 +293,7 @@ impl SynSvcNativeService {
             download_sessions: Mutex::new(HashMap::new()),
             fdae_policy,
             service_identity,
+            service_proxy,
         }
     }
 
@@ -356,12 +318,74 @@ impl SynSvcNativeService {
     /// returning empty is over-restriction, which is correct; a carve-out
     /// here would be a bypass. Do not "simplify" this away -- see
     /// D-04-02-h in `task.md`'s Decision Register.
-    fn query_auth<'a>(&'a self, invocation: &'a NativeInvocation) -> Option<QueryAuth<'a>> {
-        self.fdae_policy.as_ref().map(|policy| QueryAuth {
+    /// Slice B3 Phase 4: runs `syneroym_fdae::plan_read` itself (rather than
+    /// letting `data_db` call the local-only `compile_read` internally),
+    /// and when the policy's selected paths need a remote relationship
+    /// fetch (pipeline stage 2), resolves it via `syneroym_rpc::
+    /// resolve_fetches` + `syneroym_fdae::finalize` before ever reaching
+    /// the store. Mirrors `sandbox_wasm::host_capabilities::HostState::
+    /// resolve_query_auth`; see that doc comment for the fail-closed
+    /// contract (a fetch error maps to `DataLayerError::PermissionDenied`).
+    ///
+    /// **No `AuthLevel` carve-out.** This deliberately does not branch on
+    /// `AuthLevel::System` (or a `"system:"`-prefixed `caller_did`) to fall
+    /// back to `auth = None`. Doing so would make a guest's self-proxy route
+    /// (`ProxyRouter::invoke_local`'s `NativeHostChannel` branch, which
+    /// synthesizes `CallerContext::service_system` for a guest calling its
+    /// own service) *more* permissive than its direct WIT `store::Host`
+    /// route under the same policy -- i.e. a guest under a policy could
+    /// proxy to itself to escape it. The synthesized-identity ingress
+    /// returning empty is over-restriction, which is correct; a carve-out
+    /// here would be a bypass. Do not "simplify" this away -- see
+    /// D-04-02-h in `task.md`'s Decision Register.
+    async fn resolve_query_auth<'a>(
+        &'a self,
+        invocation: &'a NativeInvocation,
+        collection: &str,
+        operation: &Ability,
+        mode: Mode,
+    ) -> Result<Option<QueryAuth<'a>>, DataLayerError> {
+        let Some(policy) = self.fdae_policy.as_ref() else { return Ok(None) };
+        let session = &invocation.caller.session;
+        let plan = syneroym_fdae::plan_read(
             policy,
-            session: &invocation.caller.session,
-            service_id: &self.service_id,
-        })
+            collection,
+            session,
+            &self.service_id,
+            operation,
+            mode,
+        )
+        .map_err(|e| DataLayerError::Internal(e.to_string()))?;
+        let resolved_sieve = if plan.fetches.is_empty() {
+            plan.local
+        } else {
+            let proxy = self.service_proxy.upgrade().ok_or_else(|| {
+                DataLayerError::Internal(
+                    "service proxy unavailable for a cross-service FDAE fetch".to_string(),
+                )
+            })?;
+            let caller = invocation.caller.clone();
+            let results = syneroym_rpc::resolve_fetches(&plan.fetches, &caller, proxy.as_ref())
+                .await
+                .map_err(|e| {
+                    tracing::warn!(
+                        error = %e,
+                        collection,
+                        "fdae: cross-service relationship fetch failed, denying closed"
+                    );
+                    DataLayerError::PermissionDenied
+                })?;
+            let pending = plan.pending.ok_or_else(|| {
+                DataLayerError::Internal(
+                    "internal: plan_read reported fetches but no pending sieve".to_string(),
+                )
+            })?;
+            Some(
+                syneroym_fdae::finalize(pending, &results)
+                    .map_err(|e| DataLayerError::Internal(e.to_string()))?,
+            )
+        };
+        Ok(Some(QueryAuth { policy, session, service_id: &self.service_id, resolved_sieve }))
     }
 
     /// Slice B3 pipeline stage 2, the *receiving* (data-owning) side: "which
@@ -513,7 +537,12 @@ impl SynSvcNativeService {
             // unchanged; only the identity they're evaluated against shifts.
             let mut session = invocation.caller.session.clone();
             session.subject_did = req.principal.clone();
-            let auth = QueryAuth { policy, session: &session, service_id: &self.service_id };
+            let auth = QueryAuth {
+                policy,
+                session: &session,
+                service_id: &self.service_id,
+                resolved_sieve: None,
+            };
             let opts = QueryOptions {
                 filter: None,
                 limit: Some(u32::try_from(MAX_FETCH_IDS).unwrap_or(u32::MAX)),
@@ -620,7 +649,15 @@ impl SynSvcNativeService {
                     id: String,
                 }
                 let req: Req = parse_params(&invocation)?;
-                let auth = self.query_auth(&invocation);
+                let auth = self
+                    .resolve_query_auth(
+                        &invocation,
+                        &req.collection,
+                        &Ability(Ability::DATA_LAYER_READ.to_string()),
+                        Mode::PointInTime { id: req.id.clone() },
+                    )
+                    .await
+                    .map_err(data_layer_error)?;
                 let outcome = store
                     .get(&req.collection, &req.id, auth.as_ref())
                     .await
@@ -639,7 +676,15 @@ impl SynSvcNativeService {
                     opts: QueryOptions,
                 }
                 let req: Req = parse_params(&invocation)?;
-                let auth = self.query_auth(&invocation);
+                let auth = self
+                    .resolve_query_auth(
+                        &invocation,
+                        &req.collection,
+                        &Ability(Ability::DATA_LAYER_READ.to_string()),
+                        Mode::Filter,
+                    )
+                    .await
+                    .map_err(data_layer_error)?;
                 let mut outcome = store
                     .query(&req.collection, &req.opts, auth.as_ref())
                     .await
@@ -672,7 +717,15 @@ impl SynSvcNativeService {
                     filter: Option<String>,
                 }
                 let req: Req = parse_params(&invocation)?;
-                let auth = self.query_auth(&invocation);
+                let auth = self
+                    .resolve_query_auth(
+                        &invocation,
+                        &req.collection,
+                        &Ability(Ability::DATA_LAYER_WRITE.to_string()),
+                        Mode::Filter,
+                    )
+                    .await
+                    .map_err(data_layer_error)?;
                 let affected = store
                     .delete_many(&req.collection, req.filter.as_deref(), auth.as_ref())
                     .await
@@ -786,7 +839,15 @@ impl SynSvcNativeService {
                     pipeline: String,
                 }
                 let req: Req = parse_params(&invocation)?;
-                let auth = self.query_auth(&invocation);
+                let auth = self
+                    .resolve_query_auth(
+                        &invocation,
+                        &req.collection,
+                        &Ability(Ability::DATA_LAYER_READ.to_string()),
+                        Mode::Filter,
+                    )
+                    .await
+                    .map_err(data_layer_error)?;
                 let result = store
                     .aggregate(&req.collection, &req.pipeline, auth.as_ref())
                     .await

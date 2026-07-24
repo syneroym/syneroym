@@ -128,7 +128,12 @@ fn bench_fdae_pushdown_query(c: &mut Criterion) {
 
     let policy = single_hop_policy();
     let alice = session("did:key:alice");
-    let auth = QueryAuth { policy: &policy, session: &alice, service_id: SERVICE_ID };
+    let auth = QueryAuth {
+        policy: &policy,
+        session: &alice,
+        service_id: SERVICE_ID,
+        resolved_sieve: None,
+    };
     let opts = QueryOptions { filter: None, limit: None, cursor: None };
 
     let mut group = c.benchmark_group("fdae_pushdown_query");

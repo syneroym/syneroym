@@ -100,6 +100,7 @@ async fn test_route_handler(service_id: &str) -> RouteHandler {
         None,
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
         "did:key:zTestOwner",
+        syneroym_sandbox_wasm::empty_service_proxy(),
     ));
 
     let deps = RouteHandlerDeps {
@@ -110,6 +111,7 @@ async fn test_route_handler(service_id: &str) -> RouteHandler {
         native_dispatch: NativeDispatchRegistry::default(),
         http_routes,
         control_plane_service: Arc::new(NoopControlPlane),
+        control_plane: None,
     };
 
     let route_handler = RouteHandler::init(

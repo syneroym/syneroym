@@ -67,6 +67,7 @@ async fn test_route_handler() -> RouteHandler {
         native_dispatch: NativeDispatchRegistry::default(),
         http_routes,
         control_plane_service: Arc::new(NoopControlPlane),
+        control_plane: None,
     };
     RouteHandler::init("test-orchestrator".to_string(), &config, registry, [11u8; 32], None, deps)
         .await

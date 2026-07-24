@@ -24,7 +24,7 @@ use syneroym_data_db::{
     traits::{ServiceStore, StorageProvider},
 };
 use syneroym_data_keystore::KeyStore;
-use syneroym_fdae::Policy;
+use syneroym_fdae::{Mode, Policy};
 use syneroym_mqtt_broker::{
     MessagingError as BrokerMessagingError, MqttBroker, namespace_topic,
     namespace_topic_for_publish,
@@ -171,7 +171,20 @@ impl HostState {
 
     /// Builds the `QueryAuth` for the current request from `fdae_policy` +
     /// `caller.session`, or `None` on the policy-absent path (today's
-    /// unfiltered behavior).
+    /// unfiltered behavior). Slice B3 Phase 4: runs `syneroym_fdae::
+    /// plan_read` itself (rather than letting `data_db` call the
+    /// local-only `compile_read` internally), and when the policy's
+    /// selected paths need a remote relationship fetch (pipeline stage 2),
+    /// resolves it via `syneroym_rpc::resolve_fetches` + `syneroym_fdae::
+    /// finalize` before ever reaching the store -- `QueryAuth.resolved_sieve`
+    /// carries the result through.
+    ///
+    /// **Fails closed on a fetch error** (timeout, transport error, an
+    /// unverifiable/expired `RelationshipProof`): mapped to
+    /// `DataLayerError::PermissionDenied` here, exactly the fail-closed
+    /// shape `data_db`'s own watchdog/compile-error paths already use for
+    /// Mode B. `check_access`'s own call site further maps that to `Ok(false)`
+    /// (Mode A's convention, matching a `PolicyError` compile failure).
     ///
     /// **`AuthLevel::LocalElevated` is exempt.** This is not the
     /// `AuthLevel::System` carve-out `synsvc_native.rs::query_auth`
@@ -190,15 +203,61 @@ impl HostState {
     /// was never the intent -- `execute-ddl`/`query-raw`'s own admin gate
     /// exists specifically so lifecycle hooks act with full authority over
     /// their own service's data.
-    fn query_auth(&self) -> Option<QueryAuth<'_>> {
+    async fn resolve_query_auth(
+        &mut self,
+        collection: &str,
+        operation: &Ability,
+        mode: Mode,
+    ) -> Result<Option<QueryAuth<'_>>, DataLayerError> {
         if self.caller.auth == AuthLevel::LocalElevated {
-            return None;
+            return Ok(None);
         }
-        self.fdae_policy.as_ref().map(|policy| QueryAuth {
-            policy,
-            session: &self.caller.session,
-            service_id: &self.component_id,
-        })
+        let Some(policy) = self.fdae_policy.as_ref() else { return Ok(None) };
+        // Bound once, up front: `HostState` holds non-`Sync` WASI internals,
+        // so a projection like `&self.caller.session` written *after* an
+        // `.await` forces the whole `&HostState` receiver into the
+        // generator's captured state across that yield point, which breaks
+        // the WIT-generated `Host` trait's `Send`-future requirement. Only
+        // these two locals (both `Send`, since `Policy`/`SessionContext` are
+        // plain `Sync` data) may be read after the await below -- never
+        // `self` itself.
+        let session = &self.caller.session;
+        let service_id = self.component_id.as_str();
+        let plan =
+            syneroym_fdae::plan_read(policy, collection, session, service_id, operation, mode)
+                .map_err(|e| DataLayerError::Internal(e.to_string()))?;
+        let resolved_sieve = if plan.fetches.is_empty() {
+            plan.local
+        } else {
+            let proxy = self.service_proxy.upgrade().ok_or_else(|| {
+                DataLayerError::Internal(
+                    "service proxy unavailable for a cross-service FDAE fetch".to_string(),
+                )
+            })?;
+            // Cloned to an owned value before the `.await` below, for the
+            // same `Send`-future reason as above.
+            let caller = self.caller.clone();
+            let results = syneroym_rpc::resolve_fetches(&plan.fetches, &caller, proxy.as_ref())
+                .await
+                .map_err(|e| {
+                    tracing::warn!(
+                        error = %e,
+                        collection,
+                        "fdae: cross-service relationship fetch failed, denying closed"
+                    );
+                    DataLayerError::PermissionDenied
+                })?;
+            let pending = plan.pending.ok_or_else(|| {
+                DataLayerError::Internal(
+                    "internal: plan_read reported fetches but no pending sieve".to_string(),
+                )
+            })?;
+            Some(
+                syneroym_fdae::finalize(pending, &results)
+                    .map_err(|e| DataLayerError::Internal(e.to_string()))?,
+            )
+        };
+        Ok(Some(QueryAuth { policy, session, service_id, resolved_sieve }))
     }
 }
 
@@ -480,7 +539,13 @@ impl store::Host for HostState {
             self.storage_provider.clone(),
         )
         .await?;
-        let query_auth = self.query_auth();
+        let query_auth = self
+            .resolve_query_auth(
+                &collection,
+                &Ability(Ability::DATA_LAYER_READ.to_string()),
+                Mode::PointInTime { id: id.clone() },
+            )
+            .await?;
         let outcome = store.get(&collection, &id, query_auth.as_ref()).await?;
         outcome.value.map(|record| strip_record(record, &outcome.masked_fields)).transpose()
     }
@@ -496,7 +561,13 @@ impl store::Host for HostState {
             self.storage_provider.clone(),
         )
         .await?;
-        let query_auth = self.query_auth();
+        let query_auth = self
+            .resolve_query_auth(
+                &collection,
+                &Ability(Ability::DATA_LAYER_READ.to_string()),
+                Mode::Filter,
+            )
+            .await?;
         let mut outcome = store.query(&collection, &opts, query_auth.as_ref()).await?;
         let records = mem::take(&mut outcome.value.records)
             .into_iter()
@@ -517,7 +588,13 @@ impl store::Host for HostState {
             self.storage_provider.clone(),
         )
         .await?;
-        let query_auth = self.query_auth();
+        let query_auth = self
+            .resolve_query_auth(
+                &collection,
+                &Ability(Ability::DATA_LAYER_READ.to_string()),
+                Mode::Filter,
+            )
+            .await?;
         store.aggregate(&collection, &pipeline, query_auth.as_ref()).await
     }
 
@@ -542,7 +619,13 @@ impl store::Host for HostState {
             self.storage_provider.clone(),
         )
         .await?;
-        let query_auth = self.query_auth();
+        let query_auth = self
+            .resolve_query_auth(
+                &collection,
+                &Ability(Ability::DATA_LAYER_WRITE.to_string()),
+                Mode::Filter,
+            )
+            .await?;
         store.delete_many(&collection, Some(filter.as_str()), query_auth.as_ref()).await
     }
 
@@ -563,7 +646,22 @@ impl store::Host for HostState {
             self.storage_provider.clone(),
         )
         .await?;
-        let query_auth = self.query_auth();
+        // Fail-closed to `Ok(false)` on any resolution error (including a
+        // cross-service fetch failure), matching Mode A's existing
+        // `PolicyError`-compile-failure convention -- unlike Mode B's
+        // `get`/`query`/`aggregate`/`delete_many`, a broken/undecidable
+        // policy read is "no access", not a hard error.
+        let query_auth = match self
+            .resolve_query_auth(
+                &collection,
+                &Ability(operation.clone()),
+                Mode::PointInTime { id: id.clone() },
+            )
+            .await
+        {
+            Ok(auth) => auth,
+            Err(_) => return Ok(false),
+        };
         store.check_access(&collection, &id, &operation, query_auth.as_ref()).await
     }
 
@@ -854,11 +952,14 @@ impl wasmtime::ResourceLimiter for HostState {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::sync::Mutex;
+
     use serde_json::json;
     use syneroym_core::{local_registry::EndpointRegistry, storage::MockStorage};
     use syneroym_data_blob::ObjectStoreBlobProvider;
     use syneroym_data_db::SqliteStorageProvider;
     use syneroym_fdae::parse_and_validate;
+    use syneroym_identity::substrate;
     use syneroym_mqtt_broker::MqttBrokerConfig;
     use syneroym_rpc::{Capability, SessionContext};
 
@@ -1484,5 +1585,146 @@ pub(crate) mod tests {
              should expose it. If this assertion starts failing, D-04-02-g has been fixed -- \
              update this test to assert ssn IS present."
         );
+    }
+
+    // -- Slice B3 Phase 4: cross-service relationship-proof fetch, wired
+    // through `HostState::resolve_query_auth` --------------------------
+
+    fn fdae_remote_relation_policy(expected_asserter_did: &str) -> Policy {
+        parse_and_validate(&format!(
+            r#"{{
+                "version": "fdae/v1",
+                "definitions": {{
+                    "document": {{
+                        "table": "documents",
+                        "relations": {{"owner": {{
+                            "target": "employee", "service": "hr-svc",
+                            "join_column": "owner_uuid",
+                            "expected_asserter_did": "{expected_asserter_did}"
+                        }}}},
+                        "permissions": {{
+                            "view": {{"allows": ["data-layer/read"], "paths": [["owner", "anchor"]]}}
+                        }}
+                    }}
+                }}
+            }}"#
+        ))
+        .unwrap()
+    }
+
+    #[derive(Debug)]
+    struct StubProxy(Mutex<Option<Result<Value, RpcProxyError>>>);
+
+    #[async_trait::async_trait]
+    impl ServiceProxy for StubProxy {
+        async fn invoke(&self, _request: ProxyRequest) -> Result<Value, RpcProxyError> {
+            self.0.lock().unwrap().take().expect("StubProxy invoked with no response configured")
+        }
+    }
+
+    async fn seed_one_remote_owned_document(storage_provider: Arc<dyn StorageProvider>) {
+        let mut seeder =
+            fdae_host_state(storage_provider, CallerContext::service_system(FDAE_SERVICE_ID), None);
+        store::Host::create_collection(
+            &mut seeder,
+            CollectionSchema { name: "documents".to_string(), indexes: vec![] },
+        )
+        .await
+        .unwrap();
+        store::Host::put(
+            &mut seeder,
+            "documents".to_string(),
+            RecordWriteValue {
+                id: "doc-1".to_string(),
+                payload: json!({"owner_uuid": "emp-alice"}).to_string().into_bytes(),
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    /// A policy naming a remote relation resolves through `resolve_query_auth`:
+    /// `get` reaches `HostState.service_proxy`, verifies the returned
+    /// `RelationshipProof` against the policy's `expected_asserter_did`, and
+    /// the finalized sieve correctly admits alice's own document.
+    #[tokio::test]
+    async fn fdae_remote_relation_fetch_succeeds_through_host_state() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage_provider: Arc<dyn StorageProvider> =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        seed_one_remote_owned_document(storage_provider.clone()).await;
+
+        let identity = syneroym_identity::Identity::generate().unwrap();
+        let asserter_did = substrate::derive_did_key(&identity.public_key());
+        let proof = syneroym_rpc::RelationshipProof::sign(
+            &identity,
+            "employee",
+            "did:key:alice",
+            vec!["emp-alice".to_string()],
+        )
+        .unwrap();
+        let stub: Arc<dyn ServiceProxy> =
+            Arc::new(StubProxy(Mutex::new(Some(Ok(serde_json::to_value(&proof).unwrap())))));
+
+        let policy = Arc::new(fdae_remote_relation_policy(&asserter_did));
+        let alice = fdae_caller("did:key:alice", vec![fdae_read_cap("documents")]);
+        let mut host = HostState::new(
+            FDAE_SERVICE_ID.to_string(),
+            None,
+            Arc::new(KeyStore::new()),
+            storage_provider,
+            test_blob_provider(),
+            alice,
+            0,
+            test_messaging_context(),
+            test_streaming_context(),
+            Arc::downgrade(&stub),
+            Some(policy),
+        );
+
+        let own = store::Host::get(&mut host, "documents".to_string(), "doc-1".to_string())
+            .await
+            .unwrap();
+        assert!(
+            own.is_some(),
+            "alice's document must resolve through the real cross-service fetch"
+        );
+    }
+
+    /// A fetch failure (the remote proxy call errors) denies the whole read
+    /// closed rather than falling back to unfiltered or silently empty --
+    /// `get` must surface an `Err`, not `Ok(None)` masquerading as "not
+    /// found."
+    #[tokio::test]
+    async fn fdae_remote_relation_fetch_failure_denies_closed() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage_provider: Arc<dyn StorageProvider> =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        seed_one_remote_owned_document(storage_provider.clone()).await;
+
+        let stub: Arc<dyn ServiceProxy> = Arc::new(StubProxy(Mutex::new(Some(Err(
+            RpcProxyError::Timeout(Duration::from_secs(5)),
+        )))));
+
+        let policy = Arc::new(fdae_remote_relation_policy("did:key:zSomeAsserter"));
+        let alice = fdae_caller("did:key:alice", vec![fdae_read_cap("documents")]);
+        let mut host = HostState::new(
+            FDAE_SERVICE_ID.to_string(),
+            None,
+            Arc::new(KeyStore::new()),
+            storage_provider,
+            test_blob_provider(),
+            alice,
+            0,
+            test_messaging_context(),
+            test_streaming_context(),
+            Arc::downgrade(&stub),
+            Some(policy),
+        );
+
+        let err = store::Host::get(&mut host, "documents".to_string(), "doc-1".to_string())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DataLayerError::PermissionDenied));
     }
 }

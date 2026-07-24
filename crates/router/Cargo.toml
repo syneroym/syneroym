@@ -11,6 +11,7 @@ workspace = true
 [dependencies]
 syneroym-core.workspace = true
 syneroym-sandbox-wasm.workspace = true
+syneroym-control-plane.workspace = true
 syneroym-rpc.workspace = true
 syneroym-identity.workspace = true
 syneroym-ucan.workspace = true
@@ -48,7 +49,6 @@ quinn = "0.11.11"
 
 [dev-dependencies]
 syneroym-core = { workspace = true, features = ["test-utils"] }
-syneroym-control-plane.workspace = true
 syneroym-wit-interfaces.workspace = true
 syneroym-fdae.workspace = true
 criterion.workspace = true

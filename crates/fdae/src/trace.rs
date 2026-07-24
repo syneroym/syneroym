@@ -5,6 +5,28 @@
 
 use tracing::{debug, info};
 
+/// Provenance for one successful cross-service relationship-proof fetch
+/// (Slice B3 pipeline stage 2, ADR-0017 §6). Recorded regardless of caching
+/// -- even an immediate, uncached fetch must leave a record of *which
+/// service asserted what, valid how long*, so the trace isn't allow-shaped
+/// silence the way a fail-closed deny already is.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RemoteFetchTrace {
+    /// Logical service name asked (`RemoteFetch.service`), not yet resolved
+    /// to a DID -- the DID that actually answered is `asserter_did` below.
+    pub service: String,
+    /// The remote object type asked about (`RemoteFetch.relation`).
+    pub relation: String,
+    /// The principal evaluated for -- always the anchor (or the direct
+    /// caller when there is no distinct anchor), never the proxying caller.
+    pub principal_did: String,
+    /// The DID that actually signed the returned `RelationshipProof`,
+    /// already verified against the policy's `expected_asserter_did` and
+    /// the signature itself before this trace entry is recorded.
+    pub asserter_did: String,
+    pub valid_until_secs: u64,
+}
+
 /// One FDAE tier-3 decision, built by `compile_read` at compile time and,
 /// for Mode A, augmented by `check_access`/`get` once the compiled
 /// predicate has actually been run against a row.
@@ -54,6 +76,10 @@ pub struct DecisionTrace {
     /// (capability caveats can carry DIDs, tenant ids, and other row-level
     /// data that has no business in an operator log).
     pub caveats_applied: Vec<String>,
+    /// Cross-service relationship-proof fetches this decision's compiled
+    /// sieve depended on (Slice B3), populated by `finalize` from each
+    /// consumed `FetchResult.trace`. Empty for a fully-local policy.
+    pub remote_fetches: Vec<RemoteFetchTrace>,
 }
 
 impl DecisionTrace {
@@ -75,6 +101,7 @@ impl DecisionTrace {
                 rows_reached = ?self.rows_reached,
                 path_failed = %reason,
                 caveats_applied = ?self.caveats_applied,
+                remote_fetches = ?self.remote_fetches,
                 "fdae decision: deny"
             );
         } else {
@@ -90,6 +117,7 @@ impl DecisionTrace {
                 compiled_predicate = self.compiled_predicate.as_deref(),
                 rows_reached = ?self.rows_reached,
                 caveats_applied = ?self.caveats_applied,
+                remote_fetches = ?self.remote_fetches,
                 "fdae decision: allow"
             );
         }

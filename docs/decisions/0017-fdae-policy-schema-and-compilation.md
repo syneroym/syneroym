@@ -387,3 +387,19 @@ validated lazily at **query** time, fail-closed with a trace entry if missing �
 the guest's table may not exist yet when the policy is parsed. Locks the SQL
 shape in §1's `[creator, caller]` example: `creator` resolves to `user`, and
 `user` declares `principal_column: did` for the comparison to bind against.
+
+**2026-07-24 (Slice B3 Phase 4, `service:` resolution corrected).** §1's "a
+relation is either local or names a service DID... resolved through the
+app-context registry that already exists" was checked against `main` while
+planning B3 Phase 4 and found inaccurate: no app-context registry exists.
+`crates/app_orchestration`'s `AppRegistry`/`LogicalResolver` is the right
+shape but has only a `StaticInventory` implementation with zero production
+callers — nothing registers a live entry for it to resolve. A real
+implementation is reserved as its own interstitial, between Milestone 4 and
+Milestone 5 (`meta-implementation-plan.md`), since it is an
+`app_orchestration`-crate concern serving `[PLT-DAP-01]` broadly, not FDAE
+engine work. Until it lands, `Relation.service` is resolved the same way
+`ProxyRequest.target_service` already is for every other proxied call —
+directly, through the existing `EndpointRegistry`/community-registry DID
+lookup — with no logical-name indirection layer. See
+`slice-b3-implementation-plan.md` §7 D-B3-10.

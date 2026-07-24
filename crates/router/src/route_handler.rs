@@ -19,6 +19,7 @@ use iroh::{
     endpoint::Connection,
     protocol::{AcceptError, ProtocolHandler as IrohProtocolHandler},
 };
+use syneroym_control_plane::ControlPlaneService;
 use syneroym_core::{
     config::{RetryPolicy, SubstrateConfig},
     dht_registry::RegistryClient,
@@ -164,8 +165,18 @@ pub struct RouteHandlerDeps {
     /// The node's control-plane service (deploy/undeploy/list, security
     /// ops), already registered against `native_dispatch`/`http_routes` by
     /// the caller during construction -- `RouteHandler::init` only needs to
-    /// register it into its own dispatch table under `service_id`.
+    /// register it into its own dispatch table under `service_id`. Type-
+    /// erased so test doubles can substitute a fake here without being a
+    /// real `ControlPlaneService`.
     pub control_plane_service: Arc<dyn NativeService>,
+    /// The concrete `ControlPlaneService`, when the caller has a real one --
+    /// `None` for a test double that only needs `control_plane_service`
+    /// above for dispatch-registration behavior. Slice B3 Phase 4 uses this
+    /// solely to set `ControlPlaneService.service_proxy`'s `OnceLock` once
+    /// `ProxyRouter` exists (same two-phase wiring `AppSandboxEngine.
+    /// service_proxy` already needs, for the identical ordering reason);
+    /// nothing else reads it.
+    pub control_plane: Option<Arc<ControlPlaneService>>,
 }
 
 impl Debug for RouteHandlerDeps {
@@ -219,6 +230,22 @@ impl RouteHandler {
             .service_proxy
             .set(Arc::downgrade(&proxy) as Weak<dyn ServiceProxy>)
             .map_err(|_| anyhow::anyhow!("AppSandboxEngine::service_proxy set more than once"))?;
+        // Slice B3 Phase 4: `SynSvcNativeService`'s cross-service
+        // relationship-proof fetch needs the same proxy handle, threaded
+        // through `ControlPlaneService` at deploy time -- same two-phase
+        // wiring as `AppSandboxEngine`'s above, for the identical ordering
+        // reason (`ProxyRouter` doesn't exist yet when either service is
+        // constructed). `None` only for a test harness that substitutes a
+        // fake `control_plane_service` and never deploys a real FDAE-policy
+        // service through it.
+        if let Some(control_plane) = &deps.control_plane {
+            control_plane
+                .service_proxy
+                .set(Arc::downgrade(&proxy) as Weak<dyn ServiceProxy>)
+                .map_err(|_| {
+                    anyhow::anyhow!("ControlPlaneService::service_proxy set more than once")
+                })?;
+        }
 
         let inner = Arc::new(RouteHandlerInner {
             registry,

@@ -142,6 +142,7 @@ async fn test_route_handler_with_proxy_components() -> Option<RouteHandler> {
         native_dispatch: NativeDispatchRegistry::default(),
         http_routes,
         control_plane_service: Arc::new(NoopControlPlane),
+        control_plane: None,
     };
 
     Some(
@@ -375,6 +376,7 @@ async fn test_route_handler_with_self_native_data_layer(
         fdae_policy,
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
         "did:key:zTestOwner",
+        syneroym_sandbox_wasm::empty_service_proxy(),
     ));
     native_dispatch.insert("proxy-caller".to_string(), native_service as Arc<dyn NativeService>);
 
@@ -387,6 +389,7 @@ async fn test_route_handler_with_self_native_data_layer(
         native_dispatch,
         http_routes,
         control_plane_service: Arc::new(NoopControlPlane),
+        control_plane: None,
     };
 
     Some(

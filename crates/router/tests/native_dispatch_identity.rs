@@ -13,9 +13,12 @@
 //!    `dispatch_data_layer` and becomes the stored `creator_id` -- not the
 //!    service being called.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    sync::{
+        Arc, Weak,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
 };
 
 use dashmap::DashMap;
@@ -23,23 +26,26 @@ use hyper_util::rt::TokioIo;
 use serde_json::{Value, json};
 use syneroym_control_plane::SynSvcNativeService;
 use syneroym_core::{
-    config::SubstrateConfig,
+    config::{RetryPolicy, SubstrateConfig},
+    dht_registry::RegistryClient,
     http_routes::{HttpRoute, HttpRouteRegistry},
-    local_registry::{EndpointRegistry, NATIVE_CAPABILITY_INTERFACES},
+    local_registry::{EndpointRegistry, NATIVE_CAPABILITY_INTERFACES, SubstrateEndpoint},
     storage::MockStorage,
 };
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
 use syneroym_data_db::SqliteStorageProvider;
 use syneroym_data_keystore::KeyStore;
-use syneroym_fdae::{FetchResult, MAX_FETCH_IDS, Mode, Policy, parse_and_validate};
+use syneroym_fdae::{MAX_FETCH_IDS, Mode, Policy, parse_and_validate};
+use syneroym_identity::substrate;
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
 use syneroym_router::{
-    AdaptationStage, EncryptionStage, RouteHandler, RouteHandlerDeps, RoutePipeline, RoutePreamble,
-    RouteProtocol, RouteTransport, ServiceStage, TransportStage,
+    AdaptationStage, EncryptionStage, IrohHop, ProxyRouter, RouteHandler, RouteHandlerDeps,
+    RoutePipeline, RoutePreamble, RouteProtocol, RouteTransport, ServiceStage, TransportStage,
 };
 use syneroym_rpc::{
-    Ability, AuthLevel, CallerContext, Capability, NativeDispatchRegistry, NativeInvocation,
-    NativeResponse, NativeService, ResourceUri, RpcResult, SessionContext,
+    Ability, AuthLevel, CallerContext, Capability, FetchError, NativeDispatchRegistry,
+    NativeInvocation, NativeResponse, NativeService, ProxyError, ProxyRequest, ResourceUri,
+    RpcResult, ServiceProxy, SessionContext,
 };
 use syneroym_sandbox_wasm::AppSandboxEngine;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
@@ -132,6 +138,7 @@ async fn test_route_handler() -> (RouteHandler, HttpRouteRegistry) {
         native_dispatch: NativeDispatchRegistry::default(),
         http_routes: http_routes.clone(),
         control_plane_service: Arc::new(RecordingNativeService::default()),
+        control_plane: None,
     };
 
     let route_handler = RouteHandler::init(
@@ -233,6 +240,7 @@ async fn authenticated_caller_identity_becomes_creator_id_not_service_id() {
         None,
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
         "did:key:zTestOwner",
+        syneroym_sandbox_wasm::empty_service_proxy(),
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -296,6 +304,7 @@ async fn execute_ddl_denied_for_ordinary_native_caller() {
         None,
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
         "did:key:zTestOwner",
+        syneroym_sandbox_wasm::empty_service_proxy(),
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -338,6 +347,7 @@ async fn execute_ddl_allowed_for_admin_ucan_root_native_caller() {
         None,
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
         "did:key:zTestOwner",
+        syneroym_sandbox_wasm::empty_service_proxy(),
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -376,6 +386,7 @@ async fn ordinary_caller_denied_query_raw() {
         None,
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
         "did:key:zTestOwner",
+        syneroym_sandbox_wasm::empty_service_proxy(),
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -418,6 +429,7 @@ async fn admin_caller_admitted_query_raw() {
         None,
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
         "did:key:zTestOwner",
+        syneroym_sandbox_wasm::empty_service_proxy(),
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -459,6 +471,7 @@ async fn query_raw_binds_params_no_injection() {
         None,
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
         "did:key:zTestOwner",
+        syneroym_sandbox_wasm::empty_service_proxy(),
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -540,6 +553,7 @@ async fn query_raw_null_param_round_trips() {
         None,
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
         "did:key:zTestOwner",
+        syneroym_sandbox_wasm::empty_service_proxy(),
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -596,6 +610,7 @@ async fn query_raw_result_cells_are_round_trippable_as_params() {
         None,
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
         "did:key:zTestOwner",
+        syneroym_sandbox_wasm::empty_service_proxy(),
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -807,6 +822,7 @@ async fn ordinary_caller_admitted_aggregate() {
         None,
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
         "did:key:zTestOwner",
+        syneroym_sandbox_wasm::empty_service_proxy(),
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -880,6 +896,7 @@ async fn aggregate_malformed_pipeline_is_schema_violation() {
         None,
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
         "did:key:zTestOwner",
+        syneroym_sandbox_wasm::empty_service_proxy(),
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -996,6 +1013,7 @@ async fn native_fdae_policy_row_filters_and_masks_for_two_distinct_verified_call
         Some(policy),
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
         "did:key:zTestOwner",
+        syneroym_sandbox_wasm::empty_service_proxy(),
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -1175,6 +1193,7 @@ async fn native_delete_many_is_row_filtered_as_a_write_operation() {
         Some(policy),
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
         "did:key:zTestOwner",
+        syneroym_sandbox_wasm::empty_service_proxy(),
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -1264,6 +1283,7 @@ async fn native_aggregate_is_row_filtered_through_native_dispatch() {
         Some(policy),
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
         "did:key:zTestOwner",
+        syneroym_sandbox_wasm::empty_service_proxy(),
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -1477,6 +1497,7 @@ async fn resolve_relation_service_and_pipeline_with(
         policy.map(Arc::new),
         node_identity,
         owner_did,
+        syneroym_sandbox_wasm::empty_service_proxy(),
     ));
     route_handler.register_native_service(service_id.to_string(), data_service);
 
@@ -1922,70 +1943,178 @@ async fn resolve_relation_is_empty_when_no_policy_is_deployed() {
     assert_eq!(resp["result"]["ids"], json!([]));
 }
 
-/// The join the review calls out as missing: `plan_read` (`crates/fdae`)
-/// -> `resolve-relation` (native dispatch on a *second*, distinct service)
-/// -> `finalize`, wired together by hand -- there is no `ServiceProxy`
-/// orchestration yet (Phase 4), so this test plays that role manually --
-/// proving the sender and receiver actually agree on what they're asking
-/// each other, not just that each half is correct in isolation. This is
-/// exactly the test that would have caught B3-01 (principal mismatch) and
-/// B3-02 (relation namespace mismatch) immediately; both are fixed, and
-/// this pins the fix at the seam where they were found.
-#[tokio::test]
-async fn plan_read_resolve_relation_finalize_join_end_to_end() {
-    // -- the remote (data-owning) service: hr-svc. `resolvable_employee_policy`
-    // seeds emp-alice (did:key:alice) and emp-bob (did:key:bob).
-    let hr_service_id = "hr-svc-join-test";
-    let (hr_route_handler, hr_pipeline, hr_preamble, _hr_temp_dir) =
-        resolve_relation_service_and_pipeline(hr_service_id, Some(resolvable_employee_policy()))
+/// Slice B3 Phase 4: constructs hr-svc's `SynSvcNativeService` directly
+/// (not via `resolve_relation_service_and_pipeline_with`/`RouteHandler`,
+/// which hides its registry/native_dispatch -- this test needs a real
+/// `ProxyRouter` it can hand to `syneroym_rpc::resolve_fetches`), registers
+/// it as a `NativeHostChannel` in a fresh `EndpointRegistry`, and seeds two
+/// employees. Returns the router (as `ServiceProxy`), the DID a caller's
+/// policy must declare as `expected_asserter_did` to trust this instance
+/// (computed the same way a real policy author would: independently, from
+/// the `(owner_did, service_id)` pair they were told about -- never read
+/// back off a proof), and the owned `NativeDispatchRegistry`/`TempDir` the
+/// caller must keep alive for the test's duration.
+///
+/// **Must not leak these.** `SqliteStorageProvider` spawns a
+/// `spawn_blocking` writer-loop task on the *ambient* runtime (here,
+/// `#[tokio::test]`'s own), which only exits once its channel `Sender`
+/// (owned transitively by `hr_service`, kept alive by `native_dispatch`) is
+/// dropped. Leaking `native_dispatch`/`temp_dir` (an earlier version of this
+/// helper did, mirroring a pattern used elsewhere in this file for values
+/// that genuinely need `'static`) keeps that writer thread running forever,
+/// which deadlocks the test runtime's shutdown (`BlockingPool::shutdown`
+/// waits for every spawned blocking task to finish) -- confirmed by `sample`
+/// on the hung process, which showed the main thread parked in
+/// `Runtime::drop` -> `BlockingPool::shutdown` while a `tokio-rt-worker`
+/// thread sat in `run_writer_loop`'s `blocking_recv()`. Returning owned
+/// handles the test function holds until it returns (normal drop order)
+/// fixes this.
+async fn build_hr_svc_proxy_router(
+    node_identity: Arc<syneroym_identity::Identity>,
+    owner_did: &str,
+) -> (Arc<ProxyRouter>, String, NativeDispatchRegistry, tempfile::TempDir) {
+    let hr_service_id = "hr-svc";
+    let expected_asserter_did = substrate::derive_did_key(
+        &node_identity.derive_service_identity(owner_did, hr_service_id).public_key(),
+    );
+
+    let key_store = Arc::new(KeyStore::new());
+    let temp_dir = tempfile::tempdir().unwrap();
+    let storage_provider = Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+    let blob_provider: Arc<dyn BlobProvider> =
+        Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+    let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+    let hr_service = Arc::new(SynSvcNativeService::new(
+        hr_service_id.to_string(),
+        key_store,
+        storage_provider,
+        blob_provider,
+        messaging_broker,
+        Some(Arc::new(resolvable_employee_policy())),
+        node_identity.clone(),
+        owner_did,
+        syneroym_sandbox_wasm::empty_service_proxy(),
+    ));
+    let seeder = test_caller("did:key:z6MkResolveRelationSeeder");
+    for (id, did) in [("emp-alice", "did:key:alice"), ("emp-bob", "did:key:bob")] {
+        let _ = hr_service
+            .dispatch(NativeInvocation {
+                interface: "data-layer".to_string(),
+                method: "create-collection".to_string(),
+                params: json!({"name": "employees"}),
+                caller: seeder.clone(),
+            })
             .await;
+        hr_service
+            .dispatch(NativeInvocation {
+                interface: "data-layer".to_string(),
+                method: "put".to_string(),
+                params: json!({
+                    "collection": "employees",
+                    "value": {"id": id, "payload": json!({"did": did}).to_string().into_bytes()}
+                }),
+                caller: seeder.clone(),
+            })
+            .await
+            .unwrap();
+    }
+
+    let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+    registry
+        .register(
+            hr_service_id.to_string(),
+            "data-layer".to_string(),
+            SubstrateEndpoint::NativeHostChannel { service_id: hr_service_id.to_string() },
+        )
+        .await
+        .unwrap();
+    let native_dispatch: NativeDispatchRegistry = Arc::new(DashMap::new());
+    native_dispatch.insert(hr_service_id.to_string(), hr_service as Arc<dyn NativeService>);
+
+    let router = Arc::new(ProxyRouter::new(
+        registry,
+        Arc::new(RegistryClient::new(false, None)),
+        Arc::downgrade(&native_dispatch),
+        Weak::new(),
+        Arc::new(IrohHop::new(None, RetryPolicy::default())),
+        node_identity,
+        RetryPolicy::default(),
+    ));
+
+    (router, expected_asserter_did, native_dispatch, temp_dir)
+}
+
+/// The join B3 Phase 3's review called out as missing, now through the real
+/// `syneroym_rpc::resolve_fetches` orchestration instead of a hand-wired
+/// stand-in: `plan_read` (`crates/fdae`) -> `resolve_fetches` (a real
+/// `ProxyRouter` call, `CallOrigin::Native`, to hr-svc's native
+/// `resolve-relation`) -> `finalize` -> real SQL execution. Also proves a
+/// *successful* fetch leaves `DecisionTrace` provenance (ADR-0017 §6 reason
+/// 2), not just the deny path.
+#[tokio::test]
+async fn plan_read_resolve_fetches_finalize_join_end_to_end_through_a_real_proxy() {
+    let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
+    let owner_did = "did:key:zHrSvcOwner";
+    // `_native_dispatch`/`_temp_dir` must stay alive for the whole test --
+    // `proxy_router` only holds a `Weak` to the dispatch table, and dropping
+    // the storage's backing directory would tear down its writer thread out
+    // from under a still-in-flight query. See `build_hr_svc_proxy_router`'s
+    // own doc comment for why these must never be leaked instead.
+    let (proxy_router, expected_asserter_did, _native_dispatch, _temp_dir) =
+        build_hr_svc_proxy_router(node_identity, owner_did).await;
 
     // -- the local (requesting) service: app-svc, whose own policy names a
-    // remote relation pointing at hr-svc.
+    // remote relation pointing at hr-svc, trusting the *real* derived
+    // asserter DID (D-B3-8) -- not a placeholder.
     let local_service_id = "app-svc-join-test";
-    let local_policy = parse_and_validate(
-        r#"{
+    let local_policy = parse_and_validate(&format!(
+        r#"{{
             "version": "fdae/v1",
-            "definitions": {
-                "document": {
+            "definitions": {{
+                "document": {{
                     "table": "documents",
-                    "relations": {"owner": {
-                        "target": "employee", "service": "hr-svc", "join_column": "owner_uuid"
-                    }},
-                    "permissions": {
-                        "view": {"allows": ["data-layer/read"], "paths": [["owner", "anchor"]]}
-                    }
-                }
-            }
-        }"#,
-    )
+                    "relations": {{"owner": {{
+                        "target": "employee", "service": "hr-svc", "join_column": "owner_uuid",
+                        "expected_asserter_did": "{expected_asserter_did}"
+                    }}}},
+                    "permissions": {{
+                        "view": {{"allows": ["data-layer/read"], "paths": [["owner", "anchor"]]}}
+                    }}
+                }}
+            }}
+        }}"#
+    ))
     .unwrap();
 
     // A caller presenting as `svc-A` (whoever actually authenticated this
-    // connection to app-svc) proxying for anchor `alice`.
-    let proxying_service = SessionContext {
-        subject_did: "did:key:svc-A".to_string(),
-        anchor_did: Some("did:key:alice".to_string()),
-        capabilities: vec![Capability {
-            // Scoped to "document" (the `collection` string this test
-            // passes to `plan_read` below), not "documents" -- `plan_read`
-            // builds its resource URI from whatever `collection` argument
-            // it's called with directly, unlike `ServiceStore::query`'s
-            // literal-table-name addressing.
-            with: native_fdae_resource(local_service_id, "document"),
-            can: Ability(Ability::DATA_LAYER_READ.to_string()),
-            caveats: None,
-        }],
-        ..Default::default()
+    // connection to app-svc) proxying for anchor `alice`. `proof: None`
+    // here (no real UCAN chain in this test), so `resolve_fetches` forwards
+    // an unauthenticated caller and hr-svc's own re-verification is a no-op
+    // that trusts `caller_did` as given -- sufficient to exercise the real
+    // proxy/wire path end to end without standing up a full B1 chain.
+    let proxying_caller = CallerContext {
+        caller_did: "did:key:svc-A".to_string(),
+        app_instance: None,
+        session: SessionContext {
+            subject_did: "did:key:svc-A".to_string(),
+            anchor_did: Some("did:key:alice".to_string()),
+            capabilities: vec![Capability {
+                with: native_fdae_resource(local_service_id, "document"),
+                can: Ability(Ability::DATA_LAYER_READ.to_string()),
+                caveats: None,
+            }],
+            ..Default::default()
+        },
+        auth: AuthLevel::Ucan,
+        proof: None,
     };
 
     // Step 1: `plan_read` on the *local* policy -- must produce a
-    // `RemoteFetch` (B2's old behavior was to fail closed here), asking
-    // about the anchor, never the proxying caller.
+    // `RemoteFetch`, asking about the anchor, never the proxying caller.
     let mut plan = syneroym_fdae::plan_read(
         &local_policy,
         "document",
-        &proxying_service,
+        &proxying_caller.session,
         local_service_id,
         &Ability(Ability::DATA_LAYER_READ.to_string()),
         Mode::Filter,
@@ -2001,42 +2130,20 @@ async fn plan_read_resolve_relation_finalize_join_end_to_end() {
     assert_eq!(fetch.relation, "employee", "B3-02: the wire relation is the remote object type");
     assert_eq!(fetch.principal_did, "did:key:alice", "B3-01: the fetch asks about the anchor");
 
-    // Step 2: issue the fetch as a *real* resolve-relation call against
-    // hr-svc's native dispatch -- standing in for Phase 4's orchestration,
-    // which would forward the anchor's own re-verified identity as the
-    // wire caller of this specific request (the piece Phase 4 still needs
-    // to build; here it's constructed by hand to close the loop).
-    let anchor_as_direct_caller = test_caller(&fetch.principal_did);
-    let anchor_as_direct_caller = CallerContext {
-        session: SessionContext {
-            subject_did: fetch.principal_did.clone(),
-            ..anchor_as_direct_caller.session
-        },
-        ..anchor_as_direct_caller
-    };
-    let resolve_body = resolve_relation_body(&fetch.relation, &fetch.principal_did);
-    let resolve_resp = hr_route_handler
-        .dispatch_json_rpc_once(
-            &hr_pipeline,
-            &hr_preamble,
-            Some(&anchor_as_direct_caller),
-            &resolve_body,
-        )
-        .await
-        .unwrap();
-    let resolve_resp: Value = serde_json::from_slice(&resolve_resp).unwrap();
-    assert!(resolve_resp.get("error").is_none(), "resolve-relation must succeed: {resolve_resp:?}");
-    let ids: Vec<String> = resolve_resp["result"]["ids"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|v| v.as_str().unwrap().to_string())
-        .collect();
-    assert_eq!(
-        ids,
-        vec!["emp-alice"],
-        "hr-svc must resolve alice's own employee row: {resolve_resp:?}"
-    );
+    // Step 2: the real orchestration seam -- `resolve_fetches` issues the
+    // fetch as `CallOrigin::Native` through the real `ProxyRouter`, which
+    // dispatches it to hr-svc's native `resolve-relation`, verifies the
+    // returned `RelationshipProof` against `fetch.expected_asserter_did`,
+    // and returns a `FetchResult` carrying real provenance.
+    let results =
+        syneroym_rpc::resolve_fetches(&plan.fetches, &proxying_caller, proxy_router.as_ref())
+            .await
+            .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].ids, vec!["emp-alice".to_string()]);
+    assert_eq!(results[0].trace.asserter_did, expected_asserter_did);
+    assert_eq!(results[0].trace.relation, "employee");
+    assert_eq!(results[0].trace.principal_did, "did:key:alice");
 
     // Step 3: `finalize` the plan with the real fetched id-set, and run
     // the resulting sieve against a locally-seeded `documents` table --
@@ -2044,7 +2151,7 @@ async fn plan_read_resolve_relation_finalize_join_end_to_end() {
     // use, proving the compiled predicate is not just well-typed but
     // actually correct.
     let pending = plan.pending.take().unwrap();
-    let sieve = syneroym_fdae::finalize(pending, &[FetchResult { slot: fetch.slot, ids }]).unwrap();
+    let sieve = syneroym_fdae::finalize(pending, &results).unwrap();
 
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     conn.execute_batch(
@@ -2075,6 +2182,170 @@ async fn plan_read_resolve_relation_finalize_join_end_to_end() {
     assert_eq!(
         visible,
         vec!["doc-1"],
-        "only alice's own document is reachable through the full plan -> fetch -> finalize join"
+        "only alice's own document is reachable through the full plan -> fetch -> finalize join, \
+         through a real ProxyRouter"
     );
+
+    // The successful fetch must also leave provenance in the sieve's own
+    // `DecisionTrace` (ADR-0017 §6 reason 2, B3-08's sibling requirement for
+    // the allow path) -- not just the deny path B3-08 already covers.
+    assert_eq!(sieve.trace.remote_fetches.len(), 1);
+    assert_eq!(sieve.trace.remote_fetches[0].asserter_did, expected_asserter_did);
+    assert!(sieve.trace.remote_fetches[0].valid_until_secs > 0);
+}
+
+/// A `RelationshipProof` signed by an identity the policy does *not* name in
+/// `expected_asserter_did` (e.g. an impersonator standing up its own service
+/// at the same logical name) must be rejected, not silently trusted off its
+/// own self-declared `asserter_did` field (D-B3-8) -- exercised through the
+/// real `ProxyRouter`/`resolve_fetches` path, not just `rpc`'s own unit test
+/// of `RelationshipProof::verify` in isolation.
+#[tokio::test]
+async fn resolve_fetches_denies_when_the_real_proxys_asserter_does_not_match_the_policy() {
+    let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
+    let (proxy_router, _real_asserter_did, _native_dispatch, _temp_dir) =
+        build_hr_svc_proxy_router(node_identity, "did:key:zHrSvcOwner").await;
+
+    let local_policy = parse_and_validate(
+        r#"{
+            "version": "fdae/v1",
+            "definitions": {
+                "document": {
+                    "table": "documents",
+                    "relations": {"owner": {
+                        "target": "employee", "service": "hr-svc", "join_column": "owner_uuid",
+                        "expected_asserter_did": "did:key:zNotTheRealHrSvc"
+                    }},
+                    "permissions": {
+                        "view": {"allows": ["data-layer/read"], "paths": [["owner", "anchor"]]}
+                    }
+                }
+            }
+        }"#,
+    )
+    .unwrap();
+    let proxying_caller = CallerContext {
+        caller_did: "did:key:svc-A".to_string(),
+        app_instance: None,
+        session: SessionContext {
+            subject_did: "did:key:svc-A".to_string(),
+            anchor_did: Some("did:key:alice".to_string()),
+            capabilities: vec![Capability {
+                with: native_fdae_resource("app-svc-mismatch-test", "document"),
+                can: Ability(Ability::DATA_LAYER_READ.to_string()),
+                caveats: None,
+            }],
+            ..Default::default()
+        },
+        auth: AuthLevel::Ucan,
+        proof: None,
+    };
+    let plan = syneroym_fdae::plan_read(
+        &local_policy,
+        "document",
+        &proxying_caller.session,
+        "app-svc-mismatch-test",
+        &Ability(Ability::DATA_LAYER_READ.to_string()),
+        Mode::Filter,
+    )
+    .unwrap();
+
+    let err = syneroym_rpc::resolve_fetches(&plan.fetches, &proxying_caller, proxy_router.as_ref())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, FetchError::ProofInvalid { .. }),
+        "a real, correctly-signed proof from the wrong asserter must still be rejected: {err:?}"
+    );
+}
+
+/// Native dispatch's own fail-closed behavior for a cross-service fetch
+/// failure (mirrors `sandbox_wasm::host_capabilities`'s equivalent WASM-path
+/// tests): `SynSvcNativeService`'s `get`/`query` must deny the whole read,
+/// not fall back to unfiltered or silently-empty, when the configured
+/// `ServiceProxy` errors on the fetch.
+#[tokio::test]
+async fn native_dispatch_denies_closed_on_a_cross_service_fetch_failure() {
+    #[derive(Debug)]
+    struct AlwaysErrorsProxy;
+    #[async_trait::async_trait]
+    impl ServiceProxy for AlwaysErrorsProxy {
+        async fn invoke(&self, _request: ProxyRequest) -> Result<Value, ProxyError> {
+            Err(ProxyError::Timeout(Duration::from_secs(5)))
+        }
+    }
+
+    let policy = parse_and_validate(
+        r#"{
+            "version": "fdae/v1",
+            "definitions": {
+                "document": {
+                    "table": "documents",
+                    "relations": {"owner": {
+                        "target": "employee", "service": "hr-svc", "join_column": "owner_uuid",
+                        "expected_asserter_did": "did:key:zHrSvc"
+                    }},
+                    "permissions": {
+                        "view": {"allows": ["data-layer/read"], "paths": [["owner", "anchor"]]}
+                    }
+                }
+            }
+        }"#,
+    )
+    .unwrap();
+    let service_id = "app-svc-fetch-failure-test";
+    let key_store = Arc::new(KeyStore::new());
+    let temp_dir = tempfile::tempdir().unwrap();
+    let storage_provider = Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+    let blob_provider: Arc<dyn BlobProvider> =
+        Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+    let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+    let stub_proxy: Arc<dyn ServiceProxy> = Arc::new(AlwaysErrorsProxy);
+    let app_service = SynSvcNativeService::new(
+        service_id.to_string(),
+        key_store,
+        storage_provider,
+        blob_provider,
+        messaging_broker,
+        Some(Arc::new(policy)),
+        Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        "did:key:zTestOwner",
+        Arc::downgrade(&stub_proxy),
+    );
+
+    let caller = CallerContext {
+        caller_did: "did:key:svc-A".to_string(),
+        app_instance: None,
+        session: SessionContext {
+            subject_did: "did:key:svc-A".to_string(),
+            anchor_did: Some("did:key:alice".to_string()),
+            capabilities: vec![Capability {
+                // Scoped to "documents" (the literal `collection` param the
+                // "query" call below passes), matching how `plan_read`
+                // builds its resource string from whatever collection
+                // argument it's called with -- not "document" (the policy's
+                // own definition key), which would leave zero entitling
+                // capabilities and mask the fetch-failure path this test
+                // means to exercise behind an unrelated "collection not
+                // found" (the query never having reached `resolve_fetches`
+                // at all).
+                with: native_fdae_resource(service_id, "documents"),
+                can: Ability(Ability::DATA_LAYER_READ.to_string()),
+                caveats: None,
+            }],
+            ..Default::default()
+        },
+        auth: AuthLevel::Ucan,
+        proof: None,
+    };
+    let resp = app_service
+        .dispatch(NativeInvocation {
+            interface: "data-layer".to_string(),
+            method: "query".to_string(),
+            params: json!({"collection": "documents", "opts": {}}),
+            caller,
+        })
+        .await;
+    let err = resp.unwrap_err();
+    assert_eq!(err.code(), -32010, "a cross-service fetch failure must deny closed: {err:?}");
 }

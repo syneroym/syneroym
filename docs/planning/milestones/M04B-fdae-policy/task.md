@@ -109,11 +109,18 @@ D-04-02 as a pair):
     permissions, field names). ADR-0017 **drops the standalone physical
     registry / `data_sources`** the arch doc sketched (`:1834`): a relation is
     either local or names a service DID; policies never carry connection
-    strings. Logical→service-DID resolution reuses the existing app-context
-    registry (`system-architecture.md:1881-1883`); logical→table/column binding
-    lives in the policy's own `definitions:` block (ADR-0017 §1, §5). *(This
-    supersedes the earlier "resolved against a physical registry binding"
-    framing, which the ADR deleted.)*
+    strings. Logical→service-DID resolution was meant to reuse an app-context
+    registry (`system-architecture.md:1881-1883`) — **checked while starting
+    Slice B3 Phase 4 (2026-07-24) and found not to exist** (see D-B3-10,
+    `slice-b3-implementation-plan.md` §7; ADR-0017 amended with a dated note).
+    Real logical-name resolution is reserved as its own interstitial between
+    Milestone 4 and Milestone 5 (`meta-implementation-plan.md`) — committed
+    future platform work, not `deferred-backlog.md` material. Until it lands,
+    a remote relation's `service:` resolves directly through the same
+    DID lookup the Universal Proxy already uses for every other call.
+    Logical→table/column binding lives in the policy's own `definitions:`
+    block (ADR-0017 §1, §5). *(This supersedes the earlier "resolved against
+    a physical registry binding" framing, which the ADR deleted.)*
   - How ReBAC relationship chains compile to `WHERE EXISTS` / cycle-protected
     `WITH RECURSIVE` (the "Pushdown Sieve"), the `visited_track` cycle guard, and
     the `sqlite3_progress_handler` watchdog + policy-configurable time budget
@@ -247,6 +254,24 @@ and no longer gate B2; d/e remain as a deferral and a B7 hand-off.
   `router/tests/proxy_dispatch.rs::guest_self_proxy_data_layer_returns_empty_when_policy_present`
   (ingress ii), each asserting today's empty result explicitly. Surfaced
   during Slice B2 Phase 4 planning.
+
+  **Update (Slice B3 Phase 4, 2026-07-24):** the B3 plan's D-B3-4 had
+  recommended closing ingress (ii) in B3 (forwarding the real caller in
+  `proxy::Host::call`'s self-proxy branch, since B3's `anchor_did` stamp now
+  exists). Checked against `main` while implementing: this doesn't work.
+  `router/src/route_handler/dispatch.rs`'s `JsonRpcToWasm` branch calls
+  `AppSandboxEngine::execute_wasm_json` with no `caller` argument at all, so
+  the verified caller `dispatch_json_rpc_once` already holds is dropped
+  before `prepare_wasm_execution` ever runs — `HostState.caller` is
+  `service_system` for *both* ingresses identically, not just ingress (i).
+  Forwarding it in ingress (ii)'s self-proxy branch would forward the same
+  synthesized identity, closing nothing. The two ingresses share one root
+  cause and cannot be dispositioned independently; both stay open, unchanged,
+  through B3. Real closure needs the ingress-(i) cross-cut this entry already
+  named (threading the real caller through `dispatch.rs` →
+  `execute_wasm_json`/`execute_wasm_vals` → `prepare_wasm_execution` →
+  `HostState`), confirmed out of scope for B3 Phase 4 with the user. See
+  `slice-b3-implementation-plan.md` §7's corrected D-B3-4.
 
 ---
 
@@ -458,7 +483,7 @@ the `C1`/`H1`-`H8` third-pass review findings documented with evidence;
 (M4B) row flipped `Planned` → `In Progress (Slice B2 complete)`) — done on
 the same branch, closing out Slice B2. Full evidence: `status.md`.
 
-#### Slice B3: Federated FDAE (Cross-Service Parameter Fetch) — Phase 1 ✅ (2026-07-23, PR #89); Phase 2 ✅ (2026-07-23, two-phase compile `plan_read`/`finalize` in `crates/fdae`); Phase 3 ✅ (2026-07-23, native `resolve-relation` — the receiving side of the cross-service fetch; native-only, no WIT/`wasm32-wasip2` change); Post-review hardening ✅ (2026-07-24, nine review findings + per-service signing identity, PR #100)
+#### Slice B3: Federated FDAE (Cross-Service Parameter Fetch) — Phase 1 ✅ (2026-07-23, PR #89); Phase 2 ✅ (2026-07-23, two-phase compile `plan_read`/`finalize` in `crates/fdae`); Phase 3 ✅ (2026-07-23, native `resolve-relation` — the receiving side of the cross-service fetch; native-only, no WIT/`wasm32-wasip2` change); Post-review hardening ✅ (2026-07-24, nine review findings + per-service signing identity, PR #100); Phase 4 ✅ (2026-07-24, `resolve_fetches` orchestration seam wired into both read ingresses over a real Universal Proxy, `expected_asserter_did` policy-declared trust anchor (D-B3-8 corrected), successful-fetch `DecisionTrace` provenance, D-B3-9 resolved (forward the real caller, no new mechanism needed) — D-04-02-h stays open on both ingresses, jointly, per D-B3-4 corrected against `dispatch.rs`'s actual behavior; Phase 5 (e2e steps 22-23, perf budget, matrix/traceability sign-off) not yet done)
 **Depends on:** B2, and M04A A1 (Universal Proxy). **Requirement:** `[FND-IAM]`.
 Pipeline stage 2 (`system-requirements-spec.md:981`, `system-architecture.md:1841`):
 pause evaluation, fetch remote relationship proofs/parameters via the Universal
@@ -608,7 +633,7 @@ deferred, not silently dropped, per those slices' own task.md entries.
 | 3 | CLS: caller lacks column permission | Column masked/projected out; value never returned | ✅ satisfied by Slice B2 Phase 3's host-side `strip_masked_fields`; sieve-level union computed by `compile::tests::cls_masked_fields_union_policy_and_capability_deny_lists` |
 | 4 | FDAE policy with a cyclic ReBAC relationship in user data | `visited_track` breaks recursion; no infinite loop (`system-architecture.md:1847`) | ✅ `compile::tests::recursive_relation_terminates_on_a_cyclic_manager_graph` — a deliberately cyclic manager graph (eve→frank→eve) terminates and returns the correct membership |
 | 5 | Compiled FDAE query exceeds the policy time budget | Transaction rolled back, Default-Denied (`:1848`) | ✅ `sqlite::tests::fdae_watchdog_interrupts_do_query_as_quota_exceeded`, `..._do_get_as_quota_exceeded`, `fdae_watchdog_interrupt_denies_do_check_access` (Mode A → `Ok(false)`), `..._do_delete_many_on_the_writer_conn` (`data_db`) — `FDAE_MAX_VM_OPS` progress-handler backstop, per ADR-0017 §8 plan resolution (§12.8) |
-| 6 | Cross-service FDAE parameter fetch times out | Falls back to deny, not silent allow | ⛔ Deferred — Slice B3 (pipeline stage 2, not yet implemented) |
+| 6 | Cross-service FDAE parameter fetch times out | Falls back to deny, not silent allow | ✅ Mechanism + tests landed in Slice B3 Phase 4 (`resolve_fetches` maps any proxy error/timeout to a deny for Mode B/A alike) — `syneroym_rpc::fdae_fetch::tests::resolve_fetches_denies_on_a_proxy_timeout`, `router::native_dispatch_identity::native_dispatch_denies_closed_on_a_cross_service_fetch_failure`, `sandbox_wasm::host_capabilities::tests::fdae_remote_relation_fetch_failure_denies_closed`. The two-real-substrate e2e proof of the same claim is Slice B3 Phase 5, not yet done. |
 | 7 | Stage-4 ABAC attempts to **widen** access beyond ReBAC | Rejected — restrict-only enforced; a widen decision cannot grant a row the sieve excluded (ADR-0017 §7) | ⛔ Deferred — Slice B4-fdae (stage 4, not yet implemented) |
 | 8 | Stage-4 ABAC read-only lookup (§7) exceeds its fuel/time budget | Aborted, row Default-Denied; the lookup cannot run unmetered | ⛔ Deferred — Slice B4-fdae (not yet implemented) |
 | 9 | Stage-4 ABAC returns `redact(fields)` | Named fields removed from the row before it reaches the guest | ⛔ Deferred — Slice B4-fdae (not yet implemented) |
@@ -663,7 +688,7 @@ renumbered.
 - [x] ADR D-04-02 ([ADR-0017](../../../decisions/0017-fdae-policy-schema-and-compilation.md)) **Accepted** (2026-07-20), with D-04-02-a/-b/-c resolved.
 - [ ] FDAE pushdown sieve implemented: Mode A + Mode B, RLS + CLS, cycle guard, watchdog default-deny, parameterized binding.
 - [ ] Compiled FDAE security subquery merges correctly with the ADR-0007 JSON filter.
-- [ ] Federated cross-service fetch (B3) works over the Universal Proxy; timeout→deny verified.
+- [x] Federated cross-service fetch (B3) works over the Universal Proxy; timeout→deny verified (Slice B3 Phase 4, 2026-07-24 — real `ProxyRouter`/`resolve_fetches` integration tests in `crates/router`/`crates/rpc`/`crates/sandbox_wasm`; the two-real-substrate e2e proof is Phase 5).
 - [ ] Stage-4 ABAC wired: pure-predicate, batched, restrict-only default; redact/deny tested.
 - [ ] Reference scenario steps 22–23 execute end-to-end.
 - [ ] All Failure and Security Tests produce documented outcomes.

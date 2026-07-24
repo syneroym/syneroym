@@ -15,4 +15,4 @@ pub use policy::{
     CondOp, Condition, Definition, FieldsPolicy, Operator, Permission, Policy, PolicyError,
     Relation, parse_and_validate,
 };
-pub use trace::DecisionTrace;
+pub use trace::{DecisionTrace, RemoteFetchTrace};

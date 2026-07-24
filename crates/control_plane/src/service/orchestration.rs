@@ -659,6 +659,7 @@ impl OrchestratorInterface for ControlPlaneService {
                     fdae_policy.as_ref().map(|(_, policy)| policy.clone()),
                     self.node_identity.clone(),
                     &caller.caller_did,
+                    self.current_service_proxy(),
                 )) as Arc<dyn NativeService>,
             );
         } else {

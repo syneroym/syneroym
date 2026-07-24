@@ -254,9 +254,14 @@ the set of far-side ids the **anchor** can reach on that service. B3:
    `relation.service.is_some()` becomes a `RemoteFetch{service, relation,
    principal_did: anchor, slot}` and the path is compiled with a placeholder
    `IN (:slot)` predicate instead of a local join.
-2. **resolve** the logical `service` → service DID via the existing app-context
-   registry (`system-architecture.md:1881-1883` — the same resolver B2's
-   docs point at; fdae stays out of it, the orchestration layer does this).
+2. **resolve** the logical `service` → service DID. **Corrected 2026-07-24
+   (D-B3-10, §7): no app-context registry exists yet** to do this
+   (`system-architecture.md:1881-1883` describes one, but it was never
+   built — see D-B3-10). Phase 4 resolves `service` the same way
+   `ProxyRequest.target_service` is already resolved for every other proxied
+   call: directly, via the existing `EndpointRegistry`/community-registry DID
+   lookup, no logical-name indirection layer. `fdae` itself stays free of
+   this either way — the orchestration layer does it.
 3. **fetch**: issue a `ProxyRequest{ target_service: <DID>, interface:
    "data-layer", method: <relationship-proof method, §3.2>, params: {relation,
    principal: anchor}, caller: <anchor's CallerContext/proof>, origin: Native }`
@@ -329,8 +334,9 @@ D-B3-3 (updated) and D-B3-6.
 ## 4. Where the orchestration lives (the `ServiceProxy` seam)
 
 `plan_read`/`finalize` are pure and live in `crates/fdae`. The **async fetch
-loop** needs a `ServiceProxy` handle + the app-context registry, both of which
-already exist on the host read path B2 built:
+loop** needs a `ServiceProxy` handle, which already exists on the host read
+path B2 built (no app-context registry — see D-B3-10; `service` resolves
+directly through the same DID lookup `target_service` already uses):
 
 - **WASM read path:** `HostState.fdae_policy` (B2 Phase 3/4) already carries the
   compiled policy at `host_capabilities.rs`; the same `HostState` reaches a
@@ -367,11 +373,24 @@ it in `crates/fdae` (keeps that crate proxy-free per §1.1).
 >   is a meatier `crates/router`↔`crates/sandbox_wasm` cross-cut than (ii).
 >
 > **Decision D-B3-4 (§7):** does B3 *close* D-04-02-h or only *unblock* it — and
-> **per-ingress**? Recommendation: close **(ii)** in B3 (natural under the
-> stamp), and **unblock but explicitly defer (i)** unless the triggering-anchor
-> thread proves cheap — recording the deferral, not silently dropping it. This
-> directly governs reference-scenario **step 22** (§6, §9) and which of the two
-> pinned regression tests flip (§6).
+> **per-ingress**? Original recommendation: close **(ii)** in B3 (natural under
+> the stamp), and **unblock but explicitly defer (i)** unless the
+> triggering-anchor thread proves cheap.
+>
+> **✅ Corrected (2026-07-24, Phase 4): (ii)'s "natural fix" was wrong — it
+> isn't independently closable.** `router/src/route_handler/dispatch.rs`'s
+> `JsonRpcToWasm` branch calls `AppSandboxEngine::execute_wasm_json` with no
+> `caller` argument at all, so the already-verified caller `dispatch_json_rpc_
+> once` holds is dropped before `prepare_wasm_execution` ever runs — `HostState.
+> caller` is `service_system` for *both* ingresses, identically, regardless of
+> which one is entered. "Forward the original principal's chain" in
+> `proxy::Host::call`'s self-proxy branch would forward that same synthesized
+> identity, closing nothing. Both ingresses share the one root cause the
+> ingress-(i) paragraph above already named (the triggering-invocation thread),
+> so they stand or fall together. **Phase 4 does neither** — confirmed with
+> the user; recorded as one joint deferral, not two independently-dispositioned
+> ingresses. Neither pinned regression test flips. This directly governs
+> reference-scenario **step 22** (§6, §9), which stays open in full.
 
 ### 4.1 The three named `TODO(M04B/FDAE)` wire-in points — disposition
 
@@ -438,17 +457,16 @@ filtering. Timeout/error stub → deny (matrix row 6). Verify the trace records
 successful-fetch provenance (asserter DID, `valid_until_secs`), not just the
 timeout path.
 
-**D-04-02-h regression tests (flip iff D-B3-4 resolves "close").** These two
-pin today's over-restrictive empty-result behavior and must be *flipped* (not
-deleted) when their ingress is closed — the same treatment task.md gives
-D-04-02-g's pinned tests ("flip the assertion"):
-- Ingress (ii): `crates/router/tests/proxy_dispatch.rs:459`
-  `guest_self_proxy_data_layer_returns_empty_when_policy_present` — flip if B3
-  closes (ii) per the D-B3-4 recommendation.
-- Ingress (i): `crates/sandbox_wasm/tests/data_layer_integration.rs:173`
-  `test_deployed_policy_yields_empty_guest_originated_query_d04_02_h` — flip
-  **only if** B3 also closes (i); otherwise it stays asserting empty, with the
-  deferral recorded.
+**D-04-02-h regression tests — neither flips (D-B3-4 corrected 2026-07-24).**
+Both continue to pin today's over-restrictive empty-result behavior,
+unchanged — see the D-B3-4 correction in §7: both ingresses share one root
+cause (`dispatch.rs` drops the verified caller before `execute_wasm_json`)
+and neither closes in Phase 4:
+- Ingress (ii): `crates/router/tests/proxy_dispatch.rs`
+  `guest_self_proxy_data_layer_returns_empty_when_policy_present` — unchanged.
+- Ingress (i): `crates/sandbox_wasm/tests/data_layer_integration.rs`
+  `test_deployed_policy_yields_empty_guest_originated_query_d04_02_h` —
+  unchanged.
 
 **E2E (`mise run test:e2e`, ≥2 substrates):** reference scenario **steps
 22–23** (task.md's exit criteria names *both*, not 23 alone):
@@ -456,8 +474,9 @@ D-04-02-g's pinned tests ("flip the assertion"):
   real cross-service fetch via the Universal Proxy mid-query, filtered by the
   anchor. The first genuine `caller ≠ anchor` end-to-end assertion.
 - **Step 22** — its still-open half ("unauthorized rows *never reach the WASM
-  guest*") is the one task.md says "resolves alongside B3's `anchor_did`." It
-  closes for a guest-originated read **exactly to the extent D-B3-4 closes the
+  guest*") is the one task.md says "resolves alongside B3's `anchor_did`." Per
+  the corrected D-B3-4, it **stays open in full** in Phase 4 — closes for a
+  guest-originated read **exactly to the extent D-B3-4 closes the
   ingress**: (ii) self-proxy in B3; (i) direct host-function read only if that
   ingress is also taken. Commit to the (ii) half of step 22 and state the (i)
   half's disposition explicitly (§9).
@@ -491,11 +510,36 @@ deny) from ⛔ Deferred to ✅ with evidence.
   (ADR-0017 §6), not a bare `list<id>`** — so the trace gets cryptographic
   provenance now and the D-B3-6 cache is a pure add later; pick the `IN`-list
   cap. (§3.2, §5)
-- **D-B3-4 — close vs. unblock D-04-02-h, *per ingress*.** Recommend: close
-  **(ii) self-proxy** in B3 (anchor rides the forwarded proof); **unblock but
-  defer (i) direct host-function** read (anchor must come from the triggering
-  invocation, a bigger cross-cut) unless cheap. Governs step 22 + which pinned
-  test flips. Record any deferral, don't drop it. (§4, §6)
+- **D-B3-4 — close vs. unblock D-04-02-h, *per ingress*.** Original
+  recommendation: close **(ii) self-proxy** in B3 (anchor rides the forwarded
+  proof); **unblock but defer (i) direct host-function** read (anchor must
+  come from the triggering invocation, a bigger cross-cut) unless cheap.
+  **✅ Corrected (2026-07-24, Phase 4): the premise doesn't hold — both
+  ingresses share one root cause and cannot be closed independently.**
+  Checked against `main` while implementing Phase 4:
+  `router/src/route_handler/dispatch.rs`'s `JsonRpcToWasm` branch (the path a
+  router-verified external caller's request takes to reach a WASM-hosted
+  service's guest-exported interface) calls `AppSandboxEngine::
+  execute_wasm_json(service_id, interface, request)` with **no `caller`
+  parameter at all** — the already-verified `caller: Option<&CallerContext>`
+  available earlier in `dispatch_json_rpc_once` (and used for the sibling
+  native-dispatch branch) is silently dropped before it ever reaches
+  `execute_wasm_vals` → `prepare_wasm_execution`, which synthesizes
+  `CallerContext::service_system(service_id)` with no external-caller input
+  of any kind. So `HostState.caller` is `service_system` for **both** ingress
+  (i) (direct host-function read) and ingress (ii) (self-proxy) identically
+  — ingress (ii)'s own "natural fix" (forward `HostState.caller` in
+  `proxy::Host::call`'s self-proxy case instead of re-synthesizing
+  `service_system`) forwards the *same* synthesized identity either way,
+  closing nothing. Real closure of *either* ingress requires the ingress-(i)
+  cross-cut the original recommendation deferred: threading the real
+  `CallerContext` through `dispatch.rs`'s WASM branch →
+  `execute_wasm_json`/`execute_wasm_vals` → `prepare_wasm_execution` →
+  `HostState`. **Phase 4 does not do this** (confirmed with the user
+  2026-07-24) — out of scope for this phase's diff size; both ingresses stay
+  deferred together, tracked as one piece of future work, not two
+  independently closable ones. Neither pinned regression test is flipped.
+  (§4, §6)
 - **D-B3-5 — remote-inside-recursive relation.** Defer with an explicit
   error-closed guard in `plan_read`; confirm it isn't already impossible. (§5)
 - **D-B3-6 — fetch result caching/TTL.** ADR-0017 §6 calls batching + TTL'd
@@ -525,19 +569,24 @@ deny) from ⛔ Deferred to ✅ with evidence.
   status.md's "Per-service signing identity" entry). Every current test
   verifies a `RelationshipProof`'s signature against the `asserter_did`
   carried *inside that same proof* — self-referential: any signer can embed
-  its own DID and sign under the matching key, and it "verifies." Distinct
-  per-service asserter DIDs are inert as a security property until the
-  *verifying* side independently computes the DID it expects for the
-  service it queried (`derive_did_key` of
-  `derive_service_identity(owner_did, service_id).public_key()`, using the
-  `service` and `owner_did` the policy/registry name for that fetch, not a
-  value the response supplies) and rejects a mismatch. `resolve_fetches`
-  (§4, not yet built) is where this must land — it is the only place that
-  both issues the fetch (so it knows which service/owner it targeted) and
-  receives the proof. Without this check, per-service signing narrows *who
-  can plausibly have produced a valid-looking proof* but does not prevent
-  an impersonating signer from self-declaring a false `asserter_did` and
-  passing self-verification. (§4)
+  its own DID and sign under the matching key, and it "verifies."
+  **✅ RESOLVED (2026-07-24), and the original wording corrected: the
+  literal recipe below does not work cross-node.**
+  `derive_service_identity(owner_did, service_id)` derives from `self`'s
+  *own* secret key (`Hkdf::new(None, &self.to_bytes())`,
+  `crates/identity/src/keys.rs`) — a node-private derivation. A different
+  node can never reproduce another node's derived key from `(owner_did,
+  service_id)` alone; there is no shared secret between them. So "the
+  verifier independently *derives* the expectation" is only possible for a
+  same-node fetch, not the genuine cross-node case B3 exists for. Fix:
+  a remote `Relation` gains a required, policy-declared
+  `expected_asserter_did: String` (alongside `service`) — the policy author
+  pins the DID they trust to answer for that relation, an explicit,
+  auditable trust anchor (same category as the already-shipped
+  `resolvable_without_capability` per-definition trust knob), not a
+  derivation. `resolve_fetches` rejects a `RelationshipProof` whose
+  `asserter_did` doesn't match this declared value. A pre-release schema
+  tightening, same class as Phase 2's required `join_column`. (§4)
 - **D-B3-9 — which principal's capabilities gate A1, when the connection is
   a real cross-service proxy (open, currently a no-op).** Today
   `resolve_relation`'s A1 branch gates on `invocation.caller.session
@@ -556,9 +605,38 @@ deny) from ⛔ Deferred to ✅ with evidence.
   the proxying service's own capability on the target resource (a
   service-to-service grant, closer to today's literal behavior), or falls
   back to A2 structural resolution whenever the proxying service holds
-  none of its own. Settle before Phase 4's fetch orchestration ships, since
-  it changes what a policy author must grant for cross-service reads to
-  work at all. (§4)
+  none of its own. **✅ RESOLVED (2026-07-24): (a), and no new forwarding
+  mechanism is actually needed.** `resolve_fetches` issues the fetch with
+  `ProxyRequest.caller` set to the **local invocation's own already-verified
+  `CallerContext`, unmodified** (proof intact) — `invoke_remote_at`
+  already forwards `caller.proof` verbatim for any `CallOrigin::Native` call
+  (`router/src/proxy.rs:350-357`). The remote's own `verify_chain` then
+  naturally re-derives `subject_did`/`anchor_did` from that real chain, so
+  A1 gates on whatever was legitimately delegated through it — no new
+  proof-forwarding plumbing, just reusing the existing proxy contract. (§4)
+- **D-B3-10 — logical `service` name resolution: no app-context registry
+  exists (correcting ADR-0017 §1 and this doc's own §1.1/§3.1/§4).**
+  Checked against `main` while starting Phase 4: `system-architecture.md`'s
+  "app-context registry" and ADR-0017's "resolved through the app-context
+  registry that already exists" describe something that was never built.
+  `crates/app_orchestration`'s `AppRegistry`/`LogicalResolver` is the right
+  shape (`LogicalServiceRef {app_instance_id, service_name} -> ServiceId`)
+  but its only implementation, `StaticInventory`, is an in-memory map with
+  zero production callers — nothing registers a live entry for it to
+  resolve, and it needs an `app_instance_id` FDAE's `RemoteFetch.service`
+  doesn't carry. **Not deferred-backlog material** — this is committed
+  future platform work, not something safely dropped, so it is reserved as
+  its own interstitial between Milestone 4 and Milestone 5
+  (`meta-implementation-plan.md`), owned by `app_orchestration`
+  (`[PLT-DAP-01]`), not FDAE. **Phase 4's interim, working mechanism:**
+  `RemoteFetch.service` resolves exactly the way `ProxyRequest.target_service`
+  already does for every other proxied call — directly, through the
+  existing `EndpointRegistry`/community-registry DID lookup, no
+  logical-name indirection layer. Correct for the deployment shapes M04B
+  supports today; only the *logical-name* indirection is missing, and
+  nothing in the platform provides that for any consumer yet, FDAE
+  included. ADR-0017 amended with a dated note; see `task.md`'s Decision
+  Register. (§1.1, §3.1, §4)
 
 ---
 
@@ -582,10 +660,15 @@ deny) from ⛔ Deferred to ✅ with evidence.
 4. **Phase 4 — orchestration seam (§4).** `resolve_fetches` helper on both
    ingresses (WASM host path + native dispatch); anchor-carrying `ProxyRequest`
    with `origin: Native`; timeout→deny **and** successful-fetch provenance in
-   `DecisionTrace`. Integration tests with a stubbed proxy. Address D-04-02-h
-   per D-B3-4 — close ingress (ii), flip its pinned test; disposition (i).
+   `DecisionTrace`. Integration tests with a stubbed proxy. **D-04-02-h: does
+   not close either ingress** — D-B3-4 corrected (2026-07-24): both ingresses
+   share one root cause (`dispatch.rs`'s `JsonRpcToWasm` branch drops the
+   verified caller before `execute_wasm_json`, so `HostState.caller` is
+   `service_system` either way) and can't be closed independently as
+   originally recommended; both pinned tests stay unchanged.
 5. **Phase 5 — e2e + perf + docs.** Two-substrate e2e (reference **steps
-   22–23**, step 22 to the extent D-B3-4 closes an ingress), 50 ms-hop perf in
+   22–23**, step 22's "…never reaches the WASM guest" half stays open per the
+   D-B3-4 correction above), 50 ms-hop perf in
    `status.md`, Failure/Security matrix row 6 → ✅, and **update
    `traceability-matrix.md`** (`[FND-IAM]` M4B row → "In Progress (Slices B2, B3
    complete)", mirroring B2's precedent — *not* Complete; B4/B5 remain).
@@ -605,11 +688,15 @@ deny) from ⛔ Deferred to ✅ with evidence.
       (Failure/Security row 6); a *successful* fetch records provenance in
       `DecisionTrace` (asserter DID, `valid_until_secs`).
 - [ ] Reference scenario **steps 22–23** execute end-to-end across ≥2 substrates
-      (step 22 to the extent D-B3-4 closes an ingress; state (i)'s disposition).
+      (step 22's "…never reaches the WASM guest" half stays open — D-B3-4
+      corrected, see below).
 - [ ] Federated-hop perf documented in `status.md` (< 50 ms p99 floor).
-- [ ] D-04-02-h dispositioned per D-B3-4 (per-ingress: closed, or explicitly
-      still-open with the reason recorded — not silently dropped); the pinned
-      regression test for any closed ingress is *flipped*, not deleted.
+- [ ] D-04-02-h dispositioned: **neither ingress closes in B3** (D-B3-4
+      corrected 2026-07-24 — both share one root cause, `dispatch.rs`'s
+      `JsonRpcToWasm` branch dropping the verified caller before
+      `execute_wasm_json`, and can't be closed independently); recorded as a
+      joint deferral, not silently dropped. Both pinned regression tests stay
+      unchanged.
 - [ ] **`traceability-matrix.md` `[FND-IAM]` (M4B) row updated** to reflect B3
       completion ("In Progress (Slices B2, B3 complete)"), mirroring B2's
       closeout — not flipped to Complete (B4-fdae/B5-fdae remain).
