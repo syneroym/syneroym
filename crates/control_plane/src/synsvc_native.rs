@@ -63,12 +63,27 @@ pub struct SynSvcNativeService {
     /// this hot path. A re-deploy reconstructs the service, so a policy edit
     /// takes effect with the deploy that carries it.
     fdae_policy: Option<Arc<Policy>>,
-    /// This node's own signing identity (Slice B3): `resolve-relation`
-    /// signs its returned `RelationshipProof` as this node's asserter DID
-    /// (`derive_did_key(&node_identity.public_key())`), so the requesting
-    /// node can verify *this specific node* asserted it, not merely that
-    /// some transport-authenticated peer answered.
-    node_identity: Arc<Identity>,
+    /// This *service's own* signing identity (Slice B3), derived from the
+    /// node's identity via
+    /// `Identity::derive_service_identity(owner_did, service_id)`
+    /// (ADR-0006 "Model A" pattern) -- **not** the shared node identity
+    /// directly. `resolve-relation` signs its returned `RelationshipProof`
+    /// as this service's asserter DID
+    /// (`derive_did_key(&service_identity.public_key())`), per ADR-0017
+    /// §6/§7's "`hr-svc` asserts..." / "the service's own identity" model:
+    /// a substrate node routinely hosts multiple, unrelated services
+    /// (multi-tenancy is the normal case), so a shared node-wide signing
+    /// identity would make every co-hosted service's assertions
+    /// cryptographically indistinguishable from one another, and would let
+    /// the node operator forge assertions on any hosted service's behalf.
+    /// `owner_did` (the deploying/owning DID recorded by
+    /// `ControlPlaneService`'s `registry.owner_of`/`set_owner`) is folded
+    /// into the derivation alongside `service_id` so that a `service_id`
+    /// freed by undeploy and later redeployed under a different owner gets
+    /// a distinct identity rather than inheriting the previous owner's key.
+    /// Deterministic and redeploy-stable for the *same* owner (same
+    /// derivation every time), so no new persisted key material is needed.
+    service_identity: Identity,
 }
 
 impl fmt::Debug for SynSvcNativeService {
@@ -290,6 +305,7 @@ fn extract_id_column(result: RawQueryResult) -> RpcResult<Vec<String>> {
 
 impl SynSvcNativeService {
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         service_id: String,
         key_store: Arc<KeyStore>,
@@ -298,7 +314,14 @@ impl SynSvcNativeService {
         messaging_broker: Arc<MqttBroker>,
         fdae_policy: Option<Arc<Policy>>,
         node_identity: Arc<Identity>,
+        owner_did: &str,
     ) -> Self {
+        // Derived here, once, rather than at every call site: every
+        // existing (and future) construction site already passes the
+        // shared node identity and the deploying owner's DID for exactly
+        // this purpose, so deriving internally means no caller needs to
+        // know this service-scoping happens at all.
+        let service_identity = node_identity.derive_service_identity(owner_did, &service_id);
         Self {
             service_id,
             key_store,
@@ -308,7 +331,7 @@ impl SynSvcNativeService {
             upload_sessions: Mutex::new(HashMap::new()),
             download_sessions: Mutex::new(HashMap::new()),
             fdae_policy,
-            node_identity,
+            service_identity,
         }
     }
 
@@ -395,7 +418,7 @@ impl SynSvcNativeService {
 
         let Some(policy) = self.fdae_policy.as_ref() else {
             let proof = sign_relationship_proof(
-                &self.node_identity,
+                &self.service_identity,
                 &req.relation,
                 &req.principal,
                 Vec::new(),
@@ -417,7 +440,7 @@ impl SynSvcNativeService {
         // spuriously fails `collection-not-found`.
         let Some(table) = syneroym_fdae::definition_table(policy, &req.relation) else {
             let proof = sign_relationship_proof(
-                &self.node_identity,
+                &self.service_identity,
                 &req.relation,
                 &req.principal,
                 Vec::new(),
@@ -507,7 +530,7 @@ impl SynSvcNativeService {
             return Err(data_layer_error(DataLayerError::QuotaExceeded));
         }
         let proof =
-            sign_relationship_proof(&self.node_identity, &req.relation, &req.principal, ids)?;
+            sign_relationship_proof(&self.service_identity, &req.relation, &req.principal, ids)?;
         to_payload(&proof)
     }
 

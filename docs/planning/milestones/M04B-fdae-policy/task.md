@@ -458,7 +458,7 @@ the `C1`/`H1`-`H8` third-pass review findings documented with evidence;
 (M4B) row flipped `Planned` → `In Progress (Slice B2 complete)`) — done on
 the same branch, closing out Slice B2. Full evidence: `status.md`.
 
-#### Slice B3: Federated FDAE (Cross-Service Parameter Fetch) — Phase 1 ✅ (2026-07-23, PR #89); Phase 2 ✅ (2026-07-23, two-phase compile `plan_read`/`finalize` in `crates/fdae`); Phase 3 ✅ (2026-07-23, native `resolve-relation` — the receiving side of the cross-service fetch; native-only, no WIT/`wasm32-wasip2` change)
+#### Slice B3: Federated FDAE (Cross-Service Parameter Fetch) — Phase 1 ✅ (2026-07-23, PR #89); Phase 2 ✅ (2026-07-23, two-phase compile `plan_read`/`finalize` in `crates/fdae`); Phase 3 ✅ (2026-07-23, native `resolve-relation` — the receiving side of the cross-service fetch; native-only, no WIT/`wasm32-wasip2` change); Post-review hardening ✅ (2026-07-24, nine review findings + per-service signing identity, PR #100)
 **Depends on:** B2, and M04A A1 (Universal Proxy). **Requirement:** `[FND-IAM]`.
 Pipeline stage 2 (`system-requirements-spec.md:981`, `system-architecture.md:1841`):
 pause evaluation, fetch remote relationship proofs/parameters via the Universal
@@ -511,7 +511,27 @@ add a surface nothing in B3 consumes. The calling side of the fetch
 (`resolve_fetches` orchestration, `ProxyRequest`, timeout→deny,
 `DecisionTrace` provenance, reference-scenario steps 22–23, the federated-
 fetch perf budget, D-04-02-h ingress (ii) closure) is **Phase 4**, not yet
-done. Full evidence: `status.md`.
+done.
+
+**Post-review hardening** (2026-07-24): an independent review of Phase 2/3
+(commit `279d284`) surfaced nine findings (two blocking, five correctness,
+two hygiene) — all confirmed against the code and fixed, none pushed back
+on. Highlights: `resolve_relation`'s principal check compared against
+`subject_did` instead of `anchor_did.unwrap_or(subject_did)`, rejecting
+every genuine cross-service ask (B3-01); sender/receiver disagreed on what
+`relation` names on the wire, the local edge name vs. the remote's own
+object type (B3-02); `finalize`'s empty-id-set substitution used `IN
+(NULL)`, which inverts wrong under SQLite three-valued logic (B3-03). Also
+fixed, raised separately by the user (not the review): `sign_relationship_proof`
+signed under the single shared `node_identity`, so every service co-hosted
+on one node shared one `asserter_did`, contradicting ADR-0017 §6/§7's
+"the service's own identity" model — `SynSvcNativeService` now derives a
+private `service_identity` via `Identity::derive_service_identity(owner_did,
+service_id)` (HKDF, the same "Model A: derived" pattern as
+`data_keystore`'s per-service DEKs), keyed by both the deploying owner's
+DID and the service id so a `service_id` recycled by a *different* owner
+after undeploy doesn't inherit the old owner's signing key. Full evidence
+for both: `status.md`.
 
 #### Slice B4-fdae: Stage-4 WASM ABAC
 **Depends on:** B2 (candidate rows come from the sieve). May fold into B2's

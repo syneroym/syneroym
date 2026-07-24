@@ -232,6 +232,7 @@ async fn authenticated_caller_identity_becomes_creator_id_not_service_id() {
         messaging_broker,
         None,
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        "did:key:zTestOwner",
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -294,6 +295,7 @@ async fn execute_ddl_denied_for_ordinary_native_caller() {
         messaging_broker,
         None,
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        "did:key:zTestOwner",
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -335,6 +337,7 @@ async fn execute_ddl_allowed_for_admin_ucan_root_native_caller() {
         messaging_broker,
         None,
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        "did:key:zTestOwner",
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -372,6 +375,7 @@ async fn ordinary_caller_denied_query_raw() {
         messaging_broker,
         None,
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        "did:key:zTestOwner",
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -413,6 +417,7 @@ async fn admin_caller_admitted_query_raw() {
         messaging_broker,
         None,
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        "did:key:zTestOwner",
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -453,6 +458,7 @@ async fn query_raw_binds_params_no_injection() {
         messaging_broker,
         None,
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        "did:key:zTestOwner",
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -533,6 +539,7 @@ async fn query_raw_null_param_round_trips() {
         messaging_broker,
         None,
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        "did:key:zTestOwner",
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -588,6 +595,7 @@ async fn query_raw_result_cells_are_round_trippable_as_params() {
         messaging_broker,
         None,
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        "did:key:zTestOwner",
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -798,6 +806,7 @@ async fn ordinary_caller_admitted_aggregate() {
         messaging_broker,
         None,
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        "did:key:zTestOwner",
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -870,6 +879,7 @@ async fn aggregate_malformed_pipeline_is_schema_violation() {
         messaging_broker,
         None,
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        "did:key:zTestOwner",
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -985,6 +995,7 @@ async fn native_fdae_policy_row_filters_and_masks_for_two_distinct_verified_call
         messaging_broker,
         Some(policy),
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        "did:key:zTestOwner",
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -1163,6 +1174,7 @@ async fn native_delete_many_is_row_filtered_as_a_write_operation() {
         messaging_broker,
         Some(policy),
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        "did:key:zTestOwner",
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -1251,6 +1263,7 @@ async fn native_aggregate_is_row_filtered_through_native_dispatch() {
         messaging_broker,
         Some(policy),
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        "did:key:zTestOwner",
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -1429,6 +1442,25 @@ async fn resolve_relation_service_and_pipeline(
     service_id: &str,
     policy: Option<Policy>,
 ) -> (RouteHandler, RoutePipeline, RoutePreamble, tempfile::TempDir) {
+    resolve_relation_service_and_pipeline_with(
+        service_id,
+        policy,
+        Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        "did:key:zTestOwner",
+    )
+    .await
+}
+
+/// Same as [`resolve_relation_service_and_pipeline`], but lets the caller
+/// pin `node_identity`/`owner_did` explicitly -- needed to construct two
+/// services that share one or the other while varying just the dimension
+/// under test (e.g. same node, different owner).
+async fn resolve_relation_service_and_pipeline_with(
+    service_id: &str,
+    policy: Option<Policy>,
+    node_identity: Arc<syneroym_identity::Identity>,
+    owner_did: &str,
+) -> (RouteHandler, RoutePipeline, RoutePreamble, tempfile::TempDir) {
     let (route_handler, _http_routes) = test_route_handler().await;
     let key_store = Arc::new(KeyStore::new());
     let temp_dir = tempfile::tempdir().unwrap();
@@ -1443,7 +1475,8 @@ async fn resolve_relation_service_and_pipeline(
         blob_provider,
         messaging_broker,
         policy.map(Arc::new),
-        Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        node_identity,
+        owner_did,
     ));
     route_handler.register_native_service(service_id.to_string(), data_service);
 
@@ -1601,6 +1634,125 @@ async fn resolve_relation_a1_resolves_via_the_capability_gated_sieve_and_verifie
     unsigned["signature"] = json!("");
     syneroym_identity::substrate::verify_json_signature(asserter_did, &unsigned, signature)
         .expect("the returned proof must verify against its own asserter_did");
+}
+
+/// Two services co-hosted on the same node (same `node_identity`, same
+/// `owner_did`) but with distinct `service_id`s must sign their
+/// `RelationshipProof`s under distinct `asserter_did`s -- the multi-tenancy
+/// concern ADR-0017 §6/§7's "`hr-svc` asserts..." model is meant to
+/// address: a shared node-wide signing identity would make every co-hosted
+/// service's assertions cryptographically indistinguishable.
+#[tokio::test]
+async fn resolve_relation_co_hosted_services_sign_with_distinct_asserter_dids() {
+    let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
+    let owner_did = "did:key:zSharedOwner";
+
+    let (hr_handler, hr_pipeline, hr_preamble, _hr_dir) =
+        resolve_relation_service_and_pipeline_with(
+            "hr-svc",
+            Some(resolvable_employee_policy()),
+            node_identity.clone(),
+            owner_did,
+        )
+        .await;
+    let (finance_handler, finance_pipeline, finance_preamble, _finance_dir) =
+        resolve_relation_service_and_pipeline_with(
+            "finance-svc",
+            Some(resolvable_employee_policy()),
+            node_identity,
+            owner_did,
+        )
+        .await;
+
+    let bob = zero_capability_caller("did:key:bob");
+    let body = resolve_relation_body("employee", "did:key:bob");
+
+    let hr_resp = hr_handler
+        .dispatch_json_rpc_once(&hr_pipeline, &hr_preamble, Some(&bob), &body)
+        .await
+        .unwrap();
+    let hr_resp: Value = serde_json::from_slice(&hr_resp).unwrap();
+    assert!(hr_resp.get("error").is_none(), "resolve-relation must succeed: {hr_resp:?}");
+    let hr_asserter = hr_resp["result"]["asserter_did"].as_str().unwrap();
+
+    let finance_resp = finance_handler
+        .dispatch_json_rpc_once(&finance_pipeline, &finance_preamble, Some(&bob), &body)
+        .await
+        .unwrap();
+    let finance_resp: Value = serde_json::from_slice(&finance_resp).unwrap();
+    assert!(finance_resp.get("error").is_none(), "resolve-relation must succeed: {finance_resp:?}");
+    let finance_asserter = finance_resp["result"]["asserter_did"].as_str().unwrap();
+
+    assert_ne!(
+        hr_asserter, finance_asserter,
+        "two co-hosted services under the same owner must sign as distinct asserter_dids"
+    );
+
+    // Each proof must verify only against its own service's asserter_did.
+    let mut hr_unsigned = hr_resp["result"].clone();
+    hr_unsigned["signature"] = json!("");
+    let hr_signature = hr_resp["result"]["signature"].as_str().unwrap();
+    syneroym_identity::substrate::verify_json_signature(hr_asserter, &hr_unsigned, hr_signature)
+        .expect("hr-svc's proof must verify against its own asserter_did");
+    assert!(
+        syneroym_identity::substrate::verify_json_signature(
+            finance_asserter,
+            &hr_unsigned,
+            hr_signature
+        )
+        .is_err(),
+        "hr-svc's proof must not verify under finance-svc's asserter_did"
+    );
+}
+
+/// A `service_id` freed by undeploy and redeployed under a **different**
+/// owner must not inherit the old owner's signing key: same node, same
+/// `service_id`, different `owner_did` must still derive distinct
+/// `asserter_did`s. Otherwise a stale `RelationshipProof` cached from the
+/// old tenancy would still verify under the new tenant's identity.
+#[tokio::test]
+async fn resolve_relation_service_id_reused_by_a_different_owner_signs_distinctly() {
+    let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
+    let service_id = "reused-service-id-svc";
+
+    let (old_handler, old_pipeline, old_preamble, _old_dir) =
+        resolve_relation_service_and_pipeline_with(
+            service_id,
+            Some(resolvable_employee_policy()),
+            node_identity.clone(),
+            "did:key:zOldOwner",
+        )
+        .await;
+    let (new_handler, new_pipeline, new_preamble, _new_dir) =
+        resolve_relation_service_and_pipeline_with(
+            service_id,
+            Some(resolvable_employee_policy()),
+            node_identity,
+            "did:key:zNewOwner",
+        )
+        .await;
+
+    let bob = zero_capability_caller("did:key:bob");
+    let body = resolve_relation_body("employee", "did:key:bob");
+
+    let old_resp = old_handler
+        .dispatch_json_rpc_once(&old_pipeline, &old_preamble, Some(&bob), &body)
+        .await
+        .unwrap();
+    let old_resp: Value = serde_json::from_slice(&old_resp).unwrap();
+    let old_asserter = old_resp["result"]["asserter_did"].as_str().unwrap();
+
+    let new_resp = new_handler
+        .dispatch_json_rpc_once(&new_pipeline, &new_preamble, Some(&bob), &body)
+        .await
+        .unwrap();
+    let new_resp: Value = serde_json::from_slice(&new_resp).unwrap();
+    let new_asserter = new_resp["result"]["asserter_did"].as_str().unwrap();
+
+    assert_ne!(
+        old_asserter, new_asserter,
+        "a service_id reused under a different owner must derive a distinct asserter_did"
+    );
 }
 
 /// B3-07: a capability scoped to a completely unrelated resource must not

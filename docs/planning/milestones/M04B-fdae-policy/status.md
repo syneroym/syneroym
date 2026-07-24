@@ -2289,3 +2289,91 @@ identical to every prior phase's own documented list -- nothing new,
 nothing in a crate this review's fixes touched. `mise run test:e2e` --
 not run, same reasoning as the phase's own entry above: still no
 WIT/`wasm32-wasip2` change, still no reference-scenario-visible behavior.
+
+### Per-service signing identity (2026-07-24)
+
+Raised by the user, not the artifact review: `sign_relationship_proof`
+signed every `RelationshipProof` under the single node-wide
+`node_identity`, so every service co-hosted on one substrate node shared
+one `asserter_did` -- contradicting ADR-0017 §6/§7's "`hr-svc` asserts..."
+model, which treats each service's assertions as attributable to *that
+service*, not to "some service hosted on this node." Multi-tenant hosting
+(several unrelated services on one node) is the normal case, not an edge
+case, so this was a real gap.
+
+Fixed with the same "Model A: derived, not separately provisioned"
+pattern (ADR-0006) `syneroym-data-keystore`'s `derive_instance_kek`
+already establishes for per-service DEKs, applied to signing identity
+instead of encryption:
+
+- `Identity::derive_service_identity(owner_did, service_id)`
+  (`crates/identity/src/keys.rs`) -- HKDF-SHA256 over the node's own
+  secret key, domain-separated by `"syneroym:identity:v1:<len>:<owner_did>:<service_id>"`.
+  `owner_did`'s byte length is prefixed so the two variable-length fields
+  can't be reassigned across their boundary (DIDs contain `:` themselves,
+  so a bare `{owner_did}:{service_id}` join would let e.g.
+  `owner_did="did:key:zA:x", service_id="y"` collide with
+  `owner_did="did:key:zA", service_id="x:y"`).
+- `owner_did` is folded into the derivation, not just `service_id`,
+  because `service_id` is a reusable string: `ControlPlaneService`'s
+  `undeploy` already frees it (`registry.remove_owner`), and a
+  *different* owner can later redeploy under the same name
+  (`registry.owner_of`/`set_owner` bookkeeping, M04A Slice B7a). Deriving
+  from `service_id` alone would hand that new, unrelated owner's service
+  the exact signing key the old owner's service had -- letting a stale
+  `RelationshipProof` from the old tenancy still verify under the new
+  tenant's asserter DID. Keying on both makes an ownership change yield a
+  distinct identity even when the name is recycled, while still
+  distinguishing co-hosted services under the same owner from each other.
+- `SynSvcNativeService` (`crates/control_plane/src/synsvc_native.rs`)
+  gained an `owner_did: &str` constructor parameter and derives its
+  private `service_identity: Identity` field internally
+  (`node_identity.derive_service_identity(owner_did, &service_id)`) --
+  callers pass the same `node_identity` and the deploying caller's DID
+  they already have in scope; no caller needs to know service-scoping
+  happens at all. The production call site
+  (`crates/control_plane/src/service/orchestration.rs`'s `deploy`) passes
+  `&caller.caller_did`, already in scope there and consistent with what
+  gets recorded as the owner a few lines later.
+- `sign_relationship_proof` now signs with `self.service_identity`
+  instead of `self.node_identity`/a shared `Arc<Identity>`.
+
+**Tests added:**
+- `crates/identity/src/keys.rs`: `derive_service_identity_differs_per_owner`
+  (same node/service_id, different owner_did -> distinct identity -- the
+  redeploy-under-a-new-owner scenario) and
+  `derive_service_identity_is_not_ambiguous_across_the_owner_service_boundary`
+  (pins the length-prefix fix against the concatenation-collision case
+  above), alongside the four pre-existing derivation tests updated for the
+  new two-argument signature.
+- `crates/router/tests/native_dispatch_identity.rs`:
+  `resolve_relation_co_hosted_services_sign_with_distinct_asserter_dids`
+  (two services, same node identity, same owner, different `service_id`s
+  -> distinct `asserter_did`s, and each proof verifies only against its
+  own) and `resolve_relation_service_id_reused_by_a_different_owner_signs_distinctly`
+  (same node identity, same `service_id`, different `owner_did` ->
+  distinct `asserter_did`s -- the ownership-change scenario). Both go
+  through real `dispatch_json_rpc_once` calls against real
+  `SynSvcNativeService` instances, not unit-level identity derivation
+  alone.
+
+**Verification:** `cargo test -p syneroym-identity` -- **28 passed**, 0
+failed (22 baseline + 6 derivation tests, 2 new). `cargo +nightly fmt
+--all` clean. `cargo clippy --workspace --all-targets --all-features` --
+zero warnings (`SynSvcNativeService::new` picked up an 8th constructor
+argument, `#[allow(clippy::too_many_arguments)]` added, matching the same
+bare-attribute precedent already used on `ControlPlaneService`'s own
+multi-argument constructors). `cargo test -p syneroym-router --test
+native_dispatch_identity` -- **31 passed**, 0 failed (29 baseline + 2
+new), run twice in isolation to confirm. `cargo test --workspace
+--no-fail-fast` -- the same ten pre-existing, sandbox-environmental
+targets fail (the nine already documented above, plus this run's parallel
+execution additionally tripped the shared `mainline` DHT-actor flake
+(`actor thread unexpectedly shutdown: "SendError(..)"`) inside
+`native_dispatch_identity` itself rather than `query_raw`'s test this
+time -- same panic signature as previously observed on
+`admin_caller_admitted_query_raw`, confirmed not a regression by rerunning
+the full binary standalone: 31/31 pass). `mise run test:e2e` -- not run;
+this change touches only the native `resolve-relation` RPC's internal
+signing identity, no WIT/`wasm32-wasip2` change, no reference-scenario-
+visible behavior.

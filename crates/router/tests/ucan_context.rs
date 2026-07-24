@@ -99,6 +99,7 @@ async fn test_route_handler(service_id: &str) -> RouteHandler {
         messaging_broker.clone(),
         None,
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        "did:key:zTestOwner",
     ));
 
     let deps = RouteHandlerDeps {
