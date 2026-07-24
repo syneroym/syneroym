@@ -450,6 +450,8 @@ Due to its complexity, the AI expansion track is subdivided into foundational an
 ---
 
 ## Later-Phase Additions
+> The full, cross-cutting deferred backlog (these items plus ADR deferrals, per-slice scope-outs, and in-code TODOs) is consolidated in [deferred-backlog.md](./deferred-backlog.md). The list below is the implementation-sequencing subset.
+
 To keep Milestones 1–10 achievable, the following features are sequenced after them, not shelved. Each is designed to compose with what ships in Milestones 1–10 without reworking it:
 - **`[FND-IDT]` Extensions:** Master Key export/recovery, Tier-1 Fallback processing, and Method B Zero-Knowledge (ZK) plugin verification.
 - **Phase 6 Product Expansion:** 

@@ -1262,7 +1262,7 @@ Because Syneroym can be utilized as a general open cloud, this dedicated phase s
 
 ## Appendix: Later-Phase Additions
 
-Sequenced after the baseline, pending detailed specs. Each must add on without reworking shipped contracts.
+Sequenced after the baseline, pending detailed specs. Each must add on without reworking shipped contracts. These requirements-level items, together with implementation deferrals, ADR scope-outs, and in-code TODOs, are tracked as one running list in [deferred-backlog.md](planning/deferred-backlog.md).
 
 ### Accessibility and Localisation
 
