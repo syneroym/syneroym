@@ -77,6 +77,7 @@ Target notation: `M05`, `M07`, `M10+`, `Phase 6` = a sequenced milestone/phase; 
 |---|---|---|---|
 | MQTT shared subscriptions (`$share/<group>/<filter>`) | Small `namespace_topic` fix in `crates/mqtt_broker`; `rumqttd 0.20` already supports it. Doesn't block later milestones. | post-M3B, low pri | [meta-implementation-plan.md](./meta-implementation-plan.md#later-phase-additions); [M03B task](./milestones/M03B-messaging/task.md) |
 | WebSocket upgrade for messaging | Out of scope for the messaging slice; revisit as follow-up. | TBD | [M03B task](./milestones/M03B-messaging/task.md) |
+| Guest delivery p99 CI regression gate | `test_guest_delivery_latency_budget`'s p99 assertion (guarding the <25ms exit criterion, met at 5.16ms when first measured) downgraded to an informational log after two rounds of threshold-raising (75ms, 150ms) each got outrun by shared-CI-runner noise (observed 4ms-334ms with no dispatch-path change). A fixed millisecond bound in this integration test can't tell "CI was busy" from "the path regressed"; real regression detection needs a dedicated benchmark with proper statistics. | TBD | `crates/sandbox_wasm/tests/messaging_integration.rs`; [M03B status.md](./milestones/M03B-messaging/status.md) |
 | Decentralized messaging overlay | Pushed to M7. | M07 | [M03B task](./milestones/M03B-messaging/task.md); commit `c619b71` |
 | Raw-timestamp plausibility bounds | Left open for a follow-up decision. | TBD | [ADR-0013](../decisions/0013-p2p-messaging-architecture.md) |
 
