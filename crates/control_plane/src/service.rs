@@ -8,7 +8,7 @@ use std::{
     fmt::{Debug, Formatter},
     fs,
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, OnceLock, Weak},
 };
 
 use anyhow::Result;
@@ -21,7 +21,7 @@ use syneroym_identity::Identity;
 use syneroym_mqtt_broker::MqttBroker;
 use syneroym_rpc::{
     Ability, CallerContext, NativeDispatchRegistry, NativeInvocation, NativeResponse,
-    NativeService, ResourceUri, RpcError, RpcResult, WeakNativeDispatchRegistry,
+    NativeService, ResourceUri, RpcError, RpcResult, ServiceProxy, WeakNativeDispatchRegistry,
 };
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     DeployManifest, DeploymentPlan,
@@ -62,6 +62,17 @@ pub struct ControlPlaneService {
     /// (`node_identity.to_doc(..).id`). Distinct from `node_did` above,
     /// which is only the DID string; this carries the actual key material.
     node_identity: Arc<Identity>,
+    /// The Universal Proxy (M04A Slice A1), for Slice B3 Phase 4's
+    /// cross-service relationship-proof fetch, threaded on into each
+    /// deployed service's `SynSvcNativeService`. `pub` and a post-
+    /// construction `OnceLock`, mirroring `AppSandboxEngine.service_proxy`
+    /// exactly (`crates/sandbox_wasm/src/engine.rs`): `ProxyRouter` (the
+    /// only implementation) is constructed in `RouteHandler::init`, which
+    /// runs *after* this service (`RouteHandlerDeps` already holds it), so
+    /// there is no construction-time value to inject -- `RouteHandler::init`
+    /// calls `.set(...)` on this field the same way it already does for
+    /// `AppSandboxEngine`'s.
+    pub service_proxy: OnceLock<Weak<dyn ServiceProxy>>,
     // `Weak`, not `NativeDispatchRegistry` -- see the cycle explained in
     // `syneroym_rpc::dispatch_registry`'s module docs. `RouteHandlerInner`
     // owns the strong clone for as long as the router itself is alive.
@@ -119,9 +130,42 @@ impl ControlPlaneService {
             blob_provider,
             messaging_broker,
             node_identity,
+            service_proxy: OnceLock::new(),
             native_dispatch: Arc::downgrade(&native_dispatch),
             http_routes,
         })
+    }
+
+    /// Never-constructed marker type coerced to an unsized `Weak<dyn
+    /// ServiceProxy>` -- mirrors `sandbox_wasm::host_capabilities::
+    /// empty_service_proxy` exactly, duplicated here (not shared) since
+    /// `control_plane` cannot depend on `sandbox_wasm` unconditionally (the
+    /// `app_sandbox` feature is optional). Used only before
+    /// `RouteHandler::init` has called `service_proxy.set(...)` -- a real
+    /// fetch attempted against it fails closed via `.upgrade()` returning
+    /// `None`, never a panic.
+    fn empty_service_proxy() -> Weak<dyn ServiceProxy> {
+        #[derive(Debug)]
+        struct NeverConstructed;
+        #[async_trait::async_trait]
+        impl ServiceProxy for NeverConstructed {
+            async fn invoke(
+                &self,
+                _request: syneroym_rpc::ProxyRequest,
+            ) -> Result<Value, syneroym_rpc::ProxyError> {
+                unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+            }
+        }
+        Weak::<NeverConstructed>::new()
+    }
+
+    /// The current `Weak<dyn ServiceProxy>`, or an always-empty one if
+    /// `RouteHandler::init` hasn't populated `service_proxy` yet (a
+    /// substrate startup ordering that never lasts past the first deploy in
+    /// practice, but is a real possibility for a test harness that
+    /// constructs `ControlPlaneService` without a full `RouteHandler`).
+    pub(crate) fn current_service_proxy(&self) -> Weak<dyn ServiceProxy> {
+        self.service_proxy.get().cloned().unwrap_or_else(Self::empty_service_proxy)
     }
 
     /// Whether `caller` holds a specific **node-wide** orchestrator ability:

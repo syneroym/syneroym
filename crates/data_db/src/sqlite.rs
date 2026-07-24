@@ -245,6 +245,7 @@ fn do_delete_many(
     sieve: Option<&CompiledSieve>,
 ) -> Result<u64, host_store::DataLayerError> {
     validate_identifier(collection)?;
+    emit_mode_b_trace(sieve);
     let compiled = filter::compile_filter(filter_json)?;
 
     let mut where_clauses = Vec::new();
@@ -416,6 +417,23 @@ fn emit_mode_a_execution_trace(sieve: Option<&CompiledSieve>, outcome: ModeAOutc
     trace.emit();
 }
 
+/// Mode B counterpart of [`emit_mode_a_execution_trace`]: `query`/
+/// `aggregate`/`delete_many` never get a per-row outcome (`rows_reached` is
+/// always `None` for these, unlike Mode A), so there is nothing to augment
+/// post-execution. But `plan_read`'s own `trace.emit()` runs *before* a
+/// cross-service relationship fetch resolves, so it necessarily logs
+/// `remote_fetches: []` -- `finalize` only folds the real
+/// `RemoteFetchTrace`(es) into `sieve.trace` afterward. Re-emitting that
+/// already-finalized trace here is the only place a successful Mode B read's
+/// fetch provenance (asserter DID, TTL) becomes observable; a fully local
+/// sieve just logs the same allow/deny a second time, mirroring Mode A's
+/// always-re-emit precedent.
+fn emit_mode_b_trace(sieve: Option<&CompiledSieve>) {
+    if let Some(s) = sieve {
+        s.trace.clone().emit();
+    }
+}
+
 fn read_record_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<(String, String, i64, i64)> {
     Ok((
         row.get::<_, String>(0)?,
@@ -432,6 +450,7 @@ fn do_query(
     sieve: Option<&CompiledSieve>,
 ) -> Result<host_store::QueryResult, host_store::DataLayerError> {
     validate_identifier(collection)?;
+    emit_mode_b_trace(sieve);
 
     // A CLS-masked field must not be filterable either -- otherwise masking
     // only the projection turns the predicate into an oracle that recovers
@@ -608,6 +627,7 @@ fn do_aggregate(
     sieve: Option<&CompiledSieve>,
 ) -> Result<host_store::RawQueryResult, host_store::DataLayerError> {
     validate_identifier(collection)?;
+    emit_mode_b_trace(sieve);
 
     // Check CLS denial *before* compiling caveat filters: a CLS-active sieve
     // denies the whole call regardless of what its caveats say, so there is
@@ -812,6 +832,15 @@ fn compile_sieve_for_op(
     mode: Mode,
 ) -> Result<Option<CompiledSieve>, host_store::DataLayerError> {
     let Some(auth) = auth else { return Ok(None) };
+    // Slice B3 Phase 4: a caller that already ran `plan_read` + the
+    // `resolve_fetches` orchestration + `finalize` (because the policy's
+    // selected paths needed a remote relationship fetch) hands the
+    // already-compiled sieve straight through -- `compile_read` below would
+    // otherwise fail closed on exactly that case (it's the local-only
+    // entry point, unchanged since Phase 2/3).
+    if let Some(sieve) = &auth.resolved_sieve {
+        return Ok(Some(sieve.clone()));
+    }
     // Validated here, before `collection` reaches `compile_read` and a
     // strict-mode deny logs it verbatim into `path_failed` (an `info!`
     // line) -- otherwise a WASM guest could inject newlines/escapes into
@@ -1844,6 +1873,10 @@ impl ServiceStore for SqliteServiceStore {
         // rather than propagating -- unlike Mode B's `query`/`get`, where a
         // compile error is a loud `Err` (a broken policy isn't "zero rows").
         let sieve = match auth {
+            // Slice B3 Phase 4: honor a caller-pre-resolved sieve exactly
+            // like `compile_sieve_for_op` does, before ever calling the
+            // local-only `compile_read`.
+            Some(a) if a.resolved_sieve.is_some() => a.resolved_sieve.clone(),
             Some(a) => match compile_read(
                 a.policy,
                 collection,
@@ -2787,6 +2820,68 @@ mod tests {
         let logs_content = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
         assert!(logs_content.contains("fdae decision: deny"), "logs were: {logs_content}");
         assert!(logs_content.contains("rows_reached=Some(false)"), "logs were: {logs_content}");
+    }
+
+    /// A successful cross-service fetch's provenance (asserter DID, TTL) is
+    /// only known once `finalize` folds the real `RemoteFetchTrace` into
+    /// `sieve.trace` -- after `plan_read`'s own compile-time `trace.emit()`
+    /// already ran with `remote_fetches: []`. Mode B (`query`) has no other
+    /// execution-time hook the way Mode A's `check_access`/`get` do, so
+    /// `emit_mode_b_trace` re-emitting the already-finalized trace is the
+    /// only place this becomes observable in the logs.
+    #[test]
+    fn decision_trace_emits_remote_fetch_provenance_for_a_mode_b_query() {
+        use std::io;
+
+        use syneroym_fdae::RemoteFetchTrace;
+        use tracing_subscriber::prelude::*;
+
+        let conn = Connection::open_in_memory().unwrap();
+        seed_one_row_documents(&conn);
+
+        let sieve = CompiledSieve {
+            where_clause: "1=1".to_string(),
+            params: Vec::new(),
+            masked_fields: Vec::new(),
+            where_caveats: Vec::new(),
+            trace: DecisionTrace {
+                remote_fetches: vec![RemoteFetchTrace {
+                    service: "hr-svc".to_string(),
+                    relation: "owner".to_string(),
+                    principal_did: "did:key:alice".to_string(),
+                    asserter_did: "did:key:zHrSvc".to_string(),
+                    valid_until_secs: 42,
+                }],
+                ..DecisionTrace::default()
+            },
+        };
+
+        let logs = Arc::new(Mutex::new(Vec::new()));
+        let logs_clone = logs.clone();
+        struct MockWriter {
+            logs: Arc<Mutex<Vec<u8>>>,
+        }
+        impl io::Write for MockWriter {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.logs.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let make_writer = move || MockWriter { logs: logs_clone.clone() };
+        let layer = tracing_subscriber::fmt::layer().with_ansi(false).with_writer(make_writer);
+        let subscriber = tracing_subscriber::registry().with(layer);
+
+        let opts = host_store::QueryOptions { filter: None, limit: None, cursor: None };
+        tracing::subscriber::with_default(subscriber, || {
+            do_query(&conn, "documents", &opts, Some(&sieve)).unwrap()
+        });
+
+        let logs_content = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+        assert!(logs_content.contains("did:key:zHrSvc"), "logs were: {logs_content}");
+        assert!(logs_content.contains("hr-svc"), "logs were: {logs_content}");
     }
 
     #[test]

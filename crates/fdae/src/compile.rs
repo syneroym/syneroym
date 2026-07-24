@@ -14,7 +14,7 @@ use syneroym_ucan::{Ability, Capability, ResourceUri, SessionContext};
 
 use crate::{
     policy::{CondOp, Definition, Operator, Permission, Policy, PolicyError, Relation},
-    trace::DecisionTrace,
+    trace::{DecisionTrace, RemoteFetchTrace},
 };
 
 /// Depth backstop for a recursive relation's self-join, bound as a `?`
@@ -110,14 +110,27 @@ pub struct RemoteFetch {
     /// defense (ADR-0015 A5): this holds regardless of whether the path's
     /// own declared terminal word is `caller` or `anchor`.
     pub principal_did: String,
+    /// The DID a fetched `RelationshipProof` for this relation must be
+    /// signed by, from the policy's own `Relation.expected_asserter_did`
+    /// (D-B3-8) -- never derived by the fetching side (a per-node HKDF
+    /// derivation cannot be reproduced by a different node), and never
+    /// taken from the proof's own self-declared field (self-referential,
+    /// verifies for any signer). The caller performing the fetch rejects a
+    /// proof whose `asserter_did` doesn't match this value.
+    pub expected_asserter_did: String,
     pub slot: FetchSlot,
 }
 
-/// One fetched result, matched back to its [`RemoteFetch`] by `slot`.
+/// One fetched result, matched back to its [`RemoteFetch`] by `slot`. `trace`
+/// is the already-verified provenance the fetching side observed (asserter,
+/// relation, principal, TTL) -- `finalize` folds it into the sieve's
+/// [`DecisionTrace`] so a successful fetch, not just a timeout/deny, leaves a
+/// record (ADR-0017 §6 reason 2, `slice-b3-implementation-plan.md` §3.2).
 #[derive(Debug, Clone)]
 pub struct FetchResult {
     pub slot: FetchSlot,
     pub ids: Vec<String>,
+    pub trace: RemoteFetchTrace,
 }
 
 /// One not-yet-resolved position in a [`PendingSieve`]'s SQL text: a unique
@@ -206,15 +219,38 @@ impl FetchCtx {
         service: String,
         relation: String,
         principal_did: String,
+        expected_asserter_did: String,
         correlate_expr: String,
         params_index: usize,
-    ) -> String {
+    ) -> Result<String, PolicyError> {
         let slot =
             match self.fetches.iter().find(|f| f.service == service && f.relation == relation) {
-                Some(existing) => existing.slot,
+                Some(existing) => {
+                    // Two hops naming the same remote (service, relation)
+                    // must agree on who is trusted to answer for it -- a
+                    // policy declaring two different `expected_asserter_did`
+                    // values for the same remote type is a misconfiguration,
+                    // not a case to silently resolve by keeping whichever
+                    // hop registered first.
+                    if existing.expected_asserter_did != expected_asserter_did {
+                        return Err(PolicyError::Semantic(format!(
+                            "relation '{relation}' on service '{service}' is reached with two \
+                             different expected_asserter_did values ('{}' vs \
+                             '{expected_asserter_did}')",
+                            existing.expected_asserter_did
+                        )));
+                    }
+                    existing.slot
+                }
                 None => {
                     let slot = FetchSlot(self.fetches.len());
-                    self.fetches.push(RemoteFetch { service, relation, principal_did, slot });
+                    self.fetches.push(RemoteFetch {
+                        service,
+                        relation,
+                        principal_did,
+                        expected_asserter_did,
+                        slot,
+                    });
                     slot
                 }
             };
@@ -226,7 +262,7 @@ impl FetchCtx {
             correlate_expr,
             params_index,
         });
-        token
+        Ok(token)
     }
 }
 
@@ -251,8 +287,14 @@ pub fn finalize(
     pending: PendingSieve,
     results: &[FetchResult],
 ) -> Result<CompiledSieve, PolicyError> {
-    let PendingSieve { mut where_clause, mut params, masked_fields, where_caveats, trace, markers } =
-        pending;
+    let PendingSieve {
+        mut where_clause,
+        mut params,
+        masked_fields,
+        where_caveats,
+        mut trace,
+        markers,
+    } = pending;
 
     // Markers are inserted in ascending `params_index` order so `shift`
     // (the running count of ids already spliced in) correctly accounts for
@@ -263,16 +305,22 @@ pub fn finalize(
     ordered.sort_by_key(|m| m.params_index);
 
     let mut shift = 0usize;
+    // One `RemoteFetchTrace` entry per distinct *slot* consumed, not per
+    // marker occurrence -- the same remote relation reached by several OR'd
+    // permission paths shares one fetch (`FetchCtx::register`'s dedup), so
+    // it should leave one provenance record, not one per occurrence.
+    let mut traced_slots: BTreeSet<usize> = BTreeSet::new();
     for marker in &ordered {
-        let ids =
-            results.iter().find(|r| r.slot == marker.slot).map(|r| r.ids.as_slice()).ok_or_else(
-                || {
-                    PolicyError::Semantic(format!(
-                        "finalize: missing fetch result for slot {}",
-                        marker.slot.0
-                    ))
-                },
-            )?;
+        let result = results.iter().find(|r| r.slot == marker.slot).ok_or_else(|| {
+            PolicyError::Semantic(format!(
+                "finalize: missing fetch result for slot {}",
+                marker.slot.0
+            ))
+        })?;
+        let ids = result.ids.as_slice();
+        if traced_slots.insert(marker.slot.0) {
+            trace.remote_fetches.push(result.trace.clone());
+        }
         if ids.len() > MAX_FETCH_IDS {
             return Err(PolicyError::Semantic(format!(
                 "remote fetch returned {} ids, exceeding the {MAX_FETCH_IDS} cap",
@@ -533,6 +581,7 @@ pub fn plan_read(
         rows_reached: None,
         path_failed,
         caveats_applied,
+        remote_fetches: Vec::new(),
     };
     trace.emit();
 
@@ -1147,6 +1196,12 @@ fn emit_remote_terminal(
     let service = hop.relation.service.clone().ok_or_else(|| {
         PolicyError::Semantic(format!("internal: relation '{}' is not remote", hop.name))
     })?;
+    let expected_asserter_did = hop.relation.expected_asserter_did.clone().ok_or_else(|| {
+        PolicyError::Semantic(format!(
+            "internal: relation '{}' is remote but declares no expected_asserter_did",
+            hop.name
+        ))
+    })?;
     let principal_did = session.anchor_did.clone().unwrap_or_else(|| session.subject_did.clone());
     // `hop.relation.target`, not `hop.name`: the wire `relation` names the
     // remote **object type**, which the remote's own `definitions:` map
@@ -1157,9 +1212,10 @@ fn emit_remote_terminal(
         service,
         hop.relation.target.clone(),
         principal_did,
+        expected_asserter_did,
         correlate_expr,
         params.len(),
-    );
+    )?;
     // The marker stands for the whole predicate (see `PendingMarker::
     // correlate_expr`), not just an `IN (...)` list -- `finalize` needs to
     // be able to substitute a literal `0` for an empty id-set.
@@ -2182,7 +2238,8 @@ mod tests {
                     "document": {
                         "table": "documents",
                         "relations": {"owner": {
-                            "target": "employee", "service": "hr-svc", "join_column": "owner_uuid"
+                            "target": "employee", "service": "hr-svc", "join_column": "owner_uuid",
+                            "expected_asserter_did": "did:key:zHrSvc"
                         }},
                         "permissions": {
                             "view": {"allows": ["data-layer/read"], "paths": [["owner", "anchor"]]}
@@ -2306,9 +2363,25 @@ mod tests {
         let slot = plan.fetches[0].slot;
         let pending = plan.pending.take().unwrap();
 
-        let results = vec![FetchResult { slot, ids: vec!["emp-alice".to_string()] }];
+        let fetch_trace = RemoteFetchTrace {
+            service: "hr-svc".to_string(),
+            relation: "employee".to_string(),
+            principal_did: "did:key:alice".to_string(),
+            asserter_did: "did:key:zHrSvc".to_string(),
+            valid_until_secs: 1_000,
+        };
+        let results = vec![FetchResult {
+            slot,
+            ids: vec!["emp-alice".to_string()],
+            trace: fetch_trace.clone(),
+        }];
         let sieve = finalize(pending, &results).unwrap();
         assert_eq!(run_sieve(&conn, "documents", &sieve), vec!["doc-1"]);
+        assert_eq!(
+            sieve.trace.remote_fetches,
+            vec![fetch_trace],
+            "a successful fetch must leave provenance in the DecisionTrace, not just the deny path"
+        );
     }
 
     /// Mirrors the above with an empty fetched id-set: `IN (SELECT 1 WHERE
@@ -2344,7 +2417,11 @@ mod tests {
         .unwrap();
         let slot = plan.fetches[0].slot;
         let pending = plan.pending.take().unwrap();
-        let sieve = finalize(pending, &[FetchResult { slot, ids: Vec::new() }]).unwrap();
+        let sieve = finalize(
+            pending,
+            &[FetchResult { slot, ids: Vec::new(), trace: RemoteFetchTrace::default() }],
+        )
+        .unwrap();
         assert!(run_sieve(&conn, "documents", &sieve).is_empty());
     }
 
@@ -2369,7 +2446,8 @@ mod tests {
                             "creator": {"target": "user", "join_column": "creator_uuid"},
                             "embargoed_from": {
                                 "target": "employee", "service": "hr-svc",
-                                "join_column": "embargoed_uuid"
+                                "join_column": "embargoed_uuid",
+                                "expected_asserter_did": "did:key:zHrSvc"
                             }
                         },
                         "permissions": {
@@ -2400,7 +2478,11 @@ mod tests {
         let pending = plan.pending.take().unwrap();
         // The remote legitimately knows of nobody embargoed -- an honest
         // empty answer, not a fetch failure.
-        let sieve = finalize(pending, &[FetchResult { slot, ids: Vec::new() }]).unwrap();
+        let sieve = finalize(
+            pending,
+            &[FetchResult { slot, ids: Vec::new(), trace: RemoteFetchTrace::default() }],
+        )
+        .unwrap();
         assert_eq!(
             run_sieve(&conn, "documents", &sieve),
             vec!["doc-1"],
@@ -2454,11 +2536,13 @@ mod tests {
                         "relations": {
                             "owner": {
                                 "target": "employee", "service": "hr-svc",
-                                "join_column": "owner_uuid"
+                                "join_column": "owner_uuid",
+                                "expected_asserter_did": "did:key:zHrSvc"
                             },
                             "department": {
                                 "target": "team", "service": "hr-svc",
-                                "join_column": "department_uuid"
+                                "join_column": "department_uuid",
+                                "expected_asserter_did": "did:key:zHrSvc"
                             }
                         },
                         "permissions": {
@@ -2490,8 +2574,16 @@ mod tests {
         let pending = plan.pending.take().unwrap();
 
         let results = vec![
-            FetchResult { slot: owner_slot, ids: vec!["emp-alice".to_string()] },
-            FetchResult { slot: dept_slot, ids: vec!["team-eng".to_string()] },
+            FetchResult {
+                slot: owner_slot,
+                ids: vec!["emp-alice".to_string()],
+                trace: RemoteFetchTrace::default(),
+            },
+            FetchResult {
+                slot: dept_slot,
+                ids: vec!["team-eng".to_string()],
+                trace: RemoteFetchTrace::default(),
+            },
         ];
         let sieve = finalize(pending, &results).unwrap();
         assert_eq!(run_sieve(&conn, "documents", &sieve), vec!["doc-1"]);
@@ -2527,11 +2619,13 @@ mod tests {
                         "relations": {
                             "owner": {
                                 "target": "employee", "service": "hr-svc",
-                                "join_column": "owner_uuid"
+                                "join_column": "owner_uuid",
+                                "expected_asserter_did": "did:key:zHrSvc"
                             },
                             "department": {
                                 "target": "team", "service": "hr-svc",
-                                "join_column": "department_uuid"
+                                "join_column": "department_uuid",
+                                "expected_asserter_did": "did:key:zHrSvc"
                             }
                         },
                         "permissions": {
@@ -2563,8 +2657,16 @@ mod tests {
 
         // Reversed vs. the sibling test.
         let results = vec![
-            FetchResult { slot: dept_slot, ids: vec!["team-eng".to_string()] },
-            FetchResult { slot: owner_slot, ids: vec!["emp-alice".to_string()] },
+            FetchResult {
+                slot: dept_slot,
+                ids: vec!["team-eng".to_string()],
+                trace: RemoteFetchTrace::default(),
+            },
+            FetchResult {
+                slot: owner_slot,
+                ids: vec!["emp-alice".to_string()],
+                trace: RemoteFetchTrace::default(),
+            },
         ];
         let sieve = finalize(pending, &results).unwrap();
         assert_eq!(run_sieve(&conn, "documents", &sieve), vec!["doc-1"]);
@@ -2610,8 +2712,15 @@ mod tests {
         .unwrap();
         let slot = plan.fetches[0].slot;
         let pending = plan.pending.take().unwrap();
-        let sieve =
-            finalize(pending, &[FetchResult { slot, ids: vec!["emp-alice".to_string()] }]).unwrap();
+        let sieve = finalize(
+            pending,
+            &[FetchResult {
+                slot,
+                ids: vec!["emp-alice".to_string()],
+                trace: RemoteFetchTrace::default(),
+            }],
+        )
+        .unwrap();
 
         assert_eq!(
             run_sieve(&conn, "documents", &sieve),
@@ -2634,9 +2743,15 @@ mod tests {
         .unwrap();
         let slot2 = plan2.fetches[0].slot;
         let pending2 = plan2.pending.take().unwrap();
-        let sieve2 =
-            finalize(pending2, &[FetchResult { slot: slot2, ids: vec!["emp-alice".to_string()] }])
-                .unwrap();
+        let sieve2 = finalize(
+            pending2,
+            &[FetchResult {
+                slot: slot2,
+                ids: vec!["emp-alice".to_string()],
+                trace: RemoteFetchTrace::default(),
+            }],
+        )
+        .unwrap();
         assert_eq!(run_sieve(&conn, "documents", &sieve2), vec!["doc-2"]);
     }
 
@@ -2660,7 +2775,11 @@ mod tests {
         let slot = plan.fetches[0].slot;
         let pending = plan.pending.take().unwrap();
         let oversized: Vec<String> = (0..MAX_FETCH_IDS + 1).map(|i| format!("id-{i}")).collect();
-        let err = finalize(pending, &[FetchResult { slot, ids: oversized }]).unwrap_err();
+        let err = finalize(
+            pending,
+            &[FetchResult { slot, ids: oversized, trace: RemoteFetchTrace::default() }],
+        )
+        .unwrap_err();
         assert!(matches!(err, PolicyError::Semantic(_)));
     }
 
@@ -2736,11 +2855,13 @@ mod tests {
                         "relations": {
                             "owner": {
                                 "target": "employee", "service": "hr-svc",
-                                "join_column": "owner_uuid"
+                                "join_column": "owner_uuid",
+                                "expected_asserter_did": "did:key:zHrSvc"
                             },
                             "lead": {
                                 "target": "employee", "service": "hr-svc",
-                                "join_column": "lead_uuid"
+                                "join_column": "lead_uuid",
+                                "expected_asserter_did": "did:key:zHrSvc"
                             }
                         },
                         "permissions": {
@@ -2786,11 +2907,13 @@ mod tests {
                         "relations": {
                             "owner": {
                                 "target": "employee", "service": "hr-svc",
-                                "join_column": "owner_uuid"
+                                "join_column": "owner_uuid",
+                                "expected_asserter_did": "did:key:zHrSvc"
                             },
                             "department": {
                                 "target": "team", "service": "hr-svc",
-                                "join_column": "department_uuid"
+                                "join_column": "department_uuid",
+                                "expected_asserter_did": "did:key:zHrSvc"
                             }
                         },
                         "permissions": {
@@ -2823,6 +2946,140 @@ mod tests {
         );
         let targets: BTreeSet<&str> = plan.fetches.iter().map(|f| f.relation.as_str()).collect();
         assert_eq!(targets, BTreeSet::from(["employee", "team"]));
+    }
+
+    /// `RemoteFetch.expected_asserter_did` (D-B3-8) is threaded from the
+    /// policy's `Relation.expected_asserter_did`, not left empty or derived.
+    #[test]
+    fn plan_read_carries_the_policys_expected_asserter_did_onto_the_fetch() {
+        let policy = remote_relation_policy();
+        let proxying_service =
+            session_with_anchor("did:key:svc-1", "did:key:alice", vec![read_cap(Some("document"))]);
+        let plan = plan_read(
+            &policy,
+            "document",
+            &proxying_service,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::Filter,
+        )
+        .unwrap();
+        assert_eq!(plan.fetches[0].expected_asserter_did, "did:key:zHrSvc");
+    }
+
+    /// Two hops naming the same remote (service, relation) but declaring
+    /// different `expected_asserter_did` values must fail closed rather than
+    /// silently keep whichever hop registered its fetch first -- a policy
+    /// author disagreeing with themselves about who is trusted to answer
+    /// for one remote type is a misconfiguration, not something to resolve
+    /// by picking one arbitrarily.
+    #[test]
+    fn plan_read_fails_closed_when_two_hops_disagree_on_expected_asserter_did() {
+        let policy = parse_and_validate(
+            r#"{
+                "version": "fdae/v1",
+                "definitions": {
+                    "document": {
+                        "table": "documents",
+                        "relations": {
+                            "owner": {
+                                "target": "employee", "service": "hr-svc",
+                                "join_column": "owner_uuid",
+                                "expected_asserter_did": "did:key:zHrSvcOne"
+                            },
+                            "lead": {
+                                "target": "employee", "service": "hr-svc",
+                                "join_column": "lead_uuid",
+                                "expected_asserter_did": "did:key:zHrSvcTwo"
+                            }
+                        },
+                        "permissions": {
+                            "view": {
+                                "allows": ["data-layer/read"],
+                                "paths": [["owner", "anchor"], ["lead", "anchor"]]
+                            }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let proxying_service =
+            session_with_anchor("did:key:svc-1", "did:key:alice", vec![read_cap(Some("document"))]);
+        let err = plan_read(
+            &policy,
+            "document",
+            &proxying_service,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::Filter,
+        )
+        .unwrap_err();
+        assert!(matches!(err, PolicyError::Semantic(_)));
+    }
+
+    /// The same remote relation reached via two distinct local hop names
+    /// (`plan_read_dedupes_repeated_fetches_to_the_same_remote_relation`'s
+    /// shape) shares one fetch, so `finalize` must record its provenance
+    /// once, not once per occurrence.
+    #[test]
+    fn finalize_records_one_trace_entry_per_deduped_slot_not_per_occurrence() {
+        let policy = parse_and_validate(
+            r#"{
+                "version": "fdae/v1",
+                "definitions": {
+                    "document": {
+                        "table": "documents",
+                        "relations": {
+                            "owner": {
+                                "target": "employee", "service": "hr-svc",
+                                "join_column": "owner_uuid",
+                                "expected_asserter_did": "did:key:zHrSvc"
+                            },
+                            "lead": {
+                                "target": "employee", "service": "hr-svc",
+                                "join_column": "lead_uuid",
+                                "expected_asserter_did": "did:key:zHrSvc"
+                            }
+                        },
+                        "permissions": {
+                            "view": {
+                                "allows": ["data-layer/read"],
+                                "paths": [["owner", "anchor"], ["lead", "anchor"]]
+                            }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let proxying_service =
+            session_with_anchor("did:key:svc-1", "did:key:alice", vec![read_cap(Some("document"))]);
+        let mut plan = plan_read(
+            &policy,
+            "document",
+            &proxying_service,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::Filter,
+        )
+        .unwrap();
+        assert_eq!(plan.fetches.len(), 1, "owner/lead collapse to one deduped fetch");
+        let slot = plan.fetches[0].slot;
+        let pending = plan.pending.take().unwrap();
+        let fetch_trace = RemoteFetchTrace {
+            service: "hr-svc".to_string(),
+            relation: "employee".to_string(),
+            principal_did: "did:key:alice".to_string(),
+            asserter_did: "did:key:zHrSvc".to_string(),
+            valid_until_secs: 1_000,
+        };
+        let sieve = finalize(
+            pending,
+            &[FetchResult { slot, ids: vec!["emp-alice".to_string()], trace: fetch_trace.clone() }],
+        )
+        .unwrap();
+        assert_eq!(sieve.trace.remote_fetches, vec![fetch_trace]);
     }
 
     fn resolvable_employee_policy(principal_col: &str) -> Policy {

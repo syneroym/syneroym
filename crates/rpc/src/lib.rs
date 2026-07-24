@@ -8,19 +8,25 @@ use std::result;
 
 mod converter;
 mod dispatch_registry;
+pub mod fdae_fetch;
 pub mod framing;
 mod native;
 mod proxy;
+pub mod relationship_proof;
 mod types;
 
 pub use converter::JsonRpcConverter;
 pub use dispatch_registry::{NativeDispatchRegistry, WeakNativeDispatchRegistry};
+pub use fdae_fetch::{FDAE_FETCH_TIMEOUT, FetchError, resolve_fetches};
 pub use native::{
     AuthLevel, CallerContext, CallerProof, NativeInvocation, NativeResponse, NativeService,
 };
 pub use proxy::{
     CallOrigin, DEFAULT_PROXY_CALL_TIMEOUT, PROXY_TRANSPORT_RPC_CODE, ProxyError, ProxyProtocol,
     ProxyRequest, ServiceProxy, UNSUPPORTED_PROTOCOL_RPC_CODE, UNSUPPORTED_TARGET_RPC_CODE,
+};
+pub use relationship_proof::{
+    RELATIONSHIP_PROOF_TTL_SECS, RelationshipProof, RelationshipProofError,
 };
 use serde_json::Value;
 pub use syneroym_ucan::{

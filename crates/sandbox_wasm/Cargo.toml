@@ -36,6 +36,7 @@ zeroize.workspace = true
 criterion.workspace = true
 wasmtime = { workspace = true, features = ["wat"] }
 tempfile.workspace = true
+syneroym-identity.workspace = true
 
 
 [[bench]]

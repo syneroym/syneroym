@@ -79,6 +79,16 @@ pub struct Relation {
     /// since there is no local `target` table to `EXISTS`-join through.
     #[serde(default)]
     pub service: Option<String>,
+    /// Required alongside `service` (D-B3-8, Slice B3 Phase 4): the DID a
+    /// fetched `RelationshipProof` for this relation must be signed by. Not
+    /// derived -- `Identity::derive_service_identity` is a node-private
+    /// derivation (keyed on that node's own secret key), so a different
+    /// node can never independently reproduce it. The policy author instead
+    /// declares an explicit, auditable trust anchor, same category as
+    /// `resolvable_without_capability`; `resolve_fetches` rejects a proof
+    /// whose `asserter_did` doesn't match this value.
+    #[serde(default)]
+    pub expected_asserter_did: Option<String>,
     // -- local single-hop join (or, with `service` set, the local column
     // checked against a remote fetch's id-set) --
     #[serde(default)]
@@ -303,6 +313,13 @@ fn validate_relation_shape(
         return Err(PolicyError::Semantic(format!(
             "definition '{type_name}' relation '{rel_name}' sets recursive: true without \
              from_key/to_key"
+        )));
+    }
+    if is_remote && rel.expected_asserter_did.is_none() {
+        return Err(PolicyError::Semantic(format!(
+            "definition '{type_name}' relation '{rel_name}' names a remote service but has no \
+             expected_asserter_did -- required so a fetched RelationshipProof is verified against \
+             a policy-declared trust anchor, not its own self-declared signer"
         )));
     }
     Ok(())
@@ -550,10 +567,22 @@ mod tests {
     fn accepts_remote_relation_with_join_column() {
         let doc = minimal_doc(
             r#"{"document": {"table": "documents", "relations": {"creator": {
-                "target": "user", "join_column": "creator_uuid", "service": "hr-svc"
+                "target": "user", "join_column": "creator_uuid", "service": "hr-svc",
+                "expected_asserter_did": "did:key:zHrSvc"
             }}}}"#,
         );
         parse_and_validate(&doc).unwrap();
+    }
+
+    #[test]
+    fn rejects_remote_relation_missing_expected_asserter_did() {
+        let doc = minimal_doc(
+            r#"{"document": {"table": "documents", "relations": {"owner": {
+                "target": "employee", "service": "hr-svc", "join_column": "owner_uuid"
+            }}}}"#,
+        );
+        let err = parse_and_validate(&doc).unwrap_err();
+        assert!(matches!(err, PolicyError::Semantic(_)));
     }
 
     #[test]
@@ -610,7 +639,8 @@ mod tests {
     fn accepts_remote_relation_target_unresolved_locally() {
         let doc = minimal_doc(
             r#"{"document": {"table": "documents", "relations": {"owner": {
-                "target": "employee", "service": "hr-svc", "join_column": "owner_uuid"
+                "target": "employee", "service": "hr-svc", "join_column": "owner_uuid",
+                "expected_asserter_did": "did:key:zHrSvc"
             }}}}"#,
         );
         parse_and_validate(&doc).unwrap();
@@ -637,7 +667,8 @@ mod tests {
     fn rejects_a_caller_terminal_on_a_remote_relation_path() {
         let doc = minimal_doc(
             r#"{"document": {"table": "documents", "relations": {"owner": {
-                "target": "employee", "service": "hr-svc", "join_column": "owner_uuid"
+                "target": "employee", "service": "hr-svc", "join_column": "owner_uuid",
+                "expected_asserter_did": "did:key:zHrSvc"
             }}, "permissions": {"view": {
                 "allows": ["data-layer/read"], "paths": [["owner", "caller"]]
             }}}}"#,
@@ -651,7 +682,8 @@ mod tests {
     fn accepts_an_anchor_terminal_on_a_remote_relation_path() {
         let doc = minimal_doc(
             r#"{"document": {"table": "documents", "relations": {"owner": {
-                "target": "employee", "service": "hr-svc", "join_column": "owner_uuid"
+                "target": "employee", "service": "hr-svc", "join_column": "owner_uuid",
+                "expected_asserter_did": "did:key:zHrSvc"
             }}, "permissions": {"view": {
                 "allows": ["data-layer/read"], "paths": [["owner", "anchor"]]
             }}}}"#,

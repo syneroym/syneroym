@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use serde_json::json;
 use syneroym_data_keystore::KeyStore;
-use syneroym_fdae::{Policy, parse_and_validate};
+use syneroym_fdae::{CompiledSieve, DecisionTrace, Policy, parse_and_validate};
 use syneroym_ucan::{Ability, Capability, ResourceUri, SessionContext};
 use tempfile::tempdir;
 
@@ -227,13 +227,68 @@ async fn mode_b_query_excludes_unreachable_rows_not_error() {
     seed_creator_docs(store.as_ref()).await;
     let policy = single_hop_policy();
     let alice = session("did:key:alice", vec![read_cap("documents")]);
-    let auth = QueryAuth { policy: &policy, session: &alice, service_id: SERVICE_ID };
+    let auth = QueryAuth {
+        policy: &policy,
+        session: &alice,
+        service_id: SERVICE_ID,
+        resolved_sieve: None,
+    };
 
     let opts = QueryOptions { filter: None, limit: None, cursor: None };
     let outcome = store.query("documents", &opts, Some(&auth)).await.unwrap();
     let ids: Vec<_> = outcome.value.records.iter().map(|r| r.id.clone()).collect();
     assert_eq!(ids, vec!["doc-1"], "bob's document must be excluded, not erred");
     assert!(outcome.masked_fields.is_empty());
+}
+
+/// Slice B3 Phase 4: `QueryAuth.resolved_sieve`, when present, is used
+/// as-is and `compile_read` is never consulted -- a caller that already ran
+/// `plan_read` + the `resolve_fetches` orchestration + `finalize` (because
+/// the policy needed a remote relationship fetch) must not have its result
+/// silently re-derived (and potentially narrowed or widened) by the store
+/// recompiling from `policy`/`session` on its own. Proven here with a
+/// stranger session `single_hop_policy` would otherwise deny outright: with
+/// `resolved_sieve` set to an always-true predicate, her query still
+/// returns every row.
+#[tokio::test]
+async fn resolved_sieve_preempts_compile_read_and_is_used_verbatim() {
+    let store = setup_store().await;
+    seed_creator_docs(store.as_ref()).await;
+    let policy = single_hop_policy();
+    let mallory = session("did:key:mallory", vec![read_cap("documents")]);
+
+    // Baseline: without a pre-resolved sieve, `compile_read` denies mallory
+    // outright (she owns neither document).
+    let auth_local = QueryAuth {
+        policy: &policy,
+        session: &mallory,
+        service_id: SERVICE_ID,
+        resolved_sieve: None,
+    };
+    let opts = QueryOptions { filter: None, limit: None, cursor: None };
+    let baseline = store.query("documents", &opts, Some(&auth_local)).await.unwrap();
+    assert!(baseline.value.records.is_empty(), "compile_read must deny a stranger, as before");
+
+    // With a pre-resolved (always-true) sieve, the same denied session
+    // reaches every row -- proving `resolved_sieve` is used verbatim, not
+    // merely accepted and then ignored in favor of a fresh `compile_read`.
+    let resolved_sieve = CompiledSieve {
+        where_clause: "1=1".to_string(),
+        params: Vec::new(),
+        masked_fields: Vec::new(),
+        where_caveats: Vec::new(),
+        trace: DecisionTrace::default(),
+    };
+    let auth_resolved = QueryAuth {
+        policy: &policy,
+        session: &mallory,
+        service_id: SERVICE_ID,
+        resolved_sieve: Some(resolved_sieve),
+    };
+    let outcome = store.query("documents", &opts, Some(&auth_resolved)).await.unwrap();
+    let mut ids: Vec<_> = outcome.value.records.iter().map(|r| r.id.clone()).collect();
+    ids.sort();
+    assert_eq!(ids, vec!["doc-1".to_string(), "doc-2".to_string()]);
 }
 
 /// The anchor terminal reaching real SQL execution end to end, not just the
@@ -249,15 +304,24 @@ async fn mode_b_query_filters_by_anchor_not_by_the_proxying_caller() {
 
     let proxying_for_alice =
         session_with_anchor("did:key:svc-1", "did:key:alice", vec![read_cap("documents")]);
-    let auth = QueryAuth { policy: &policy, session: &proxying_for_alice, service_id: SERVICE_ID };
+    let auth = QueryAuth {
+        policy: &policy,
+        session: &proxying_for_alice,
+        service_id: SERVICE_ID,
+        resolved_sieve: None,
+    };
     let outcome = store.query("documents", &opts, Some(&auth)).await.unwrap();
     let ids: Vec<_> = outcome.value.records.iter().map(|r| r.id.clone()).collect();
     assert_eq!(ids, vec!["doc-1"], "anchored to alice, must reach alice's document");
 
     let proxying_for_a_stranger =
         session_with_anchor("did:key:svc-1", "did:key:mallory", vec![read_cap("documents")]);
-    let auth =
-        QueryAuth { policy: &policy, session: &proxying_for_a_stranger, service_id: SERVICE_ID };
+    let auth = QueryAuth {
+        policy: &policy,
+        session: &proxying_for_a_stranger,
+        service_id: SERVICE_ID,
+        resolved_sieve: None,
+    };
     let outcome = store.query("documents", &opts, Some(&auth)).await.unwrap();
     assert!(outcome.value.records.is_empty(), "anchored to a stranger, must reach nothing");
 }
@@ -268,7 +332,12 @@ async fn mode_a_check_access_denies_unreachable_row() {
     seed_creator_docs(store.as_ref()).await;
     let policy = single_hop_policy();
     let alice = session("did:key:alice", vec![read_cap("documents")]);
-    let auth = QueryAuth { policy: &policy, session: &alice, service_id: SERVICE_ID };
+    let auth = QueryAuth {
+        policy: &policy,
+        session: &alice,
+        service_id: SERVICE_ID,
+        resolved_sieve: None,
+    };
 
     assert!(
         store
@@ -281,6 +350,38 @@ async fn mode_a_check_access_denies_unreachable_row() {
             .check_access("documents", "doc-2", Ability::DATA_LAYER_READ, Some(&auth))
             .await
             .unwrap()
+    );
+}
+
+/// The `resolved_sieve` pre-emption applies to Mode A (`check_access`) too,
+/// not just Mode B: a resolved sieve is used verbatim instead of the store
+/// re-deriving one via `compile_read`.
+#[tokio::test]
+async fn resolved_sieve_preempts_compile_read_for_check_access_too() {
+    let store = setup_store().await;
+    seed_creator_docs(store.as_ref()).await;
+    let policy = single_hop_policy();
+    let mallory = session("did:key:mallory", vec![read_cap("documents")]);
+    let resolved_sieve = CompiledSieve {
+        where_clause: "1=1".to_string(),
+        params: Vec::new(),
+        masked_fields: Vec::new(),
+        where_caveats: Vec::new(),
+        trace: DecisionTrace::default(),
+    };
+    let auth = QueryAuth {
+        policy: &policy,
+        session: &mallory,
+        service_id: SERVICE_ID,
+        resolved_sieve: Some(resolved_sieve),
+    };
+    assert!(
+        store
+            .check_access("documents", "doc-2", Ability::DATA_LAYER_READ, Some(&auth))
+            .await
+            .unwrap(),
+        "a stranger `compile_read` would deny must be admitted when resolved_sieve is \
+         verbatim-true"
     );
 }
 
@@ -303,7 +404,12 @@ async fn get_of_unreachable_row_returns_none_not_error() {
     seed_creator_docs(store.as_ref()).await;
     let policy = single_hop_policy();
     let alice = session("did:key:alice", vec![read_cap("documents")]);
-    let auth = QueryAuth { policy: &policy, session: &alice, service_id: SERVICE_ID };
+    let auth = QueryAuth {
+        policy: &policy,
+        session: &alice,
+        service_id: SERVICE_ID,
+        resolved_sieve: None,
+    };
 
     let own = store.get("documents", "doc-1", Some(&auth)).await.unwrap();
     assert!(own.value.is_some());
@@ -317,7 +423,12 @@ async fn aggregate_is_row_filtered_identically_to_query() {
     seed_creator_docs(store.as_ref()).await;
     let policy = single_hop_policy();
     let alice = session("did:key:alice", vec![read_cap("documents")]);
-    let auth = QueryAuth { policy: &policy, session: &alice, service_id: SERVICE_ID };
+    let auth = QueryAuth {
+        policy: &policy,
+        session: &alice,
+        service_id: SERVICE_ID,
+        resolved_sieve: None,
+    };
 
     let result = store
         .aggregate("documents", r#"{"$group":{"_id":null,"n":{"$sum":1}}}"#, Some(&auth))
@@ -336,7 +447,12 @@ async fn aggregate_denied_when_cls_active() {
     seed_creator_docs(store.as_ref()).await;
     let policy = cls_policy();
     let alice = session("did:key:alice", vec![read_cap("documents")]);
-    let auth = QueryAuth { policy: &policy, session: &alice, service_id: SERVICE_ID };
+    let auth = QueryAuth {
+        policy: &policy,
+        session: &alice,
+        service_id: SERVICE_ID,
+        resolved_sieve: None,
+    };
 
     let err = store
         .aggregate("documents", r#"{"$group":{"_id":null,"n":{"$sum":1}}}"#, Some(&auth))
@@ -351,7 +467,12 @@ async fn masked_fields_exposed_but_rows_unmasked_in_phase_2() {
     seed_creator_docs(store.as_ref()).await;
     let policy = cls_policy();
     let alice = session("did:key:alice", vec![read_cap("documents")]);
-    let auth = QueryAuth { policy: &policy, session: &alice, service_id: SERVICE_ID };
+    let auth = QueryAuth {
+        policy: &policy,
+        session: &alice,
+        service_id: SERVICE_ID,
+        resolved_sieve: None,
+    };
 
     let opts = QueryOptions { filter: None, limit: None, cursor: None };
     let outcome = store.query("documents", &opts, Some(&auth)).await.unwrap();
@@ -374,7 +495,12 @@ async fn query_filter_referencing_a_cls_masked_field_is_denied() {
     seed_creator_docs(store.as_ref()).await;
     let policy = cls_policy();
     let alice = session("did:key:alice", vec![read_cap("documents")]);
-    let auth = QueryAuth { policy: &policy, session: &alice, service_id: SERVICE_ID };
+    let auth = QueryAuth {
+        policy: &policy,
+        session: &alice,
+        service_id: SERVICE_ID,
+        resolved_sieve: None,
+    };
 
     let opts = QueryOptions {
         filter: Some(r#"{"ssn": {"$regex": "1"}}"#.to_string()),
@@ -404,7 +530,12 @@ async fn query_filter_on_non_masked_field_still_works_when_cls_active() {
     seed_creator_docs(store.as_ref()).await;
     let policy = cls_policy();
     let alice = session("did:key:alice", vec![read_cap("documents")]);
-    let auth = QueryAuth { policy: &policy, session: &alice, service_id: SERVICE_ID };
+    let auth = QueryAuth {
+        policy: &policy,
+        session: &alice,
+        service_id: SERVICE_ID,
+        resolved_sieve: None,
+    };
 
     let opts = QueryOptions {
         filter: Some(r#"{"creator_uuid": "u-alice"}"#.to_string()),
@@ -423,7 +554,12 @@ async fn delete_many_is_row_filtered_as_a_write_operation() {
     // Alice holds only a *read* capability -- `manage` requires
     // data-layer/write, so D2's write-mode compile must deny every row.
     let alice_read_only = session("did:key:alice", vec![read_cap("documents")]);
-    let auth_ro = QueryAuth { policy: &policy, session: &alice_read_only, service_id: SERVICE_ID };
+    let auth_ro = QueryAuth {
+        policy: &policy,
+        session: &alice_read_only,
+        service_id: SERVICE_ID,
+        resolved_sieve: None,
+    };
     let deleted = store.delete_many("documents", None, Some(&auth_ro)).await.unwrap();
     assert_eq!(deleted, 0, "a read-only capability must not satisfy the write-mode sieve");
 
@@ -434,7 +570,12 @@ async fn delete_many_is_row_filtered_as_a_write_operation() {
         caveats: None,
     };
     let alice_write = session("did:key:alice", vec![write_cap]);
-    let auth_rw = QueryAuth { policy: &policy, session: &alice_write, service_id: SERVICE_ID };
+    let auth_rw = QueryAuth {
+        policy: &policy,
+        session: &alice_write,
+        service_id: SERVICE_ID,
+        resolved_sieve: None,
+    };
     let deleted = store.delete_many("documents", None, Some(&auth_rw)).await.unwrap();
     assert_eq!(deleted, 1, "only alice's own document is deletable");
     assert!(store.get("documents", "doc-1", None).await.unwrap().value.is_none());
@@ -473,7 +614,12 @@ async fn binding_order_sieve_and_filter_and_cursor_with_caveat_where() {
         caveats: Some(json!({"where": {"region": "EU"}})),
     };
     let alice = session("did:key:alice", vec![cap_with_region_caveat]);
-    let auth = QueryAuth { policy: &policy, session: &alice, service_id: SERVICE_ID };
+    let auth = QueryAuth {
+        policy: &policy,
+        session: &alice,
+        service_id: SERVICE_ID,
+        resolved_sieve: None,
+    };
 
     // Sieve (creator=alice, all 3) ∧ caveat (region=EU, doc-1/doc-3) ∧ the
     // caller's own JSON filter (kind=report, doc-1 only) ∧ cursor pagination.
@@ -503,7 +649,12 @@ async fn missing_target_table_fails_closed_not_leak() {
 
     let policy = missing_target_table_policy();
     let alice = session("did:key:alice", vec![read_cap("documents")]);
-    let auth = QueryAuth { policy: &policy, session: &alice, service_id: SERVICE_ID };
+    let auth = QueryAuth {
+        policy: &policy,
+        session: &alice,
+        service_id: SERVICE_ID,
+        resolved_sieve: None,
+    };
 
     let opts = QueryOptions { filter: None, limit: None, cursor: None };
     let err = store.query("documents", &opts, Some(&auth)).await.unwrap_err();
@@ -535,7 +686,12 @@ async fn policy_absent_definition_is_unfiltered_when_not_strict() {
 
     let policy = parse_and_validate(r#"{"version": "fdae/v1", "definitions": {}}"#).unwrap();
     let alice = session("did:key:alice", vec![]);
-    let auth = QueryAuth { policy: &policy, session: &alice, service_id: SERVICE_ID };
+    let auth = QueryAuth {
+        policy: &policy,
+        session: &alice,
+        service_id: SERVICE_ID,
+        resolved_sieve: None,
+    };
 
     let opts = QueryOptions { filter: None, limit: None, cursor: None };
     let outcome = store.query("unrelated", &opts, Some(&auth)).await.unwrap();
@@ -559,7 +715,12 @@ async fn differently_cased_collection_name_does_not_bypass_the_sieve() {
     seed_creator_docs(store.as_ref()).await;
     let policy = single_hop_policy();
     let mallory = session("did:key:mallory", vec![]);
-    let auth = QueryAuth { policy: &policy, session: &mallory, service_id: SERVICE_ID };
+    let auth = QueryAuth {
+        policy: &policy,
+        session: &mallory,
+        service_id: SERVICE_ID,
+        resolved_sieve: None,
+    };
 
     let opts = QueryOptions { filter: None, limit: None, cursor: None };
     let outcome = store.query("DOCUMENTS", &opts, Some(&auth)).await.unwrap();
@@ -591,7 +752,12 @@ async fn adversarial_subject_did_and_caveat_value_are_bound_not_interpolated() {
         caveats: Some(json!({"where": {"kind": "x'; DROP TABLE documents; --"}})),
     };
     let attacker = session("attacker' OR '1'='1", vec![attacker_cap]);
-    let auth = QueryAuth { policy: &policy, session: &attacker, service_id: SERVICE_ID };
+    let auth = QueryAuth {
+        policy: &policy,
+        session: &attacker,
+        service_id: SERVICE_ID,
+        resolved_sieve: None,
+    };
 
     let opts = QueryOptions { filter: None, limit: None, cursor: None };
     let outcome = store.query("documents", &opts, Some(&auth)).await.unwrap();
@@ -646,7 +812,12 @@ async fn two_capabilities_with_conflicting_caveats_currently_narrow_to_zero_rows
     // the same resource -- today's (undesired) behavior ANDs both caveats
     // onto the sieve, so even the unrestricted grant's rows are suppressed.
     let alice = session("did:key:alice", vec![unrestricted_cap, eu_only_cap]);
-    let auth = QueryAuth { policy: &policy, session: &alice, service_id: SERVICE_ID };
+    let auth = QueryAuth {
+        policy: &policy,
+        session: &alice,
+        service_id: SERVICE_ID,
+        resolved_sieve: None,
+    };
 
     let opts = QueryOptions { filter: None, limit: None, cursor: None };
     let outcome = store.query("documents", &opts, Some(&auth)).await.unwrap();
@@ -679,7 +850,12 @@ async fn strict_mode_never_logs_an_unvalidated_collection_name() {
     let policy =
         parse_and_validate(r#"{"version": "fdae/v1", "strict": true, "definitions": {}}"#).unwrap();
     let alice = session("did:key:alice", vec![]);
-    let auth = QueryAuth { policy: &policy, session: &alice, service_id: SERVICE_ID };
+    let auth = QueryAuth {
+        policy: &policy,
+        session: &alice,
+        service_id: SERVICE_ID,
+        resolved_sieve: None,
+    };
 
     let logs = Arc::new(Mutex::new(Vec::new()));
     let logs_clone = logs.clone();

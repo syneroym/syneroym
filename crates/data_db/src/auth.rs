@@ -2,7 +2,7 @@
 //! paths (ADR-0017, M04B Slice B2 Phase 2).
 
 use serde_json::Value;
-use syneroym_fdae::Policy;
+use syneroym_fdae::{CompiledSieve, Policy};
 use syneroym_ucan::SessionContext;
 
 use crate::host_store::DataLayerError;
@@ -15,6 +15,16 @@ pub struct QueryAuth<'a> {
     pub policy: &'a Policy,
     pub session: &'a SessionContext,
     pub service_id: &'a str,
+    /// Pre-resolved by the caller (Slice B3 Phase 4), via
+    /// `syneroym_fdae::plan_read` + the `resolve_fetches` orchestration
+    /// (`syneroym-rpc`) + `syneroym_fdae::finalize`, when the policy's
+    /// selected paths needed a remote relationship fetch -- `crates/fdae`'s
+    /// `compile_read` cannot resolve one itself (stays proxy-free), so a
+    /// caller with `ServiceProxy` access resolves it before ever reaching
+    /// this store. `None` (the common, fully-local case) preserves the
+    /// original behavior: the store compiles the sieve itself via
+    /// `compile_read`, unchanged since Phase 2.
+    pub resolved_sieve: Option<CompiledSieve>,
 }
 
 /// A read result plus the CLS field-mask the host must apply as its final

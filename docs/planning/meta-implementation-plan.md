@@ -255,6 +255,66 @@ until this lands.
 
 ---
 
+## Interstitial: Live App-Context Registry (between Milestone 4 and Milestone 5)
+
+> Not yet started. Reserved here (2026-07-24) while planning M04B Slice B3
+> Phase 4, so the gap below is tracked as committed future work rather than
+> left as an informal note. No ADR/plan doc yet — per this file's own
+> "Standard Milestone Documentation Format," a full `task.md` is generated
+> when work begins.
+
+**Goal:** Give `[PLT-DAP-01]`'s "app-context registry" — named in
+`system-architecture.md`'s "Logical Names and Public Aliases" section and in
+[ADR-0017](../decisions/0017-fdae-policy-schema-and-compilation.md) §1 as a
+mechanism that "already exists" — a real, **live** implementation, so a
+logical service name (e.g. a policy's `Relation.service`, or a manifest
+dependency) resolves to a DID backed by actual current deployment state, not a
+hand-populated test double.
+
+**Verified current state (2026-07-24).** It does not exist. `crates
+/app_orchestration/src/resolver.rs`'s `AppRegistry` trait +
+`LogicalResolver`/`TopologyCache` is the right shape (`LogicalServiceRef
+{app_instance_id, service_name} -> ServiceId`, topology-mode-aware selection
+for `Singleton`/`Redundant`/`Sharded`), but its only implementation,
+`StaticInventory`, is an in-memory map nothing calls `.register()` on — no
+deploy or reconcile code path populates it, and it has zero production
+callers today (only re-exported from `app_orchestration::lib`). The
+`Reconciler`/`DeploymentJournal` (`reconcile.rs`) compute desired-vs-active
+deployment diffs but do not track per-service health, and nothing currently
+publishes a live topology entry when a service actually comes up.
+
+**Scope:** an `AppRegistry` impl backed by the orchestrator's own live
+deployment/reconciliation state (populated as services deploy/undeploy and,
+ideally, as health checks pass/fail — health checking itself does not exist
+yet either and may need to be scoped in or explicitly split out), wired so a
+deploy-time or query-time logical-name lookup reflects what is actually
+running, not a static snapshot.
+
+**Why it's not a Slice B3 deliverable.** It is an `app_orchestration`-crate,
+cross-milestone concern (also serves `[PLT-DAP-01]`'s physical-sharding
+transparency goal, not just FDAE), not FDAE engine work — the same reasoning
+that kept `[FND-CFG]` out of M04B above. Building it as a Slice-B3-Phase-4
+side quest would both under-scope it (B3 only needs single-DID resolution, not
+topology-mode/sharding selection) and block a slice on work that belongs to a
+different owner.
+
+**What Slice B3 Phase 4 does in the interim, and why that's acceptable.**
+`RemoteFetch.service` (a policy-declared name) is resolved the same way
+`ProxyRequest.target_service` already is today — directly, through the
+existing `EndpointRegistry`/community-registry DID lookup `ProxyRouter`
+already performs for every other proxied call — with no logical-name
+indirection layer. This is a real, working mechanism for the deployment
+shapes M04B supports (a policy names a service identifier the proxy can
+already resolve); it is not a stub. The gap this interstitial closes is
+specifically the *logical name* indirection (`org-service` -> whichever DID
+currently backs it), which nothing in the platform provides yet for *any*
+consumer, FDAE included. Recorded in
+[slice-b3-implementation-plan.md](milestones/M04B-fdae-policy/slice-b3-implementation-plan.md)
+§1 and task.md's Decision Register, not `deferred-backlog.md` — this is
+committed platform work, not an item that can be safely dropped.
+
+---
+
 ## Build-Order Amendment: M5–M7 Resequencing (2026-07-16)
 
 > **Optimization target:** the end-state at M7 close, not the wall-clock

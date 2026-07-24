@@ -512,6 +512,7 @@ async fn build_route_handler_deps(
         node_identity,
     )
     .await?;
+    let control_plane_service = Arc::new(control_plane_service);
 
     Ok(RouteHandlerDeps {
         key_store,
@@ -520,7 +521,8 @@ async fn build_route_handler_deps(
         messaging_broker,
         native_dispatch,
         http_routes,
-        control_plane_service: Arc::new(control_plane_service),
+        control_plane_service: control_plane_service.clone(),
+        control_plane: Some(control_plane_service),
     })
 }
 
