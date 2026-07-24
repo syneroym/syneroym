@@ -518,6 +518,47 @@ deny) from ⛔ Deferred to ✅ with evidence.
   to `None` → caller-only semantics) is *also* fail-closed but silent; if chosen,
   it must still emit a `DecisionTrace` so the drop is observable. **Pick before
   writing the invariant** — it is the crux of the confused-deputy defense. (§2.2)
+- **D-B3-8 — Phase 4 must verify `asserter_did` against an independently
+  derived expectation, not the proof's own embedded field (load-bearing).**
+  Raised post-Phase-3, after per-service signing identity landed
+  (`Identity::derive_service_identity(owner_did, service_id)` — see
+  status.md's "Per-service signing identity" entry). Every current test
+  verifies a `RelationshipProof`'s signature against the `asserter_did`
+  carried *inside that same proof* — self-referential: any signer can embed
+  its own DID and sign under the matching key, and it "verifies." Distinct
+  per-service asserter DIDs are inert as a security property until the
+  *verifying* side independently computes the DID it expects for the
+  service it queried (`derive_did_key` of
+  `derive_service_identity(owner_did, service_id).public_key()`, using the
+  `service` and `owner_did` the policy/registry name for that fetch, not a
+  value the response supplies) and rejects a mismatch. `resolve_fetches`
+  (§4, not yet built) is where this must land — it is the only place that
+  both issues the fetch (so it knows which service/owner it targeted) and
+  receives the proof. Without this check, per-service signing narrows *who
+  can plausibly have produced a valid-looking proof* but does not prevent
+  an impersonating signer from self-declaring a false `asserter_did` and
+  passing self-verification. (§4)
+- **D-B3-9 — which principal's capabilities gate A1, when the connection is
+  a real cross-service proxy (open, currently a no-op).** Today
+  `resolve_relation`'s A1 branch gates on `invocation.caller.session
+  .capabilities` (the actual connection's capabilities) while evaluating
+  row-filtering against `req.principal` (the anchor) as an overridden
+  `subject_did` — see `synsvc_native.rs`'s `resolve_relation`. Every
+  existing caller is a direct native-dispatch test caller who *is* the
+  effective principal, so "the connection's capabilities" and "the
+  anchor's capabilities" coincide and the distinction is currently a
+  no-op. Once Phase 4's real proxy exists, the connection calling a remote
+  service's `resolve-relation` is the *proxying* service (e.g. `svc-A`
+  fetching on `alice`'s behalf from `hr-svc`), not `alice` directly — its
+  own connection capabilities are not `alice`'s delegated grants. Phase 4
+  must settle whether A1 requires (a) a capability forwarded/provable as
+  the anchor's own (needs a forwarding mechanism not yet designed), or (b)
+  the proxying service's own capability on the target resource (a
+  service-to-service grant, closer to today's literal behavior), or falls
+  back to A2 structural resolution whenever the proxying service holds
+  none of its own. Settle before Phase 4's fetch orchestration ships, since
+  it changes what a policy author must grant for cross-service reads to
+  work at all. (§4)
 
 ---
 

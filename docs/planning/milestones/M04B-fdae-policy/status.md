@@ -2377,3 +2377,18 @@ the full binary standalone: 31/31 pass). `mise run test:e2e` -- not run;
 this change touches only the native `resolve-relation` RPC's internal
 signing identity, no WIT/`wasm32-wasip2` change, no reference-scenario-
 visible behavior.
+
+**Carried into Phase 4 (recorded as D-B3-8/D-B3-9 in
+`slice-b3-implementation-plan.md` §7, not yet resolved):** distinct
+per-service asserter DIDs are a guarantee only once the *verifying* side
+checks them -- today every verification is self-referential (a proof
+verifies against the `asserter_did` embedded in that same proof, so any
+signer can self-declare its own DID and pass). Phase 4's `resolve_fetches`
+must independently derive the expected asserter for the service/owner it
+queried and reject a mismatch (D-B3-8, load-bearing). Separately,
+`resolve_relation`'s A1 branch gates on the connection's capabilities
+while row-filtering against the anchor -- a no-op today since every test
+caller *is* the effective principal, but Phase 4's real service-to-service
+proxy will make the connection's identity (the proxying service) diverge
+from the anchor's, so which principal's capability must gate A1 needs
+settling before the fetch orchestration ships (D-B3-9).

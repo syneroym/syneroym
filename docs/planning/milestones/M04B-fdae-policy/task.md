@@ -511,7 +511,13 @@ add a surface nothing in B3 consumes. The calling side of the fetch
 (`resolve_fetches` orchestration, `ProxyRequest`, timeout→deny,
 `DecisionTrace` provenance, reference-scenario steps 22–23, the federated-
 fetch perf budget, D-04-02-h ingress (ii) closure) is **Phase 4**, not yet
-done.
+done. Phase 4 must also close **D-B3-8** (verify `asserter_did` against an
+independently derived expectation, not the proof's own self-declared
+field — otherwise per-service signing narrows but doesn't prevent
+impersonation) and settle **D-B3-9** (which principal's capabilities gate
+A1 once the connection is a real cross-service proxy, currently a no-op
+because every existing caller *is* the effective principal) — both in
+`slice-b3-implementation-plan.md` §7.
 
 **Post-review hardening** (2026-07-24): an independent review of Phase 2/3
 (commit `279d284`) surfaced nine findings (two blocking, five correctness,
