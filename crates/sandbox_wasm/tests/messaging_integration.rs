@@ -212,10 +212,15 @@ async fn test_guest_delivery_latency_budget() {
     // `messaging_client_e2e.rs`'s native-subscriber budget test applies to
     // its own warm-up. Discard these from the budget measurement.
     const WARMUP: u32 = 3;
+    // A hang-detection watchdog, not a latency assertion (that's the loose
+    // p99 check below) -- generous on purpose so a slow, contended CI
+    // runner doesn't fail the test over ordinary scheduler noise. Only a
+    // delivery that genuinely never happens should ever hit this.
+    const DELIVERY_HANG_TIMEOUT: Duration = Duration::from_secs(30);
     for i in 0..WARMUP {
         call(&engine, SERVICE_A, "publish-to", serde_json::json!(["orders/new", format!("w{i}")]))
             .await;
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let deadline = tokio::time::Instant::now() + DELIVERY_HANG_TIMEOUT;
         loop {
             let received =
                 call(&engine, SERVICE_B, "get-received-messages", serde_json::json!([])).await;
@@ -236,7 +241,7 @@ async fn test_guest_delivery_latency_budget() {
         call(&engine, SERVICE_A, "publish-to", serde_json::json!(["orders/new", format!("m{i}")]))
             .await;
 
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let deadline = tokio::time::Instant::now() + DELIVERY_HANG_TIMEOUT;
         loop {
             let received =
                 call(&engine, SERVICE_B, "get-received-messages", serde_json::json!([])).await;
