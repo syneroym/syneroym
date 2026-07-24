@@ -587,6 +587,17 @@ deny) from ⛔ Deferred to ✅ with evidence.
   derivation. `resolve_fetches` rejects a `RelationshipProof` whose
   `asserter_did` doesn't match this declared value. A pre-release schema
   tightening, same class as Phase 2's required `join_column`. (§4)
+  **Residual gap, flagged in Phase 4 review (2026-07-24), not yet closed:**
+  this resolves *verification* (the check is cryptographically sound once
+  the policy holds the right value) but not *discovery* — a policy author on
+  the requesting node has no way to learn the remote's per-service signing
+  DID (itself derived from the remote node's own private key over
+  `(owner_did, service_id)`) short of an out-of-band channel. There is no
+  publication/lookup mechanism in this phase. Every passing end-to-end test
+  only works because both services share one in-process node identity, so
+  they can compute the same derived DID directly — genuine cross-node fetch,
+  the reason B3 exists, is not yet operable end-to-end. Recorded in
+  [deferred-backlog.md](../../deferred-backlog.md) §3.
 - **D-B3-9 — which principal's capabilities gate A1, when the connection is
   a real cross-service proxy (open, currently a no-op).** Today
   `resolve_relation`'s A1 branch gates on `invocation.caller.session

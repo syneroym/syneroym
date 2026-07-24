@@ -9,6 +9,7 @@
 use std::time::Duration;
 
 use syneroym_fdae::{FetchResult, RemoteFetch, RemoteFetchTrace};
+use tokio::time;
 
 use crate::{
     CallOrigin, CallerContext, ProxyError, ProxyProtocol, ProxyRequest, ServiceProxy,
@@ -97,11 +98,25 @@ async fn resolve_one_fetch(
         idempotent: true,
         timeout: Some(FDAE_FETCH_TIMEOUT),
     };
-    let response = proxy.invoke(request).await.map_err(|source| FetchError::Proxy {
-        service: fetch.service.clone(),
-        relation: fetch.relation.clone(),
-        source,
-    })?;
+    // `request.timeout` above is *advisory* -- it's honored by the
+    // production `ProxyRouter`, but `proxy` here is any `dyn ServiceProxy`,
+    // and nothing stops a different implementation from ignoring the field.
+    // This crate's own fail-closed contract must not depend on that: wrap
+    // the call in a deadline it enforces itself, so a `ServiceProxy` that
+    // never returns still denies closed after `FDAE_FETCH_TIMEOUT` rather
+    // than hanging the read indefinitely.
+    let response = time::timeout(FDAE_FETCH_TIMEOUT, proxy.invoke(request))
+        .await
+        .map_err(|_| FetchError::Proxy {
+            service: fetch.service.clone(),
+            relation: fetch.relation.clone(),
+            source: ProxyError::Timeout(FDAE_FETCH_TIMEOUT),
+        })?
+        .map_err(|source| FetchError::Proxy {
+            service: fetch.service.clone(),
+            relation: fetch.relation.clone(),
+            source,
+        })?;
     let proof: RelationshipProof =
         serde_json::from_value(response).map_err(|source| FetchError::MalformedProof {
             service: fetch.service.clone(),
@@ -135,7 +150,10 @@ async fn resolve_one_fetch(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use std::{
+        future,
+        sync::{Arc, Mutex},
+    };
 
     use syneroym_fdae::Mode;
     use syneroym_identity::{Identity, substrate};
@@ -256,7 +274,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_fetches_denies_on_a_proxy_timeout() {
+    async fn resolve_fetches_denies_on_a_proxy_error() {
         let stub = Arc::new(StubProxy {
             response: Mutex::new(Some(Err("boom".to_string()))),
             received: Mutex::new(None),
@@ -266,6 +284,42 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, FetchError::Proxy { .. }));
+    }
+
+    /// A `ServiceProxy` that never resolves -- `request.timeout` is only
+    /// advisory (honored by the production `ProxyRouter`, not enforced by
+    /// this crate), so `resolve_one_fetch` must enforce `FDAE_FETCH_TIMEOUT`
+    /// itself. Distinct from `resolve_fetches_denies_on_a_proxy_error`
+    /// above, which tests an immediate error, not an elapsed deadline.
+    #[derive(Debug)]
+    struct StallingProxy;
+
+    #[async_trait::async_trait]
+    impl ServiceProxy for StallingProxy {
+        async fn invoke(&self, _request: ProxyRequest) -> Result<serde_json::Value, ProxyError> {
+            future::pending().await
+        }
+    }
+
+    // Paused virtual time: tokio auto-advances the clock to the next timer
+    // once the test task is blocked on nothing but that timer, so this
+    // resolves instantly in wall-clock terms despite waiting out the full
+    // `FDAE_FETCH_TIMEOUT` in virtual time.
+    #[tokio::test(start_paused = true)]
+    async fn resolve_fetches_denies_on_an_actually_elapsed_timeout() {
+        let caller = test_caller();
+        let err = resolve_fetches(&[fetch("did:key:zAnything")], &caller, &StallingProxy)
+            .await
+            .unwrap_err();
+        match err {
+            FetchError::Proxy { source: ProxyError::Timeout(d), .. } => {
+                assert_eq!(d, FDAE_FETCH_TIMEOUT);
+            }
+            other => panic!(
+                "a proxy that never resolves must be denied by this crate's own deadline, not \
+                 hang: {other:?}"
+            ),
+        }
     }
 
     #[tokio::test]

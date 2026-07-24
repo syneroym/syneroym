@@ -2194,6 +2194,124 @@ async fn plan_read_resolve_fetches_finalize_join_end_to_end_through_a_real_proxy
     assert!(sieve.trace.remote_fetches[0].valid_until_secs > 0);
 }
 
+/// The test above drives `plan_read` -> `resolve_fetches` -> `finalize` ->
+/// raw SQL by hand, bypassing `resolve_query_auth`. This is the same join,
+/// but through `SynSvcNativeService::dispatch`'s real `"query"` handler --
+/// the production method the fetch-failure deny test above exercises for its
+/// (deny) branch -- so the assembled success branch (`resolve_query_auth`
+/// building a `QueryAuth` whose `resolved_sieve` actually returns
+/// correctly-filtered rows via `store.query`) has coverage through the
+/// dispatch method too, not just through its individually-tested pieces.
+#[tokio::test]
+async fn native_dispatch_query_resolves_a_cross_service_fetch_end_to_end() {
+    let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
+    let (proxy_router, expected_asserter_did, _native_dispatch, _hr_temp_dir) =
+        build_hr_svc_proxy_router(node_identity.clone(), "did:key:zHrSvcOwner3").await;
+
+    let local_service_id = "app-svc-query-through-dispatch";
+    let local_policy = parse_and_validate(&format!(
+        r#"{{
+            "version": "fdae/v1",
+            "definitions": {{
+                "document": {{
+                    "table": "documents",
+                    "relations": {{"owner": {{
+                        "target": "employee", "service": "hr-svc", "join_column": "owner_uuid",
+                        "expected_asserter_did": "{expected_asserter_did}"
+                    }}}},
+                    "permissions": {{
+                        "view": {{"allows": ["data-layer/read"], "paths": [["owner", "anchor"]]}}
+                    }}
+                }}
+            }}
+        }}"#
+    ))
+    .unwrap();
+
+    let key_store = Arc::new(KeyStore::new());
+    let temp_dir = tempfile::tempdir().unwrap();
+    let storage_provider = Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+    let blob_provider: Arc<dyn BlobProvider> =
+        Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+    let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+    let service_proxy: Arc<dyn ServiceProxy> = proxy_router;
+    let app_service = SynSvcNativeService::new(
+        local_service_id.to_string(),
+        key_store,
+        storage_provider,
+        blob_provider,
+        messaging_broker,
+        Some(Arc::new(local_policy)),
+        node_identity,
+        "did:key:zAppSvcOwner",
+        Arc::downgrade(&service_proxy),
+    );
+
+    let seeder = test_caller("did:key:z6MkQueryThroughDispatchSeeder");
+    app_service
+        .dispatch(NativeInvocation {
+            interface: "data-layer".to_string(),
+            method: "create-collection".to_string(),
+            params: json!({"name": "documents"}),
+            caller: seeder.clone(),
+        })
+        .await
+        .unwrap();
+    for (id, owner_uuid) in [("doc-1", "emp-alice"), ("doc-2", "emp-bob")] {
+        app_service
+            .dispatch(NativeInvocation {
+                interface: "data-layer".to_string(),
+                method: "put".to_string(),
+                params: json!({
+                    "collection": "documents",
+                    "value": {
+                        "id": id,
+                        "payload": json!({"owner_uuid": owner_uuid}).to_string().into_bytes()
+                    }
+                }),
+                caller: seeder.clone(),
+            })
+            .await
+            .unwrap();
+    }
+
+    // Alice's proxying caller, same shape as the hand-wired join test above.
+    let proxying_caller = CallerContext {
+        caller_did: "did:key:svc-A".to_string(),
+        app_instance: None,
+        session: SessionContext {
+            subject_did: "did:key:svc-A".to_string(),
+            anchor_did: Some("did:key:alice".to_string()),
+            capabilities: vec![Capability {
+                with: native_fdae_resource(local_service_id, "documents"),
+                can: Ability(Ability::DATA_LAYER_READ.to_string()),
+                caveats: None,
+            }],
+            ..Default::default()
+        },
+        auth: AuthLevel::Ucan,
+        proof: None,
+    };
+
+    let resp = app_service
+        .dispatch(NativeInvocation {
+            interface: "data-layer".to_string(),
+            method: "query".to_string(),
+            params: json!({"collection": "documents", "opts": {}}),
+            caller: proxying_caller,
+        })
+        .await
+        .unwrap();
+    let records = resp.payload["records"].as_array().expect("query must return records");
+    assert_eq!(
+        records.len(),
+        1,
+        "only alice's own document must be reachable through a real dispatch(\"query\") call: {:?}",
+        resp.payload
+    );
+    assert_eq!(records[0]["id"], "doc-1");
+}
+
 /// A `RelationshipProof` signed by an identity the policy does *not* name in
 /// `expected_asserter_did` (e.g. an impersonator standing up its own service
 /// at the same logical name) must be rejected, not silently trusted off its

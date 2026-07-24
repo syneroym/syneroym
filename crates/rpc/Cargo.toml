@@ -20,6 +20,7 @@ syneroym-identity.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 
 [[bench]]
 name = "framing"
