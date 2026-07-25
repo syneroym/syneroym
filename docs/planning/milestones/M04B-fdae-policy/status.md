@@ -2641,4 +2641,195 @@ returns (normal drop order) instead of leaking.
   startup wiring directly (the new `ControlPlaneService.service_proxy`
   `OnceLock` set call) -- worth confirming the substrate itself still comes
   up cleanly, not just that FDAE behavior is unchanged for these fixtures.
+
+### Phase 5 -- Two-real-substrate e2e, federated-hop perf, matrix/traceability sign-off ✅ (2026-07-25)
+
+Branch: `feat/m04b-slice-b3-phase5`. Plan:
+[slice-b3-implementation-plan.md](slice-b3-implementation-plan.md) §8 item 5,
+§9. Closes out Slice B3: reference scenario step 23, the timeout/mismatch
+deny-closed case, and the federated-hop perf budget, all proven across two
+genuinely independent `syneroym-substrate` instances -- not the in-process
+`ProxyRouter` Phase 4's own tests already cover.
+
+#### What was delivered
+
+- **`crates/substrate/tests/federated_fdae_e2e.rs`** (new, 672 lines) --
+  `federated_fdae_fetch_across_two_real_substrates`, a real two-node
+  integration test in the established `crates/substrate/tests/*.rs` idiom
+  (each file boots one or more full substrate instances in-process via
+  `syneroym_substrate::init`/`run_with_signal`, per `http_passthrough_e2e.rs`/
+  `basic_lifecycle.rs`'s own precedent -- see "Decisions" below for why this,
+  not a new Playwright scenario, is the right vehicle). A local `Node` helper
+  (adapted from `basic_lifecycle.rs`'s own `SubstrateTestContext`, since only
+  three of five `crates/substrate/tests/*.rs` files share the one in
+  `tests/common/mod.rs`, and this test needs two extra capabilities neither
+  copy exposes: an optional shared registry URL and a way to read the node's
+  own identity back off disk for computing `expected_asserter_did`) boots:
+  - **Node A** (ports 8000/8001/8002) -- self-referential coordinator +
+    registry, **owned** (`iam.admin_ucan_root` set to the deploying owner's
+    DID -- see "Decisions" below for why this is required, not incidental).
+    Hosts an `hr-svc`-equivalent native service (deployed via the real
+    `orchestrator/deploy` JSON-RPC call, a `ServiceConfig.fdae_policy`
+    `DocumentSource::Inline`) with an `employee` definition declaring
+    `resolvable_without_capability: true` (A2).
+  - **Node B** (ports 8100/8101/8102) -- its own coordinator role stays up
+    but unused; `substrate.registry_url` and `parent_coordinator.iroh` both
+    point at Node A's, so cross-node discovery/dialing goes through one
+    shared registry and one shared relay (also see "Decisions"). Hosts a
+    `documents` service whose policy's `owner` relation names Node A's
+    service as remote, trusting the real, independently-computed
+    `expected_asserter_did`.
+  - Alice (a fresh `Identity`) deploys and owns Node B's service herself,
+    self-issuing a root `CapabilityToken` (no delegation chain, ADR-0015 A6:
+    an owner-rooted capability needs no node-wide admin) granting herself
+    `data-layer/read` on her own `documents` collection, then queries it for
+    real over the wire.
+- Publishes each deployed app's own `EndpointInfo` into the shared registry
+  via a direct `POST {registry_url}/register`, self-signed by the app's own
+  identity -- the same pattern `basic_lifecycle.rs`'s own
+  `register_app_in_registry` already established (independently confirmed,
+  not invented for this phase), needed because `ProxyRouter::invoke_remote`
+  resolves a target service by its own registry entry, not by the hosting
+  node's.
+- A second scenario in the same test proves Failure/Security matrix row 6's
+  cross-substrate case: a second Node B app whose policy declares the
+  *wrong* `expected_asserter_did` gets a real, correctly-signed proof from
+  Node A rejected over the real network hop, surfacing as a hard deny (see
+  "Decisions" on why this is an error, not an empty result).
+
+#### Decisions made this session
+
+- **A real two-substrate Rust integration test, not a new Playwright
+  scenario.** `crates/substrate/tests/*.rs` already treats one
+  in-process-booted full substrate as "a real substrate instance" (see
+  `http_passthrough_e2e.rs`'s own doc comment); running two of them in one
+  test, each with an independent identity/ports/storage and a real Iroh QUIC
+  hop between them, satisfies "≥2 substrates" without inventing a new
+  harness. The existing Playwright multi-hop suite tests a different thing
+  (WebRTC coordinator relay hops for a browser client), not FDAE, and
+  extending it would have meant standing up a WASM miniapp with an FDAE
+  policy plus a second coordinator topology from scratch for no proof-value
+  this approach doesn't already deliver more directly.
+- **Node A must be owned, not left in the default unowned-bootstrap
+  posture.** Discovered by a real failing run, not anticipated: on an
+  unowned substrate, `build_caller` issues every verified caller a bare
+  `substrate:<node_did>` capability for the free `orchestrator/*` abilities
+  (M04A B7a F4). `resolve_relation`'s A1/A2 fork (B3-07) treats *any*
+  substrate-scoped capability as "holds a capability scoped to this
+  resource" regardless of ability, so that free capability always routes to
+  A1 -- which then correctly denies (Alice really holds nothing on Node A),
+  but for the wrong reason, permanently defeating A2's
+  `resolvable_without_capability` path. Fixed in the test by giving Node A
+  an explicit `iam.admin_ucan_root`; recorded as its own `deferred-backlog.md`
+  entry (existing Phase 3 behavior, not something this phase's own code
+  introduced, so not fixed here).
+- **Both nodes share one relay, not each its own.** Tried each node with
+  its own self-referential relay first; two independently-relayed loopback
+  Iroh endpoints cost seconds per connection attempt (see the perf finding
+  below) -- switching Node B's `parent_coordinator.iroh` to Node A's relay
+  made no measurable difference, ruling out "different relay homes" as the
+  cause (see the next decision) but is still the more realistic shape for
+  two nodes actually meant to reach each other, so kept.
+  `coordinator_iroh`'s "/v1/info" server always binds
+  `http_bind_address`'s port **+ 10** (`spawn_http_info_server`), which
+  collided across nodes at the first port choice -- the hundred-port gap
+  between Node A's and Node B's port blocks avoids it.
+- **The federated-hop perf budget is measured and documented, not
+  hard-asserted at 50 ms.** Every iteration succeeded on its first
+  connection attempt (zero "proxy call failed; retrying" log lines), so the
+  ~4.4-4.9 s p50/p99 measured here is genuine fresh-QUIC-connection
+  establishment cost on this sandboxed test environment, not a retry storm
+  or a correctness bug -- confirmed by trying both a per-node relay and a
+  shared relay with no change. `IrohHop` (`crates/router/src/proxy.rs`)
+  opens a brand-new connection per `resolve_fetches` call with no reuse; the
+  test's own `FETCH_LATENCY_SANITY_CEILING` (30 s) is a hang/regression
+  backstop, not the task.md budget, which is recorded here instead:
+  **not met** on this environment, for a transport-layer reason recorded as
+  its own `deferred-backlog.md` entry (`IrohHop` connection reuse), separate
+  from and more fundamental than the already-recorded fetch-parallelism
+  item.
+- **A cross-service fetch failure (asserter mismatch, timeout) asserts as a
+  transport-level `Err`, not an empty `result`.** Confirmed against
+  `SynSvcNativeService::resolve_query_auth`'s documented behavior and
+  `native_dispatch_identity.rs`'s own
+  `native_dispatch_denies_closed_on_a_cross_service_fetch_failure`: this
+  failure mode is `DataLayerError::PermissionDenied`, a real JSON-RPC error
+  (code -32010) -- deliberately different from an ordinary "row not
+  reachable" deny (ADR-0007's "no result is a valid outcome"), since it is
+  an infrastructure/trust failure, not a legitimate absence.
+  `SyneroymClient::request` deserializes strictly into
+  `JsonRpcResponse{result: Value, ..}` (no `error` field), so the wire's
+  error envelope surfaces as a deserialize-level `Err` here rather than a
+  structured error code -- the test asserts `Err` itself, not its content.
+- **Doc-hygiene, per the B3 plan §10 checklist:** all three
+  "audience of the first non-root token" supersessions were already fixed
+  in Phase 1 (checked this session, not re-done); the `route_handler/
+  dispatch.rs` inventory correction was already applied in Phase 4's own
+  status entry. Nothing left outstanding from that checklist.
+
+#### Tests
+
+`crates/substrate/tests/federated_fdae_e2e.rs` (new, 1 test exercising both
+the success and the timeout/mismatch-deny scenarios in one real two-node
+setup, since standing up two full substrates per scenario would roughly
+double an already ~50 s test for no independent proof-value):
+`federated_fdae_fetch_across_two_real_substrates` -- deploys real services
+on two independent substrates via the real `orchestrator/deploy` JSON-RPC
+call, seeds data over the wire, queries `documents` on Node B as a real
+wire caller (a self-issued root `CapabilityToken`, no hand-built
+`CallerContext`), and asserts: (1) only alice's own document comes back,
+proving the real cross-substrate `plan_read` -> `resolve_fetches` (real
+Iroh QUIC hop) -> `finalize` join; (2) the federated-hop latency, measured
+and printed, against a generous hang-backstop rather than the task.md
+budget (see "Decisions"); (3) a second Node B app whose policy declares the
+wrong `expected_asserter_did` gets a hard deny, not an empty-but-successful
+result or a leaked row, proving Failure/Security matrix row 6's timeout/
+mismatch case cross-substrate.
+
+#### Explicitly out of Phase 5 scope (recorded, not silently dropped)
+
+- **The federated-hop perf budget itself (< 50 ms p99)** -- not met on this
+  environment; the gap is a transport-layer connection-reuse gap
+  (`deferred-backlog.md`), not an FDAE correctness issue, and not something
+  this phase's own scope (proving the mechanism works, and measuring it
+  honestly) extends to fixing.
+- **`resolve_relation`'s A1/A2 fork on an unowned substrate** -- discovered,
+  worked around in the test (Node A is owned), recorded in
+  `deferred-backlog.md`; not fixed, since it is existing Phase 3 behavior
+  this phase's own code did not introduce.
+- **D-04-02-h (both ingresses)** -- unaffected by this phase; stays open per
+  Phase 4's own disposition. Step 22's "…never reaches the WASM guest" half
+  of the reference scenario stays open for the same reason.
+- **Automated cross-node `expected_asserter_did` discovery/publication** --
+  this phase's test reads the DID directly off the node it itself
+  constructed (the same access a real deploying operator would have, not a
+  bypass); a real lookup/publication *mechanism* so a policy author never
+  needs an out-of-band step at all is still not built (`deferred-backlog.md`,
+  updated this phase to correct its own now-stale "not yet operable
+  end-to-end" claim).
+
+#### Verification evidence
+
+- `cargo +nightly fmt --all` -- clean.
+- `cargo clippy --workspace --all-targets --all-features` -- zero warnings.
+- `cargo test --test federated_fdae_e2e -p syneroym-substrate` (sandbox
+  disabled, real port binds) -- **1 passed**, run twice back to back to
+  confirm non-flakiness (48.41 s, 50.28 s); federated fetch latency both
+  runs: p50 ≈ 4.46-4.50 s, p99 ≈ 4.48-4.52 s (5 iterations each; see
+  "Decisions" for why this doesn't meet the < 50 ms budget and why that's
+  not treated as a Phase 5 regression).
+- `cargo test --workspace` -- unchanged from Phase 4's baseline aside from
+  the new test binary; the same nine pre-existing sandbox-environmental
+  targets fail under this CLI's default network sandbox, identical set and
+  error class to every prior phase.
+- `mise run test:e2e` -- run (sandbox disabled), **12/12 green**, matching
+  the established baseline; this phase adds no WIT/guest-visible change and
+  touches no substrate startup wiring, so this reconfirms no regression
+  rather than exercising new behavior.
+- `traceability-matrix.md`'s `[FND-IAM]` (M4B) row flipped `In Progress
+  (Slice B2 complete)` → `In Progress (Slices B2, B3 complete)`, with B3's
+  delivered evidence and known gaps recorded.
+- Failure/Security matrix row 6 and reference-scenario step 23 in `task.md`
+  updated with this phase's e2e evidence; Slice B3's own header line marked
+  complete.
 - `wasm32-wasip2` -- unbroken; no WIT change this phase.

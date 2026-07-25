@@ -483,7 +483,7 @@ the `C1`/`H1`-`H8` third-pass review findings documented with evidence;
 (M4B) row flipped `Planned` → `In Progress (Slice B2 complete)`) — done on
 the same branch, closing out Slice B2. Full evidence: `status.md`.
 
-#### Slice B3: Federated FDAE (Cross-Service Parameter Fetch) — Phase 1 ✅ (2026-07-23, PR #89); Phase 2 ✅ (2026-07-23, two-phase compile `plan_read`/`finalize` in `crates/fdae`); Phase 3 ✅ (2026-07-23, native `resolve-relation` — the receiving side of the cross-service fetch; native-only, no WIT/`wasm32-wasip2` change); Post-review hardening ✅ (2026-07-24, nine review findings + per-service signing identity, PR #100); Phase 4 ✅ (2026-07-24, `resolve_fetches` orchestration seam wired into both read ingresses over a real Universal Proxy, `expected_asserter_did` policy-declared trust anchor (D-B3-8 corrected), successful-fetch `DecisionTrace` provenance, D-B3-9 resolved (forward the real caller, no new mechanism needed) — D-04-02-h stays open on both ingresses, jointly, per D-B3-4 corrected against `dispatch.rs`'s actual behavior; Phase 5 (e2e steps 22-23, perf budget, matrix/traceability sign-off) not yet done)
+#### Slice B3: Federated FDAE (Cross-Service Parameter Fetch) — Phase 1 ✅ (2026-07-23, PR #89); Phase 2 ✅ (2026-07-23, two-phase compile `plan_read`/`finalize` in `crates/fdae`); Phase 3 ✅ (2026-07-23, native `resolve-relation` — the receiving side of the cross-service fetch; native-only, no WIT/`wasm32-wasip2` change); Post-review hardening ✅ (2026-07-24, nine review findings + per-service signing identity, PR #100); Phase 4 ✅ (2026-07-24, `resolve_fetches` orchestration seam wired into both read ingresses over a real Universal Proxy, `expected_asserter_did` policy-declared trust anchor (D-B3-8 corrected), successful-fetch `DecisionTrace` provenance, D-B3-9 resolved (forward the real caller, no new mechanism needed) — D-04-02-h stays open on both ingresses, jointly, per D-B3-4 corrected against `dispatch.rs`'s actual behavior); Phase 5 ✅ (2026-07-25, reference-scenario step 23 proven across two genuinely independent real `syneroym-substrate` instances, timeout/asserter-mismatch deny-closed proven the same way, federated-hop perf measured (dominated by `IrohHop`'s per-call fresh-connection cost, a newly-recorded deferred item, not the fetch's own processing time), `traceability-matrix.md` flipped to "In Progress (Slices B2, B3 complete)") — **Slice B3 complete**
 **Depends on:** B2, and M04A A1 (Universal Proxy). **Requirement:** `[FND-IAM]`.
 Pipeline stage 2 (`system-requirements-spec.md:981`, `system-architecture.md:1841`):
 pause evaluation, fetch remote relationship proofs/parameters via the Universal
@@ -616,7 +616,12 @@ Continues from M04A (steps 20–21, 24–25):
     instead, which is a different (over-restrictive) claim. Resolves
     alongside B3's `anchor_did`.
 23. A ReBAC check requiring a remote relationship proof triggers a cross-service
-    fetch via the Universal Proxy mid-query (B3, pipeline stage 2).
+    fetch via the Universal Proxy mid-query (B3, pipeline stage 2). **✅ Done
+    (Phase 5, 2026-07-25)** — proven across two genuinely independent, real
+    `syneroym-substrate` instances (distinct node identities, distinct
+    on-disk storage, a real Iroh QUIC hop for the fetch itself), not the
+    single-process in-process `ProxyRouter` Phase 4's own tests use:
+    `crates/substrate/tests/federated_fdae_e2e.rs::federated_fdae_fetch_across_two_real_substrates`.
 
 ---
 
@@ -633,7 +638,7 @@ deferred, not silently dropped, per those slices' own task.md entries.
 | 3 | CLS: caller lacks column permission | Column masked/projected out; value never returned | ✅ satisfied by Slice B2 Phase 3's host-side `strip_masked_fields`; sieve-level union computed by `compile::tests::cls_masked_fields_union_policy_and_capability_deny_lists` |
 | 4 | FDAE policy with a cyclic ReBAC relationship in user data | `visited_track` breaks recursion; no infinite loop (`system-architecture.md:1847`) | ✅ `compile::tests::recursive_relation_terminates_on_a_cyclic_manager_graph` — a deliberately cyclic manager graph (eve→frank→eve) terminates and returns the correct membership |
 | 5 | Compiled FDAE query exceeds the policy time budget | Transaction rolled back, Default-Denied (`:1848`) | ✅ `sqlite::tests::fdae_watchdog_interrupts_do_query_as_quota_exceeded`, `..._do_get_as_quota_exceeded`, `fdae_watchdog_interrupt_denies_do_check_access` (Mode A → `Ok(false)`), `..._do_delete_many_on_the_writer_conn` (`data_db`) — `FDAE_MAX_VM_OPS` progress-handler backstop, per ADR-0017 §8 plan resolution (§12.8) |
-| 6 | Cross-service FDAE parameter fetch times out | Falls back to deny, not silent allow | ✅ Mechanism + tests landed in Slice B3 Phase 4 (`resolve_fetches` maps any proxy error/timeout to a deny for Mode B/A alike, and now enforces `FDAE_FETCH_TIMEOUT` itself rather than trusting the `ServiceProxy` to honor it) — `syneroym_rpc::fdae_fetch::tests::resolve_fetches_denies_on_an_actually_elapsed_timeout`, `..._denies_on_a_proxy_error`, `router::native_dispatch_identity::native_dispatch_denies_closed_on_a_cross_service_fetch_failure`, `sandbox_wasm::host_capabilities::tests::fdae_remote_relation_fetch_failure_denies_closed`. The two-real-substrate e2e proof of the same claim is Slice B3 Phase 5, not yet done. |
+| 6 | Cross-service FDAE parameter fetch times out | Falls back to deny, not silent allow | ✅ Mechanism + tests landed in Slice B3 Phase 4 (`resolve_fetches` maps any proxy error/timeout to a deny for Mode B/A alike, and now enforces `FDAE_FETCH_TIMEOUT` itself rather than trusting the `ServiceProxy` to honor it) — `syneroym_rpc::fdae_fetch::tests::resolve_fetches_denies_on_an_actually_elapsed_timeout`, `..._denies_on_a_proxy_error`, `router::native_dispatch_identity::native_dispatch_denies_closed_on_a_cross_service_fetch_failure`, `sandbox_wasm::host_capabilities::tests::fdae_remote_relation_fetch_failure_denies_closed`. **The two-real-substrate e2e proof of the same claim (Slice B3 Phase 5, 2026-07-25):** `crates/substrate/tests/federated_fdae_e2e.rs`'s own asserter-mismatch scenario (a policy trusting the wrong `expected_asserter_did`, the shape a stale/misconfigured policy would produce) denies closed with a real `PermissionDenied` across the real network hop, not just in a hand-built unit test. |
 | 7 | Stage-4 ABAC attempts to **widen** access beyond ReBAC | Rejected — restrict-only enforced; a widen decision cannot grant a row the sieve excluded (ADR-0017 §7) | ⛔ Deferred — Slice B4-fdae (stage 4, not yet implemented) |
 | 8 | Stage-4 ABAC read-only lookup (§7) exceeds its fuel/time budget | Aborted, row Default-Denied; the lookup cannot run unmetered | ⛔ Deferred — Slice B4-fdae (not yet implemented) |
 | 9 | Stage-4 ABAC returns `redact(fields)` | Named fields removed from the row before it reaches the guest | ⛔ Deferred — Slice B4-fdae (not yet implemented) |
@@ -688,9 +693,9 @@ renumbered.
 - [x] ADR D-04-02 ([ADR-0017](../../../decisions/0017-fdae-policy-schema-and-compilation.md)) **Accepted** (2026-07-20), with D-04-02-a/-b/-c resolved.
 - [ ] FDAE pushdown sieve implemented: Mode A + Mode B, RLS + CLS, cycle guard, watchdog default-deny, parameterized binding.
 - [ ] Compiled FDAE security subquery merges correctly with the ADR-0007 JSON filter.
-- [x] Federated cross-service fetch (B3) works over the Universal Proxy; timeout→deny verified (Slice B3 Phase 4, 2026-07-24 — real `ProxyRouter`/`resolve_fetches` integration tests in `crates/router`/`crates/rpc`/`crates/sandbox_wasm`; the two-real-substrate e2e proof is Phase 5).
+- [x] Federated cross-service fetch (B3) works over the Universal Proxy; timeout→deny verified (Slice B3 Phase 4, 2026-07-24 — real `ProxyRouter`/`resolve_fetches` integration tests in `crates/router`/`crates/rpc`/`crates/sandbox_wasm`; Phase 5, 2026-07-25, adds the two-real-substrate e2e proof, `crates/substrate/tests/federated_fdae_e2e.rs`).
 - [ ] Stage-4 ABAC wired: pure-predicate, batched, restrict-only default; redact/deny tested.
-- [ ] Reference scenario steps 22–23 execute end-to-end.
+- [ ] Reference scenario steps 22–23 execute end-to-end (step 23 ✅ Phase 5, 2026-07-25; step 22's "…never reaches the WASM guest" half stays open on D-04-02-h, unaffected by B3).
 - [ ] All Failure and Security Tests produce documented outcomes.
 - [ ] Performance budgets verified; `criterion` output in `status.md`.
 - [ ] `traceability-matrix.md` `[FND-IAM]` (M4B: FDAE) row flipped **Planned → Complete** with evidence (pushdown sieve, RLS/CLS, 4-stage pipeline, federated fetch, stage-4 ABAC). *(Row already present; `[PRD-SAF]` already retargeted to `TBD` at M04A closeout — no action unless it regresses.)*
