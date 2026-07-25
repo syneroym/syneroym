@@ -286,6 +286,20 @@ and no longer gate B2; d/e remain as a deferral and a B7 hand-off.
   **Slice B3.5-fdae** — rather than left open-ended again as a rider on
   B4-fdae/B5-fdae.
 
+  **✅ Resolved (Slice B3.5-fdae, 2026-07-25).** The cross-cut landed:
+  `dispatch.rs`'s `JsonRpcToWasm` branch now forwards its router-verified
+  `caller` through `execute_wasm_json` -> `execute_wasm_vals` ->
+  `prepare_wasm_execution` into `HostState.caller`, closing ingress (i); and
+  `proxy::Host::call`'s self-proxy branch forwards that same `HostState.
+  caller` (instead of always re-synthesizing `service_system`) whenever the
+  proxy target is the guest's own service, closing ingress (ii) — both
+  ingresses shared the one root cause this entry already identified, and
+  closed together once it was fixed, exactly as the corrected D-B3-4
+  analysis predicted. Reference scenario step 22's "…never reaches the WASM
+  guest" half is now provably filtered-correctly for a real caller, not
+  merely provably empty. See Slice B3.5-fdae's own entry below and
+  `status.md` for full implementation/verification evidence.
+
 ---
 
 ## FDAE Enforcement Model (design seed for D-04-02)
@@ -577,7 +591,7 @@ DID and the service id so a `service_id` recycled by a *different* owner
 after undeploy doesn't inherit the old owner's signing key. Full evidence
 for both: `status.md`.
 
-#### Slice B3.5-fdae: Guest-Originated Read Identity Threading (D-04-02-h)
+#### Slice B3.5-fdae: Guest-Originated Read Identity Threading (D-04-02-h) ✅ (2026-07-25)
 **Depends on:** M04A B0 (verified `CallerContext`), B3 (the corrected D-B3-4
 analysis in `slice-b3-implementation-plan.md` §7 confirming this needs its
 own slice, not a same-phase fix). **Requirement:** `[FND-IAM]`.
@@ -607,6 +621,163 @@ shown-correctly-filtered for a real caller on that path.
 
 **Exit gate:** `traceability-matrix.md`'s `[FND-IAM]` (M4B) row should not
 flip to `Complete` while this stays open, even once B4-fdae/B5-fdae land.
+
+**Closed (2026-07-25).** Threaded the real `CallerContext` through the whole
+chain both ingresses share: `dispatch.rs`'s `JsonRpcToWasm` branch now passes
+its `caller: Option<&CallerContext>` into
+`AppSandboxEngine::execute_wasm_json`, which gained a `caller:
+Option<CallerContext>` parameter threaded through `execute_wasm_vals` ->
+`prepare_wasm_execution`, replacing the unconditional
+`CallerContext::service_system(service_id)` with `caller.unwrap_or_else(||
+CallerContext::service_system(service_id))` — `None` (an unauthenticated
+connection, which WASM guests still admit per design §6.1.2) preserves the
+prior behavior exactly. Ingress (i) (the WASM host-function path) is closed
+by this alone: `HostState.caller` now carries the real caller, so
+`resolve_query_auth` compiles a real sieve instead of falling to
+`deny_all()`. Ingress (ii) (guest self-proxy into its own service's native
+`data-layer`) closes for free once (i) is fixed: `proxy::Host::call`
+(`host_capabilities.rs`) now forwards `self.caller.clone()` — no longer
+always `CallerContext::service_system(&self.component_id)` — whenever the
+proxy target is the guest's **own** service; a genuine cross-service proxy
+call still synthesizes `service_system` (real cross-service
+caller-delegation is a separate, not-yet-built B1/UCAN mechanism, unaffected
+by this slice). `SynSvcNativeService::resolve_query_auth`
+(`synsvc_native.rs`) needed **no change** — its deliberate "no `AuthLevel`
+carve-out" design (documented at the time, to avoid the self-proxy route
+being *more* permissive than the direct route) meant it was already correct
+for whatever `NativeInvocation.caller` turned out to be; it was only ever
+receiving a synthesized identity because nothing upstream forwarded a real
+one. `execute_wasm` (the string-typed entry point used only by test/dev
+harnesses — smoke tests, the messaging test driver, `invoke_test_context`)
+keeps its old signature and always passes `caller: None` internally, so none
+of those call sites changed behavior.
+
+Both pinned regression tests were flipped, not deleted, to prove closure for
+a *real* caller while still pinning the (unaffected, still-correct)
+anonymous-caller case:
+`sandbox_wasm/tests/data_layer_integration.rs::test_deployed_policy_filters_guest_originated_query_for_a_real_caller_d04_02_h_closed`
+(ingress i — a real caller's guest-originated `query` now reaches exactly a
+row seeded as theirs, and excludes the guest's own unrelated write) and
+`router/tests/proxy_dispatch.rs::guest_self_proxy_data_layer_filters_for_a_real_caller_d04_02_h_closed`
+(ingress ii — a real caller's self-proxy `get` reaches their own row and is
+denied a different principal's row). The prior empty-result tests
+(`test_deployed_policy_yields_empty_guest_originated_query_d04_02_h`,
+`guest_self_proxy_data_layer_returns_empty_when_policy_present`) stay in
+place, re-scoped in their doc comments to the one case that is still
+legitimately empty: `caller: None` (no verified identity at all). Full
+evidence: `status.md`.
+
+**Post-implementation review (2026-07-25).** An independent review of commit
+`ac02c89` (re-running tests/clippy/e2e rather than trusting `status.md`)
+surfaced eight findings. All eight were checked against the code; six were
+confirmed and addressed, one was confirmed but is out of this slice's scope
+(B5-fdae's), one was a documentation-only observation.
+
+- **Guest proof laundered onto a remote hop when the local-registry lookup
+  misses (confirmed, fixed).** `proxy::Host::call`'s self-proxy branch
+  forwards the real caller (proof included) whenever `service ==
+  self.component_id` — but "own service" doesn't imply "resolves locally":
+  `ProxyRouter::invoke` falls through to `invoke_remote` whenever the
+  `(service, interface)` pair misses the local `EndpointRegistry`, and
+  `invoke_remote_at` put `caller.proof` straight on the outbound preamble for
+  *any* proof-bearing caller regardless of origin. `check_native_capability_
+  gate`'s same-service exception only restricts `NATIVE_CAPABILITY_INTERFACES`
+  cross-service, not this fallback, so a guest choosing an interface the
+  registry hasn't got could steer a call it authored onto the wire under the
+  real caller's signed proof — the exact laundering `invoke_remote_at`'s own
+  doc comment says it prevents, and `guest_without_proof_forwards_as_
+  anonymous_not_node_identity` only ever tested the (now stale) "a guest
+  never carries a proof" premise. Fixed: `invoke_remote_at` now keys off
+  `req.origin`, not just `req.caller.proof`'s presence — a `CallOrigin::
+  Guest` request never presents a proof (its own or the node's) remotely,
+  proof-bearing or not. New test:
+  `router/src/proxy.rs::guest_with_proof_still_forwards_as_anonymous_not_the_real_proof`.
+- **The ingress-(i) regression test couldn't fail even with filtering fully
+  broken (confirmed, fixed).** `run-crud-scenario(1)` wrote one unrelated row
+  then queried with `limit: 1` against a table already holding 2 rows (1
+  seeded + 1 guest-written) — `observed == 1` held whether the sieve
+  correctly filtered or admitted everything unfiltered, since the limit
+  truncates to 1 either way. This undercut the "provably filtered, not
+  merely provably empty" claim made above and in `status.md`. Fixed: the
+  guest now writes 5 unrelated rows and a second, differently-principal-owned
+  row is seeded too (7 total), queried with `limit: 5` — `observed == 1` now
+  only holds if the sieve genuinely excludes both the guest's writes and the
+  other principal's row, not merely if it admits *something*. Same test,
+  strengthened in place; see `sandbox_wasm/tests/data_layer_integration.rs`.
+- **Admin-rooted DDL/raw-SQL reachability through a guest, made wire-live for
+  the first time (confirmed as real, disagree it's a defect to fix here).**
+  Forwarding the real caller means a caller matching `[iam].admin_ucan_root`
+  (issued a bare `substrate:<node_did>` grant of `substrate/admin`, which
+  `Ability::entails` defines as covering everything on the node, including
+  `data-layer/admin`) can now reach a guest's `execute-ddl`/`query-raw` from
+  an actual wire dispatch — previously `HostState.caller` was always
+  `service_system` outside `invoke_lifecycle_hook`, so this admission was
+  true in principle but practically unreachable. This is not a new capability
+  this slice invented: `lifecycle_hooks.rs::test_execute_ddl_allowed_for_
+  admin_ucan_root_caller` already pins the same admission against a
+  hand-built `HostState`, citing ADR-0015/0016 and B0.md §11.2 as the source
+  of the design — and it's the same "any verified identity reaches any
+  native service" gap D-04-02-e (above) already names and defers to B7's
+  grant-layer reconciliation, now additionally reachable through a WASM
+  guest's own exports rather than only direct native dispatch. Restricting it
+  here (e.g. stripping admin-entailing abilities on forward, or gating the
+  guest DDL/raw-SQL check to `LocalElevated` only) would silently reverse an
+  already-accepted, already-tested admission model as a side effect of a
+  read-identity-threading slice — exactly the kind of undiscussed scope
+  creep this response is trying to avoid elsewhere. What *was* missing:
+  a test pinning this fact through the real dispatch wiring this slice
+  changed (not a hand-built `HostState`) and an explicit note that this
+  slice is what activates it. Added:
+  `sandbox_wasm/src/engine.rs::prepare_wasm_execution_forwards_a_wire_admin_caller_that_reaches_guest_execute_ddl`,
+  plus a `debug_assert!` in `prepare_wasm_execution` that a forwarded caller
+  is never `LocalElevated` (the one thing that actually would be a bug).
+- **Self-proxy writes silently changed `creator_id` attribution (confirmed,
+  out of this slice's scope, pinned not silently dropped).** `put`/
+  `batch-mutate`'s `creator_id` now stamps the real caller's DID on the
+  self-proxy path (unlike the guest's direct WIT `put`, which always stamps
+  the service's own `component_id`) — a write-*attribution* change this
+  read-identity-threading slice made as an incidental side effect, not a
+  deliberate design decision. Deciding which is correct needs an origin
+  marker `NativeInvocation` doesn't carry today (the same handler also
+  legitimately serves genuinely native, non-WASM external callers, where
+  real-caller attribution is intended) — that's B5-fdae's write-path design
+  question (D-04-02-f), not a one-line fix here. Recorded in
+  [deferred-backlog.md](../../deferred-backlog.md) and pinned by
+  `router/tests/proxy_dispatch.rs::guest_self_proxy_put_attributes_creator_id_to_the_real_caller_not_the_service`
+  so B5-fdae inherits a known, tested fact rather than a silent surprise.
+- **The cross-service `else` branch (still synthesizing `service_system`)
+  was asserted in a doc comment but never tested (confirmed, fixed).** The
+  "cannot escalate to another service's rights" argument for the self-proxy
+  forwarding rests entirely on the `service != self.component_id` branch
+  staying `service_system` — nothing pinned that before. New test:
+  `sandbox_wasm/src/host_capabilities.rs::self_proxy_forwarding_does_not_extend_to_a_different_target_service`.
+- **Guest-ingress federated fetch success has no coverage through the real
+  wire-dispatch chain (confirmed, accepted as a residual, documented gap).**
+  `fdae_remote_relation_fetch_succeeds_through_host_state` (pre-dating this
+  slice) already proves the fetch *mechanism* works for a real caller, and
+  this slice's own new tests independently prove a real caller reaches
+  `HostState.caller` through the actual dispatch chain — but no test
+  combines all three (real wire dispatch + real caller + a policy requiring
+  a remote fetch). Accepted as a known, narrower-than-reported gap rather
+  than built out here: the two dimensions the review's concern actually
+  depended on (real-caller wire-reachability; the fetch mechanism itself)
+  are each independently covered, leaving only their intersection untested.
+  Candidate follow-up, not blocking.
+- **`AuthLevel::LocalElevated` never reaching a forwarded caller was asserted
+  in prose only (confirmed, fixed).** Addressed by the `debug_assert!` noted
+  above (admin-DDL finding).
+- **Guest-path `DecisionTrace` now logs real end-user DIDs where it
+  previously logged `system:<service_id>` (documentation-only, no code
+  change).** Consistent with the native path's existing behavior, not a new
+  class of exposure — noted here as the conscious sign-off the review asked
+  for, not left as an undiscussed side effect.
+
+Two intermittent test failures observed while re-running the suite in
+parallel mode (`router/tests/proxy_dispatch.rs`,
+`sandbox_wasm/tests/messaging_integration.rs`) reproduce the same
+pre-existing `mainline` DHT actor-thread flake this repo already tracks;
+confirmed clean with `--test-threads=1`, unrelated to this slice, no action
+taken here.
 
 #### Slice B4-fdae: Stage-4 WASM ABAC
 **Depends on:** B2 (candidate rows come from the sieve). May fold into B2's
@@ -653,12 +824,15 @@ Continues from M04A (steps 20–21, 24–25):
     filtering half is closed** as of Phase 4, end to end from a real
     router-verified caller into native dispatch
     (`router/tests/native_dispatch_identity.rs::native_fdae_policy_row_filters_and_masks_for_two_distinct_verified_callers`).
-    **The "…never reach the WASM guest" half stays open**, blocked on
-    D-04-02-h: a guest-originated read (either ingress) carries no external
-    principal, so it cannot yet be *shown* to be correctly filtered for a
-    real caller reaching the WASM guest specifically — it is provably empty
-    instead, which is a different (over-restrictive) claim. Resolves
-    alongside B3's `anchor_did`.
+    **The "…never reach the WASM guest" half is now also closed (Slice
+    B3.5-fdae, 2026-07-25)**: D-04-02-h's real-caller identity threading
+    landed for both ingresses, so a guest-originated read is now *shown* to
+    be correctly filtered for a real caller reaching the WASM guest, not
+    merely provably empty —
+    `sandbox_wasm/tests/data_layer_integration.rs::test_deployed_policy_filters_guest_originated_query_for_a_real_caller_d04_02_h_closed`
+    (ingress i, direct host-function read) and
+    `router/tests/proxy_dispatch.rs::guest_self_proxy_data_layer_filters_for_a_real_caller_d04_02_h_closed`
+    (ingress ii, guest self-proxy).
 23. A ReBAC check requiring a remote relationship proof triggers a cross-service
     fetch via the Universal Proxy mid-query (B3, pipeline stage 2). **✅ Done
     (Phase 5, 2026-07-25)** — proven across two genuinely independent, real
@@ -739,7 +913,7 @@ renumbered.
 - [ ] Compiled FDAE security subquery merges correctly with the ADR-0007 JSON filter.
 - [x] Federated cross-service fetch (B3) works over the Universal Proxy; timeout→deny verified (Slice B3 Phase 4, 2026-07-24 — real `ProxyRouter`/`resolve_fetches` integration tests in `crates/router`/`crates/rpc`/`crates/sandbox_wasm`; Phase 5, 2026-07-25, adds the two-real-substrate e2e proof, `crates/substrate/tests/federated_fdae_e2e.rs`).
 - [ ] Stage-4 ABAC wired: pure-predicate, batched, restrict-only default; redact/deny tested.
-- [ ] Reference scenario steps 22–23 execute end-to-end (step 23 ✅ Phase 5, 2026-07-25; step 22's "…never reaches the WASM guest" half stays open on D-04-02-h, unaffected by B3).
+- [x] Reference scenario steps 22–23 execute end-to-end (step 23 ✅ Phase 5, 2026-07-25; step 22 ✅ Slice B3.5-fdae, 2026-07-25 — both D-04-02-h ingresses closed).
 - [ ] All Failure and Security Tests produce documented outcomes.
 - [ ] Performance budgets verified; `criterion` output in `status.md`.
 - [ ] `traceability-matrix.md` `[FND-IAM]` (M4B: FDAE) row flipped **Planned → Complete** with evidence (pushdown sieve, RLS/CLS, 4-stage pipeline, federated fetch, stage-4 ABAC). *(Row already present; `[PRD-SAF]` already retargeted to `TBD` at M04A closeout — no action unless it regresses.)*

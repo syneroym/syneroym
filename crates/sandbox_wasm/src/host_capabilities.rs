@@ -776,17 +776,33 @@ impl proxy::Host for HostState {
         let protocol =
             ProxyProtocol::parse(protocol_tag).map_err(proxy::ProxyError::UnsupportedProtocol)?;
 
+        // D-04-02-h ingress (ii): a guest proxying into its **own** service's
+        // native `data-layer` forwards this invocation's real `HostState.
+        // caller` (router-verified, or `service_system` if none reached
+        // this guest -- see `prepare_wasm_execution`), so the receiving
+        // `SynSvcNativeService::resolve_query_auth` sees who is actually
+        // asking instead of always synthesizing `service_system` -- the
+        // same-service exception (`ProxyRouter::check_native_capability_
+        // gate`) already restricts this to the guest's own data, so this
+        // cannot escalate to another service's rights.
+        //
+        // A genuine cross-service call still acts as itself: it does NOT
+        // inherit the identity of whoever invoked *this* guest (no U->X
+        // delegation exists in B0's model), so a proxied call to a
+        // *different* service cannot be used to escalate to the original
+        // caller's rights. Real cross-service caller-delegation is B1/UCAN,
+        // not yet built.
+        let caller = if service == self.component_id {
+            self.caller.clone()
+        } else {
+            CallerContext::service_system(&self.component_id)
+        };
         let req = ProxyRequest {
             target_service: service,
             interface,
             method,
             params,
-            // The component acts as itself. It does NOT inherit the
-            // identity of whoever invoked it (no U->X delegation exists in
-            // B0's model), so a proxied call cannot be used to escalate to
-            // the original caller's rights. Real caller-delegation is
-            // B1/UCAN.
-            caller: CallerContext::service_system(&self.component_id),
+            caller,
             origin: CallOrigin::Guest { service_id: self.component_id.clone() },
             protocol,
             idempotent,
@@ -995,6 +1011,92 @@ pub(crate) mod tests {
     /// that don't exercise `syneroym:proxy/proxy::call`.
     pub(crate) fn test_service_proxy() -> Weak<dyn ServiceProxy> {
         super::empty_service_proxy()
+    }
+
+    /// Records the last `ProxyRequest` it was invoked with, so a test can
+    /// inspect what `proxy::Host::call` actually built (in particular
+    /// `caller`) without needing a real downstream service to answer.
+    #[derive(Debug, Default)]
+    struct RecordingProxy {
+        last_request: Mutex<Option<ProxyRequest>>,
+    }
+
+    #[async_trait::async_trait]
+    impl ServiceProxy for RecordingProxy {
+        async fn invoke(&self, request: ProxyRequest) -> Result<Value, RpcProxyError> {
+            let recorded = request.clone();
+            *self.last_request.lock().unwrap() = Some(recorded);
+            Ok(Value::Null)
+        }
+    }
+
+    /// D-04-02-h ingress (ii)'s self-proxy forwarding (`proxy::Host::call`)
+    /// is scoped to `service == self.component_id` -- a genuinely
+    /// cross-service proxy call must still synthesize `service_system`, per
+    /// the function's own doc comment ("does NOT inherit the identity of
+    /// whoever invoked *this* guest"). Nothing pinned that fact before this
+    /// test; the whole "cannot escalate to another service's rights"
+    /// argument in the doc comment rested on it being true, unverified.
+    #[tokio::test]
+    async fn self_proxy_forwarding_does_not_extend_to_a_different_target_service() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let proxy = Arc::new(RecordingProxy::default());
+
+        let real_caller = CallerContext {
+            caller_did: "did:key:zRealCaller".to_string(),
+            app_instance: None,
+            session: SessionContext {
+                subject_did: "did:key:zRealCaller".to_string(),
+                capabilities: vec![Capability {
+                    with: ResourceUri::substrate("did:key:zRealCaller"),
+                    can: Ability(Ability::SUBSTRATE_ADMIN.to_string()),
+                    caveats: None,
+                }],
+                ..Default::default()
+            },
+            auth: AuthLevel::Ucan,
+            proof: None,
+        };
+
+        let mut host = HostState::new(
+            "svc-a".to_string(),
+            None,
+            Arc::new(KeyStore::new()),
+            storage,
+            test_blob_provider(),
+            real_caller,
+            0,
+            test_messaging_context(),
+            test_streaming_context(),
+            Arc::downgrade(&proxy) as Weak<dyn ServiceProxy>,
+            None,
+        );
+
+        proxy::Host::call(
+            &mut host,
+            "svc-b".to_string(),
+            "some-interface".to_string(),
+            "some-method".to_string(),
+            "null".to_string(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let received = proxy.last_request.lock().unwrap().take().unwrap();
+        assert_eq!(
+            received.caller.auth,
+            AuthLevel::System,
+            "a proxy call to a *different* service must not carry the guest's real caller \
+             identity, capabilities included -- got {:?}",
+            received.caller
+        );
+        assert!(
+            received.caller.session.capabilities.is_empty(),
+            "a cross-service proxy call must never carry the guest's real capabilities: {:?}",
+            received.caller.session.capabilities
+        );
     }
 
     #[tokio::test]

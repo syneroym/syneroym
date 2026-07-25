@@ -24,16 +24,20 @@ use syneroym_core::{
     test_constants,
 };
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
-use syneroym_data_db::SqliteStorageProvider;
+use syneroym_data_db::{
+    SqliteStorageProvider, StorageProvider, host_store::RecordWriteValue as HostRecordWriteValue,
+};
 use syneroym_data_keystore::KeyStore;
 use syneroym_fdae::{Policy, parse_and_validate};
+use syneroym_identity::Identity;
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
 use syneroym_router::{
     AdaptationStage, EncryptionStage, RouteHandler, RouteHandlerDeps, RoutePipeline, RoutePreamble,
     RouteProtocol, RouteTransport, ServiceStage, TransportStage,
 };
 use syneroym_rpc::{
-    NativeDispatchRegistry, NativeInvocation, NativeResponse, NativeService, RpcResult,
+    Ability, AuthLevel, CallerContext, Capability, NativeDispatchRegistry, NativeInvocation,
+    NativeResponse, NativeService, ResourceUri, RpcResult, SessionContext,
 };
 use syneroym_sandbox_wasm::AppSandboxEngine;
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
@@ -297,18 +301,21 @@ fn self_proxy_items_policy() -> Policy {
 /// `test_route_handler_with_proxy_components`, plus a real
 /// `SynSvcNativeService` registered for `proxy-caller`'s own `data-layer`
 /// interface (the same-service self-proxy ingress). `fdae_policy` lets the
-/// two tests below construct that service with and without a deployed
-/// policy.
+/// tests below construct that service with and without a deployed policy.
+/// Also returns `storage_provider`/`key_store` so a test can seed a row
+/// directly (bypassing the guest's own `put`) to control exactly which
+/// principal a row belongs to.
 async fn test_route_handler_with_self_native_data_layer(
     fdae_policy: Option<Arc<Policy>>,
-) -> Option<RouteHandler> {
+) -> Option<(RouteHandler, Arc<dyn StorageProvider>, Arc<KeyStore>)> {
     let proxy_test_bytes = fs::read(test_constants::proxy_test_wasm_path()).ok()?;
     let greeter_bytes = fs::read(test_constants::greeter_wasm_path()).ok()?;
 
     let temp_dir = tempfile::tempdir().unwrap();
     let config = SubstrateConfig::default();
     let key_store = Arc::new(KeyStore::new());
-    let storage_provider = Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+    let storage_provider: Arc<dyn StorageProvider> =
+        Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
     let blob_provider: Arc<dyn BlobProvider> =
         Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
     let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
@@ -374,7 +381,7 @@ async fn test_route_handler_with_self_native_data_layer(
         blob_provider.clone(),
         messaging_broker.clone(),
         fdae_policy,
-        Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        Arc::new(Identity::generate().unwrap()),
         "did:key:zTestOwner",
         syneroym_sandbox_wasm::empty_service_proxy(),
     ));
@@ -382,8 +389,8 @@ async fn test_route_handler_with_self_native_data_layer(
 
     let http_routes: HttpRouteRegistry = Arc::new(DashMap::new());
     let deps = RouteHandlerDeps {
-        key_store,
-        storage_provider,
+        key_store: key_store.clone(),
+        storage_provider: storage_provider.clone(),
         app_sandbox_engine,
         messaging_broker,
         native_dispatch,
@@ -392,24 +399,32 @@ async fn test_route_handler_with_self_native_data_layer(
         control_plane: None,
     };
 
-    Some(
-        RouteHandler::init(
-            "test-orchestrator".to_string(),
-            &config,
-            registry,
-            [12u8; 32],
-            None,
-            deps,
-        )
-        .await
-        .unwrap(),
+    let route_handler = RouteHandler::init(
+        "test-orchestrator".to_string(),
+        &config,
+        registry,
+        [12u8; 32],
+        None,
+        deps,
     )
+    .await
+    .unwrap();
+
+    Some((route_handler, storage_provider, key_store))
 }
 
 /// Drives `proxy-caller`'s `call_peer` against its own `data-layer`
 /// interface: `create-collection` + `put` + `get`, all through
-/// `syneroym:proxy/proxy::call`.
-async fn self_proxy_call(route_handler: &RouteHandler, method: &str, params: Value) -> Value {
+/// `syneroym:proxy/proxy::call`. `caller` is forwarded to
+/// `dispatch_json_rpc_once` verbatim -- `None` for an unauthenticated
+/// connection (today's baseline), `Some` for a router-verified caller
+/// (D-04-02-h ingress (ii)'s closure).
+async fn self_proxy_call(
+    route_handler: &RouteHandler,
+    method: &str,
+    params: Value,
+    caller: Option<&CallerContext>,
+) -> Value {
     let call_params = json!({
         "service": "proxy-caller",
         "interface": "data-layer",
@@ -418,7 +433,7 @@ async fn self_proxy_call(route_handler: &RouteHandler, method: &str, params: Val
     });
     let body = json_rpc_body("call-peer", call_params);
     let response_bytes = route_handler
-        .dispatch_json_rpc_once(&call_peer_pipeline(), &call_peer_preamble(), None, &body)
+        .dispatch_json_rpc_once(&call_peer_pipeline(), &call_peer_preamble(), caller, &body)
         .await
         .unwrap();
     serde_json::from_slice(&response_bytes).unwrap()
@@ -430,62 +445,253 @@ async fn self_proxy_call(route_handler: &RouteHandler, method: &str, params: Val
 /// FDAE (a future tightening of the gate that broke it would fail this).
 #[tokio::test]
 async fn guest_self_proxy_data_layer_reads_normally_when_policy_absent() {
-    let Some(route_handler) = test_route_handler_with_self_native_data_layer(None).await else {
+    let Some((route_handler, _storage_provider, _key_store)) =
+        test_route_handler_with_self_native_data_layer(None).await
+    else {
         eprintln!("skipping: proxy-test/greeter wasm artifacts not built");
         return;
     };
 
-    let resp = self_proxy_call(&route_handler, "create-collection", json!({"name": "items"})).await;
+    let resp =
+        self_proxy_call(&route_handler, "create-collection", json!({"name": "items"}), None).await;
     assert!(resp.get("error").is_none(), "create-collection failed: {resp:?}");
 
     let resp = self_proxy_call(
         &route_handler,
         "put",
         json!({"collection": "items", "value": {"id": "1", "payload": b"{}".to_vec()}}),
+        None,
     )
     .await;
     assert!(resp.get("error").is_none(), "put failed: {resp:?}");
 
     let resp =
-        self_proxy_call(&route_handler, "get", json!({"collection": "items", "id": "1"})).await;
+        self_proxy_call(&route_handler, "get", json!({"collection": "items", "id": "1"}), None)
+            .await;
     assert!(resp.get("error").is_none(), "get failed: {resp:?}");
     let result = resp.get("result").and_then(Value::as_str).unwrap_or_default();
     assert_ne!(result, "null", "policy-absent self-proxy read must return the row: {result:?}");
     assert!(result.contains("\"id\":\"1\""), "expected the seeded row, got: {result:?}");
 }
 
-/// Policy-present pin: the same self-proxy `get` against a service
-/// constructed with `Some(policy)` returns empty, because `proxy::Host::call`
-/// synthesizes `service_system` (`host_capabilities.rs:670`), which holds no
-/// capability the policy's `view` permission can be entitled through.
-/// D-04-02-h (`task.md`): whoever threads real caller identity into this
-/// ingress should flip this assertion to the rows the real caller can see.
+/// Pins a write-attribution inconsistency Slice B3.5-fdae's identity
+/// forwarding introduced as a side effect, not something this (read-only,
+/// per its own task.md scope) slice deliberately designed: `put`/
+/// `batch-mutate`'s `creator_id` stamping
+/// (`SynSvcNativeService::dispatch_data_layer`) uses
+/// `invocation.caller.app_instance.unwrap_or(invocation.caller.caller_did)`,
+/// which is correct and intended for a genuinely native (non-WASM) SynSvc
+/// reached directly -- but that same handler is now also reachable via a
+/// guest's self-proxy, whose `invocation.caller` is (since this slice) the
+/// real forwarded caller too. The guest's *direct* WIT `put`
+/// (`host_capabilities.rs`) still always stamps the service's own
+/// `component_id`, unaffected -- so the same guest, writing through two
+/// different paths, now attributes ownership differently. `NativeInvocation`
+/// carries no origin marker to distinguish "genuinely native external
+/// caller" from "guest self-proxy" at this handler, so resolving which
+/// attribution is correct is a design question, not a one-line fix --
+/// D-04-02-f already gates single-row write *authorization* to Slice
+/// B5-fdae; this pins today's *attribution* behavior explicitly so
+/// B5-fdae's write-path work inherits a known fact, not a silent surprise,
+/// rather than letting the two ingresses drift further apart unnoticed.
 #[tokio::test]
-async fn guest_self_proxy_data_layer_returns_empty_when_policy_present() {
-    let policy = Arc::new(self_proxy_items_policy());
-    let Some(route_handler) = test_route_handler_with_self_native_data_layer(Some(policy)).await
+async fn guest_self_proxy_put_attributes_creator_id_to_the_real_caller_not_the_service() {
+    let Some((route_handler, _storage_provider, _key_store)) =
+        test_route_handler_with_self_native_data_layer(None).await
     else {
         eprintln!("skipping: proxy-test/greeter wasm artifacts not built");
         return;
     };
 
-    let resp = self_proxy_call(&route_handler, "create-collection", json!({"name": "items"})).await;
+    const REAL_CALLER_DID: &str = "did:key:zSelfProxyWriterB35";
+    let real_caller = CallerContext {
+        caller_did: REAL_CALLER_DID.to_string(),
+        app_instance: None,
+        session: SessionContext::default(),
+        auth: AuthLevel::Ucan,
+        proof: None,
+    };
+
+    let resp =
+        self_proxy_call(&route_handler, "create-collection", json!({"name": "items"}), None).await;
     assert!(resp.get("error").is_none(), "create-collection failed: {resp:?}");
 
     let resp = self_proxy_call(
         &route_handler,
         "put",
         json!({"collection": "items", "value": {"id": "1", "payload": b"{}".to_vec()}}),
+        Some(&real_caller),
     )
     .await;
     assert!(resp.get("error").is_none(), "put failed: {resp:?}");
 
     let resp =
-        self_proxy_call(&route_handler, "get", json!({"collection": "items", "id": "1"})).await;
+        self_proxy_call(&route_handler, "get", json!({"collection": "items", "id": "1"}), None)
+            .await;
+    assert!(resp.get("error").is_none(), "get failed: {resp:?}");
+    let result = resp.get("result").and_then(Value::as_str).unwrap_or_default();
+    assert!(
+        result.contains(&format!("\"creator_id\":\"{REAL_CALLER_DID}\"")),
+        "today's (B5-fdae-open) behavior: a self-proxy write attributes creator_id to the real \
+         caller, unlike the guest's own direct-WIT `put`, which always stamps the service's own \
+         component_id -- got {result:?}"
+    );
+}
+
+/// No-verified-caller pin: the same self-proxy `get` against a service
+/// constructed with `Some(policy)`, dispatched with `caller: None` (an
+/// unauthenticated connection -- WASM guests admit these, design §6.1.2),
+/// returns empty, because `HostState.caller` (and so `proxy::Host::call`'s
+/// forwarded self-proxy caller) is `service_system`, which holds no
+/// capability the policy's `view` permission can be entitled through. This
+/// is the one D-04-02-h case Slice B3.5-fdae does **not** change -- an
+/// anonymous connection still can't be filtered *for* anyone. See
+/// `guest_self_proxy_data_layer_filters_for_a_real_caller_d04_02_h_closed`
+/// below for the closed case: a real, router-verified caller.
+#[tokio::test]
+async fn guest_self_proxy_data_layer_returns_empty_when_policy_present() {
+    let policy = Arc::new(self_proxy_items_policy());
+    let Some((route_handler, _storage_provider, _key_store)) =
+        test_route_handler_with_self_native_data_layer(Some(policy)).await
+    else {
+        eprintln!("skipping: proxy-test/greeter wasm artifacts not built");
+        return;
+    };
+
+    let resp =
+        self_proxy_call(&route_handler, "create-collection", json!({"name": "items"}), None).await;
+    assert!(resp.get("error").is_none(), "create-collection failed: {resp:?}");
+
+    let resp = self_proxy_call(
+        &route_handler,
+        "put",
+        json!({"collection": "items", "value": {"id": "1", "payload": b"{}".to_vec()}}),
+        None,
+    )
+    .await;
+    assert!(resp.get("error").is_none(), "put failed: {resp:?}");
+
+    let resp =
+        self_proxy_call(&route_handler, "get", json!({"collection": "items", "id": "1"}), None)
+            .await;
     assert!(resp.get("error").is_none(), "get failed: {resp:?}");
     let result = resp.get("result").and_then(Value::as_str).unwrap_or_default();
     assert_eq!(
         result, "null",
-        "a guest's self-proxy read under a loaded policy must be empty -- D-04-02-h: {result:?}"
+        "an unauthenticated connection's self-proxy read under a loaded policy must be empty -- \
+         D-04-02-h: {result:?}"
+    );
+}
+
+/// A `principal_column`-direct policy (`items.creator_id`, the physical
+/// column the host already stamps on every `put`) matched straight against
+/// the caller -- no `creator`/`user` join, since the point here is proving
+/// the caller now *reaches* `HostState`/`NativeInvocation.caller` at all,
+/// not exercising the ReBAC join compiler (already covered elsewhere).
+fn self_proxy_items_principal_column_policy() -> Policy {
+    parse_and_validate(
+        r#"{
+            "version": "fdae/v1",
+            "definitions": {
+                "items": {
+                    "table": "items",
+                    "principal_column": "creator_id",
+                    "permissions": {
+                        "view": {"allows": ["data-layer/read"], "paths": [["caller"]]}
+                    }
+                }
+            }
+        }"#,
+    )
+    .unwrap()
+}
+
+/// Slice B3.5-fdae closure of D-04-02-h ingress (ii): a **real**,
+/// router-verified caller reaching the guest (`dispatch_json_rpc_once`'s
+/// `caller: Some(&real_caller)`) now flows all the way through
+/// `HostState.caller` into `proxy::Host::call`'s self-proxy branch (the
+/// service's own `data-layer`), which forwards it instead of re-synthesizing
+/// `service_system` -- so `SynSvcNativeService::resolve_query_auth` (no
+/// `AuthLevel` carve-out, by design) sees who is actually asking.
+///
+/// Seeds two rows directly (bypassing the guest's self-proxy `put`, so each
+/// row's `creator_id` is exactly the principal this test intends, not
+/// whatever `put`'s own caller-derived stamping would produce) -- one owned
+/// by the real caller, one by a different principal -- and asserts the
+/// self-proxy `get` reaches only its own.
+#[tokio::test]
+async fn guest_self_proxy_data_layer_filters_for_a_real_caller_d04_02_h_closed() {
+    let policy = Arc::new(self_proxy_items_principal_column_policy());
+    let Some((route_handler, storage_provider, key_store)) =
+        test_route_handler_with_self_native_data_layer(Some(policy)).await
+    else {
+        eprintln!("skipping: proxy-test/greeter wasm artifacts not built");
+        return;
+    };
+
+    let resp =
+        self_proxy_call(&route_handler, "create-collection", json!({"name": "items"}), None).await;
+    assert!(resp.get("error").is_none(), "create-collection failed: {resp:?}");
+
+    const REAL_CALLER_DID: &str = "did:key:zSelfProxyRealCallerB35";
+    let real_caller = CallerContext {
+        caller_did: REAL_CALLER_DID.to_string(),
+        app_instance: None,
+        session: SessionContext {
+            subject_did: REAL_CALLER_DID.to_string(),
+            capabilities: vec![Capability {
+                with: ResourceUri::service("proxy-caller", "proxy-caller"),
+                can: Ability(Ability::DATA_LAYER_READ.to_string()),
+                caveats: None,
+            }],
+            ..Default::default()
+        },
+        auth: AuthLevel::Ucan,
+        proof: None,
+    };
+
+    let store = storage_provider.open_service_db("proxy-caller", &key_store).await.unwrap();
+    store
+        .put(
+            "items",
+            &HostRecordWriteValue { id: "own".to_string(), payload: b"{}".to_vec() },
+            REAL_CALLER_DID,
+        )
+        .await
+        .unwrap();
+    store
+        .put(
+            "items",
+            &HostRecordWriteValue { id: "someone-elses".to_string(), payload: b"{}".to_vec() },
+            "did:key:zSomeoneElse",
+        )
+        .await
+        .unwrap();
+    drop(store);
+
+    let resp = self_proxy_call(
+        &route_handler,
+        "get",
+        json!({"collection": "items", "id": "own"}),
+        Some(&real_caller),
+    )
+    .await;
+    assert!(resp.get("error").is_none(), "get(own) failed: {resp:?}");
+    let own_result = resp.get("result").and_then(Value::as_str).unwrap_or_default();
+    assert_ne!(own_result, "null", "the real caller must reach their own row: {own_result:?}");
+    assert!(own_result.contains("\"id\":\"own\""), "expected the own row, got: {own_result:?}");
+
+    let resp = self_proxy_call(
+        &route_handler,
+        "get",
+        json!({"collection": "items", "id": "someone-elses"}),
+        Some(&real_caller),
+    )
+    .await;
+    assert!(resp.get("error").is_none(), "get(someone-elses) failed: {resp:?}");
+    let other_result = resp.get("result").and_then(Value::as_str).unwrap_or_default();
+    assert_eq!(
+        other_result, "null",
+        "the real caller must not reach a row owned by a different principal: {other_result:?}"
     );
 }
