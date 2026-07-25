@@ -926,57 +926,107 @@ impl AppSandboxEngine {
     /// that export. If not, the message is silently discarded (per
     /// ADR-0010): this makes it safe to call for every subscription
     /// regardless of whether the target component implements messaging.
+    ///
+    /// Retries a bounded number of times on host-level transient failures --
+    /// instantiation failing (e.g. the pooling allocator's engine-wide
+    /// instance cap is momentarily saturated by concurrent short-lived calls,
+    /// see `build_wasm_engine`) or the call itself trapping (e.g. an epoch
+    /// deadline hit while the runtime was starved of CPU). Neither of these
+    /// is a judgment about the message itself, so silently dropping the
+    /// message on the first occurrence -- as this used to do -- turns an
+    /// ordinary, momentary resource hiccup into permanent message loss with
+    /// no redelivery. A missing export or a guest-returned application error
+    /// is not retried: retrying can't change either outcome.
     async fn deliver_message(&self, service_id: &str, topic: &str, payload: Vec<u8>) {
-        // `service_system`, never `local_elevated`: this is the inbound
-        // broker-delivery hot path -- an accidentally elevated caller here
-        // would let every delivered message pass the `execute-ddl` Admin
-        // gate. The component receiving a message acts as itself.
-        let (mut store, instance, _max_instructions) = match self
-            .build_store_and_instantiate(
-                service_id,
-                CallerContext::service_system(service_id),
-                self.dispatch_epoch_ticks,
-            )
-            .await
-        {
-            Ok(triple) => triple,
-            Err(e) => {
-                debug!(
-                    service_id,
-                    error = %e,
-                    "messaging: failed to instantiate component for delivery"
-                );
-                return;
-            }
-        };
-
         const GUEST_API_INTERFACE: &str = "syneroym:messaging/guest-api@0.1.0";
-        let (func, results_len, _item) = match Self::get_wasm_func(
-            &mut store,
-            &instance,
-            Some(GUEST_API_INTERFACE),
-            "handle-message",
-        ) {
-            Ok(found) => found,
-            Err(_) => {
-                debug!(
+        const MAX_ATTEMPTS: u32 = 4;
+        const RETRY_BACKOFF: Duration = Duration::from_millis(50);
+
+        for attempt in 1..=MAX_ATTEMPTS {
+            let last_attempt = attempt == MAX_ATTEMPTS;
+
+            // `service_system`, never `local_elevated`: this is the inbound
+            // broker-delivery hot path -- an accidentally elevated caller
+            // here would let every delivered message pass the `execute-ddl`
+            // Admin gate. The component receiving a message acts as itself.
+            let (mut store, instance, _max_instructions) = match self
+                .build_store_and_instantiate(
                     service_id,
-                    "messaging: component does not export guest-api::handle-message, discarding"
-                );
-                return;
+                    CallerContext::service_system(service_id),
+                    self.dispatch_epoch_ticks,
+                )
+                .await
+            {
+                Ok(triple) => triple,
+                Err(e) if !last_attempt => {
+                    debug!(
+                        service_id,
+                        attempt,
+                        error = %e,
+                        "messaging: failed to instantiate component for delivery, retrying"
+                    );
+                    time::sleep(RETRY_BACKOFF).await;
+                    continue;
+                }
+                Err(e) => {
+                    warn!(
+                        service_id,
+                        attempts = MAX_ATTEMPTS,
+                        error = %e,
+                        "messaging: failed to instantiate component for delivery, giving up"
+                    );
+                    return;
+                }
+            };
+
+            let (func, results_len, _item) = match Self::get_wasm_func(
+                &mut store,
+                &instance,
+                Some(GUEST_API_INTERFACE),
+                "handle-message",
+            ) {
+                Ok(found) => found,
+                Err(_) => {
+                    debug!(
+                        service_id,
+                        "messaging: component does not export guest-api::handle-message, \
+                         discarding"
+                    );
+                    return;
+                }
+            };
+
+            let args = [
+                Val::String(topic.to_string()),
+                Val::List(payload.clone().into_iter().map(Val::U8).collect()),
+            ];
+            let mut results = vec![Val::Bool(false); results_len];
+            match func.call_async(&mut store, &args, &mut results).await {
+                Ok(()) => {
+                    if let Some(msg) = Self::wasm_result_err(&results) {
+                        warn!(service_id, error = %msg, "messaging: handle-message returned an error");
+                    }
+                    return;
+                }
+                Err(e) if !last_attempt => {
+                    debug!(
+                        service_id,
+                        attempt,
+                        error = %e,
+                        "messaging: handle-message invocation trapped, retrying"
+                    );
+                    time::sleep(RETRY_BACKOFF).await;
+                }
+                Err(e) => {
+                    warn!(
+                        service_id,
+                        attempts = MAX_ATTEMPTS,
+                        error = %e,
+                        "messaging: handle-message invocation trapped, giving up"
+                    );
+                    return;
+                }
             }
-        };
-
-        let args =
-            [Val::String(topic.to_string()), Val::List(payload.into_iter().map(Val::U8).collect())];
-        let mut results = vec![Val::Bool(false); results_len];
-        if let Err(e) = func.call_async(&mut store, &args, &mut results).await {
-            warn!(service_id, error = %e, "messaging: handle-message invocation trapped");
-            return;
-        }
-
-        if let Some(msg) = Self::wasm_result_err(&results) {
-            warn!(service_id, error = %msg, "messaging: handle-message returned an error");
         }
     }
 
