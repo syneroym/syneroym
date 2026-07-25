@@ -25,7 +25,7 @@ use syneroym_data_db::traits::StorageProvider;
 use syneroym_data_keystore::KeyStore;
 use syneroym_fdae::Policy;
 use syneroym_mqtt_broker::{MqttBroker, SubscriptionHandle};
-use syneroym_rpc::{CallerContext, JsonRpcRequest, ServiceProxy};
+use syneroym_rpc::{AuthLevel, CallerContext, JsonRpcRequest, ServiceProxy};
 use syneroym_wit_interfaces::{
     control_plane::exports::syneroym::control_plane::orchestrator::{
         ArtifactSource, DeployManifest, ServiceType,
@@ -852,7 +852,17 @@ impl AppSandboxEngine {
         // bars a *forwarded* `caller` from ever carrying `LocalElevated`
         // here -- neither of this function's two callers can construct one
         // (`execute_wasm` always passes `None`; `dispatch.rs`/`proxy.rs`
-        // only ever hold a router-verified or `service_system` caller).
+        // only ever hold a router-verified or `service_system` caller). Not
+        // just a comment: a `LocalElevated` caller reaching this function
+        // would hand the guest `data-layer/admin` and skip the FDAE sieve
+        // outright (`HostState::resolve_query_auth`'s `LocalElevated`
+        // exemption), so a debug build catches a future call site that
+        // starts constructing one and passing it through here.
+        debug_assert!(
+            !matches!(&caller, Some(c) if c.auth == AuthLevel::LocalElevated),
+            "prepare_wasm_execution must never receive a forwarded LocalElevated caller -- that \
+             context is reserved for invoke_lifecycle_hook, which never calls this function"
+        );
         let caller = caller.unwrap_or_else(|| CallerContext::service_system(service_id));
         let (mut store, instance, _max_instructions) =
             self.build_store_and_instantiate(service_id, caller, self.dispatch_epoch_ticks).await?;
@@ -1381,7 +1391,7 @@ mod tests {
     use syneroym_core::{storage::MockStorage, test_constants};
     use syneroym_data_db::{ServiceStore, SqliteStorageProvider};
     use syneroym_mqtt_broker::MqttBrokerConfig;
-    use syneroym_rpc::AuthLevel;
+    use syneroym_rpc::{Ability, AuthLevel, Capability, ResourceUri, SessionContext};
     use tokio::{sync::Notify, task};
     use wasmtime::component::Component;
 
@@ -1733,6 +1743,83 @@ mod tests {
                 "caller_did leaked a local-elevated identity for method {method:?}"
             );
         }
+    }
+
+    /// A caller matching `[iam].admin_ucan_root` has always been meant to
+    /// reach a guest's `execute-ddl`/`query-raw` -- `build_caller`
+    /// (`crates/router/src/route_handler/io.rs`) issues it a bare
+    /// `substrate:<node_did>` grant of `substrate/admin`, which
+    /// `Ability::entails` defines as covering everything on the node
+    /// (including `data-layer/admin`), and
+    /// `lifecycle_hooks.
+    /// rs::test_execute_ddl_allowed_for_admin_ucan_root_caller`
+    /// already pins that fact against a hand-built `HostState` (ADR-0015/
+    /// 0016, B0.md §11.2).
+    ///
+    /// Before Slice B3.5-fdae, that fact was true but practically
+    /// unreachable from the wire: `prepare_wasm_execution` always
+    /// synthesized `service_system` (no capabilities at all) for any
+    /// wire-dispatched call, so no admin-rooted caller's grant could ever
+    /// actually arrive at `HostState.caller` outside `invoke_lifecycle_hook`
+    /// (which never calls this function). Forwarding the real caller
+    /// (`dispatch.rs`'s `JsonRpcToWasm` branch, this slice) makes that
+    /// existing, ADR-accepted admission reachable end to end for the first
+    /// time -- this test pins it through the real `prepare_wasm_execution`
+    /// wiring this slice changed, not a hand-built `HostState`, so a
+    /// regression in that wiring (or an accidental narrowing that
+    /// contradicts the ADR) shows up here.
+    #[tokio::test]
+    async fn prepare_wasm_execution_forwards_a_wire_admin_caller_that_reaches_guest_execute_ddl() {
+        let wat = r#"
+(component
+  (core module $m
+    (func (export "noop"))
+  )
+  (core instance $i (instantiate $m))
+  (func $noop (canon lift (core func $i "noop")))
+  (instance $interface
+    (export "init" (func $noop))
+    (export "migrate" (func $noop))
+  )
+  (export "test-interface" (instance $interface))
+)
+"#;
+        let storage_provider: Arc<dyn StorageProvider> = Arc::new(
+            SqliteStorageProvider::new(tempfile::tempdir().unwrap().path(), false).unwrap(),
+        );
+        let app_engine = test_app_engine(storage_provider);
+        app_engine.compile_and_cache_wasm("svc-admin-ddl", wat.as_bytes(), None).unwrap();
+
+        let admin_did = "did:key:z6MkAdminRootWire";
+        let admin_caller = CallerContext {
+            caller_did: admin_did.to_string(),
+            app_instance: None,
+            session: SessionContext {
+                subject_did: admin_did.to_string(),
+                capabilities: vec![Capability {
+                    with: ResourceUri::substrate(admin_did),
+                    can: Ability(Ability::SUBSTRATE_ADMIN.to_string()),
+                    caveats: None,
+                }],
+                ..Default::default()
+            },
+            auth: AuthLevel::Delegated,
+            proof: None,
+        };
+
+        let (mut store, _func, _results_len, _item) = app_engine
+            .prepare_wasm_execution("svc-admin-ddl", "test-interface", "init", Some(admin_caller))
+            .await
+            .unwrap();
+
+        store::Host::execute_ddl(store.data_mut(), "CREATE TABLE x (id TEXT)".to_string())
+            .await
+            .expect(
+                "an admin-rooted caller forwarded through the real dispatch wiring must reach \
+                 guest execute-ddl, matching the ADR-0015/0016 admission model already pinned \
+                 (against a hand-built HostState) by \
+                 lifecycle_hooks::test_execute_ddl_allowed_for_admin_ucan_root_caller",
+            );
     }
 
     #[tokio::test]

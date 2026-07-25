@@ -338,31 +338,39 @@ impl ProxyRouter {
         req: &ProxyRequest,
     ) -> Result<Value, ProxyError> {
         // Identity: forward the caller's *signed proof* verbatim when it has
-        // one (ADR-0016 §6 -- the destination re-verifies with
-        // `verify_preamble` and builds a fresh `CallerContext`); otherwise
-        // present this node's own identity -- but only for a genuine
-        // substrate-internal (`CallOrigin::Native`) call. A guest never
-        // carries a proof (`CallerContext::service_system`'s `proof` is
-        // always `None`; B1/UCAN delegation is what will give it one), so
-        // presenting the node's own key on its behalf would launder the
-        // guest's call as this node's real, potentially privileged DID at
-        // the destination. Leaving `pubkey` unset instead makes the
-        // destination treat it as anonymous, which the native-dispatch arm
-        // already rejects and non-native paths already tolerate. Capabilities
-        // never cross either way.
+        // one and the call is genuinely substrate-internal (ADR-0016 §6 --
+        // the destination re-verifies with `verify_preamble` and builds a
+        // fresh `CallerContext`); otherwise present this node's own identity
+        // -- again only for `CallOrigin::Native`. A guest is never allowed
+        // to present a proof remotely, even one it legitimately carries
+        // today (Slice B3.5-fdae forwards a self-proxy caller's real
+        // `CallerContext`, proof included, whenever the target is the
+        // guest's own service -- `check_native_capability_gate`'s same-
+        // service check only restricts *native-capability* interfaces, so
+        // an ordinary interface the local registry doesn't happen to have
+        // registered still falls through to this remote path with that
+        // proof attached). Presenting either the caller's proof or this
+        // node's own key on a guest's behalf would let the guest steer its
+        // own freely-chosen `(interface, method, params)` onto the wire
+        // under a real, potentially privileged identity -- exactly the
+        // laundering this function's `CallOrigin::Guest` branch exists to
+        // prevent. Leaving `pubkey` unset instead makes the destination
+        // treat it as anonymous, which the native-dispatch arm already
+        // rejects and non-native paths already tolerate. Capabilities never
+        // cross either way.
         let mut preamble = RoutePreamble::binary_json_rpc(&req.target_service, &req.interface);
-        match &req.caller.proof {
-            Some(proof) => {
+        match (&req.caller.proof, &req.origin) {
+            (Some(proof), CallOrigin::Native) => {
                 preamble.pubkey = Some(proof.pubkey_hex.clone());
                 preamble.delegation = proof
                     .delegation_json
                     .as_deref()
                     .and_then(|json| DelegationCertificate::from_json(json).ok());
             }
-            None if matches!(req.origin, CallOrigin::Native) => {
+            (None, CallOrigin::Native) => {
                 preamble.pubkey = Some(hex::encode(self.node_identity.public_key().to_bytes()));
             }
-            None => {}
+            (_, CallOrigin::Guest { .. }) => {}
         }
 
         let json_rpc_request = JsonRpcRequest {
@@ -450,8 +458,8 @@ mod tests {
     use iroh::SecretKey;
     use syneroym_core::storage::MockStorage;
     use syneroym_rpc::{
-        AuthLevel, CallerContext, NativeDispatchRegistry, NativeResponse, NativeService, RpcResult,
-        SessionContext,
+        AuthLevel, CallerContext, CallerProof, NativeDispatchRegistry, NativeResponse,
+        NativeService, RpcResult, SessionContext,
     };
 
     use super::*;
@@ -846,10 +854,8 @@ mod tests {
         let router = test_router(hop.clone(), empty_registry());
 
         let mut req = base_request("remote-svc", "greet");
-        req.caller.proof = Some(syneroym_rpc::CallerProof {
-            pubkey_hex: "deadbeef".to_string(),
-            delegation_json: None,
-        });
+        req.caller.proof =
+            Some(CallerProof { pubkey_hex: "deadbeef".to_string(), delegation_json: None });
         router.invoke_remote_at(&synthetic_addr(), &req).await.unwrap();
 
         let preamble = hop.last_preamble.lock().unwrap().clone().unwrap();
@@ -906,5 +912,48 @@ mod tests {
 
         let preamble = hop.last_preamble.lock().unwrap().clone().unwrap();
         assert_eq!(preamble.pubkey, None);
+    }
+
+    /// Slice B3.5-fdae's self-proxy branch (`host_capabilities.rs`) forwards
+    /// a `CallOrigin::Guest` request that legitimately carries the real
+    /// caller's proof when the target is the guest's own service. If that
+    /// request ever falls through `invoke`'s local-registry lookup (an
+    /// interface the local `EndpointRegistry` hasn't got, even for the
+    /// guest's raw own `component_id` -- `check_native_capability_gate`
+    /// only restricts *native-capability* interfaces cross-service, not
+    /// this fallback), it must not present that proof, or this node's own
+    /// identity, to a remote destination the guest fully chose the
+    /// `(interface, method, params)` for. Same invariant as
+    /// `guest_without_proof_forwards_as_anonymous_not_node_identity`, now
+    /// pinned for a guest caller that *does* carry a proof.
+    #[tokio::test]
+    async fn guest_with_proof_still_forwards_as_anonymous_not_the_real_proof() {
+        let hop = Arc::new(MockHop::with_outcomes(vec![MockOutcome::Success(Value::Null)]));
+        let identity = Arc::new(Identity::generate().unwrap());
+        let native_dispatch: NativeDispatchRegistry = Arc::new(DashMap::new());
+        let router = ProxyRouter::new(
+            empty_registry(),
+            empty_registry_client(),
+            Arc::downgrade(&native_dispatch),
+            Weak::new(),
+            hop.clone(),
+            identity,
+            RetryPolicy::default(),
+        );
+
+        let mut req = base_request("guest-component", "some-unregistered-iface");
+        req.caller.proof =
+            Some(CallerProof { pubkey_hex: "deadbeef".to_string(), delegation_json: None });
+        req.origin = CallOrigin::Guest { service_id: "guest-component".to_string() };
+        router.invoke_remote_at(&synthetic_addr(), &req).await.unwrap();
+
+        let preamble = hop.last_preamble.lock().unwrap().clone().unwrap();
+        assert_eq!(
+            preamble.pubkey, None,
+            "a guest-origin call must never present a proof (its own or the node's) to a remote \
+             destination, even when `req.caller.proof` is `Some` -- otherwise a guest could \
+             launder a real caller's identity onto the wire by steering a self-proxy call onto an \
+             interface the local registry misses"
+        );
     }
 }

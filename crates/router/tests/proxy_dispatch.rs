@@ -474,6 +474,70 @@ async fn guest_self_proxy_data_layer_reads_normally_when_policy_absent() {
     assert!(result.contains("\"id\":\"1\""), "expected the seeded row, got: {result:?}");
 }
 
+/// Pins a write-attribution inconsistency Slice B3.5-fdae's identity
+/// forwarding introduced as a side effect, not something this (read-only,
+/// per its own task.md scope) slice deliberately designed: `put`/
+/// `batch-mutate`'s `creator_id` stamping
+/// (`SynSvcNativeService::dispatch_data_layer`) uses
+/// `invocation.caller.app_instance.unwrap_or(invocation.caller.caller_did)`,
+/// which is correct and intended for a genuinely native (non-WASM) SynSvc
+/// reached directly -- but that same handler is now also reachable via a
+/// guest's self-proxy, whose `invocation.caller` is (since this slice) the
+/// real forwarded caller too. The guest's *direct* WIT `put`
+/// (`host_capabilities.rs`) still always stamps the service's own
+/// `component_id`, unaffected -- so the same guest, writing through two
+/// different paths, now attributes ownership differently. `NativeInvocation`
+/// carries no origin marker to distinguish "genuinely native external
+/// caller" from "guest self-proxy" at this handler, so resolving which
+/// attribution is correct is a design question, not a one-line fix --
+/// D-04-02-f already gates single-row write *authorization* to Slice
+/// B5-fdae; this pins today's *attribution* behavior explicitly so
+/// B5-fdae's write-path work inherits a known fact, not a silent surprise,
+/// rather than letting the two ingresses drift further apart unnoticed.
+#[tokio::test]
+async fn guest_self_proxy_put_attributes_creator_id_to_the_real_caller_not_the_service() {
+    let Some((route_handler, _storage_provider, _key_store)) =
+        test_route_handler_with_self_native_data_layer(None).await
+    else {
+        eprintln!("skipping: proxy-test/greeter wasm artifacts not built");
+        return;
+    };
+
+    const REAL_CALLER_DID: &str = "did:key:zSelfProxyWriterB35";
+    let real_caller = CallerContext {
+        caller_did: REAL_CALLER_DID.to_string(),
+        app_instance: None,
+        session: SessionContext::default(),
+        auth: AuthLevel::Ucan,
+        proof: None,
+    };
+
+    let resp =
+        self_proxy_call(&route_handler, "create-collection", json!({"name": "items"}), None).await;
+    assert!(resp.get("error").is_none(), "create-collection failed: {resp:?}");
+
+    let resp = self_proxy_call(
+        &route_handler,
+        "put",
+        json!({"collection": "items", "value": {"id": "1", "payload": b"{}".to_vec()}}),
+        Some(&real_caller),
+    )
+    .await;
+    assert!(resp.get("error").is_none(), "put failed: {resp:?}");
+
+    let resp =
+        self_proxy_call(&route_handler, "get", json!({"collection": "items", "id": "1"}), None)
+            .await;
+    assert!(resp.get("error").is_none(), "get failed: {resp:?}");
+    let result = resp.get("result").and_then(Value::as_str).unwrap_or_default();
+    assert!(
+        result.contains(&format!("\"creator_id\":\"{REAL_CALLER_DID}\"")),
+        "today's (B5-fdae-open) behavior: a self-proxy write attributes creator_id to the real \
+         caller, unlike the guest's own direct-WIT `put`, which always stamps the service's own \
+         component_id -- got {result:?}"
+    );
+}
+
 /// No-verified-caller pin: the same self-proxy `get` against a service
 /// constructed with `Some(policy)`, dispatched with `caller: None` (an
 /// unauthenticated connection -- WASM guests admit these, design §6.1.2),

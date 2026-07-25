@@ -3039,3 +3039,37 @@ touched file, not just the new code).
   represent a router-verified or self-proxy ingress.
 - **B4-fdae (stage-4 WASM ABAC) and B5-fdae (write-side Mode-A
   authorization)** — untouched, as before; this slice closes D-04-02-h only.
+
+## Slice B3.5-fdae — Post-implementation review response (2026-07-25)
+
+An independent review of commit `ac02c89` (re-running tests/clippy/e2e
+rather than trusting this document) surfaced eight findings, ranked by the
+review as High/High/Medium/Medium/Medium/Low/Low/Low. All eight were
+verified against the code before acting on any of them; six were confirmed
+and fixed, one was confirmed but correctly belongs to B5-fdae, one was a
+documentation-only observation. Full rationale for each is in `task.md`'s
+Slice B3.5-fdae entry; this section is the verification/evidence trail.
+
+| # | Finding | Verdict | Disposition |
+|---|---|---|---|
+| F1 | Admin-rooted caller can now reach guest `execute-ddl`/`query-raw` from the wire | Confirmed, real | **Disagree it's a defect to fix here** — `lifecycle_hooks.rs::test_execute_ddl_allowed_for_admin_ucan_root_caller` already pins the same admission (ADR-0015/0016, B0.md §11.2) against a hand-built `HostState`; this slice makes an already-accepted design reachable from the wire for the first time, not a new capability. Pinned through the real dispatch wiring instead: `engine.rs::prepare_wasm_execution_forwards_a_wire_admin_caller_that_reaches_guest_execute_ddl` |
+| F2 | Ingress-(i) test couldn't distinguish "filtered" from "unfiltered" (limit truncation masked it) | Confirmed | **Fixed** — strengthened `data_layer_integration.rs`'s test: 5 unrelated guest writes + a second, differently-owned seeded row (7 total), `limit: 5`; `observed == 1` now only holds under genuine filtering |
+| F3 | Self-proxy `put`/`batch-mutate` now attributes `creator_id` to the real caller, diverging from the direct-WIT path | Confirmed, real | **Out of this slice's scope, B5-fdae's (D-04-02-f)** — pinned explicitly (`proxy_dispatch.rs::guest_self_proxy_put_attributes_creator_id_to_the_real_caller_not_the_service`) and recorded in `deferred-backlog.md` rather than guessed at here |
+| F4 | A guest's real proof can launder onto a remote hop if the self-proxy target falls through to `invoke_remote` | Confirmed, real | **Fixed** — `invoke_remote_at` now keys the identity-presentation decision off `req.origin`, not just proof presence; a `CallOrigin::Guest` request never presents a proof remotely. New test: `proxy.rs::guest_with_proof_still_forwards_as_anonymous_not_the_real_proof` |
+| F5 | The cross-service `else` branch and the now-functional guest-ingress federated fetch are untested | Partially confirmed | **Fixed the else-branch gap** (`host_capabilities.rs::self_proxy_forwarding_does_not_extend_to_a_different_target_service`); **accepted the federated-fetch-success gap as residual** — the two dimensions it depends on (real-caller wire-reachability; the fetch mechanism itself) are each already independently covered, narrowing the actual gap to their untested intersection |
+| F6 | The "no forwarded `LocalElevated`" invariant was prose-only | Confirmed | **Fixed** — `debug_assert!` added at `prepare_wasm_execution`'s `caller.unwrap_or_else` |
+| F7 | Guest-path `DecisionTrace` now logs real end-user DIDs | Confirmed, expected | **Documentation only** — consistent with the native path's existing behavior; noted as a conscious sign-off, not a new exposure class |
+| F8 | Two intermittent test failures in parallel mode | Confirmed, pre-existing | **No action** — reproduced, then confirmed clean with `--test-threads=1`; same `mainline` DHT actor-thread flake already known, unrelated to this slice |
+
+### Verification after the response
+
+- `cargo +nightly fmt --all` — clean.
+- `cargo clippy --workspace --all-targets --all-features` — clean, 0
+  warnings.
+- `cargo test -p syneroym-router --lib --tests` and
+  `cargo test -p syneroym-sandbox-wasm --lib --tests`, both
+  `--test-threads=1` — all green, including the five new/strengthened tests
+  above.
+- `cargo test --workspace --no-fail-fast` — same baseline as this slice's
+  own original run: sandbox-port-bind failures only, on the same
+  already-documented targets, none touched by this response.

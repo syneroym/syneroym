@@ -296,9 +296,13 @@ async fn test_deployed_policy_filters_guest_originated_query_for_a_real_caller_d
         proof: None,
     };
 
-    // Seed one row directly, owned (per the policy) by the real caller --
-    // bypassing the guest's own `put`, whose host-stamped `creator_id` is
-    // always `SERVICE_ID`, never a real caller's DID.
+    // Seed two rows directly, bypassing the guest's own `put` (whose
+    // host-stamped `creator_id` is always `SERVICE_ID`, never a real
+    // caller's DID): one owned (per the policy) by the real caller, one
+    // owned by a *different* principal that must stay unreachable --
+    // mirroring `router/tests/proxy_dispatch.rs`'s ingress-(ii) test, which
+    // asserts both the reached row and the denied one.
+    const OTHER_PRINCIPAL_DID: &str = "did:key:zSomeoneElseB35";
     let store = storage_provider.open_service_db(SERVICE_ID, &key_store).await.unwrap();
     store
         .put(
@@ -311,20 +315,35 @@ async fn test_deployed_policy_filters_guest_originated_query_for_a_real_caller_d
         )
         .await
         .unwrap();
+    store
+        .put(
+            "profiles",
+            &RecordWriteValue {
+                id: "seeded-for-someone-else".to_string(),
+                payload: format!(r#"{{"creator_uuid":"{OTHER_PRINCIPAL_DID}"}}"#).into_bytes(),
+            },
+            SERVICE_ID,
+        )
+        .await
+        .unwrap();
     drop(store);
 
-    // The guest's own `run-crud-scenario(1)` writes one *unrelated* row
-    // (`{"age": 0}`, no `creator_uuid`) via the still-ungated write path,
-    // then queries with `limit: 1`. If the real caller weren't reaching
-    // `HostState.caller` (today's fixed bug), the sieve would compile
-    // `deny_all()` and this would return 0, same as the anonymous test
-    // above. With ingress (i) closed, the sieve instead admits exactly the
-    // one seeded row (the guest's own fresh row doesn't match
-    // `creator_uuid`), so `limit: 1` returns it.
+    // The guest's own `run-crud-scenario(5)` writes five *unrelated* rows
+    // (`{"age": 0..5}`, no `creator_uuid`) via the still-ungated write path,
+    // then queries with `limit: 5`. The table now holds 7 rows total (2
+    // seeded + 5 guest-written), so `limit: 5` alone would satisfy
+    // `observed == 5` under *no* filtering at all -- a `limit: 1` here
+    // would be indistinguishable from correct filtering (any non-empty
+    // result reaches the limit either way, per D-04-02-h ingress (i)'s
+    // original review finding). With ingress (i) actually closed, the
+    // sieve admits exactly the one row owned by the real caller (neither
+    // the guest's own unrelated writes nor the other principal's row match
+    // `creator_uuid`), so the true count -- not a limit truncation -- is
+    // what makes `observed == 1`.
     let request = JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
         method: "run-crud-scenario".to_string(),
-        params: serde_json::json!([1]),
+        params: serde_json::json!([5]),
         id: None,
     };
     let result = engine
@@ -334,8 +353,8 @@ async fn test_deployed_policy_filters_guest_originated_query_for_a_real_caller_d
     let observed: u32 = result.as_str().unwrap().parse().unwrap();
     assert_eq!(
         observed, 1,
-        "D-04-02-h ingress (i): a real caller's own guest-originated query must now reach the row \
-         the policy grants it (the seeded row), while still excluding the guest's own unrelated \
-         write -- got {result:?}"
+        "D-04-02-h ingress (i): a real caller's own guest-originated query must reach exactly the \
+         one row the policy grants it, excluding both the guest's 5 unrelated writes and the \
+         other principal's row, out of 7 rows total (limit: 5) -- got {result:?}"
     );
 }
