@@ -545,26 +545,43 @@ impl AppSandboxEngine {
     /// Execute a WASM component for a given service, returning the guest's
     /// results as the string-shaped boundary contract every existing caller
     /// relies on (see [`crate::conversions::wasm_results_to_json_string`]).
+    /// Test/dev-harness entry point only (smoke tests, the messaging test
+    /// driver, `invoke_test_context`) -- always dispatches as
+    /// `service_system` (`caller: None` below). A real caller reaching a
+    /// guest belongs on [`Self::execute_wasm_json`].
     pub async fn execute_wasm(
         &self,
         service_id: &str,
         interface_name: &str,
         request: &JsonRpcRequest,
     ) -> Result<String> {
-        let wasm_results = self.execute_wasm_vals(service_id, interface_name, request).await?;
+        let wasm_results =
+            self.execute_wasm_vals(service_id, interface_name, request, None).await?;
         wasm_results_to_json_string(&wasm_results)
     }
 
     /// Typed entry point (M04A Slice A1): the guest's results as a real JSON
     /// [`Value`], with no string special-case. Used by the Universal Proxy
     /// (`ProxyRouter::invoke_local`) and the inbound `JsonRpcToWasm` route.
+    ///
+    /// `caller`, when `Some`, becomes the invoked guest's `HostState.caller`
+    /// (D-04-02-h ingress (i)) instead of the synthesized `service_system`
+    /// [`prepare_wasm_execution`] falls back to on `None` -- so the guest's
+    /// own host-function reads see who is actually asking. `dispatch.rs`'s
+    /// `JsonRpcToWasm` branch passes the router-verified caller (or `None`
+    /// for an unauthenticated connection, which WASM guests admit);
+    /// `ProxyRouter::invoke_local`'s `WasmChannel` arm deliberately passes
+    /// `None` -- a proxied guest-to-guest call is a different, not-yet-built
+    /// delegation question (see that call site's own comment).
     pub async fn execute_wasm_json(
         &self,
         service_id: &str,
         interface_name: &str,
         request: &JsonRpcRequest,
+        caller: Option<CallerContext>,
     ) -> Result<Value> {
-        let wasm_results = self.execute_wasm_vals(service_id, interface_name, request).await?;
+        let wasm_results =
+            self.execute_wasm_vals(service_id, interface_name, request, caller).await?;
         crate::conversions::wasm_results_to_json(&wasm_results)
     }
 
@@ -578,6 +595,7 @@ impl AppSandboxEngine {
         service_id: &str,
         interface_name: &str,
         request: &JsonRpcRequest,
+        caller: Option<CallerContext>,
     ) -> Result<Vec<Val>> {
         Self::validate_service_id(service_id)?;
         struct ActiveInstanceGuard;
@@ -598,8 +616,9 @@ impl AppSandboxEngine {
 
         // TODO: Later optimize this by caching things like function parameter details
         // on first execution, so we don't have to do the same lookups every time.
-        let (mut store, func, results_len, item) =
-            self.prepare_wasm_execution(service_id, interface_name, &request.method).await?;
+        let (mut store, func, results_len, item) = self
+            .prepare_wasm_execution(service_id, interface_name, &request.method, caller)
+            .await?;
 
         // Parse parameters based on ComponentFunc signature
         let params_iter = match &item {
@@ -808,11 +827,18 @@ impl AppSandboxEngine {
     }
 
     /// Helper to prepare WASM execution context and extract function
+    ///
+    /// `caller`, when `Some`, is the real caller this invocation carries
+    /// through into `HostState.caller` (D-04-02-h ingress (i)); `None`
+    /// preserves the prior synthesized-`service_system` behavior (an
+    /// unauthenticated connection, or a test/dev-harness call via
+    /// [`Self::execute_wasm`]).
     async fn prepare_wasm_execution(
         &self,
         service_id: &str,
         interface_name: &str,
         method_name: &str,
+        caller: Option<CallerContext>,
     ) -> Result<(Store<HostState>, Func, usize, ComponentItem)> {
         // This is the ordinary dispatch path -- reached from wire-originated
         // JSON-RPC (`dispatch.rs`) and guest-to-guest proxy calls, both of
@@ -822,8 +848,12 @@ impl AppSandboxEngine {
         // would otherwise self-elevate. `local_elevated` is reserved for
         // `invoke_lifecycle_hook`, which the deploy path calls directly
         // (never through this function) and builds its own caller/epoch
-        // budget without consulting `method_name` at all.
-        let caller = CallerContext::service_system(service_id);
+        // budget without consulting `method_name` at all. Same reasoning
+        // bars a *forwarded* `caller` from ever carrying `LocalElevated`
+        // here -- neither of this function's two callers can construct one
+        // (`execute_wasm` always passes `None`; `dispatch.rs`/`proxy.rs`
+        // only ever hold a router-verified or `service_system` caller).
+        let caller = caller.unwrap_or_else(|| CallerContext::service_system(service_id));
         let (mut store, instance, _max_instructions) =
             self.build_store_and_instantiate(service_id, caller, self.dispatch_epoch_ticks).await?;
 
@@ -1689,7 +1719,7 @@ mod tests {
 
         for method in ["init", "migrate"] {
             let (store, _func, _results_len, _item) = app_engine
-                .prepare_wasm_execution("svc-n1", "test-interface", method)
+                .prepare_wasm_execution("svc-n1", "test-interface", method, None)
                 .await
                 .unwrap();
             assert_eq!(

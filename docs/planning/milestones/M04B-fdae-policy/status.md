@@ -2833,3 +2833,209 @@ mismatch case cross-substrate.
   updated with this phase's e2e evidence; Slice B3's own header line marked
   complete.
 - `wasm32-wasip2` -- unbroken; no WIT change this phase.
+
+## Slice B3.5-fdae — Guest-Originated Read Identity Threading (D-04-02-h) ✅ (2026-07-25)
+
+Branch: `feat/m04b-slice-b3.5-fdae` (based on `feat/m04b-slice-b3-phase5`, since
+main does not yet carry Slice B3 Phase 5). Closes the one gap left open
+across three consecutive prior phases (B2 Phase 4, B3 Phase 4, B3 Phase 5):
+D-04-02-h, "a guest-originated `data-layer` read carries no real external
+principal into `HostState`/native dispatch." `crates/fdae`'s
+`plan_read`/`compile_read`, `crates/data_db`'s `QueryAuth`/`check_access`, and
+`SynSvcNativeService::resolve_query_auth`'s deliberate no-`AuthLevel`-carve-out
+design are all unchanged ground truth for this slice — the fix is entirely
+about *what identity reaches* those already-correct call sites.
+
+### Root cause (confirmed against `main`, matching the B3 Phase 4 analysis)
+
+`router/src/route_handler/dispatch.rs`'s `JsonRpcToWasm` branch called
+`AppSandboxEngine::execute_wasm_json(service_id, interface, request)` with no
+`caller` argument at all, even though `dispatch_json_rpc_once` already held
+the router-verified `caller: Option<&CallerContext>` one arm over (the
+Native-service branch uses it). `execute_wasm_json` → `execute_wasm_vals` →
+`prepare_wasm_execution` unconditionally built
+`CallerContext::service_system(service_id)`, so `HostState.caller` was always
+the synthesized system identity regardless of who actually invoked the guest.
+Both D-04-02-h ingresses trace back to this one gap:
+
+- **Ingress (i)** — the WASM host-function path (`store::Host for
+  HostState`'s `get`/`query`/etc.) reads `self.caller` directly.
+- **Ingress (ii)** — a guest's `syneroym:proxy::call` into its own service's
+  native `data-layer` (`proxy::Host::call`'s self-proxy branch) always
+  constructed a *fresh* `CallerContext::service_system(&self.component_id)`
+  for the `ProxyRequest`, independent of ingress (i)'s fix — so closing (i)
+  alone would not have closed (ii).
+
+### What was delivered
+
+- **`crates/sandbox_wasm/src/engine.rs`** — `execute_wasm_json`,
+  `execute_wasm_vals`, and `prepare_wasm_execution` all gained a trailing
+  `caller: Option<CallerContext>` parameter. `prepare_wasm_execution` now
+  does `caller.unwrap_or_else(|| CallerContext::service_system(service_id))`
+  in place of the unconditional synthesis — `None` (an unauthenticated
+  connection, which a WASM guest still admits per design §6.1.2) reproduces
+  the exact prior behavior. `execute_wasm` (the string-typed entry point used
+  only by test/dev harnesses — `smoke-tests`, the messaging test driver in
+  `control_plane/src/service.rs`, `invoke_test_context`) keeps its old
+  signature unchanged and always passes `caller: None` internally, so none of
+  those call sites' behavior changed and none needed editing.
+- **`crates/router/src/route_handler/dispatch.rs`** — the `JsonRpcToWasm` arm
+  now passes `caller.cloned()` into `execute_wasm_json`, closing ingress (i)
+  for any router-verified caller reaching a WASM guest's own exported
+  interface.
+- **`crates/sandbox_wasm/src/host_capabilities.rs`** — `proxy::Host::call`
+  (the guest-facing `syneroym:proxy/proxy::call` implementation) now forwards
+  `self.caller.clone()` as the `ProxyRequest.caller` whenever the proxy
+  target is the guest's **own** service (`service == self.component_id`) —
+  the same-service self-proxy case the proxy gate's existing exception
+  already restricts to a guest's own data, so this cannot escalate to another
+  service's rights. A genuine cross-service proxy call (a different target
+  service) still synthesizes `service_system`, unchanged: real
+  cross-service caller-delegation is a separate, not-yet-built B1/UCAN
+  mechanism, explicitly out of this slice's scope. This closes ingress (ii)
+  with **no change needed** in `SynSvcNativeService::resolve_query_auth`
+  (`control_plane/src/synsvc_native.rs`) — its documented "no `AuthLevel`
+  carve-out" design (kept specifically so the self-proxy route can never be
+  *more* permissive than the direct route) was already correct for whatever
+  `NativeInvocation.caller` turned out to be; it had only ever received a
+  synthesized identity because nothing upstream forwarded a real one.
+- **`crates/router/src/proxy.rs`** — `ProxyRouter::invoke_local`'s
+  `WasmChannel` arm (a proxied call into a *different* WASM service's own
+  guest-exported interface, not a native capability) now passes
+  `caller: None` **explicitly** to `execute_wasm_json`, with an updated
+  comment distinguishing this from the two D-04-02-h ingresses closed above:
+  forwarding a proxy's own caller across a *genuine* cross-service call is
+  the separate, deferred caller-delegation question, not this slice's scope.
+  No behavior change on this path.
+- Doc-hygiene: `dispatch_json_rpc_once`'s own doc comment (which said `caller`
+  was "unused" outside the Native arm) updated to describe the WASM arm's new
+  use; the D-04-02-h Decision Register entry and Slice B3.5-fdae's own
+  `task.md` entry marked resolved with a full account of what closed and how;
+  reference scenario step 22's "…never reaches the WASM guest" half marked
+  done; `traceability-matrix.md`'s `[FND-IAM]` (M4B) row updated (still `In
+  Progress` — B4-fdae/B5-fdae remain); `deferred-backlog.md`'s D-04-02-h row
+  moved to "Recently resolved" (no in-code `TODO`/`FIXME` marker existed for
+  it to remove).
+
+### Tests
+
+Both pinned D-04-02-h regression tests were **flipped, not deleted** — each
+now proves closure for a *real* caller while a sibling test keeps pinning the
+one case that is still legitimately empty (`caller: None`, no verified
+identity at all reaches either ingress):
+
+- **`crates/sandbox_wasm/tests/data_layer_integration.rs`** —
+  `test_deployed_policy_filters_guest_originated_query_for_a_real_caller_d04_02_h_closed`
+  (new): deploys the same `data-layer-test` WASM fixture under a
+  `principal_column`-direct policy (`profiles.creator_uuid`, a payload field
+  via `json_extract` — chosen over the original `creator`/`user`-join shape
+  because the write path's host-stamped `creator_id` is always the
+  *service's* own `component_id`, never a real caller's DID, so a
+  caller-owned row has to be seeded directly through `ServiceStore` rather
+  than through the guest's own `put`). Seeds one row owned (per the policy)
+  by a real, capability-bearing `CallerContext`, then drives the guest's
+  `run-crud-scenario(1)` through `execute_wasm_json`'s new `caller` param:
+  the guest's own fresh write (unrelated, no `creator_uuid`) stays correctly
+  excluded, and the query reaches exactly the one seeded row — `1`, not the
+  prior unconditional `0`.
+  `test_deployed_policy_yields_empty_guest_originated_query_d04_02_h`
+  (existing, re-scoped): unchanged in behavior and assertion (still `0`) —
+  its doc comment now explains this is the anonymous-connection case
+  (`run_crud_scenario`/`execute_wasm` always pass `caller: None`), not a
+  general gap, and points at the new test for the closed case.
+  `make_engine_with_storage` gained a third return value (`Arc<KeyStore>`,
+  needed to seed a row directly), threaded through its one prior call site.
+- **`crates/router/tests/proxy_dispatch.rs`** —
+  `guest_self_proxy_data_layer_filters_for_a_real_caller_d04_02_h_closed`
+  (new): builds the same `proxy-caller`/`SynSvcNativeService`
+  self-proxy harness as the existing pin, under a `principal_column`-direct
+  `items.creator_id` policy (the physical column, so no `json_extract`
+  needed at all here). Seeds two rows directly (bypassing the guest's
+  self-proxy `put`, for exact control over which principal owns which row)
+  — one owned by a real caller, one by a different principal — then drives
+  `self_proxy_call`'s `get` for each with `dispatch_json_rpc_once`'s
+  `caller: Some(&real_caller)`: the real caller reaches their own row and is
+  denied the other principal's row.
+  `guest_self_proxy_data_layer_returns_empty_when_policy_present` (existing,
+  re-scoped): unchanged in behavior and assertion (still empty) — its doc
+  comment now explains this is the `caller: None` case; points at the new
+  test for the closed case.
+  `test_route_handler_with_self_native_data_layer` now also returns
+  `(Arc<dyn StorageProvider>, Arc<KeyStore>)` (needed for direct seeding),
+  threaded through both its existing call sites; `self_proxy_call` gained a
+  `caller: Option<&CallerContext>` parameter, threaded through its four
+  existing call sites as `None` (preserving their exact behavior).
+- Both new tests independently prove **per-row** filtering, not just "the
+  policy now passes everything through": each leaves at least one row in the
+  same collection that must stay excluded (the guest's own unrelated write
+  in the sandbox_wasm test; the other principal's row in the router test).
+
+### Import cleanup
+
+One inline fully-qualified path introduced incidentally by the `router` test
+file's expanded return type touched the surrounding line —
+`syneroym_identity::Identity::generate()` in
+`test_route_handler_with_self_native_data_layer` — fixed by importing
+`syneroym_identity::Identity` and calling `Identity::generate()`, per
+AGENTS.md's import-qualification rule. No other inline `::`-qualified paths
+were introduced by this slice's diff (checked by scanning the diff of every
+touched file, not just the new code).
+
+### Verification evidence
+
+- `cargo +nightly fmt --all` — clean.
+- `cargo clippy --workspace --all-targets --all-features` — zero warnings.
+- `cargo test -p syneroym-sandbox-wasm --lib --tests` — **74 passed**, 0
+  failed (44 lib + 5 blob + 3 data-layer [2 prior + 1 new] + 6 lifecycle + 3
+  messaging + 13 stream).
+- `cargo test -p syneroym-router --lib --tests` — **134 passed**, 0 failed
+  (72 lib + 9 deploy_grant + 34 native_dispatch_identity + 5 proxy_dispatch
+  [4 prior + 1 new] + 10 service_ownership + 2 ucan_context + 2
+  unsupported_protocol).
+- `cargo test -p syneroym-router --test proxy_dispatch -- --nocapture` and
+  `cargo test -p syneroym-sandbox-wasm --test data_layer_integration --
+  d04_02_h --nocapture` — both new + both re-scoped tests independently
+  re-run and confirmed passing before the full-crate runs above.
+- `cargo test --workspace --no-fail-fast` — **10 pre-existing,
+  sandbox-environmental targets fail** (`coordinator-iroh`'s
+  `connection_limit`/`multi_hop_relay`/`tls_rotation`, `mqtt-broker`'s lib
+  tests, `sdk`'s `connect_timeout`, `substrate`'s `basic_lifecycle`/
+  `http_passthrough_e2e`/`messaging_client_e2e`/`stream_client_e2e`/
+  `federated_fdae_e2e`), all `"Operation not permitted (os error 1)"`
+  binding a real port under this CLI's default network sandbox — the same
+  set and error class every prior phase has documented, plus
+  `federated_fdae_e2e` (added in Slice B3 Phase 5, which already documented
+  it needs the sandbox disabled for its real two-substrate QUIC hop; not
+  previously exercised by a *default-sandbox* full-workspace run in this
+  slice's diff history). None of these ten targets' source files were
+  touched by this slice. Re-ran `federated_fdae_e2e` in isolation with the
+  sandbox disabled to confirm it is unaffected by this slice's changes: **1
+  passed** (52.20s) — matching Phase 5's own documented result.
+- `mise run test:e2e` — run (sandbox disabled, needed for real port binds),
+  **12/12 green** (8 `webrtc.spec.ts` + 4 `multi-hop.spec.ts`), matching the
+  established baseline. Run deliberately, despite no WIT change: this slice
+  changes real production behavior on the `JsonRpcToWasm` dispatch path
+  every router-originated WASM call takes (a router-verified caller now
+  reaches `HostState.caller` instead of always `service_system`), so
+  reconfirming the existing e2e fixtures (which deploy no FDAE policy) still
+  come up and behave identically is worth the run, not assumed from "no WIT
+  change" alone.
+- `wasm32-wasip2` — unbroken; no `.wit` file touched this slice, and no
+  `test-components` rebuild was needed (the existing `data-layer-test`,
+  `proxy-test`, and `greeter` artifacts exercised correctly through both new
+  tests without modification).
+
+### Explicitly out of scope (recorded, not silently dropped)
+
+- **Cross-service guest caller-delegation** (a proxy call to a *different*
+  service inheriting the calling guest's own identity rather than acting as
+  itself) — unaffected by this slice; still `service_system` in both
+  `proxy::Host::call` (cross-service branch) and `ProxyRouter::invoke_local`'s
+  `WasmChannel` arm. Real delegation needs B1/UCAN chain-of-custody design
+  work this slice does not attempt.
+- **`AppSandboxEngine::execute_wasm`'s test/dev-harness call sites** (smoke
+  tests, the messaging test driver, `invoke_test_context`) — deliberately
+  left on the unchanged, `service_system`-only signature; none of them
+  represent a router-verified or self-proxy ingress.
+- **B4-fdae (stage-4 WASM ABAC) and B5-fdae (write-side Mode-A
+  authorization)** — untouched, as before; this slice closes D-04-02-h only.

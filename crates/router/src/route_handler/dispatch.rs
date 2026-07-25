@@ -63,8 +63,10 @@ impl RouteHandler {
     ///
     /// `caller` is `None` for a connection with no verifiable identity
     /// (ADR-0016 §3). The Native-service arm below rejects it before
-    /// dispatch -- every other arm here never reaches a native capability,
-    /// so it's unused there.
+    /// dispatch; the WASM arm forwards it into the guest's `HostState.caller`
+    /// (D-04-02-h ingress (i), Slice B3.5-fdae) instead of rejecting or
+    /// ignoring it -- a WASM guest still admits an anonymous (`None`)
+    /// caller, per design §6.1.2.
     pub async fn dispatch_json_rpc_once(
         &self,
         pipeline: &RoutePipeline,
@@ -120,8 +122,20 @@ impl RouteHandler {
                     serde_json::from_slice(body).map_err(|e| anyhow!("JSON parse error: {e}"))?;
 
                 if let Some(app_sandbox_engine) = &self.inner.app_sandbox_engine {
+                    // D-04-02-h ingress (i): forward the router-verified
+                    // caller (or `None` for an unauthenticated connection,
+                    // which WASM guests admit -- design §6.1.2) into
+                    // `HostState.caller`, so the guest's own host-function
+                    // reads/writes see who is actually asking instead of the
+                    // synthesized `service_system` every prior phase left
+                    // in place here.
                     match app_sandbox_engine
-                        .execute_wasm_json(service_id, &preamble.interface, &request)
+                        .execute_wasm_json(
+                            service_id,
+                            &preamble.interface,
+                            &request,
+                            caller.cloned(),
+                        )
                         .await
                     {
                         Ok(wasm_result) => {

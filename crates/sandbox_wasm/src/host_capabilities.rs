@@ -776,17 +776,33 @@ impl proxy::Host for HostState {
         let protocol =
             ProxyProtocol::parse(protocol_tag).map_err(proxy::ProxyError::UnsupportedProtocol)?;
 
+        // D-04-02-h ingress (ii): a guest proxying into its **own** service's
+        // native `data-layer` forwards this invocation's real `HostState.
+        // caller` (router-verified, or `service_system` if none reached
+        // this guest -- see `prepare_wasm_execution`), so the receiving
+        // `SynSvcNativeService::resolve_query_auth` sees who is actually
+        // asking instead of always synthesizing `service_system` -- the
+        // same-service exception (`ProxyRouter::check_native_capability_
+        // gate`) already restricts this to the guest's own data, so this
+        // cannot escalate to another service's rights.
+        //
+        // A genuine cross-service call still acts as itself: it does NOT
+        // inherit the identity of whoever invoked *this* guest (no U->X
+        // delegation exists in B0's model), so a proxied call to a
+        // *different* service cannot be used to escalate to the original
+        // caller's rights. Real cross-service caller-delegation is B1/UCAN,
+        // not yet built.
+        let caller = if service == self.component_id {
+            self.caller.clone()
+        } else {
+            CallerContext::service_system(&self.component_id)
+        };
         let req = ProxyRequest {
             target_service: service,
             interface,
             method,
             params,
-            // The component acts as itself. It does NOT inherit the
-            // identity of whoever invoked it (no U->X delegation exists in
-            // B0's model), so a proxied call cannot be used to escalate to
-            // the original caller's rights. Real caller-delegation is
-            // B1/UCAN.
-            caller: CallerContext::service_system(&self.component_id),
+            caller,
             origin: CallOrigin::Guest { service_id: self.component_id.clone() },
             protocol,
             idempotent,

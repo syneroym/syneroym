@@ -274,11 +274,15 @@ impl ProxyRouter {
                     })
             }
             // Identity threading through a proxied WASM call is "the callee
-            // acts as itself" (`execute_wasm_json` builds its own
-            // `service_system`/`local_elevated` caller internally, per B0's
-            // shape) -- the proxy caller's own identity does not currently
-            // reach a WASM callee's host state. Not an oversight: a
-            // caller-scoped guest identity is an FDAE/M04B concern.
+            // acts as itself": `caller: None` below always synthesizes
+            // `service_system` (D-B3-4/D-04-02-h; `execute_wasm_json`'s own
+            // doc comment). This is a *different* question from the two
+            // D-04-02-h ingresses B3.5-fdae closed (a router-verified
+            // caller's own identity reaching its own guest's reads, direct
+            // or via self-proxy) -- this is one guest delegating to a
+            // *different* service's guest-exported interface through the
+            // proxy, which would need real caller-delegation (B1/UCAN,
+            // not yet built) to forward safely. Not an oversight.
             //
             // Known limitation, same boundary: any error from
             // `execute_wasm_json` -- including a callee's own typed
@@ -299,7 +303,7 @@ impl ProxyRouter {
                 };
                 time::timeout(
                     call_timeout,
-                    engine.execute_wasm_json(&service_id, &canonical_iface, &request),
+                    engine.execute_wasm_json(&service_id, &canonical_iface, &request, None),
                 )
                 .await
                 .map_err(|_| ProxyError::Timeout(call_timeout))?
