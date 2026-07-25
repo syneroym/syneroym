@@ -223,8 +223,11 @@ and no longer gate B2; d/e remain as a deferral and a B7 hand-off.
   comment directing whoever fixes this to flip the assertion. Surfaced during
   Slice B2 Phase-2 review (independent re-review pass).
 - **D-04-02-h — Guest-originated reads carry no principal.** ⛳ **Open —
-  expected to be resolved alongside B3's `anchor_did`, not as a slice of its
-  own.** Every read a guest originates runs under a synthesized
+  scheduled as its own slice, Slice B3.5-fdae (2026-07-25 update below).**
+  Originally expected to resolve alongside B3's `anchor_did` rather than as a
+  slice of its own; superseded once B3 Phase 4 confirmed the two ingresses
+  can't be dispositioned independently and B3 itself couldn't attempt the
+  cross-cut. Every read a guest originates runs under a synthesized
   `CallerContext::service_system(service_id)` — "the callee acts as itself",
   settled in M04A B0/A1 — whose `SessionContext` holds no capabilities, so
   `compile_read` falls to `deny_all()` and the read returns empty (Mode B) /
@@ -272,6 +275,16 @@ and no longer gate B2; d/e remain as a deferral and a B7 hand-off.
   `execute_wasm_json`/`execute_wasm_vals` → `prepare_wasm_execution` →
   `HostState`), confirmed out of scope for B3 Phase 4 with the user. See
   `slice-b3-implementation-plan.md` §7's corrected D-B3-4.
+
+  **Update (Slice B3 Phase 5, 2026-07-25):** still open through B3's own
+  closeout — the cross-cut above was not attempted this phase either.
+  Deferred three consecutive phases now (B2 Phase 4, B3 Phase 4, B3 Phase 5)
+  without ever landing in a slice's committed scope, which is a pattern, not
+  a coincidence, and it blocks a substantive claim (reference scenario step
+  22, the primary SynApp usage pattern of a WASM guest reading its own data
+  via `data-layer`), not a formality. Given its own slice below —
+  **Slice B3.5-fdae** — rather than left open-ended again as a rider on
+  B4-fdae/B5-fdae.
 
 ---
 
@@ -563,6 +576,37 @@ service_id)` (HKDF, the same "Model A: derived" pattern as
 DID and the service id so a `service_id` recycled by a *different* owner
 after undeploy doesn't inherit the old owner's signing key. Full evidence
 for both: `status.md`.
+
+#### Slice B3.5-fdae: Guest-Originated Read Identity Threading (D-04-02-h)
+**Depends on:** M04A B0 (verified `CallerContext`), B3 (the corrected D-B3-4
+analysis in `slice-b3-implementation-plan.md` §7 confirming this needs its
+own slice, not a same-phase fix). **Requirement:** `[FND-IAM]`.
+Closes the one gap B2 and B3 have each left open across three consecutive
+phases (B2 Phase 4, B3 Phase 4, B3 Phase 5): a guest-originated `data-layer`
+read — either ingress, the WASM host-function path or same-service guest
+self-proxy — carries no real external principal into `HostState`/native
+dispatch, both synthesizing `service_system`. Root cause, confirmed in B3
+Phase 4: `router/src/route_handler/dispatch.rs`'s `JsonRpcToWasm` branch
+drops the router's already-verified caller before calling
+`execute_wasm_json`, so it never reaches `execute_wasm_vals` ->
+`prepare_wasm_execution` -> `HostState`. Closing it means threading the real
+`CallerContext` through that whole call chain for both ingresses — the
+cross-cut B3 Phase 4 explicitly declined to attempt.
+
+**Why this needs its own slice, not a B4/B5 rider.** This is FDAE's own
+unfinished obligation, not cross-milestone platform work owned elsewhere
+(contrast D-B3-10's app-context registry, owned by `app_orchestration`,
+serving consumers beyond FDAE) — bundling it into B4-fdae's ABAC work risks
+it being deprioritized against that slice's own feature scope for a fourth
+time, the same way it was deferred at the end of B2 Phase 4, B3 Phase 4, and
+B3 Phase 5. It also blocks a substantive claim, not a formality: reference
+scenario step 22 ("unauthorized rows never reach the WASM guest") describes
+the *primary* SynApp usage pattern — a WASM component reading its own data
+via `data-layer` — and today that guarantee is provably empty rather than
+shown-correctly-filtered for a real caller on that path.
+
+**Exit gate:** `traceability-matrix.md`'s `[FND-IAM]` (M4B) row should not
+flip to `Complete` while this stays open, even once B4-fdae/B5-fdae land.
 
 #### Slice B4-fdae: Stage-4 WASM ABAC
 **Depends on:** B2 (candidate rows come from the sieve). May fold into B2's
