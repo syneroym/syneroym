@@ -269,7 +269,24 @@ until this lands.
 mechanism that "already exists" — a real, **live** implementation, so a
 logical service name (e.g. a policy's `Relation.service`, or a manifest
 dependency) resolves to a DID backed by actual current deployment state, not a
-hand-populated test double.
+hand-populated test double. **Second goal, folded in here rather than a
+separate initiative (added 2026-07-25, M04B Slice B3 Phase 5):** the same
+registry entry should also carry each service's `expected_asserter_did` —
+the residual gap from B3's D-B3-8. `resolve_fetches` verifies a remote
+`RelationshipProof` against a policy-declared `expected_asserter_did`
+(`Identity::derive_service_identity(owner_did, service_id)`, deliberately
+node-private), but a policy author on a different node has no automated way
+to learn it today — only the out-of-band channel Phase 5's own e2e test
+uses (reading it directly off the node the test itself constructed, the
+same access a real deploying operator would have). This is the same class
+of lookup problem as the logical-name resolution above, and plausibly the
+same data store: if the live `AppRegistry` records `{service_id,
+expected_asserter_did}` per entry instead of just `{service_id}`, one build
+closes both gaps instead of two initiatives solving overlapping problems.
+Previously tracked as its own `deferred-backlog.md` §3 row ("Cross-node
+`expected_asserter_did` discovery/publication"); moved here as its actual
+home, for the same reason D-B3-10 lives here and not there — this is
+committed platform work, not droppable debt.
 
 **Verified current state (2026-07-24).** It does not exist. `crates
 /app_orchestration/src/resolver.rs`'s `AppRegistry` trait +
@@ -288,7 +305,11 @@ deployment/reconciliation state (populated as services deploy/undeploy and,
 ideally, as health checks pass/fail — health checking itself does not exist
 yet either and may need to be scoped in or explicitly split out), wired so a
 deploy-time or query-time logical-name lookup reflects what is actually
-running, not a static snapshot.
+running, not a static snapshot. Each entry should also carry the deployed
+service's `expected_asserter_did` (computable at deploy time from
+`(owner_did, service_id)`, the same inputs `resolve-relation`'s signing side
+already derives from), so an FDAE policy author's lookup resolves both "who
+backs this logical name" and "what will it sign with" from one place.
 
 **Why it's not a Slice B3 deliverable.** It is an `app_orchestration`-crate,
 cross-milestone concern (also serves `[PLT-DAP-01]`'s physical-sharding

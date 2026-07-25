@@ -26,7 +26,8 @@ pub struct JsonRpcResponse {
     pub id: Option<Value>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, thiserror::Error)]
+#[error("JSON-RPC error {code}: {message}")]
 pub struct JsonRpcError {
     pub code: i32,
     pub message: String,
