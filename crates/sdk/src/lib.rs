@@ -20,8 +20,8 @@ use syneroym_core::dht_registry::{EndpointMechanism, RegistryClient, SignedEndpo
 use syneroym_identity::Identity;
 use syneroym_router::{RoutePreamble, RouteProtocol, RouteTransport, SYNEROYM_ALPN};
 use syneroym_rpc::{
-    CapabilityToken, JsonRpcRequest, JsonRpcResponse, MESSAGING_MESSAGE_METHOD,
-    MessagingNotification, framing,
+    CapabilityToken, JsonRpcErrorResponse, JsonRpcRequest, JsonRpcResponse,
+    MESSAGING_MESSAGE_METHOD, MessagingNotification, framing,
 };
 pub use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, ContainerManifest, ContainerPortMapping, ContainerVolumeMapping,
@@ -422,7 +422,23 @@ impl SyneroymClient {
                 request.method
             ));
         }
-        let res: JsonRpcResponse = serde_json::from_slice(&frame)?;
+        // A wire error frame is a `JsonRpcErrorResponse` (`{error, ..}`),
+        // structurally disjoint from the success shape `JsonRpcResponse`
+        // (`{result, ..}`) this deserializes into first -- so a failed parse
+        // here doesn't yet mean "malformed response," only "not a success."
+        // Falling back to `JsonRpcErrorResponse` recovers the RPC-level
+        // `code`/`message` (e.g. `PermissionDenied` at -32010) as a
+        // downcastable `JsonRpcError` on the returned `anyhow::Error`,
+        // instead of only ever surfacing an opaque deserialize failure.
+        let res: JsonRpcResponse = match serde_json::from_slice(&frame) {
+            Ok(res) => res,
+            Err(parse_err) => {
+                return match serde_json::from_slice::<JsonRpcErrorResponse>(&frame) {
+                    Ok(err_res) => Err(err_res.error.into()),
+                    Err(_) => Err(parse_err.into()),
+                };
+            }
+        };
         debug!("got json response for method: {}: {:?}", request.method, res);
         Ok(res)
     }

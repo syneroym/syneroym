@@ -20,7 +20,16 @@ use crate::{
 /// Well above the `< 50 ms p99` *floor* the perf budget targets for a
 /// healthy hop (`task.md`), but still bounded -- a fetch that overruns this
 /// denies the whole read closed rather than hang the caller indefinitely.
-pub const FDAE_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
+///
+/// 15s, not 5s: `IrohHop` (`crates/router/src/proxy.rs`) opens a brand-new
+/// QUIC connection per call (no reuse yet, tracked in
+/// `docs/planning/deferred-backlog.md`), and that connection setup alone
+/// measured p99≈4.6s in `federated_fdae_e2e.rs` -- an 8% margin against a 5s
+/// ceiling that a slightly slower/loaded CI runner would blow through,
+/// turning a real timeout into a spurious deny-closed test failure. 15s
+/// keeps this a hang backstop, not a race against connection-establishment
+/// jitter.
+pub const FDAE_FETCH_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Debug, thiserror::Error)]
 pub enum FetchError {

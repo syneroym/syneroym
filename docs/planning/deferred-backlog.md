@@ -114,6 +114,7 @@ Target notation: `M05`, `M07`, `M10+`, `Phase 6` = a sequenced milestone/phase; 
 | Observability engine build-out | Current engine is a placeholder / basic shell. | TBD | `observability/src/engine.rs` |
 | Process-global tracing init | Handle process-global tracing initialization more cleanly. | TBD | `observability/src/engine.rs` |
 | Resource metering `[FND-OBS]` | Exact per-service utilization metering (for billing) not built. | TBD | [system-requirements-spec.md](../system-requirements-spec.md) feature matrix |
+| No queryable `DecisionTrace` API | ADR-0017 §9's per-decision trace (asserter DID, `valid_until_secs`, compiled predicate, etc.) is only observable via `tracing` (`DecisionTrace::emit`) -- there's no API response field or query surface for it yet. Confirmed at unit level (`fdae_fetch`/`finalize` tests) but `federated_fdae_e2e.rs` can't assert a successful fetch's provenance end to end without capturing log output, which the test deliberately doesn't do. | Later slice | `crates/fdae/src/trace.rs`; `crates/substrate/tests/federated_fdae_e2e.rs` |
 
 ## 10. Product surfaces & UX
 

@@ -32,7 +32,7 @@ use syneroym_core::{
     dht_registry::{EndpointInfo, EndpointMechanism, EndpointType},
 };
 use syneroym_identity::{Identity, substrate};
-use syneroym_rpc::{Ability, Capability, CapabilityToken, ResourceUri};
+use syneroym_rpc::{Ability, Capability, CapabilityToken, JsonRpcError, ResourceUri};
 use syneroym_sdk::{DeployManifest, ServiceConfig, ServiceType, SyneroymClient, TcpManifest};
 use syneroym_substrate::identity;
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::DocumentSource;
@@ -523,6 +523,10 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
         assert_eq!(records[0]["id"], "doc-1");
     }
 
+    // With FETCH_LATENCY_ITERATIONS this small, "p99" is arithmetically
+    // indistinguishable from max -- not a real percentile, just a smoke
+    // number alongside the hang backstop below. Labeled as such in the log
+    // line so it isn't misread as a statistically meaningful measurement.
     latencies.sort();
     let p50 = latencies[latencies.len() / 2];
     let p99_idx = ((latencies.len() as f64) * 0.99).ceil() as usize;
@@ -530,7 +534,8 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
     let max = *latencies.last().unwrap();
     println!(
         "federated FDAE fetch (Node B -> Node A, real Iroh QUIC, {} iterations): p50={p50:?} \
-         p99={p99:?} max={max:?}",
+         p99(n={}, ~=max)={p99:?} max={max:?}",
+        latencies.len(),
         latencies.len()
     );
     assert!(
@@ -656,15 +661,22 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
     // `native_dispatch_denies_closed_on_a_cross_service_fetch_failure`) --
     // deliberately different from an ordinary "row not reachable" deny
     // (ADR-0007's own "no result is a valid outcome"), since this is an
-    // infrastructure/trust failure, not a legitimate absence. `request`
-    // strictly deserializes into `JsonRpcResponse{result: Value, ..}`, which
-    // has no `error` field, so the wire's JSON-RPC error envelope surfaces
-    // here as a deserialize-level transport `Err` (not a structured error
-    // code) -- `Err` at all is still the load-bearing assertion: it proves
-    // this is not the earlier scenario's `Ok` with a real record.
-    bad_query_client.request("data-layer", "query", query_body).await.expect_err(
+    // infrastructure/trust failure, not a legitimate absence. `SyneroymClient::
+    // request_raw` recovers the wire's JSON-RPC error envelope as a
+    // downcastable `syneroym_rpc::JsonRpcError`, so this asserts the actual
+    // -32010 deny path, not just "some error happened" (which an unrelated
+    // transport failure would also satisfy).
+    let err = bad_query_client.request("data-layer", "query", query_body).await.expect_err(
         "a policy trusting the wrong expected_asserter_did must deny closed with an error, not \
          leak bob's row or succeed unfiltered",
+    );
+    let rpc_err = err.downcast_ref::<JsonRpcError>().unwrap_or_else(|| {
+        panic!("expected a structured JSON-RPC error, got a transport-level error instead: {err:?}")
+    });
+    assert_eq!(
+        rpc_err.code, -32010,
+        "an asserter mismatch must deny closed via PermissionDenied (-32010), not some other \
+         error: {rpc_err:?}"
     );
 
     node_a.teardown().await;
