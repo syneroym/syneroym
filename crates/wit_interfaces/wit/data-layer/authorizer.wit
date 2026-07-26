@@ -1,0 +1,53 @@
+package syneroym:data-layer@0.1.0;
+
+/// Stage-4 ABAC after-step (ADR-0017 §7). A service *may* export this; a
+/// component that doesn't is simply never asked. It is deliberately NOT part
+/// of the `host-environment` world -- adding it there would make every
+/// deployed component required to implement it.
+interface authorizer {
+    record auth-context {
+        /// The collection whose rows these are. Required: one exported
+        /// function serves every opted-in permission on every collection
+        /// (ADR-0017 §7), so without this the guest cannot tell what it is
+        /// being asked about.
+        collection: string,
+        /// Every applicable permission on this read that opted into the
+        /// after-step, batch-scoped -- not the one permission that admitted
+        /// any particular row. A definition's applicable permissions OR into
+        /// one compiled predicate, so if any of them opts in, every row the
+        /// combined predicate admits is judged here, including rows a
+        /// sibling permission that left this opt-in `false` alone would
+        /// have admitted; there is no per-row attribution back to a single
+        /// rule.
+        permissions: list<string>,
+        subject-did: string,
+        anchor-did: option<string>,
+        capabilities: list<string>,
+        claims-json: string,
+    }
+
+    record candidate-row {
+        id: string,
+        payload: list<u8>,
+        creator-id: string,
+        created-at: u64,
+        updated-at: u64,
+    }
+
+    variant row-decision {
+        allow,
+        deny,
+        redact(list<string>),
+    }
+
+    /// Restrict-only: every row passed in was already admitted by the SQL
+    /// sieve, and decisions are positional, so there is no way to admit a
+    /// row that isn't in `rows`. A returned list whose length differs from
+    /// `rows`, or an `err`, denies the whole batch.
+    authorize-rows: func(ctx: auth-context, rows: list<candidate-row>)
+        -> result<list<row-decision>, string>;
+}
+
+world data-layer-authorizer {
+    export authorizer;
+}

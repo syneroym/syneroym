@@ -403,3 +403,63 @@ engine work. Until it lands, `Relation.service` is resolved the same way
 directly, through the existing `EndpointRegistry`/community-registry DID
 lookup — with no logical-name indirection layer. See
 `slice-b3-implementation-plan.md` §7 D-B3-10.
+
+**2026-07-25 (Slice B4-fdae, §7's WIT shape and fuel budget corrected).**
+Implementing the after-step against `main` found two inaccuracies in §7 as
+written, plus the mechanism its "may issue read-only lookups" line names but
+never specifies. See `slice-b4-implementation-plan.md` §5 for the full
+review that found these.
+
+- **The WIT shape.** §7's sketch is explicitly labelled illustrative and
+  turned out to need three changes once implemented: `authorize-rows`
+  returns `result<list<row-decision>, string>`, not a bare
+  `list<row-decision>` — matching every other guest export's error-carrying
+  shape, and giving a trap or a guest-declined request a message the
+  decision trace can carry. `auth-context` gains `collection` and
+  `permissions` fields §7 never listed: one `authorize-rows` export serves
+  every opted-in permission on every collection in a component (there is no
+  per-policy-rule export, §0.1 of the implementation plan), so without these
+  two fields the guest has no way to tell what it is being asked about.
+  `auth-context.claims` becomes `claims-json`, a serialized JSON string —
+  `SessionContext.claims` is a `serde_json::Map<String, Value>` of typed
+  scalars that a `list<tuple<string,string>>` would silently flatten. Also
+  added: `anchor-did`, which did not exist when §7 was drafted (ADR-0015 A5
+  landed after this ADR was accepted) — without it, the after-step cannot
+  distinguish a proxied read from a direct one, the exact distinction
+  `RemoteFetch.principal_did` and the decision trace's own `anchor_did`
+  field (§9) exist to make elsewhere in this same pipeline. The final shape
+  is in `slice-b4-implementation-plan.md` §3.4 and
+  `crates/wit_interfaces/wit/data-layer/authorizer.wit`.
+- **The fuel budget.** §7 says lookups are "Bounded by ADR-0005's existing
+  fuel quota." That quota (`store.set_fuel(max_instructions)` in
+  `build_store_and_instantiate`) is scoped to one invocation of the
+  service's own entry point; the after-step is a **separate**
+  instantiation (D-B4-1: a host function cannot re-enter the live instance
+  it is already running inside, so the after-step runs in a fresh,
+  throw-away instance of the same component). Left as written, that
+  instantiation would silently receive a second full quota rather than
+  being bounded by anything derived from the caller's own budget. Fixed by
+  a dedicated pair of config fields, `abac_max_instructions` /
+  `abac_epoch_timeout_secs` (`AppSandboxRole`, deliberately a small fraction
+  of `default_max_instructions` — the after-step runs once per read on the
+  hot path), not a share of the entry point's own quota.
+- **The read-only lookup mechanism, previously unspecified.** §7 says the
+  escape hatches run under the service's own identity and may issue
+  read-only lookups, but names no identity that is both. `service_system`
+  (capability-less) compiles every lookup to `deny_all()` — the hatch would
+  be dead on arrival; `local_elevated` reads *and* writes, and is far more
+  than "read-only." Resolved by a third substrate-injected `AuthLevel`,
+  `LocalReadOnly` (`CallerContext::service_abac(service_id)`), sieve-exempt
+  like `LocalElevated` but carrying **no** capabilities, paired with a
+  `HostState.read_only` flag that hard-denies every mutating and egress
+  host function structurally (host write paths carry no capability gate of
+  their own, so a narrower capability would not have enforced anything).
+  The sieve exemption on this level is also what bounds after-step
+  recursion: a `LocalReadOnly` read carries no `QueryAuth`, hence no
+  `abac_permissions`, hence nothing that could trigger a second after-step
+  from inside the first. Read-only lookups are unfiltered within the
+  after-step's own service — the intended posture per this section's
+  original "the service owner authored the policy and could equally have
+  written the same call into their service code" reasoning, stated
+  explicitly since an early implementation draft mischaracterized it as
+  sieve-filtered.

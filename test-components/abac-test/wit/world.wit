@@ -1,0 +1,13 @@
+package syneroym-test:abac-test@0.1.0;
+
+world abac-test {
+    import syneroym:data-layer/store@0.1.0;
+    import syneroym:app-config/app-config@0.1.0;
+
+    /// Creates `profiles` (the collection the after-step is asked about,
+    /// ADR-0017 §7) and `lookup_targets`, seeded with one row the `lookup`
+    /// mode's read-only after-step lookup reads back.
+    export init: func() -> result<_, string>;
+
+    export syneroym:data-layer/authorizer@0.1.0;
+}

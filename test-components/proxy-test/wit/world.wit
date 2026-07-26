@@ -17,4 +17,13 @@ interface test-driver {
 world proxy-test {
     import syneroym:proxy/proxy@0.1.0;
     export test-driver;
+
+    /// Stage-4 ABAC after-step (ADR-0017 §7): exported so this component can
+    /// also serve as the self-proxy target in
+    /// `crates/router/tests/proxy_dispatch.rs`'s
+    /// `guest_self_proxy_data_layer_applies_stage4` -- a guest calling its
+    /// own `data-layer` through `syneroym:proxy/proxy::call` (ingress ii)
+    /// under a stage-4-opted policy. Denies the row seeded with id
+    /// `"secret"`, allows everything else; see `src/lib.rs`.
+    export syneroym:data-layer/authorizer@0.1.0;
 }

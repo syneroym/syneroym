@@ -80,6 +80,8 @@ fn bench_wasm_engine(c: &mut Criterion) {
                 test_streaming_context(),
                 empty_service_proxy(),
                 None,
+                false,
+                syneroym_rpc::empty_row_authorizer(),
             );
             let _store = Store::new(&engine, host_state);
         });
@@ -100,6 +102,8 @@ fn bench_wasm_engine(c: &mut Criterion) {
                 test_streaming_context(),
                 empty_service_proxy(),
                 None,
+                false,
+                syneroym_rpc::empty_row_authorizer(),
             );
             let mut store: Store<HostState> = Store::new(&engine, host_state);
             store.set_fuel(1_000_000).unwrap();
@@ -122,6 +126,8 @@ fn bench_wasm_engine(c: &mut Criterion) {
         test_streaming_context(),
         empty_service_proxy(),
         None,
+        false,
+        syneroym_rpc::empty_row_authorizer(),
     );
     let mut store: Store<HostState> = Store::new(&engine, host_state);
 

@@ -2,6 +2,34 @@
 
 This file is automatically updated by `cargo xtask perf-summary`.
 
+## Run: 2026-07-26 09:03:04 (70f00c9) -- targeted, `cargo bench --bench abac_bench` only
+
+Manually recorded (not a full `cargo xtask perf-summary` sweep) to close
+Slice B4-fdae review finding B4-15: `task.md`'s Performance Budgets row 3
+and Slice B4-fdae's own plan (§4) ask for the stage-4 ABAC after-step
+measurement here. Row-count sweep at a fixed ~28-byte payload; payload-size
+sweep at a fixed 100-row batch, added per review finding B4-02 (payload
+bytes, not row count, drive the `Val::List(Val::U8...)` marshalling cost).
+
+| Benchmark | Mean Time |
+|-----------|-----------|
+| abac_after_step_0_rows | 34.5 µs |
+| abac_after_step_1_rows | 34.9 µs |
+| abac_after_step_10_rows | 45.0 µs |
+| abac_after_step_100_rows (~28 B/row) | 142.2 µs |
+| abac_after_step_1000_rows (~28 B/row, `MAX_ABAC_ROWS`) | 1.102 ms |
+| abac_after_step_100_rows_at_1kb | 1.494 ms |
+| abac_after_step_100_rows_at_16kb | 22.14 ms |
+
+The instantiation floor (0 rows) dominates at realistic page sizes, matching
+Slice B3 Phase 5's federated-fetch finding -- but payload size, not row
+count, is what actually moves the number: 100 rows at 16 KB/row (1.6 MB
+total) is ~156x the ~28-byte-row figure at the same row count, confirming
+B4-02's concern and motivating `MAX_ABAC_PAYLOAD_BYTES` (1 MiB/batch as of
+review residual R4 -- an initial 16 MiB was too generous against these same
+numbers: 100 rows @ 16 KB is a tenth of that cap yet already costs ~18-22
+ms, implying ~180 ms/~640 MB for a batch actually at the old cap).
+
 ## Run: 2026-06-04 08:47:03 (285d29d)
 
 ### Environment

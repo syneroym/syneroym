@@ -50,6 +50,8 @@ fn make_host_state(component_id: &str, storage_provider: Arc<dyn StorageProvider
         streaming,
         empty_service_proxy(),
         None,
+        false,
+        syneroym_rpc::empty_row_authorizer(),
     )
 }
 

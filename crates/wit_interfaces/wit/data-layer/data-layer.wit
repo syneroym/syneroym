@@ -94,6 +94,13 @@ interface store {
     /// NOTE: The host implementation must enforce a hard upper bound on the number
     /// of returned records (e.g. max 1000 per page) to prevent memory exhaustion,
     /// regardless of the limit specified in query options.
+    ///
+    /// NOTE: a stage-4 ABAC after-step (ADR-0017 §7, `syneroym:data-layer/
+    /// authorizer`) can deny or redact rows *after* the SQL sieve already
+    /// picked a full page. A post-hoc denial can make the returned page
+    /// shorter than the requested `limit` while `next-cursor` is still
+    /// `some` -- a caller must page until `next-cursor` is `none`, never
+    /// stop at a short page.
     query: func(collection: string, opts: query-options) -> result<query-result, data-layer-error>;
 
     /// Runs an aggregation over a collection (ADR-0007). `pipeline` is a

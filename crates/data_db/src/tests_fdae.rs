@@ -150,6 +150,37 @@ fn cls_policy() -> Policy {
 
 /// A `manage` permission covering `data-layer/write`, reachable via the same
 /// creator relation -- used to exercise `delete_many`'s D2 write-op binding.
+/// A single permission covering both read and write, opted into the
+/// stage-4 after-step (ADR-0017 §7, `authorize_rows: true`) -- `data_db`
+/// has no WASM engine, so this is exactly the shape
+/// `do_aggregate`/`do_delete_many` must deny closed on (the after-step
+/// needs materialized candidate rows an aggregate never surfaces, and
+/// deletion has no rows left to hand it once the `DELETE` has run). Covers
+/// both operations with one policy since both tests only need "some
+/// applicable permission opted in", not distinct read/write shapes.
+fn abac_policy() -> Policy {
+    parse_and_validate(
+        r#"{
+            "version": "fdae/v1",
+            "definitions": {
+                "document": {
+                    "table": "documents",
+                    "relations": {"creator": {"target": "user", "join_column": "creator_uuid"}},
+                    "permissions": {
+                        "manage": {
+                            "allows": ["data-layer/read", "data-layer/write"],
+                            "paths": [["creator", "caller"]],
+                            "authorize_rows": true
+                        }
+                    }
+                },
+                "user": {"table": "users", "principal_column": "did"}
+            }
+        }"#,
+    )
+    .unwrap()
+}
+
 fn write_policy() -> Policy {
     parse_and_validate(
         r#"{
@@ -278,6 +309,7 @@ async fn resolved_sieve_preempts_compile_read_and_is_used_verbatim() {
         masked_fields: Vec::new(),
         where_caveats: Vec::new(),
         trace: DecisionTrace::default(),
+        abac_permissions: Vec::new(),
     };
     let auth_resolved = QueryAuth {
         policy: &policy,
@@ -368,6 +400,7 @@ async fn resolved_sieve_preempts_compile_read_for_check_access_too() {
         masked_fields: Vec::new(),
         where_caveats: Vec::new(),
         trace: DecisionTrace::default(),
+        abac_permissions: Vec::new(),
     };
     let auth = QueryAuth {
         policy: &policy,
@@ -446,6 +479,31 @@ async fn aggregate_denied_when_cls_active() {
     let store = setup_store().await;
     seed_creator_docs(store.as_ref()).await;
     let policy = cls_policy();
+    let alice = session("did:key:alice", vec![read_cap("documents")]);
+    let auth = QueryAuth {
+        policy: &policy,
+        session: &alice,
+        service_id: SERVICE_ID,
+        resolved_sieve: None,
+    };
+
+    let err = store
+        .aggregate("documents", r#"{"$group":{"_id":null,"n":{"$sum":1}}}"#, Some(&auth))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataLayerError::PermissionDenied));
+}
+
+/// ADR-0017 §7: `data_db` has no WASM engine to run the stage-4 after-step,
+/// so a sieve whose applicable permission opted in (`abac_permissions`
+/// non-empty) must deny the whole aggregate closed -- same category as the
+/// CLS denial above, not something the ingress can work around by
+/// narrowing its own request.
+#[tokio::test]
+async fn aggregate_denies_closed_under_a_stage4_policy() {
+    let store = setup_store().await;
+    seed_creator_docs(store.as_ref()).await;
+    let policy = abac_policy();
     let alice = session("did:key:alice", vec![read_cap("documents")]);
     let auth = QueryAuth {
         policy: &policy,
@@ -580,6 +638,37 @@ async fn delete_many_is_row_filtered_as_a_write_operation() {
     assert_eq!(deleted, 1, "only alice's own document is deletable");
     assert!(store.get("documents", "doc-1", None).await.unwrap().value.is_none());
     assert!(store.get("documents", "doc-2", None).await.unwrap().value.is_some());
+}
+
+/// ADR-0017 §7: deletion happens inside SQL, so there is no candidate-row
+/// batch left to hand the stage-4 after-step once the `DELETE` has run --
+/// a sieve whose applicable permission opted in must deny the whole call
+/// closed rather than delete unfiltered or delete first and skip the
+/// after-step.
+#[tokio::test]
+async fn delete_many_denies_closed_under_a_stage4_policy() {
+    let store = setup_store().await;
+    seed_creator_docs(store.as_ref()).await;
+    let policy = abac_policy();
+    let write_cap = Capability {
+        with: resource("documents"),
+        can: Ability(Ability::DATA_LAYER_WRITE.to_string()),
+        caveats: None,
+    };
+    let alice = session("did:key:alice", vec![write_cap]);
+    let auth = QueryAuth {
+        policy: &policy,
+        session: &alice,
+        service_id: SERVICE_ID,
+        resolved_sieve: None,
+    };
+
+    let err = store.delete_many("documents", None, Some(&auth)).await.unwrap_err();
+    assert!(matches!(err, DataLayerError::PermissionDenied));
+    assert!(
+        store.get("documents", "doc-1", None).await.unwrap().value.is_some(),
+        "a denied-closed delete_many must not remove anything"
+    );
 }
 
 #[tokio::test]

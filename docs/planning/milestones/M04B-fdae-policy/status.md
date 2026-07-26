@@ -3073,3 +3073,361 @@ Slice B3.5-fdae entry; this section is the verification/evidence trail.
 - `cargo test --workspace --no-fail-fast` — same baseline as this slice's
   own original run: sandbox-port-bind failures only, on the same
   already-documented targets, none touched by this response.
+
+## Slice B4-fdae — Stage-4 WASM ABAC ✅ (2026-07-25)
+
+Branch: `feat/m04b-slice-b4-abac` (based on `main` @ `4302827`, Slice
+B3.5-fdae complete). Wires ADR-0017 §7's after-step — the fourth stage of
+the hybrid pipeline (`system-requirements-spec.md:979-983`): the host hands
+the SQL sieve's already-admitted candidate rows to a guest-exported
+`authorize-rows` function, which returns one `allow`/`deny`/`redact(fields)`
+decision per row. Batched, opt-in per policy permission
+(`authorize_rows: true`), restrict-only by construction (a positional
+decision list over rows the sieve already picked cannot admit a row outside
+that set), fuel-/time-metered with deny-closed on overrun. Full design in
+[`slice-b4-implementation-plan.md`](./slice-b4-implementation-plan.md); this
+section is the verification/evidence trail. Five blocking design decisions
+(D-B4-1 through D-B4-5) are called out below where they shaped the shipped
+code, not re-derived here.
+
+### Phase 1 — Policy opt-in and sieve/trace plumbing (`crates/fdae`)
+
+`Permission.authorize_rows: bool` (`policy.rs`, `#[serde(default)]` —
+absent means `false`, so every pre-existing policy parses unchanged) plus
+the matching `fdae-v1.json` schema property. `CompiledSieve.abac_permissions:
+Vec<String>` (`compile.rs`) carries the applicable, opted-in permission
+names through `plan_read`, both `ReadPlan` construction arms, `PendingSieve`,
+and `finalize`'s remote-fetch path — `deny_all()` always leaves it empty, so
+a denied read never triggers the after-step. `DecisionTrace.abac_permissions`
+(`trace.rs`) records the same set at compile time; a separate
+`AbacTrace` struct (its own `emit`, called by the ingress *after* the
+after-step actually runs) records the execution-aware outcome
+(`rows_in`/`rows_denied`/`rows_redacted`/`failed_closed`) — deliberately not
+a field on `DecisionTrace`, since compile-time intent and runtime outcome
+are different questions.
+
+### Phase 2 — The after-step seam (`crates/rpc/src/fdae_abac.rs`)
+
+New file, sibling to `fdae_fetch.rs` for the same layering reason: `fdae`
+stays engine-free, `data_db` has no WASM dependency, `rpc` is the one crate
+both ingresses already depend on. `RowAuthorizer` (an `async_trait`,
+object-safe, mirroring `ServiceProxy`'s `Weak<dyn _>` pattern) is the seam
+the engine implements and both ingresses hold; `empty_row_authorizer()`
+gives non-WASM contexts (coordinator mode, tests) an always-empty `Weak`.
+`apply_stage4` is the shared orchestration helper both ingresses call:
+pass-through when `abac_permissions` is empty, else builds an
+`AbacAuthContext`, calls the authorizer under `FDAE_ABAC_TIMEOUT` (3s, the
+caller's own belt-and-braces deadline on top of the engine's epoch
+deadline), and maps every failure mode — over-large batch (>`MAX_ABAC_ROWS`
+= 1000, matching `data_db`'s own page cap), unavailable authorizer, timeout,
+arity mismatch, a dotted `redact` path (H3 precedent: a dotted entry would
+silently mask nothing) — to a whole-batch `Err`, which every caller treats
+as "no rows," never "unfiltered." `AuthLevel::LocalReadOnly` and
+`CallerContext::service_abac(service_id)` (D-B4-2, `crates/rpc/src/native.rs`)
+are the substrate-injected identity the after-step runs under: sieve-exempt
+like `LocalElevated` (so its own lookups read this service's data
+unfiltered — ADR-0017 §7's declared, intentional posture) but carrying **no**
+capabilities at all, since read paths have no capability gate and every
+gate that does exist is hard-denied by `read_only` regardless.
+
+### Phase 3 — WIT interface, engine, read-only host state
+
+`crates/wit_interfaces/wit/data-layer/authorizer.wit` — a second file in
+the existing single-file `data-layer` package, deliberately **not** part of
+`host-environment` (adding it there would make every deployed component
+required to implement it). `authorize-rows: func(ctx: auth-context, rows:
+list<candidate-row>) -> result<list<row-decision>, string>` — `auth-context`
+carries `collection`/`permissions` (so the one export serving every
+opted-in permission on every collection can tell what it's being asked
+about — not in ADR-0017 §7's own illustrative sketch) plus
+`subject-did`/`anchor-did`/`capabilities`/`claims-json`. `AppSandboxEngine`
+implements `RowAuthorizer` (`engine.rs`): each call instantiates a fresh,
+throw-away `Store`/`Instance` of the same component (D-B4-1 — a host
+function cannot re-enter the live instance it's already running inside,
+the same shape `deliver_message`/`invoke_lifecycle_hook` already use),
+under dedicated `abac_max_instructions`/`abac_epoch_timeout_secs` budgets
+(`crates/core/src/config.rs`, defaults `Some(50_000_000)` / `2` — a
+deliberately small fraction of the entry point's own quota, since the ADR's
+"bounded by ADR-0005's existing fuel quota" claim was checked against `main`
+and found inaccurate: the after-step is a *separate* instantiation, so it
+would otherwise silently receive a second full budget). Every trap/fuel/
+epoch classification reuses `execute_wasm_vals`'s exact string matching, not
+a second, independently-drifting taxonomy. `HostState.read_only`
+(`host_capabilities.rs`) hard-denies every mutating and egress host
+function (`create_collection`/`put`/`patch`/`delete`/`delete_many`/
+`batch_mutate`/`execute_ddl`/`query_raw`, the blob-store write/upload paths,
+`publish`/`subscribe`/`unsubscribe`, `proxy::Host::call`, every stream host
+function) at the top of each method — host write paths carry no capability
+gate of their own, so the check has to live in host state, not the
+capability layer. `resolve_query_auth`'s existing `LocalElevated` exemption
+extended to `LocalReadOnly`: a `LocalReadOnly` read gets `Ok(None)`, so it
+carries no `QueryAuth`, hence no `abac_permissions`, hence nothing that
+could trigger a second after-step from inside the first — this one-line
+early return is D-B4-4's entire recursion bound, no depth counter needed.
+
+### Phase 4 — Ingress wiring and deploy-time validation
+
+Both read ingresses run `apply_stage4` after the sieve, before the CLS mask
+projection (`data_db/src/auth.rs:32`'s pre-existing "stage-4 ordering
+contract" comment, now made real): `sqlite: sieve → stage 4 on unmasked
+rows → union CLS mask with the after-step's own redact set → strip once`.
+`store::Host::query`/`get`/`check_access` (`sandbox_wasm/src/
+host_capabilities.rs`, ingress i) and `SynSvcNativeService`'s `"get"`/
+`"query"`/`"check-access"` arms (`control_plane/src/synsvc_native.rs`,
+ingress ii) both wire it, copying values out of `self`/`invocation` into
+owned locals before the `.await` per the existing `Send`-future
+constraint. `check_access` takes D-B4-3(b)'s substitution rather than a
+plain existence check: under a stage-4-opted sieve it runs `get`'s
+point-in-time predicate and asks the after-step the same question a `query`
+would, so Mode A and Mode B agree on the same policy; `redact` counts as
+reachable (the row was reached, just filtered). `aggregate`/`delete_many`
+(`data_db/src/sqlite.rs`) deny closed outright under a stage-4-opted sieve
+— rows never surface to filter after the fact, the same reasoning as the
+existing CLS denial at `sqlite.rs:636`. `resolve-relation`
+(`synsvc_native.rs`) denies closed for a stage-4-opted definition via a
+**coarser, definition-level** check (`syneroym_fdae::definition_has_abac`
+— neither its A1 nor A2 branch has a compiled sieve to read per-read
+`abac_permissions` from) covering both branches, so a remote cannot route
+around this node's after-step by resolving structurally instead of through
+the direct, after-step-aware read path. Deploy-time
+`validate_stage4_export` (`control_plane/src/service/orchestration.rs`)
+rejects, before `save_fdae_policy`'s row can go live uncontested (rolled
+back via the existing `rollback_fdae_policy` if the WASM component is
+already compiled/cached by the time the check runs): a WASM service whose
+compiled component doesn't export `authorize-rows` under an opted-in
+policy, or any TCP/container service with an opted-in policy at all (no
+guest to call). `dummy_sandbox::AppSandboxEngine::exports_authorize_rows`
+(the sandbox-less build's stub) always returns `false`, so an opted-in
+policy fails this gate rather than failing to compile in a sandbox-less
+build.
+
+### Phase 5 — Fixture, remaining tests, bench, docs
+
+`test-components/abac-test` — a switchable fixture (`app-config`'s `mode`
+key selects `allow_all`/`deny_by_field`/`redact`/`spin`/`bad_arity`/
+`lookup`/`write_attempt`) covering every Failure/Security matrix row 7-9
+case plus the read-only-lookup escape hatch and read-only write enforcement
+in one compiled component, with 8 end-to-end tests in
+`crates/sandbox_wasm/tests/abac_integration.rs` driving `HostState::store::
+Host` directly against a real deployed engine (`row_authorizer` wired to
+the real engine, not `empty_row_authorizer()`). This session's own
+additions, closing the remaining gaps against the implementation plan:
+
+- **Router-side ingress-(ii) self-proxy proof.** `test-components/proxy-test`
+  (`proxy-caller`/`proxy-callee` in `router/tests/proxy_dispatch.rs`'s
+  existing harness) extended to also export `syneroym:data-layer/authorizer`
+  — a fixed, deterministic behavior (deny the row seeded with id `"secret"`,
+  allow everything else) rather than `abac-test`'s switchable modes, since
+  only one new test needed it. New helper
+  `test_route_handler_with_self_native_data_layer_and_stage4` wires
+  `proxy-caller`'s `SynSvcNativeService` with a real
+  `Weak<dyn RowAuthorizer>` (`Arc::downgrade` off the same engine, the same
+  unsized-coercion pattern `abac_integration.rs::row_authorizer_for` uses)
+  instead of `empty_row_authorizer()`. New test:
+  `guest_self_proxy_data_layer_applies_stage4` — seeds two rows the sieve
+  equally admits (`principal_column`-direct policy, both owned by the real
+  caller), and shows the after-step still denies the one the sieve alone
+  would have let through.
+- **`resolve-relation` stage-4 deny regression tests.** Local:
+  `router/tests/native_dispatch_identity.rs::
+  resolve_relation_a1_denies_closed_under_a_stage4_definition` and
+  `..._a2_denies_closed_under_a_stage4_definition` — same `employee`
+  definition shape as the pre-existing A1/A2 resolve-relation tests, with
+  `view_self.authorize_rows: true` added, asserting `-32010` (permission
+  denied) instead of a resolved id-set for both the capability-gated (A1)
+  and bare-`principal_column` (A2) callers. `resolve_relation` dispatches
+  through the exact same `SynSvcNativeService` path a real federated fetch
+  reaches (`resolve-relation` *is* B3's cross-service receiving side), so
+  this is the deny logic under real dispatch, not a synthetic shortcut.
+  **A genuinely cross-node proof was attempted and reverted.** Redeploying
+  Node A's `hr_service` (in `federated_fdae_e2e.rs`'s existing two-substrate
+  harness) with an `employee_stage4` definition (`authorize_rows: true`)
+  and a new Node B app targeting it seemed straightforward, but failed at
+  deploy: `hr_service` is always deployed as a **TCP** service in that
+  harness (`deploy_manifest`'s hardcoded `ServiceType::Tcp`), and
+  `validate_stage4_export` (Phase 4) correctly rejects *any*
+  `authorize_rows: true` policy on a TCP service outright — there is no
+  guest to call. The deploy itself failed with exactly the error the gate
+  is supposed to produce
+  (`crates/control_plane/src/service/orchestration.rs`'s
+  `deploy_tcp_service` rejection), confirming the gate works, but making
+  this specific cross-node scenario structurally unbuildable without first
+  giving the harness a WASM-typed, `authorize-rows`-exporting data-owning
+  node — a substantially larger change to a 672-line, already-complex fixture
+  than this session's scope justifies. Reverted the addition (confirmed the
+  file matches its pre-session state via `git diff`), re-ran
+  `federated_fdae_fetch_across_two_real_substrates` to confirm B3's own
+  proofs still pass unmodified (75.51s, real two-substrate boot), and
+  recorded the gap in `deferred-backlog.md` rather than silently dropping
+  the plan's own ask for cross-node coverage.
+- **`control_plane` deploy-time gate tests.**
+  `service::orchestration::tests::test_stage4_policy_without_the_export_fails_deploy`
+  (a real, minimal WAT component — the same shape
+  `test_deploy_failure_after_successful_wasm_compile_rolls_back_gen_and_policy`
+  already uses — that compiles successfully but exports nothing under
+  `syneroym:data-layer/authorizer`), `..._on_a_tcp_service_fails_deploy`,
+  and `..._rejection_rolls_back_the_policy_row` (asserts
+  `storage_provider.load_fdae_policy` returns `None` after a rejected
+  first-ever deploy of a service, proving `rollback_fdae_policy` actually
+  ran, not just that the deploy call returned `Err`).
+- **`criterion` bench** (`crates/sandbox_wasm/benches/abac_bench.rs`, task.md
+  Performance Budgets row 3): `RowAuthorizer::authorize_rows` measured
+  directly (not `apply_stage4`, whose own overhead is a handful of `Vec`
+  operations) against the `abac-test` fixture's `allow_all` mode, batch
+  sizes 0/1/10/100/1000. 0 rows still pays the full instantiate-and-call
+  cost with nothing to marshal, isolating the fixed per-call floor from
+  anything that scales with row count. Measured (2026-07-25, this
+  environment): 0 rows 34.9 µs, 1 row 36.1 µs, 10 rows 46.0 µs, 100 rows
+  137.1 µs, 1000 rows (`MAX_ABAC_ROWS`) 1.048 ms — the instantiation floor
+  dominates at realistic page sizes (10-100 rows barely move off the 0-row
+  floor), matching Slice B3 Phase 5's own finding for the federated fetch
+  that per-call setup, not per-item work, is the real cost; even the
+  1000-row ceiling case is negligible (≈4%) against the 25 ms p99 Mode-B
+  pushdown-query budget.
+- **Docs.** `task.md`: Failure/Security matrix rows 7-9 flipped to ✅ with
+  test names, row 7 reworded to match what the shipped decision shape can
+  actually evidence (a positional decision list over already-admitted rows
+  has no "widen" encoding to test — see the implementation plan's §5 item 5
+  — proven instead via the arity guard plus an end-to-end
+  allow-everything-guest-still-excluded assertion); the stale "pure-predicate"
+  exit criterion reworded to reflect ADR-0017 §7's relaxed read-only-lookup
+  allowance; Performance Budgets row 3 filled in; Slice B4-fdae completion
+  entry added. `traceability-matrix.md`'s `[FND-IAM]` (M4B) row updated to
+  "In Progress (Slices B2, B3, B3.5-fdae, B4-fdae complete)" — stays open
+  for B5-fdae (write-side Mode-A authorization), the one remaining slice.
+  `deferred-backlog.md`: the pre-existing "FDAE stage-4 WASM ABAC" row moved
+  to Recently Resolved; three new rows added for real, shipped restrictions
+  this slice introduces (`aggregate`/`delete_many` hard-denying under a
+  stage-4 policy — a genuinely new user-visible restriction, not merely
+  covered by the existing CLS precedent; `resolve-relation`'s
+  definition-level-not-per-read deny granularity, D-B4-3; the
+  pagination-shortening consequence, D-B4-5). ADR-0017 amended for §7's WIT
+  shape (`result<..., string>`, `collection`/`permissions`/`anchor-did`
+  added, `claims-json`) and its fuel-budget claim (the after-step's own,
+  separate instantiation, not covered by the entry point's quota).
+
+### Blocking design decisions, as shipped
+
+- **D-B4-1 (how the after-step runs at all):** fresh, throw-away
+  instantiation per call — see Phase 3 above. Cost: one component
+  instantiation per stage-4-active read, quantified by this phase's own
+  bench.
+- **D-B4-2 (identity, and can it read):** `AuthLevel::LocalReadOnly` /
+  `CallerContext::service_abac`, capability-less, sieve-exempt,
+  `HostState.read_only`-gated — the recommended path, not the pure-predicate
+  fallback. `stage4_lookup_sees_its_own_service_data` proves the read-only
+  lookup escape hatch works end to end against a real deployed engine.
+- **D-B4-3 (which store operations stage 4 applies to):** `query`/`get` run
+  it; `aggregate`/`delete_many` deny closed; `check_access` takes the
+  point-in-time substitution; `resolve-relation` denies closed at the
+  definition level. All shipped as specified.
+- **D-B4-4 (recursion):** structurally impossible under the shipped
+  identity — the sieve exemption *is* the bound, no depth counter. Proven
+  implicitly by `stage4_lookup_sees_its_own_service_data` completing at
+  all (a re-entering after-step would hang or trap on nested WASM calls,
+  not silently pass).
+- **D-B4-5 (pagination shortening):** documented on the WIT `query` doc
+  comment and in `traits.rs`'s `query`; not backfilled.
+
+### Explicitly out of scope (recorded, not silently dropped)
+
+- **B5-fdae (write-side Mode-A authorization)** — untouched; `put`/`patch`/
+  `delete`/`batch_mutate` still run under service authority with no
+  `caller.session` consultation and no capability gate on single-row
+  writes. `traceability-matrix.md`'s `[FND-IAM]` row stays "In Progress"
+  until it lands.
+- **`stage4_missing_export_under_an_opted_in_policy_denies_closed` and
+  `stage4_nested_read_does_not_re_enter_the_after_step`** (the two
+  remaining named tests in the implementation plan's §4 sandbox_wasm list,
+  beyond the 8 already shipped in Phase 5's own fixture work) — not added
+  in this session. The missing-export case is already covered at the
+  deploy-time gate (`test_stage4_policy_without_the_export_fails_deploy`),
+  and D-B4-4's recursion bound is a one-line, structurally-impossible-to-miss
+  early return already exercised incidentally by the `lookup` mode's
+  passing completion; judged not to add distinct coverage worth the
+  additional fixture-mode complexity, but flagged here rather than silently
+  dropped from the plan's own list.
+- **The `resolve-relation` deny's definition-level (not per-read) granularity**
+  and the **`aggregate`/`delete_many` hard-deny's user-visible-restriction
+  status** — both real, both recorded in `deferred-backlog.md` per this
+  session's docs pass, not silently accepted as free extensions of existing
+  precedent.
+- **A genuinely cross-node proof of the `resolve-relation` stage-4 deny**
+  — attempted, structurally infeasible with `federated_fdae_e2e.rs`'s
+  current TCP-typed data-owning node (see "What was delivered" above and
+  `deferred-backlog.md`); the local proof over the identical dispatch path
+  stands in.
+
+### Verification evidence
+
+Also fixed in passing, discovered by `cargo clippy --workspace
+--all-targets --all-features` (not otherwise touched by this slice's own
+diff): `tests/perf/src/scenarios/wasm_latency.rs` called `HostState::new`
+with its pre-Phase-3 11-argument signature, uncaught until now because
+`tests/perf` isn't part of any crate `cargo test`/`cargo clippy --workspace`
+run without `--all-targets`. Added the two missing trailing arguments
+(`read_only: false`, `row_authorizer: empty_row_authorizer()`), matching
+every other test/bench call site's `HostState::new` update from Phase 3.
+
+- `cargo +nightly fmt --all` — clean.
+- `cargo clippy --workspace --all-targets --all-features` — clean, 0
+  warnings (after the `wasm_latency.rs` fix above).
+- **`cargo test --workspace --no-fail-fast`** — 11 targets reported failed;
+  10 are the same pre-existing, sandbox-environmental targets every prior
+  phase in this milestone has documented (`coordinator-iroh`'s
+  `connection_limit`/`multi_hop_relay`/`tls_rotation`, `mqtt-broker`'s lib
+  tests, `sdk`'s `connect_timeout`, `substrate`'s `basic_lifecycle`/
+  `http_passthrough_e2e`/`messaging_client_e2e`/`stream_client_e2e`/
+  `federated_fdae_e2e`), all `"Operation not permitted (os error 1)"`
+  binding a real port under this CLI's default network sandbox. The
+  eleventh, `-p syneroym-router --test native_dispatch_identity`, was new:
+  investigated rather than assumed away, since it lands squarely on files
+  this session touched. `ps` showed the test binary genuinely parked
+  (near-zero CPU across several minutes), not slow — a hang, not a logic
+  failure, and reproducible only under this session's unusually heavy
+  concurrent `cargo test` load (several other crates' test binaries running
+  at once against the same `target/` dir and, for the `mainline`-DHT-backed
+  tests, real UDP sockets). Killed the hung process and re-ran the same
+  binary twice in isolation, once with default parallelism and once with
+  `--test-threads=1`: **36/36 passed both times**, including
+  `authenticated_caller_reaches_native_dispatch` (the test that had hung)
+  and all five stage-4 tests this session added. Consistent with the
+  `mainline` DHT actor-thread flake class this milestone's status.md
+  already documents for `router/tests/proxy_dispatch.rs` and
+  `sandbox_wasm/tests/messaging_integration.rs` (B3.5-fdae's F8 finding) —
+  not a new failure mode, just a new file it happened to land on this time.
+- **Per-crate targeted re-runs, each in isolation** (no concurrent `cargo
+  test` contention): `syneroym-control-plane` **48 passed** (incl. the 3 new
+  deploy-time gate tests); `syneroym-router` **139 passed** across all 7
+  test files (73 lib + 9 `deploy_grant` + 36 `native_dispatch_identity`
+  [incl. 2 new stage-4 resolve-relation tests] + 7 `proxy_dispatch` [incl.
+  1 new self-proxy stage-4 test] + 10 `service_ownership` + 2
+  `ucan_context` + 2 `unsupported_protocol`); `syneroym-rpc` **31 passed**
+  (incl. 8 `fdae_abac` unit tests); `syneroym-fdae` **99 passed** (incl. 3
+  `compile::` abac-permission tests + 2 `policy::` `authorize_rows` tests);
+  `syneroym-data-db` **143 passed** (incl. 2 stage-4 `aggregate`/
+  `delete_many` deny tests); `syneroym-sandbox-wasm` **74 passed** across
+  `--lib --tests` (46 lib + 8 `abac_integration` + 5 `blob_store_integration`
+  + 3 `data_layer_integration` + 6 `lifecycle_hooks` + 3
+  `messaging_integration` — the last of these also hit the same
+  parallel-mode flake on a `--lib --tests` combined run and was independently
+  confirmed clean, 3/3, run alone).
+- **`crates/substrate/tests/federated_fdae_e2e.rs`** (sandbox disabled, real
+  Iroh QUIC, real port binds) — re-run after reverting the infeasible
+  cross-node addition described above, to confirm B3's own proofs (the
+  successful federated fetch and the asserter-mismatch deny) still pass
+  unmodified by this slice: **1 passed** (75.51s, real two-substrate boot;
+  within the same order of magnitude as Phase 5's own documented 48-52s
+  baseline, variance expected from this session's heavier concurrent
+  system load).
+- `mise run test:e2e` (sandbox disabled, needed for real port binds) —
+  **12/12 green** (8 `webrtc.spec.ts` + 4 `multi-hop.spec.ts`), matching the
+  established baseline.
+- `wasm32-wasip2` — confirmed unbroken: `test-components/abac-test` and the
+  extended `test-components/proxy-test` (now also exporting
+  `syneroym:data-layer/authorizer`) both built cleanly via `cargo component
+  build --release --target wasm32-wasip2`; `data-layer-test`/`greeter`/
+  `messaging-pubsub-test`/`stream-test` artifacts untouched and still valid
+  (the new `authorizer.wit` is an additive second file in the existing
+  `data-layer` WIT package, not a modification to anything those fixtures
+  already depend on).

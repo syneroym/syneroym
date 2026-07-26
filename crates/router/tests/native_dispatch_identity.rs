@@ -241,6 +241,7 @@ async fn authenticated_caller_identity_becomes_creator_id_not_service_id() {
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
         "did:key:zTestOwner",
         syneroym_sandbox_wasm::empty_service_proxy(),
+        syneroym_rpc::empty_row_authorizer(),
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -305,6 +306,7 @@ async fn execute_ddl_denied_for_ordinary_native_caller() {
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
         "did:key:zTestOwner",
         syneroym_sandbox_wasm::empty_service_proxy(),
+        syneroym_rpc::empty_row_authorizer(),
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -348,6 +350,7 @@ async fn execute_ddl_allowed_for_admin_ucan_root_native_caller() {
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
         "did:key:zTestOwner",
         syneroym_sandbox_wasm::empty_service_proxy(),
+        syneroym_rpc::empty_row_authorizer(),
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -387,6 +390,7 @@ async fn ordinary_caller_denied_query_raw() {
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
         "did:key:zTestOwner",
         syneroym_sandbox_wasm::empty_service_proxy(),
+        syneroym_rpc::empty_row_authorizer(),
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -430,6 +434,7 @@ async fn admin_caller_admitted_query_raw() {
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
         "did:key:zTestOwner",
         syneroym_sandbox_wasm::empty_service_proxy(),
+        syneroym_rpc::empty_row_authorizer(),
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -472,6 +477,7 @@ async fn query_raw_binds_params_no_injection() {
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
         "did:key:zTestOwner",
         syneroym_sandbox_wasm::empty_service_proxy(),
+        syneroym_rpc::empty_row_authorizer(),
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -554,6 +560,7 @@ async fn query_raw_null_param_round_trips() {
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
         "did:key:zTestOwner",
         syneroym_sandbox_wasm::empty_service_proxy(),
+        syneroym_rpc::empty_row_authorizer(),
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -611,6 +618,7 @@ async fn query_raw_result_cells_are_round_trippable_as_params() {
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
         "did:key:zTestOwner",
         syneroym_sandbox_wasm::empty_service_proxy(),
+        syneroym_rpc::empty_row_authorizer(),
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -823,6 +831,7 @@ async fn ordinary_caller_admitted_aggregate() {
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
         "did:key:zTestOwner",
         syneroym_sandbox_wasm::empty_service_proxy(),
+        syneroym_rpc::empty_row_authorizer(),
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -897,6 +906,7 @@ async fn aggregate_malformed_pipeline_is_schema_violation() {
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
         "did:key:zTestOwner",
         syneroym_sandbox_wasm::empty_service_proxy(),
+        syneroym_rpc::empty_row_authorizer(),
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -1014,6 +1024,7 @@ async fn native_fdae_policy_row_filters_and_masks_for_two_distinct_verified_call
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
         "did:key:zTestOwner",
         syneroym_sandbox_wasm::empty_service_proxy(),
+        syneroym_rpc::empty_row_authorizer(),
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -1194,6 +1205,7 @@ async fn native_delete_many_is_row_filtered_as_a_write_operation() {
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
         "did:key:zTestOwner",
         syneroym_sandbox_wasm::empty_service_proxy(),
+        syneroym_rpc::empty_row_authorizer(),
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -1284,6 +1296,7 @@ async fn native_aggregate_is_row_filtered_through_native_dispatch() {
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
         "did:key:zTestOwner",
         syneroym_sandbox_wasm::empty_service_proxy(),
+        syneroym_rpc::empty_row_authorizer(),
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -1498,6 +1511,7 @@ async fn resolve_relation_service_and_pipeline_with(
         node_identity,
         owner_did,
         syneroym_sandbox_wasm::empty_service_proxy(),
+        syneroym_rpc::empty_row_authorizer(),
     ));
     route_handler.register_native_service(service_id.to_string(), data_service);
 
@@ -1943,6 +1957,92 @@ async fn resolve_relation_is_empty_when_no_policy_is_deployed() {
     assert_eq!(resp["result"]["ids"], json!([]));
 }
 
+// -- Slice B4-fdae: `resolve-relation` denies closed under a stage-4
+// definition (D-B4-3) ----------------------------------------------------
+
+/// Same shape as `resolvable_employee_policy`, but `view_self` opts into
+/// the stage-4 after-step. Neither A1 nor A2 has a compiled sieve in hand
+/// (`synsvc_native.rs::resolve_relation`'s own doc comment), so
+/// `definition_has_abac` denies both branches at the definition level
+/// before either would otherwise run.
+fn resolvable_employee_policy_with_stage4() -> Policy {
+    parse_and_validate(
+        r#"{
+            "version": "fdae/v1",
+            "definitions": {
+                "employee": {
+                    "table": "employees",
+                    "principal_column": "did",
+                    "resolvable_without_capability": true,
+                    "permissions": {
+                        "view_self": {
+                            "allows": ["data-layer/read"],
+                            "paths": [["caller"]],
+                            "authorize_rows": true
+                        }
+                    }
+                }
+            }
+        }"#,
+    )
+    .unwrap()
+}
+
+/// A1: a caller who would otherwise resolve via the capability-gated sieve
+/// (same caller as
+/// `resolve_relation_a1_resolves_via_the_capability_gated_sieve_and_verifies`)
+/// is denied outright once `view_self` opts into stage 4 -- the remote must
+/// not be able to route around this node's after-step by resolving
+/// structurally instead of through the direct, after-step-aware read path.
+#[tokio::test]
+async fn resolve_relation_a1_denies_closed_under_a_stage4_definition() {
+    let service_id = "resolve-relation-a1-stage4-svc";
+    let (route_handler, pipeline, preamble, _temp_dir) = resolve_relation_service_and_pipeline(
+        service_id,
+        Some(resolvable_employee_policy_with_stage4()),
+    )
+    .await;
+
+    let alice = employee_reader_caller("did:key:alice", service_id);
+    let body = resolve_relation_body("employee", "did:key:alice");
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&alice), &body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert_eq!(
+        resp["error"]["code"], -32010,
+        "an A1 resolution under a stage-4 definition must deny closed, not return an \
+         after-step-unfiltered id-set: {resp:?}"
+    );
+}
+
+/// A2: the bare `principal_column` match (`resolvable_without_capability`)
+/// bypasses the sieve entirely, so it would otherwise be the wider hole of
+/// the two -- same deny under the same stage-4 definition.
+#[tokio::test]
+async fn resolve_relation_a2_denies_closed_under_a_stage4_definition() {
+    let service_id = "resolve-relation-a2-stage4-svc";
+    let (route_handler, pipeline, preamble, _temp_dir) = resolve_relation_service_and_pipeline(
+        service_id,
+        Some(resolvable_employee_policy_with_stage4()),
+    )
+    .await;
+
+    let bob = zero_capability_caller("did:key:bob");
+    let body = resolve_relation_body("employee", "did:key:bob");
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&bob), &body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert_eq!(
+        resp["error"]["code"], -32010,
+        "an A2 resolution under a stage-4 definition must deny closed, not return an \
+         after-step-unfiltered id-set: {resp:?}"
+    );
+}
+
 /// Slice B3 Phase 4: constructs hr-svc's `SynSvcNativeService` directly
 /// (not via `resolve_relation_service_and_pipeline_with`/`RouteHandler`,
 /// which hides its registry/native_dispatch -- this test needs a real
@@ -1994,6 +2094,7 @@ async fn build_hr_svc_proxy_router(
         node_identity.clone(),
         owner_did,
         syneroym_sandbox_wasm::empty_service_proxy(),
+        syneroym_rpc::empty_row_authorizer(),
     ));
     let seeder = test_caller("did:key:z6MkResolveRelationSeeder");
     for (id, did) in [("emp-alice", "did:key:alice"), ("emp-bob", "did:key:bob")] {
@@ -2245,6 +2346,7 @@ async fn native_dispatch_query_resolves_a_cross_service_fetch_end_to_end() {
         node_identity,
         "did:key:zAppSvcOwner",
         Arc::downgrade(&service_proxy),
+        syneroym_rpc::empty_row_authorizer(),
     );
 
     let seeder = test_caller("did:key:z6MkQueryThroughDispatchSeeder");
@@ -2429,6 +2531,7 @@ async fn native_dispatch_denies_closed_on_a_cross_service_fetch_failure() {
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
         "did:key:zTestOwner",
         Arc::downgrade(&stub_proxy),
+        syneroym_rpc::empty_row_authorizer(),
     );
 
     let caller = CallerContext {

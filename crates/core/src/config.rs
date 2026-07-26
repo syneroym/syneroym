@@ -419,6 +419,12 @@ const fn default_dispatch_epoch_timeout_secs() -> u64 {
 const fn default_lifecycle_hook_epoch_timeout_secs() -> u64 {
     30
 }
+const fn default_abac_max_instructions() -> u64 {
+    50_000_000
+}
+const fn default_abac_epoch_timeout_secs() -> u64 {
+    2
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -443,6 +449,29 @@ pub struct AppSandboxRole {
     /// a request, so a generous budget doesn't trade away the same
     /// protection the tighter dispatch budget buys.
     pub lifecycle_hook_epoch_timeout_secs: u64,
+    /// Fuel ceiling for one stage-4 ABAC after-step invocation (ADR-0017 §7's
+    /// "fuel-metered"). Deliberately a small fraction of
+    /// `default_max_instructions`: the after-step runs once per read on the
+    /// hot path, and §7's optional read-only lookups are the thing this
+    /// bounds. Overrun denies the whole batch, never returns partially-
+    /// checked rows. A starting point, to be re-tuned against a measured
+    /// `criterion` bench.
+    ///
+    /// Deliberately **not** `Option<u64>` (review finding B4-07): the
+    /// after-step always overrides the service's own fuel via
+    /// `InstanceOptions::fuel_override`, which treats `None` as "keep
+    /// whatever the caller already had" -- for every *other*
+    /// `fuel_override` use that means "no override", but here it would
+    /// silently fall through to the service's own `default_max_instructions`
+    /// (10 billion by default, ~200x this field's own default), the exact
+    /// opposite of what an operator clearing this field to disable a limit
+    /// would expect. A plain `u64` makes that fallback unreachable.
+    pub abac_max_instructions: u64,
+    /// Wall-clock budget for one after-step. Tighter than
+    /// `dispatch_epoch_timeout_secs` for the same reason: the after-step
+    /// runs on the hot read path, not once per deploy. A starting point, to
+    /// be re-tuned against a measured `criterion` bench.
+    pub abac_epoch_timeout_secs: u64,
 }
 
 impl AppSandboxRole {
@@ -463,6 +492,8 @@ impl Default for AppSandboxRole {
             default_max_memory_bytes: Some(256 * 1024 * 1024),
             dispatch_epoch_timeout_secs: default_dispatch_epoch_timeout_secs(),
             lifecycle_hook_epoch_timeout_secs: default_lifecycle_hook_epoch_timeout_secs(),
+            abac_max_instructions: default_abac_max_instructions(),
+            abac_epoch_timeout_secs: default_abac_epoch_timeout_secs(),
         }
     }
 }

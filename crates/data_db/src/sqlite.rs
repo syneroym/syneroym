@@ -245,6 +245,16 @@ fn do_delete_many(
     sieve: Option<&CompiledSieve>,
 ) -> Result<u64, host_store::DataLayerError> {
     validate_identifier(collection)?;
+    // A stage-4-active sieve (ADR-0017 §7) needs the deleted rows
+    // materialized and run through the guest-exported after-step before
+    // they may be removed -- deletion happens inside SQL, so there is
+    // nothing to hand the after-step. Deny closed, same category as the CLS
+    // denial below: a permission opting into `authorize_rows` never widens
+    // what `delete_many` may remove, so this cannot be worked around by
+    // narrowing the caller's request.
+    if sieve.is_some_and(|s| !s.abac_permissions.is_empty()) {
+        return Err(host_store::DataLayerError::PermissionDenied);
+    }
     emit_mode_b_trace(sieve);
     let compiled = filter::compile_filter(filter_json)?;
 
@@ -619,7 +629,12 @@ fn do_list_collections(conn: &mut Connection) -> Result<Vec<String>, host_store:
 /// aggregate's `SUM`/`AVG`/etc. can leak a masked field's value through its
 /// output even without projecting the raw column, and there is no general
 /// way to tell which accumulators are "safe" over a masked field. RLS,
-/// unlike CLS, injects cleanly into the inner query's `WHERE`.
+/// unlike CLS, injects cleanly into the inner query's `WHERE`. The same
+/// reasoning extends to `sieve.abac_permissions` (ADR-0017 §7): the stage-4
+/// after-step needs materialized candidate rows to judge, and an aggregate
+/// never surfaces rows -- only accumulator output, which can leak a
+/// would-be-denied row's contribution the same way a masked field can leak
+/// through `SUM`/`AVG`.
 fn do_aggregate(
     conn: &Connection,
     collection: &str,
@@ -629,12 +644,12 @@ fn do_aggregate(
     validate_identifier(collection)?;
     emit_mode_b_trace(sieve);
 
-    // Check CLS denial *before* compiling caveat filters: a CLS-active sieve
+    // Check CLS/stage-4 denial *before* compiling caveat filters: either
     // denies the whole call regardless of what its caveats say, so there is
     // no reason to pay a caveat-filter compile (or surface its error, if the
     // caveat is malformed) on a call that is about to be denied anyway.
     if let Some(s) = sieve
-        && !s.masked_fields.is_empty()
+        && (!s.masked_fields.is_empty() || !s.abac_permissions.is_empty())
     {
         return Err(host_store::DataLayerError::PermissionDenied);
     }
@@ -2518,6 +2533,7 @@ mod tests {
             masked_fields: Vec::new(),
             where_caveats: Vec::new(),
             trace: DecisionTrace::default(),
+            abac_permissions: Vec::new(),
         }
     }
 
@@ -2854,6 +2870,7 @@ mod tests {
                 }],
                 ..DecisionTrace::default()
             },
+            abac_permissions: Vec::new(),
         };
 
         let logs = Arc::new(Mutex::new(Vec::new()));

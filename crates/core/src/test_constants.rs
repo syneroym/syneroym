@@ -65,3 +65,15 @@ pub fn proxy_test_wasm_path() -> PathBuf {
         "../../test-components/proxy-test/target/wasm32-wasip2/release/syneroym_test_proxy.wasm",
     )
 }
+
+/// Returns the workspace-relative path to the abac-test component WASM
+/// module (imports `syneroym:data-layer/store` and `syneroym:app-config/
+/// app-config`, exports `init` and `syneroym:data-layer/authorizer` --
+/// Slice B4-fdae's stage-4 ABAC fixture, ADR-0017 §7. Behavior switches on
+/// the deployed `app-config`'s `mode` key -- see
+/// `test-components/abac-test`).
+pub fn abac_test_wasm_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+        "../../test-components/abac-test/target/wasm32-wasip2/release/syneroym_test_abac.wasm",
+    )
+}

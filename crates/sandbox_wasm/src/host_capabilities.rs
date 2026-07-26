@@ -30,8 +30,9 @@ use syneroym_mqtt_broker::{
     namespace_topic_for_publish,
 };
 use syneroym_rpc::{
-    Ability, AuthLevel, CallOrigin, CallerContext, ProxyError as RpcProxyError, ProxyProtocol,
-    ProxyRequest, ResourceUri, ServiceProxy,
+    AbacError, Ability, AuthLevel, CallOrigin, CallerContext, CandidateRow,
+    ProxyError as RpcProxyError, ProxyProtocol, ProxyRequest, ResourceUri, RowAuthorizer,
+    ServiceProxy, apply_stage4, union_masked_fields,
 };
 use syneroym_wit_interfaces::host::syneroym::{
     app_config::app_config::{self, ConfigError},
@@ -115,6 +116,16 @@ pub struct HostState {
     /// strong refs would form the same class of uncollectable cycle that
     /// hung graceful shutdown in Slice 6B.
     pub service_proxy: Weak<dyn ServiceProxy>,
+    /// Stage-4 after-step instances (`AuthLevel::LocalReadOnly`) get this
+    /// set: every mutating and egress host function hard-denies. Not
+    /// derivable from `caller.auth` alone -- write host paths carry no
+    /// capability gate today (D-04-02-f), so the check has to live somewhere
+    /// that isn't the capability layer.
+    pub read_only: bool,
+    /// Weak handle to the after-step invoker (ADR-0017 §7). `Weak`, not
+    /// `Arc`: the only implementation is `AppSandboxEngine`, which owns this
+    /// state's `Store` -- same cycle reasoning as `service_proxy`.
+    pub row_authorizer: Weak<dyn RowAuthorizer>,
 }
 
 impl Debug for HostState {
@@ -142,6 +153,8 @@ impl HostState {
         streaming: StreamContext,
         service_proxy: Weak<dyn ServiceProxy>,
         fdae_policy: Option<Arc<Policy>>,
+        read_only: bool,
+        row_authorizer: Weak<dyn RowAuthorizer>,
     ) -> Self {
         let wasi = WasiCtx::builder().build();
         let table = ResourceTable::new();
@@ -166,6 +179,8 @@ impl HostState {
             messaging,
             streaming,
             service_proxy,
+            read_only,
+            row_authorizer,
         }
     }
 
@@ -203,13 +218,28 @@ impl HostState {
     /// was never the intent -- `execute-ddl`/`query-raw`'s own admin gate
     /// exists specifically so lifecycle hooks act with full authority over
     /// their own service's data.
+    ///
+    /// **`AuthLevel::LocalReadOnly` is exempt too, for a related but
+    /// distinct reason (ADR-0017 §7, D-B4-2/D-B4-4).** It is the stage-4
+    /// after-step's own identity: the ADR is explicit that the after-step's
+    /// optional lookups read this service's data unfiltered -- the service
+    /// owner authored the policy and could equally have written the same
+    /// call into their service code, and running under the caller's
+    /// authority breaks most real policies. Read-only-ness comes from
+    /// `HostState.read_only` (hard-denying every mutating/egress host
+    /// function), not from the sieve. **This early return is also what
+    /// bounds after-step recursion (D-B4-4)**: an after-step instance's own
+    /// reads carry no `QueryAuth` at all, hence no sieve, hence no
+    /// `abac_permissions` to trigger a second after-step. Narrowing this
+    /// exemption without replacing that bound reintroduces unbounded
+    /// recursion.
     async fn resolve_query_auth(
         &mut self,
         collection: &str,
         operation: &Ability,
         mode: Mode,
     ) -> Result<Option<QueryAuth<'_>>, DataLayerError> {
-        if self.caller.auth == AuthLevel::LocalElevated {
+        if matches!(self.caller.auth, AuthLevel::LocalElevated | AuthLevel::LocalReadOnly) {
             return Ok(None);
         }
         let Some(policy) = self.fdae_policy.as_ref() else { return Ok(None) };
@@ -308,12 +338,21 @@ impl vault::Host for HostState {
 
 impl host_api::Host for HostState {
     async fn publish(&mut self, topic: String, payload: Vec<u8>) -> Result<(), MessagingError> {
+        if self.read_only {
+            return Err(MessagingError::PermissionDenied);
+        }
         let namespaced = namespace_topic_for_publish(&self.component_id, &topic);
         let broker = self.messaging.broker.clone();
         broker.publish(namespaced, payload).await.map_err(map_broker_error)
     }
 
     async fn subscribe(&mut self, topic: String) -> Result<(), MessagingError> {
+        // A subscription registered from a throw-away stage-4 instance
+        // would outlive it, and stage-4 is a local, synchronous read-only
+        // lookup, not a place to register egress.
+        if self.read_only {
+            return Err(MessagingError::PermissionDenied);
+        }
         let namespaced = namespace_topic(&self.component_id, &topic);
         let service_id = self.component_id.clone();
         let storage_provider = self.storage_provider.clone();
@@ -340,6 +379,9 @@ impl host_api::Host for HostState {
     }
 
     async fn unsubscribe(&mut self, topic: String) -> Result<(), MessagingError> {
+        if self.read_only {
+            return Err(MessagingError::PermissionDenied);
+        }
         let namespaced = namespace_topic(&self.component_id, &topic);
         let service_id = self.component_id.clone();
         let storage_provider = self.storage_provider.clone();
@@ -364,6 +406,9 @@ impl host_api::Host for HostState {
     }
 
     async fn register_stream_protocol(&mut self, protocol: String) -> Result<(), MessagingError> {
+        if self.read_only {
+            return Err(MessagingError::PermissionDenied);
+        }
         let service_id = self.component_id.clone();
         self.streaming
             .registry
@@ -402,6 +447,75 @@ fn strip_record(
 ) -> Result<RecordReadValue, DataLayerError> {
     record.payload = auth::strip_masked_fields(record.payload, masked_fields)?;
     Ok(record)
+}
+
+/// Converts a store-returned record into the stage-4 after-step's candidate
+/// shape (ADR-0017 §7) -- the two types share the same fields (both mirror
+/// the physical row), so this is a plain field copy.
+fn to_candidate_row(record: &RecordReadValue) -> CandidateRow {
+    CandidateRow {
+        id: record.id.clone(),
+        payload: record.payload.clone(),
+        creator_id: record.creator_id.clone(),
+        created_at: record.created_at,
+        updated_at: record.updated_at,
+    }
+}
+
+/// The inverse of [`to_candidate_row`] -- reconstructs the WIT record shape
+/// from a stage-4-surviving candidate, since `apply_stage4`'s output
+/// (`kept`) is no longer positionally aligned with the original row list
+/// (denied rows are dropped, not carried as `None`s).
+fn from_candidate_row(row: CandidateRow) -> RecordReadValue {
+    RecordReadValue {
+        id: row.id,
+        payload: row.payload,
+        creator_id: row.creator_id,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+    }
+}
+
+/// Maps a stage-4 after-step failure to the `DataLayerError` `get`/`query`
+/// actually return (review finding B4-04). Both fail closed either way (no
+/// row data reaches the caller), but collapsing every `AbacError` into an
+/// empty-but-successful page made "the after-step said no" indistinguishable
+/// from "the after-step couldn't run at all" -- and the ADR-0007 "no result
+/// is a valid outcome" principle this leaned on covers authorization
+/// denials, not infrastructure failures. `Unavailable` (includes the
+/// after-step's own pool-exhaustion case, B4-01) and `BudgetExceeded` are
+/// resource pressure, reported the same way `data_db`'s watchdog timeout
+/// already reports one (`QuotaExceeded`); the rest are the guest's own
+/// after-step misbehaving (a missing export, a trap, a malformed or
+/// arity-mismatched decision list), reported as `Internal`.
+fn map_abac_error(e: AbacError) -> DataLayerError {
+    match e {
+        AbacError::Unavailable(_)
+        | AbacError::BudgetExceeded { .. }
+        | AbacError::BatchTooLarge(_)
+        | AbacError::PayloadTooLarge { .. } => DataLayerError::QuotaExceeded,
+        // `MissingExport`/`ArityMismatch` carry only a service id / row
+        // counts -- safe to echo in full, and useful for diagnosing a
+        // deploy-time misconfiguration.
+        AbacError::MissingExport(_) | AbacError::ArityMismatch { .. } => {
+            DataLayerError::Internal(e.to_string())
+        }
+        // `Trap`/`Malformed` can carry guest-authored (and, for a malformed
+        // decision, potentially row-derived) text -- review residual R3:
+        // echoing it via `DataLayerError::Internal` puts it on the wire to
+        // the calling client, a channel that didn't exist before B4-04's
+        // fix (previously an after-step failure never reached the caller
+        // at all). A generic message keeps the caller-visible signal to
+        // "the after-step failed" without the detail; the detail itself
+        // still reaches `AbacTrace::emit`'s (truncated, B4-06) log line,
+        // which is the audience it's actually useful to.
+        AbacError::Trap { .. } => {
+            DataLayerError::Internal("stage-4 after-step trapped".to_string())
+        }
+        AbacError::Malformed(_) => {
+            DataLayerError::Internal("stage-4 after-step returned a malformed decision".to_string())
+        }
+    }
 }
 
 impl app_config::Host for HostState {
@@ -479,6 +593,9 @@ impl app_config::Host for HostState {
 
 impl store::Host for HostState {
     async fn create_collection(&mut self, schema: CollectionSchema) -> Result<(), DataLayerError> {
+        if self.read_only {
+            return Err(DataLayerError::PermissionDenied);
+        }
         let store = open_store(
             self.component_id.clone(),
             self.key_store.clone(),
@@ -489,6 +606,9 @@ impl store::Host for HostState {
     }
 
     async fn drop_collection(&mut self, name: String) -> Result<(), DataLayerError> {
+        if self.read_only {
+            return Err(DataLayerError::PermissionDenied);
+        }
         let store = open_store(
             self.component_id.clone(),
             self.key_store.clone(),
@@ -503,6 +623,9 @@ impl store::Host for HostState {
         collection: String,
         value: RecordWriteValue,
     ) -> Result<(), DataLayerError> {
+        if self.read_only {
+            return Err(DataLayerError::PermissionDenied);
+        }
         let creator_id = self.component_id.clone();
         let store = open_store(
             self.component_id.clone(),
@@ -519,6 +642,9 @@ impl store::Host for HostState {
         id: String,
         patch_json: Vec<u8>,
     ) -> Result<(), DataLayerError> {
+        if self.read_only {
+            return Err(DataLayerError::PermissionDenied);
+        }
         let store = open_store(
             self.component_id.clone(),
             self.key_store.clone(),
@@ -533,6 +659,15 @@ impl store::Host for HostState {
         collection: String,
         id: String,
     ) -> Result<Option<RecordReadValue>, DataLayerError> {
+        // Copied into owned locals up front, before `resolve_query_auth`'s
+        // `&mut self` borrow starts (its returned `QueryAuth<'_>` ties to
+        // that borrow, so `self` cannot be touched again while it's held) --
+        // same `Send`-future discipline `resolve_query_auth`'s own doc
+        // comment describes, applied one step earlier.
+        let session = self.caller.session.clone();
+        let service_id = self.component_id.clone();
+        let authorizer = self.row_authorizer.upgrade();
+
         let store = open_store(
             self.component_id.clone(),
             self.key_store.clone(),
@@ -547,7 +682,26 @@ impl store::Host for HostState {
             )
             .await?;
         let outcome = store.get(&collection, &id, query_auth.as_ref()).await?;
-        outcome.value.map(|record| strip_record(record, &outcome.masked_fields)).transpose()
+        let Some(record) = outcome.value else { return Ok(None) };
+
+        let Some(sieve) = query_auth.as_ref().and_then(|a| a.resolved_sieve.as_ref()) else {
+            return strip_record(record, &outcome.masked_fields).map(Some);
+        };
+        if sieve.abac_permissions.is_empty() {
+            return strip_record(record, &outcome.masked_fields).map(Some);
+        }
+        let candidate = to_candidate_row(&record);
+        // Fail-closed, but distinguishably (B4-04): an after-step error
+        // (pool exhaustion, a trap, a budget overrun) is not the same claim
+        // as "the after-step ran and denied this row" -- only the latter is
+        // `Ok(None)`.
+        let kept =
+            apply_stage4(sieve, &session, &service_id, &collection, authorizer, vec![candidate])
+                .await
+                .map_err(map_abac_error)?;
+        let Some((_, extra)) = kept.into_iter().next() else { return Ok(None) };
+        let masked = union_masked_fields(&outcome.masked_fields, extra);
+        strip_record(record, &masked).map(Some)
     }
 
     async fn query(
@@ -555,6 +709,12 @@ impl store::Host for HostState {
         collection: String,
         opts: QueryOptions,
     ) -> Result<QueryResult, DataLayerError> {
+        // See `get`'s identical comment on why these are captured before
+        // `resolve_query_auth` runs.
+        let session = self.caller.session.clone();
+        let service_id = self.component_id.clone();
+        let authorizer = self.row_authorizer.upgrade();
+
         let store = open_store(
             self.component_id.clone(),
             self.key_store.clone(),
@@ -569,9 +729,50 @@ impl store::Host for HostState {
             )
             .await?;
         let mut outcome = store.query(&collection, &opts, query_auth.as_ref()).await?;
-        let records = mem::take(&mut outcome.value.records)
+        let rows = mem::take(&mut outcome.value.records);
+
+        let sieve = query_auth.as_ref().and_then(|a| a.resolved_sieve.as_ref());
+        let kept: Vec<(RecordReadValue, Vec<String>)> = match sieve {
+            Some(sieve) if !sieve.abac_permissions.is_empty() => {
+                let candidates: Vec<CandidateRow> = rows.iter().map(to_candidate_row).collect();
+                match apply_stage4(
+                    sieve,
+                    &session,
+                    &service_id,
+                    &collection,
+                    authorizer,
+                    candidates,
+                )
+                .await
+                {
+                    // `kept` already excludes denied rows -- rebuild each
+                    // surviving `RecordReadValue` from its candidate rather
+                    // than trying to re-align against the original `rows`.
+                    Ok(kept) => kept
+                        .into_iter()
+                        .map(|(row, extra)| (from_candidate_row(row), extra))
+                        .collect(),
+                    // Fail-closed, but as a distinguishable error, not a
+                    // silent empty-and-successful page (B4-04): clearing
+                    // `next_cursor` here would make `records: []` +
+                    // `next_cursor: None` read as "no more pages", which is
+                    // exactly the wrong signal for an after-step that
+                    // couldn't run, as opposed to one that ran and denied
+                    // every row.
+                    Err(e) => {
+                        return Err(map_abac_error(e));
+                    }
+                }
+            }
+            _ => rows.into_iter().map(|r| (r, Vec::new())).collect(),
+        };
+
+        let records = kept
             .into_iter()
-            .map(|record| strip_record(record, &outcome.masked_fields))
+            .map(|(record, extra)| {
+                let masked = union_masked_fields(&outcome.masked_fields, extra);
+                strip_record(record, &masked)
+            })
             .collect::<Result<Vec<_>, _>>()?;
         outcome.value.records = records;
         Ok(outcome.value)
@@ -599,6 +800,9 @@ impl store::Host for HostState {
     }
 
     async fn delete(&mut self, collection: String, id: String) -> Result<(), DataLayerError> {
+        if self.read_only {
+            return Err(DataLayerError::PermissionDenied);
+        }
         let store = open_store(
             self.component_id.clone(),
             self.key_store.clone(),
@@ -613,6 +817,9 @@ impl store::Host for HostState {
         collection: String,
         filter: String,
     ) -> Result<u64, DataLayerError> {
+        if self.read_only {
+            return Err(DataLayerError::PermissionDenied);
+        }
         let store = open_store(
             self.component_id.clone(),
             self.key_store.clone(),
@@ -640,6 +847,12 @@ impl store::Host for HostState {
         id: String,
         operation: String,
     ) -> Result<bool, DataLayerError> {
+        // See `get`'s comment on why these are captured before
+        // `resolve_query_auth`'s `&mut self` borrow starts.
+        let session = self.caller.session.clone();
+        let service_id = self.component_id.clone();
+        let authorizer = self.row_authorizer.upgrade();
+
         let store = open_store(
             self.component_id.clone(),
             self.key_store.clone(),
@@ -662,7 +875,37 @@ impl store::Host for HostState {
             Ok(auth) => auth,
             Err(_) => return Ok(false),
         };
-        store.check_access(&collection, &id, &operation, query_auth.as_ref()).await
+        let sieve = query_auth.as_ref().and_then(|a| a.resolved_sieve.as_ref());
+        match sieve {
+            Some(sieve) if !sieve.abac_permissions.is_empty() => {
+                // A `get` under this `Mode::PointInTime` sieve runs exactly
+                // the predicate `check_access` would have run, and
+                // additionally hands back the row -- required to ask the
+                // after-step (ADR-0017 §7) the same question `check-access`
+                // does: "may this caller reach the row".
+                let outcome = match store.get(&collection, &id, query_auth.as_ref()).await {
+                    Ok(o) => o,
+                    Err(_) => return Ok(false),
+                };
+                let Some(record) = outcome.value else { return Ok(false) };
+                let candidate = to_candidate_row(&record);
+                let kept = apply_stage4(
+                    sieve,
+                    &session,
+                    &service_id,
+                    &collection,
+                    authorizer,
+                    vec![candidate],
+                )
+                .await;
+                // A `redact` decision counts as reachable: the question is
+                // "may this caller reach the row", and a redacted row was
+                // reached. `Err` or an empty `kept` (a `deny` decision) is
+                // `false`.
+                Ok(matches!(kept, Ok(k) if !k.is_empty()))
+            }
+            _ => store.check_access(&collection, &id, &operation, query_auth.as_ref()).await,
+        }
     }
 
     async fn batch_mutate(
@@ -670,6 +913,9 @@ impl store::Host for HostState {
         collection: String,
         mutations: Vec<Mutation>,
     ) -> Result<(), DataLayerError> {
+        if self.read_only {
+            return Err(DataLayerError::PermissionDenied);
+        }
         let creator_id = self.component_id.clone();
         let store = open_store(
             self.component_id.clone(),
@@ -681,6 +927,9 @@ impl store::Host for HostState {
     }
 
     async fn execute_ddl(&mut self, sql: String) -> Result<(), DataLayerError> {
+        if self.read_only {
+            return Err(DataLayerError::PermissionDenied);
+        }
         // Admin-capability gate (ADR-0015/0016, replaces the former
         // `is_init_context` scaffold): only a caller holding
         // `data-layer/admin` on this component's own resource may run DDL.
@@ -704,6 +953,9 @@ impl store::Host for HostState {
         sql: String,
         params: Vec<SqlValue>,
     ) -> Result<RawQueryResult, DataLayerError> {
+        if self.read_only {
+            return Err(DataLayerError::PermissionDenied);
+        }
         // Admin-capability gate (ADR-0015/0016), identical to execute_ddl: only
         // a caller holding `data-layer/admin` on this component's own resource
         // may run raw SQL. Lifecycle init/migrate runs as
@@ -757,6 +1009,15 @@ impl proxy::Host for HostState {
         params: String,
         options: Option<proxy::CallOptions>,
     ) -> Result<String, proxy::ProxyError> {
+        // ADR-0017 §7 is *local* read-only lookups; a cross-service call
+        // mid-query is exactly the N+1-over-the-network cost the ADR
+        // deliberately contained by keeping stage 4 out of the query-planner
+        // business.
+        if self.read_only {
+            return Err(proxy::ProxyError::Internal(
+                "stage-4 after-step instances may not originate proxy calls".to_string(),
+            ));
+        }
         let service_proxy = self
             .service_proxy
             .upgrade()
@@ -842,6 +1103,11 @@ async fn resolve_blob_dek(
 
 impl blob_store::Host for HostState {
     async fn put_blob(&mut self, data: Vec<u8>) -> Result<String, BlobError> {
+        if self.read_only {
+            return Err(BlobError::Internal(
+                "stage-4 after-step instances are read-only".to_string(),
+            ));
+        }
         let dek =
             resolve_blob_dek(&self.component_id, &self.key_store, &self.storage_provider).await?;
         self.blob_provider.put_blob(&self.component_id, data, dek).await.map_err(map_blob_error)
@@ -854,6 +1120,11 @@ impl blob_store::Host for HostState {
     }
 
     async fn open_upload(&mut self) -> Result<Resource<BlobWriter>, BlobError> {
+        if self.read_only {
+            return Err(BlobError::Internal(
+                "stage-4 after-step instances are read-only".to_string(),
+            ));
+        }
         let dek =
             resolve_blob_dek(&self.component_id, &self.key_store, &self.storage_provider).await?;
         let session = self
@@ -882,10 +1153,26 @@ impl blob_store::Host for HostState {
     }
 
     async fn delete_blob(&mut self, hash: String) -> Result<(), BlobError> {
+        if self.read_only {
+            return Err(BlobError::Internal(
+                "stage-4 after-step instances are read-only".to_string(),
+            ));
+        }
         self.blob_provider.delete_blob(&self.component_id, &hash).await.map_err(map_blob_error)
     }
 
     async fn signed_url(&mut self, hash: String, ttl_secs: u32) -> Result<String, BlobError> {
+        // Every other mutating/egress host function is hard-denied under
+        // `read_only` (review finding B4-14); a signed URL is a read in
+        // shape but mints a time-limited, externally redeemable URL that
+        // outlives this throw-away stage-4 instance -- the same kind of
+        // egress-beyond-the-call ADR-0017 §7's "local, read-only lookups
+        // only" is meant to rule out.
+        if self.read_only {
+            return Err(BlobError::Internal(
+                "stage-4 after-step instances are read-only".to_string(),
+            ));
+        }
         let dek =
             resolve_blob_dek(&self.component_id, &self.key_store, &self.storage_provider).await?;
         self.blob_provider
@@ -901,11 +1188,21 @@ impl HostBlobWriter for HostState {
         self_: Resource<BlobWriter>,
         chunk: Vec<u8>,
     ) -> Result<(), BlobError> {
+        if self.read_only {
+            return Err(BlobError::Internal(
+                "stage-4 after-step instances are read-only".to_string(),
+            ));
+        }
         let session = self.table.get_mut(&self_).map_err(|e| BlobError::Internal(e.to_string()))?;
         session.0.write(chunk).await.map_err(map_blob_error)
     }
 
     async fn finish(&mut self, self_: Resource<BlobWriter>) -> Result<String, BlobError> {
+        if self.read_only {
+            return Err(BlobError::Internal(
+                "stage-4 after-step instances are read-only".to_string(),
+            ));
+        }
         let session = self.table.delete(self_).map_err(|e| BlobError::Internal(e.to_string()))?;
         session.0.finish().await.map_err(map_blob_error)
     }
@@ -1071,6 +1368,8 @@ pub(crate) mod tests {
             test_streaming_context(),
             Arc::downgrade(&proxy) as Weak<dyn ServiceProxy>,
             None,
+            false,
+            syneroym_rpc::empty_row_authorizer(),
         );
 
         proxy::Host::call(
@@ -1120,6 +1419,8 @@ pub(crate) mod tests {
             test_streaming_context(),
             test_service_proxy(),
             None,
+            false,
+            syneroym_rpc::empty_row_authorizer(),
         );
 
         use app_config::Host as ConfigHost;
@@ -1169,6 +1470,8 @@ pub(crate) mod tests {
             test_streaming_context(),
             test_service_proxy(),
             None,
+            false,
+            syneroym_rpc::empty_row_authorizer(),
         );
         let mut host_b = HostState::new(
             "svc_b".to_string(),
@@ -1182,6 +1485,8 @@ pub(crate) mod tests {
             test_streaming_context(),
             test_service_proxy(),
             None,
+            false,
+            syneroym_rpc::empty_row_authorizer(),
         );
 
         let val_a = ConfigHost::get(&mut host_a_gen2, "mode".to_string()).await.unwrap().unwrap();
@@ -1202,6 +1507,8 @@ pub(crate) mod tests {
             test_streaming_context(),
             test_service_proxy(),
             None,
+            false,
+            syneroym_rpc::empty_row_authorizer(),
         );
         let val_a_old =
             ConfigHost::get(&mut host_a_gen1, "mode".to_string()).await.unwrap().unwrap();
@@ -1230,6 +1537,8 @@ pub(crate) mod tests {
             test_streaming_context(),
             test_service_proxy(),
             None,
+            false,
+            syneroym_rpc::empty_row_authorizer(),
         );
 
         let result = vault::Host::reveal(&mut host_state, "does-not-exist".to_string()).await;
@@ -1367,6 +1676,8 @@ pub(crate) mod tests {
             test_streaming_context(),
             test_service_proxy(),
             fdae_policy,
+            false,
+            syneroym_rpc::empty_row_authorizer(),
         )
     }
 
@@ -1782,6 +2093,8 @@ pub(crate) mod tests {
             test_streaming_context(),
             Arc::downgrade(&stub),
             Some(policy),
+            false,
+            syneroym_rpc::empty_row_authorizer(),
         );
 
         let own = store::Host::get(&mut host, "documents".to_string(), "doc-1".to_string())
@@ -1822,6 +2135,8 @@ pub(crate) mod tests {
             test_streaming_context(),
             Arc::downgrade(&stub),
             Some(policy),
+            false,
+            syneroym_rpc::empty_row_authorizer(),
         );
 
         let err = store::Host::get(&mut host, "documents".to_string(), "doc-1".to_string())

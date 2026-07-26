@@ -1,14 +1,15 @@
 [package]
-name = "syneroym-test-proxy"
+name = "syneroym-test-abac"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 wit-bindgen = "0.55.0"
+serde_json = "1"
 
 [lib]
 crate-type = ["cdylib"]
 
 [package.metadata.component.target.dependencies]
-"syneroym:proxy" = { path = "wit/deps/proxy" }
 "syneroym:data-layer" = { path = "wit/deps/data-layer" }
+"syneroym:app-config" = { path = "wit/deps/app-config" }

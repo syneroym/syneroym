@@ -39,8 +39,9 @@ use syneroym_fdae::{MAX_FETCH_IDS, Mode, Policy};
 use syneroym_identity::Identity;
 use syneroym_mqtt_broker::{MqttBroker, namespace_topic_for_publish};
 use syneroym_rpc::{
-    Ability, NativeInvocation, NativeResponse, NativeService, RelationshipProof, ResourceUri,
-    RpcError, RpcResult, ServiceProxy,
+    AbacError, Ability, CandidateRow, NativeInvocation, NativeResponse, NativeService,
+    RelationshipProof, ResourceUri, RowAuthorizer, RpcError, RpcResult, ServiceProxy, apply_stage4,
+    union_masked_fields,
 };
 use syneroym_wit_interfaces::host::syneroym::{
     app_config::app_config::ConfigError,
@@ -99,6 +100,17 @@ pub struct SynSvcNativeService {
     /// the same two-phase wiring `AppSandboxEngine.service_proxy` already
     /// uses for the identical ordering reason.
     service_proxy: Weak<dyn ServiceProxy>,
+    /// The stage-4 ABAC after-step invoker (ADR-0017 §7), same reasoning and
+    /// same two-phase `Weak` wiring as `service_proxy`: `AppSandboxEngine`
+    /// (the sole implementation) is constructed after this service, so it is
+    /// threaded in via a post-construction `OnceLock` at the composition
+    /// root. `syneroym_rpc::empty_row_authorizer()` in a build without the
+    /// `app_sandbox` feature (`crate::dummy_sandbox`), where a stage-4-opted
+    /// policy can never be deployed in the first place (`orchestration.rs`'s
+    /// deploy-time gate rejects it) -- this field exists only so the same
+    /// four native read/delete sites work unconditionally, without a
+    /// `#[cfg]`.
+    row_authorizer: Weak<dyn RowAuthorizer>,
 }
 
 impl fmt::Debug for SynSvcNativeService {
@@ -140,11 +152,11 @@ fn blob_error(e: BlobError) -> RpcError {
 /// exceeded" from a generic internal failure instead of every case
 /// collapsing into `RpcError::InternalError`.
 ///
-/// `PermissionDenied` is mapped for completeness, but note it is not
-/// reachable through any of Slice 7's own bridged `get`/`query`/`put`/
-/// `patch` routes -- the only real producer is `execute-ddl`, which is
-/// unconditionally denied to native callers (see the `execute-ddl` match
-/// arm below) and is not bridged by any Slice 7 route.
+/// `PermissionDenied` is not reachable through any of Slice 7's own bridged
+/// `get`/`query`/`put`/`patch` routes -- `execute-ddl` (unconditionally
+/// denied to native callers, see the `execute-ddl` match arm below) and
+/// `resolve-relation`'s stage-4 deny (D-B4-3, ADR-0017 §7) are the two real
+/// producers, and neither is bridged by any Slice 7 route.
 fn data_layer_error(e: DataLayerError) -> RpcError {
     match e {
         DataLayerError::PermissionDenied => {
@@ -158,6 +170,41 @@ fn data_layer_error(e: DataLayerError) -> RpcError {
             RpcError::Custom(-32013, "data-layer quota exceeded".to_string(), None)
         }
         DataLayerError::Internal(msg) => internal(msg),
+    }
+}
+
+/// Maps a stage-4 after-step failure to a `DataLayerError`, mirroring
+/// `sandbox_wasm::host_capabilities`'s identical helper for ingress (i)
+/// (review finding B4-04): `Unavailable` (includes the after-step's own
+/// pool-exhaustion case, B4-01)/`BudgetExceeded`/the batch-size caps are
+/// resource pressure, reported as `QuotaExceeded` the same way `data_db`'s
+/// watchdog timeout already is; the rest are the guest's own after-step
+/// misbehaving, reported as `Internal`. Both ingresses fail closed either
+/// way -- this only makes *why* distinguishable from "the after-step ran and
+/// found nothing".
+fn abac_error_to_data_layer_error(e: AbacError) -> DataLayerError {
+    match e {
+        AbacError::Unavailable(_)
+        | AbacError::BudgetExceeded { .. }
+        | AbacError::BatchTooLarge(_)
+        | AbacError::PayloadTooLarge { .. } => DataLayerError::QuotaExceeded,
+        // `MissingExport`/`ArityMismatch` carry only a service id / row
+        // counts -- safe to echo in full.
+        AbacError::MissingExport(_) | AbacError::ArityMismatch { .. } => {
+            DataLayerError::Internal(e.to_string())
+        }
+        // `Trap`/`Malformed` can carry guest-authored (and, for a malformed
+        // decision, potentially row-derived) text -- review residual R3,
+        // same reasoning as `sandbox_wasm::host_capabilities::map_abac_error`:
+        // a generic message keeps the caller-visible signal without putting
+        // that text on the wire to the calling client; the detail still
+        // reaches `AbacTrace::emit`'s (truncated, B4-06) log line.
+        AbacError::Trap { .. } => {
+            DataLayerError::Internal("stage-4 after-step trapped".to_string())
+        }
+        AbacError::Malformed(_) => {
+            DataLayerError::Internal("stage-4 after-step returned a malformed decision".to_string())
+        }
     }
 }
 
@@ -175,6 +222,35 @@ fn strip_record(
 ) -> Result<RecordReadValue, DataLayerError> {
     record.payload = auth::strip_masked_fields(record.payload, masked_fields)?;
     Ok(record)
+}
+
+/// Converts a store-returned record into the stage-4 after-step's candidate
+/// shape (ADR-0017 §7) -- mirrors
+/// `sandbox_wasm::host_capabilities::to_candidate_row`; each ingress
+/// converts its own `RecordReadValue` rather than sharing a type across the
+/// WASM/native boundary (`syneroym-rpc` doesn't depend on
+/// `syneroym-wit-interfaces`).
+fn to_candidate_row(record: &RecordReadValue) -> CandidateRow {
+    CandidateRow {
+        id: record.id.clone(),
+        payload: record.payload.clone(),
+        creator_id: record.creator_id.clone(),
+        created_at: record.created_at,
+        updated_at: record.updated_at,
+    }
+}
+
+/// The inverse of [`to_candidate_row`] -- see that function's sibling in
+/// `host_capabilities.rs` for why `apply_stage4`'s output can't be
+/// positionally re-aligned against the original row list.
+fn from_candidate_row(row: CandidateRow) -> RecordReadValue {
+    RecordReadValue {
+        id: row.id,
+        payload: row.payload,
+        creator_id: row.creator_id,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+    }
 }
 
 fn parse_params<T: serde::de::DeserializeOwned>(invocation: &NativeInvocation) -> RpcResult<T> {
@@ -276,6 +352,7 @@ impl SynSvcNativeService {
         node_identity: Arc<Identity>,
         owner_did: &str,
         service_proxy: Weak<dyn ServiceProxy>,
+        row_authorizer: Weak<dyn RowAuthorizer>,
     ) -> Self {
         // Derived here, once, rather than at every call site: every
         // existing (and future) construction site already passes the
@@ -294,6 +371,7 @@ impl SynSvcNativeService {
             fdae_policy,
             service_identity,
             service_proxy,
+            row_authorizer,
         }
     }
 
@@ -471,6 +549,22 @@ impl SynSvcNativeService {
             )?;
             return to_payload(&proof);
         };
+
+        // D-B4-3: a definition whose permissions opt into the stage-4
+        // after-step (ADR-0017 §7) cannot be resolved structurally by
+        // either A1 or A2 -- neither branch below has a compiled sieve in
+        // hand (A1's own `store.query` call builds `QueryAuth { resolved_sieve:
+        // None, .. }` and lets `data_db` compile internally; A2 has no
+        // sieve at all), so there is nothing to read `abac_permissions`
+        // from per-read. This is a coarser, definition-level check
+        // (`definition_has_abac`) than a compiled sieve's own
+        // `abac_permissions` -- deliberately so: the remote asking must not
+        // be able to route around this node's after-step by resolving
+        // structurally instead of through the direct, after-step-aware read
+        // path.
+        if syneroym_fdae::definition_has_abac(policy, &req.relation) {
+            return Err(data_layer_error(DataLayerError::PermissionDenied));
+        }
 
         // B3-07: the A1/A2 fork is keyed on whether the caller holds *any*
         // capability scoped to *this resource* -- not on whether they hold
@@ -662,11 +756,46 @@ impl SynSvcNativeService {
                     .get(&req.collection, &req.id, auth.as_ref())
                     .await
                     .map_err(data_layer_error)?;
-                let result = outcome
-                    .value
-                    .map(|record| strip_record(record, &outcome.masked_fields))
-                    .transpose()
-                    .map_err(data_layer_error)?;
+
+                let result: Option<RecordReadValue> = match outcome.value {
+                    None => None,
+                    Some(record) => {
+                        let sieve = auth.as_ref().and_then(|a| a.resolved_sieve.as_ref());
+                        match sieve {
+                            Some(sieve) if !sieve.abac_permissions.is_empty() => {
+                                let session = &invocation.caller.session;
+                                let candidate = to_candidate_row(&record);
+                                // Fail-closed, but distinguishably (B4-04):
+                                // see `abac_error_to_data_layer_error`.
+                                let kept = apply_stage4(
+                                    sieve,
+                                    session,
+                                    &self.service_id,
+                                    &req.collection,
+                                    self.row_authorizer.upgrade(),
+                                    vec![candidate],
+                                )
+                                .await
+                                .map_err(|e| data_layer_error(abac_error_to_data_layer_error(e)))?;
+                                match kept.into_iter().next() {
+                                    Some((_, extra)) => {
+                                        let masked =
+                                            union_masked_fields(&outcome.masked_fields, extra);
+                                        Some(
+                                            strip_record(record, &masked)
+                                                .map_err(data_layer_error)?,
+                                        )
+                                    }
+                                    None => None,
+                                }
+                            }
+                            _ => Some(
+                                strip_record(record, &outcome.masked_fields)
+                                    .map_err(data_layer_error)?,
+                            ),
+                        }
+                    }
+                };
                 to_payload(&result)
             }
             "query" => {
@@ -689,9 +818,49 @@ impl SynSvcNativeService {
                     .query(&req.collection, &req.opts, auth.as_ref())
                     .await
                     .map_err(data_layer_error)?;
-                let records = mem::take(&mut outcome.value.records)
+                let rows = mem::take(&mut outcome.value.records);
+
+                let sieve = auth.as_ref().and_then(|a| a.resolved_sieve.as_ref());
+                let kept: Vec<(RecordReadValue, Vec<String>)> = match sieve {
+                    Some(sieve) if !sieve.abac_permissions.is_empty() => {
+                        let session = &invocation.caller.session;
+                        let candidates: Vec<CandidateRow> =
+                            rows.iter().map(to_candidate_row).collect();
+                        match apply_stage4(
+                            sieve,
+                            session,
+                            &self.service_id,
+                            &req.collection,
+                            self.row_authorizer.upgrade(),
+                            candidates,
+                        )
+                        .await
+                        {
+                            Ok(kept) => kept
+                                .into_iter()
+                                .map(|(row, extra)| (from_candidate_row(row), extra))
+                                .collect(),
+                            // Fail-closed, but as a distinguishable error,
+                            // not a silent empty-and-successful page
+                            // (B4-04): resetting `next_cursor` to `None`
+                            // here is exactly "no more pages", which is the
+                            // wrong signal for an after-step that couldn't
+                            // run at all, as opposed to one that ran and
+                            // denied every row.
+                            Err(e) => {
+                                return Err(data_layer_error(abac_error_to_data_layer_error(e)));
+                            }
+                        }
+                    }
+                    _ => rows.into_iter().map(|r| (r, Vec::new())).collect(),
+                };
+
+                let records = kept
                     .into_iter()
-                    .map(|record| strip_record(record, &outcome.masked_fields))
+                    .map(|(record, extra)| {
+                        let masked = union_masked_fields(&outcome.masked_fields, extra);
+                        strip_record(record, &masked)
+                    })
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(data_layer_error)?;
                 outcome.value.records = records;
