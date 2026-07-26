@@ -129,6 +129,20 @@ pub struct Permission {
     /// `authorize-rows` after-step before any row reaches the caller.
     /// Restrict-only: the after-step may drop rows or redact fields, never
     /// admit a row this permission's `paths:` did not reach.
+    ///
+    /// **The opt-in is per permission, but its effect is call-scoped, not
+    /// row-scoped (review finding B4-05).** A definition's applicable
+    /// permissions OR into one compiled `where_clause`; if *any* applicable
+    /// permission on this definition opts in, every row the combined clause
+    /// admits is judged by the after-step, including rows a *different*
+    /// sibling permission (one that left this `false`) alone would have
+    /// admitted. Still restrict-only -- the after-step can never widen past
+    /// what the sieve already picked -- but a row's admission cannot be
+    /// attributed back to a single permission, so the guest cannot apply
+    /// different logic per originating rule; `auth-context.permissions`
+    /// (the WIT `authorizer` interface) is every applicable permission on
+    /// this read, batch-scoped, not the one that happened to admit a given
+    /// row.
     #[serde(default)]
     pub authorize_rows: bool,
 }

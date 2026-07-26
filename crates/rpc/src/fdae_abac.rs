@@ -27,6 +27,17 @@ pub const FDAE_ABAC_TIMEOUT: Duration = Duration::from_secs(3);
 /// legitimate read, only on a malformed one.
 pub const MAX_ABAC_ROWS: usize = 1000;
 
+/// Hard cap on one batch's total row-payload bytes (review finding B4-02).
+/// `MAX_ABAC_ROWS` bounds row *count*, not bytes: the engine lowers every
+/// payload byte into its own `wasmtime::component::Val` (the dynamic `Val`
+/// API has no raw-bytes fast path), and `Val`'s largest variant is ~40
+/// bytes, so an unbounded per-record payload turns into unbounded transient
+/// host memory at up to ~40x the wire size, per concurrent read. 16 MiB
+/// keeps a full `MAX_ABAC_ROWS`-row batch of realistically-sized records
+/// well under the memory a single after-step call should ever transiently
+/// hold, while staying far above any legitimate single-page payload.
+pub const MAX_ABAC_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
+
 /// Everything the guest-exported `authorize-rows` after-step needs to know
 /// about the call it is being asked to judge, mirroring the WIT
 /// `auth-context` fields of the same name (`wit/data-layer/authorizer.wit`):
@@ -90,9 +101,16 @@ pub enum RowDecision {
 
 #[derive(Debug, thiserror::Error)]
 pub enum AbacError {
+    /// No `RowAuthorizer` was available to run the after-step at all --
+    /// either the service isn't WASM-backed/wired (the original meaning of
+    /// this variant), or the throw-away instance's own instantiation failed
+    /// (e.g. the wasmtime pooling allocator's instance budget was exhausted,
+    /// review finding B4-01). Both are resource-availability failures, not
+    /// an authorization decision -- callers map this to a distinguishable
+    /// error, never to "zero rows" (B4-04).
     #[error(
-        "no row authorizer is available for service '{0}' (stage-4 policy on a non-WASM or \
-         unwired service)"
+        "no row authorizer is available for service '{0}' (unwired service, or the after-step \
+         instance could not be started)"
     )]
     Unavailable(String),
     #[error("service '{0}' does not export syneroym:data-layer/authorizer#authorize-rows")]
@@ -107,6 +125,8 @@ pub enum AbacError {
     Malformed(String),
     #[error("batch of {0} rows exceeds the {MAX_ABAC_ROWS}-row cap")]
     BatchTooLarge(usize),
+    #[error("batch payload of {bytes} bytes exceeds the {MAX_ABAC_PAYLOAD_BYTES}-byte cap")]
+    PayloadTooLarge { bytes: usize },
 }
 
 /// Invokes a service's guest-exported stage-4 after-step (ADR-0017 §7). The
@@ -192,6 +212,14 @@ pub async fn apply_stage4(
         trace.failed_closed = Some(format!("batch of {} rows exceeds the cap", rows.len()));
         trace.emit(collection, service_id, &session.subject_did);
         return Err(AbacError::BatchTooLarge(rows.len()));
+    }
+
+    let payload_bytes: usize = rows.iter().map(|r| r.payload.len()).sum();
+    if payload_bytes > MAX_ABAC_PAYLOAD_BYTES {
+        trace.failed_closed =
+            Some(format!("batch payload of {payload_bytes} bytes exceeds the cap"));
+        trace.emit(collection, service_id, &session.subject_did);
+        return Err(AbacError::PayloadTooLarge { bytes: payload_bytes });
     }
 
     let Some(auth) = authorizer else {
@@ -403,6 +431,23 @@ mod tests {
         let err =
             apply_stage4(&s, &session(), "svc", "docs", Some(authorizer), rows).await.unwrap_err();
         assert!(matches!(err, AbacError::BatchTooLarge(_)));
+    }
+
+    #[tokio::test]
+    async fn an_over_large_payload_denies_closed() {
+        let s = sieve(vec!["view".to_string()]);
+        let authorizer = StubAuthorizer::new(Ok(vec![RowDecision::Allow]));
+        let big_row = CandidateRow {
+            id: "big".to_string(),
+            payload: vec![0u8; MAX_ABAC_PAYLOAD_BYTES + 1],
+            creator_id: "did:key:alice".to_string(),
+            created_at: 0,
+            updated_at: 0,
+        };
+        let err = apply_stage4(&s, &session(), "svc", "docs", Some(authorizer), vec![big_row])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AbacError::PayloadTooLarge { .. }));
     }
 
     #[tokio::test(start_paused = true)]

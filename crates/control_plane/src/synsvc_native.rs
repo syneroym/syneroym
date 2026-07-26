@@ -39,8 +39,8 @@ use syneroym_fdae::{MAX_FETCH_IDS, Mode, Policy};
 use syneroym_identity::Identity;
 use syneroym_mqtt_broker::{MqttBroker, namespace_topic_for_publish};
 use syneroym_rpc::{
-    Ability, CandidateRow, NativeInvocation, NativeResponse, NativeService, RelationshipProof,
-    ResourceUri, RowAuthorizer, RpcError, RpcResult, ServiceProxy, apply_stage4,
+    AbacError, Ability, CandidateRow, NativeInvocation, NativeResponse, NativeService,
+    RelationshipProof, ResourceUri, RowAuthorizer, RpcError, RpcResult, ServiceProxy, apply_stage4,
 };
 use syneroym_wit_interfaces::host::syneroym::{
     app_config::app_config::ConfigError,
@@ -169,6 +169,28 @@ fn data_layer_error(e: DataLayerError) -> RpcError {
             RpcError::Custom(-32013, "data-layer quota exceeded".to_string(), None)
         }
         DataLayerError::Internal(msg) => internal(msg),
+    }
+}
+
+/// Maps a stage-4 after-step failure to a `DataLayerError`, mirroring
+/// `sandbox_wasm::host_capabilities`'s identical helper for ingress (i)
+/// (review finding B4-04): `Unavailable` (includes the after-step's own
+/// pool-exhaustion case, B4-01)/`BudgetExceeded`/the batch-size caps are
+/// resource pressure, reported as `QuotaExceeded` the same way `data_db`'s
+/// watchdog timeout already is; the rest are the guest's own after-step
+/// misbehaving, reported as `Internal`. Both ingresses fail closed either
+/// way -- this only makes *why* distinguishable from "the after-step ran and
+/// found nothing".
+fn abac_error_to_data_layer_error(e: AbacError) -> DataLayerError {
+    match e {
+        AbacError::Unavailable(_)
+        | AbacError::BudgetExceeded { .. }
+        | AbacError::BatchTooLarge(_)
+        | AbacError::PayloadTooLarge { .. } => DataLayerError::QuotaExceeded,
+        AbacError::MissingExport(_)
+        | AbacError::Trap { .. }
+        | AbacError::ArityMismatch { .. }
+        | AbacError::Malformed(_) => DataLayerError::Internal(e.to_string()),
     }
 }
 
@@ -729,6 +751,8 @@ impl SynSvcNativeService {
                             Some(sieve) if !sieve.abac_permissions.is_empty() => {
                                 let session = &invocation.caller.session;
                                 let candidate = to_candidate_row(&record);
+                                // Fail-closed, but distinguishably (B4-04):
+                                // see `abac_error_to_data_layer_error`.
                                 let kept = apply_stage4(
                                     sieve,
                                     session,
@@ -738,7 +762,7 @@ impl SynSvcNativeService {
                                     vec![candidate],
                                 )
                                 .await
-                                .unwrap_or_default();
+                                .map_err(|e| data_layer_error(abac_error_to_data_layer_error(e)))?;
                                 match kept.into_iter().next() {
                                     Some((_, extra)) => {
                                         let masked: Vec<String> = outcome
@@ -806,15 +830,15 @@ impl SynSvcNativeService {
                                 .into_iter()
                                 .map(|(row, extra)| (from_candidate_row(row), extra))
                                 .collect(),
-                            // Fail-closed: an after-step error denies the
-                            // whole page, never a partial or unfiltered one
-                            // -- `next_cursor` is reset too, so a caller
-                            // paging on a transient after-step failure
-                            // doesn't read "no more pages" as "I saw
-                            // everything".
-                            Err(_) => {
-                                outcome.value.next_cursor = None;
-                                Vec::new()
+                            // Fail-closed, but as a distinguishable error,
+                            // not a silent empty-and-successful page
+                            // (B4-04): resetting `next_cursor` to `None`
+                            // here is exactly "no more pages", which is the
+                            // wrong signal for an after-step that couldn't
+                            // run at all, as opposed to one that ran and
+                            // denied every row.
+                            Err(e) => {
+                                return Err(data_layer_error(abac_error_to_data_layer_error(e)));
                             }
                         }
                     }

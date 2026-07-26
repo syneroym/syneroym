@@ -419,8 +419,8 @@ const fn default_dispatch_epoch_timeout_secs() -> u64 {
 const fn default_lifecycle_hook_epoch_timeout_secs() -> u64 {
     30
 }
-const fn default_abac_max_instructions() -> Option<u64> {
-    Some(50_000_000)
+const fn default_abac_max_instructions() -> u64 {
+    50_000_000
 }
 const fn default_abac_epoch_timeout_secs() -> u64 {
     2
@@ -456,7 +456,17 @@ pub struct AppSandboxRole {
     /// bounds. Overrun denies the whole batch, never returns partially-
     /// checked rows. A starting point, to be re-tuned against a measured
     /// `criterion` bench.
-    pub abac_max_instructions: Option<u64>,
+    ///
+    /// Deliberately **not** `Option<u64>` (review finding B4-07): the
+    /// after-step always overrides the service's own fuel via
+    /// `InstanceOptions::fuel_override`, which treats `None` as "keep
+    /// whatever the caller already had" -- for every *other*
+    /// `fuel_override` use that means "no override", but here it would
+    /// silently fall through to the service's own `default_max_instructions`
+    /// (10 billion by default, ~200x this field's own default), the exact
+    /// opposite of what an operator clearing this field to disable a limit
+    /// would expect. A plain `u64` makes that fallback unreachable.
+    pub abac_max_instructions: u64,
     /// Wall-clock budget for one after-step. Tighter than
     /// `dispatch_epoch_timeout_secs` for the same reason: the after-step
     /// runs on the hot read path, not once per deploy. A starting point, to

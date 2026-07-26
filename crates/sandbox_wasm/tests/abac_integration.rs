@@ -8,7 +8,7 @@
 //! `empty_row_authorizer()`.
 
 use std::{
-    fs,
+    env, fs,
     path::Path,
     sync::{Arc, Weak},
 };
@@ -18,19 +18,24 @@ use syneroym_core::{
     config::SubstrateConfig, local_registry::EndpointRegistry, storage::MockStorage, test_constants,
 };
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
-use syneroym_data_db::{SqliteStorageProvider, StorageProvider, host_store::RecordWriteValue};
+use syneroym_data_db::{
+    SqliteStorageProvider, StorageProvider,
+    host_store::{CollectionSchema, RecordWriteValue},
+};
 use syneroym_data_keystore::KeyStore;
 use syneroym_fdae::{Policy, parse_and_validate};
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
 use syneroym_rpc::{
     Ability, AuthLevel, CallerContext, Capability, ResourceUri, RowAuthorizer, SessionContext,
 };
-use syneroym_sandbox_wasm::{AppSandboxEngine, HostState, MessagingContext, StreamContext};
+use syneroym_sandbox_wasm::{
+    AppSandboxEngine, HostState, MessagingContext, StreamContext, empty_service_proxy,
+};
 use syneroym_wit_interfaces::{
     control_plane::exports::syneroym::control_plane::orchestrator::{
         ArtifactSource, DeployManifest, ServiceConfig, ServiceType, WasmManifest,
     },
-    host::syneroym::data_layer::store::{Host as DataLayerHost, QueryOptions},
+    host::syneroym::data_layer::store::{DataLayerError, Host as DataLayerHost, QueryOptions},
 };
 
 const SERVICE_ID: &str = "abac-test-svc";
@@ -39,6 +44,21 @@ const SERVICE_ID: &str = "abac-test-svc";
 /// reachable via `data-layer/read` and terminating in a bare `caller`
 /// match against `profiles.creator_uuid` (no join needed) -- mirrors
 /// `data_layer_integration.rs`'s `principal_column`-direct shape.
+///
+/// `lookup_targets` is also stage-4-gated, deliberately via an
+/// unconditionally public permission (`paths: []`, no `principal_column`
+/// needed): D-B4-4's recursion bound (`stage4_nested_read_does_not_re_
+/// enter_the_after_step`, review finding B4-03) needs a nested read that
+/// would actually match for *any* caller identity, including the
+/// after-step's own synthetic `LocalReadOnly` one -- a `caller`-scoped
+/// permission like `profiles`' own wouldn't reliably do that, since
+/// `apply_stage4` short-circuits on an empty row set before ever invoking
+/// the after-step a second time. It also carries a `fields.deny` (CLS),
+/// unlike `profiles`, so `stage4_cls_mask_unions_with_the_after_step_redact_
+/// set` (review finding B4-08) has a permission combining both to assert
+/// against, which no existing `profiles` permission does (adding `fields.
+/// deny` there would change what `stage4_redact_removes_the_named_field_
+/// before_the_guest_sees_it` asserts survives the redact).
 fn abac_policy() -> String {
     r#"{
         "version": "fdae/v1",
@@ -50,6 +70,17 @@ fn abac_policy() -> String {
                     "view": {
                         "allows": ["data-layer/read"],
                         "paths": [["caller"]],
+                        "authorize_rows": true
+                    }
+                }
+            },
+            "lookup_targets": {
+                "table": "lookup_targets",
+                "permissions": {
+                    "view": {
+                        "allows": ["data-layer/read"],
+                        "paths": [],
+                        "fields": { "deny": ["classification"] },
                         "authorize_rows": true
                     }
                 }
@@ -174,7 +205,7 @@ fn build_host_state(
         config_generation,
         test_messaging_context(),
         test_streaming_context(),
-        syneroym_sandbox_wasm::empty_service_proxy(),
+        empty_service_proxy(),
         Some(policy),
         false,
         row_authorizer,
@@ -197,6 +228,13 @@ struct Deployed {
 async fn deploy_with_mode(dir: &Path, mode: &str) -> Option<Deployed> {
     let wasm_bytes = fs::read(test_constants::abac_test_wasm_path()).ok()?;
     let (engine, storage_provider, key_store, blob_provider) = make_engine_with_storage(dir).await;
+    // Mirrors the composition root (`runtime.rs`): without this, the
+    // after-step's own throw-away instance gets `empty_row_authorizer()`
+    // (`build_store_and_instantiate` falls back to it when `self_weak` is
+    // unset), so any nested read from inside `authorize_rows` could never
+    // actually re-enter it -- silently defeating any test of D-B4-4's
+    // recursion bound (review finding B4-03).
+    engine.self_weak.set(Arc::downgrade(&engine)).unwrap();
 
     storage_provider.save_fdae_policy(SERVICE_ID, &abac_policy()).await.unwrap();
     let config_generation = storage_provider
@@ -242,8 +280,25 @@ async fn deploy_with_mode(dir: &Path, mode: &str) -> Option<Deployed> {
     Some(Deployed { engine, storage_provider, key_store, blob_provider, policy, config_generation })
 }
 
+/// Skips (or, under `CI`, fails) a test whose fixture artifact wasn't
+/// built. The silent-skip half is the house pattern shared by every
+/// WASM-fixture test in this workspace (`data_layer_integration.rs` and
+/// friends), kept here for local-dev convenience; the `CI` panic is
+/// deliberately narrower than that pattern (review finding B4-10) --
+/// these eight tests *are* Slice B4-fdae's security evidence
+/// (Failure/Security matrix rows 7-9), and CI is known to build this
+/// fixture (`.github/actions/ci-build-and-test/action.yml`), so a silent
+/// skip there would mean a green run stopped proving what it claims to.
 macro_rules! skip_if_missing_artifact {
     ($test_name:expr) => {
+        if env::var_os("CI").is_some() {
+            panic!(
+                "{}: abac-test WASM artifact not found under CI, where it must have been built \
+                 (see .github/actions/ci-build-and-test/action.yml) -- a silent skip here would \
+                 mean this security-evidence test stopped running without the run going red",
+                $test_name
+            );
+        }
         eprintln!(
             "Skipping {}: abac-test WASM artifact not found (run `cargo component build --release \
              --target wasm32-wasip2` in test-components/abac-test)",
@@ -285,6 +340,42 @@ async fn stage4_denies_rows_the_guest_rejects_for_a_real_caller() {
         result.records.is_empty(),
         "the after-step must deny Alice's own 'secret' row even though the sieve admits it: \
          {result:?}"
+    );
+}
+
+/// `store::Host::get`'s stage-4 arm at ingress (i) (review finding B4-09):
+/// every other test in this file drives `query` or `check_access`, leaving
+/// `get`'s own fail-closed shape (`apply_stage4`'s `Err` mapped through
+/// `map_abac_error`, per B4-04) untested end to end against a real guest
+/// export. Same fixture, same seeded row, same `deny_by_field` mode as
+/// `stage4_denies_rows_the_guest_rejects_for_a_real_caller` above -- only
+/// the ingress method differs.
+#[tokio::test]
+async fn stage4_get_denies_rows_the_guest_rejects_for_a_real_caller() {
+    let dir = tempfile::tempdir().unwrap();
+    let Some(d) = deploy_with_mode(dir.path(), "deny_by_field").await else {
+        skip_if_missing_artifact!("stage4_get_denies_rows_the_guest_rejects_for_a_real_caller");
+    };
+
+    let row_authorizer = row_authorizer_for(&d.engine);
+    let mut host = build_host_state(
+        d.key_store,
+        d.storage_provider,
+        d.blob_provider,
+        real_caller("did:key:zAlice"),
+        d.config_generation,
+        d.policy,
+        row_authorizer,
+    );
+
+    let result =
+        DataLayerHost::get(&mut host, "profiles".to_string(), "owned-by-alice".to_string())
+            .await
+            .unwrap();
+    assert!(
+        result.is_none(),
+        "the after-step must deny Alice's own 'secret' row on `get`, even though the sieve admits \
+         it (the row exists and is hers): {result:?}"
     );
 }
 
@@ -351,10 +442,52 @@ async fn stage4_redact_removes_the_named_field_before_the_guest_sees_it() {
     );
 }
 
+/// The CLS-mask ∪ after-step-redact union, at both maskings' actual
+/// sources (review finding B4-08): `lookup_targets`'s `view` permission
+/// carries a policy `fields.deny: ["classification"]` (CLS) *and*
+/// `authorize_rows: true`, and `redact` mode additionally redacts `ssn` at
+/// runtime -- no existing test combined both on one permission, so the
+/// `outcome.masked_fields.iter().cloned().chain(extra)` union at each
+/// ingress site had nothing to exercise past `apply_stage4`'s own,
+/// CLS-free unit tests.
+#[tokio::test]
+async fn stage4_cls_mask_unions_with_the_after_step_redact_set() {
+    let dir = tempfile::tempdir().unwrap();
+    let Some(d) = deploy_with_mode(dir.path(), "redact").await else {
+        skip_if_missing_artifact!("stage4_cls_mask_unions_with_the_after_step_redact_set");
+    };
+
+    let row_authorizer = row_authorizer_for(&d.engine);
+    let mut host = build_host_state(
+        d.key_store,
+        d.storage_provider,
+        d.blob_provider,
+        real_caller("did:key:zAlice"),
+        d.config_generation,
+        d.policy,
+        row_authorizer,
+    );
+
+    let opts = QueryOptions { filter: None, limit: None, cursor: None };
+    let result = DataLayerHost::query(&mut host, "lookup_targets".to_string(), opts).await.unwrap();
+    assert_eq!(result.records.len(), 2, "both seeded rows are redacted, not denied: {result:?}");
+    for record in &result.records {
+        let payload: serde_json::Value = serde_json::from_slice(&record.payload).unwrap();
+        assert!(payload.get("classification").is_none(), "CLS-masked field leaked: {payload:?}");
+        assert!(payload.get("ssn").is_none(), "after-step-redacted field leaked: {payload:?}");
+        assert!(
+            payload.get("note").is_some(),
+            "a field named by neither mask must survive the union: {payload:?}"
+        );
+    }
+}
+
 /// Row 8: the `spin` mode's unbounded loop exceeds the after-step's
 /// fuel/epoch budget -- `apply_stage4` maps that to a fail-closed `Err`,
-/// which the ingress maps to an empty page, never a partial or unfiltered
-/// one.
+/// which the ingress maps to a distinguishable `QuotaExceeded` error (B4-04):
+/// resource pressure that stopped the after-step from running at all is not
+/// the same claim as "it ran and denied every row", so it is not a silent
+/// empty-but-successful page either.
 #[tokio::test]
 async fn stage4_fuel_exhaustion_denies_the_whole_batch() {
     let dir = tempfile::tempdir().unwrap();
@@ -374,8 +507,11 @@ async fn stage4_fuel_exhaustion_denies_the_whole_batch() {
     );
 
     let opts = QueryOptions { filter: None, limit: None, cursor: None };
-    let result = DataLayerHost::query(&mut host, "profiles".to_string(), opts).await.unwrap();
-    assert!(result.records.is_empty(), "a budget-exceeded after-step must deny closed: {result:?}");
+    let err = DataLayerHost::query(&mut host, "profiles".to_string(), opts).await.unwrap_err();
+    assert!(
+        matches!(err, DataLayerError::QuotaExceeded),
+        "a budget-exceeded after-step must deny closed with a distinguishable error: {err:?}"
+    );
 }
 
 /// Read-only enforcement (D-B4-2): the after-step instance's own write
@@ -415,9 +551,14 @@ async fn stage4_instance_cannot_write() {
 /// service's own `lookup_targets` collection (seeded by `init()`)
 /// unfiltered -- no `QueryAuth` reaches a `LocalReadOnly` caller
 /// (`resolve_query_auth`'s exemption) -- to decide every row in the batch.
-/// A successful, non-hanging completion also demonstrates D-B4-4's
-/// structural recursion bound: if the exemption didn't hold, this nested
-/// read would itself carry a sieve and re-enter `authorize_rows`.
+/// The recursion-bound half of this claim (review finding B4-03: the same
+/// exemption is what *stops* this nested read from re-entering
+/// `authorize_rows`) has its own dedicated test,
+/// `stage4_nested_read_does_not_re_enter_the_after_step`, below -- this one
+/// only needs a single-row `get` to exist, which `lookup_targets` having no
+/// reachable sieve at all (pre-B4-03-fix) or a public one (post-fix) would
+/// satisfy identically, so it can't by itself prove termination would fail
+/// under a narrowed exemption.
 #[tokio::test]
 async fn stage4_lookup_sees_its_own_service_data() {
     let dir = tempfile::tempdir().unwrap();
@@ -446,6 +587,54 @@ async fn stage4_lookup_sees_its_own_service_data() {
     );
 }
 
+/// D-B4-4's recursion bound (review finding B4-03): `lookup_targets`'s
+/// `view` permission is stage-4-gated *and* unconditionally public, so it
+/// matches for *any* caller identity -- including the after-step's own
+/// synthetic `LocalReadOnly` one -- guaranteeing the nested `query` inside
+/// `nested_query_recurses_if_unexempted` mode is non-empty and would
+/// therefore actually re-enter `authorize_rows` (recursing without bound,
+/// since every entry runs the identical logic) if `resolve_query_auth`'s
+/// `LocalReadOnly` exemption were ever narrowed. Unlike
+/// `stage4_lookup_sees_its_own_service_data` above, an empty-rows
+/// short-circuit inside `apply_stage4` can't silently make this pass for
+/// the wrong reason: `profiles`' own `caller`-scoped permission would never
+/// match the after-step's synthetic identity, so a nested read against
+/// *that* collection would return zero rows and never actually attempt
+/// re-entry either way -- exactly why this needs its own definition
+/// (`abac_policy`'s doc comment) rather than reusing `profiles`.
+///
+/// A fast, correctly-decided completion is the proof the bound holds
+/// today; a real regression here surfaces as a `QuotaExceeded`/timeout
+/// error from the outer `query` (bounded by `abac_instance_permits` +
+/// `FDAE_ABAC_TIMEOUT`, review finding B4-01), not an unbounded hang.
+#[tokio::test]
+async fn stage4_nested_read_does_not_re_enter_the_after_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let Some(d) = deploy_with_mode(dir.path(), "nested_query_recurses_if_unexempted").await else {
+        skip_if_missing_artifact!("stage4_nested_read_does_not_re_enter_the_after_step");
+    };
+
+    let row_authorizer = row_authorizer_for(&d.engine);
+    let mut host = build_host_state(
+        d.key_store,
+        d.storage_provider,
+        d.blob_provider,
+        real_caller("did:key:zAlice"),
+        d.config_generation,
+        d.policy,
+        row_authorizer,
+    );
+
+    let opts = QueryOptions { filter: None, limit: None, cursor: None };
+    let result = DataLayerHost::query(&mut host, "profiles".to_string(), opts).await.unwrap();
+    assert_eq!(
+        result.records.len(),
+        1,
+        "the after-step's nested `lookup_targets` query saw both seeded rows unfiltered and \
+         allowed alice's own `profiles` row accordingly, without hanging or erroring: {result:?}"
+    );
+}
+
 /// Row 7's structural guard: `bad_arity` mode returns one fewer decision
 /// than rows, which `apply_stage4` must treat as a whole-batch deny.
 #[tokio::test]
@@ -467,8 +656,11 @@ async fn stage4_bad_arity_denies_the_whole_batch() {
     );
 
     let opts = QueryOptions { filter: None, limit: None, cursor: None };
-    let result = DataLayerHost::query(&mut host, "profiles".to_string(), opts).await.unwrap();
-    assert!(result.records.is_empty(), "an arity-mismatched decision list must deny closed");
+    let err = DataLayerHost::query(&mut host, "profiles".to_string(), opts).await.unwrap_err();
+    assert!(
+        matches!(err, DataLayerError::Internal(_)),
+        "an arity-mismatched decision list must deny closed with a distinguishable error: {err:?}"
+    );
 }
 
 /// `check_access` (Mode A) takes the same stage-4 substitution D-B4-3(b)
@@ -504,5 +696,117 @@ async fn stage4_check_access_runs_the_after_step_too() {
         !allowed,
         "check_access must run the after-step too, denying Alice's own 'secret' row exactly like \
          `query` does"
+    );
+}
+
+/// The runtime missing-export deny path (review finding B4-11). The
+/// deploy-time gate (`orchestration.rs`'s `validate_stage4_export`) has its
+/// own tests in `control_plane::service::orchestration`, but this file --
+/// like every other low-level `sandbox_wasm` integration test -- deploys
+/// straight through `AppSandboxEngine::deploy_wasm`, which performs no such
+/// validation (deliberately: it's a `control_plane`-layer concern). That
+/// left `AbacError::MissingExport` -- the last line of defence for a
+/// persisted policy whose component was redeployed some other way, or
+/// simply never re-validated -- untested at the engine level: every other
+/// test in this file deploys `abac-test`, which always has the export. This
+/// one deploys the `greeter` fixture (exports only `greet`, no
+/// `authorize-rows`) under a stage-4-opted policy, seeding its data
+/// directly at the storage level since `store::Host` is host-native and
+/// doesn't care what the guest itself implements.
+#[tokio::test]
+async fn stage4_missing_export_under_an_opted_in_policy_denies_closed() {
+    const GREETER_SERVICE_ID: &str = "greeter-abac-svc";
+    let dir = tempfile::tempdir().unwrap();
+    let Ok(greeter_bytes) = fs::read(test_constants::greeter_wasm_path()) else {
+        skip_if_missing_artifact!("stage4_missing_export_under_an_opted_in_policy_denies_closed");
+    };
+    let (engine, storage_provider, key_store, blob_provider) =
+        make_engine_with_storage(dir.path()).await;
+    engine.self_weak.set(Arc::downgrade(&engine)).unwrap();
+
+    let policy_json = r#"{
+        "version": "fdae/v1",
+        "definitions": {
+            "widgets": {
+                "table": "widgets",
+                "permissions": {
+                    "view": {
+                        "allows": ["data-layer/read"],
+                        "paths": [],
+                        "authorize_rows": true
+                    }
+                }
+            }
+        }
+    }"#;
+    storage_provider.save_fdae_policy(GREETER_SERVICE_ID, policy_json).await.unwrap();
+    let config_generation =
+        storage_provider.save_config_generation(GREETER_SERVICE_ID, "{}").await.unwrap();
+
+    let manifest = wasm_deploy_manifest(greeter_bytes);
+    engine.deploy_wasm(GREETER_SERVICE_ID, &manifest).await.unwrap();
+
+    let store = storage_provider.open_service_db(GREETER_SERVICE_ID, &key_store).await.unwrap();
+    store
+        .create_collection(&CollectionSchema { name: "widgets".to_string(), indexes: vec![] })
+        .await
+        .unwrap();
+    store
+        .put(
+            "widgets",
+            &RecordWriteValue { id: "w1".to_string(), payload: b"{}".to_vec() },
+            GREETER_SERVICE_ID,
+        )
+        .await
+        .unwrap();
+    drop(store);
+
+    let policy = Arc::new(parse_and_validate(policy_json).unwrap());
+    let row_authorizer = row_authorizer_for(&engine);
+    // Not `real_caller`: its capability is scoped to `SERVICE_ID`
+    // ("abac-test-svc"), the constant every other test in this file
+    // deploys against -- here the resource is `GREETER_SERVICE_ID`, so the
+    // capability must name that instead, or `data-layer/read` is never
+    // held on this resource and the permission is never applicable at all
+    // (a `deny_all()` sieve with empty `abac_permissions`, which would
+    // reach `Ok(empty)` without the after-step ever running -- silently
+    // proving nothing about `MissingExport`).
+    let caller = CallerContext {
+        caller_did: "did:key:zAlice".to_string(),
+        app_instance: None,
+        session: SessionContext {
+            subject_did: "did:key:zAlice".to_string(),
+            capabilities: vec![Capability {
+                with: ResourceUri::service(GREETER_SERVICE_ID, GREETER_SERVICE_ID),
+                can: Ability(Ability::DATA_LAYER_READ.to_string()),
+                caveats: None,
+            }],
+            ..Default::default()
+        },
+        auth: AuthLevel::Ucan,
+        proof: None,
+    };
+    let mut host = HostState::new(
+        GREETER_SERVICE_ID.to_string(),
+        None,
+        key_store,
+        storage_provider,
+        blob_provider,
+        caller,
+        config_generation,
+        test_messaging_context(),
+        test_streaming_context(),
+        empty_service_proxy(),
+        Some(policy),
+        false,
+        row_authorizer,
+    );
+
+    let opts = QueryOptions { filter: None, limit: None, cursor: None };
+    let err = DataLayerHost::query(&mut host, "widgets".to_string(), opts).await.unwrap_err();
+    assert!(
+        matches!(err, DataLayerError::Internal(_)),
+        "a stage-4-opted policy against a component with no `authorize-rows` export must deny \
+         closed with a distinguishable error, not silently pass rows through: {err:?}"
     );
 }

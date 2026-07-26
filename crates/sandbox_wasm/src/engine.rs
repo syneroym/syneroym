@@ -172,6 +172,25 @@ pub struct AppSandboxEngine {
     /// `STREAM_INSTANCE_POOL_HEADROOM` pool slots always available for
     /// ordinary calls, instead of letting streams silently starve them.
     stream_instance_permits: Arc<Semaphore>,
+    /// Pool slots the stage-4 ABAC after-step (`authorize_rows`) may hold
+    /// concurrently, out of `max_concurrent_instances` (review finding
+    /// B4-01). A stage-4-active read holds *two* instances at once for the
+    /// after-step's duration: its own live dispatch instance (uncounted
+    /// here -- it isn't gated by any semaphore today) plus this throw-away
+    /// one, which nothing budgeted for before this fix. With no cap, a
+    /// handful of concurrent stage-4 reads could exhaust the whole
+    /// wasmtime pool -- a hard `PoolConcurrencyLimitError` at instantiation,
+    /// not a wait -- which every caller (`AbacError::Unavailable`) then
+    /// mapped to an empty-but-successful page, indistinguishable from
+    /// "nothing matched". Acquiring a permit here turns that into bounded
+    /// queuing instead: a caller waiting past `FDAE_ABAC_TIMEOUT` surfaces
+    /// as `AbacError::BudgetExceeded`, which ingress code now maps to a
+    /// distinguishable resource-exhausted error (B4-04), never to
+    /// "authorized, zero rows". Sized conservatively (a third of the pool)
+    /// so this alone can never be the sole cause of exhausting the rest of
+    /// the pool; raise `max_concurrent_instances` to raise stage-4
+    /// throughput.
+    abac_instance_permits: Arc<Semaphore>,
     /// Epoch-tick budget for an ordinary dispatch call (RPC/proxy
     /// invocation, message delivery, one streaming chunk) -- see
     /// `AppSandboxRole::dispatch_epoch_timeout_secs`.
@@ -184,7 +203,7 @@ pub struct AppSandboxEngine {
     abac_epoch_ticks: u64,
     /// Fuel ceiling for one stage-4 ABAC after-step invocation -- see
     /// `AppSandboxRole::abac_max_instructions`.
-    abac_max_instructions: Option<u64>,
+    abac_max_instructions: u64,
 }
 
 /// Per-instantiation differences from an ordinary dispatch call. Bundled
@@ -297,9 +316,10 @@ impl AppSandboxEngine {
             if let Some(sandbox_config) = &config.roles.app_sandbox {
                 (sandbox_config.abac_epoch_timeout_secs, sandbox_config.abac_max_instructions)
             } else {
-                (2, Some(50_000_000))
+                (2, 50_000_000)
             };
         let abac_epoch_ticks = ticks_for_secs(abac_timeout_secs);
+        let abac_instance_budget = (max_instances / 3).max(1);
 
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
 
@@ -341,6 +361,7 @@ impl AppSandboxEngine {
             stream_registry: StreamRegistry::new(),
             max_concurrent_streams_per_service,
             stream_instance_permits: Arc::new(Semaphore::new(stream_instance_budget as usize)),
+            abac_instance_permits: Arc::new(Semaphore::new(abac_instance_budget as usize)),
             dispatch_epoch_ticks,
             lifecycle_hook_epoch_ticks,
             abac_epoch_ticks,
@@ -1463,6 +1484,26 @@ impl AppSandboxEngine {
     }
 }
 
+/// Ceiling on how much of a guest-controlled string (a returned `err`
+/// payload, or the debug rendering of an unrecognized `Val`) is kept once it
+/// becomes an `AbacError` detail (review finding B4-06). Every `AbacError`
+/// eventually reaches `AbacTrace::emit`'s `info!` line unbounded, so without
+/// this a guest returning a multi-megabyte error string -- or a decision
+/// list carrying row-derived data in a malformed shape -- writes it to the
+/// log in full on every read that hits it.
+const ABAC_ERROR_DETAIL_MAX_LEN: usize = 500;
+
+fn truncate_detail(s: String) -> String {
+    if s.len() <= ABAC_ERROR_DETAIL_MAX_LEN {
+        return s;
+    }
+    let mut cut = ABAC_ERROR_DETAIL_MAX_LEN;
+    while !s.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!("{}... ({} bytes total, truncated)", &s[..cut], s.len())
+}
+
 #[async_trait::async_trait]
 impl RowAuthorizer for AppSandboxEngine {
     /// Invokes `service_id`'s guest-exported `authorize-rows` (ADR-0017 §7)
@@ -1474,6 +1515,13 @@ impl RowAuthorizer for AppSandboxEngine {
     /// `deliver_message`: a retried after-step would double the worst-case
     /// latency of a hot-path read, and every failure mode below is already
     /// deny-closed.
+    ///
+    /// Records `substrate.fdae.abac_ms` on *every* exit path, labelled by
+    /// outcome (review finding B4-13): the un-refactored version only
+    /// recorded it after a successful `func.call_async`, so instantiation
+    /// failure (B4-01's pool-exhaustion symptom) and a missing export both
+    /// skipped it entirely, undercounting exactly the two failure modes an
+    /// operator most needs visibility into.
     async fn authorize_rows(
         &self,
         service_id: &str,
@@ -1481,12 +1529,43 @@ impl RowAuthorizer for AppSandboxEngine {
         rows: &[CandidateRow],
     ) -> Result<Vec<RowDecision>, AbacError> {
         let exec_start = Instant::now();
+        let result = self.authorize_rows_inner(service_id, ctx, rows).await;
+        let outcome = if result.is_ok() { "ok" } else { "error" };
+        metrics::histogram!("substrate.fdae.abac_ms", "outcome" => outcome)
+            .record(exec_start.elapsed().as_secs_f64() * 1000.0);
+        result
+    }
+}
+
+impl AppSandboxEngine {
+    async fn authorize_rows_inner(
+        &self,
+        service_id: &str,
+        ctx: &AbacAuthContext,
+        rows: &[CandidateRow],
+    ) -> Result<Vec<RowDecision>, AbacError> {
+        // Bounds concurrent after-step instantiation (review finding
+        // B4-01) -- see `abac_instance_permits`'s doc comment. Acquired
+        // before instantiating, inside `apply_stage4`'s own
+        // `FDAE_ABAC_TIMEOUT` wrapper, so a long queue wait surfaces as the
+        // same `AbacError::BudgetExceeded` a fuel/epoch overrun would,
+        // rather than hanging indefinitely or racing wasmtime's pool
+        // directly.
+        let _permit = self
+            .abac_instance_permits
+            .acquire()
+            .await
+            .map_err(|_| AbacError::Unavailable(service_id.to_string()))?;
+
         let (mut store, instance, _max_instructions) = self
             .build_store_and_instantiate(
                 service_id,
                 CallerContext::service_abac(service_id),
                 self.abac_epoch_ticks,
-                InstanceOptions { fuel_override: self.abac_max_instructions, read_only: true },
+                InstanceOptions {
+                    fuel_override: Some(self.abac_max_instructions),
+                    read_only: true,
+                },
             )
             .await
             .map_err(|_| AbacError::Unavailable(service_id.to_string()))?;
@@ -1535,8 +1614,6 @@ impl RowAuthorizer for AppSandboxEngine {
 
         let mut results = vec![Val::Bool(false); results_len];
         let call_result = func.call_async(&mut store, &[ctx_val, rows_val], &mut results).await;
-        metrics::histogram!("substrate.fdae.abac_ms")
-            .record(exec_start.elapsed().as_secs_f64() * 1000.0);
 
         let service = service_id.to_string();
         if let Err(e) = call_result {
@@ -1549,7 +1626,7 @@ impl RowAuthorizer for AppSandboxEngine {
                     detail: "exceeded its fuel budget".to_string(),
                 });
             }
-            let err_str = e.root_cause().to_string();
+            let err_str = truncate_detail(e.root_cause().to_string());
             if err_str.contains("all fuel consumed") || err_str.contains("out of fuel") {
                 return Err(AbacError::BudgetExceeded { service, detail: err_str });
             }
@@ -1568,23 +1645,28 @@ impl RowAuthorizer for AppSandboxEngine {
         let decisions_val = match result_val {
             Val::Result(Ok(Some(boxed))) => boxed.as_ref(),
             Val::Result(Err(payload)) => {
+                // Guest-controlled (an explicit `Err(string)`, or the debug
+                // rendering of an unrecognized `Val`) -- truncated before it
+                // becomes an `AbacError` so it can't carry an unbounded or
+                // row-derived string into `AbacTrace`'s `info!` line
+                // (review finding B4-06).
                 let msg = match payload.as_deref() {
-                    Some(Val::String(s)) => s.clone(),
-                    Some(other) => format!("{other:?}"),
+                    Some(Val::String(s)) => truncate_detail(s.clone()),
+                    Some(other) => truncate_detail(format!("{other:?}")),
                     None => "guest declined the request".to_string(),
                 };
                 return Err(AbacError::Trap { service, detail: msg });
             }
             other => {
-                return Err(AbacError::Malformed(format!(
+                return Err(AbacError::Malformed(truncate_detail(format!(
                     "expected result<list<row-decision>, string>, got {other:?}"
-                )));
+                ))));
             }
         };
         let Val::List(items) = decisions_val else {
-            return Err(AbacError::Malformed(format!(
+            return Err(AbacError::Malformed(truncate_detail(format!(
                 "expected list<row-decision>, got {decisions_val:?}"
-            )));
+            ))));
         };
 
         let mut decisions = Vec::with_capacity(items.len());
@@ -1598,25 +1680,25 @@ impl RowAuthorizer for AppSandboxEngine {
                 }
                 Val::Variant(tag, Some(boxed)) if tag == "redact" => {
                     let Val::List(fields) = boxed.as_ref() else {
-                        return Err(AbacError::Malformed(format!(
+                        return Err(AbacError::Malformed(truncate_detail(format!(
                             "redact payload must be list<string>, got {boxed:?}"
-                        )));
+                        ))));
                     };
                     let mut names = Vec::with_capacity(fields.len());
                     for field in fields {
                         let Val::String(s) = field else {
-                            return Err(AbacError::Malformed(format!(
+                            return Err(AbacError::Malformed(truncate_detail(format!(
                                 "redact field must be string, got {field:?}"
-                            )));
+                            ))));
                         };
                         names.push(s.clone());
                     }
                     RowDecision::Redact(names)
                 }
                 other => {
-                    return Err(AbacError::Malformed(format!(
+                    return Err(AbacError::Malformed(truncate_detail(format!(
                         "unrecognized row-decision: {other:?}"
-                    )));
+                    ))));
                 }
             };
             decisions.push(decision);
@@ -2197,10 +2279,11 @@ mod tests {
             stream_registry: StreamRegistry::new(),
             max_concurrent_streams_per_service: 8,
             stream_instance_permits: Arc::new(Semaphore::new(8)),
+            abac_instance_permits: Arc::new(Semaphore::new(3)),
             dispatch_epoch_ticks: ticks_for_secs(5),
             lifecycle_hook_epoch_ticks: ticks_for_secs(30),
             abac_epoch_ticks: ticks_for_secs(2),
-            abac_max_instructions: Some(50_000_000),
+            abac_max_instructions: 50_000_000,
         };
 
         // Cache the test component
@@ -2262,10 +2345,11 @@ mod tests {
             stream_registry: StreamRegistry::new(),
             max_concurrent_streams_per_service: 8,
             stream_instance_permits: Arc::new(Semaphore::new(8)),
+            abac_instance_permits: Arc::new(Semaphore::new(3)),
             dispatch_epoch_ticks: ticks_for_secs(5),
             lifecycle_hook_epoch_ticks: ticks_for_secs(30),
             abac_epoch_ticks: ticks_for_secs(2),
-            abac_max_instructions: Some(50_000_000),
+            abac_max_instructions: 50_000_000,
         }
     }
 

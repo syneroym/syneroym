@@ -16,6 +16,14 @@
 //! per-call floor. The 1/10/100/1000-row benchmarks show how much (or how
 //! little) scales on top of it, mirroring Slice B3 Phase 5's own finding
 //! that per-call setup dominates over row-count-proportional work.
+//!
+//! Review finding B4-02/B4-15: the row-count sweep above uses a fixed
+//! ~28-byte payload per row, which is the *marshalling cost*'s binding
+//! variable (`Val::List(payload.iter().map(Val::U8)...)` expands every
+//! payload byte into its own ~40-byte `wasmtime::component::Val`), not row
+//! count. `abac_after_step_100_rows_at_*kb` holds row count fixed at 100
+//! and sweeps payload size instead, so the headline row-count numbers
+//! above aren't read as bounding realistic (kilobyte-scale) records too.
 
 use std::{fs, sync::Arc};
 
@@ -37,9 +45,13 @@ use tokio::runtime::Builder;
 const SERVICE_ID: &str = "abac-bench-svc";
 
 fn candidate_row(i: usize) -> CandidateRow {
+    candidate_row_with_payload_size(i, br#"{"classification": "public"}"#.len())
+}
+
+fn candidate_row_with_payload_size(i: usize, payload_bytes: usize) -> CandidateRow {
     CandidateRow {
         id: format!("row-{i}"),
-        payload: br#"{"classification": "public"}"#.to_vec(),
+        payload: vec![b'x'; payload_bytes],
         creator_id: "did:key:zBenchCreator".to_string(),
         created_at: 0,
         updated_at: 0,
@@ -122,6 +134,19 @@ fn bench_stage4_after_step(c: &mut Criterion) {
     for batch_size in [0usize, 1, 10, 100, 1000] {
         let rows: Vec<CandidateRow> = (0..batch_size).map(candidate_row).collect();
         c.bench_function(&format!("abac_after_step_{batch_size}_rows"), |b| {
+            b.to_async(&runtime).iter(|| async {
+                engine.authorize_rows(SERVICE_ID, black_box(&ctx), black_box(&rows)).await.unwrap();
+            });
+        });
+    }
+
+    // Payload-size axis (review finding B4-02/B4-15): row count fixed at
+    // 100, payload size swept instead, since B4-02 identified payload
+    // bytes -- not row count -- as the actual marshalling-cost driver.
+    for payload_kb in [1usize, 16] {
+        let rows: Vec<CandidateRow> =
+            (0..100).map(|i| candidate_row_with_payload_size(i, payload_kb * 1024)).collect();
+        c.bench_function(&format!("abac_after_step_100_rows_at_{payload_kb}kb"), |b| {
             b.to_async(&runtime).iter(|| async {
                 engine.authorize_rows(SERVICE_ID, black_box(&ctx), black_box(&rows)).await.unwrap();
             });

@@ -11,8 +11,14 @@ interface authorizer {
         /// (ADR-0017 §7), so without this the guest cannot tell what it is
         /// being asked about.
         collection: string,
-        /// The opted-in permissions that selected this row set, so a guest
-        /// can apply different logic per rule. Same reason as `collection`.
+        /// Every applicable permission on this read that opted into the
+        /// after-step, batch-scoped -- not the one permission that admitted
+        /// any particular row. A definition's applicable permissions OR into
+        /// one compiled predicate, so if any of them opts in, every row the
+        /// combined predicate admits is judged here, including rows a
+        /// sibling permission that left this opt-in `false` alone would
+        /// have admitted; there is no per-row attribution back to a single
+        /// rule.
         permissions: list<string>,
         subject-did: string,
         anchor-did: option<string>,

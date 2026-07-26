@@ -845,6 +845,117 @@ ADR-0017 amended (2026-07-25) for §7's WIT shape (`result<..., string>`,
 instantiation from the entry point's own quota, not covered by it) —
 see the ADR's Amendments section. Full evidence: `status.md`.
 
+**Post-review hardening (2026-07-26).** An independent review of commit
+`70f00c9` (re-running the full verification ledger rather than trusting
+`status.md`) surfaced fifteen findings — three high, six medium, six low.
+All fifteen were checked against the code; every one confirmed and fixed,
+none pushed back on (two — B4-05, B4-10 — were fixed more narrowly than the
+review's fuller suggested remediation, each recorded as its own
+deferred-backlog row rather than silently scoped down).
+
+- **B4-01 (high, confirmed, fixed).** The after-step's throw-away instance
+  took a second wasmtime pooling-allocator slot nothing budgeted for
+  (`stream_instance_permits` only reserves headroom against streams);
+  ~5 concurrent stage-4 reads on a default 10-instance pool could exhaust
+  it, and the resulting instantiation failure surfaced as an empty,
+  successful page, indistinguishable from "nothing matched." Fixed with a
+  dedicated `abac_instance_permits` semaphore gating concurrent after-step
+  instantiation (`engine.rs`), plus the B4-04 fix below so exhaustion
+  surfaces as `QuotaExceeded`, never a silent empty page.
+- **B4-02 (high, confirmed, fixed).** Row payloads lower into
+  `Val::List(Val::U8...)` one byte at a time (~40 bytes of host memory per
+  payload byte — inherent to wasmtime's dynamic `Val` API, not a bug in
+  this slice's own code), and `MAX_ABAC_ROWS` bounds row count, not bytes.
+  Fixed with a new `MAX_ABAC_PAYLOAD_BYTES` (16 MiB/batch) cap in
+  `apply_stage4`, denying closed above it. Bench numbers below (B4-15)
+  confirm the scaling this bounds.
+- **B4-03 (high, confirmed, fixed).** D-B4-4's recursion bound had no
+  regression test, and `stage4_lookup_sees_its_own_service_data` — credited
+  with covering it — couldn't: its nested read targeted a collection with
+  no policy (nothing to filter regardless of the exemption), and the test's
+  engine never set `self_weak`, so the after-step's own `row_authorizer`
+  was `empty_row_authorizer()` and couldn't have re-entered even if a
+  sieve had appeared. Fixed: `lookup_targets` now carries its own
+  stage-4-gated, unconditionally public permission (so a nested read
+  matches for *any* caller identity, including the after-step's synthetic
+  one) and `deploy_with_mode` wires `self_weak`; new dedicated test
+  `stage4_nested_read_does_not_re_enter_the_after_step`.
+- **B4-04 (medium, confirmed, fixed).** Both ingresses cleared
+  `next_cursor` on an after-step error and returned an empty, successful
+  page — and the comment justifying it said the opposite of what the code
+  does (`next_cursor: None` *is* "no more pages"). Fixed: `query`/`get` at
+  both ingresses now return a distinguishable `DataLayerError`
+  (`QuotaExceeded` for resource pressure, `Internal` for the guest's own
+  after-step misbehaving) instead of a silent empty page, matching the
+  precedent `data_db`'s own watchdog-timeout path already sets
+  (`QuotaExceeded`, not a silent empty result). `check_access` is
+  unchanged — its WIT doc comment already commits to never returning an
+  error.
+- **B4-05 (medium, confirmed, fixed narrower than suggested).** The
+  opt-in's effect is call-scoped (every applicable permission's clause ORs
+  together), not row-scoped, so a row admitted solely by a permission that
+  left `authorize_rows: false` is still judged whenever *any* sibling
+  permission opts in. Documented explicitly on `Permission.authorize_rows`
+  and the WIT `auth-context.permissions` field rather than implementing
+  per-row permission attribution (needs the same OR-branch provenance
+  D-04-02-g's caveat-union problem already needs); see the deferred-backlog
+  row.
+- **B4-06 (medium, confirmed, fixed).** Guest-controlled strings (an
+  explicit `Err(string)`, or the debug rendering of a malformed decision)
+  reached `info!` unbounded via `AbacTrace::emit`. Fixed: `truncate_detail`
+  caps every guest-derived `AbacError` detail at 500 bytes before it's
+  constructed.
+- **B4-07 (medium, confirmed, fixed).** `abac_max_instructions: None` read
+  as "inherit the service's own fuel" (10 billion by default), not
+  "unlimited" or "use the ABAC default" — a ~200x-larger budget than an
+  operator clearing the field would expect. Fixed: the field is now a plain
+  `u64` (default `50_000_000`), removing the ambiguous state entirely.
+- **B4-08 (medium, confirmed, fixed).** The CLS-mask ∪ after-step-redact
+  union had no test combining both on one permission. Fixed:
+  `lookup_targets` now carries a `fields.deny` alongside `authorize_rows`;
+  new test `stage4_cls_mask_unions_with_the_after_step_redact_set`.
+- **B4-09 (medium, confirmed, fixed).** `store::Host::get`'s stage-4 arm
+  had no test at ingress (i) — every existing test drove `query` or
+  `check_access`. New test
+  `stage4_get_denies_rows_the_guest_rejects_for_a_real_caller`.
+- **B4-10 (low, confirmed, fixed narrower than suggested).** Every
+  `abac_integration.rs` test no-ops silently when the fixture WASM is
+  missing, the house pattern this workspace uses everywhere — but for the
+  tests that are this slice's own security evidence, a silent skip means
+  green stops meaning covered. Fixed *in this file only* (`skip_if_missing_
+  artifact!` now panics under `CI`); the same gap in the workspace's other
+  WASM-fixture test files was left as-is and recorded in the
+  deferred-backlog instead of changed repo-wide in the same pass.
+- **B4-11 (low, confirmed, fixed).** The runtime missing-export deny path
+  (`AbacError::MissingExport`, the last line of defence once a persisted
+  policy's component is redeployed some other way) had no test — only the
+  deploy-time gate did. New test
+  `stage4_missing_export_under_an_opted_in_policy_denies_closed`, deploying
+  the `greeter` fixture (no `authorize-rows` export) under a stage-4-opted
+  policy straight through `AppSandboxEngine::deploy_wasm` (which performs
+  no such validation itself).
+- **B4-12 (low, confirmed, fixed).** The WIT `query` doc comment never got
+  D-B4-5's pagination-shortening caveat, though `traits.rs` did and the
+  backlog said both were done. Fixed: caveat added to the WIT file
+  (`data-layer.wit`); no backlog correction needed since the row already
+  correctly named only `traits.rs`.
+- **B4-13 (low, confirmed, fixed).** `substrate.fdae.abac_ms` was recorded
+  only after a successful `func.call_async`, undercounting instantiation
+  failure and missing-export exit paths — exactly the two failure modes an
+  operator most needs to see. Fixed: `authorize_rows` now wraps an inner
+  `authorize_rows_inner` and records the histogram (labelled by outcome) on
+  every exit path.
+- **B4-14 (low, confirmed, fixed).** `signed_url` was the one
+  outward-facing host function `read_only` didn't gate — every other
+  mutating/egress path is hard-denied, but a signed URL mints a
+  time-limited, externally redeemable URL that outlives the throw-away
+  instance. Fixed: gated under `read_only` like its siblings.
+- **B4-15 (low, confirmed, fixed).** The bench measured only ~28-byte
+  payloads, and `PERF_SUMMARY.md` was never updated despite the plan asking
+  for it. Fixed: a payload-size axis added to `abac_bench.rs` (100 rows at
+  1 KB/16 KB), both recorded in `PERF_SUMMARY.md` and this Performance
+  Budgets table above.
+
 #### Slice B5-fdae: Write-Side Tier 3 (Mode-A Write Authorization)
 **Depends on:** B2 (the `check_access` Mode-A primitive) **and D-04-02-f**
 (creation authorization). **Requirement:** `[FND-IAM]`.
@@ -943,7 +1054,7 @@ renumbered.
 |---|---|---|
 | FDAE pushdown query (100 records, single-hop ReBAC) | < 25 ms p99 (vs. M3A's unauthenticated 20 ms — +5 ms for policy compilation) | `criterion` integration bench |
 | Federated FDAE fetch (one cross-service hop) | < 50 ms p99 (network-bound; a floor, not a hard SLA) | Integration test, two local nodes |
-| Stage-4 ABAC over a candidate batch | Document measured; must not dominate Mode-B query latency | ✅ `criterion` micro-bench (`crates/sandbox_wasm/benches/abac_bench.rs`), 2026-07-25: instantiation floor (0 rows) 34.9 µs; 1 row 36.1 µs; 10 rows 46.0 µs; 100 rows 137.1 µs; 1000 rows (`MAX_ABAC_ROWS`) 1.048 ms — negligible against the 25 ms p99 Mode-B budget above (0.5% at 100 rows) and confirming the instantiation floor, not row count, dominates at realistic page sizes, matching Slice B3 Phase 5's own finding for the federated fetch. Opt-in per permission (`authorize_rows: true`); the cost above is the price of opting in, paid only by reads through that permission. |
+| Stage-4 ABAC over a candidate batch | Document measured; must not dominate Mode-B query latency | ✅ `criterion` micro-bench (`crates/sandbox_wasm/benches/abac_bench.rs`), row-count sweep at a fixed ~28-byte payload (2026-07-25): instantiation floor (0 rows) 34.9 µs; 1 row 36.1 µs; 10 rows 46.0 µs; 100 rows 137.1 µs; 1000 rows (`MAX_ABAC_ROWS`) 1.048 ms — negligible against the 25 ms p99 Mode-B budget above (0.5% at 100 rows) and confirming the instantiation floor, not row count, dominates at realistic page sizes, matching Slice B3 Phase 5's own finding for the federated fetch. **Payload-size sweep added post-review (2026-07-26, review finding B4-02/B4-15)**, 100 rows fixed: ~28 B/row 142.2 µs, 1 KB/row 1.494 ms, 16 KB/row 22.14 ms — payload bytes, not row count, are the real cost driver (`Val::List(payload.iter().map(Val::U8)...)` expands every byte into its own `wasmtime::component::Val`), motivating the new `MAX_ABAC_PAYLOAD_BYTES` batch cap (16 MiB) alongside `MAX_ABAC_ROWS`. Full numbers: `PERF_SUMMARY.md`. Opt-in per permission (`authorize_rows: true`); the cost above is the price of opting in, paid only by reads through that permission. |
 
 ---
 

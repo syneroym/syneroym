@@ -47,9 +47,30 @@ impl Guest for AbacTestComponent {
             indexes: vec![],
         })
         .map_err(|e| format!("{e:?}"))?;
+        // Non-empty payloads (`classification`/`ssn`/`note`) so the same two
+        // rows also serve `stage4_cls_mask_unions_with_the_after_step_
+        // redact_set` (review finding B4-08): `classification` is
+        // CLS-masked by `lookup_targets`'s own policy permission, `ssn` is
+        // redacted by the `authorize-rows` after-step in `redact` mode, and
+        // `note` must survive both to prove the union subtracts, never
+        // adds.
+        let lookup_row_payload = serde_json::json!({
+            "classification": "secret",
+            "ssn": "999-99-9999",
+            "note": "public-lookup-row"
+        })
+        .to_string()
+        .into_bytes();
         store::put(
             "lookup_targets",
-            &RecordWriteValue { id: "target-1".to_string(), payload: b"{}".to_vec() },
+            &RecordWriteValue { id: "target-1".to_string(), payload: lookup_row_payload.clone() },
+        )
+        .map_err(|e| format!("{e:?}"))?;
+        // A second row so the recursion-bound mode below can assert it saw
+        // *both*, unfiltered -- not just that a single-row `get` succeeded.
+        store::put(
+            "lookup_targets",
+            &RecordWriteValue { id: "target-2".to_string(), payload: lookup_row_payload },
         )
         .map_err(|e| format!("{e:?}"))
     }
@@ -113,6 +134,27 @@ impl AuthorizerGuest for AbacTestComponent {
                     _ => RowDecision::Deny,
                 })
                 .collect())
+            }
+            // D-B4-4's recursion bound. `lookup_targets`'s own `view`
+            // permission is stage-4-gated *and* unconditionally public
+            // (`paths: []`), so it matches for *any* caller identity,
+            // including this after-step's own synthetic `LocalReadOnly`
+            // one -- guaranteeing the nested query below is non-empty and
+            // would therefore actually re-enter this same function (and
+            // recurse without bound, since every entry runs the identical
+            // logic) if the `LocalReadOnly` sieve exemption were ever
+            // narrowed. Today it completes fast and sees both seeded rows
+            // unfiltered, because the exemption means this nested read
+            // never consults a sieve -- carries no `QueryAuth` -- at all.
+            "nested_query_recurses_if_unexempted" => {
+                let opts = store::QueryOptions { filter: None, limit: None, cursor: None };
+                let saw_both = store::query("lookup_targets", &opts)
+                    .map(|r| r.records.len() == 2)
+                    .unwrap_or(false);
+                Ok(rows
+                    .into_iter()
+                    .map(|_| if saw_both { RowDecision::Allow } else { RowDecision::Deny })
+                    .collect())
             }
             // Baseline: cannot widen access beyond what the sieve already
             // admitted -- every row the sieve excluded never reaches this

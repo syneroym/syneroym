@@ -30,8 +30,9 @@ use syneroym_mqtt_broker::{
     namespace_topic_for_publish,
 };
 use syneroym_rpc::{
-    Ability, AuthLevel, CallOrigin, CallerContext, CandidateRow, ProxyError as RpcProxyError,
-    ProxyProtocol, ProxyRequest, ResourceUri, RowAuthorizer, ServiceProxy, apply_stage4,
+    AbacError, Ability, AuthLevel, CallOrigin, CallerContext, CandidateRow,
+    ProxyError as RpcProxyError, ProxyProtocol, ProxyRequest, ResourceUri, RowAuthorizer,
+    ServiceProxy, apply_stage4,
 };
 use syneroym_wit_interfaces::host::syneroym::{
     app_config::app_config::{self, ConfigError},
@@ -475,6 +476,31 @@ fn from_candidate_row(row: CandidateRow) -> RecordReadValue {
     }
 }
 
+/// Maps a stage-4 after-step failure to the `DataLayerError` `get`/`query`
+/// actually return (review finding B4-04). Both fail closed either way (no
+/// row data reaches the caller), but collapsing every `AbacError` into an
+/// empty-but-successful page made "the after-step said no" indistinguishable
+/// from "the after-step couldn't run at all" -- and the ADR-0007 "no result
+/// is a valid outcome" principle this leaned on covers authorization
+/// denials, not infrastructure failures. `Unavailable` (includes the
+/// after-step's own pool-exhaustion case, B4-01) and `BudgetExceeded` are
+/// resource pressure, reported the same way `data_db`'s watchdog timeout
+/// already reports one (`QuotaExceeded`); the rest are the guest's own
+/// after-step misbehaving (a missing export, a trap, a malformed or
+/// arity-mismatched decision list), reported as `Internal`.
+fn map_abac_error(e: AbacError) -> DataLayerError {
+    match e {
+        AbacError::Unavailable(_)
+        | AbacError::BudgetExceeded { .. }
+        | AbacError::BatchTooLarge(_)
+        | AbacError::PayloadTooLarge { .. } => DataLayerError::QuotaExceeded,
+        AbacError::MissingExport(_)
+        | AbacError::Trap { .. }
+        | AbacError::ArityMismatch { .. }
+        | AbacError::Malformed(_) => DataLayerError::Internal(e.to_string()),
+    }
+}
+
 impl app_config::Host for HostState {
     async fn get(&mut self, key: String) -> Result<Option<String>, ConfigError> {
         if self.config_generation == 0 {
@@ -648,10 +674,14 @@ impl store::Host for HostState {
             return strip_record(record, &outcome.masked_fields).map(Some);
         }
         let candidate = to_candidate_row(&record);
+        // Fail-closed, but distinguishably (B4-04): an after-step error
+        // (pool exhaustion, a trap, a budget overrun) is not the same claim
+        // as "the after-step ran and denied this row" -- only the latter is
+        // `Ok(None)`.
         let kept =
             apply_stage4(sieve, &session, &service_id, &collection, authorizer, vec![candidate])
                 .await
-                .unwrap_or_default();
+                .map_err(map_abac_error)?;
         let Some((_, extra)) = kept.into_iter().next() else { return Ok(None) };
         let masked: Vec<String> = outcome.masked_fields.iter().cloned().chain(extra).collect();
         strip_record(record, &masked).map(Some)
@@ -705,10 +735,15 @@ impl store::Host for HostState {
                         .into_iter()
                         .map(|(row, extra)| (from_candidate_row(row), extra))
                         .collect(),
-                    // Fail-closed: an after-step error denies the whole page,
-                    // never a partial or unfiltered one.
-                    Err(_) => {
-                        return Ok(QueryResult { records: vec![], next_cursor: None });
+                    // Fail-closed, but as a distinguishable error, not a
+                    // silent empty-and-successful page (B4-04): clearing
+                    // `next_cursor` here would make `records: []` +
+                    // `next_cursor: None` read as "no more pages", which is
+                    // exactly the wrong signal for an after-step that
+                    // couldn't run, as opposed to one that ran and denied
+                    // every row.
+                    Err(e) => {
+                        return Err(map_abac_error(e));
                     }
                 }
             }
@@ -1111,6 +1146,17 @@ impl blob_store::Host for HostState {
     }
 
     async fn signed_url(&mut self, hash: String, ttl_secs: u32) -> Result<String, BlobError> {
+        // Every other mutating/egress host function is hard-denied under
+        // `read_only` (review finding B4-14); a signed URL is a read in
+        // shape but mints a time-limited, externally redeemable URL that
+        // outlives this throw-away stage-4 instance -- the same kind of
+        // egress-beyond-the-call ADR-0017 §7's "local, read-only lookups
+        // only" is meant to rule out.
+        if self.read_only {
+            return Err(BlobError::Internal(
+                "stage-4 after-step instances are read-only".to_string(),
+            ));
+        }
         let dek =
             resolve_blob_dek(&self.component_id, &self.key_store, &self.storage_provider).await?;
         self.blob_provider
