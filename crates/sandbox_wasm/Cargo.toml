@@ -46,3 +46,7 @@ harness = false
 [[bench]]
 name = "data_layer_bench"
 harness = false
+
+[[bench]]
+name = "abac_bench"
+harness = false

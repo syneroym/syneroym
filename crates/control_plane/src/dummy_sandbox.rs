@@ -25,6 +25,17 @@ impl AppSandboxEngine {
     ) -> anyhow::Result<Self> {
         Ok(Self)
     }
+
+    /// Mirrors `syneroym_sandbox_wasm::AppSandboxEngine::exports_authorize_rows`:
+    /// a sandbox-less build never has a compiled component to inspect, so a
+    /// policy that opts a permission into the stage-4 after-step
+    /// (`authorize_rows: true`, ADR-0017 §7) always fails
+    /// `validate_stage4_export`'s deploy-time gate here, rather than
+    /// silently compiling and denying every read at runtime.
+    #[must_use]
+    pub fn exports_authorize_rows(&self, _service_id: &str) -> bool {
+        false
+    }
 }
 
 #[cfg(feature = "podman_sandbox")]

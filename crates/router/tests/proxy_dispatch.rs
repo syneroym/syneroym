@@ -11,7 +11,10 @@
 //! (`cargo build --target wasm32-wasip2 --release` in
 //! `test-components/proxy-test` and `test-components/greeter`).
 
-use std::{fs, sync::Arc};
+use std::{
+    fs,
+    sync::{Arc, Weak},
+};
 
 use dashmap::DashMap;
 use serde_json::{Value, json};
@@ -37,7 +40,7 @@ use syneroym_router::{
 };
 use syneroym_rpc::{
     Ability, AuthLevel, CallerContext, Capability, NativeDispatchRegistry, NativeInvocation,
-    NativeResponse, NativeService, ResourceUri, RpcResult, SessionContext,
+    NativeResponse, NativeService, ResourceUri, RowAuthorizer, RpcResult, SessionContext,
 };
 use syneroym_sandbox_wasm::AppSandboxEngine;
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
@@ -384,6 +387,7 @@ async fn test_route_handler_with_self_native_data_layer(
         Arc::new(Identity::generate().unwrap()),
         "did:key:zTestOwner",
         syneroym_sandbox_wasm::empty_service_proxy(),
+        syneroym_rpc::empty_row_authorizer(),
     ));
     native_dispatch.insert("proxy-caller".to_string(), native_service as Arc<dyn NativeService>);
 
@@ -404,6 +408,128 @@ async fn test_route_handler_with_self_native_data_layer(
         &config,
         registry,
         [12u8; 32],
+        None,
+        deps,
+    )
+    .await
+    .unwrap();
+
+    Some((route_handler, storage_provider, key_store))
+}
+
+/// Same shape as `test_route_handler_with_self_native_data_layer`, but
+/// wires `proxy-caller`'s `SynSvcNativeService` with a **real**
+/// `Weak<dyn RowAuthorizer>` (`row_authorizer_for`, mirroring
+/// `abac_integration.rs`'s own helper) instead of `empty_row_authorizer()`.
+/// `proxy-caller` (the `proxy-test` fixture) exports
+/// `syneroym:data-layer/authorizer` for exactly this reason -- Slice
+/// B4-fdae's router-side ingress-(ii) proof that a self-proxy `get` actually
+/// invokes the stage-4 after-step, not just the sieve.
+async fn test_route_handler_with_self_native_data_layer_and_stage4(
+    fdae_policy: Arc<Policy>,
+) -> Option<(RouteHandler, Arc<dyn StorageProvider>, Arc<KeyStore>)> {
+    let proxy_test_bytes = fs::read(test_constants::proxy_test_wasm_path()).ok()?;
+    let greeter_bytes = fs::read(test_constants::greeter_wasm_path()).ok()?;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let config = SubstrateConfig::default();
+    let key_store = Arc::new(KeyStore::new());
+    let storage_provider: Arc<dyn StorageProvider> =
+        Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+    let blob_provider: Arc<dyn BlobProvider> =
+        Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+    let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+    let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+
+    let app_sandbox_engine = Arc::new(
+        AppSandboxEngine::init(
+            &config,
+            vec![],
+            key_store.clone(),
+            storage_provider.clone(),
+            blob_provider.clone(),
+            messaging_broker.clone(),
+            registry.clone(),
+        )
+        .await
+        .unwrap(),
+    );
+    app_sandbox_engine.self_weak.set(Arc::downgrade(&app_sandbox_engine)).unwrap();
+
+    app_sandbox_engine
+        .deploy_wasm("proxy-caller", &wasm_deploy_manifest(proxy_test_bytes))
+        .await
+        .unwrap();
+    app_sandbox_engine
+        .deploy_wasm("proxy-callee", &wasm_deploy_manifest(greeter_bytes))
+        .await
+        .unwrap();
+
+    registry
+        .register(
+            "proxy-caller".to_string(),
+            test_constants::PROXY_TEST_DRIVER_INTERFACE.to_string(),
+            SubstrateEndpoint::WasmChannel { service_id: "proxy-caller".to_string() },
+        )
+        .await
+        .unwrap();
+    registry
+        .register(
+            "proxy-callee".to_string(),
+            test_constants::GREETER_INTERFACE_NAME.to_string(),
+            SubstrateEndpoint::WasmChannel { service_id: "proxy-callee".to_string() },
+        )
+        .await
+        .unwrap();
+    registry
+        .register(
+            "proxy-caller".to_string(),
+            "data-layer".to_string(),
+            SubstrateEndpoint::NativeHostChannel { service_id: "proxy-caller".to_string() },
+        )
+        .await
+        .unwrap();
+
+    // Coerces the concrete engine to `Arc<dyn RowAuthorizer>` at this typed
+    // `let`, then downgrades -- same unsized-coercion pattern
+    // `abac_integration.rs::row_authorizer_for` uses.
+    let row_authorizer: Weak<dyn RowAuthorizer> = {
+        let trait_object: Arc<dyn RowAuthorizer> = app_sandbox_engine.clone();
+        Arc::downgrade(&trait_object)
+    };
+
+    let native_dispatch: NativeDispatchRegistry = Arc::new(DashMap::new());
+    let native_service = Arc::new(SynSvcNativeService::new(
+        "proxy-caller".to_string(),
+        key_store.clone(),
+        storage_provider.clone(),
+        blob_provider.clone(),
+        messaging_broker.clone(),
+        Some(fdae_policy),
+        Arc::new(Identity::generate().unwrap()),
+        "did:key:zTestOwner",
+        syneroym_sandbox_wasm::empty_service_proxy(),
+        row_authorizer,
+    ));
+    native_dispatch.insert("proxy-caller".to_string(), native_service as Arc<dyn NativeService>);
+
+    let http_routes: HttpRouteRegistry = Arc::new(DashMap::new());
+    let deps = RouteHandlerDeps {
+        key_store: key_store.clone(),
+        storage_provider: storage_provider.clone(),
+        app_sandbox_engine,
+        messaging_broker,
+        native_dispatch,
+        http_routes,
+        control_plane_service: Arc::new(NoopControlPlane),
+        control_plane: None,
+    };
+
+    let route_handler = RouteHandler::init(
+        "test-orchestrator".to_string(),
+        &config,
+        registry,
+        [13u8; 32],
         None,
         deps,
     )
@@ -693,5 +819,126 @@ async fn guest_self_proxy_data_layer_filters_for_a_real_caller_d04_02_h_closed()
     assert_eq!(
         other_result, "null",
         "the real caller must not reach a row owned by a different principal: {other_result:?}"
+    );
+}
+
+// -- Slice B4-fdae: ingress (ii) applies the stage-4 after-step -----------
+
+/// Same `items`/`principal_column` shape as
+/// `self_proxy_items_principal_column_policy`, but `view` opts into the
+/// stage-4 after-step (ADR-0017 §7).
+fn self_proxy_items_principal_column_policy_with_stage4() -> Policy {
+    parse_and_validate(
+        r#"{
+            "version": "fdae/v1",
+            "definitions": {
+                "items": {
+                    "table": "items",
+                    "principal_column": "creator_id",
+                    "permissions": {
+                        "view": {
+                            "allows": ["data-layer/read"],
+                            "paths": [["caller"]],
+                            "authorize_rows": true
+                        }
+                    }
+                }
+            }
+        }"#,
+    )
+    .unwrap()
+}
+
+/// Router-side ingress-(ii) proof (`SynSvcNativeService::dispatch_data_layer`'s
+/// `"get"` arm): a guest's self-proxy `get`, reached through
+/// `syneroym:proxy/proxy::call` exactly like
+/// `guest_self_proxy_data_layer_filters_for_a_real_caller_d04_02_h_closed`,
+/// runs the stage-4 after-step on top of the sieve -- not just the sieve
+/// alone. Seeds two rows the sieve equally admits (both owned by the real
+/// caller); `proxy-caller`'s own exported `authorize-rows` (`proxy-test`'s
+/// fixture behavior, `src/lib.rs`) denies only the one seeded with id
+/// `"secret"`, so a row surviving the sieve is still reachable only if the
+/// after-step also allows it.
+#[tokio::test]
+async fn guest_self_proxy_data_layer_applies_stage4() {
+    let policy = Arc::new(self_proxy_items_principal_column_policy_with_stage4());
+    let Some((route_handler, storage_provider, key_store)) =
+        test_route_handler_with_self_native_data_layer_and_stage4(policy).await
+    else {
+        eprintln!("skipping: proxy-test/greeter wasm artifacts not built");
+        return;
+    };
+
+    let resp =
+        self_proxy_call(&route_handler, "create-collection", json!({"name": "items"}), None).await;
+    assert!(resp.get("error").is_none(), "create-collection failed: {resp:?}");
+
+    const REAL_CALLER_DID: &str = "did:key:zSelfProxyStage4Caller";
+    let real_caller = CallerContext {
+        caller_did: REAL_CALLER_DID.to_string(),
+        app_instance: None,
+        session: SessionContext {
+            subject_did: REAL_CALLER_DID.to_string(),
+            capabilities: vec![Capability {
+                with: ResourceUri::service("proxy-caller", "proxy-caller"),
+                can: Ability(Ability::DATA_LAYER_READ.to_string()),
+                caveats: None,
+            }],
+            ..Default::default()
+        },
+        auth: AuthLevel::Ucan,
+        proof: None,
+    };
+
+    let store = storage_provider.open_service_db("proxy-caller", &key_store).await.unwrap();
+    store
+        .put(
+            "items",
+            &HostRecordWriteValue { id: "secret".to_string(), payload: b"{}".to_vec() },
+            REAL_CALLER_DID,
+        )
+        .await
+        .unwrap();
+    store
+        .put(
+            "items",
+            &HostRecordWriteValue { id: "normal".to_string(), payload: b"{}".to_vec() },
+            REAL_CALLER_DID,
+        )
+        .await
+        .unwrap();
+    drop(store);
+
+    let resp = self_proxy_call(
+        &route_handler,
+        "get",
+        json!({"collection": "items", "id": "secret"}),
+        Some(&real_caller),
+    )
+    .await;
+    assert!(resp.get("error").is_none(), "get(secret) failed: {resp:?}");
+    let secret_result = resp.get("result").and_then(Value::as_str).unwrap_or_default();
+    assert_eq!(
+        secret_result, "null",
+        "the sieve admits this row (same caller owns it), but the after-step must still deny it: \
+         {secret_result:?}"
+    );
+
+    let resp = self_proxy_call(
+        &route_handler,
+        "get",
+        json!({"collection": "items", "id": "normal"}),
+        Some(&real_caller),
+    )
+    .await;
+    assert!(resp.get("error").is_none(), "get(normal) failed: {resp:?}");
+    let normal_result = resp.get("result").and_then(Value::as_str).unwrap_or_default();
+    assert_ne!(
+        normal_result, "null",
+        "a row the after-step allows must still reach the caller: {normal_result:?}"
+    );
+    assert!(
+        normal_result.contains("\"id\":\"normal\""),
+        "expected the normal row, got: {normal_result:?}"
     );
 }

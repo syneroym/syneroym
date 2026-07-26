@@ -25,7 +25,10 @@ use syneroym_data_db::traits::StorageProvider;
 use syneroym_data_keystore::KeyStore;
 use syneroym_fdae::Policy;
 use syneroym_mqtt_broker::{MqttBroker, SubscriptionHandle};
-use syneroym_rpc::{AuthLevel, CallerContext, JsonRpcRequest, ServiceProxy};
+use syneroym_rpc::{
+    AbacAuthContext, AbacError, AuthLevel, CallerContext, CandidateRow, JsonRpcRequest,
+    RowAuthorizer, RowDecision, ServiceProxy,
+};
 use syneroym_wit_interfaces::{
     control_plane::exports::syneroym::control_plane::orchestrator::{
         ArtifactSource, DeployManifest, ServiceType,
@@ -176,6 +179,23 @@ pub struct AppSandboxEngine {
     /// Epoch-tick budget for a component's `init()`/`migrate()` lifecycle
     /// hook -- see `AppSandboxRole::lifecycle_hook_epoch_timeout_secs`.
     lifecycle_hook_epoch_ticks: u64,
+    /// Epoch-tick budget for one stage-4 ABAC after-step invocation -- see
+    /// `AppSandboxRole::abac_epoch_timeout_secs`.
+    abac_epoch_ticks: u64,
+    /// Fuel ceiling for one stage-4 ABAC after-step invocation -- see
+    /// `AppSandboxRole::abac_max_instructions`.
+    abac_max_instructions: Option<u64>,
+}
+
+/// Per-instantiation differences from an ordinary dispatch call. Bundled
+/// into one struct rather than more positional parameters on
+/// `build_store_and_instantiate` -- today's sole non-default use is the
+/// stage-4 after-step (`authorize_rows`), which needs both fields at once.
+#[derive(Debug, Clone, Copy, Default)]
+struct InstanceOptions {
+    /// Overrides the service's own quota-derived fuel. `None` keeps it.
+    fuel_override: Option<u64>,
+    read_only: bool,
 }
 
 /// Pool slots reserved out of `max_concurrent_instances` for short-lived
@@ -273,6 +293,14 @@ impl AppSandboxEngine {
         let dispatch_epoch_ticks = ticks_for_secs(dispatch_timeout_secs);
         let lifecycle_hook_epoch_ticks = ticks_for_secs(lifecycle_hook_timeout_secs);
 
+        let (abac_timeout_secs, abac_max_instructions) =
+            if let Some(sandbox_config) = &config.roles.app_sandbox {
+                (sandbox_config.abac_epoch_timeout_secs, sandbox_config.abac_max_instructions)
+            } else {
+                (2, Some(50_000_000))
+            };
+        let abac_epoch_ticks = ticks_for_secs(abac_timeout_secs);
+
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
 
         let max_concurrent_streams_per_service =
@@ -315,6 +343,8 @@ impl AppSandboxEngine {
             stream_instance_permits: Arc::new(Semaphore::new(stream_instance_budget as usize)),
             dispatch_epoch_ticks,
             lifecycle_hook_epoch_ticks,
+            abac_epoch_ticks,
+            abac_max_instructions,
         };
 
         for (service_id, _interface_name, endpoint) in endpoints {
@@ -478,6 +508,29 @@ impl AppSandboxEngine {
         } else {
             None
         }
+    }
+
+    /// The well-known guest export for the stage-4 ABAC after-step
+    /// (ADR-0017 §7, `wit/data-layer/authorizer.wit`). Deliberately not part
+    /// of the `host-environment` world -- a component only needs to
+    /// implement it when a deployed policy opts in.
+    const AUTHORIZER_INTERFACE: &str = "syneroym:data-layer/authorizer@0.1.0";
+
+    /// Whether `service_id`'s compiled component exports the stage-4
+    /// after-step. Cheap: inspects the cached `InstancePre`'s static
+    /// component type, no instantiation -- used by the deploy-time gate
+    /// (`validate_stage4_export`) to reject a policy that opts a permission
+    /// into `authorize_rows: true` against a component that could never
+    /// satisfy it.
+    #[must_use]
+    pub fn exports_authorize_rows(&self, service_id: &str) -> bool {
+        let Some(entry) = self.components.get(service_id) else { return false };
+        let ct = entry.value().0.component().component_type();
+        let Some(export) = ct.get_export(&self.engine, Self::AUTHORIZER_INTERFACE) else {
+            return false;
+        };
+        let ComponentItem::ComponentInstance(interface) = export.ty else { return false };
+        interface.get_export(&self.engine, "authorize-rows").is_some()
     }
 
     /// Deploy and compile a WASM component for a given service
@@ -743,6 +796,7 @@ impl AppSandboxEngine {
         service_id: &str,
         caller: CallerContext,
         epoch_deadline_ticks: u64,
+        opts: InstanceOptions,
     ) -> Result<(Store<HostState>, Instance, Option<u64>)> {
         // Look up the pre-linked component instance
         let (instance_pre, quota) = {
@@ -788,6 +842,16 @@ impl AppSandboxEngine {
             .get()
             .cloned()
             .unwrap_or_else(crate::host_capabilities::empty_service_proxy);
+        // `self_weak` is set once by the composition root immediately after
+        // this engine is wrapped in an `Arc`, and `AppSandboxEngine` is the
+        // sole `RowAuthorizer` implementation -- unsized coercion turns the
+        // concrete `Weak<AppSandboxEngine>` into `Weak<dyn RowAuthorizer>` at
+        // this `let`'s type annotation, same as `Arc<T> -> Arc<dyn Trait>`.
+        let row_authorizer: Weak<dyn RowAuthorizer> = if let Some(w) = self.self_weak.get() {
+            w.clone()
+        } else {
+            syneroym_rpc::empty_row_authorizer()
+        };
         let fdae_policy = self.resolve_fdae_policy(service_id).await;
         let host_state = HostState::new(
             service_id.to_string(),
@@ -801,6 +865,8 @@ impl AppSandboxEngine {
             streaming,
             service_proxy,
             fdae_policy,
+            opts.read_only,
+            row_authorizer,
         );
 
         debug!("created wasi ctx and host state");
@@ -812,7 +878,7 @@ impl AppSandboxEngine {
         store.epoch_deadline_trap();
         store.set_epoch_deadline(epoch_deadline_ticks);
 
-        if let Some(instructions) = max_instructions {
+        if let Some(instructions) = opts.fuel_override.or(max_instructions) {
             store.set_fuel(instructions)?;
         }
 
@@ -859,13 +925,23 @@ impl AppSandboxEngine {
         // exemption), so a debug build catches a future call site that
         // starts constructing one and passing it through here.
         debug_assert!(
-            !matches!(&caller, Some(c) if c.auth == AuthLevel::LocalElevated),
-            "prepare_wasm_execution must never receive a forwarded LocalElevated caller -- that \
-             context is reserved for invoke_lifecycle_hook, which never calls this function"
+            !matches!(
+                &caller,
+                Some(c) if matches!(c.auth, AuthLevel::LocalElevated | AuthLevel::LocalReadOnly)
+            ),
+            "prepare_wasm_execution must never receive a forwarded LocalElevated or LocalReadOnly \
+             caller -- those contexts are reserved for invoke_lifecycle_hook and authorize_rows \
+             respectively, neither of which calls this function"
         );
         let caller = caller.unwrap_or_else(|| CallerContext::service_system(service_id));
-        let (mut store, instance, _max_instructions) =
-            self.build_store_and_instantiate(service_id, caller, self.dispatch_epoch_ticks).await?;
+        let (mut store, instance, _max_instructions) = self
+            .build_store_and_instantiate(
+                service_id,
+                caller,
+                self.dispatch_epoch_ticks,
+                InstanceOptions::default(),
+            )
+            .await?;
 
         // Use the helper to extract the function
         let (func, results_len, item) =
@@ -888,6 +964,7 @@ impl AppSandboxEngine {
                 service_id,
                 CallerContext::local_elevated(service_id),
                 self.lifecycle_hook_epoch_ticks,
+                InstanceOptions::default(),
             )
             .await?;
 
@@ -994,6 +1071,7 @@ impl AppSandboxEngine {
                     service_id,
                     CallerContext::service_system(service_id),
                     self.dispatch_epoch_ticks,
+                    InstanceOptions::default(),
                 )
                 .await
             {
@@ -1199,6 +1277,7 @@ impl AppSandboxEngine {
             service_id,
             CallerContext::service_system(service_id),
             self.dispatch_epoch_ticks,
+            InstanceOptions::default(),
         )
         .await
     }
@@ -1381,6 +1460,171 @@ impl AppSandboxEngine {
         // EOF has nothing to observe and hangs rather than completing.
         let _ = writer.shutdown().await;
         result.map(|()| StreamRequestOutcome::Completed)
+    }
+}
+
+#[async_trait::async_trait]
+impl RowAuthorizer for AppSandboxEngine {
+    /// Invokes `service_id`'s guest-exported `authorize-rows` (ADR-0017 §7)
+    /// in a freshly instantiated, throw-away instance of the same
+    /// component -- the same "instantiate, call, discard" shape
+    /// `deliver_message`/`invoke_lifecycle_hook` already use, since a host
+    /// function (this trait's only caller) cannot re-enter the live
+    /// instance it's already running inside. No retry loop, unlike
+    /// `deliver_message`: a retried after-step would double the worst-case
+    /// latency of a hot-path read, and every failure mode below is already
+    /// deny-closed.
+    async fn authorize_rows(
+        &self,
+        service_id: &str,
+        ctx: &AbacAuthContext,
+        rows: &[CandidateRow],
+    ) -> Result<Vec<RowDecision>, AbacError> {
+        let exec_start = Instant::now();
+        let (mut store, instance, _max_instructions) = self
+            .build_store_and_instantiate(
+                service_id,
+                CallerContext::service_abac(service_id),
+                self.abac_epoch_ticks,
+                InstanceOptions { fuel_override: self.abac_max_instructions, read_only: true },
+            )
+            .await
+            .map_err(|_| AbacError::Unavailable(service_id.to_string()))?;
+
+        let (func, results_len, _item) = Self::get_wasm_func(
+            &mut store,
+            &instance,
+            Some(Self::AUTHORIZER_INTERFACE),
+            "authorize-rows",
+        )
+        .map_err(|_| AbacError::MissingExport(service_id.to_string()))?;
+
+        let ctx_val = Val::Record(vec![
+            ("collection".to_string(), Val::String(ctx.collection.clone())),
+            (
+                "permissions".to_string(),
+                Val::List(ctx.permissions.iter().cloned().map(Val::String).collect()),
+            ),
+            ("subject-did".to_string(), Val::String(ctx.subject_did.clone())),
+            (
+                "anchor-did".to_string(),
+                Val::Option(ctx.anchor_did.clone().map(|d| Box::new(Val::String(d)))),
+            ),
+            (
+                "capabilities".to_string(),
+                Val::List(ctx.capabilities.iter().cloned().map(Val::String).collect()),
+            ),
+            ("claims-json".to_string(), Val::String(ctx.claims_json.clone())),
+        ]);
+        let rows_val = Val::List(
+            rows.iter()
+                .map(|r| {
+                    Val::Record(vec![
+                        ("id".to_string(), Val::String(r.id.clone())),
+                        (
+                            "payload".to_string(),
+                            Val::List(r.payload.iter().copied().map(Val::U8).collect()),
+                        ),
+                        ("creator-id".to_string(), Val::String(r.creator_id.clone())),
+                        ("created-at".to_string(), Val::U64(r.created_at)),
+                        ("updated-at".to_string(), Val::U64(r.updated_at)),
+                    ])
+                })
+                .collect(),
+        );
+
+        let mut results = vec![Val::Bool(false); results_len];
+        let call_result = func.call_async(&mut store, &[ctx_val, rows_val], &mut results).await;
+        metrics::histogram!("substrate.fdae.abac_ms")
+            .record(exec_start.elapsed().as_secs_f64() * 1000.0);
+
+        let service = service_id.to_string();
+        if let Err(e) = call_result {
+            // Reuses `execute_wasm_vals`'s exact string classification --
+            // deliberately not a second, independently-drifting
+            // implementation of the same trap taxonomy.
+            if let Some(Trap::OutOfFuel) = e.downcast_ref::<Trap>() {
+                return Err(AbacError::BudgetExceeded {
+                    service,
+                    detail: "exceeded its fuel budget".to_string(),
+                });
+            }
+            let err_str = e.root_cause().to_string();
+            if err_str.contains("all fuel consumed") || err_str.contains("out of fuel") {
+                return Err(AbacError::BudgetExceeded { service, detail: err_str });
+            }
+            if err_str.contains("epoch") || err_str.contains("deadline") {
+                return Err(AbacError::BudgetExceeded { service, detail: err_str });
+            }
+            return Err(AbacError::Trap { service, detail: err_str });
+        }
+
+        let [result_val] = results.as_slice() else {
+            return Err(AbacError::Malformed(format!(
+                "expected exactly 1 result<_, string> return value, got {}",
+                results.len()
+            )));
+        };
+        let decisions_val = match result_val {
+            Val::Result(Ok(Some(boxed))) => boxed.as_ref(),
+            Val::Result(Err(payload)) => {
+                let msg = match payload.as_deref() {
+                    Some(Val::String(s)) => s.clone(),
+                    Some(other) => format!("{other:?}"),
+                    None => "guest declined the request".to_string(),
+                };
+                return Err(AbacError::Trap { service, detail: msg });
+            }
+            other => {
+                return Err(AbacError::Malformed(format!(
+                    "expected result<list<row-decision>, string>, got {other:?}"
+                )));
+            }
+        };
+        let Val::List(items) = decisions_val else {
+            return Err(AbacError::Malformed(format!(
+                "expected list<row-decision>, got {decisions_val:?}"
+            )));
+        };
+
+        let mut decisions = Vec::with_capacity(items.len());
+        let mut denied = 0u64;
+        for item in items {
+            let decision = match item {
+                Val::Variant(tag, None) if tag == "allow" => RowDecision::Allow,
+                Val::Variant(tag, None) if tag == "deny" => {
+                    denied += 1;
+                    RowDecision::Deny
+                }
+                Val::Variant(tag, Some(boxed)) if tag == "redact" => {
+                    let Val::List(fields) = boxed.as_ref() else {
+                        return Err(AbacError::Malformed(format!(
+                            "redact payload must be list<string>, got {boxed:?}"
+                        )));
+                    };
+                    let mut names = Vec::with_capacity(fields.len());
+                    for field in fields {
+                        let Val::String(s) = field else {
+                            return Err(AbacError::Malformed(format!(
+                                "redact field must be string, got {field:?}"
+                            )));
+                        };
+                        names.push(s.clone());
+                    }
+                    RowDecision::Redact(names)
+                }
+                other => {
+                    return Err(AbacError::Malformed(format!(
+                        "unrecognized row-decision: {other:?}"
+                    )));
+                }
+            };
+            decisions.push(decision);
+        }
+        if denied > 0 {
+            metrics::counter!("substrate.fdae.abac_rows_denied").increment(denied);
+        }
+        Ok(decisions)
     }
 }
 
@@ -1843,6 +2087,8 @@ mod tests {
             test_streaming_context(),
             test_service_proxy(),
             None,
+            false,
+            syneroym_rpc::empty_row_authorizer(),
         );
 
         let mut store = Store::new(&engine, host_state);
@@ -1953,6 +2199,8 @@ mod tests {
             stream_instance_permits: Arc::new(Semaphore::new(8)),
             dispatch_epoch_ticks: ticks_for_secs(5),
             lifecycle_hook_epoch_ticks: ticks_for_secs(30),
+            abac_epoch_ticks: ticks_for_secs(2),
+            abac_max_instructions: Some(50_000_000),
         };
 
         // Cache the test component
@@ -2016,6 +2264,8 @@ mod tests {
             stream_instance_permits: Arc::new(Semaphore::new(8)),
             dispatch_epoch_ticks: ticks_for_secs(5),
             lifecycle_hook_epoch_ticks: ticks_for_secs(30),
+            abac_epoch_ticks: ticks_for_secs(2),
+            abac_max_instructions: Some(50_000_000),
         }
     }
 

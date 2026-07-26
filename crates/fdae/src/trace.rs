@@ -80,6 +80,12 @@ pub struct DecisionTrace {
     /// sieve depended on (Slice B3), populated by `finalize` from each
     /// consumed `FetchResult.trace`. Empty for a fully-local policy.
     pub remote_fetches: Vec<RemoteFetchTrace>,
+    /// Applicable permissions that opted into the stage-4 after-step
+    /// (ADR-0017 §7, `Permission.authorize_rows`). Recorded at compile time;
+    /// the *outcome* of that step is a separate, execution-aware trace the
+    /// ingress emits ([`AbacTrace`]), the same two-trace shape Mode A
+    /// already uses for `rows_reached`.
+    pub abac_permissions: Vec<String>,
 }
 
 impl DecisionTrace {
@@ -102,6 +108,7 @@ impl DecisionTrace {
                 path_failed = %reason,
                 caveats_applied = ?self.caveats_applied,
                 remote_fetches = ?self.remote_fetches,
+                abac_permissions = ?self.abac_permissions,
                 "fdae decision: deny"
             );
         } else {
@@ -118,7 +125,67 @@ impl DecisionTrace {
                 rows_reached = ?self.rows_reached,
                 caveats_applied = ?self.caveats_applied,
                 remote_fetches = ?self.remote_fetches,
+                abac_permissions = ?self.abac_permissions,
                 "fdae decision: allow"
+            );
+        }
+    }
+}
+
+/// The stage-4 ABAC after-step's actual outcome for one read (ADR-0017 §9).
+/// A separate struct from [`DecisionTrace`], not a field on it: the sieve is
+/// compiled synchronously and traced immediately, while the after-step runs
+/// later (and only conditionally, per ingress) once candidate rows exist --
+/// the same two-trace shape Mode A already uses for `rows_reached`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AbacTrace {
+    /// The permissions that triggered this after-step invocation, mirroring
+    /// `DecisionTrace.abac_permissions` for the same read.
+    pub permissions: Vec<String>,
+    pub rows_in: usize,
+    pub rows_denied: usize,
+    pub rows_redacted: usize,
+    /// `Some(reason)` when the whole batch was denied closed -- missing
+    /// export, fuel/epoch overrun, trap, or a malformed decision list.
+    pub failed_closed: Option<String>,
+}
+
+impl AbacTrace {
+    /// Logs this outcome via `tracing`: `info` when the batch was denied
+    /// closed or any row was denied/redacted (the actionable signal an
+    /// operator should see without opting into `debug`), `debug` otherwise.
+    pub fn emit(&self, collection: &str, service_id: &str, subject_did: &str) {
+        if let Some(reason) = &self.failed_closed {
+            info!(
+                collection = %collection,
+                service_id = %service_id,
+                subject_did = %subject_did,
+                permissions = ?self.permissions,
+                rows_in = self.rows_in,
+                rows_denied = self.rows_denied,
+                rows_redacted = self.rows_redacted,
+                failed_closed = %reason,
+                "fdae stage-4 abac: denied closed"
+            );
+        } else if self.rows_denied > 0 || self.rows_redacted > 0 {
+            info!(
+                collection = %collection,
+                service_id = %service_id,
+                subject_did = %subject_did,
+                permissions = ?self.permissions,
+                rows_in = self.rows_in,
+                rows_denied = self.rows_denied,
+                rows_redacted = self.rows_redacted,
+                "fdae stage-4 abac: rows filtered"
+            );
+        } else {
+            debug!(
+                collection = %collection,
+                service_id = %service_id,
+                subject_did = %subject_did,
+                permissions = ?self.permissions,
+                rows_in = self.rows_in,
+                "fdae stage-4 abac: all rows allowed"
             );
         }
     }

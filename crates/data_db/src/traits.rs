@@ -159,7 +159,12 @@ pub trait ServiceStore: Send + Sync {
     /// applies the FDAE pushdown sieve (ADR-0017 Mode A) when present; an
     /// unreachable-but-existing row is indistinguishable from a missing one
     /// (`ReadOutcome::value == None`), per ADR-0007 "no result is a valid
-    /// outcome".
+    /// outcome". When the sieve's selected permission opted into the
+    /// stage-4 after-step (`CompiledSieve.abac_permissions`), the returned
+    /// row is still only the *sieve's* candidate -- `data_db` has no WASM
+    /// engine and deliberately does not run the after-step itself; the
+    /// ingress (`sandbox_wasm`/`control_plane`) runs it before the row ever
+    /// reaches a caller.
     async fn get(
         &self,
         collection: &str,
@@ -170,7 +175,13 @@ pub trait ServiceStore: Send + Sync {
     /// Queries records matching an optional MongoDB-style JSON filter, with
     /// cursor pagination. Returns an empty list (not an error) when nothing
     /// matches. `auth` applies the FDAE pushdown sieve (ADR-0017 Mode B) when
-    /// present, ANDed with the caller's own filter.
+    /// present, ANDed with the caller's own filter. Same stage-4 caveat as
+    /// `get`: a returned page is the sieve's candidate set, not yet passed
+    /// through `authorize-rows` when `abac_permissions` is non-empty -- that
+    /// is the ingress's job. A post-hoc after-step denial/redaction can make
+    /// a returned page shorter than `limit` even while `next_cursor` is
+    /// still `Some`; callers must page until `next_cursor` is `None`, not
+    /// stop at a short page.
     async fn query(
         &self,
         collection: &str,

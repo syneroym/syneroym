@@ -8,6 +8,7 @@ use std::result;
 
 mod converter;
 mod dispatch_registry;
+pub mod fdae_abac;
 pub mod fdae_fetch;
 pub mod framing;
 mod native;
@@ -17,6 +18,10 @@ mod types;
 
 pub use converter::JsonRpcConverter;
 pub use dispatch_registry::{NativeDispatchRegistry, WeakNativeDispatchRegistry};
+pub use fdae_abac::{
+    AbacAuthContext, AbacError, CandidateRow, FDAE_ABAC_TIMEOUT, MAX_ABAC_ROWS, RowAuthorizer,
+    RowDecision, apply_stage4, empty_row_authorizer,
+};
 pub use fdae_fetch::{FDAE_FETCH_TIMEOUT, FetchError, resolve_fetches};
 pub use native::{
     AuthLevel, CallerContext, CallerProof, NativeInvocation, NativeResponse, NativeService,

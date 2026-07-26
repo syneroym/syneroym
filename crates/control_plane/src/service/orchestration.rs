@@ -158,6 +158,16 @@ fn warn_on_ambiguous_public_permission(service_id: &str, policy: &Policy) {
     }
 }
 
+/// Whether any permission in `policy` opts into the stage-4 after-step
+/// (ADR-0017 §7, `authorize_rows: true`). Whole-policy, unlike
+/// `syneroym_fdae::definition_has_abac`'s per-collection question -- the
+/// deploy-time gate below needs to know before a single component/service
+/// type is chosen, since a TCP/container service has no guest to call for
+/// *any* collection.
+fn policy_declares_stage4(policy: &Policy) -> bool {
+    policy.definitions.values().any(|def| def.permissions.values().any(|p| p.authorize_rows))
+}
+
 impl ControlPlaneService {
     async fn register_wasm_endpoints(
         &self,
@@ -238,11 +248,34 @@ impl ControlPlaneService {
         wasm_manifest: &WasmManifest,
         new_gen: u64,
         previous_fdae_policy: &Option<String>,
+        new_fdae_policy: Option<&Policy>,
     ) -> Result<(), String> {
         if let Err(e) = self.app_sandbox_engine.deploy_wasm(service_id, manifest).await {
             self.rollback_config_generation(service_id, new_gen).await;
             self.rollback_fdae_policy(service_id, previous_fdae_policy).await;
             return Err(format!("WASM deployment failed: {e}"));
+        }
+
+        // D-B4-1/validate_stage4_export (ADR-0017 §8): a policy that opts a
+        // permission into the stage-4 after-step but whose compiled
+        // component doesn't export `syneroym:data-layer/authorizer#
+        // authorize-rows` would deny **every** read through that permission
+        // at runtime (fail-closed) -- failing the deploy here, once the
+        // component is actually compiled and its exports are knowable, is
+        // strictly better than shipping a service that silently returns
+        // nothing. Placed after `deploy_wasm` (which compiles/caches the
+        // component) so `exports_authorize_rows` has a real answer.
+        if let Some(policy) = new_fdae_policy
+            && policy_declares_stage4(policy)
+            && !self.app_sandbox_engine.exports_authorize_rows(service_id)
+        {
+            self.rollback_config_generation(service_id, new_gen).await;
+            self.rollback_fdae_policy(service_id, previous_fdae_policy).await;
+            return Err(format!(
+                "FDAE policy for service {service_id} opts a permission into the stage-4 \
+                 after-step (authorize_rows: true), but the deployed component does not export \
+                 syneroym:data-layer/authorizer#authorize-rows"
+            ));
         }
 
         if let Err(e) =
@@ -261,7 +294,22 @@ impl ControlPlaneService {
         tcp_manifest: &TcpManifest,
         new_gen: u64,
         previous_fdae_policy: &Option<String>,
+        new_fdae_policy: Option<&Policy>,
     ) -> Result<(), String> {
+        // No guest to call at all -- a TCP service can never satisfy a
+        // stage-4 opt-in, so reject up front rather than deploying a
+        // service that would deny every such read.
+        if let Some(policy) = new_fdae_policy
+            && policy_declares_stage4(policy)
+        {
+            self.rollback_config_generation(service_id, new_gen).await;
+            self.rollback_fdae_policy(service_id, previous_fdae_policy).await;
+            return Err(format!(
+                "FDAE policy for service {service_id} opts a permission into the stage-4 \
+                 after-step (authorize_rows: true), but a TCP service has no guest component to \
+                 export it"
+            ));
+        }
         for endpoint in &tcp_manifest.endpoints {
             info!(
                 "Deploying TCP service {} endpoint {}: {}:{}",
@@ -294,7 +342,21 @@ impl ControlPlaneService {
         container_manifest: &ContainerManifest,
         new_gen: u64,
         previous_fdae_policy: &Option<String>,
+        new_fdae_policy: Option<&Policy>,
     ) -> Result<(), String> {
+        // Same reasoning as `deploy_tcp_service`: no guest component to
+        // export the after-step.
+        if let Some(policy) = new_fdae_policy
+            && policy_declares_stage4(policy)
+        {
+            self.rollback_config_generation(service_id, new_gen).await;
+            self.rollback_fdae_policy(service_id, previous_fdae_policy).await;
+            return Err(format!(
+                "FDAE policy for service {service_id} opts a permission into the stage-4 \
+                 after-step (authorize_rows: true), but a container service has no guest \
+                 component to export it"
+            ));
+        }
         info!("Deploying container service {}: image={}", service_id, container_manifest.image);
         let actual_mappings = match self.podman_sandbox_engine.deploy(service_id, manifest).await {
             Ok(mappings) => mappings,
@@ -566,6 +628,7 @@ impl OrchestratorInterface for ControlPlaneService {
                 .map_err(|e| format!("Failed to clear FDAE policy: {}", e))?;
         }
 
+        let new_fdae_policy = fdae_policy.as_ref().map(|(_, policy)| policy.as_ref());
         match &manifest.service_type {
             WitServiceType::Wasm(wasm_manifest) => {
                 self.deploy_wasm_service(
@@ -574,12 +637,19 @@ impl OrchestratorInterface for ControlPlaneService {
                     wasm_manifest,
                     new_gen,
                     &previous_fdae_policy,
+                    new_fdae_policy,
                 )
                 .await?;
             }
             WitServiceType::Tcp(tcp_manifest) => {
-                self.deploy_tcp_service(&service_id, tcp_manifest, new_gen, &previous_fdae_policy)
-                    .await?;
+                self.deploy_tcp_service(
+                    &service_id,
+                    tcp_manifest,
+                    new_gen,
+                    &previous_fdae_policy,
+                    new_fdae_policy,
+                )
+                .await?;
             }
             WitServiceType::Container(container_manifest) => {
                 self.deploy_container_service(
@@ -588,6 +658,7 @@ impl OrchestratorInterface for ControlPlaneService {
                     container_manifest,
                     new_gen,
                     &previous_fdae_policy,
+                    new_fdae_policy,
                 )
                 .await?;
             }
@@ -660,6 +731,7 @@ impl OrchestratorInterface for ControlPlaneService {
                     self.node_identity.clone(),
                     &caller.caller_did,
                     self.current_service_proxy(),
+                    self.current_row_authorizer(),
                 )) as Arc<dyn NativeService>,
             );
         } else {
@@ -1527,6 +1599,287 @@ mod tests {
         assert!(result.is_ok(), "{:?}", result);
         let loaded = storage_provider.load_fdae_policy("fdae_test_service").await.unwrap();
         assert_eq!(loaded, Some(r#"{"version": "fdae/v1", "definitions": {}}"#.to_string()));
+    }
+
+    /// A minimal, real component that compiles successfully but exports
+    /// nothing under `syneroym:data-layer/authorizer` -- the same
+    /// `wat` shape
+    /// `test_deploy_failure_after_successful_wasm_compile_rolls_back_gen_and_policy`
+    /// uses to get a real, cheap-to-build component without a
+    /// `cargo-component`-built fixture.
+    const WASM_WITHOUT_AUTHORIZE_ROWS_EXPORT: &str = r#"
+(component
+  (core module $m (func (export "noop")))
+  (core instance $i (instantiate $m))
+  (func $noop (canon lift (core func $i "noop")))
+  (instance $interface (export "greet" (func $noop)))
+  (export "test-interface" (instance $interface))
+)
+"#;
+
+    /// A policy opting a single permission into the stage-4 after-step
+    /// (`authorize_rows: true`, ADR-0017 §7).
+    const STAGE4_POLICY: &str = r#"{
+        "version": "fdae/v1",
+        "definitions": {
+            "items": {
+                "table": "items",
+                "principal_column": "creator_id",
+                "permissions": {
+                    "view": {
+                        "allows": ["data-layer/read"],
+                        "paths": [["caller"]],
+                        "authorize_rows": true
+                    }
+                }
+            }
+        }
+    }"#;
+
+    /// D-B4-1/`validate_stage4_export` (ADR-0017 §8): a policy that opts
+    /// into the stage-4 after-step but whose compiled WASM component does
+    /// not export `syneroym:data-layer/authorizer#authorize-rows` must fail
+    /// the deploy, not ship a service that silently denies every read
+    /// through that permission at runtime.
+    #[tokio::test]
+    async fn test_stage4_policy_without_the_export_fails_deploy() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+            )
+            .await
+            .unwrap(),
+        );
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+
+        let native_dispatch = NativeDispatchRegistry::default();
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider.clone(),
+            blob_provider.clone(),
+            messaging_broker.clone(),
+            native_dispatch.clone(),
+            Arc::new(DashMap::new()),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        )
+        .await
+        .unwrap();
+
+        let manifest = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema: None,
+                rotation_policy: None,
+                fdae_policy: Some(DocumentSource::Inline(STAGE4_POLICY.to_string())),
+            },
+            service_type: WitServiceType::Wasm(WasmManifest {
+                source: ArtifactSource::Binary(
+                    WASM_WITHOUT_AUTHORIZE_ROWS_EXPORT.as_bytes().to_vec(),
+                ),
+                hash: None,
+                interfaces: vec![],
+            }),
+            registry_certificate: None,
+        };
+
+        let result = service
+            .deploy(
+                "stage4_missing_export_svc".to_string(),
+                manifest,
+                &node_wide_caller("test-caller"),
+            )
+            .await;
+        assert!(
+            result.is_err(),
+            "a stage-4-opted policy on a component without the export must fail"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("authorize_rows: true") && err.contains("does not export"),
+            "expected the validate_stage4_export error, got: {err}"
+        );
+    }
+
+    /// Same shape as `deploy_wasm_service`'s gate above, for the two
+    /// service types that have no guest component to call at all: a TCP
+    /// service can never satisfy a stage-4 opt-in, so it is rejected up
+    /// front, before any endpoint registration.
+    #[tokio::test]
+    async fn test_stage4_policy_on_a_tcp_service_fails_deploy() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+            )
+            .await
+            .unwrap(),
+        );
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+
+        let native_dispatch = NativeDispatchRegistry::default();
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider.clone(),
+            blob_provider.clone(),
+            messaging_broker.clone(),
+            native_dispatch.clone(),
+            Arc::new(DashMap::new()),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        )
+        .await
+        .unwrap();
+
+        let manifest = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema: None,
+                rotation_policy: None,
+                fdae_policy: Some(DocumentSource::Inline(STAGE4_POLICY.to_string())),
+            },
+            service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+            registry_certificate: None,
+        };
+
+        let result = service
+            .deploy("stage4_tcp_svc".to_string(), manifest, &node_wide_caller("test-caller"))
+            .await;
+        assert!(result.is_err(), "a stage-4-opted policy on a TCP service must fail deploy");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("authorize_rows: true") && err.contains("no guest component"),
+            "expected the TCP-service stage-4 rejection, got: {err}"
+        );
+    }
+
+    /// A rejected stage-4 deploy must not leave its (already-persisted, per
+    /// `deploy`'s save-then-validate ordering) policy row in force --
+    /// `rollback_fdae_policy` must restore whatever was there before (here,
+    /// nothing at all: `stage4_rollback_svc` has never deployed before).
+    #[tokio::test]
+    async fn test_stage4_policy_rejection_rolls_back_the_policy_row() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+            )
+            .await
+            .unwrap(),
+        );
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+
+        let native_dispatch = NativeDispatchRegistry::default();
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider.clone(),
+            blob_provider.clone(),
+            messaging_broker.clone(),
+            native_dispatch.clone(),
+            Arc::new(DashMap::new()),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        )
+        .await
+        .unwrap();
+
+        let manifest = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema: None,
+                rotation_policy: None,
+                fdae_policy: Some(DocumentSource::Inline(STAGE4_POLICY.to_string())),
+            },
+            service_type: WitServiceType::Wasm(WasmManifest {
+                source: ArtifactSource::Binary(
+                    WASM_WITHOUT_AUTHORIZE_ROWS_EXPORT.as_bytes().to_vec(),
+                ),
+                hash: None,
+                interfaces: vec![],
+            }),
+            registry_certificate: None,
+        };
+
+        let result = service
+            .deploy("stage4_rollback_svc".to_string(), manifest, &node_wide_caller("test-caller"))
+            .await;
+        assert!(result.is_err(), "the deploy must still be rejected: {result:?}");
+        assert_eq!(
+            storage_provider.load_fdae_policy("stage4_rollback_svc").await.unwrap(),
+            None,
+            "a rejected stage-4 deploy must roll back the policy row it saved before validating \
+             the export, not leave the rejected policy in force"
+        );
     }
 
     #[tokio::test]

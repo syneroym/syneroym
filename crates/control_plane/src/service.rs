@@ -21,7 +21,8 @@ use syneroym_identity::Identity;
 use syneroym_mqtt_broker::MqttBroker;
 use syneroym_rpc::{
     Ability, CallerContext, NativeDispatchRegistry, NativeInvocation, NativeResponse,
-    NativeService, ResourceUri, RpcError, RpcResult, ServiceProxy, WeakNativeDispatchRegistry,
+    NativeService, ResourceUri, RowAuthorizer, RpcError, RpcResult, ServiceProxy,
+    WeakNativeDispatchRegistry, empty_row_authorizer,
 };
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     DeployManifest, DeploymentPlan,
@@ -73,6 +74,12 @@ pub struct ControlPlaneService {
     /// calls `.set(...)` on this field the same way it already does for
     /// `AppSandboxEngine`'s.
     pub service_proxy: OnceLock<Weak<dyn ServiceProxy>>,
+    /// The stage-4 ABAC after-step invoker (ADR-0017 §7), threaded on into
+    /// each deployed service's `SynSvcNativeService` exactly like
+    /// `service_proxy` above -- same reason (`AppSandboxEngine`, the sole
+    /// implementation, is constructed in `RouteHandler::init`, which runs
+    /// after this service) and same two-phase `OnceLock` wiring.
+    pub row_authorizer: OnceLock<Weak<dyn RowAuthorizer>>,
     // `Weak`, not `NativeDispatchRegistry` -- see the cycle explained in
     // `syneroym_rpc::dispatch_registry`'s module docs. `RouteHandlerInner`
     // owns the strong clone for as long as the router itself is alive.
@@ -131,6 +138,7 @@ impl ControlPlaneService {
             messaging_broker,
             node_identity,
             service_proxy: OnceLock::new(),
+            row_authorizer: OnceLock::new(),
             native_dispatch: Arc::downgrade(&native_dispatch),
             http_routes,
         })
@@ -166,6 +174,18 @@ impl ControlPlaneService {
     /// constructs `ControlPlaneService` without a full `RouteHandler`).
     pub(crate) fn current_service_proxy(&self) -> Weak<dyn ServiceProxy> {
         self.service_proxy.get().cloned().unwrap_or_else(Self::empty_service_proxy)
+    }
+
+    /// The current `Weak<dyn RowAuthorizer>`, or an always-empty one if
+    /// `RouteHandler::init` hasn't populated `row_authorizer` yet -- mirrors
+    /// `current_service_proxy` exactly. Unlike `empty_service_proxy` above,
+    /// reuses `syneroym_rpc::empty_row_authorizer` directly rather than a
+    /// locally duplicated marker type: `RowAuthorizer` lives in
+    /// `syneroym-rpc`, a dependency `control_plane` already carries
+    /// unconditionally (unlike `sandbox_wasm`, which is behind the optional
+    /// `app_sandbox` feature).
+    pub(crate) fn current_row_authorizer(&self) -> Weak<dyn RowAuthorizer> {
+        self.row_authorizer.get().cloned().unwrap_or_else(empty_row_authorizer)
     }
 
     /// Whether `caller` holds a specific **node-wide** orchestrator ability:

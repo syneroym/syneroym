@@ -779,14 +779,71 @@ pre-existing `mainline` DHT actor-thread flake this repo already tracks;
 confirmed clean with `--test-threads=1`, unrelated to this slice, no action
 taken here.
 
-#### Slice B4-fdae: Stage-4 WASM ABAC
-**Depends on:** B2 (candidate rows come from the sieve). May fold into B2's
-design if it stays small. **Requirement:** `[FND-IAM]`.
+#### Slice B4-fdae: Stage-4 WASM ABAC ✅ (2026-07-25)
+**Depends on:** B2 (candidate rows come from the sieve). Turned out not to
+stay small enough to fold into B2 (a WIT interface, a new substrate identity
+level, a read-only host-state mode, a config pair, a deploy-time gate, and a
+test fixture component) — shipped as its own slice, per
+`slice-b4-implementation-plan.md` §5 item 7. **Requirement:** `[FND-IAM]`.
 Wire the guest-exported `authorize-rows` after-step (shape per D-04-02, see FDAE
 Enforcement Model). Batched (one call per candidate batch, not per row); opt-in
 per policy rule; **restrict-only** (may redact/deny, never widen). Per ADR-0017
 §7 it **may** issue read-only lookups, but only fuel-/time-metered — enforce the
 budget and Default-Deny on overrun.
+
+**Closed (2026-07-25).** Wired both real read ingresses (the WASM
+host-function path and guest self-proxy/native dispatch) to run the
+after-step over the sieve's already-admitted candidate rows whenever a
+permission opts in (`authorize_rows: true`), through a fresh, throw-away
+component instantiation per D-B4-1 (a host function cannot re-enter the
+live instance it is already running inside) under a new, capability-less,
+sieve-exempt `AuthLevel::LocalReadOnly` (D-B4-2) that structurally bounds
+both write access (`HostState.read_only`) and after-step recursion (a
+`LocalReadOnly` read carries no `QueryAuth`, so nothing can trigger a
+second after-step from inside the first). `aggregate`/`delete_many` deny
+closed under a stage-4 policy (D-B4-3: rows never surface to filter after
+the fact), `check_access` runs the same after-step as `get` rather than a
+plain existence check, and a remote `resolve-relation` denies closed for a
+stage-4-opted definition (neither its A1 nor A2 branch has a compiled sieve
+to check per-read, so the check is a coarser, definition-level
+`definition_has_abac`). Deploy-time `validate_stage4_export` rejects a
+stage-4-opted policy whose WASM component doesn't export the after-step, or
+that names a TCP/container service outright, with the already-persisted
+policy row rolled back on rejection. Failure/Security matrix rows 7-9 are
+all ✅ (row 7 reworded — see §5 item 5 of the implementation plan — since
+the shipped decision shape makes "widen" structurally unrepresentable
+rather than something to reject at runtime). The `< 25 ms` Mode-B budget's
+after-step counterpart is measured (`abac_bench.rs`): a 34.9 µs
+instantiation floor at 0 rows, scaling to 1.048 ms at the 1000-row
+`MAX_ABAC_ROWS` cap — negligible against the pushdown-query budget, and
+opt-in per permission, so only reads through a stage-4-opted permission pay
+it. Proven end to end against a real guest export: the `abac-test` WASM
+fixture (`test-components/abac-test`, switchable via `app-config`'s `mode`
+key) and its 8 integration tests in
+`sandbox_wasm/tests/abac_integration.rs` cover deny/redact/allow, fuel
+exhaustion, read-only write-attempt enforcement, the read-only lookup
+escape hatch reading the service's own data, arity-mismatch denial, and
+`check_access`; the router-side ingress-(ii) self-proxy path is proven the
+same way in `router/tests/proxy_dispatch.rs::guest_self_proxy_data_layer_applies_stage4`
+(the `proxy-test` fixture now also exports `authorize-rows`); the
+`resolve-relation` deny is proven locally
+(`router/tests/native_dispatch_identity.rs::resolve_relation_a1_denies_closed_under_a_stage4_definition`,
+`..._a2_denies_closed_under_a_stage4_definition`), which dispatches through
+the identical `SynSvcNativeService::resolve_relation` path a real federated
+fetch reaches; a genuinely cross-node proof was attempted in
+`federated_fdae_e2e.rs` and reverted — the harness's data-owning node is
+always deployed as a **TCP** service, which `validate_stage4_export` (Phase
+4) correctly rejects outright for any `authorize_rows: true` policy (no
+guest to call), so no stage-4-opted policy can ever be deployed there at
+all; see `deferred-backlog.md`. The deploy-time gate is
+proven in `control_plane/src/service/orchestration.rs`'s
+`test_stage4_policy_without_the_export_fails_deploy`,
+`..._on_a_tcp_service_fails_deploy`, `..._rejection_rolls_back_the_policy_row`.
+ADR-0017 amended (2026-07-25) for §7's WIT shape (`result<..., string>`,
+`collection`/`permissions`/`anchor-did` added to `auth-context`,
+`claims-json`) and its fuel-budget claim (the after-step is a separate
+instantiation from the entry point's own quota, not covered by it) —
+see the ADR's Amendments section. Full evidence: `status.md`.
 
 #### Slice B5-fdae: Write-Side Tier 3 (Mode-A Write Authorization)
 **Depends on:** B2 (the `check_access` Mode-A primitive) **and D-04-02-f**
@@ -845,9 +902,7 @@ Continues from M04A (steps 20–21, 24–25):
 
 ## Failure and Security Tests
 
-B2's rows (1-5) are done, with evidence below. Rows 6 (B3) and 7-9
-(B4-fdae) name mechanisms this slice does not implement yet — recorded as
-deferred, not silently dropped, per those slices' own task.md entries.
+All nine rows are done, with evidence below (1-5: B2; 6: B3; 7-9: B4-fdae).
 
 | # | Test | Expected Outcome | Outcome |
 |---|---|---|---|
@@ -857,9 +912,9 @@ deferred, not silently dropped, per those slices' own task.md entries.
 | 4 | FDAE policy with a cyclic ReBAC relationship in user data | `visited_track` breaks recursion; no infinite loop (`system-architecture.md:1847`) | ✅ `compile::tests::recursive_relation_terminates_on_a_cyclic_manager_graph` — a deliberately cyclic manager graph (eve→frank→eve) terminates and returns the correct membership |
 | 5 | Compiled FDAE query exceeds the policy time budget | Transaction rolled back, Default-Denied (`:1848`) | ✅ `sqlite::tests::fdae_watchdog_interrupts_do_query_as_quota_exceeded`, `..._do_get_as_quota_exceeded`, `fdae_watchdog_interrupt_denies_do_check_access` (Mode A → `Ok(false)`), `..._do_delete_many_on_the_writer_conn` (`data_db`) — `FDAE_MAX_VM_OPS` progress-handler backstop, per ADR-0017 §8 plan resolution (§12.8) |
 | 6 | Cross-service FDAE parameter fetch times out | Falls back to deny, not silent allow | ✅ Mechanism + tests landed in Slice B3 Phase 4 (`resolve_fetches` maps any proxy error/timeout to a deny for Mode B/A alike, and now enforces `FDAE_FETCH_TIMEOUT` itself rather than trusting the `ServiceProxy` to honor it) — `syneroym_rpc::fdae_fetch::tests::resolve_fetches_denies_on_an_actually_elapsed_timeout`, `..._denies_on_a_proxy_error`, `router::native_dispatch_identity::native_dispatch_denies_closed_on_a_cross_service_fetch_failure`, `sandbox_wasm::host_capabilities::tests::fdae_remote_relation_fetch_failure_denies_closed`. **The two-real-substrate e2e proof of the same claim (Slice B3 Phase 5, 2026-07-25):** `crates/substrate/tests/federated_fdae_e2e.rs`'s own asserter-mismatch scenario (a policy trusting the wrong `expected_asserter_did`, the shape a stale/misconfigured policy would produce) denies closed with a real `PermissionDenied` across the real network hop, not just in a hand-built unit test. |
-| 7 | Stage-4 ABAC attempts to **widen** access beyond ReBAC | Rejected — restrict-only enforced; a widen decision cannot grant a row the sieve excluded (ADR-0017 §7) | ⛔ Deferred — Slice B4-fdae (stage 4, not yet implemented) |
-| 8 | Stage-4 ABAC read-only lookup (§7) exceeds its fuel/time budget | Aborted, row Default-Denied; the lookup cannot run unmetered | ⛔ Deferred — Slice B4-fdae (not yet implemented) |
-| 9 | Stage-4 ABAC returns `redact(fields)` | Named fields removed from the row before it reaches the guest | ⛔ Deferred — Slice B4-fdae (not yet implemented) |
+| 7 | Stage-4 ABAC's decision shape attempting to **widen** access beyond ReBAC | *(reworded, see `slice-b4-implementation-plan.md` §5 item 5 — "widen" has no encoding to attempt: a positional `allow`/`deny`/`redact` list over rows the sieve already admitted cannot name a row outside that set)* Structurally unrepresentable, proven two ways: a malformed (arity-mismatched) decision list denies the whole batch rather than being partially trusted; an `allow`-everything guest still never sees a row the sieve excluded | ✅ `fdae_abac::tests::arity_mismatch_denies_the_whole_batch` (`rpc`); `sandbox_wasm::tests::abac_integration::stage4_bad_arity_denies_the_whole_batch`, `..._cannot_admit_a_row_the_sieve_excluded` |
+| 8 | Stage-4 ABAC read-only lookup (§7) exceeds its fuel/time budget | Aborted, row Default-Denied; the lookup cannot run unmetered | ✅ `fdae_abac::tests::an_elapsed_timeout_denies_closed`, `..._an_unavailable_authorizer_denies_closed`, `..._an_over_large_batch_denies_closed` (`rpc`); `sandbox_wasm::tests::abac_integration::stage4_fuel_exhaustion_denies_the_whole_batch` (real fuel/epoch overrun through a real WASM `spin` guest) |
+| 9 | Stage-4 ABAC returns `redact(fields)` | Named fields removed from the row before it reaches the guest | ✅ `fdae_abac::tests::redact_returns_exactly_the_decided_fields_never_subtracting_them`, `..._a_dotted_redact_path_denies_the_row` (H3 precedent — a dotted path denies rather than silently masking nothing) (`rpc`); `sandbox_wasm::tests::abac_integration::stage4_redact_removes_the_named_field_before_the_guest_sees_it` |
 
 ### Security review findings (Slice B2, post-commit third pass)
 
@@ -888,7 +943,7 @@ renumbered.
 |---|---|---|
 | FDAE pushdown query (100 records, single-hop ReBAC) | < 25 ms p99 (vs. M3A's unauthenticated 20 ms — +5 ms for policy compilation) | `criterion` integration bench |
 | Federated FDAE fetch (one cross-service hop) | < 50 ms p99 (network-bound; a floor, not a hard SLA) | Integration test, two local nodes |
-| Stage-4 ABAC over a candidate batch | Document measured; must not dominate Mode-B query latency | `criterion` micro-bench |
+| Stage-4 ABAC over a candidate batch | Document measured; must not dominate Mode-B query latency | ✅ `criterion` micro-bench (`crates/sandbox_wasm/benches/abac_bench.rs`), 2026-07-25: instantiation floor (0 rows) 34.9 µs; 1 row 36.1 µs; 10 rows 46.0 µs; 100 rows 137.1 µs; 1000 rows (`MAX_ABAC_ROWS`) 1.048 ms — negligible against the 25 ms p99 Mode-B budget above (0.5% at 100 rows) and confirming the instantiation floor, not row count, dominates at realistic page sizes, matching Slice B3 Phase 5's own finding for the federated fetch. Opt-in per permission (`authorize_rows: true`); the cost above is the price of opting in, paid only by reads through that permission. |
 
 ---
 
@@ -912,9 +967,9 @@ renumbered.
 - [ ] FDAE pushdown sieve implemented: Mode A + Mode B, RLS + CLS, cycle guard, watchdog default-deny, parameterized binding.
 - [ ] Compiled FDAE security subquery merges correctly with the ADR-0007 JSON filter.
 - [x] Federated cross-service fetch (B3) works over the Universal Proxy; timeout→deny verified (Slice B3 Phase 4, 2026-07-24 — real `ProxyRouter`/`resolve_fetches` integration tests in `crates/router`/`crates/rpc`/`crates/sandbox_wasm`; Phase 5, 2026-07-25, adds the two-real-substrate e2e proof, `crates/substrate/tests/federated_fdae_e2e.rs`).
-- [ ] Stage-4 ABAC wired: pure-predicate, batched, restrict-only default; redact/deny tested.
+- [x] Stage-4 ABAC wired (Slice B4-fdae, 2026-07-25): batched, opt-in per permission, restrict-only enforced; may issue fuel-/time-metered read-only lookups (ADR-0017 §7's escape hatch, not the earlier "pure-predicate" ban — see the ADR's 2026-07-25 amendment). Redact/deny tested, real WASM export end to end.
 - [x] Reference scenario steps 22–23 execute end-to-end (step 23 ✅ Phase 5, 2026-07-25; step 22 ✅ Slice B3.5-fdae, 2026-07-25 — both D-04-02-h ingresses closed).
-- [ ] All Failure and Security Tests produce documented outcomes.
-- [ ] Performance budgets verified; `criterion` output in `status.md`.
+- [x] All Failure and Security Tests produce documented outcomes.
+- [x] Performance budgets verified; `criterion` output in `status.md`.
 - [ ] `traceability-matrix.md` `[FND-IAM]` (M4B: FDAE) row flipped **Planned → Complete** with evidence (pushdown sieve, RLS/CLS, 4-stage pipeline, federated fetch, stage-4 ABAC). *(Row already present; `[PRD-SAF]` already retargeted to `TBD` at M04A closeout — no action unless it regresses.)*
 - [ ] Sub-decisions D-04-02-a/-b/-c (resolved at ADR acceptance) reflected in the shipped schema/compiler; D-04-02-d/-e recorded as deferral/B7 hand-off, not silently dropped.

@@ -80,7 +80,8 @@
           "type": "array",
           "items": { "type": "string", "minLength": 1 }
         },
-        "fields": { "$ref": "#/$defs/fields_policy" }
+        "fields": { "$ref": "#/$defs/fields_policy" },
+        "authorize_rows": { "type": "boolean" }
       }
     },
     "condition": {

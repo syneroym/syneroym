@@ -124,6 +124,13 @@ pub struct Permission {
     pub includes: Vec<String>,
     #[serde(default)]
     pub fields: Option<FieldsPolicy>,
+    /// Stage-4 ABAC opt-in (ADR-0017 §7). When true, a read admitted through
+    /// this permission is additionally passed to the service's guest-exported
+    /// `authorize-rows` after-step before any row reaches the caller.
+    /// Restrict-only: the after-step may drop rows or redact fields, never
+    /// admit a row this permission's `paths:` did not reach.
+    #[serde(default)]
+    pub authorize_rows: bool,
 }
 
 /// An attribute predicate binding a caller claim against a row column:
@@ -541,6 +548,39 @@ mod tests {
     }
 
     #[test]
+    fn authorize_rows_defaults_to_false_when_absent() {
+        let doc = minimal_doc(
+            r#"{"document": {"table": "documents", "permissions": {
+                "view": {"allows": ["data-layer/read"], "paths": []}
+            }}}"#,
+        );
+        let policy = parse_and_validate(&doc).unwrap();
+        assert!(!policy.definitions["document"].permissions["view"].authorize_rows);
+    }
+
+    #[test]
+    fn accepts_authorize_rows_when_declared() {
+        let doc = minimal_doc(
+            r#"{"document": {"table": "documents", "permissions": {
+                "view": {"allows": ["data-layer/read"], "paths": [], "authorize_rows": true}
+            }}}"#,
+        );
+        let policy = parse_and_validate(&doc).unwrap();
+        assert!(policy.definitions["document"].permissions["view"].authorize_rows);
+    }
+
+    #[test]
+    fn rejects_an_unknown_permission_key() {
+        let doc = minimal_doc(
+            r#"{"document": {"table": "documents", "permissions": {
+                "view": {"allows": ["data-layer/read"], "paths": [], "authorise_rows": true}
+            }}}"#,
+        );
+        let err = parse_and_validate(&doc).unwrap_err();
+        assert!(matches!(err, PolicyError::Schema(_)));
+    }
+
+    #[test]
     fn rejects_wrong_version_at_schema_stage() {
         let doc = minimal_doc(r#"{"user": {"table": "users"}}"#).replace("fdae/v1", "fdae/v2");
         let err = parse_and_validate(&doc).unwrap_err();
@@ -929,6 +969,7 @@ mod tests {
                 conditions: vec![],
                 includes: vec![],
                 fields: None,
+                authorize_rows: false,
             },
         );
         let mut definitions = BTreeMap::new();

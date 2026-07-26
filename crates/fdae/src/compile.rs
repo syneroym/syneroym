@@ -57,6 +57,14 @@ pub struct CompiledSieve {
     /// predicate has actually been run, and emit a second, execution-aware
     /// trace.
     pub trace: DecisionTrace,
+    /// Applicable permission names that opted into the stage-4 ABAC after-step
+    /// (ADR-0017 §7, `Permission.authorize_rows`). Empty -- the overwhelmingly
+    /// common case -- means no after-step: the sieve's rows are final.
+    /// Non-empty obliges the *ingress* (never `data_db`, which has no WASM
+    /// engine) to run `authorize-rows` over the candidate rows before
+    /// returning them, and obliges `aggregate`/`delete_many` to deny
+    /// closed.
+    pub abac_permissions: Vec<String>,
 }
 
 /// Which of ADR-0017 §4's two compilation modes to produce.
@@ -175,6 +183,7 @@ pub struct PendingSieve {
     where_caveats: Vec<Json>,
     trace: DecisionTrace,
     markers: Vec<PendingMarker>,
+    abac_permissions: Vec<String>,
 }
 
 /// The result of [`plan_read`]: either a fully-compiled local sieve (the B2
@@ -294,6 +303,7 @@ pub fn finalize(
         where_caveats,
         mut trace,
         markers,
+        abac_permissions,
     } = pending;
 
     // Markers are inserted in ascending `params_index` order so `shift`
@@ -343,7 +353,14 @@ pub fn finalize(
         }
     }
 
-    Ok(CompiledSieve { where_clause, params, masked_fields, where_caveats, trace })
+    Ok(CompiledSieve {
+        where_clause,
+        params,
+        masked_fields,
+        where_caveats,
+        trace,
+        abac_permissions,
+    })
 }
 
 /// Compiles the row-security block for `operation` on `collection`, as seen
@@ -510,6 +527,16 @@ pub fn plan_read(
         }
     }
 
+    // Stage-4 ABAC opt-in (ADR-0017 §7): every applicable permission that set
+    // `authorize_rows: true`, including the `default` fallback if it was
+    // just folded into `applicable` above. Empty -- the overwhelmingly
+    // common case -- means no after-step.
+    let abac_permissions: Vec<String> = applicable
+        .iter()
+        .filter(|name| def.permissions.get(*name).is_some_and(|p| p.authorize_rows))
+        .cloned()
+        .collect();
+
     let mut params: Vec<Value> = Vec::new();
     let mut fetch_ctx = FetchCtx::default();
     let mut clauses: Vec<String> = Vec::with_capacity(applicable.len());
@@ -582,6 +609,7 @@ pub fn plan_read(
         path_failed,
         caveats_applied,
         remote_fetches: Vec::new(),
+        abac_permissions: abac_permissions.clone(),
     };
     trace.emit();
 
@@ -593,6 +621,7 @@ pub fn plan_read(
                 masked_fields,
                 where_caveats,
                 trace,
+                abac_permissions,
             }),
             fetches: Vec::new(),
             pending: None,
@@ -608,6 +637,7 @@ pub fn plan_read(
                 where_caveats,
                 trace,
                 markers: fetch_ctx.markers,
+                abac_permissions,
             }),
         })
     }
@@ -665,6 +695,22 @@ fn find_definition<'a>(policy: &'a Policy, collection: &str) -> Option<(&'a str,
 #[must_use]
 pub fn definition_table<'a>(policy: &'a Policy, collection: &str) -> Option<&'a str> {
     find_definition(policy, collection).map(|(_, def)| def.table.as_str())
+}
+
+/// Whether *any* permission on the definition backing `collection` opts into
+/// the stage-4 after-step (ADR-0017 §7, `Permission.authorize_rows`).
+/// Coarser than a compiled sieve's `abac_permissions` (which knows which
+/// permissions this caller actually selected) and deliberately so: the one
+/// caller is B3's `resolve-relation` (both its A1 sieve-backed branch and
+/// its A2 `resolve_structural` fallback), which has no compiled sieve for
+/// the requesting anchor and must fail closed rather than let a remote
+/// caller route around this node's after-step. An unknown `collection`
+/// returns `false` -- `find_definition` returning `None` already means "no
+/// definition to gate," identical to `definition_table`'s own behavior.
+#[must_use]
+pub fn definition_has_abac(policy: &Policy, collection: &str) -> bool {
+    find_definition(policy, collection)
+        .is_some_and(|(_, def)| def.permissions.values().any(|p| p.authorize_rows))
 }
 
 /// A raw `<principal_column> = ?` predicate for [`resolve_structural`] (B3
@@ -735,6 +781,7 @@ fn deny_all() -> CompiledSieve {
         masked_fields: Vec::new(),
         where_caveats: Vec::new(),
         trace: DecisionTrace::default(),
+        abac_permissions: Vec::new(),
     }
 }
 
@@ -2324,6 +2371,82 @@ mod tests {
         assert!(plan.local.is_some());
     }
 
+    /// `abac_permissions` lists only the applicable permissions that opted
+    /// into the stage-4 after-step, not every applicable permission -- a
+    /// single capability entitles both `view` and `view_secret` here (the
+    /// grant∩policy intersection, D-04-02-a), but only `view_secret` set
+    /// `authorize_rows: true`.
+    #[test]
+    fn abac_permissions_lists_only_opted_in_applicable_permissions() {
+        let policy = parse_and_validate(
+            r#"{
+                "version": "fdae/v1",
+                "definitions": {
+                    "document": {
+                        "table": "documents",
+                        "permissions": {
+                            "view": {"allows": ["data-layer/read"], "paths": []},
+                            "view_secret": {
+                                "allows": ["data-layer/read"], "paths": [],
+                                "authorize_rows": true
+                            }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let alice = session("did:key:alice", vec![read_cap(Some("document"))]);
+        let sieve = compile_read(
+            &policy,
+            "document",
+            &alice,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::Filter,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(sieve.abac_permissions, vec!["view_secret".to_string()]);
+    }
+
+    /// A denied read (no entitling capability at all) never runs the
+    /// after-step -- `deny_all()`'s `abac_permissions` is always empty,
+    /// regardless of what the policy declares.
+    #[test]
+    fn deny_all_carries_no_abac_permissions() {
+        let policy = parse_and_validate(
+            r#"{
+                "version": "fdae/v1",
+                "definitions": {
+                    "document": {
+                        "table": "documents",
+                        "permissions": {
+                            "view_secret": {
+                                "allows": ["data-layer/read"], "paths": [],
+                                "authorize_rows": true
+                            }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let stranger = session("did:key:stranger", vec![]);
+        let sieve = compile_read(
+            &policy,
+            "document",
+            &stranger,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::Filter,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(sieve.abac_permissions.is_empty());
+        assert_eq!(sieve.where_clause, "0=1");
+    }
+
     /// `finalize` binds a fetched id-set into the pending sieve's `IN (...)`
     /// predicate and runs correctly against real seeded rows: the local row
     /// whose `owner_uuid` is in the fetched set is visible; one that isn't,
@@ -2382,6 +2505,62 @@ mod tests {
             vec![fetch_trace],
             "a successful fetch must leave provenance in the DecisionTrace, not just the deny path"
         );
+    }
+
+    /// `abac_permissions` survives the two-phase compile: `plan_read`
+    /// computes it before any fetch is known, `PendingSieve` carries it
+    /// across the `await` a real fetch would sit behind, and `finalize`'s
+    /// exhaustive destructure/rebuild must not drop it.
+    #[test]
+    fn finalize_preserves_abac_permissions_through_a_remote_fetch() {
+        let policy = parse_and_validate(
+            r#"{
+                "version": "fdae/v1",
+                "definitions": {
+                    "document": {
+                        "table": "documents",
+                        "relations": {"owner": {
+                            "target": "employee", "service": "hr-svc", "join_column": "owner_uuid",
+                            "expected_asserter_did": "did:key:zHrSvc"
+                        }},
+                        "permissions": {
+                            "view": {
+                                "allows": ["data-layer/read"], "paths": [["owner", "anchor"]],
+                                "authorize_rows": true
+                            }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let proxying_service =
+            session_with_anchor("did:key:svc-1", "did:key:alice", vec![read_cap(Some("document"))]);
+        let mut plan = plan_read(
+            &policy,
+            "document",
+            &proxying_service,
+            SERVICE_ID,
+            &Ability(Ability::DATA_LAYER_READ.to_string()),
+            Mode::Filter,
+        )
+        .unwrap();
+        let slot = plan.fetches[0].slot;
+        let pending = plan.pending.take().unwrap();
+
+        let results = vec![FetchResult {
+            slot,
+            ids: vec!["emp-alice".to_string()],
+            trace: RemoteFetchTrace {
+                service: "hr-svc".to_string(),
+                relation: "employee".to_string(),
+                principal_did: "did:key:alice".to_string(),
+                asserter_did: "did:key:zHrSvc".to_string(),
+                valid_until_secs: 1_000,
+            },
+        }];
+        let sieve = finalize(pending, &results).unwrap();
+        assert_eq!(sieve.abac_permissions, vec!["view".to_string()]);
     }
 
     /// Mirrors the above with an empty fetched id-set: `IN (SELECT 1 WHERE

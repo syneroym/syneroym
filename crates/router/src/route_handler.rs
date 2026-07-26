@@ -31,7 +31,7 @@ use syneroym_data_db::traits::StorageProvider;
 use syneroym_data_keystore::KeyStore;
 use syneroym_identity::{Identity, substrate};
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
-use syneroym_rpc::{NativeDispatchRegistry, NativeService, ServiceProxy};
+use syneroym_rpc::{NativeDispatchRegistry, NativeService, RowAuthorizer, ServiceProxy};
 use syneroym_sandbox_wasm::AppSandboxEngine;
 use tokio::io::AsyncWriteExt;
 use tracing::{debug, error};
@@ -230,6 +230,21 @@ impl RouteHandler {
             .service_proxy
             .set(Arc::downgrade(&proxy) as Weak<dyn ServiceProxy>)
             .map_err(|_| anyhow::anyhow!("AppSandboxEngine::service_proxy set more than once"))?;
+        // Slice B4-fdae: `SynSvcNativeService`'s stage-4 ABAC after-step
+        // (ADR-0017 §7) needs a handle to the same engine -- `AppSandboxEngine`
+        // is the sole `RowAuthorizer` implementation. Threaded through
+        // `ControlPlaneService.row_authorizer` below, same two-phase
+        // `OnceLock` wiring as `service_proxy` (this engine already exists
+        // by construction time; only the *native-dispatch* side needs the
+        // handle threaded in post-construction).
+        if let Some(control_plane) = &deps.control_plane {
+            control_plane
+                .row_authorizer
+                .set(Arc::downgrade(&deps.app_sandbox_engine) as Weak<dyn RowAuthorizer>)
+                .map_err(|_| {
+                    anyhow::anyhow!("ControlPlaneService::row_authorizer set more than once")
+                })?;
+        }
         // Slice B3 Phase 4: `SynSvcNativeService`'s cross-service
         // relationship-proof fetch needs the same proxy handle, threaded
         // through `ControlPlaneService` at deploy time -- same two-phase

@@ -101,6 +101,7 @@ async fn test_route_handler(service_id: &str) -> RouteHandler {
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
         "did:key:zTestOwner",
         syneroym_sandbox_wasm::empty_service_proxy(),
+        syneroym_rpc::empty_row_authorizer(),
     ));
 
     let deps = RouteHandlerDeps {

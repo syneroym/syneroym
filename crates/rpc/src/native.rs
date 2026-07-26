@@ -63,6 +63,16 @@ pub enum AuthLevel {
     /// Substrate-injected lifecycle context (init/migrate), carrying
     /// `data-layer/admin` on the service's own resource.
     LocalElevated,
+    /// Substrate-injected stage-4 ABAC context (ADR-0017 §7): the service
+    /// acting as itself for the after-step. Carries **no** capabilities and
+    /// is exempt from the FDAE sieve, per §7's "the escape hatches run under
+    /// the service's own identity". Read-only-ness comes from
+    /// `HostState.read_only`, not from a capability -- host write paths
+    /// carry no capability gate of their own (D-04-02-f), so a narrower
+    /// capability would enforce nothing. Distinct from capability-less
+    /// `System` only because the sieve exemption keys on this level, and
+    /// exempting `System` would re-open D-04-02-h's ingress-(ii) bypass.
+    LocalReadOnly,
     /// Substrate-injected system context (a service acting as itself, or an
     /// already-authorized internal dispatch), not derived from a wire
     /// handshake. Carries no elevated capabilities, unlike `LocalElevated`.
@@ -113,6 +123,24 @@ impl CallerContext {
                 ..Default::default()
             },
             auth: AuthLevel::System,
+            proof: None,
+        }
+    }
+
+    /// Substrate-injected stage-4 ABAC identity. Never constructible from
+    /// guest or wire input: `AppSandboxEngine::authorize_rows` is the sole
+    /// producer, exactly as `invoke_lifecycle_hook` is for `local_elevated`.
+    /// Deliberately capability-less -- see `AuthLevel::LocalReadOnly`.
+    #[must_use]
+    pub fn service_abac(service_id: &str) -> Self {
+        Self {
+            caller_did: format!("system:abac:{service_id}"),
+            app_instance: None,
+            session: SessionContext {
+                subject_did: format!("system:abac:{service_id}"),
+                ..Default::default()
+            },
+            auth: AuthLevel::LocalReadOnly,
             proof: None,
         }
     }
