@@ -32,11 +32,23 @@ pub const MAX_ABAC_ROWS: usize = 1000;
 /// payload byte into its own `wasmtime::component::Val` (the dynamic `Val`
 /// API has no raw-bytes fast path), and `Val`'s largest variant is ~40
 /// bytes, so an unbounded per-record payload turns into unbounded transient
-/// host memory at up to ~40x the wire size, per concurrent read. 16 MiB
-/// keeps a full `MAX_ABAC_ROWS`-row batch of realistically-sized records
-/// well under the memory a single after-step call should ever transiently
-/// hold, while staying far above any legitimate single-page payload.
-pub const MAX_ABAC_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
+/// host memory at up to ~40x the wire size, per concurrent read.
+///
+/// 1 MiB (review residual R4 -- an earlier 16 MiB was too generous):
+/// `crates/sandbox_wasm/benches/abac_bench.rs` measured 100 rows @ 16 KB
+/// (1.6 MB, a tenth of that old cap) at ~18.4 ms, so a batch actually at
+/// 16 MiB would cost on the order of 180 ms and ~640 MB of transient host
+/// memory -- 7x the 25 ms Mode-B p99 budget the after-step's cost is
+/// supposed to be negligible against, and more than the guest's own default
+/// 256 MB `default_max_memory_bytes`. At 1 MiB the same linear scaling
+/// implies roughly 11 ms and ~40 MB worst case: a real cost (opting in
+/// still isn't free), but no longer able to dominate the read path it sits
+/// on. `MAX_ABAC_ROWS` at 1000 rows means this averages to ~1 KB/row if a
+/// batch uses the full row count; larger legitimate records simply mean
+/// fewer rows fit under the shared byte budget, the normal tradeoff of a
+/// batch-wide cap. A starting point, to be re-tuned against real workloads
+/// the same way `abac_max_instructions`/`abac_epoch_timeout_secs` are.
+pub const MAX_ABAC_PAYLOAD_BYTES: usize = 1024 * 1024;
 
 /// Everything the guest-exported `authorize-rows` after-step needs to know
 /// about the call it is being asked to judge, mirroring the WIT
@@ -173,10 +185,27 @@ pub fn empty_row_authorizer() -> Weak<dyn RowAuthorizer> {
     Weak::<NeverConstructed>::new()
 }
 
+/// Unions CLS's own `masked_fields` (the sieve's compile-time column mask)
+/// with the after-step's per-row `extra` redact set, the projection every
+/// read ingress applies before returning a record. Extracted (review
+/// residual R5) because the four call sites that need it -- WASM
+/// `get`/`query` (`sandbox_wasm::host_capabilities`) and native
+/// `get`/`query` (`control_plane::synsvc_native`) -- had each written the
+/// same `masked_fields.iter().cloned().chain(extra).collect()` out by hand;
+/// one shared function means they can't silently drift, and the one
+/// integration test that exercises this union
+/// (`stage4_cls_mask_unions_with_the_after_step_redact_set`) now covers all
+/// four by covering the function they share, not just the one call site it
+/// happens to drive.
+#[must_use]
+pub fn union_masked_fields(masked_fields: &[String], extra: Vec<String>) -> Vec<String> {
+    masked_fields.iter().cloned().chain(extra).collect()
+}
+
 /// Runs the stage-4 after-step over `rows` when `sieve` opts in, and returns
 /// the surviving rows each paired with the **extra** field names to strip
 /// (the after-step's `redact` set; the caller unions this with the sieve's
-/// own `masked_fields` before projecting).
+/// own `masked_fields` before projecting, via [`union_masked_fields`]).
 ///
 /// **Restrict-only by construction**: the guest is only ever shown rows the
 /// sieve already admitted and can only answer per-position, so there is no

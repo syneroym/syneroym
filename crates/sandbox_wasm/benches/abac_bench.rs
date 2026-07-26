@@ -24,6 +24,13 @@
 //! count. `abac_after_step_100_rows_at_*kb` holds row count fixed at 100
 //! and sweeps payload size instead, so the headline row-count numbers
 //! above aren't read as bounding realistic (kilobyte-scale) records too.
+//! This bench measures `RowAuthorizer::authorize_rows` directly, bypassing
+//! `apply_stage4`'s `MAX_ABAC_PAYLOAD_BYTES` cap entirely -- the
+//! `_at_16kb` point (1.6 MB total) is exactly the measurement that showed
+//! the original 16 MiB cap (review residual R4) was too generous and
+//! motivated tightening it to 1 MiB, so that point now exceeds what a real
+//! read is allowed to reach in production, on purpose: it's here to keep
+//! demonstrating the per-byte cost, not to represent an in-budget batch.
 
 use std::{fs, sync::Arc};
 

@@ -41,6 +41,7 @@ use syneroym_mqtt_broker::{MqttBroker, namespace_topic_for_publish};
 use syneroym_rpc::{
     AbacError, Ability, CandidateRow, NativeInvocation, NativeResponse, NativeService,
     RelationshipProof, ResourceUri, RowAuthorizer, RpcError, RpcResult, ServiceProxy, apply_stage4,
+    union_masked_fields,
 };
 use syneroym_wit_interfaces::host::syneroym::{
     app_config::app_config::ConfigError,
@@ -187,10 +188,23 @@ fn abac_error_to_data_layer_error(e: AbacError) -> DataLayerError {
         | AbacError::BudgetExceeded { .. }
         | AbacError::BatchTooLarge(_)
         | AbacError::PayloadTooLarge { .. } => DataLayerError::QuotaExceeded,
-        AbacError::MissingExport(_)
-        | AbacError::Trap { .. }
-        | AbacError::ArityMismatch { .. }
-        | AbacError::Malformed(_) => DataLayerError::Internal(e.to_string()),
+        // `MissingExport`/`ArityMismatch` carry only a service id / row
+        // counts -- safe to echo in full.
+        AbacError::MissingExport(_) | AbacError::ArityMismatch { .. } => {
+            DataLayerError::Internal(e.to_string())
+        }
+        // `Trap`/`Malformed` can carry guest-authored (and, for a malformed
+        // decision, potentially row-derived) text -- review residual R3,
+        // same reasoning as `sandbox_wasm::host_capabilities::map_abac_error`:
+        // a generic message keeps the caller-visible signal without putting
+        // that text on the wire to the calling client; the detail still
+        // reaches `AbacTrace::emit`'s (truncated, B4-06) log line.
+        AbacError::Trap { .. } => {
+            DataLayerError::Internal("stage-4 after-step trapped".to_string())
+        }
+        AbacError::Malformed(_) => {
+            DataLayerError::Internal("stage-4 after-step returned a malformed decision".to_string())
+        }
     }
 }
 
@@ -765,12 +779,8 @@ impl SynSvcNativeService {
                                 .map_err(|e| data_layer_error(abac_error_to_data_layer_error(e)))?;
                                 match kept.into_iter().next() {
                                     Some((_, extra)) => {
-                                        let masked: Vec<String> = outcome
-                                            .masked_fields
-                                            .iter()
-                                            .cloned()
-                                            .chain(extra)
-                                            .collect();
+                                        let masked =
+                                            union_masked_fields(&outcome.masked_fields, extra);
                                         Some(
                                             strip_record(record, &masked)
                                                 .map_err(data_layer_error)?,
@@ -848,8 +858,7 @@ impl SynSvcNativeService {
                 let records = kept
                     .into_iter()
                     .map(|(record, extra)| {
-                        let masked: Vec<String> =
-                            outcome.masked_fields.iter().cloned().chain(extra).collect();
+                        let masked = union_masked_fields(&outcome.masked_fields, extra);
                         strip_record(record, &masked)
                     })
                     .collect::<Result<Vec<_>, _>>()

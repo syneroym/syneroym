@@ -45,20 +45,29 @@ const SERVICE_ID: &str = "abac-test-svc";
 /// match against `profiles.creator_uuid` (no join needed) -- mirrors
 /// `data_layer_integration.rs`'s `principal_column`-direct shape.
 ///
-/// `lookup_targets` is also stage-4-gated, deliberately via an
-/// unconditionally public permission (`paths: []`, no `principal_column`
-/// needed): D-B4-4's recursion bound (`stage4_nested_read_does_not_re_
-/// enter_the_after_step`, review finding B4-03) needs a nested read that
-/// would actually match for *any* caller identity, including the
-/// after-step's own synthetic `LocalReadOnly` one -- a `caller`-scoped
-/// permission like `profiles`' own wouldn't reliably do that, since
-/// `apply_stage4` short-circuits on an empty row set before ever invoking
-/// the after-step a second time. It also carries a `fields.deny` (CLS),
-/// unlike `profiles`, so `stage4_cls_mask_unions_with_the_after_step_redact_
-/// set` (review finding B4-08) has a permission combining both to assert
-/// against, which no existing `profiles` permission does (adding `fields.
-/// deny` there would change what `stage4_redact_removes_the_named_field_
-/// before_the_guest_sees_it` asserts survives the redact).
+/// `lookup_targets` is also stage-4-gated, via an unconditionally public
+/// permission (`paths: []`, no `principal_column` needed):
+/// `stage4_nested_read_does_not_re_enter_the_after_step` (review finding
+/// B4-03) needs a nested read that reliably returns rows *today*, under the
+/// intact `LocalReadOnly` exemption, so a regression in that exemption
+/// flips the fixture's decision and fails the test's outer assertion.
+/// `paths: []` only makes the row-level predicate unconditional; it does
+/// **not** bypass `applicable_permissions`' capability gate (review residual
+/// R1, `compile.rs::applicable_permissions`), which requires a *held
+/// capability* before any permission -- public or not -- becomes
+/// applicable. `CallerContext::service_abac` is deliberately capability-less
+/// (D-B4-2), so if the exemption were ever narrowed, this nested read would
+/// compile `deny_all()` (zero rows, deny-closed), not re-enter
+/// `authorize_rows` -- the capability gate independently blocks true
+/// recursion regardless of this exemption. See the test's own doc comment
+/// for what the test does and doesn't prove.
+///
+/// `lookup_targets` also carries a `fields.deny` (CLS), unlike `profiles`,
+/// so `stage4_cls_mask_unions_with_the_after_step_redact_set` (review
+/// finding B4-08) has a permission combining both to assert against, which
+/// no existing `profiles` permission does (adding `fields.deny` there would
+/// change what `stage4_redact_removes_the_named_field_before_the_guest_sees_it`
+/// asserts survives the redact).
 fn abac_policy() -> String {
     r#"{
         "version": "fdae/v1",
@@ -587,26 +596,55 @@ async fn stage4_lookup_sees_its_own_service_data() {
     );
 }
 
-/// D-B4-4's recursion bound (review finding B4-03): `lookup_targets`'s
-/// `view` permission is stage-4-gated *and* unconditionally public, so it
-/// matches for *any* caller identity -- including the after-step's own
-/// synthetic `LocalReadOnly` one -- guaranteeing the nested `query` inside
-/// `nested_query_recurses_if_unexempted` mode is non-empty and would
-/// therefore actually re-enter `authorize_rows` (recursing without bound,
-/// since every entry runs the identical logic) if `resolve_query_auth`'s
-/// `LocalReadOnly` exemption were ever narrowed. Unlike
-/// `stage4_lookup_sees_its_own_service_data` above, an empty-rows
+/// D-B4-4's recursion bound (review finding B4-03) -- corrected per review
+/// residual R1, which is right that the original version of this comment
+/// named the wrong mechanism.
+///
+/// **What this test actually proves.** `resolve_query_auth`'s
+/// `LocalReadOnly` exemption (`host_capabilities.rs`) makes the after-step's
+/// own reads carry no `QueryAuth` at all, so the nested `query` inside
+/// `nested_query_recurses_if_unexempted` mode reads `lookup_targets`
+/// genuinely unfiltered -- seeing both seeded rows regardless of any policy
+/// on that collection. If the exemption were ever narrowed, that nested
+/// read would start going through `plan_read` like any other, and this test
+/// fails: the fixture would see an empty result (not two rows) and deny
+/// every candidate, dropping the outer `query`'s surviving row count from 1
+/// to 0, breaking the assertion below.
+///
+/// **What it does *not* prove.** A narrowed exemption would *not* actually
+/// make the nested read re-enter `authorize_rows`. `lookup_targets`' `view`
+/// permission being unconditionally public (`paths: []`) only makes its
+/// *row-level* predicate unconditional -- it does nothing to
+/// `applicable_permissions`' *permission-level* gate
+/// (`crates/fdae/src/compile.rs`), which requires the caller to hold some
+/// capability granting the operation before *any* permission, public or
+/// not, is even considered applicable. `CallerContext::service_abac` is
+/// deliberately capability-less (D-B4-2), so under a narrowed exemption the
+/// nested read would compile `deny_all()` -- zero rows, no `abac_permissions`
+/// -- rather than reaching a second `authorize_rows` call. The recursion
+/// bound is therefore doubly held today: the exemption (when intact) skips
+/// policy evaluation for this identity entirely, and the capability gate
+/// (independently, and regardless of the exemption) would deny it anyway.
+/// Should a future change ever give `service_abac` a capability, the
+/// capability gate stops being a backstop and this exemption becomes the
+/// *only* thing preventing genuine re-entry -- that is the point at which
+/// this test's original "prevents recursion" framing would become literally
+/// true, and worth re-deriving from scratch rather than assuming still
+/// holds.
+///
+/// Unlike `stage4_lookup_sees_its_own_service_data` above, an empty-rows
 /// short-circuit inside `apply_stage4` can't silently make this pass for
 /// the wrong reason: `profiles`' own `caller`-scoped permission would never
-/// match the after-step's synthetic identity, so a nested read against
-/// *that* collection would return zero rows and never actually attempt
-/// re-entry either way -- exactly why this needs its own definition
-/// (`abac_policy`'s doc comment) rather than reusing `profiles`.
+/// be applicable for the after-step's synthetic (capability-less) identity
+/// either, so a nested read against *that* collection would already be
+/// empty today -- exactly why this needs its own definition (`abac_policy`'s
+/// doc comment) rather than reusing `profiles`.
 ///
-/// A fast, correctly-decided completion is the proof the bound holds
-/// today; a real regression here surfaces as a `QuotaExceeded`/timeout
-/// error from the outer `query` (bounded by `abac_instance_permits` +
-/// `FDAE_ABAC_TIMEOUT`, review finding B4-01), not an unbounded hang.
+/// A fast, correctly-decided completion is what today's behavior looks
+/// like; a regression here surfaces as a broken assertion (this test
+/// fails), not a hang -- and separately, even an actually-recursing
+/// hypothetical would be bounded by `abac_instance_permits` +
+/// `FDAE_ABAC_TIMEOUT` (review finding B4-01) rather than looping forever.
 #[tokio::test]
 async fn stage4_nested_read_does_not_re_enter_the_after_step() {
     let dir = tempfile::tempdir().unwrap();

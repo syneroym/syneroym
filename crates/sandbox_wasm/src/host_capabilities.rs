@@ -32,7 +32,7 @@ use syneroym_mqtt_broker::{
 use syneroym_rpc::{
     AbacError, Ability, AuthLevel, CallOrigin, CallerContext, CandidateRow,
     ProxyError as RpcProxyError, ProxyProtocol, ProxyRequest, ResourceUri, RowAuthorizer,
-    ServiceProxy, apply_stage4,
+    ServiceProxy, apply_stage4, union_masked_fields,
 };
 use syneroym_wit_interfaces::host::syneroym::{
     app_config::app_config::{self, ConfigError},
@@ -494,10 +494,27 @@ fn map_abac_error(e: AbacError) -> DataLayerError {
         | AbacError::BudgetExceeded { .. }
         | AbacError::BatchTooLarge(_)
         | AbacError::PayloadTooLarge { .. } => DataLayerError::QuotaExceeded,
-        AbacError::MissingExport(_)
-        | AbacError::Trap { .. }
-        | AbacError::ArityMismatch { .. }
-        | AbacError::Malformed(_) => DataLayerError::Internal(e.to_string()),
+        // `MissingExport`/`ArityMismatch` carry only a service id / row
+        // counts -- safe to echo in full, and useful for diagnosing a
+        // deploy-time misconfiguration.
+        AbacError::MissingExport(_) | AbacError::ArityMismatch { .. } => {
+            DataLayerError::Internal(e.to_string())
+        }
+        // `Trap`/`Malformed` can carry guest-authored (and, for a malformed
+        // decision, potentially row-derived) text -- review residual R3:
+        // echoing it via `DataLayerError::Internal` puts it on the wire to
+        // the calling client, a channel that didn't exist before B4-04's
+        // fix (previously an after-step failure never reached the caller
+        // at all). A generic message keeps the caller-visible signal to
+        // "the after-step failed" without the detail; the detail itself
+        // still reaches `AbacTrace::emit`'s (truncated, B4-06) log line,
+        // which is the audience it's actually useful to.
+        AbacError::Trap { .. } => {
+            DataLayerError::Internal("stage-4 after-step trapped".to_string())
+        }
+        AbacError::Malformed(_) => {
+            DataLayerError::Internal("stage-4 after-step returned a malformed decision".to_string())
+        }
     }
 }
 
@@ -683,7 +700,7 @@ impl store::Host for HostState {
                 .await
                 .map_err(map_abac_error)?;
         let Some((_, extra)) = kept.into_iter().next() else { return Ok(None) };
-        let masked: Vec<String> = outcome.masked_fields.iter().cloned().chain(extra).collect();
+        let masked = union_masked_fields(&outcome.masked_fields, extra);
         strip_record(record, &masked).map(Some)
     }
 
@@ -753,8 +770,7 @@ impl store::Host for HostState {
         let records = kept
             .into_iter()
             .map(|(record, extra)| {
-                let masked: Vec<String> =
-                    outcome.masked_fields.iter().cloned().chain(extra).collect();
+                let masked = union_masked_fields(&outcome.masked_fields, extra);
                 strip_record(record, &masked)
             })
             .collect::<Result<Vec<_>, _>>()?;

@@ -25,7 +25,10 @@ The instantiation floor (0 rows) dominates at realistic page sizes, matching
 Slice B3 Phase 5's federated-fetch finding -- but payload size, not row
 count, is what actually moves the number: 100 rows at 16 KB/row (1.6 MB
 total) is ~156x the ~28-byte-row figure at the same row count, confirming
-B4-02's concern and motivating `MAX_ABAC_PAYLOAD_BYTES` (16 MiB/batch).
+B4-02's concern and motivating `MAX_ABAC_PAYLOAD_BYTES` (1 MiB/batch as of
+review residual R4 -- an initial 16 MiB was too generous against these same
+numbers: 100 rows @ 16 KB is a tenth of that cap yet already costs ~18-22
+ms, implying ~180 ms/~640 MB for a batch actually at the old cap).
 
 ## Run: 2026-06-04 08:47:03 (285d29d)
 

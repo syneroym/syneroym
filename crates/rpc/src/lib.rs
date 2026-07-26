@@ -20,7 +20,7 @@ pub use converter::JsonRpcConverter;
 pub use dispatch_registry::{NativeDispatchRegistry, WeakNativeDispatchRegistry};
 pub use fdae_abac::{
     AbacAuthContext, AbacError, CandidateRow, FDAE_ABAC_TIMEOUT, MAX_ABAC_ROWS, RowAuthorizer,
-    RowDecision, apply_stage4, empty_row_authorizer,
+    RowDecision, apply_stage4, empty_row_authorizer, union_masked_fields,
 };
 pub use fdae_fetch::{FDAE_FETCH_TIMEOUT, FetchError, resolve_fetches};
 pub use native::{

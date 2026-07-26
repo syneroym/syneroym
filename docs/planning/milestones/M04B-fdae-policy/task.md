@@ -866,20 +866,35 @@ deferred-backlog row rather than silently scoped down).
   `Val::List(Val::U8...)` one byte at a time (~40 bytes of host memory per
   payload byte — inherent to wasmtime's dynamic `Val` API, not a bug in
   this slice's own code), and `MAX_ABAC_ROWS` bounds row count, not bytes.
-  Fixed with a new `MAX_ABAC_PAYLOAD_BYTES` (16 MiB/batch) cap in
-  `apply_stage4`, denying closed above it. Bench numbers below (B4-15)
-  confirm the scaling this bounds.
-- **B4-03 (high, confirmed, fixed).** D-B4-4's recursion bound had no
-  regression test, and `stage4_lookup_sees_its_own_service_data` — credited
-  with covering it — couldn't: its nested read targeted a collection with
-  no policy (nothing to filter regardless of the exemption), and the test's
-  engine never set `self_weak`, so the after-step's own `row_authorizer`
-  was `empty_row_authorizer()` and couldn't have re-entered even if a
-  sieve had appeared. Fixed: `lookup_targets` now carries its own
-  stage-4-gated, unconditionally public permission (so a nested read
-  matches for *any* caller identity, including the after-step's synthetic
-  one) and `deploy_with_mode` wires `self_weak`; new dedicated test
-  `stage4_nested_read_does_not_re_enter_the_after_step`.
+  Fixed with a new `MAX_ABAC_PAYLOAD_BYTES` cap in `apply_stage4`, denying
+  closed above it. Bench numbers below (B4-15) confirm the scaling this
+  bounds. **Follow-up (2026-07-26, review residual R4):** the initial 16
+  MiB value was too generous against those same numbers — 100 rows @ 16 KB
+  (a tenth of that cap) already cost ~18-22 ms, implying ~180 ms and ~640 MB
+  for a batch actually at the cap, well past "negligible" against the 25 ms
+  Mode-B budget. Lowered to 1 MiB (~11 ms / ~40 MB worst case); see the
+  constant's own doc comment for the full derivation.
+- **B4-03 (high, confirmed, fixed; comments corrected post-review, R1).**
+  D-B4-4's recursion bound had no regression test, and
+  `stage4_lookup_sees_its_own_service_data` — credited with covering it —
+  couldn't: its nested read targeted a collection with no policy (nothing
+  to filter regardless of the exemption), and the test's engine never set
+  `self_weak`, so the after-step's own `row_authorizer` was
+  `empty_row_authorizer()` and couldn't have re-entered even if a sieve had
+  appeared. Fixed: `lookup_targets` now carries its own stage-4-gated,
+  unconditionally public permission (so a nested read reliably returns rows
+  *today*, under the intact exemption) and `deploy_with_mode` wires
+  `self_weak`; new dedicated test
+  `stage4_nested_read_does_not_re_enter_the_after_step`. **Follow-up
+  (2026-07-26, review residual R1):** the fix's own comments misdescribed
+  the mechanism — `paths: []` makes the *row* predicate unconditional, not
+  the *permission* applicable; `applicable_permissions` (`crates/fdae/src/
+  compile.rs`) still requires a held capability, which `service_abac`
+  (D-B4-2) deliberately never has, so a narrowed exemption would compile
+  `deny_all()`, not genuinely re-enter `authorize_rows`. The test still
+  correctly fails on a regression (the nested read goes empty, flipping the
+  outer assertion) — only the stated reasoning was wrong, corrected across
+  all three comments (`abac_policy`, the test, and the fixture mode).
 - **B4-04 (medium, confirmed, fixed).** Both ingresses cleared
   `next_cursor` on an after-step error and returned an empty, successful
   page — and the comment justifying it said the opposite of what the code
@@ -935,10 +950,14 @@ deferred-backlog row rather than silently scoped down).
   policy straight through `AppSandboxEngine::deploy_wasm` (which performs
   no such validation itself).
 - **B4-12 (low, confirmed, fixed).** The WIT `query` doc comment never got
-  D-B4-5's pagination-shortening caveat, though `traits.rs` did and the
-  backlog said both were done. Fixed: caveat added to the WIT file
-  (`data-layer.wit`); no backlog correction needed since the row already
-  correctly named only `traits.rs`.
+  D-B4-5's pagination-shortening caveat, though `traits.rs` did — and the
+  deferred-backlog row for D-B4-5 named both the WIT comment and
+  `traits.rs`, which was inaccurate for the WIT half until this fix landed.
+  Fixed: caveat added to the WIT file (`data-layer.wit`); no backlog
+  correction needed *now*, since the row's claim is accurate as of this
+  commit (review residual R6 caught the earlier, imprecise wording here
+  claiming the row had "already correctly named only `traits.rs`" — it
+  named both, and the WIT half was the part that was wrong).
 - **B4-13 (low, confirmed, fixed).** `substrate.fdae.abac_ms` was recorded
   only after a successful `func.call_async`, undercounting instantiation
   failure and missing-export exit paths — exactly the two failure modes an
@@ -1054,7 +1073,7 @@ renumbered.
 |---|---|---|
 | FDAE pushdown query (100 records, single-hop ReBAC) | < 25 ms p99 (vs. M3A's unauthenticated 20 ms — +5 ms for policy compilation) | `criterion` integration bench |
 | Federated FDAE fetch (one cross-service hop) | < 50 ms p99 (network-bound; a floor, not a hard SLA) | Integration test, two local nodes |
-| Stage-4 ABAC over a candidate batch | Document measured; must not dominate Mode-B query latency | ✅ `criterion` micro-bench (`crates/sandbox_wasm/benches/abac_bench.rs`), row-count sweep at a fixed ~28-byte payload (2026-07-25): instantiation floor (0 rows) 34.9 µs; 1 row 36.1 µs; 10 rows 46.0 µs; 100 rows 137.1 µs; 1000 rows (`MAX_ABAC_ROWS`) 1.048 ms — negligible against the 25 ms p99 Mode-B budget above (0.5% at 100 rows) and confirming the instantiation floor, not row count, dominates at realistic page sizes, matching Slice B3 Phase 5's own finding for the federated fetch. **Payload-size sweep added post-review (2026-07-26, review finding B4-02/B4-15)**, 100 rows fixed: ~28 B/row 142.2 µs, 1 KB/row 1.494 ms, 16 KB/row 22.14 ms — payload bytes, not row count, are the real cost driver (`Val::List(payload.iter().map(Val::U8)...)` expands every byte into its own `wasmtime::component::Val`), motivating the new `MAX_ABAC_PAYLOAD_BYTES` batch cap (16 MiB) alongside `MAX_ABAC_ROWS`. Full numbers: `PERF_SUMMARY.md`. Opt-in per permission (`authorize_rows: true`); the cost above is the price of opting in, paid only by reads through that permission. |
+| Stage-4 ABAC over a candidate batch | Document measured; must not dominate Mode-B query latency | ✅ `criterion` micro-bench (`crates/sandbox_wasm/benches/abac_bench.rs`), row-count sweep at a fixed ~28-byte payload (2026-07-25): instantiation floor (0 rows) 34.9 µs; 1 row 36.1 µs; 10 rows 46.0 µs; 100 rows 137.1 µs; 1000 rows (`MAX_ABAC_ROWS`) 1.048 ms — negligible against the 25 ms p99 Mode-B budget above (0.5% at 100 rows) and confirming the instantiation floor, not row count, dominates at realistic page sizes, matching Slice B3 Phase 5's own finding for the federated fetch. **Payload-size sweep added post-review (2026-07-26, review finding B4-02/B4-15)**, 100 rows fixed: ~28 B/row 142.2 µs, 1 KB/row 1.494 ms, 16 KB/row 22.14 ms — payload bytes, not row count, are the real cost driver (`Val::List(payload.iter().map(Val::U8)...)` expands every byte into its own `wasmtime::component::Val`), motivating the new `MAX_ABAC_PAYLOAD_BYTES` batch cap (1 MiB, tightened from an initial 16 MiB per review residual R4 once these numbers showed 16 MiB implied ~180 ms/~640 MB at the cap) alongside `MAX_ABAC_ROWS`. Full numbers: `PERF_SUMMARY.md`. Opt-in per permission (`authorize_rows: true`); the cost above is the price of opting in, paid only by reads through that permission. |
 
 ---
 

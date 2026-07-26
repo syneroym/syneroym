@@ -135,17 +135,21 @@ impl AuthorizerGuest for AbacTestComponent {
                 })
                 .collect())
             }
-            // D-B4-4's recursion bound. `lookup_targets`'s own `view`
-            // permission is stage-4-gated *and* unconditionally public
-            // (`paths: []`), so it matches for *any* caller identity,
-            // including this after-step's own synthetic `LocalReadOnly`
-            // one -- guaranteeing the nested query below is non-empty and
-            // would therefore actually re-enter this same function (and
-            // recurse without bound, since every entry runs the identical
-            // logic) if the `LocalReadOnly` sieve exemption were ever
-            // narrowed. Today it completes fast and sees both seeded rows
-            // unfiltered, because the exemption means this nested read
-            // never consults a sieve -- carries no `QueryAuth` -- at all.
+            // D-B4-4's recursion bound (see the Rust-side test's doc
+            // comment, `abac_integration.rs`, for the corrected mechanism --
+            // review residual R1). Today this sees both seeded rows
+            // unfiltered, because the `LocalReadOnly` sieve exemption means
+            // this nested read carries no `QueryAuth` and never consults a
+            // sieve at all. If that exemption were ever narrowed, the read
+            // would *not* re-enter this function: `lookup_targets`' `view`
+            // permission is unconditionally public at the row level
+            // (`paths: []`), but this after-step's synthetic caller holds
+            // no capability, and `applicable_permissions` requires one
+            // before any permission -- public or not -- is applicable. So a
+            // narrowed exemption instead compiles `deny_all()`: this query
+            // sees zero rows, `saw_both` goes false, and every candidate is
+            // denied -- still a real regression signal (the outer test's
+            // assertion breaks), just not literal re-entry.
             "nested_query_recurses_if_unexempted" => {
                 let opts = store::QueryOptions { filter: None, limit: None, cursor: None };
                 let saw_both = store::query("lookup_targets", &opts)

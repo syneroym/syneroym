@@ -186,10 +186,17 @@ pub struct AppSandboxEngine {
     /// queuing instead: a caller waiting past `FDAE_ABAC_TIMEOUT` surfaces
     /// as `AbacError::BudgetExceeded`, which ingress code now maps to a
     /// distinguishable resource-exhausted error (B4-04), never to
-    /// "authorized, zero rows". Sized conservatively (a third of the pool)
-    /// so this alone can never be the sole cause of exhausting the rest of
-    /// the pool; raise `max_concurrent_instances` to raise stage-4
-    /// throughput.
+    /// "authorized, zero rows". Fixed at half of
+    /// `STREAM_INSTANCE_POOL_HEADROOM` (review residual R2; see where it's
+    /// computed in `init` for the full accounting), *not* scaled by
+    /// `max_concurrent_instances`: `stream_instance_permits`' own budget
+    /// formula predates this fix and is asserted exactly by an existing
+    /// test at a small pool size, so this reservation had to fit inside
+    /// the headroom that formula already carves out for "ordinary calls",
+    /// rather than growing the pool's overall reservation and shrinking
+    /// what streams get. Raising stage-4 throughput today means raising
+    /// this fixed budget (and `STREAM_INSTANCE_POOL_HEADROOM` alongside
+    /// it) in code, not raising `max_concurrent_instances` alone.
     abac_instance_permits: Arc<Semaphore>,
     /// Epoch-tick budget for an ordinary dispatch call (RPC/proxy
     /// invocation, message delivery, one streaming chunk) -- see
@@ -319,7 +326,24 @@ impl AppSandboxEngine {
                 (2, 50_000_000)
             };
         let abac_epoch_ticks = ticks_for_secs(abac_timeout_secs);
-        let abac_instance_budget = (max_instances / 3).max(1);
+        // Fixed, not scaled by `max_concurrent_instances` (review residual
+        // R2 -- an earlier version scaled this and, computed independently
+        // of `stream_instance_budget`, let the two jointly oversubscribe
+        // the pool: default tier 8 + 3 against 10 slots). Each concurrent
+        // after-step call holds *two* pool slots at once (itself, plus the
+        // live ordinary-dispatch instance it was invoked from -- see
+        // `abac_instance_permits`'s doc comment), so this reservation is
+        // doubled below. `STREAM_INSTANCE_POOL_HEADROOM` is the existing,
+        // already-tested "slots reserved for ordinary calls generally"
+        // budget (`stream_integration.rs::test_stream_instances_across_
+        // services_bounded_by_shared_pool_budget` asserts its exact
+        // arithmetic against a small `max_concurrent_instances`, so
+        // `stream_instance_budget`'s own formula below is intentionally
+        // left untouched); halving it is the largest fixed value that
+        // still keeps `stream_instance_budget + abac_instance_budget * 2 ==
+        // max_concurrent_instances` for every pool size, rather than only
+        // the default one.
+        let abac_instance_budget = (STREAM_INSTANCE_POOL_HEADROOM / 2).max(1);
 
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
 
@@ -2279,7 +2303,7 @@ mod tests {
             stream_registry: StreamRegistry::new(),
             max_concurrent_streams_per_service: 8,
             stream_instance_permits: Arc::new(Semaphore::new(8)),
-            abac_instance_permits: Arc::new(Semaphore::new(3)),
+            abac_instance_permits: Arc::new(Semaphore::new(1)),
             dispatch_epoch_ticks: ticks_for_secs(5),
             lifecycle_hook_epoch_ticks: ticks_for_secs(30),
             abac_epoch_ticks: ticks_for_secs(2),
@@ -2345,7 +2369,7 @@ mod tests {
             stream_registry: StreamRegistry::new(),
             max_concurrent_streams_per_service: 8,
             stream_instance_permits: Arc::new(Semaphore::new(8)),
-            abac_instance_permits: Arc::new(Semaphore::new(3)),
+            abac_instance_permits: Arc::new(Semaphore::new(1)),
             dispatch_epoch_ticks: ticks_for_secs(5),
             lifecycle_hook_epoch_ticks: ticks_for_secs(30),
             abac_epoch_ticks: ticks_for_secs(2),
