@@ -3431,3 +3431,334 @@ every other test/bench call site's `HostState::new` update from Phase 3.
   (the new `authorizer.wit` is an additive second file in the existing
   `data-layer` WIT package, not a modification to anything those fixtures
   already depend on).
+
+## Slice B5-fdae — Write-Side Tier 3 (Mode-A Write Authorization) ✅ (2026-07-26)
+
+Branch: `feat/m04b-slice-b5-write-authz` (based on `main` @ `475e259`, Slice
+B4-fdae complete). Closes D-04-02-f and the milestone's last open slice:
+every single-row mutation (`put`/`patch`/`delete`/`batch_mutate`) is now
+authorized against the caller's compiled FDAE policy, rows and columns, in
+the same SQLite transaction as the mutation. Full design in
+[`slice-b5-implementation-plan.md`](./slice-b5-implementation-plan.md)
+(revision 2, post independent review); this section is the
+verification/evidence trail. Seven design decisions (D-B5-1 through D-B5-7)
+are called out below only where they shaped what shipped, not re-derived
+here — see the plan for the full reasoning.
+
+### What was delivered
+
+- **`crates/fdae`** (`trace.rs`, `compile.rs`) — `DecisionTrace` gained three
+  fields: `operation: String` (the ability this decision was compiled for --
+  without it a write deny and a read deny on the same collection were
+  indistinguishable in the log), `row_id: Option<String>` (Mode A only, the
+  row the compiled predicate ran against), and `write_phase:
+  Option<String>` (`"pre-image"`/`"post-image"`, write path only). Wired
+  into all four `DecisionTrace` construction sites in `plan_read`/
+  `compile_read` and both `emit()` log lines (`info!` deny / `debug!`
+  allow). No policy-schema or compiler behavior change -- purely additive
+  observability, matching D-B5-1's diagnosability argument for why this
+  slice touches `crates/fdae` at all despite no new compiled-SQL shape.
+- **`crates/data_db/src/sqlite.rs`** — the enforcement core:
+  - `row_exists` -- the unsieved create-vs-update probe (D-B5-2): decides
+    *which* rule applies (`require_pre_image`), not whether the write is
+    allowed.
+  - `read_payload` -- reads a record's raw payload directly, only ever
+    called from `authorize_and_mutate` after the relevant reachability
+    check already ran.
+  - `masked_fields_unchanged` (D-B5-7) -- compares masked-field values
+    between a write's pre- and post-image; `pre: None` (a create) means any
+    masked key present in the post-image is a rejection. Fail-closed on a
+    non-JSON-object payload, mirroring `auth::strip_masked_fields`'s own
+    rule.
+  - `row_reachable` -- evaluates a `data-layer/write` sieve (compiled once,
+    in `Mode::Filter`, not recompiled per row) against exactly one row id;
+    fail-closed (a watchdog interrupt, malformed caveat, or missing table
+    is `Ok(false)`, same contract as `do_check_access`). Traces via
+    `emit_mode_a_execution_trace` with `row_id`/`write_phase` filled in;
+    denies always trace, allows only when `trace_allows` (suppressed inside
+    `do_batch_mutate` to avoid ~2 log lines per batch member).
+  - `authorize_and_mutate` -- the pre/mutate/post envelope: D-B5-4's stage-4
+    deny-closed check, the `USING` pre-image check (D-B5-2), the CLS
+    pre-image capture (D-B5-7, only when masked fields are non-empty and a
+    pre-image applies), the mutation itself, the `WITH CHECK` post-image
+    check, and the CLS post-check. `sieve == None` is today's unfiltered
+    behavior unchanged (`return mutate(conn)` immediately).
+  - `do_authorized_put`/`do_authorized_patch`/`do_authorized_delete` --
+    transaction wrappers opening a transaction only when a sieve is
+    present, so the policy-absent hot path pays nothing new.
+  - `do_batch_mutate` gained `sieve: Option<&CompiledSieve>`: the existing
+    transaction already gives all-or-nothing rollback, so the first denial
+    `?`-propagates and drops the whole batch -- D-04-02-f's "how does
+    `batch_mutate` authorize per-mutation" answered literally.
+  - **D-B5-6, one line**: `do_put`'s `ON CONFLICT(id) DO UPDATE` no longer
+    refreshes `creator_id` -- it joins `created_at` as create-time-only, so
+    an upsert by a caller who legitimately reaches a shared-path row cannot
+    reassign who created it.
+  - `DbCommand::Put`/`Patch`/`Delete`/`BatchMutate` each gained a boxed
+    `sieve: Option<Box<CompiledSieve>>` field (same `clippy::
+    large_enum_variant` reasoning `DeleteMany` already carried); the writer
+    loop calls the `do_authorized_*` wrappers.
+- **`crates/data_db/src/traits.rs`** -- `put`/`patch`/`delete`/`batch_mutate`
+  each gained a trailing `auth: Option<&QueryAuth<'_>>`, matching
+  `delete_many`'s existing shape; doc comments state the `None`/`Some`
+  contract and the idempotency change (below). `SqliteServiceStore`'s impl
+  compiles the sieve via `compile_sieve_for_op(..., Ability::
+  DATA_LAYER_WRITE, Mode::Filter)`, mirroring `delete_many`; the `Arc<
+  SqliteServiceStore>` forwarding impl forwards the new argument.
+- **`crates/rpc/src/native.rs`** -- `CallerContext::write_attribution
+  (&self, service_id: &str) -> String` (D-B5-5): `System`/`LocalElevated`/
+  `LocalReadOnly` attribute to the service itself (no external principal);
+  every other `AuthLevel` attributes to `app_instance.or(anchor_did).
+  unwrap_or(subject_did)` -- the same anchor-before-subject precedence
+  `compile::terminal_value`/`RemoteFetch.principal_did` use, so a row
+  created through a proxying service is attributed to the principal it
+  acts for, not the proxy. Single source of truth for both ingresses,
+  closing the disagreement Slice B3.5-fdae's identity forwarding had
+  exposed between the guest's direct WIT `put` (previously always
+  `component_id`) and the self-proxy path (previously `app_instance ??
+  caller_did`).
+- **`crates/sandbox_wasm/src/host_capabilities.rs`** -- `put`/`patch`/
+  `delete`/`batch_mutate` each now resolve a `data-layer/write` `QueryAuth`
+  via `resolve_query_auth` (same helper `get`/`query`/`delete_many` already
+  use) and pass it through; `put`/`batch_mutate` compute `creator_id` via
+  `self.caller.write_attribution(&self.component_id)` before opening the
+  store (owned locals first, since `resolve_query_auth` takes `&mut self`).
+- **`crates/control_plane/src/synsvc_native.rs`** -- the `"put"`/`"patch"`/
+  `"delete"`/`"batch-mutate"` JSON-RPC arms of `dispatch_data_layer` gained
+  the same `resolve_query_auth` + `write_attribution` wiring. **Three
+  pre-existing bugs fixed in passing**: `"delete"`, `"delete-many"`, and
+  `"batch-mutate"` mapped every store error through `internal(e.to_string())`
+  instead of `data_layer_error`, so a `PermissionDenied` (already true for
+  `delete_many`'s stage-4 denial before this slice, and now also true for
+  all four write ops) surfaced as an opaque internal error rather than a
+  permission denial. All three now use `data_layer_error`.
+- **WIT** (`data-layer.wit`) -- doc comments only, no signature change:
+  `put`/`patch`/`delete`/`batch-mutate` document that they may now return
+  `permission-denied` under a policy; `delete`/`patch` document the
+  idempotency/not-found change (below); `put`/`check-access` document that
+  `check-access` cannot answer a create pre-check (a hypothetical
+  post-image needs a payload argument it doesn't take).
+
+### Idempotency and not-found semantics change under a policy (§4 of the plan)
+
+`do_delete` is deliberately idempotent on the policy-absent path (unchanged,
+still pinned by `tests_crud.rs::test_delete_missing_record_is_idempotent`).
+Under a policy, deleting a **non-existent** id now returns
+`PermissionDenied` instead of `Ok`: the pre-image check cannot distinguish
+"absent" from "present but unreachable," and must not try to -- that
+distinction is exactly the existence oracle CLS-masking already refuses to
+provide. Same class: `patch` of a missing row flips from
+`SchemaViolation("record not found")` to `PermissionDenied`. Both pinned by
+`tests_fdae.rs::delete_of_a_missing_row_denies_under_a_policy_but_stays_idempotent_without_one`
+and `::patch_of_a_missing_row_denies_rather_than_reporting_not_found`.
+
+### Fixture remediation (§3.7 of the plan, extended during implementation)
+
+Every pre-existing test/bench call site (63 across `data_db`, `sandbox_wasm`,
+`router`) needed a mechanical trailing `auth: None`, preserving today's
+behavior exactly -- confirmed by every pre-existing assertion staying green
+unmodified. Beyond the mechanical pass, several fixtures **seeded through a
+now-gated write path** and needed remediation to seed via the store directly
+(`auth: None`) instead, since the plan's own revision-2 scope (three named
+fixture families) proved narrower than what write-gating actually touched
+once exercised end to end:
+
+- **`router/tests/native_dispatch_identity.rs`** -- the three FDAE tests
+  building a service with `Some(policy)` and seeding via `json_rpc_body(
+  "put", …)` under a capability-less `test_caller` (the plan's originally
+  named fixtures); **plus** `build_hr_svc_proxy_router` (used by every
+  `resolve_relation_*` test) and the local-service construction inside
+  `native_dispatch_query_resolves_a_cross_service_fetch_end_to_end`, both of
+  which the plan's revision-2 scope missed -- discovered only by actually
+  running the suite. All now seed via a new `seed_via_store` helper (or an
+  inline equivalent) that opens the store and calls `put`/`batch_mutate`
+  directly with `auth: None`. `resolve_relation_service_and_pipeline`/`_with`
+  also widened their return tuple to hand back `(storage_provider,
+  key_store)` so `seed_many_employees` (used by the two `MAX_FETCH_IDS`
+  overflow tests) can seed 1001 rows directly via `batch_mutate` instead of
+  through `batch-mutate` JSON-RPC. The now-false "`put`/`create-collection`
+  carry no FDAE gate" comments were deleted.
+- **`crates/router/tests/native_dispatch_identity.rs`'s `test_caller`
+  helper** -- a second, independent fixture bug surfaced by D-B5-5:
+  `test_caller` built `session: SessionContext::default()` (empty
+  `subject_did`) while setting `caller_did` separately, unlike production's
+  `build_caller` (`route_handler/io.rs:169`), which always sets
+  `session.subject_did = caller_did`. `write_attribution` correctly reads
+  the verified session identity, not the raw `caller_did` field, so this
+  fixture gap silently attributed writes to an empty string. Fixed by
+  setting `session.subject_did` to match, which also fixed
+  `authenticated_caller_identity_becomes_creator_id_not_service_id`'s
+  now-correct `creator_id` assertion. The same fix was needed for
+  `router/tests/proxy_dispatch.rs`'s `guest_self_proxy_put_attributes_
+  creator_id_to_the_real_caller_not_the_service` (`real_caller`'s
+  `SessionContext::default()`) -- and since D-B5-5 makes this test's
+  asserted behavior the settled spec, its doc comment and assertion message
+  were also updated from "today's (B5-fdae-open) behavior" to "D-B5-5".
+- **`router/tests/proxy_dispatch.rs`**'s `guest_self_proxy_data_layer_
+  returns_empty_when_policy_present` -- seeded via `self_proxy_call(…,
+  "put", …, None)`, a `None`-caller self-proxy write under a loaded policy,
+  precisely the `AuthLevel::System` write D-B5-3 denies (this fixture's
+  policy also declares no `data-layer/write` permission at all). Fixed to
+  seed via the store directly, matching the neighboring `..._d04_02_h_
+  closed` test's existing pattern.
+- **`crates/substrate/tests/federated_fdae_e2e.rs`** -- both fixture
+  policies (`hr_policy` on Node A, `app_policy` and `bad_app_policy` on Node
+  B) gained a `"seed": {"allows": ["data-layer/write"], "paths": []}`
+  permission, per the plan. **One correction to the plan's own assumption,
+  found while implementing:** the plan verified only that Node A's seeding
+  client (`hr_data_client`, run as the node's `admin_ucan_root` owner) holds
+  a write-entailing capability (`substrate/admin`, confirmed via the emitted
+  `DecisionTrace` log line during a failing run). Node B is **unowned** (no
+  `admin_ucan_root`), so `alice_data_client`/`bad_app_data_client` hold no
+  capability at all by default -- the "seed" permission's public `paths: []`
+  is unreachable without one. Fixed by self-issuing a **write-only** token
+  for each seeding connection (trusted per ADR-0015 A6, since alice/
+  alice_identity_2 own the services they deployed), kept deliberately
+  separate from each principal's existing **read-only** token used for the
+  later query connection: `data-layer/write` entails `data-layer/read` (the
+  tiered ability hierarchy), so presenting a write capability on the *query*
+  connection would make "seed"'s public `paths: []` reachable there too,
+  leaking every document instead of just the caller's own -- verified this
+  would actually happen before implementing the fix, not assumed.
+- **`test-components/data-layer-test`** -- gained a new guest export,
+  `run-query-scenario: func(limit: u32) -> result<string, string>` (query
+  only, no `put`), alongside the existing `run-crud-scenario` (put then
+  query). Two `data_layer_integration.rs` D-04-02-h tests combine a guest
+  write with a guest read in one call (`run_crud_scenario`); under a
+  write-gated policy the guest's own `put` (running as a capability-less
+  `service_system` or a real caller with no write permission) now denies
+  before the read half ever runs, which is not what those tests are about.
+  Fixed by seeding the rows directly against the store and driving only
+  `run-query-scenario` through the guest. Rebuilt via `cargo build --target
+  wasm32-wasip2 --release` in `test-components/data-layer-test`; the
+  artifact is gitignored (`target/`), matching every other test-component.
+
+### Tests
+
+- **`crates/data_db/src/tests_fdae.rs`** (17 new integration tests, real SQL
+  against seeded rows through the `ServiceStore` trait): `mode_a_write_
+  denies_patch_of_an_unreachable_row`, `..._denies_delete_of_an_unreachable_
+  row`, `..._denies_put_update_of_an_unreachable_row`, `..._allows_patch_
+  of_a_reachable_row`, `put_create_is_allowed_when_the_new_row_is_
+  reachable`, `..._is_denied_when_the_new_row_would_be_unreachable`,
+  `patch_is_denied_when_the_post_image_escapes_the_callers_reach`,
+  `batch_mutate_rolls_back_entirely_when_one_mutation_is_unauthorized`,
+  `a_read_only_permission_does_not_authorize_a_write`, `writes_are_
+  unfiltered_when_no_definition_matches_the_collection`, `a_stage4_opted_
+  permission_denies_single_row_writes_closed`, `a_system_caller_write_is_
+  denied_under_a_policy`, `delete_of_a_missing_row_denies_under_a_policy_
+  but_stays_idempotent_without_one`, `patch_of_a_missing_row_denies_
+  rather_than_reporting_not_found`, `an_upsert_by_a_teammate_does_not_
+  steal_creator_id` (D-B5-6), `a_masked_field_cannot_be_written_on_create`
+  and `a_masked_fields_value_cannot_be_changed_on_update` (D-B5-7, covering
+  add/change/remove).
+- **`crates/data_db/src/sqlite.rs`** (1 new unit test in the existing
+  private `tests` module): `fdae_watchdog_interrupt_denies_a_write_and_
+  rolls_back` -- a pathological sieve during `row_reachable`'s pre-image
+  check maps to `PermissionDenied` (not `QuotaExceeded`, unlike the read
+  paths), the mutation never applies, and the connection stays usable
+  afterward.
+- **`crates/sandbox_wasm/src/host_capabilities.rs`** (1 new integration
+  test): `fdae_put_patch_delete_deny_an_unreachable_row_and_allow_a_
+  reachable_one`, through the real `store::Host` guest boundary.
+- **`crates/router/tests/native_dispatch_identity.rs`** (1 new headline
+  test): `native_fdae_policy_authorizes_writes_for_one_verified_caller_and_
+  denies_another`, mirroring the read-side headline test -- two verified
+  callers, each may `patch` only their own row.
+- **`crates/sandbox_wasm/tests/data_layer_integration.rs`** (1 new
+  integration test): `test_deployed_policy_authorizes_guest_originated_
+  writes_for_a_real_caller_and_denies_another` -- a real caller holding
+  `data-layer/write` on a `principal_column: "creator_id"` policy writes
+  and reads back their own rows through the guest (creator_id stamped via
+  `write_attribution`); a capability-less real caller is denied on the
+  first write.
+- **`crates/data_db/benches/fdae_bench.rs`** (new `fdae_authorized_write`
+  `criterion` group): authorized vs. unauthorized `patch`, and a
+  50-mutation authorized vs. unauthorized `batch_mutate` (all of one
+  caller's own, even-numbered seeded rows).
+- **63 mechanical `auth: None` additions** across `data_db/src/tests_crud.rs`
+  (29), `data_db/src/tests_fdae.rs` (8, pre-existing), `data_db/benches/
+  security_config_bench.rs` (2), `data_db/benches/fdae_bench.rs` (3),
+  `sandbox_wasm/benches/data_layer_bench.rs` (4), `sandbox_wasm/tests/
+  abac_integration.rs` (3), `sandbox_wasm/tests/data_layer_integration.rs`
+  (2), `router/tests/proxy_dispatch.rs` (5, three of which needed the
+  additional fixture fix above) -- zero behavior change, confirmed by
+  every pre-existing assertion passing unmodified.
+
+### Decisions carried into this slice
+
+- **`row_reachable` is deliberately not `do_check_access`** --
+  `do_check_access` falls back to a bare existence probe when `sieve` is
+  `None` (D3's documented behavior), which is the wrong answer for a
+  create: an existence fallback would deny every create outright.
+- **The watchdog guard is function-scoped inside `row_reachable`, not
+  hoisted to the transaction** -- `install_watchdog`'s `progress_handler`
+  would otherwise still be armed when the caller's transaction commits,
+  interrupting the commit itself.
+- **`Mode::Filter`, not `Mode::PointInTime`, for the write sieve compile** --
+  one compile per call (`compile_sieve_for_op` in the `ServiceStore` impl),
+  with the `id` predicate appended per row inside `row_reachable`. This is
+  what makes a 200-mutation batch cost one compile, not 200.
+- **No `AuthLevel` carve-out added to `synsvc_native.rs`'s `resolve_query_
+  auth`** -- it already had none (by design, so the self-proxy ingress
+  can't be more permissive than the direct route under the same policy);
+  B5-fdae's write wiring inherits that unchanged.
+
+### Verification evidence
+
+- `cargo +nightly fmt --all` -- clean.
+- `cargo clippy --workspace --all-targets --all-features` -- zero warnings.
+- `cargo test -p syneroym-fdae` -- **99 passed, 0 failed** (unchanged from
+  B4-fdae; the new `DecisionTrace` fields needed no new unit tests at this
+  layer, only wiring at the two call sites `plan_read` already covers).
+- `cargo test -p syneroym-data-db --lib` -- **161 passed, 0 failed** (143
+  prior + 17 new `tests_fdae` + 1 new `sqlite::tests` watchdog test).
+- `cargo test -p syneroym-sandbox-wasm --lib --tests` -- **90 passed, 0
+  failed** across the lib and all six integration test binaries (47 lib
+  [46 prior + 1 new] + 12 `abac_integration` + 5 `blob_store_integration` +
+  4 `data_layer_integration` [3 prior + 1 new] + 6 `lifecycle_hooks` + 3
+  `messaging_integration` + 13 `stream_integration`).
+- `cargo test -p syneroym-control-plane --lib` -- **48 passed, 0 failed**
+  (unchanged; the dispatch wiring is covered by `router`'s integration
+  tests, not new unit tests in this crate).
+- `cargo test -p syneroym-router --lib --tests` -- **140 passed, 0 failed**
+  across the lib (73) and all six test binaries (`deploy_grant` 9,
+  `native_dispatch_identity` 37 [36 prior + 1 new headline write test],
+  `proxy_dispatch` 7 [unchanged count; one test's fixture and assertions
+  updated], `service_ownership` 10, `ucan_context` 2,
+  `unsupported_protocol` 2). One isolated re-run of
+  `resolve_relation_a2_overflow_maps_to_quota_exceeded` hit the
+  pre-existing, previously-documented `mainline` DHT actor-thread flake
+  under heavy parallel test load (`"actor thread unexpectedly shutdown:
+  SendError(..)"`); reran clean in isolation immediately after, confirming
+  a resource-contention flake, not a regression -- the same class this
+  milestone's status.md already documents for `proxy_dispatch.rs` and
+  `messaging_integration.rs`.
+- `cargo test -p syneroym-rpc` -- **32 passed, 0 failed** (unchanged; no
+  `rpc`-crate changes this slice).
+- `cargo test -p syneroym-substrate --test federated_fdae_e2e`
+  (sandbox disabled, real Iroh QUIC, real port binds) -- **1 passed**
+  (76.63s), confirming B3/B3.5-fdae/B4-fdae's own federated proofs still
+  hold with both fixture policies' new `"seed"` permission and the
+  write-only seeding tokens in place.
+- `cargo test --workspace` -- **80/80 test-result blocks green**, zero
+  failures (sandbox disabled for the full run; the previously-documented
+  `coordinator-iroh`/`mqtt-broker`/`sdk`/`substrate` network-bind failures
+  under this CLI's default sandbox are environmental, unrelated to this
+  change, same class every prior phase has documented).
+- `mise run test:e2e` -- **12/12 green** (8 `webrtc.spec.ts` + 4
+  `multi-hop.spec.ts`), matching the established baseline. The reference-
+  scenario E2E fixtures still exercise no `data-layer` code path
+  (`miniapp-demo1-web` is a plain HTTP backend); a deliberate skip of *new*
+  assertions here, same reasoning every prior slice has documented -- the
+  suite is run as a regression gate, not step-22/23 evidence.
+- `wasm32-wasip2` -- confirmed unbroken: `test-components/data-layer-test`
+  rebuilt cleanly via `cargo build --target wasm32-wasip2 --release` after
+  adding `run-query-scenario`; `data-layer.wit`'s doc-comment-only edits
+  needed no rebuild of any other fixture (`greeter`/`proxy-test`/
+  `messaging-pubsub-test`/`stream-test`/`abac-test` all untouched).
+- `cargo bench -p syneroym-data-db --bench fdae_bench -- fdae_authorized_
+  write` -- `patch_unauthorized_baseline` 20.585 µs, `patch_authorized`
+  39.925 µs, `batch_mutate_50_unauthorized_baseline` 340.46 µs,
+  `batch_mutate_50_authorized` 964.41 µs (all criterion mean values; full
+  distributions in `PERF_SUMMARY.md`).

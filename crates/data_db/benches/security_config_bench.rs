@@ -133,14 +133,24 @@ fn bench_sqlcipher_overhead(c: &mut Criterion) {
         group.bench_function(format!("put_{label}"), |b| {
             b.to_async(&runtime).iter(|| async {
                 store
-                    .put("bench", black_box(&write_value("p1", r#"{"age": 30}"#)), "bench-creator")
+                    .put(
+                        "bench",
+                        black_box(&write_value("p1", r#"{"age": 30}"#)),
+                        "bench-creator",
+                        None,
+                    )
                     .await
                     .unwrap();
             });
         });
 
         runtime
-            .block_on(store.put("bench", &write_value("g1", r#"{"age": 30}"#), "bench-creator"))
+            .block_on(store.put(
+                "bench",
+                &write_value("g1", r#"{"age": 30}"#),
+                "bench-creator",
+                None,
+            ))
             .unwrap();
         group.bench_function(format!("get_{label}"), |b| {
             b.to_async(&runtime).iter(|| async {

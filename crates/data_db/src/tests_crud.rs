@@ -45,7 +45,7 @@ async fn test_put_get_patch_correctness() {
     store.create_collection(&schema("people")).await.unwrap();
 
     store
-        .put("people", &write_value("p1", r#"{"name": "alice", "age": 30}"#), "creator-1")
+        .put("people", &write_value("p1", r#"{"name": "alice", "age": 30}"#), "creator-1", None)
         .await
         .unwrap();
     let got = store.get("people", "p1", None).await.unwrap().value.unwrap();
@@ -55,7 +55,7 @@ async fn test_put_get_patch_correctness() {
     assert_eq!(payload["name"], "alice");
     assert_eq!(payload["age"], 30);
 
-    store.patch("people", "p1", br#"{"age": 31, "nickname": "al"}"#).await.unwrap();
+    store.patch("people", "p1", br#"{"age": 31, "nickname": "al"}"#, None).await.unwrap();
     let patched = store.get("people", "p1", None).await.unwrap().value.unwrap();
     let payload: Value = serde_json::from_slice(&patched.payload).unwrap();
     assert_eq!(payload["name"], "alice");
@@ -76,9 +76,18 @@ async fn test_get_returns_ok_none_for_missing_record() {
 async fn test_query_operators_end_to_end() {
     let store = setup_store().await;
     store.create_collection(&schema("people")).await.unwrap();
-    store.put("people", &write_value("p1", r#"{"name": "alice", "age": 30}"#), "c").await.unwrap();
-    store.put("people", &write_value("p2", r#"{"name": "bob", "age": 17}"#), "c").await.unwrap();
-    store.put("people", &write_value("p3", r#"{"name": "carol", "age": 45}"#), "c").await.unwrap();
+    store
+        .put("people", &write_value("p1", r#"{"name": "alice", "age": 30}"#), "c", None)
+        .await
+        .unwrap();
+    store
+        .put("people", &write_value("p2", r#"{"name": "bob", "age": 17}"#), "c", None)
+        .await
+        .unwrap();
+    store
+        .put("people", &write_value("p3", r#"{"name": "carol", "age": 45}"#), "c", None)
+        .await
+        .unwrap();
 
     let opts = QueryOptions {
         filter: Some(r#"{"age": {"$gt": 18}}"#.to_string()),
@@ -115,11 +124,11 @@ async fn test_query_dot_notation() {
     let store = setup_store().await;
     store.create_collection(&schema("people")).await.unwrap();
     store
-        .put("people", &write_value("p1", r#"{"address": {"city": "London"}}"#), "c")
+        .put("people", &write_value("p1", r#"{"address": {"city": "London"}}"#), "c", None)
         .await
         .unwrap();
     store
-        .put("people", &write_value("p2", r#"{"address": {"city": "Paris"}}"#), "c")
+        .put("people", &write_value("p2", r#"{"address": {"city": "Paris"}}"#), "c", None)
         .await
         .unwrap();
 
@@ -137,7 +146,7 @@ async fn test_query_dot_notation() {
 async fn test_query_empty_list_when_no_match() {
     let store = setup_store().await;
     store.create_collection(&schema("people")).await.unwrap();
-    store.put("people", &write_value("p1", r#"{"name": "alice"}"#), "c").await.unwrap();
+    store.put("people", &write_value("p1", r#"{"name": "alice"}"#), "c", None).await.unwrap();
 
     let opts = QueryOptions {
         filter: Some(r#"{"name": "nobody"}"#.to_string()),
@@ -154,7 +163,7 @@ async fn test_query_cursor_pagination_disjoint_pages() {
     let store = setup_store().await;
     store.create_collection(&schema("people")).await.unwrap();
     for i in 0..10 {
-        store.put("people", &write_value(&format!("p{i:02}"), "{}"), "c").await.unwrap();
+        store.put("people", &write_value(&format!("p{i:02}"), "{}"), "c", None).await.unwrap();
     }
 
     let page1 = store
@@ -181,7 +190,7 @@ async fn test_query_cursor_pagination_disjoint_pages() {
 async fn test_batch_mutate_rolls_back_all_on_one_failure() {
     let store = setup_store().await;
     store.create_collection(&schema("people")).await.unwrap();
-    store.put("people", &write_value("existing", "{}"), "c").await.unwrap();
+    store.put("people", &write_value("existing", "{}"), "c", None).await.unwrap();
 
     // The Patch targets an id that doesn't exist, which fails -- the earlier
     // Put in the same batch must not persist either.
@@ -192,7 +201,7 @@ async fn test_batch_mutate_rolls_back_all_on_one_failure() {
             patch_json: b"{}".to_vec(),
         }),
     ];
-    let err = store.batch_mutate("people", &mutations, "c").await.unwrap_err();
+    let err = store.batch_mutate("people", &mutations, "c", None).await.unwrap_err();
     assert!(matches!(err, DataLayerError::SchemaViolation(_)));
     assert!(
         store.get("people", "new-1", None).await.unwrap().value.is_none(),
@@ -207,7 +216,7 @@ async fn test_batch_mutate_exceeding_max_size_rejected() {
     let mutations: Vec<_> = (0..(MAX_BATCH_SIZE + 1))
         .map(|i| Mutation::Put(write_value(&format!("p{i}"), "{}")))
         .collect();
-    let err = store.batch_mutate("people", &mutations, "c").await.unwrap_err();
+    let err = store.batch_mutate("people", &mutations, "c", None).await.unwrap_err();
     assert!(matches!(err, DataLayerError::SchemaViolation(_)));
 }
 
@@ -215,9 +224,9 @@ async fn test_batch_mutate_exceeding_max_size_rejected() {
 async fn test_delete_many_returns_affected_row_count() {
     let store = setup_store().await;
     store.create_collection(&schema("people")).await.unwrap();
-    store.put("people", &write_value("p1", r#"{"age": 10}"#), "c").await.unwrap();
-    store.put("people", &write_value("p2", r#"{"age": 20}"#), "c").await.unwrap();
-    store.put("people", &write_value("p3", r#"{"age": 30}"#), "c").await.unwrap();
+    store.put("people", &write_value("p1", r#"{"age": 10}"#), "c", None).await.unwrap();
+    store.put("people", &write_value("p2", r#"{"age": 20}"#), "c", None).await.unwrap();
+    store.put("people", &write_value("p3", r#"{"age": 30}"#), "c", None).await.unwrap();
 
     let deleted =
         store.delete_many("people", Some(r#"{"age": {"$gte": 20}}"#), None).await.unwrap();
@@ -230,7 +239,7 @@ async fn test_delete_many_returns_affected_row_count() {
 async fn test_delete_missing_record_is_idempotent() {
     let store = setup_store().await;
     store.create_collection(&schema("people")).await.unwrap();
-    store.delete("people", "does-not-exist").await.unwrap();
+    store.delete("people", "does-not-exist", None).await.unwrap();
 }
 
 #[tokio::test]
@@ -252,7 +261,7 @@ async fn test_unsupported_operator_returns_schema_violation() {
 async fn test_sql_injection_via_filter_value_is_safely_bound() {
     let store = setup_store().await;
     store.create_collection(&schema("people")).await.unwrap();
-    store.put("people", &write_value("p1", r#"{"name": "alice"}"#), "c").await.unwrap();
+    store.put("people", &write_value("p1", r#"{"name": "alice"}"#), "c", None).await.unwrap();
 
     let opts = QueryOptions {
         filter: Some(r#"{"name": "'; DROP TABLE people; --"}"#.to_string()),
@@ -285,13 +294,13 @@ async fn test_filter_nested_over_10_levels_rejected() {
 async fn test_updated_at_is_host_injected_discarding_guest_value() {
     let store = setup_store().await;
     store.create_collection(&schema("people")).await.unwrap();
-    store.put("people", &write_value("p1", "{}"), "c").await.unwrap();
+    store.put("people", &write_value("p1", "{}"), "c", None).await.unwrap();
     let before = store.get("people", "p1", None).await.unwrap().value.unwrap();
 
     // The guest embeds an `updated_at` key inside the merge-patch payload
     // itself -- this must have no effect on the host-injected `updated-at`
     // column, which is unconditionally recomputed from the host clock.
-    store.patch("people", "p1", br#"{"updated_at": 1}"#).await.unwrap();
+    store.patch("people", "p1", br#"{"updated_at": 1}"#, None).await.unwrap();
     let after = store.get("people", "p1", None).await.unwrap().value.unwrap();
     assert!(after.updated_at >= before.updated_at);
     assert_ne!(after.updated_at, 1);
@@ -302,7 +311,7 @@ async fn test_execute_ddl_succeeds_and_is_queryable() {
     let store = setup_store().await;
     store.create_collection(&schema("people")).await.unwrap();
     store.execute_ddl("ALTER TABLE people ADD COLUMN nickname TEXT").await.unwrap();
-    store.put("people", &write_value("p1", "{}"), "c").await.unwrap();
+    store.put("people", &write_value("p1", "{}"), "c", None).await.unwrap();
     assert!(store.get("people", "p1", None).await.unwrap().value.is_some());
 }
 
@@ -318,7 +327,7 @@ async fn test_execute_ddl_invalid_syntax_rejected_before_mutation() {
 async fn test_creator_id_is_always_host_supplied() {
     let store = setup_store().await;
     store.create_collection(&schema("people")).await.unwrap();
-    store.put("people", &write_value("p1", "{}"), "the-deploying-service-id").await.unwrap();
+    store.put("people", &write_value("p1", "{}"), "the-deploying-service-id", None).await.unwrap();
     let got = store.get("people", "p1", None).await.unwrap().value.unwrap();
     assert_eq!(got.creator_id, "the-deploying-service-id");
 }
@@ -336,9 +345,18 @@ async fn test_query_missing_collection_is_an_error_not_empty_list() {
 async fn seeded_people_store() -> Box<dyn ServiceStore> {
     let store = setup_store().await;
     store.create_collection(&schema("people")).await.unwrap();
-    store.put("people", &write_value("p1", r#"{"name": "alice", "age": 30}"#), "c").await.unwrap();
-    store.put("people", &write_value("p2", r#"{"name": "bob", "age": 17}"#), "c").await.unwrap();
-    store.put("people", &write_value("p3", r#"{"name": "carol", "age": 45}"#), "c").await.unwrap();
+    store
+        .put("people", &write_value("p1", r#"{"name": "alice", "age": 30}"#), "c", None)
+        .await
+        .unwrap();
+    store
+        .put("people", &write_value("p2", r#"{"name": "bob", "age": 17}"#), "c", None)
+        .await
+        .unwrap();
+    store
+        .put("people", &write_value("p3", r#"{"name": "carol", "age": 45}"#), "c", None)
+        .await
+        .unwrap();
     store
 }
 
@@ -503,7 +521,7 @@ async fn test_query_raw_exceeding_page_cap_is_quota_exceeded() {
     let store = setup_store().await;
     store.create_collection(&schema("people")).await.unwrap();
     for i in 0..(MAX_QUERY_PAGE_SIZE + 1) {
-        store.put("people", &write_value(&format!("p{i:05}"), "{}"), "c").await.unwrap();
+        store.put("people", &write_value(&format!("p{i:05}"), "{}"), "c", None).await.unwrap();
     }
     let err = store.query_raw("SELECT id FROM people", &[]).await.unwrap_err();
     assert!(matches!(err, DataLayerError::QuotaExceeded));
@@ -554,7 +572,7 @@ async fn seeded_categorized_people_store() -> Box<dyn ServiceStore> {
     let rows = [("p1", "a", 10), ("p2", "a", 20), ("p3", "a", 30), ("p4", "b", 5), ("p5", "b", 7)];
     for (id, category, amount) in rows {
         let payload = format!(r#"{{"category": "{category}", "amount": {amount}}}"#);
-        store.put("people", &write_value(id, &payload), "c").await.unwrap();
+        store.put("people", &write_value(id, &payload), "c", None).await.unwrap();
     }
     store
 }
@@ -674,7 +692,7 @@ async fn test_aggregate_default_order_is_ascending_by_id() {
     store.create_collection(&schema("people")).await.unwrap();
     for (id, category) in [("p1", "z"), ("p2", "m"), ("p3", "a"), ("p4", "m"), ("p5", "z")] {
         store
-            .put("people", &write_value(id, &format!(r#"{{"category": "{category}"}}"#)), "c")
+            .put("people", &write_value(id, &format!(r#"{{"category": "{category}"}}"#)), "c", None)
             .await
             .unwrap();
     }
@@ -700,7 +718,12 @@ async fn test_aggregate_over_page_cap_quota_exceeded() {
     store.create_collection(&schema("people")).await.unwrap();
     for i in 0..(MAX_QUERY_PAGE_SIZE + 1) {
         store
-            .put("people", &write_value(&format!("p{i:05}"), &format!(r#"{{"k": {i}}}"#)), "c")
+            .put(
+                "people",
+                &write_value(&format!("p{i:05}"), &format!(r#"{{"k": {i}}}"#)),
+                "c",
+                None,
+            )
             .await
             .unwrap();
     }
@@ -717,7 +740,7 @@ async fn test_aggregate_skip_limit_pages_groups() {
     store.create_collection(&schema("people")).await.unwrap();
     for i in 0..10 {
         store
-            .put("people", &write_value(&format!("p{i}"), &format!(r#"{{"k": {i}}}"#)), "c")
+            .put("people", &write_value(&format!("p{i}"), &format!(r#"{{"k": {i}}}"#)), "c", None)
             .await
             .unwrap();
     }

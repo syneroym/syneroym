@@ -144,6 +144,28 @@ impl CallerContext {
             proof: None,
         }
     }
+
+    /// The DID a row this caller writes should be attributed to (D-B5-5,
+    /// M04B Slice B5-fdae). Synthesized substrate contexts have no external
+    /// principal, so the service owns the row; everyone else is attributed
+    /// to the principal they act for -- `anchor_did` before `subject_did`,
+    /// the same precedence `syneroym_fdae::compile`'s path-terminal
+    /// resolution and `RemoteFetch.principal_did` use, so a row created
+    /// through a proxying service is attributed to the principal it acts
+    /// for, not the proxy.
+    #[must_use]
+    pub fn write_attribution(&self, service_id: &str) -> String {
+        match self.auth {
+            AuthLevel::System | AuthLevel::LocalElevated | AuthLevel::LocalReadOnly => {
+                service_id.to_string()
+            }
+            AuthLevel::Delegated | AuthLevel::Ucan => self
+                .app_instance
+                .clone()
+                .or_else(|| self.session.anchor_did.clone())
+                .unwrap_or_else(|| self.session.subject_did.clone()),
+        }
+    }
 }
 
 /// Represents a parsed and validated request ready for dispatch to a native

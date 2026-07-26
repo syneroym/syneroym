@@ -600,26 +600,17 @@ async fn guest_self_proxy_data_layer_reads_normally_when_policy_absent() {
     assert!(result.contains("\"id\":\"1\""), "expected the seeded row, got: {result:?}");
 }
 
-/// Pins a write-attribution inconsistency Slice B3.5-fdae's identity
-/// forwarding introduced as a side effect, not something this (read-only,
-/// per its own task.md scope) slice deliberately designed: `put`/
-/// `batch-mutate`'s `creator_id` stamping
-/// (`SynSvcNativeService::dispatch_data_layer`) uses
-/// `invocation.caller.app_instance.unwrap_or(invocation.caller.caller_did)`,
-/// which is correct and intended for a genuinely native (non-WASM) SynSvc
-/// reached directly -- but that same handler is now also reachable via a
-/// guest's self-proxy, whose `invocation.caller` is (since this slice) the
-/// real forwarded caller too. The guest's *direct* WIT `put`
-/// (`host_capabilities.rs`) still always stamps the service's own
-/// `component_id`, unaffected -- so the same guest, writing through two
-/// different paths, now attributes ownership differently. `NativeInvocation`
-/// carries no origin marker to distinguish "genuinely native external
-/// caller" from "guest self-proxy" at this handler, so resolving which
-/// attribution is correct is a design question, not a one-line fix --
-/// D-04-02-f already gates single-row write *authorization* to Slice
-/// B5-fdae; this pins today's *attribution* behavior explicitly so
-/// B5-fdae's write-path work inherits a known fact, not a silent surprise,
-/// rather than letting the two ingresses drift further apart unnoticed.
+/// Pins the D-B5-5 attribution spec: `put`/`batch-mutate`'s `creator_id`
+/// stamping (`SynSvcNativeService::dispatch_data_layer`, via
+/// `CallerContext::write_attribution`) attributes a self-proxy write to the
+/// real forwarded caller, not the service -- unlike the guest's *direct*
+/// WIT `put` (`host_capabilities.rs`), which still always stamps the
+/// service's own `component_id` for a guest writing its own data. The two
+/// ingresses attribute ownership differently by design: a self-proxy call
+/// carries a real external principal (forwarded since Slice B3.5-fdae),
+/// while the direct WIT path has none. Originally pinned as an open
+/// inconsistency (Slice B3.5-fdae); D-B5-5 (Slice B5-fdae) resolved it, so
+/// this is now the settled spec, not a known gap.
 #[tokio::test]
 async fn guest_self_proxy_put_attributes_creator_id_to_the_real_caller_not_the_service() {
     let Some((route_handler, _storage_provider, _key_store)) =
@@ -633,7 +624,10 @@ async fn guest_self_proxy_put_attributes_creator_id_to_the_real_caller_not_the_s
     let real_caller = CallerContext {
         caller_did: REAL_CALLER_DID.to_string(),
         app_instance: None,
-        session: SessionContext::default(),
+        // `subject_did` mirrors `caller_did`, as production's `build_caller`
+        // always sets it -- `write_attribution` (D-B5-5) reads the verified
+        // session identity, not the raw `caller_did` field.
+        session: SessionContext { subject_did: REAL_CALLER_DID.to_string(), ..Default::default() },
         auth: AuthLevel::Ucan,
         proof: None,
     };
@@ -658,9 +652,9 @@ async fn guest_self_proxy_put_attributes_creator_id_to_the_real_caller_not_the_s
     let result = resp.get("result").and_then(Value::as_str).unwrap_or_default();
     assert!(
         result.contains(&format!("\"creator_id\":\"{REAL_CALLER_DID}\"")),
-        "today's (B5-fdae-open) behavior: a self-proxy write attributes creator_id to the real \
-         caller, unlike the guest's own direct-WIT `put`, which always stamps the service's own \
-         component_id -- got {result:?}"
+        "D-B5-5: a self-proxy write attributes creator_id to the real caller, unlike the guest's \
+         own direct-WIT `put`, which always stamps the service's own component_id -- got \
+         {result:?}"
     );
 }
 
@@ -677,7 +671,7 @@ async fn guest_self_proxy_put_attributes_creator_id_to_the_real_caller_not_the_s
 #[tokio::test]
 async fn guest_self_proxy_data_layer_returns_empty_when_policy_present() {
     let policy = Arc::new(self_proxy_items_policy());
-    let Some((route_handler, _storage_provider, _key_store)) =
+    let Some((route_handler, storage_provider, key_store)) =
         test_route_handler_with_self_native_data_layer(Some(policy)).await
     else {
         eprintln!("skipping: proxy-test/greeter wasm artifacts not built");
@@ -688,14 +682,24 @@ async fn guest_self_proxy_data_layer_returns_empty_when_policy_present() {
         self_proxy_call(&route_handler, "create-collection", json!({"name": "items"}), None).await;
     assert!(resp.get("error").is_none(), "create-collection failed: {resp:?}");
 
-    let resp = self_proxy_call(
-        &route_handler,
-        "put",
-        json!({"collection": "items", "value": {"id": "1", "payload": b"{}".to_vec()}}),
-        None,
-    )
-    .await;
-    assert!(resp.get("error").is_none(), "put failed: {resp:?}");
+    // Seeded directly against the store, `auth: None` -- a self-proxy `put`
+    // with no verified caller is exactly the `AuthLevel::System` write
+    // D-B5-3 denies closed under a policy (this fixture's `self_proxy_items_
+    // policy` declares no `data-layer/write` permission at all, so the
+    // fixture's own `put` would fail regardless of caller identity). This
+    // test is about the *read* side (D-04-02-h); seeding must not itself
+    // exercise the write-side gate B5-fdae added.
+    let store = storage_provider.open_service_db("proxy-caller", &key_store).await.unwrap();
+    store
+        .put(
+            "items",
+            &HostRecordWriteValue { id: "1".to_string(), payload: b"{}".to_vec() },
+            "proxy-caller",
+            None,
+        )
+        .await
+        .unwrap();
+    drop(store);
 
     let resp =
         self_proxy_call(&route_handler, "get", json!({"collection": "items", "id": "1"}), None)
@@ -782,6 +786,7 @@ async fn guest_self_proxy_data_layer_filters_for_a_real_caller_d04_02_h_closed()
             "items",
             &HostRecordWriteValue { id: "own".to_string(), payload: b"{}".to_vec() },
             REAL_CALLER_DID,
+            None,
         )
         .await
         .unwrap();
@@ -790,6 +795,7 @@ async fn guest_self_proxy_data_layer_filters_for_a_real_caller_d04_02_h_closed()
             "items",
             &HostRecordWriteValue { id: "someone-elses".to_string(), payload: b"{}".to_vec() },
             "did:key:zSomeoneElse",
+            None,
         )
         .await
         .unwrap();
@@ -896,6 +902,7 @@ async fn guest_self_proxy_data_layer_applies_stage4() {
             "items",
             &HostRecordWriteValue { id: "secret".to_string(), payload: b"{}".to_vec() },
             REAL_CALLER_DID,
+            None,
         )
         .await
         .unwrap();
@@ -904,6 +911,7 @@ async fn guest_self_proxy_data_layer_applies_stage4() {
             "items",
             &HostRecordWriteValue { id: "normal".to_string(), payload: b"{}".to_vec() },
             REAL_CALLER_DID,
+            None,
         )
         .await
         .unwrap();

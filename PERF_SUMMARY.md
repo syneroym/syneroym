@@ -2,6 +2,28 @@
 
 This file is automatically updated by `cargo xtask perf-summary`.
 
+## Run: 2026-07-26 -- targeted, `cargo bench -p syneroym-data-db --bench fdae_bench -- fdae_authorized_write`
+
+Manually recorded (not a full `cargo xtask perf-summary` sweep) for Slice
+B5-fdae's write-side Mode-A authorization: `task.md`'s Performance Budgets
+row for authorized single-row writes. Compares an authorized `patch`/
+`batch_mutate` (paying the `USING`/`WITH CHECK` `EXISTS` checks) against the
+unauthorized (`auth: None`) baseline, single-hop ReBAC, real SQLite via
+`SqliteServiceStore`.
+
+| Benchmark | Mean Time |
+|-----------|-----------|
+| patch_unauthorized_baseline | 20.585 µs |
+| patch_authorized | 39.925 µs |
+| batch_mutate_50_unauthorized_baseline | 340.46 µs |
+| batch_mutate_50_authorized | 964.41 µs |
+
+A single authorized `patch` costs ~19 µs more than the unauthorized baseline
+(one pre-image + one post-image `EXISTS`, ~2x) and a 50-mutation authorized
+`batch_mutate` (all of one caller's own rows) costs ~625 µs more than its
+baseline (~2.8x) -- both well under 1 ms and negligible against the 25 ms
+p99 Mode-B pushdown-query budget above (0.16% for the single `patch`).
+
 ## Run: 2026-07-26 09:03:04 (70f00c9) -- targeted, `cargo bench --bench abac_bench` only
 
 Manually recorded (not a full `cargo xtask perf-summary` sweep) to close

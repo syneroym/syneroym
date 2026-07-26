@@ -176,21 +176,24 @@ and no longer gate B2; d/e remain as a deferral and a B7 hand-off.
   so that TODO does **not** belong to M04B, and "today any verified identity
   reaches any native service" is a wider live gap than the milestone docs imply.
   **Reconcile in B7 (grant layer), explicitly out of M04B scope.**
-- **D-04-02-f — Creation authorization for the write path.** ⛳ **Open — gates
-  Slice B5-fdae, not B2.** FDAE's read side (RLS/CLS, B2/B3) protects
+- **D-04-02-f — Creation authorization for the write path.** ✅ **Resolved
+  (Slice B5-fdae, 2026-07-26).** FDAE's read side (RLS/CLS, B2/B3) protects
   *confidentiality*; the *integrity* side — Mode-A authorization of single-row
-  mutations (`put`/`patch`/`delete`/`batch_mutate`) — is deferred to Slice
-  B5-fdae. `patch`/`delete` of an existing row map cleanly to Mode A ("may caller
-  write row `id`?"), but **`put`-create has no row to evaluate `[creator,
-  caller]` against**: row-reachability ReBAC cannot express *"who may create a row
-  in this collection,"* which is a **collection-scoped** permission the current
-  policy model lacks. Must settle: whether creation is governed by a new
-  collection-level permission kind (an ADR-0017 §1 schema amendment), and how
-  `batch_mutate` authorizes per-mutation. **Until B5-fdae lands, single-row
-  write/delete integrity is unenforced** (a caller who cannot *see* a row via RLS
-  can still `delete(id)`/`patch(id)` it — pre-existing, since host write paths run
-  under service authority and carry no capability gate today). Surfaced during
-  Slice B2 Phase-2 review.
+  mutations (`put`/`patch`/`delete`/`batch_mutate`) — is now enforced. The
+  original framing pre-committed to a schema amendment (a new
+  collection-scoped "who may create" permission kind); the shipped resolution
+  needed none: ADR-0017 §2.1's own Postgres analogy (`GRANT` = capability,
+  `CREATE POLICY` = `permissions:`) was only half-drawn — RLS's `USING`/`WITH
+  CHECK` split *is* the missing half. `put`/`patch` now evaluate the
+  post-image (`WITH CHECK`): "may the caller reach the row they are about to
+  write?", answered by the *same* `paths:` a read permission already
+  declares, with no new policy surface. `patch`/`delete` also evaluate the
+  pre-image (`USING`), and `batch_mutate` authorizes per mutation inside the
+  one transaction, rolling back the whole batch on the first denial. See
+  `slice-b5-implementation-plan.md` §1 (D-B5-2) for the full design and §1
+  D-B5-3 through D-B5-7 for the sub-decisions this resolution needed
+  (`System`-caller deny-closed, `creator_id` attribution and immutability,
+  CLS on writes).
 - **D-04-02-g — Multi-capability caveat semantics (additive vs.
   intersective).** ⛳ **Open — not a B2 blocker (over-restrictive, not a
   leak).** `compile_read` collects `entitling_caps` as *every* capability
@@ -975,30 +978,68 @@ deferred-backlog row rather than silently scoped down).
   1 KB/16 KB), both recorded in `PERF_SUMMARY.md` and this Performance
   Budgets table above.
 
-#### Slice B5-fdae: Write-Side Tier 3 (Mode-A Write Authorization)
-**Depends on:** B2 (the `check_access` Mode-A primitive) **and D-04-02-f**
-(creation authorization). **Requirement:** `[FND-IAM]`.
-B2/B3 deliver read-side Tier 3 (confidentiality: RLS/CLS on `query`/`get`/
-`aggregate`). This slice closes the **integrity** half: authorize single-row
-mutations against the caller's ReBAC policy so a row a caller cannot reach is
-also one they cannot write or delete. Today `put`/`patch`/`delete`/`batch_mutate`
-run under service authority (`creator_id = component_id`), never consult
-`caller.session`, and carry no capability gate — so single-row write/delete
-bypasses Tier 3, an asymmetry with B2's already-filtered `delete_many`
-(surfaced in Slice B2 Phase-2 review).
-- **`patch`/`delete`/`batch_mutate`-delete** of an *existing* row → Mode-A
-  `check_access` (op = `data-layer/write`) at the host before executing;
-  unreachable → `permission-denied`, not a silent write.
-- **`put`-create** → blocked on **D-04-02-f**: row-reachability cannot express
-  "who may create," so this needs the collection-scoped create-permission
-  decision first (an ADR-0017 §1 schema amendment) before it can be enforced.
-- Thread `caller.session` into the host write methods (they don't today); add the
-  write-path rows to the Failure/Security matrix (unreachable write → deny; create
-  without create-permission → deny).
+#### Slice B5-fdae: Write-Side Tier 3 (Mode-A Write Authorization) ✅ (2026-07-26)
+**Depended on:** B2 (the `check_access` Mode-A primitive) **and D-04-02-f**
+(creation authorization, resolved by this slice). **Requirement:** `[FND-IAM]`.
+B2/B3 delivered read-side Tier 3 (confidentiality: RLS/CLS on `query`/`get`/
+`aggregate`). This slice closes the **integrity** half, rows **and columns**:
+every single-row mutation (`put`/`patch`/`delete`/`batch_mutate`) is now
+authorized against the caller's compiled FDAE policy before it commits, so a
+row (or field) a caller cannot reach is also one they cannot write. Before
+this slice, `put`/`patch`/`delete`/`batch_mutate` ran under service authority,
+never consulted `caller.session`, and carried no capability gate — an
+asymmetry with B2's already-filtered `delete_many`, surfaced in Slice B2
+Phase-2 review.
 
-**Known limitation until this slice lands:** FDAE protects read confidentiality
-and bulk-delete, but single-row write/delete integrity is unenforced —
-deployments relying on FDAE for write integrity must wait for B5-fdae.
+**Design (D-B5-1/D-B5-2, `slice-b5-implementation-plan.md` §1):** the check
+runs inside `crates/data_db`'s writer actor, in the same SQLite transaction as
+the mutation — not at the two ingresses (TOCTOU, `batch_mutate`'s
+all-or-nothing guarantee, and "one rule, not two places to forget it" all
+argue for this). Authorization is Postgres's `USING`/`WITH CHECK` split:
+`patch`/`delete` evaluate the **pre-image** (may the caller reach the row as
+it stands?); `put`/`patch` evaluate the **post-image** (may the caller reach
+what they just wrote?) — the same `paths:` a read permission already
+declares, evaluated against the row's future state instead of its current
+one. This is what makes `put`-create expressible with **zero policy-schema
+change**: "who may create a row" becomes "is the row about to exist
+reachable," which `paths:` already answers.
+
+- **`patch`/`delete`** of an *existing* row → pre-image check; unreachable →
+  `permission-denied`, not a silent write. `delete`/`patch` of a **missing**
+  row now also denies (D-B5-2/§4): the pre-image check cannot distinguish
+  "absent" from "present but unreachable" without becoming the existence
+  oracle CLS-masking already refuses to provide — a deliberate, documented
+  idempotency change from the policy-absent path.
+- **`put`-create** → post-image check only (D-04-02-f, resolved). **`put`
+  on an existing id (an update)** → both pre- and post-image checked, closing
+  a D-B5-6 hazard the original framing missed: `do_put`'s upsert no longer
+  refreshes `creator_id` on conflict, so a teammate who legitimately reaches
+  a shared-path row via `WITH CHECK` cannot silently become its owner.
+- **`batch_mutate`** authorizes per mutation, inside the one transaction: the
+  first unauthorized mutation `?`-propagates and rolls back everything
+  already applied in that call.
+- **CLS on writes (D-B5-7, new from review):** a masked field cannot be
+  authored on create, nor have its value changed (added, removed, or edited)
+  on update — the write-side twin of the read-side finding that masking only
+  the projection turns the predicate into an oracle.
+- **`System`-caller writes deny closed (D-B5-3):** `CallerContext::
+  service_system`'s empty capabilities can never satisfy any permission, so
+  every guest-mediated write ingress that still synthesizes it is now
+  unwritable under a policy. Deliberate, not worked around by an
+  `AuthLevel::System` sieve exemption (would reopen the self-proxy bypass
+  shape B3.5-fdae closed). Recorded in `deferred-backlog.md` §3 as the
+  expected follow-up (thread a real principal into those ingresses).
+- **`creator_id` attribution unified (D-B5-5):** `CallerContext::
+  write_attribution` is now the single source for who a write is attributed
+  to, used by both ingresses — closing the pre-existing disagreement between
+  the guest's direct WIT `put` (stamped `component_id`) and the self-proxy
+  path (stamped `app_instance`/`caller_did`) that Slice B3.5-fdae's identity
+  forwarding had exposed.
+- Stage-4 (`authorize_rows: true`) denies single-row writes closed (D-B5-4):
+  a mutation in flight has no candidate-row batch to hand the after-step,
+  the same rule `delete_many`/`aggregate` already follow.
+
+Full implementation, decision trace, and verification evidence: `status.md`.
 
 ---
 
@@ -1032,7 +1073,8 @@ Continues from M04A (steps 20–21, 24–25):
 
 ## Failure and Security Tests
 
-All nine rows are done, with evidence below (1-5: B2; 6: B3; 7-9: B4-fdae).
+All twelve rows are done, with evidence below (1-5: B2; 6: B3; 7-9: B4-fdae;
+10-12: B5-fdae).
 
 | # | Test | Expected Outcome | Outcome |
 |---|---|---|---|
@@ -1040,11 +1082,14 @@ All nine rows are done, with evidence below (1-5: B2; 6: B3; 7-9: B4-fdae).
 | 2 | FDAE Point-In-Time check (Mode A) for an unreachable resource | Deny flag; no data leak | ✅ `tests_fdae::mode_a_check_access_denies_unreachable_row`, `..._get_of_unreachable_row_returns_none_not_error` (`data_db`) |
 | 3 | CLS: caller lacks column permission | Column masked/projected out; value never returned | ✅ satisfied by Slice B2 Phase 3's host-side `strip_masked_fields`; sieve-level union computed by `compile::tests::cls_masked_fields_union_policy_and_capability_deny_lists` |
 | 4 | FDAE policy with a cyclic ReBAC relationship in user data | `visited_track` breaks recursion; no infinite loop (`system-architecture.md:1847`) | ✅ `compile::tests::recursive_relation_terminates_on_a_cyclic_manager_graph` — a deliberately cyclic manager graph (eve→frank→eve) terminates and returns the correct membership |
-| 5 | Compiled FDAE query exceeds the policy time budget | Transaction rolled back, Default-Denied (`:1848`) | ✅ `sqlite::tests::fdae_watchdog_interrupts_do_query_as_quota_exceeded`, `..._do_get_as_quota_exceeded`, `fdae_watchdog_interrupt_denies_do_check_access` (Mode A → `Ok(false)`), `..._do_delete_many_on_the_writer_conn` (`data_db`) — `FDAE_MAX_VM_OPS` progress-handler backstop, per ADR-0017 §8 plan resolution (§12.8) |
+| 5 | Compiled FDAE query exceeds the policy time budget | Transaction rolled back, Default-Denied (`:1848`) | ✅ `sqlite::tests::fdae_watchdog_interrupts_do_query_as_quota_exceeded`, `..._do_get_as_quota_exceeded`, `fdae_watchdog_interrupt_denies_do_check_access` (Mode A → `Ok(false)`), `..._do_delete_many_on_the_writer_conn`, `..._interrupt_denies_a_write_and_rolls_back` (`data_db`) — `FDAE_MAX_VM_OPS` progress-handler backstop, per ADR-0017 §8 plan resolution (§12.8); the write path (B5-fdae) folds an interrupt into an ordinary `PermissionDenied`, not a distinguishable `QuotaExceeded` |
 | 6 | Cross-service FDAE parameter fetch times out | Falls back to deny, not silent allow | ✅ Mechanism + tests landed in Slice B3 Phase 4 (`resolve_fetches` maps any proxy error/timeout to a deny for Mode B/A alike, and now enforces `FDAE_FETCH_TIMEOUT` itself rather than trusting the `ServiceProxy` to honor it) — `syneroym_rpc::fdae_fetch::tests::resolve_fetches_denies_on_an_actually_elapsed_timeout`, `..._denies_on_a_proxy_error`, `router::native_dispatch_identity::native_dispatch_denies_closed_on_a_cross_service_fetch_failure`, `sandbox_wasm::host_capabilities::tests::fdae_remote_relation_fetch_failure_denies_closed`. **The two-real-substrate e2e proof of the same claim (Slice B3 Phase 5, 2026-07-25):** `crates/substrate/tests/federated_fdae_e2e.rs`'s own asserter-mismatch scenario (a policy trusting the wrong `expected_asserter_did`, the shape a stale/misconfigured policy would produce) denies closed with a real `PermissionDenied` across the real network hop, not just in a hand-built unit test. |
 | 7 | Stage-4 ABAC's decision shape attempting to **widen** access beyond ReBAC | *(reworded, see `slice-b4-implementation-plan.md` §5 item 5 — "widen" has no encoding to attempt: a positional `allow`/`deny`/`redact` list over rows the sieve already admitted cannot name a row outside that set)* Structurally unrepresentable, proven two ways: a malformed (arity-mismatched) decision list denies the whole batch rather than being partially trusted; an `allow`-everything guest still never sees a row the sieve excluded | ✅ `fdae_abac::tests::arity_mismatch_denies_the_whole_batch` (`rpc`); `sandbox_wasm::tests::abac_integration::stage4_bad_arity_denies_the_whole_batch`, `..._cannot_admit_a_row_the_sieve_excluded` |
 | 8 | Stage-4 ABAC read-only lookup (§7) exceeds its fuel/time budget | Aborted, row Default-Denied; the lookup cannot run unmetered | ✅ `fdae_abac::tests::an_elapsed_timeout_denies_closed`, `..._an_unavailable_authorizer_denies_closed`, `..._an_over_large_batch_denies_closed` (`rpc`); `sandbox_wasm::tests::abac_integration::stage4_fuel_exhaustion_denies_the_whole_batch` (real fuel/epoch overrun through a real WASM `spin` guest) |
 | 9 | Stage-4 ABAC returns `redact(fields)` | Named fields removed from the row before it reaches the guest | ✅ `fdae_abac::tests::redact_returns_exactly_the_decided_fields_never_subtracting_them`, `..._a_dotted_redact_path_denies_the_row` (H3 precedent — a dotted path denies rather than silently masking nothing) (`rpc`); `sandbox_wasm::tests::abac_integration::stage4_redact_removes_the_named_field_before_the_guest_sees_it` |
+| 10 | Single-row write (`put`/`patch`/`delete`) unreachable via the compiled write sieve (Mode A, D-04-02-f) | `permission-denied`, not a silent write; a denied create leaves no row inserted, a denied update/delete rolls back to the pre-image | ✅ `tests_fdae::mode_a_write_denies_patch_of_an_unreachable_row`, `..._denies_delete_of_an_unreachable_row`, `..._denies_put_update_of_an_unreachable_row`, `put_create_is_denied_when_the_new_row_would_be_unreachable`, `patch_is_denied_when_the_post_image_escapes_the_callers_reach`, `batch_mutate_rolls_back_entirely_when_one_mutation_is_unauthorized` (`data_db`); `router::native_dispatch_identity::native_fdae_policy_authorizes_writes_for_one_verified_caller_and_denies_another`; `sandbox_wasm::host_capabilities::tests::fdae_put_patch_delete_deny_an_unreachable_row_and_allow_a_reachable_one`; `sandbox_wasm::tests::data_layer_integration::test_deployed_policy_authorizes_guest_originated_writes_for_a_real_caller_and_denies_another` |
+| 11 | CLS on the write path (D-B5-7): masked field authored on create, or its value changed on update | `permission-denied`; the mutation rolls back, the field's prior value (if any) survives unchanged | ✅ `tests_fdae::a_masked_field_cannot_be_written_on_create`, `..._a_masked_fields_value_cannot_be_changed_on_update` (add/change/remove, `data_db`) |
+| 12 | `System`-caller / capability-less write under a deployed policy (D-B5-3) | `permission-denied` — a policy-covered collection is unwritable from a synthesized identity, symmetric with the read side's documented "returns empty" | ✅ `tests_fdae::a_system_caller_write_is_denied_under_a_policy`, `a_read_only_permission_does_not_authorize_a_write` (`data_db`) |
 
 ### Security review findings (Slice B2, post-commit third pass)
 
@@ -1074,6 +1119,7 @@ renumbered.
 | FDAE pushdown query (100 records, single-hop ReBAC) | < 25 ms p99 (vs. M3A's unauthenticated 20 ms — +5 ms for policy compilation) | `criterion` integration bench |
 | Federated FDAE fetch (one cross-service hop) | < 50 ms p99 (network-bound; a floor, not a hard SLA) | Integration test, two local nodes |
 | Stage-4 ABAC over a candidate batch | Document measured; must not dominate Mode-B query latency | ✅ `criterion` micro-bench (`crates/sandbox_wasm/benches/abac_bench.rs`), row-count sweep at a fixed ~28-byte payload (2026-07-25): instantiation floor (0 rows) 34.9 µs; 1 row 36.1 µs; 10 rows 46.0 µs; 100 rows 137.1 µs; 1000 rows (`MAX_ABAC_ROWS`) 1.048 ms — negligible against the 25 ms p99 Mode-B budget above (0.5% at 100 rows) and confirming the instantiation floor, not row count, dominates at realistic page sizes, matching Slice B3 Phase 5's own finding for the federated fetch. **Payload-size sweep added post-review (2026-07-26, review finding B4-02/B4-15)**, 100 rows fixed: ~28 B/row 142.2 µs, 1 KB/row 1.494 ms, 16 KB/row 22.14 ms — payload bytes, not row count, are the real cost driver (`Val::List(payload.iter().map(Val::U8)...)` expands every byte into its own `wasmtime::component::Val`), motivating the new `MAX_ABAC_PAYLOAD_BYTES` batch cap (1 MiB, tightened from an initial 16 MiB per review residual R4 once these numbers showed 16 MiB implied ~180 ms/~640 MB at the cap) alongside `MAX_ABAC_ROWS`. Full numbers: `PERF_SUMMARY.md`. Opt-in per permission (`authorize_rows: true`); the cost above is the price of opting in, paid only by reads through that permission. |
+| Authorized single-row write (Mode A `USING`/`WITH CHECK`) | Document measured; the per-mutation `EXISTS` check(s) must not dominate write latency | ✅ `criterion` micro-bench (`crates/data_db/benches/fdae_bench.rs`, `fdae_authorized_write` group, 2026-07-26): `patch` unauthorized baseline ~20.6 µs vs. authorized ~39.9 µs (+~19 µs, ~2x — one pre-image + one post-image `EXISTS`); a 50-mutation `batch_mutate` (all of one caller's own rows) unauthorized baseline ~340 µs vs. authorized ~964 µs. Both authorized figures are well under 1 ms, negligible against the 25 ms p99 Mode-B budget above (patch: 0.16%). Full numbers: `PERF_SUMMARY.md`. |
 
 ---
 
@@ -1081,10 +1127,15 @@ renumbered.
 
 - **Unit:** ReBAC → `WHERE EXISTS`/`WITH RECURSIVE` translation, cycle
   protection, RLS + CLS SQL generation, security-subquery ⊕ JSON-filter merge
-  (B2).
+  (B2); Mode-A write authorization (`USING`/`WITH CHECK`), CLS-on-write,
+  `creator_id` immutability (B5-fdae).
 - **Integration:** Mode A / Mode B end-to-end (unauthorized rows excluded);
-  federated FDAE cross-node fetch + timeout→deny (B3); stage-4 redact/deny.
-- **Benchmarks (`criterion`):** FDAE pushdown query, stage-4 batch.
+  federated FDAE cross-node fetch + timeout→deny (B3); stage-4 redact/deny;
+  write-side authorization through native dispatch and the WASM guest
+  boundary, for both a real caller and a `System`/capability-less one
+  (B5-fdae).
+- **Benchmarks (`criterion`):** FDAE pushdown query, stage-4 batch,
+  authorized write (single `patch` and a 50-mutation `batch_mutate`).
 - **E2E (`mise run test:e2e`):** reference scenario steps 22–23 in a live
   substrate, ≥2 substrates for the federated case.
 
@@ -1092,14 +1143,15 @@ renumbered.
 
 ## Measurable Exit Criteria
 
-- [ ] `cargo +nightly fmt --all` clean; `cargo clippy --workspace --all-targets --all-features` zero warnings; `cargo test --workspace` green; `mise run test:e2e` green (no M0–M04A regression); `wasm32-wasip2` unbroken after every slice.
+- [x] `cargo +nightly fmt --all` clean; `cargo clippy --workspace --all-targets --all-features` zero warnings; `cargo test --workspace` green; `mise run test:e2e` green (no M0–M04A regression); `wasm32-wasip2` unbroken after every slice. (Re-verified at Slice B5-fdae closeout, 2026-07-26.)
 - [x] ADR D-04-02 ([ADR-0017](../../../decisions/0017-fdae-policy-schema-and-compilation.md)) **Accepted** (2026-07-20), with D-04-02-a/-b/-c resolved.
-- [ ] FDAE pushdown sieve implemented: Mode A + Mode B, RLS + CLS, cycle guard, watchdog default-deny, parameterized binding.
-- [ ] Compiled FDAE security subquery merges correctly with the ADR-0007 JSON filter.
+- [x] FDAE pushdown sieve implemented: Mode A + Mode B, RLS + CLS, cycle guard, watchdog default-deny, parameterized binding. (B2.)
+- [x] Compiled FDAE security subquery merges correctly with the ADR-0007 JSON filter. (B2.)
 - [x] Federated cross-service fetch (B3) works over the Universal Proxy; timeout→deny verified (Slice B3 Phase 4, 2026-07-24 — real `ProxyRouter`/`resolve_fetches` integration tests in `crates/router`/`crates/rpc`/`crates/sandbox_wasm`; Phase 5, 2026-07-25, adds the two-real-substrate e2e proof, `crates/substrate/tests/federated_fdae_e2e.rs`).
 - [x] Stage-4 ABAC wired (Slice B4-fdae, 2026-07-25): batched, opt-in per permission, restrict-only enforced; may issue fuel-/time-metered read-only lookups (ADR-0017 §7's escape hatch, not the earlier "pure-predicate" ban — see the ADR's 2026-07-25 amendment). Redact/deny tested, real WASM export end to end.
+- [x] Write-side Mode-A authorization wired (Slice B5-fdae, 2026-07-26): `put`/`patch`/`delete`/`batch_mutate` authorized via `USING`/`WITH CHECK` in the same transaction as the mutation; D-04-02-f resolved with no policy-schema change; CLS extended to writes; `System`-caller writes deny closed; `creator_id` attribution unified and made immutable on update.
 - [x] Reference scenario steps 22–23 execute end-to-end (step 23 ✅ Phase 5, 2026-07-25; step 22 ✅ Slice B3.5-fdae, 2026-07-25 — both D-04-02-h ingresses closed).
 - [x] All Failure and Security Tests produce documented outcomes.
 - [x] Performance budgets verified; `criterion` output in `status.md`.
-- [ ] `traceability-matrix.md` `[FND-IAM]` (M4B: FDAE) row flipped **Planned → Complete** with evidence (pushdown sieve, RLS/CLS, 4-stage pipeline, federated fetch, stage-4 ABAC). *(Row already present; `[PRD-SAF]` already retargeted to `TBD` at M04A closeout — no action unless it regresses.)*
-- [ ] Sub-decisions D-04-02-a/-b/-c (resolved at ADR acceptance) reflected in the shipped schema/compiler; D-04-02-d/-e recorded as deferral/B7 hand-off, not silently dropped.
+- [x] `traceability-matrix.md` `[FND-IAM]` (M4B: FDAE) row flipped **Planned → Complete** with evidence (pushdown sieve, RLS/CLS, 4-stage pipeline, federated fetch, stage-4 ABAC, write-side Mode-A authorization).
+- [x] Sub-decisions D-04-02-a/-b/-c (resolved at ADR acceptance) reflected in the shipped schema/compiler; D-04-02-d/-e recorded as deferral/B7 hand-off, not silently dropped; D-04-02-f resolved (Slice B5-fdae).

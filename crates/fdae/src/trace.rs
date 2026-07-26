@@ -86,6 +86,18 @@ pub struct DecisionTrace {
     /// ingress emits ([`AbacTrace`]), the same two-trace shape Mode A
     /// already uses for `rows_reached`.
     pub abac_permissions: Vec<String>,
+    /// The ability this decision was compiled for (`data-layer/read`,
+    /// `data-layer/write`, or an app-permission ref). Without it a write
+    /// deny and a read deny on the same collection are indistinguishable in
+    /// the log.
+    pub operation: String,
+    /// Mode A only: the row the compiled predicate was executed against.
+    pub row_id: Option<String>,
+    /// Write path only: which half of the ADR-0017 §4 check this record is
+    /// -- `"pre-image"` (may the caller reach the row as it stands) or
+    /// `"post-image"` (may they reach what they just wrote). `None` for
+    /// reads.
+    pub write_phase: Option<String>,
 }
 
 impl DecisionTrace {
@@ -101,10 +113,13 @@ impl DecisionTrace {
                 subject_did = %self.subject_did,
                 anchor_did = ?self.anchor_did,
                 held = ?self.held,
+                operation = %self.operation,
                 operation_admitted = self.operation_admitted,
                 applicable_permissions = ?self.applicable_permissions,
                 compiled_predicate = self.compiled_predicate.as_deref(),
                 rows_reached = ?self.rows_reached,
+                row_id = ?self.row_id,
+                write_phase = ?self.write_phase,
                 path_failed = %reason,
                 caveats_applied = ?self.caveats_applied,
                 remote_fetches = ?self.remote_fetches,
@@ -119,10 +134,13 @@ impl DecisionTrace {
                 subject_did = %self.subject_did,
                 anchor_did = ?self.anchor_did,
                 held = ?self.held,
+                operation = %self.operation,
                 operation_admitted = self.operation_admitted,
                 applicable_permissions = ?self.applicable_permissions,
                 compiled_predicate = self.compiled_predicate.as_deref(),
                 rows_reached = ?self.rows_reached,
+                row_id = ?self.row_id,
+                write_phase = ?self.write_phase,
                 caveats_applied = ?self.caveats_applied,
                 remote_fetches = ?self.remote_fetches,
                 abac_permissions = ?self.abac_permissions,

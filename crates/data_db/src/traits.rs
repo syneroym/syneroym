@@ -138,20 +138,34 @@ pub trait ServiceStore: Send + Sync {
 
     /// Upserts a record. `creator_id` is supplied by the host and is always
     /// authoritative -- the WIT `record-write-value` has no `creator_id`
-    /// field, so there is no guest-controlled value to override.
+    /// field, so there is no guest-controlled value to override. `auth: None`
+    /// is unfiltered (policy-absent services, lifecycle contexts, benches,
+    /// tests); `Some` applies the ADR-0017 §4 Mode-A write check as
+    /// `data-layer/write` -- pre-image reachability for an update, post-image
+    /// reachability for a create or update (D-B5-2's `USING`/`WITH CHECK`),
+    /// plus CLS (D-B5-7): a masked field may not be authored on create, nor
+    /// changed on update. See §4 of the implementation plan for the
+    /// resulting idempotency change: deleting/patching a row that does not
+    /// exist under a policy denies rather than reporting not-found, since the
+    /// pre-image check cannot distinguish "absent" from "present but
+    /// unreachable" without becoming the existence oracle CLS-masking already
+    /// refuses to provide.
     async fn put(
         &self,
         collection: &str,
         value: &host_store::RecordWriteValue,
         creator_id: &str,
+        auth: Option<&QueryAuth<'_>>,
     ) -> Result<(), host_store::DataLayerError>;
 
     /// Applies an RFC 7396 JSON merge-patch to an existing record's payload.
+    /// See `put`'s doc comment for `auth`'s write-check semantics.
     async fn patch(
         &self,
         collection: &str,
         id: &str,
         patch_json: &[u8],
+        auth: Option<&QueryAuth<'_>>,
     ) -> Result<(), host_store::DataLayerError>;
 
     /// Fetches a record by id. Returns `Ok(None)` if the record does not
@@ -203,9 +217,17 @@ pub trait ServiceStore: Send + Sync {
         auth: Option<&QueryAuth<'_>>,
     ) -> Result<host_store::RawQueryResult, host_store::DataLayerError>;
 
-    /// Deletes a record by id. Idempotent: deleting a non-existent id is not
-    /// an error.
-    async fn delete(&self, collection: &str, id: &str) -> Result<(), host_store::DataLayerError>;
+    /// Deletes a record by id. Idempotent when `auth` is absent: deleting a
+    /// non-existent id is not an error. Under a policy (`auth: Some`), the
+    /// pre-image reachability check cannot distinguish "absent" from
+    /// "present but unreachable" -- so a missing row denies rather than
+    /// staying idempotent; see `put`'s doc comment.
+    async fn delete(
+        &self,
+        collection: &str,
+        id: &str,
+        auth: Option<&QueryAuth<'_>>,
+    ) -> Result<(), host_store::DataLayerError>;
 
     /// Deletes all records matching an optional filter, returning the number
     /// of affected rows. `auth` applies the FDAE pushdown sieve as a
@@ -218,12 +240,16 @@ pub trait ServiceStore: Send + Sync {
     ) -> Result<u64, host_store::DataLayerError>;
 
     /// Applies all mutations in a single transaction, rolling back entirely
-    /// on the first failure.
+    /// on the first failure -- including the first unauthorized mutation
+    /// when `auth` is `Some` (D-04-02-f: `batch_mutate` authorizes per
+    /// mutation, inside the one transaction). See `put`'s doc comment for
+    /// `auth`'s write-check semantics.
     async fn batch_mutate(
         &self,
         collection: &str,
         mutations: &[host_store::Mutation],
         creator_id: &str,
+        auth: Option<&QueryAuth<'_>>,
     ) -> Result<(), host_store::DataLayerError>;
 
     /// Executes a privileged read-only raw-SQL query (ADR-0011). Callers must

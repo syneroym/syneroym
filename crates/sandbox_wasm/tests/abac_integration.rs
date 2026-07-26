@@ -269,6 +269,7 @@ async fn deploy_with_mode(dir: &Path, mode: &str) -> Option<Deployed> {
                 .into_bytes(),
             },
             SERVICE_ID,
+            None,
         )
         .await
         .unwrap();
@@ -280,6 +281,7 @@ async fn deploy_with_mode(dir: &Path, mode: &str) -> Option<Deployed> {
                 payload: json!({"creator_uuid": "did:key:zBob"}).to_string().into_bytes(),
             },
             SERVICE_ID,
+            None,
         )
         .await
         .unwrap();
@@ -794,6 +796,7 @@ async fn stage4_missing_export_under_an_opted_in_policy_denies_closed() {
             "widgets",
             &RecordWriteValue { id: "w1".to_string(), payload: b"{}".to_vec() },
             GREETER_SERVICE_ID,
+            None,
         )
         .await
         .unwrap();
