@@ -599,8 +599,8 @@ binding work. Backlog row in §7.
 
 | Phase | Content | Gate |
 |---|---|---|
-| 1 | `syneroym-identity`: scope constants, `verify`'s required-scope argument, all 13 call sites (§3.1) | `cargo test -p syneroym-identity` green |
-| 2 | `syneroym-router`: `TRANSPORT_SCOPES` at the ingress, handshake tests, the tautology doc comment (§3.2) | `cargo test -p syneroym-router` green |
+| 1 | Scope constants, `verify`'s required-scope argument, and **all ten call sites** across three crates (§3.1) — `syneroym-identity` (7 unit tests + the bench), `syneroym-core` (`dht_registry.rs:139`), `syneroym-router` (`handshake.rs:66`) | `cargo test -p syneroym-identity -p syneroym-core -p syneroym-router` green. **Not splittable by crate**: `verify` is an inherent method with no default, so the signature change breaks every caller in the same commit — a `-p syneroym-identity` gate would pass on a workspace that does not build |
+| 2 | The new scope tests (§5.1, §5.2's handshake rows), the tautology doc comment, and the stale-comment fixes in `preamble.rs`/`io.rs` (§6 items 8-9) | `cargo test -p syneroym-router` green |
 | 3 | `syneroym-core` **and `syneroym-data-db`**: instance-certificate store on `EndpointRegistry`/`EndpointStorage`, all four implementors, and the schema-gate change (§3.3, D-A0-10) | `cargo test -p syneroym-core -p syneroym-data-db` green. **Both crates, deliberately** — `-p syneroym-core` alone cannot see the production backend break |
 | 4 | WIT + `syneroym-control-plane`: `instance-identity`, `deploy-manifest.instance-certificate`, install-time verification, `undeploy` cleanup, `deployed-service` expiry field (§3.4) | `cargo test -p syneroym-control-plane` green; `wasm32-wasip2` builds |
 | 5 | `syneroym-router`: `ProxyRouter`'s guest-origin identity presentation (§3.5) | integration tests in §5.3 |
@@ -609,8 +609,9 @@ binding work. Backlog row in §7.
 | 8 | E2E (§5.4) and docs: ADR-0020 amendment, `task.md`, backlog, traceability (§8) | `mise run test:all` green |
 
 Phases 1-3 are independently mergeable and land no behavior change beyond the
-ingress scope check. Phase 5 is where the behavior change bites; it must not
-land before phase 4 stores anything for it to read.
+two scope checks — the ingress allowlist, and the DHT endpoint-record
+tightening, which is unreachable today (§3.1). Phase 5 is where the behavior
+change bites; it must not land before phase 4 stores anything for it to read.
 
 ---
 
@@ -1005,7 +1006,7 @@ below says which it is.
 
 ## 8. Completion checklist
 
-- [ ] D-A0-1 … D-A0-9 confirmed against the tree at merge time (line anchors
+- [ ] D-A0-1 … D-A0-10 confirmed against the tree at merge time (line anchors
       re-checked if the branch has advanced)
 - [ ] `cargo +nightly fmt --all`
 - [ ] `cargo clippy --workspace --all-targets --all-features` clean
@@ -1013,11 +1014,16 @@ below says which it is.
 - [ ] `mise run test:e2e` green
 - [ ] `wasm32-wasip2` compilation (the WIT changes in §3.4 cross the guest
       boundary)
-- [ ] ADR-0020 amendment, dated: §1's presentation-path correction (§6 items 3 and 7),
-      §2's value-substitution correction (item 4), §5's scope-site correction
-      (item 9), and the `verify_identity` → `verify_preamble` naming fix
+- [ ] ADR-0020 amendment, dated, covering every §6 item that lands on the ADR:
+      the `verify_identity` → `verify_preamble` naming fix (item 1), §5's stale
+      scope citation (item 2), §1's presentation-path correction (item 3),
+      §2's value-substitution correction (item 4), §6's incomplete derivation
+      inputs (item 5), §6's second endpoint-record path (item 6), and §1's
+      "no change to FDAE" versus `RelationshipProof` (item 7)
 - [ ] `task.md`: A0 marked complete; matrix rows 1/2/3/14 pointed at their
-      evidence, with row 2's two granularities and row 14's split stated
+      evidence, with row 2's two granularities (§6 item 11) and row 14's split
+      stated; the A0 bullet's "existing `roymctl identity` storage" claim
+      corrected per §6 item 12
 - [ ] `status.md`: A0 row flipped, with the verification evidence
 - [ ] `deferred-backlog.md` per §7
 - [ ] `traceability-matrix.md` `[FND-IDT]` row extended (**not** flipped to
