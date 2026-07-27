@@ -332,11 +332,18 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
     hr_deployer.connect().await.expect("failed to connect to node A for deploy");
 
     // `seed` (`paths: []`, public) lets the deploying owner's own
-    // `substrate/admin` capability seed fixture rows -- M04B Slice B5-fdae
-    // gates writes too, and `view_self` (read-only) doesn't cover
-    // `data-layer/write`. Realistic (a service owner seeding its own data)
-    // and it cannot widen the read assertions below, since `allows` omits
-    // read.
+    // `substrate/admin` capability seed fixture rows -- the write-side gate
+    // now covers writes too, and `view_self` (read-only) doesn't cover
+    // `data-layer/write`. Realistic (a service owner seeding its own data).
+    // This does *not* widen the read assertions below because `allows:
+    // [data-layer/write]` entails a read check too (`write` ⊇ `read`, the
+    // tiered hierarchy) -- "omits read" does not narrow entailment. It's
+    // safe here only because the readers exercised further down never
+    // present a capability above `data-layer/read` on this resource, so
+    // they never become entitled to `seed` in the first place; it is not a
+    // property of this permission shape in general (contrast Node B's
+    // `alice_data_client` below, which deliberately keeps its write-or-
+    // better token off the query connection for exactly this reason).
     let hr_policy = r#"{
         "version": "fdae/v1",
         "definitions": {

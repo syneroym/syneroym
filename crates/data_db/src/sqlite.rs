@@ -16,7 +16,7 @@ use regex::Regex;
 use rusqlite::{Connection, Error as SqliteError, params, types::Value as SqlValue};
 use serde_json::{Map, Value};
 use syneroym_data_keystore::{KeyStore, KeyStoreError};
-use syneroym_fdae::{CompiledSieve, Mode, compile_read};
+use syneroym_fdae::{CompiledSieve, DecisionTrace, Mode, compile_read};
 use syneroym_ucan::Ability;
 use tokio::{
     sync::{mpsc, oneshot},
@@ -173,8 +173,8 @@ fn do_put(
         .map_err(map_rusqlite_error)?;
     let created_at = existing_created_at.unwrap_or(now);
 
-    // D-B5-6: `creator_id` is create-time-only, like `created_at` above --
-    // an upsert must not let a later writer reassign a row's identity anchor
+    // `creator_id` is create-time-only, like `created_at` above -- an
+    // upsert must not let a later writer reassign a row's identity anchor
     // to themselves, which would silently steal ownership out from under a
     // `principal_column: "creator_id"` policy.
     conn.execute(
@@ -308,10 +308,11 @@ fn do_batch_mutate(
     for mutation in mutations {
         match mutation {
             host_store::Mutation::Put(value) => {
-                // Only probed under a sieve (D-B5-2's create-vs-update
-                // branch) -- `authorize_and_mutate` ignores `require_pre_image`
-                // entirely on the policy-absent path, so there is nothing to
-                // gain from paying this query when `sieve` is `None`.
+                // Only probed under a sieve (decides the create-vs-update
+                // branch of the `USING`/`WITH CHECK` split below) --
+                // `authorize_and_mutate` ignores `require_pre_image` entirely
+                // on the policy-absent path, so there is nothing to gain
+                // from paying this query when `sieve` is `None`.
                 let existed =
                     if sieve.is_some() { row_exists(&tx, collection, &value.id)? } else { false };
                 authorize_and_mutate(
@@ -348,8 +349,8 @@ fn do_batch_mutate(
     Ok(())
 }
 
-/// The unsieved create-vs-update probe (D-B5-2): decides *which* rule
-/// applies (pre-image required, or not), not whether the write is allowed --
+/// The unsieved create-vs-update probe: decides *which* rule applies
+/// (pre-image required, or not), not whether the write is allowed --
 /// both branches still end in `PermissionDenied` on failure, so this leaks
 /// nothing beyond "id `X` was free", inherent to any create-by-id API.
 fn row_exists(
@@ -381,8 +382,9 @@ fn read_payload(
     Ok(payload.into_bytes())
 }
 
-/// D-B5-7: whether every masked field's value is unchanged between a write's
-/// pre- and post-image. `pre: None` means a create -- any masked key present
+/// Whether every masked field's value is unchanged between a write's
+/// pre- and post-image (CLS extended to the write path). `pre: None` means
+/// a create -- any masked key present
 /// in `post` is a rejection, since a caller who cannot read a field cannot
 /// author it either. Fail-closed on a payload that won't parse as a JSON
 /// object while a non-empty mask applies, mirroring
@@ -392,15 +394,19 @@ fn masked_fields_unchanged(
     post: &[u8],
     masked: &[String],
 ) -> Result<bool, host_store::DataLayerError> {
+    // Fail-closed as `PermissionDenied`, not `SchemaViolation` -- this is
+    // the same envelope `row_reachable` folds every abort into, and a
+    // caller must not be able to tell "CLS couldn't evaluate" apart from
+    // "CLS said no" (a distinguishable error is exactly the existence
+    // oracle CLS-masking already refuses to provide elsewhere in this
+    // file). A row stored as a non-object payload (a lifecycle write, or
+    // written before the policy existed) becomes unwritable under a
+    // CLS-active policy either way; the point is that it fails the same
+    // way a denial does.
     fn as_object(payload: &[u8]) -> Result<Map<String, Value>, host_store::DataLayerError> {
         match serde_json::from_slice(payload) {
             Ok(Value::Object(map)) => Ok(map),
-            Ok(_) => Err(host_store::DataLayerError::SchemaViolation(
-                "payload is not a JSON object; cannot apply CLS field check".into(),
-            )),
-            Err(e) => Err(host_store::DataLayerError::SchemaViolation(format!(
-                "payload is not valid JSON: {e}"
-            ))),
+            _ => Err(host_store::DataLayerError::PermissionDenied),
         }
     }
 
@@ -450,11 +456,14 @@ fn row_reachable(
 
     let allowed = matches!(outcome, Ok(Ok(true)));
     if !allowed || trace_allows {
-        let mut traced = sieve.clone();
-        traced.trace.row_id = Some(id.to_string());
-        traced.trace.write_phase = Some(phase.to_string());
+        // Clone only the trace, not the whole compiled sieve (SQL text,
+        // bound params, caveats) -- `emit_mode_a_execution_trace` never
+        // reads anything else.
+        let mut trace = sieve.trace.clone();
+        trace.row_id = Some(id.to_string());
+        trace.write_phase = Some(phase.to_string());
         emit_mode_a_execution_trace(
-            Some(&traced),
+            Some(&trace),
             match &outcome {
                 Ok(Ok(true)) => ModeAOutcome::Matched,
                 Ok(Ok(false)) => ModeAOutcome::NotMatched,
@@ -484,22 +493,28 @@ fn authorize_and_mutate(
     validate_identifier(collection)?;
     let Some(sieve) = sieve else { return mutate(conn) };
 
-    // D-B5-4: no candidate-row batch exists mid-mutation, so the stage-4
-    // after-step cannot run -- deny closed, same rule as
-    // `do_delete_many`/`do_aggregate`.
+    // No candidate-row batch exists mid-mutation, so the stage-4 after-step
+    // cannot run -- deny closed, same rule as `do_delete_many`/`do_aggregate`.
     if !sieve.abac_permissions.is_empty() {
         return Err(host_store::DataLayerError::PermissionDenied);
     }
 
-    // USING half (D-B5-2): may the caller reach the row as it stands today?
-    // This subsumes existence -- see §4's idempotency note.
+    // USING half: may the caller reach the row as it stands today? This
+    // subsumes existence -- a `delete`/`patch` of a row that does not exist
+    // under a policy therefore denies rather than reporting not-found, since
+    // this check cannot distinguish "absent" from "present but unreachable"
+    // without becoming the existence oracle CLS-masking already refuses to
+    // provide.
     if require_pre_image && !row_reachable(conn, collection, id, sieve, "pre-image", trace_allows)?
     {
         return Err(host_store::DataLayerError::PermissionDenied);
     }
 
-    // D-B5-7: capture the pre-image payload only when CLS is active.
-    let pre_payload = if !sieve.masked_fields.is_empty() && require_pre_image {
+    // Capture the pre-image payload only when CLS is active *and* there's a
+    // post-image check to compare it against -- `delete` (`require_pre_image
+    // && !check_post_image`) never reads `pre_payload` below, so paying for
+    // it there would be a wasted read on every delete under a CLS policy.
+    let pre_payload = if !sieve.masked_fields.is_empty() && require_pre_image && check_post_image {
         Some(read_payload(conn, collection, id)?)
     } else {
         None
@@ -507,15 +522,15 @@ fn authorize_and_mutate(
 
     mutate(conn)?;
 
-    // WITH CHECK half (D-B5-2): may the caller reach the row they just
-    // wrote? Rejects both "create a row you could never see" and "rewrite a
-    // row out of your own reach". `Err` rolls the caller's transaction back.
+    // WITH CHECK half: may the caller reach the row they just wrote? Rejects
+    // both "create a row you could never see" and "rewrite a row out of
+    // your own reach". `Err` rolls the caller's transaction back.
     if check_post_image && !row_reachable(conn, collection, id, sieve, "post-image", trace_allows)?
     {
         return Err(host_store::DataLayerError::PermissionDenied);
     }
 
-    // D-B5-7: a field the caller cannot read is one they cannot write.
+    // A field the caller cannot read is one they cannot write.
     if !sieve.masked_fields.is_empty() && check_post_image {
         let post = read_payload(conn, collection, id)?;
         if !masked_fields_unchanged(pre_payload.as_deref(), &post, &sieve.masked_fields)? {
@@ -622,7 +637,7 @@ fn do_get(
         })();
 
     emit_mode_a_execution_trace(
-        sieve,
+        sieve.map(|s| &s.trace),
         match &outcome {
             Ok(Ok(_)) => ModeAOutcome::Matched,
             Ok(Err(SqliteError::QueryReturnedNoRows)) => ModeAOutcome::NotMatched,
@@ -674,9 +689,9 @@ enum ModeAOutcome {
 /// the only place "rows not reached" (an admitted operation whose compiled
 /// predicate matched no row) -- or a policy-evaluation abort -- becomes
 /// knowable.
-fn emit_mode_a_execution_trace(sieve: Option<&CompiledSieve>, outcome: ModeAOutcome) {
-    let Some(s) = sieve else { return };
-    let mut trace = s.trace.clone();
+fn emit_mode_a_execution_trace(trace: Option<&DecisionTrace>, outcome: ModeAOutcome) {
+    let Some(trace) = trace else { return };
+    let mut trace = trace.clone();
     match outcome {
         ModeAOutcome::Matched => trace.rows_reached = Some(true),
         ModeAOutcome::NotMatched => {
@@ -838,7 +853,7 @@ fn do_check_access(
     })();
 
     emit_mode_a_execution_trace(
-        sieve,
+        sieve.map(|s| &s.trace),
         match &outcome {
             Ok(Ok(true)) => ModeAOutcome::Matched,
             Ok(Ok(false)) => ModeAOutcome::NotMatched,
@@ -1112,13 +1127,25 @@ fn compile_sieve_for_op(
     mode: Mode,
 ) -> Result<Option<CompiledSieve>, host_store::DataLayerError> {
     let Some(auth) = auth else { return Ok(None) };
-    // Slice B3 Phase 4: a caller that already ran `plan_read` + the
-    // `resolve_fetches` orchestration + `finalize` (because the policy's
-    // selected paths needed a remote relationship fetch) hands the
-    // already-compiled sieve straight through -- `compile_read` below would
-    // otherwise fail closed on exactly that case (it's the local-only
-    // entry point, unchanged since Phase 2/3).
+    // A caller that already ran `plan_read` + the `resolve_fetches`
+    // orchestration + `finalize` (because the policy's selected paths
+    // needed a remote relationship fetch) hands the already-compiled sieve
+    // straight through -- `compile_read` below would otherwise fail closed
+    // on exactly that case (it's the local-only entry point).
+    //
+    // Asserted, not assumed: `QueryAuth` carries no type-level guarantee
+    // that a pre-resolved sieve was compiled for *this* `operation` --
+    // `resolved_sieve` is `pub` on a type callers outside this module can
+    // construct, and both current ingresses populate it unconditionally
+    // (not only for the cross-service-fetch case), so a mismatch would
+    // otherwise pass through silently and authorize `operation` against a
+    // predicate compiled for a different (possibly wider) ability. Every
+    // sieve records the ability it was compiled for in its own trace, so
+    // the check is one comparison, not a new field.
     if let Some(sieve) = &auth.resolved_sieve {
+        if sieve.trace.operation != operation {
+            return Err(host_store::DataLayerError::PermissionDenied);
+        }
         return Ok(Some(sieve.clone()));
     }
     // Validated here, before `collection` reaches `compile_read` and a
@@ -2207,10 +2234,19 @@ impl ServiceStore for SqliteServiceStore {
         // rather than propagating -- unlike Mode B's `query`/`get`, where a
         // compile error is a loud `Err` (a broken policy isn't "zero rows").
         let sieve = match auth {
-            // Slice B3 Phase 4: honor a caller-pre-resolved sieve exactly
-            // like `compile_sieve_for_op` does, before ever calling the
-            // local-only `compile_read`.
-            Some(a) if a.resolved_sieve.is_some() => a.resolved_sieve.clone(),
+            // Honor a caller-pre-resolved sieve exactly like
+            // `compile_sieve_for_op` does, before ever calling the
+            // local-only `compile_read` -- including that function's
+            // operation-match assertion: a pre-resolved sieve compiled for a
+            // different ability than requested here must not be trusted
+            // verbatim.
+            Some(a) if a.resolved_sieve.is_some() => {
+                match &a.resolved_sieve {
+                    Some(s) if s.trace.operation != operation => return Ok(false),
+                    _ => {}
+                }
+                a.resolved_sieve.clone()
+            }
             Some(a) => match compile_read(
                 a.policy,
                 collection,
@@ -3243,8 +3279,8 @@ mod tests {
         assert_eq!(deleted, 1);
     }
 
-    /// M04B Slice B5-fdae, matrix row 5 on the write path: a watchdog
-    /// interrupt during `row_reachable`'s pre-image check is `Ok(false)`
+    /// On the write path, a watchdog interrupt during `row_reachable`'s
+    /// pre-image check is `Ok(false)`
     /// (fail-closed, same contract as `do_check_access`), which
     /// `authorize_and_mutate` turns into an ordinary `PermissionDenied` --
     /// unlike the read paths above, which surface `QuotaExceeded`

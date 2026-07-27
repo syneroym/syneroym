@@ -145,25 +145,33 @@ impl CallerContext {
         }
     }
 
-    /// The DID a row this caller writes should be attributed to (D-B5-5,
-    /// M04B Slice B5-fdae). Synthesized substrate contexts have no external
-    /// principal, so the service owns the row; everyone else is attributed
-    /// to the principal they act for -- `anchor_did` before `subject_did`,
-    /// the same precedence `syneroym_fdae::compile`'s path-terminal
-    /// resolution and `RemoteFetch.principal_did` use, so a row created
-    /// through a proxying service is attributed to the principal it acts
-    /// for, not the proxy.
+    /// The DID a row this caller writes should be attributed to. Synthesized
+    /// substrate contexts have no external principal, so the service owns
+    /// the row; everyone else is attributed to the principal they act for --
+    /// `anchor_did` before `subject_did`, the same precedence
+    /// `syneroym_fdae::compile`'s path-terminal resolution and
+    /// `RemoteFetch.principal_did` use, so a row created through a proxying
+    /// service is attributed to the principal it acts for, not the proxy.
+    ///
+    /// Deliberately does **not** consult `app_instance`: the compiled sieve's
+    /// `WITH CHECK` half re-derives the same row's owning principal from
+    /// `anchor_did`/`subject_did` alone (`terminal_value` has no
+    /// `app_instance` terminal at all), so stamping `app_instance` here
+    /// first would attribute a row to a DID the sieve can never match --
+    /// failing a policy's own `WITH CHECK` on the very write that just
+    /// passed its `USING` half. If `app_instance` ever needs to participate
+    /// in attribution, the policy language needs an `app_instance` terminal
+    /// first, so the two stay in lockstep by construction rather than by
+    /// convention.
     #[must_use]
     pub fn write_attribution(&self, service_id: &str) -> String {
         match self.auth {
             AuthLevel::System | AuthLevel::LocalElevated | AuthLevel::LocalReadOnly => {
                 service_id.to_string()
             }
-            AuthLevel::Delegated | AuthLevel::Ucan => self
-                .app_instance
-                .clone()
-                .or_else(|| self.session.anchor_did.clone())
-                .unwrap_or_else(|| self.session.subject_did.clone()),
+            AuthLevel::Delegated | AuthLevel::Ucan => {
+                self.session.anchor_did.clone().unwrap_or_else(|| self.session.subject_did.clone())
+            }
         }
     }
 }
@@ -187,4 +195,47 @@ pub struct NativeResponse {
 #[async_trait::async_trait]
 pub trait NativeService: Send + Sync + Debug {
     async fn dispatch(&self, invocation: NativeInvocation) -> RpcResult<NativeResponse>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn caller(auth: AuthLevel, subject_did: &str, anchor_did: Option<&str>) -> CallerContext {
+        CallerContext {
+            caller_did: subject_did.to_string(),
+            app_instance: None,
+            session: SessionContext {
+                subject_did: subject_did.to_string(),
+                anchor_did: anchor_did.map(str::to_string),
+                ..Default::default()
+            },
+            auth,
+            proof: None,
+        }
+    }
+
+    #[test]
+    fn synthesized_substrate_contexts_attribute_to_the_service() {
+        for auth in [AuthLevel::System, AuthLevel::LocalElevated, AuthLevel::LocalReadOnly] {
+            let ctx = caller(auth, "system:whatever", None);
+            assert_eq!(ctx.write_attribution("svc-a"), "svc-a");
+        }
+    }
+
+    #[test]
+    fn a_direct_caller_attributes_to_its_own_subject_did() {
+        let ctx = caller(AuthLevel::Ucan, "did:key:zDirectCaller", None);
+        assert_eq!(ctx.write_attribution("svc-a"), "did:key:zDirectCaller");
+    }
+
+    #[test]
+    fn a_proxied_caller_attributes_to_the_anchor_not_the_immediate_subject() {
+        let ctx = caller(
+            AuthLevel::Delegated,
+            "did:key:zProxyingService",
+            Some("did:key:zRealPrincipal"),
+        );
+        assert_eq!(ctx.write_attribution("svc-a"), "did:key:zRealPrincipal");
+    }
 }

@@ -86,9 +86,20 @@ evaluated against the row's post-image instead of its pre-image. Why:
   allowed to create could create a row attributed to someone else. The
   post-image check forbids that. *(For the **update** branch this argument
   does not carry on its own — see D-B5-6.)*
-- **The append-only case still works.** `allows: [data-layer/write]` with
-  `paths: []` (public) passes the post-image check for anything and, because
-  `allows` omits read, grants no read.
+- **A public-`paths` write permission is not automatically a public-read
+  one.** `allows: [data-layer/write]` with `paths: []` passes the post-image
+  check for anything, but *only* for a caller who already holds a capability
+  entailing `data-layer/write` on that resource. That is not "append-only
+  safety" in general: `Ability::entails` makes `write` ⊇ `read` (the tiered
+  `data-layer` hierarchy), so `applicable_permissions` finds this permission
+  applicable to a *read* too, and a caller who holds nothing above
+  `data-layer/read` never reaches it in the first place — but one who holds
+  `write` (or `admin`) gets `paths: []`'s `1=1` for reads as well. Whether
+  this permission ends up leaking read access therefore depends entirely on
+  which capabilities the policy's *other* permissions and the caller's own
+  grants put in play, not on `allows` "omitting read" (omission does not
+  narrow entailment). There is no schema-level way to express "write-only,
+  no read entailment" today.
 - **Zero new policy surface.** No `fdae-v1.json` change, no new `Permission`
   field, no deploy-time validation, no migration.
 

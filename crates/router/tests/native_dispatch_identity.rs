@@ -80,7 +80,7 @@ fn test_caller(did: &str) -> CallerContext {
         app_instance: None,
         // `subject_did` mirrors `caller_did`, exactly as production's
         // `build_caller` (`route_handler/io.rs:169`) always sets it --
-        // `write_attribution` (D-B5-5) reads the verified session identity,
+        // `write_attribution` reads the verified session identity,
         // not the raw `caller_did` field, so a fixture leaving this at
         // `SessionContext::default()`'s empty string would attribute writes
         // to nobody instead of this caller.
@@ -91,7 +91,7 @@ fn test_caller(did: &str) -> CallerContext {
 }
 
 /// Seeds one fixture row directly against a service's store, `auth: None`
-/// -- bypasses the write-side FDAE gate (B5-fdae) entirely, which these
+/// -- bypasses the write-side FDAE gate entirely, which these
 /// read-side tests are not about: their fixture policies declare no
 /// `data-layer/write` permission at all, so seeding through the gated
 /// `put`/`create-collection` JSON-RPC path would deny closed regardless of
@@ -367,6 +367,52 @@ async fn execute_ddl_denied_for_ordinary_native_caller() {
     assert_eq!(
         resp["error"]["code"], -32010,
         "an ordinary caller must be denied execute-ddl: {resp:?}"
+    );
+}
+
+/// `drop-collection` (native) is gated on `data-layer/admin`, identical to
+/// `execute-ddl`: dropping an existing collection bypasses any per-row
+/// policy on it entirely, so an ordinary caller holding no admin capability
+/// must be denied even though it could reach the same service's ordinary
+/// write operations.
+#[tokio::test]
+async fn drop_collection_denied_for_ordinary_native_caller() {
+    let (route_handler, _http_routes) = test_route_handler().await;
+
+    let service_id = "drop-collection-deny-svc".to_string();
+    let key_store = Arc::new(KeyStore::new());
+    let temp_dir = tempfile::tempdir().unwrap();
+    let storage_provider = Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+    let blob_provider: Arc<dyn BlobProvider> =
+        Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+    let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+    let data_service = Arc::new(SynSvcNativeService::new(
+        service_id.clone(),
+        key_store,
+        storage_provider,
+        blob_provider,
+        messaging_broker,
+        None,
+        Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        "did:key:zTestOwner",
+        syneroym_sandbox_wasm::empty_service_proxy(),
+        syneroym_rpc::empty_row_authorizer(),
+    ));
+    route_handler.register_native_service(service_id.clone(), data_service);
+
+    let pipeline = raw_pipeline(&service_id);
+    let preamble = preamble_for(&service_id, "data-layer");
+    let caller = test_caller("did:key:z6MkOrdinaryDropCollectionCaller");
+
+    let body = json_rpc_body("drop-collection", json!({"name": "items"}));
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&caller), &body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert_eq!(
+        resp["error"]["code"], -32010,
+        "an ordinary caller must be denied drop-collection: {resp:?}"
     );
 }
 
@@ -1144,7 +1190,7 @@ async fn native_fdae_policy_row_filters_and_masks_for_two_distinct_verified_call
     assert_eq!(records[0]["id"], "doc-2");
 }
 
-/// M04B Slice B5-fdae headline test: mirrors `native_fdae_policy_row_
+/// Mirrors `native_fdae_policy_row_
 /// filters_and_masks_for_two_distinct_verified_callers` above, for the
 /// write side. Two verified callers, each holding a `data-layer/write`
 /// capability on `documents`, may each patch only their own row and are
@@ -1235,6 +1281,123 @@ async fn native_fdae_policy_authorizes_writes_for_one_verified_caller_and_denies
         .unwrap();
     let resp: Value = serde_json::from_slice(&resp).unwrap();
     assert!(resp.get("error").is_none(), "bob patching his own row must succeed: {resp:?}");
+}
+
+/// The headline write-authz test above only exercises `patch`. `put`
+/// (both create and update), `delete`, and `batch-mutate` all wrap the same
+/// `authorize_and_mutate` envelope but are otherwise untested end to end
+/// through the native JSON-RPC dispatch path -- this pins that each denies
+/// with the same `-32010` permission-denied code, not an opaque internal
+/// error, and that a denied `batch-mutate` rolls back a mutation earlier in
+/// the same batch that would otherwise have succeeded.
+#[tokio::test]
+async fn native_fdae_policy_denies_put_delete_and_batch_mutate_for_an_unreachable_row() {
+    let (route_handler, _http_routes) = test_route_handler().await;
+
+    let service_id = "native-fdae-write-denials-svc".to_string();
+    let key_store = Arc::new(KeyStore::new());
+    let temp_dir = tempfile::tempdir().unwrap();
+    let storage_provider: Arc<dyn StorageProvider> =
+        Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+    let blob_provider: Arc<dyn BlobProvider> =
+        Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+    let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+    let policy = Arc::new(native_fdae_write_policy());
+    let data_service = Arc::new(SynSvcNativeService::new(
+        service_id.clone(),
+        key_store.clone(),
+        storage_provider.clone(),
+        blob_provider,
+        messaging_broker,
+        Some(policy),
+        Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        "did:key:zTestOwner",
+        syneroym_sandbox_wasm::empty_service_proxy(),
+        syneroym_rpc::empty_row_authorizer(),
+    ));
+    route_handler.register_native_service(service_id.clone(), data_service);
+
+    let pipeline = raw_pipeline(&service_id);
+    let preamble = preamble_for(&service_id, "data-layer");
+
+    for (collection, id, payload) in [
+        ("users", "u-alice", json!({"did": "did:key:alice"})),
+        ("users", "u-bob", json!({"did": "did:key:bob"})),
+        ("documents", "doc-alice", json!({"creator_uuid": "u-alice"})),
+        ("documents", "doc-bob", json!({"creator_uuid": "u-bob"})),
+    ] {
+        seed_via_store(&storage_provider, &key_store, &service_id, collection, id, &payload).await;
+    }
+
+    let alice = fdae_writer_caller("did:key:alice", &service_id);
+
+    // `put`-create: alice creating a row attributed to bob is denied --
+    // the post-image is unreachable to her.
+    let create_other = json_rpc_body(
+        "put",
+        json!({
+            "collection": "documents",
+            "value": {"id": "doc-new", "payload": json!({"creator_uuid": "u-bob"}).to_string().into_bytes()}
+        }),
+    );
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&alice), &create_other)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert_eq!(
+        resp["error"]["code"], -32010,
+        "alice creating a row attributed to bob must be denied: {resp:?}"
+    );
+
+    // `delete`: alice deleting bob's row is denied -- unreachable to her.
+    let delete_other = json_rpc_body("delete", json!({"collection": "documents", "id": "doc-bob"}));
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&alice), &delete_other)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert_eq!(resp["error"]["code"], -32010, "alice deleting bob's row must be denied: {resp:?}");
+
+    // `batch-mutate`: alice's own patch (would succeed alone) followed by a
+    // patch of bob's row (denied) must roll back the whole batch, not just
+    // the offending mutation.
+    let batch = json_rpc_body(
+        "batch-mutate",
+        json!({
+            "collection": "documents",
+            "mutations": [
+                {"type": "patch", "value": {"id": "doc-alice", "patch_json": b"{\"nickname\":\"al\"}".to_vec()}},
+                {"type": "patch", "value": {"id": "doc-bob", "patch_json": b"{\"nickname\":\"stolen\"}".to_vec()}},
+            ]
+        }),
+    );
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&alice), &batch)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert_eq!(
+        resp["error"]["code"], -32010,
+        "a batch containing a denied mutation must be denied: {resp:?}"
+    );
+
+    let get_body = json_rpc_body("get", json!({"collection": "documents", "id": "doc-alice"}));
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&alice), &get_body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    let result = resp.get("result").expect("get must return a result");
+    let payload: Value = serde_json::from_slice(
+        &serde_json::from_value::<Vec<u8>>(result["payload"].clone()).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        payload.get("nickname").is_none(),
+        "the denied batch's earlier, otherwise-valid mutation must have rolled back too: \
+         {payload:?}"
+    );
 }
 
 /// A `manage` permission covering `data-layer/write`, reachable via the same
@@ -1627,7 +1790,7 @@ async fn resolve_relation_service_and_pipeline_with(
     // employee_policy` (and every other fixture policy used here) declares
     // no `data-layer/write` permission at all, so seeding through the
     // gated `put`/`batch-mutate` JSON-RPC path would deny closed regardless
-    // of which caller presents it (B5-fdae).
+    // of which caller presents it.
     let store = storage_provider.open_service_db(service_id, &key_store).await.unwrap();
     store
         .create_collection(&host_store::CollectionSchema {
@@ -2218,7 +2381,7 @@ async fn build_hr_svc_proxy_router(
     // Seeded directly against the store, `auth: None` -- `resolvable_
     // employee_policy` declares no `data-layer/write` permission at all, so
     // seeding through the gated native `"put"` dispatch would deny closed
-    // regardless of caller (B5-fdae).
+    // regardless of caller.
     for (id, did) in [("emp-alice", "did:key:alice"), ("emp-bob", "did:key:bob")] {
         seed_via_store(
             &storage_provider,
@@ -2463,8 +2626,7 @@ async fn native_dispatch_query_resolves_a_cross_service_fetch_end_to_end() {
 
     // Seeded directly against the store, `auth: None` -- `local_policy`
     // declares only a `view` (read) permission, so seeding through the
-    // gated native `"put"` dispatch would deny closed regardless of caller
-    // (B5-fdae).
+    // gated native `"put"` dispatch would deny closed regardless of caller.
     for (id, owner_uuid) in [("doc-1", "emp-alice"), ("doc-2", "emp-bob")] {
         seed_via_store(
             &storage_provider,

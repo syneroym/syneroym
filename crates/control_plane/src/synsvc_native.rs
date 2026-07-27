@@ -699,6 +699,30 @@ impl SynSvcNativeService {
                 to_payload(&())
             }
             "drop-collection" | "drop_collection" => {
+                // Admin-capability gate -- identical to `execute-ddl` below:
+                // dropping an *existing* collection bypasses any per-row
+                // policy on it entirely (every row a write-capable-but-
+                // otherwise-unreachable caller could not delete individually
+                // goes with it), so it must not be reachable through an
+                // ordinary write capability. `create-collection` stays
+                // ungated deliberately: a never-yet-existing collection has
+                // no policy-protected rows to destroy, and an owner-rooted
+                // UCAN chain can never carry `data-layer/admin` at all
+                // (`router/src/route_handler/io.rs`'s `is_root` excludes
+                // admin-entailing capabilities from per-service owner-rooting
+                // on purpose) -- gating creation too would make it
+                // impossible for a service on an unowned substrate to
+                // provision its own schema at all.
+                let resource = ResourceUri::service(
+                    invocation.caller.app_instance.as_deref().unwrap_or(&self.service_id),
+                    &self.service_id,
+                );
+                if !invocation
+                    .caller
+                    .has_capability(&resource, &Ability(Ability::DATA_LAYER_ADMIN.to_string()))
+                {
+                    return Err(data_layer_error(DataLayerError::PermissionDenied));
+                }
                 #[derive(serde::Deserialize)]
                 struct Req {
                     name: String,
@@ -900,9 +924,9 @@ impl SynSvcNativeService {
                     .await
                     .map_err(data_layer_error)?;
                 // `data_layer_error`, not `internal` -- a stage-4/watchdog
-                // `PermissionDenied` (and, since B5, an FDAE write denial)
-                // must surface as a permission denial, not an opaque
-                // internal error (pre-existing bug, fixed in passing).
+                // `PermissionDenied` (and an FDAE write denial) must surface
+                // as a permission denial, not an opaque internal error
+                // (pre-existing bug, fixed in passing).
                 store
                     .delete(&req.collection, &req.id, auth.as_ref())
                     .await

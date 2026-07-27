@@ -609,6 +609,22 @@ impl store::Host for HostState {
         if self.read_only {
             return Err(DataLayerError::PermissionDenied);
         }
+        // Admin-capability gate, identical to `execute_ddl`'s: dropping an
+        // *existing* collection bypasses any per-row policy on it entirely
+        // (every row a write-capable-but-otherwise-unreachable caller could
+        // not delete individually goes with it), so it must not be
+        // reachable through an ordinary write capability. `create_collection`
+        // stays ungated deliberately: a never-yet-existing collection has no
+        // policy-protected rows to destroy, and an owner-rooted UCAN chain
+        // can never carry `data-layer/admin` at all (`router/src/route_
+        // handler/io.rs`'s `is_root` excludes admin-entailing capabilities
+        // from per-service owner-rooting on purpose) -- gating creation too
+        // would make it impossible for a service on an unowned substrate to
+        // provision its own schema at all.
+        let resource = ResourceUri::service(&self.component_id, &self.component_id);
+        if !self.caller.has_capability(&resource, &Ability(Ability::DATA_LAYER_ADMIN.to_string())) {
+            return Err(DataLayerError::PermissionDenied);
+        }
         let store = open_store(
             self.component_id.clone(),
             self.key_store.clone(),
@@ -1988,7 +2004,7 @@ pub(crate) mod tests {
         assert_eq!(deleted, 1, "only alice's own document is deletable");
     }
 
-    /// M04B Slice B5-fdae, through the `store::Host` guest boundary: a
+    /// Through the `store::Host` guest boundary: a
     /// write-capable caller who cannot reach a row via the compiled sieve
     /// is denied `put`/`patch`/`delete` on it; the same caller against a
     /// row they do reach succeeds.
@@ -2054,6 +2070,44 @@ pub(crate) mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    /// `drop_collection` bypasses any per-row policy on the collection
+    /// entirely, so it must not be reachable through an ordinary write
+    /// capability: a caller holding only `data-layer/write` on `documents`
+    /// (able to `put`/`patch`/`delete` rows it can individually reach) is
+    /// denied `drop_collection("documents")` outright; a caller holding
+    /// `data-layer/admin` on the service succeeds.
+    #[tokio::test]
+    async fn drop_collection_requires_admin_not_an_ordinary_write_capability() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage_provider: Arc<dyn StorageProvider> =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        fdae_seed_documents(storage_provider.clone()).await;
+
+        let writer = fdae_caller("did:key:alice", vec![fdae_write_cap("documents")]);
+        let mut host = fdae_host_state(storage_provider.clone(), writer, None);
+        let err =
+            store::Host::drop_collection(&mut host, "documents".to_string()).await.unwrap_err();
+        assert!(matches!(err, DataLayerError::PermissionDenied));
+        assert!(
+            store::Host::get(&mut host, "documents".to_string(), "doc-1".to_string())
+                .await
+                .unwrap()
+                .is_some(),
+            "a denied drop_collection must leave the collection intact"
+        );
+
+        let admin = fdae_caller(
+            "did:key:admin",
+            vec![Capability {
+                with: ResourceUri::service(FDAE_SERVICE_ID, FDAE_SERVICE_ID),
+                can: Ability(Ability::DATA_LAYER_ADMIN.to_string()),
+                caveats: None,
+            }],
+        );
+        let mut host = fdae_host_state(storage_provider, admin, None);
+        store::Host::drop_collection(&mut host, "documents".to_string()).await.unwrap();
     }
 
     /// **D-04-02-g CLS-narrowing pin** (task.md Decision Register): the same

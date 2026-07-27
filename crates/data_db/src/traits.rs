@@ -142,14 +142,13 @@ pub trait ServiceStore: Send + Sync {
     /// is unfiltered (policy-absent services, lifecycle contexts, benches,
     /// tests); `Some` applies the ADR-0017 §4 Mode-A write check as
     /// `data-layer/write` -- pre-image reachability for an update, post-image
-    /// reachability for a create or update (D-B5-2's `USING`/`WITH CHECK`),
-    /// plus CLS (D-B5-7): a masked field may not be authored on create, nor
-    /// changed on update. See §4 of the implementation plan for the
-    /// resulting idempotency change: deleting/patching a row that does not
-    /// exist under a policy denies rather than reporting not-found, since the
-    /// pre-image check cannot distinguish "absent" from "present but
-    /// unreachable" without becoming the existence oracle CLS-masking already
-    /// refuses to provide.
+    /// reachability for a create or update (Postgres's `USING`/`WITH CHECK`
+    /// split), plus CLS: a masked field may not be authored on create, nor
+    /// changed on update. Resulting idempotency change: deleting/patching a
+    /// row that does not exist under a policy denies rather than reporting
+    /// not-found, since the pre-image check cannot distinguish "absent"
+    /// from "present but unreachable" without becoming the existence oracle
+    /// CLS-masking already refuses to provide.
     async fn put(
         &self,
         collection: &str,

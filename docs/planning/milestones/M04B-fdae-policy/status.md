@@ -3762,3 +3762,95 @@ once exercised end to end:
   39.925 µs, `batch_mutate_50_unauthorized_baseline` 340.46 µs,
   `batch_mutate_50_authorized` 964.41 µs (all criterion mean values; full
   distributions in `PERF_SUMMARY.md`).
+
+### Post-review hardening (2026-07-27)
+
+An independent review docket against `585c9a0` raised 11 findings (2 high,
+5 medium, 4 low) plus 6 test-coverage gaps. Disposition:
+
+**Fixed:**
+- **`drop-collection` had no `data-layer/admin` capability gate** (High) --
+  gated identically to `execute-ddl`/`query-raw` in both ingresses
+  (`sandbox_wasm/src/host_capabilities.rs`, `control_plane/src/
+  synsvc_native.rs`), with a denial regression test in each. `create-
+  collection` deliberately stays ungated: gating it the same way is
+  incompatible with the router's owner-rooting rule (`router/src/
+  route_handler/io.rs`'s `is_root` never lets a per-service-owner-rooted
+  UCAN chain carry an admin-entailing capability -- only the node's real
+  admin root can), and would make schema provisioning impossible on an
+  unowned substrate. Recorded as a deliberate asymmetry in
+  `deferred-backlog.md`, not silently left as a gap.
+- **The D-B5-2 "append-only" bullet's reasoning was false** (High) --
+  `allows: [data-layer/write]` with `paths: []` does *not* "grant no read":
+  `write` entails `read` (the tiered hierarchy), so `applicable_permissions`
+  finds it applicable to reads too. Corrected in
+  `slice-b5-implementation-plan.md` and the `federated_fdae_e2e.rs` Node A
+  fixture comment that repeated the same false claim.
+- **`write_attribution`'s `app_instance` precedence had no sieve
+  counterpart** (Medium) -- `app_instance` is always `None` today, but if
+  ever populated, its precedence over `anchor_did`/`subject_did` would fail
+  a policy's own `WITH CHECK` (the sieve's `terminal_value` has no
+  `app_instance` terminal at all). Dropped from the precedence in
+  `crates/rpc/src/native.rs`; doc comment corrected; direct unit tests
+  added (none existed before).
+- **A pre-resolved sieve was trusted without checking which operation it
+  was compiled for** (Medium) -- `compile_sieve_for_op` and
+  `SqliteServiceStore::check_access` both now assert `sieve.trace.operation
+  == operation` on the short-circuit and fail closed on mismatch, since
+  both ingresses populate `resolved_sieve` unconditionally today, not only
+  for the cross-service-fetch case. Regression test added.
+- **`put`-update becomes impossible under CLS, undocumented and untested**
+  (Medium) -- stated explicitly on the WIT `put` doc note (use `patch`
+  instead); a test pins that a masked field survives `put` only when
+  resent verbatim, never via the ordinary read-modify-write loop.
+- **~35 planning-doc references (`D-B5-x`, `Slice B5-fdae`) added to
+  production code, doc comments, WIT, and test files** (Medium, house
+  rule) -- rewritten to state each invariant on its own terms across
+  `sqlite.rs`, `traits.rs`, `native.rs`, `data-layer.wit`,
+  `native_dispatch_identity.rs`, `proxy_dispatch.rs`,
+  `data_layer_integration.rs`, `fdae_bench.rs`, `tests_fdae.rs`, and the
+  `data-layer-test` fixture's WIT world. ADR-0017 citations kept.
+- **A test's doc comment described behavior D-B5-5 removed** (Low) --
+  `guest_self_proxy_put_attributes_creator_id_to_the_real_caller_not_the_
+  service`'s comment claimed the direct WIT `put` still always stamps
+  `component_id`; it calls `write_attribution` now too. Corrected to state
+  the two ingresses agree whenever a real principal is present.
+- **Every CLS `delete` paid an unused pre-image payload read** (Low) --
+  `authorize_and_mutate` now gates the read on `check_post_image` too,
+  since `delete` never consumes it.
+- **CLS payload-shape failures surfaced as `SchemaViolation`, unlike every
+  sibling check** (Low) -- `masked_fields_unchanged`'s `as_object` now
+  fails as `PermissionDenied`, matching `row_reachable`'s fail-closed
+  contract.
+- **The whole compiled sieve was cloned to stamp two trace fields** (Low)
+  -- `emit_mode_a_execution_trace` now takes `Option<&DecisionTrace>`
+  instead of `Option<&CompiledSieve>`; `row_reachable` clones only the
+  trace.
+- **Test-coverage gaps** -- added: the `delete`/`delete-many`/`batch-
+  mutate` `internal`→`data_layer_error` fix now has a native-dispatch
+  regression test; a new native-dispatch test drives `put`-create,
+  `delete`, and `batch-mutate` denials end to end (previously only
+  `patch`); a write-side twin of `differently_cased_collection_name_does_
+  not_bypass_the_sieve`; `batch_mutate` CLS coverage plus a batch denied on
+  a `Put`-create specifically; `write_attribution` direct unit tests (all
+  branches, including the `app_instance` case above); the policy-absent
+  upsert path now has its own `creator_id`-survives-a-re-put test
+  (previously only the FDAE-authorized path was pinned).
+
+**Reviewed and pushed back on:**
+- **Write-path watchdog budget is per-check, not per-request** (Medium,
+  availability) -- confirmed real (a `batch_mutate` at `MAX_BATCH_SIZE`
+  runs up to 400 sieve evaluations, each getting a fresh `FDAE_MAX_VM_OPS`
+  budget, on the single writer connection). Not fixed here: a correct
+  cumulative-budget mechanism needs a shared counter threaded through every
+  `row_reachable` call in a transaction, which is a real design/perf
+  tradeoff in its own right (risk of legitimate large batches aborting on
+  unrelated grounds), not a drive-by fix alongside a review-comment pass.
+  H5's `task.md` write-up extended to state the sharper write-path blast
+  radius explicitly; a `deferred-backlog.md` row added.
+
+Verification: `cargo +nightly fmt --all` clean; `cargo clippy --workspace
+--all-targets --all-features` zero warnings; `cargo test --workspace` green
+(sandbox-disabled full run; sandbox-enabled run shows only the
+previously-documented socket-bind failures under this CLI's default
+sandbox, unrelated to this change); `mise run test:e2e` 12/12.

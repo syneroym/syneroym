@@ -600,17 +600,16 @@ async fn guest_self_proxy_data_layer_reads_normally_when_policy_absent() {
     assert!(result.contains("\"id\":\"1\""), "expected the seeded row, got: {result:?}");
 }
 
-/// Pins the D-B5-5 attribution spec: `put`/`batch-mutate`'s `creator_id`
-/// stamping (`SynSvcNativeService::dispatch_data_layer`, via
+/// Pins the attribution spec: `put`/`batch-mutate`'s `creator_id` stamping
+/// (`SynSvcNativeService::dispatch_data_layer`, via
 /// `CallerContext::write_attribution`) attributes a self-proxy write to the
-/// real forwarded caller, not the service -- unlike the guest's *direct*
-/// WIT `put` (`host_capabilities.rs`), which still always stamps the
-/// service's own `component_id` for a guest writing its own data. The two
-/// ingresses attribute ownership differently by design: a self-proxy call
-/// carries a real external principal (forwarded since Slice B3.5-fdae),
-/// while the direct WIT path has none. Originally pinned as an open
-/// inconsistency (Slice B3.5-fdae); D-B5-5 (Slice B5-fdae) resolved it, so
-/// this is now the settled spec, not a known gap.
+/// real forwarded caller, not the service. The guest's *direct* WIT `put`
+/// (`host_capabilities.rs`) calls the very same `write_attribution` now, so
+/// the two ingresses agree whenever a real principal is present -- they
+/// diverge only when the caller is a synthesized substrate identity
+/// (`System`/`LocalElevated`/`LocalReadOnly`), which has none to attribute
+/// to, and stamps the service's own `component_id` instead. Originally
+/// pinned as an open inconsistency; now the settled spec, not a known gap.
 #[tokio::test]
 async fn guest_self_proxy_put_attributes_creator_id_to_the_real_caller_not_the_service() {
     let Some((route_handler, _storage_provider, _key_store)) =
@@ -625,7 +624,7 @@ async fn guest_self_proxy_put_attributes_creator_id_to_the_real_caller_not_the_s
         caller_did: REAL_CALLER_DID.to_string(),
         app_instance: None,
         // `subject_did` mirrors `caller_did`, as production's `build_caller`
-        // always sets it -- `write_attribution` (D-B5-5) reads the verified
+        // always sets it -- `write_attribution` reads the verified
         // session identity, not the raw `caller_did` field.
         session: SessionContext { subject_did: REAL_CALLER_DID.to_string(), ..Default::default() },
         auth: AuthLevel::Ucan,
@@ -652,8 +651,7 @@ async fn guest_self_proxy_put_attributes_creator_id_to_the_real_caller_not_the_s
     let result = resp.get("result").and_then(Value::as_str).unwrap_or_default();
     assert!(
         result.contains(&format!("\"creator_id\":\"{REAL_CALLER_DID}\"")),
-        "D-B5-5: a self-proxy write attributes creator_id to the real caller, unlike the guest's \
-         own direct-WIT `put`, which always stamps the service's own component_id -- got \
+        "a self-proxy write must attribute creator_id to the real caller, not the service -- got \
          {result:?}"
     );
 }
@@ -683,12 +681,12 @@ async fn guest_self_proxy_data_layer_returns_empty_when_policy_present() {
     assert!(resp.get("error").is_none(), "create-collection failed: {resp:?}");
 
     // Seeded directly against the store, `auth: None` -- a self-proxy `put`
-    // with no verified caller is exactly the `AuthLevel::System` write
-    // D-B5-3 denies closed under a policy (this fixture's `self_proxy_items_
-    // policy` declares no `data-layer/write` permission at all, so the
-    // fixture's own `put` would fail regardless of caller identity). This
-    // test is about the *read* side (D-04-02-h); seeding must not itself
-    // exercise the write-side gate B5-fdae added.
+    // with no verified caller is exactly the `AuthLevel::System` write the
+    // write-side gate denies closed under a policy (this fixture's
+    // `self_proxy_items_policy` declares no `data-layer/write` permission at
+    // all, so the fixture's own `put` would fail regardless of caller
+    // identity). This test is about the *read* side (D-04-02-h); seeding
+    // must not itself exercise the write-side gate.
     let store = storage_provider.open_service_db("proxy-caller", &key_store).await.unwrap();
     store
         .put(

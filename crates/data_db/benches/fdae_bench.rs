@@ -160,7 +160,7 @@ fn bench_fdae_pushdown_query(c: &mut Criterion) {
 }
 
 /// A `manage` permission covering `data-layer/write` via the same creator
-/// relation -- M04B Slice B5-fdae's write-side sieve.
+/// relation -- the write-side sieve.
 fn write_policy() -> Policy {
     parse_and_validate(
         r#"{
@@ -194,7 +194,7 @@ fn write_session(subject_did: &str) -> SessionContext {
     }
 }
 
-/// M04B Slice B5-fdae: the per-mutation `EXISTS` check (2 per row for
+/// The per-mutation `EXISTS` check (2 per row for
 /// `patch`/`put`-update, 1 for `delete`) an authorized write pays that an
 /// unauthorized (`auth: None`) one does not -- claim to establish per
 /// task.md's Performance Budgets table: it must not dominate write latency.

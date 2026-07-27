@@ -332,6 +332,27 @@ async fn test_creator_id_is_always_host_supplied() {
     assert_eq!(got.creator_id, "the-deploying-service-id");
 }
 
+/// `do_put`'s `ON CONFLICT` no longer refreshes `creator_id` on an update --
+/// this is the policy-absent path every lifecycle and orchestration write
+/// takes, not just the FDAE-authorized one `an_upsert_by_a_teammate_does_
+/// not_steal_creator_id` (`tests_fdae.rs`) pins. A re-`put` under a
+/// *different* host-supplied `creator_id` argument must still leave the
+/// original creator on record.
+#[tokio::test]
+async fn test_creator_id_survives_a_policy_absent_upsert() {
+    let store = setup_store().await;
+    store.create_collection(&schema("people")).await.unwrap();
+    store.put("people", &write_value("p1", "{}"), "original-creator", None).await.unwrap();
+    store
+        .put("people", &write_value("p1", r#"{"updated": true}"#), "a-different-caller", None)
+        .await
+        .unwrap();
+    let got = store.get("people", "p1", None).await.unwrap().value.unwrap();
+    assert_eq!(got.creator_id, "original-creator", "creator_id must be create-time-only");
+    let payload: Value = serde_json::from_slice(&got.payload).unwrap();
+    assert_eq!(payload["updated"], true, "the payload itself must still update on re-put");
+}
+
 #[tokio::test]
 async fn test_query_missing_collection_is_an_error_not_empty_list() {
     let store = setup_store().await;

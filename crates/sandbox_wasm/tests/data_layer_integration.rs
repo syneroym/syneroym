@@ -90,10 +90,9 @@ async fn run_crud_scenario(engine: &AppSandboxEngine, count: u32) -> u32 {
 }
 
 /// Drives only the guest's own `query` (no `put`) -- needed under a
-/// write-gated FDAE policy (M04B Slice B5-fdae), where the guest's own
-/// `put` (running as a capability-less `service_system` caller) would deny
-/// closed before ever reaching the query half `run_crud_scenario` combines
-/// it with.
+/// write-gated FDAE policy, where the guest's own `put` (running as a
+/// capability-less `service_system` caller) would deny closed before ever
+/// reaching the query half `run_crud_scenario` combines it with.
 async fn run_query_scenario(engine: &AppSandboxEngine, limit: u32) -> u32 {
     let request = JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
@@ -191,10 +190,9 @@ async fn test_deploy_init_crud_creator_id_and_migrate() {
 /// actually reachable.
 ///
 /// Seeds directly against the store (`auth: None`), not via the guest's own
-/// `put`: since M04B Slice B5-fdae, a write also runs the FDAE gate, and
-/// `service_system` (no capabilities) would deny it closed under this
-/// policy before the guest's query ever ran -- see `run_query_scenario`'s
-/// doc comment.
+/// `put`: a write also runs the FDAE gate, and `service_system` (no
+/// capabilities) would deny it closed under this policy before the guest's
+/// query ever ran -- see `run_query_scenario`'s doc comment.
 #[tokio::test]
 async fn test_deployed_policy_yields_empty_guest_originated_query_d04_02_h() {
     let Ok(wasm_bytes) = fs::read(test_constants::data_layer_test_wasm_path()) else {
@@ -368,11 +366,11 @@ async fn test_deployed_policy_filters_guest_originated_query_for_a_real_caller_d
         .unwrap();
     // Five more *unrelated* rows (`{"age": 0..5}`, no `creator_uuid`),
     // seeded the same way -- standing in for what `run-crud-scenario`'s own
-    // write half used to contribute before M04B Slice B5-fdae gated writes
-    // too. This policy declares no `data-layer/write` permission at all, so
-    // seeding these through the guest's own (now-gated) `put` would deny
-    // closed regardless of caller; seeding directly is what proves the
-    // *read* half in isolation.
+    // write half used to contribute before writes were gated too. This
+    // policy declares no `data-layer/write` permission at all, so seeding
+    // these through the guest's own (now-gated) `put` would deny closed
+    // regardless of caller; seeding directly is what proves the *read* half
+    // in isolation.
     for i in 0..5u32 {
         store
             .put(
@@ -417,14 +415,14 @@ async fn test_deployed_policy_filters_guest_originated_query_for_a_real_caller_d
     );
 }
 
-/// M04B Slice B5-fdae, guest-originated ingress (i): the guest's own `put`
+/// Guest-originated ingress (i): the guest's own `put`
 /// (`run-crud-scenario`'s write half) runs as whatever caller
-/// `execute_wasm_json` forwards through `HostState.caller` (per Slice
-/// B3.5-fdae) -- so a real caller holding `data-layer/write` on a
-/// `principal_column: "creator_id"` policy can write and read back their
-/// own rows (the host-stamped `creator_id` is exactly their own DID, via
-/// `write_attribution`, D-B5-5), while a real caller holding no capability
-/// at all is denied on the very first write.
+/// `execute_wasm_json` forwards through `HostState.caller` -- so a real
+/// caller holding `data-layer/write` on a `principal_column: "creator_id"`
+/// policy can write and read back their own rows (the host-stamped
+/// `creator_id` is exactly their own DID, via `write_attribution`), while a
+/// real caller holding no capability at all is denied on the very first
+/// write.
 #[tokio::test]
 async fn test_deployed_policy_authorizes_guest_originated_writes_for_a_real_caller_and_denies_another()
  {
