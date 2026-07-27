@@ -250,4 +250,107 @@ mod tests {
         let res2 = HandshakeVerifier::verify_preamble(&preamble, &resolver).await;
         assert!(res2.is_err());
     }
+
+    #[tokio::test]
+    async fn a_routing_scoped_certificate_is_accepted_on_a_connection() {
+        let master = Identity::generate().unwrap();
+        let temp = Identity::generate().unwrap();
+        let master_did = substrate::derive_did_key(&master.public_key());
+        let temp_pubkey = temp.public_key();
+        let temp_pubkey_hex = hex::encode(temp_pubkey.to_bytes());
+
+        let cert = DelegationCertificate::issue(&master, temp_pubkey, 3600, "routing".to_string())
+            .unwrap();
+        let cert_hex = hex::encode(cert.to_json().unwrap());
+
+        let preamble = RoutePreamble::parse(&format!(
+            "json-rpc://service?pubkey={temp_pubkey_hex}&delegation={cert_hex}"
+        ))
+        .unwrap();
+        let resolver = MockResolver { anchor: RwLock::new(MasterAnchorPayload::default()) };
+
+        let ident = HandshakeVerifier::verify_preamble(&preamble, &resolver)
+            .await
+            .expect("a routing-scoped certificate is unchanged, existing behavior");
+        assert_eq!(ident.master_did, master_did);
+    }
+
+    #[tokio::test]
+    async fn a_service_instance_scoped_certificate_is_accepted_on_a_connection() {
+        let member_master = Identity::generate().unwrap();
+        let instance = Identity::generate().unwrap();
+        let member_master_did = substrate::derive_did_key(&member_master.public_key());
+        let instance_pubkey = instance.public_key();
+        let instance_pubkey_hex = hex::encode(instance_pubkey.to_bytes());
+
+        let cert = DelegationCertificate::issue(
+            &member_master,
+            instance_pubkey,
+            3600,
+            "service-instance".to_string(),
+        )
+        .unwrap();
+        let cert_hex = hex::encode(cert.to_json().unwrap());
+
+        let preamble = RoutePreamble::parse(&format!(
+            "json-rpc://service?pubkey={instance_pubkey_hex}&delegation={cert_hex}"
+        ))
+        .unwrap();
+        let resolver = MockResolver { anchor: RwLock::new(MasterAnchorPayload::default()) };
+
+        let ident = HandshakeVerifier::verify_preamble(&preamble, &resolver)
+            .await
+            .expect("a service-instance-scoped certificate must be admitted at the ingress");
+        assert_eq!(ident.master_did, member_master_did);
+        assert_eq!(ident.temporary_did, substrate::derive_did_key(&instance_pubkey));
+    }
+
+    #[tokio::test]
+    async fn a_certificate_scoped_outside_transport_is_rejected_at_the_handshake() {
+        let master = Identity::generate().unwrap();
+        let temp = Identity::generate().unwrap();
+        let temp_pubkey = temp.public_key();
+        let temp_pubkey_hex = hex::encode(temp_pubkey.to_bytes());
+
+        let cert =
+            DelegationCertificate::issue(&master, temp_pubkey, 3600, "vault-unseal".to_string())
+                .unwrap();
+        let cert_hex = hex::encode(cert.to_json().unwrap());
+
+        let preamble = RoutePreamble::parse(&format!(
+            "json-rpc://service?pubkey={temp_pubkey_hex}&delegation={cert_hex}"
+        ))
+        .unwrap();
+        let resolver = MockResolver { anchor: RwLock::new(MasterAnchorPayload::default()) };
+
+        let res = HandshakeVerifier::verify_preamble(&preamble, &resolver).await;
+        assert!(res.is_err(), "a certificate scoped outside TRANSPORT_SCOPES must be rejected");
+    }
+
+    #[tokio::test]
+    async fn an_expired_instance_certificate_fails_the_handshake_closed() {
+        let member_master = Identity::generate().unwrap();
+        let instance = Identity::generate().unwrap();
+        let instance_pubkey = instance.public_key();
+        let instance_pubkey_hex = hex::encode(instance_pubkey.to_bytes());
+
+        // expires_in_secs = 0 -> already expired by the time verify() runs.
+        let cert = DelegationCertificate::issue(
+            &member_master,
+            instance_pubkey,
+            0,
+            "service-instance".to_string(),
+        )
+        .unwrap();
+        let cert_hex = hex::encode(cert.to_json().unwrap());
+
+        let preamble = RoutePreamble::parse(&format!(
+            "json-rpc://service?pubkey={instance_pubkey_hex}&delegation={cert_hex}"
+        ))
+        .unwrap();
+        let resolver = MockResolver { anchor: RwLock::new(MasterAnchorPayload::default()) };
+
+        let res = HandshakeVerifier::verify_preamble(&preamble, &resolver).await;
+        assert!(res.is_err(), "an expired service-instance certificate must fail closed");
+    }
 }

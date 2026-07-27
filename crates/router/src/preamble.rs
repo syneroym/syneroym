@@ -36,7 +36,7 @@
 //! | Param | Example | Meaning |
 //! |-------|---------|---------|
 //! | `enc`/`pubkey` | `?enc=ecdh-p256&pubkey=<hex>` | E2E ECDH-P256 + AES-GCM handshake (`handshake.rs`). Orthogonal to transport: `raw://my-interface.my-service?enc=ecdh-p256&pubkey=<hex-encoded-client-pubkey>`. |
-//! | `delegation` | `?delegation=<hex-encoded-json>` | Hex-encoded JSON `DelegationCertificate`. When present, `HandshakeVerifier::verify_preamble` checks it against `preamble.service_id` (see "Interface Names" below for what happens when it's absent). |
+//! | `delegation` | `?delegation=<hex-encoded-json>` | Hex-encoded JSON `DelegationCertificate`. When present, `HandshakeVerifier::verify_preamble` checks it against the `pubkey` param's derived DID and the certificate's own signed scope -- it never reads `preamble.service_id` (see "Interface Names" below for what happens when `delegation` is absent). |
 //! | `dir` | `?dir=upload\|download` | M3B Slice 6B/ADR-0014 stream-protocol direction disambiguator; only meaningful on `raw://` streams routed to a registered `stream-types` protocol. Any other value is rejected at the router before WASM instantiation. |
 //!
 //! The `RoutePipeline`'s `EncryptionStage` and `AdaptationStage` are **not**
