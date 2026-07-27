@@ -330,3 +330,83 @@ exists to withhold. The online-key cost is the smaller one.
 - Revocation acquires a real use. `resolve_master_anchor`'s revocation list can
   kill a compromised or retired *instance* key without disturbing the member's
   identity or any policy that names it.
+
+**Amendment (2026-07-28, after Slice A0 implementation).** Planning Slice A0
+found seven places above where this ADR describes the tree inaccurately.
+Recorded here rather than silently edited into the sections above, so the
+gap between design and what actually shipped is legible in one place.
+
+1. **§1 and §5 name the ingress verifier `verify_identity`.** No function of
+   that name exists in the tree, before or after this slice. The function is
+   `HandshakeVerifier::verify_preamble`
+   ([handshake.rs:43](../../crates/router/src/handshake.rs#L43)).
+2. **§5 cites `handshake.rs:145` as "the existing scope string in use."**
+   That line was inside a test (`test_handshake_success_delegated`).
+   `"routing"` appeared in no production code path before Slice A0 — the only
+   production issuer, `roymctl identity delegate`
+   ([identity.rs](../../apps/roymctl/src/commands/identity.rs)), took
+   `--scope` as an unvalidated free string. It was a convention, not a
+   constant. Slice A0 made it one: `SCOPE_ROUTING`, `SCOPE_SERVICE_INSTANCE`,
+   and `TRANSPORT_SCOPES` in
+   [delegation.rs](../../crates/identity/src/delegation.rs).
+3. **§1: "the instance presents that certificate on its route preamble the
+   same way a delegated client does today," citing `native.rs:52-53`.** That
+   citation describes `CallerProof::delegation_json` — the *forwarding* of
+   an inbound caller's proof across a native-dispatch hop, not a service
+   presenting its own identity on an outbound call. No such presentation
+   existed anywhere in the tree before this slice: a guest-origin remote
+   call presented nothing, and a substrate-internal one with no forwarded
+   proof presented the *node's* key. This was the single largest gap between
+   this ADR and the tree. Slice A0 built the missing arm --
+   `ProxyRouter::invoke_remote_at`'s `CallOrigin::Guest` case
+   ([proxy.rs](../../crates/router/src/proxy.rs)) now presents the service's
+   own certified instance key when one is installed, and only that case;
+   the substrate-internal `(None, CallOrigin::Native)` arm still presents
+   the node's key, deliberately left to the paired milestone's dependency-
+   binding slice (see its task text).
+4. **§2 calls the `ServiceId` change "a definition, not a new field."** True
+   of the type, false of the values: `derive_deterministic_service_id`
+   ([compiler.rs](../../crates/app_orchestration/src/compiler.rs)) fabricates
+   a `did:key` with no matching private key, which
+   `DelegationCertificate::verify`'s call to `resolve_did_key` rejects
+   outright. Slice A0 does not change the compiler's internal graph key --
+   fixing that would make the deployment journal record master-DID-bearing
+   plans -- it substitutes real member master DIDs *after* compilation, in
+   `roymctl`, between compiling the plan and mapping it to the wire form.
+   The fabricated id survives as the plan's internal graph key and on the
+   no-master path, unchanged.
+5. **§6 describes the instance-key derivation as keyed on "the hosting
+   node's identity plus `(owner_did, service_id)`."** Accurate, but
+   `owner_did` is the **deploying operator's** DID, not a property of the
+   service being deployed. Relocating a member *and* redeploying it under a
+   different operator identity changes the instance key for two reasons at
+   once, not one. Harmless for this slice; it will matter when the paired
+   milestone's supervisor slice reasons about revoking a key it did not
+   itself issue.
+6. **§6 names only one endpoint-record verification path
+   (`registry.rs:234`); there are two.** `SignedEndpointInfo::verify`
+   ([dht_registry.rs](../../crates/core/src/dht_registry.rs)) validates a
+   delegation certificate on a BEP0044/DHT-published record, doing
+   structurally the same job as the HTTP registry path this ADR describes --
+   and its keying is the *inverse* of §6's: it requires the record to be
+   keyed by the temporary DID with the certificate naming its master, where
+   §6 specifies a record keyed by the master DID and signed by the instance
+   key. Slice A0 pinned this path's accepted scope to
+   `SCOPE_SERVICE_INSTANCE` (the change is risk-free today because no
+   production or test code sets `EndpointInfo.delegation`, so the branch was
+   previously unreachable) and left reconciling the two keying shapes to the
+   paired milestone's endpoint-record slice.
+7. **§1's "this needs no change to FDAE" holds for the authorization sieve
+   and misses a second credential path.** The claim that the router
+   collapses both identity tiers to `master_did` before authorization sees
+   them is correct for `subject_did`/`caller_did`. It is not the whole
+   picture: a service's `RelationshipProof` is signed with its *instance*
+   key, and the fetching side requires **exact equality** against the
+   policy-declared `expected_asserter_did`
+   ([relationship_proof.rs](../../crates/rpc/src/relationship_proof.rs)). A
+   member reinstantiated on another node silently stops satisfying every
+   policy that names it, on a credential path this ADR never mentions.
+   Out of Slice A0's scope (it changes no FDAE credential) and now written
+   into the paired milestone's dependency-binding slice, which is what
+   publishes `expected_asserter_did` per member and is positioned to declare
+   it as the member master rather than the instance key.
