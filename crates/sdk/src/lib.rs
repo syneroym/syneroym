@@ -17,7 +17,7 @@ use iroh::{
 pub mod mapper;
 use serde_json::Value;
 use syneroym_core::dht_registry::{EndpointMechanism, RegistryClient, SignedEndpointInfo};
-use syneroym_identity::Identity;
+use syneroym_identity::{DelegationCertificate, Identity};
 use syneroym_router::{RoutePreamble, RouteProtocol, RouteTransport, SYNEROYM_ALPN};
 use syneroym_rpc::{
     CapabilityToken, JsonRpcErrorResponse, JsonRpcRequest, JsonRpcResponse,
@@ -25,8 +25,8 @@ use syneroym_rpc::{
 };
 pub use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, ContainerManifest, ContainerPortMapping, ContainerVolumeMapping,
-    DeployManifest, DeploymentPlan, NetworkEndpoint, PlannedService, ServiceConfig, ServiceType,
-    TcpManifest, WasmManifest,
+    DeployManifest, DeploymentPlan, InstanceIdentity, NetworkEndpoint, PlannedService,
+    ServiceConfig, ServiceType, TcpManifest, WasmManifest,
 };
 use tokio::{io, net::TcpStream, sync::mpsc, time};
 use tracing::debug;
@@ -503,11 +503,16 @@ impl SyneroymClient {
         interfaces: Vec<String>,
         wasm_bytes: Vec<u8>,
         registry_certificate: Option<SignedEndpointInfo>,
+        instance_certificate: Option<DelegationCertificate>,
     ) -> Result<()> {
         let registry_certificate = registry_certificate
             .map(|c| serde_json::to_string(&c))
             .transpose()
             .map_err(|e| anyhow::anyhow!("Failed to serialize registry certificate: {e}"))?;
+        let instance_certificate = instance_certificate
+            .map(|c| c.to_json())
+            .transpose()
+            .map_err(|e| anyhow::anyhow!("Failed to serialize instance certificate: {e}"))?;
         let manifest = DeployManifest {
             config: ServiceConfig {
                 env: vec![],
@@ -524,7 +529,7 @@ impl SyneroymClient {
                 interfaces,
             }),
             registry_certificate,
-            instance_certificate: None,
+            instance_certificate,
         };
         let params = serde_json::to_value((service_id, manifest))?;
         let res = self.request("orchestrator", "deploy", params).await?;
@@ -540,11 +545,16 @@ impl SyneroymClient {
         service_id: String,
         endpoints: Vec<NetworkEndpoint>,
         registry_certificate: Option<SignedEndpointInfo>,
+        instance_certificate: Option<DelegationCertificate>,
     ) -> Result<()> {
         let registry_certificate = registry_certificate
             .map(|c| serde_json::to_string(&c))
             .transpose()
             .map_err(|e| anyhow::anyhow!("Failed to serialize registry certificate: {e}"))?;
+        let instance_certificate = instance_certificate
+            .map(|c| c.to_json())
+            .transpose()
+            .map_err(|e| anyhow::anyhow!("Failed to serialize instance certificate: {e}"))?;
         let manifest = DeployManifest {
             config: ServiceConfig {
                 env: vec![],
@@ -557,7 +567,7 @@ impl SyneroymClient {
             },
             service_type: ServiceType::Tcp(TcpManifest { endpoints }),
             registry_certificate,
-            instance_certificate: None,
+            instance_certificate,
         };
         let params = serde_json::to_value((service_id, manifest))?;
         let res = self.request("orchestrator", "deploy", params).await?;
@@ -607,6 +617,17 @@ impl SyneroymClient {
         } else {
             Err(anyhow::anyhow!("Deployment failed: {:?}", res.result))
         }
+    }
+
+    /// The instance signing key the substrate would derive for `service_id`
+    /// under this client's own identity -- answerable before the service is
+    /// deployed (ADR-0020 §3), which is what lets a member master be
+    /// certified without the substrate ever holding it.
+    pub async fn instance_identity(&self, service_id: &str) -> Result<InstanceIdentity> {
+        let params = serde_json::to_value((service_id,))?;
+        let res = self.request("orchestrator", "resolve-instance-identity", params).await?;
+        serde_json::from_value(res.result)
+            .map_err(|e| anyhow::anyhow!("Failed to parse instance identity response: {e}"))
     }
 
     pub async fn deploy_plan(&self, plan: DeploymentPlan) -> Result<()> {

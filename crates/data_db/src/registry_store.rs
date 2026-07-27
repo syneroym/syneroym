@@ -491,10 +491,10 @@ mod tests {
         assert!(store.load_all_certs().await.unwrap().is_empty());
     }
 
-    /// D-A0-10: an existing database, already at `PRAGMA user_version == 1`
-    /// from before the certificate table existed, must still gain it on the
-    /// next open -- this is the regression a `version < 2` migration gate
-    /// would have reintroduced.
+    /// An existing database, already at `PRAGMA user_version == 1` from
+    /// before the certificate table existed, must still gain it on the next
+    /// open -- this is the regression a `version < 2` migration gate would
+    /// have reintroduced.
     #[tokio::test]
     async fn an_existing_database_gains_the_certificate_table_on_open() {
         let dir = tempdir().unwrap();

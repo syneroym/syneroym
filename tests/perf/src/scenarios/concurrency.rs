@@ -57,6 +57,7 @@ pub async fn run_scenario() -> Result<()> {
             vec![GREETER_INTERFACE_NAME.to_string()],
             wasm_bytes,
             None,
+            None,
         )
         .await?;
 

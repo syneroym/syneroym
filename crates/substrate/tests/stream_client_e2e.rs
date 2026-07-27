@@ -92,6 +92,7 @@ async fn test_real_client_opens_direct_stream_both_directions() {
             vec![TEST_DRIVER_INTERFACE.to_string()],
             wasm_bytes,
             None,
+            None,
         )
         .await
         .expect("deploy_svc_wasm failed");
@@ -193,6 +194,7 @@ async fn test_unregistered_stream_protocol_rejected_cleanly() {
                 host: "localhost".to_string(),
                 port: 30199,
             }],
+            None,
             None,
         )
         .await

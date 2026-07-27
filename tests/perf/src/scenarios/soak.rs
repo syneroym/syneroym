@@ -95,6 +95,7 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
             vec![GREETER_INTERFACE_NAME.to_string()],
             wasm_bytes.clone(),
             None,
+            None,
         )
         .await?;
 
@@ -288,6 +289,7 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
                     unique_service_id.clone(),
                     vec![GREETER_INTERFACE_NAME.to_string()],
                     wasm_bytes_clone.clone(),
+                    None,
                     None,
                 )
                 .await;

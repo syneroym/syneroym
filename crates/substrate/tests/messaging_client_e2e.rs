@@ -41,6 +41,7 @@ async fn test_native_subscriber_receives_push_delivery_and_close_unsubscribes() 
                 port: 30099,
             }],
             None,
+            None,
         )
         .await
         .expect("SDK Deploy TCP request failed");

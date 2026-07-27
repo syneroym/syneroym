@@ -13,6 +13,8 @@ use syneroym_app_orchestration::{
 };
 use syneroym_sdk::mapper;
 
+use super::member_identity;
+
 #[derive(Subcommand, Debug, Clone)]
 pub enum AppCommands {
     /// Deploy a `SynApp` manifest (Dual Versioning)
@@ -24,6 +26,14 @@ pub enum AppCommands {
         /// Path to the SQLite deployment journal
         #[arg(long, default_value = "deployments.db")]
         journal_path: PathBuf,
+        /// Resolve or mint one member master identity per service in the
+        /// plan (ADR-0020 §1), substitute each service's fabricated id with
+        /// its resolved master DID, and install a certified instance
+        /// certificate at deploy. Absent leaves every fabricated id and
+        /// certificate untouched -- exactly today's behavior. Minting is
+        /// never silent: a new master's backup warning prints at mint time.
+        #[arg(long)]
+        mint_masters: bool,
     },
     /// Reconcile a deployment to recover or compute updates
     Reconcile {
@@ -47,7 +57,7 @@ pub async fn handle(
     ucan_path: Option<&Path>,
 ) -> anyhow::Result<()> {
     match command {
-        AppCommands::Deploy { instance_id, manifest_path, journal_path } => {
+        AppCommands::Deploy { instance_id, manifest_path, journal_path, mint_masters } => {
             let instance_id = AppInstanceId::try_new(instance_id.clone())?;
 
             let manifest = if manifest_path.extension().and_then(|s| s.to_str()) == Some("wasm") {
@@ -104,11 +114,21 @@ pub async fn handle(
                 let _diff = reconciler.compute_diff(target_plan)?;
                 journal.update_state(record_id, DeploymentState::Applying)?;
 
-                let wit_plan = mapper::map_deployment_plan_to_wit(target_plan.clone())?;
-
                 let mut client =
                     super::client_for(substrate_did.clone(), api_url, dir, run_as, ucan_path)?;
                 client.connect().await?;
+
+                // Substitution runs on a copy, after the journal already
+                // holds the plan with its fabricated ids -- the journal must
+                // never record master-DID-bearing data.
+                let (deploy_plan, instance_certs) = if *mint_masters {
+                    member_identity::substitute_and_certify_members(&client, dir, target_plan)
+                        .await?
+                } else {
+                    (target_plan.clone(), BTreeMap::new())
+                };
+
+                let wit_plan = mapper::map_deployment_plan_to_wit(deploy_plan, &instance_certs)?;
                 client.deploy_plan(wit_plan).await?;
 
                 journal.update_state(record_id, DeploymentState::Active)?;

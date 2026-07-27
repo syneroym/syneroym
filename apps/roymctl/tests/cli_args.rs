@@ -129,3 +129,41 @@ fn test_identity_issue_grant_produces_a_signed_token() -> Result<(), Box<dyn Err
     assert!(token["signature"].as_str().is_some_and(|s| !s.is_empty()));
     Ok(())
 }
+
+/// `identity certify-instance --help` parses (the subcommand and all its
+/// flags are wired into clap).
+#[test]
+fn test_identity_certify_instance_help() -> Result<(), Box<dyn Error>> {
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.arg("identity")
+        .arg("certify-instance")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(contains("--master"))
+        .stdout(contains("--substrate"))
+        .stdout(contains("--service"))
+        .stdout(contains("--expires-hours"));
+    Ok(())
+}
+
+/// `svc deploy --master` parses alongside the existing deploy flags.
+#[test]
+fn test_svc_deploy_master_flag_parses() -> Result<(), Box<dyn Error>> {
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.arg("svc").arg("deploy").arg("--help").assert().success().stdout(contains("--master"));
+    Ok(())
+}
+
+/// `app deploy --mint-masters` parses alongside the existing deploy flags.
+#[test]
+fn test_app_deploy_mint_masters_flag_parses() -> Result<(), Box<dyn Error>> {
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.arg("app")
+        .arg("deploy")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(contains("--mint-masters"));
+    Ok(())
+}

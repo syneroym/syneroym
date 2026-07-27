@@ -21,6 +21,7 @@ use syneroym_ucan::CapabilityToken;
 
 pub mod app;
 pub mod identity;
+pub mod member_identity;
 pub mod registry;
 pub mod security;
 pub mod substrate;
@@ -194,7 +195,8 @@ pub async fn run(
             .await?;
         }
         Commands::Identity { command } => {
-            identity::handle(&command, &dir).await?;
+            identity::handle(&command, &api_url, &dir, run_as.as_deref(), ucan_path.as_deref())
+                .await?;
         }
         Commands::Shorthash { input } => {
             let hash = util::short_hash(&input);

@@ -64,6 +64,7 @@ pub async fn run_scenario() -> Result<()> {
                 port: 30001,
             }],
             None,
+            None,
         )
         .await?;
 

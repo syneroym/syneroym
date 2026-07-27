@@ -1042,7 +1042,7 @@ mod tests {
         assert_eq!(verified.master_did, member_master_did);
     }
 
-    /// The unchanged path (D-A0-9's migration guarantee): a service with no
+    /// The unchanged path (the migration guarantee): a service with no
     /// installed certificate presents nothing, exactly like before this arm
     /// existed.
     #[tokio::test]

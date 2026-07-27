@@ -149,7 +149,13 @@ pub async fn run_scenario() -> Result<()> {
 
     // Deploy WASM
     orchestrator_client
-        .deploy_svc_wasm(app_service_id.clone(), vec![interface_name.to_string()], wasm_bytes, None)
+        .deploy_svc_wasm(
+            app_service_id.clone(),
+            vec![interface_name.to_string()],
+            wasm_bytes,
+            None,
+            None,
+        )
         .await?;
 
     // We need to register the WASM service in the registry so the client can
