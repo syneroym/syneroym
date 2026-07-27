@@ -472,6 +472,16 @@ phase per the 2026-07-16 resequencing.
 
 **Implementation Approach:**
 1. **Async Primitives:** Implement the Outbox queue, cron lease mechanisms, Dead Letter Queue (DLQ), long-running task restart rules, and compensating transactions (sagas).
+   > **Landing this fires a pickup trigger.** The App Supervisor ships its
+   > binding propagation with best-effort synchronous delivery behind a narrow
+   > "apply this action to that substrate" trait, deliberately, because durable
+   > delivery needs the Outbox/DLQ built here
+   > ([ADR-0021](../decisions/0021-binding-propagation-and-app-supervisor.md) §5).
+   > When this item completes, swap that trait's implementation and add the
+   > single-writer cron lease — tracked in
+   > [deferred-backlog.md](./deferred-backlog.md) §8 *Node lifecycle & ops*.
+   > Recorded here rather than only in the supervisor's own milestone doc, so
+   > the trigger is visible from the side that fires it.
 2. **App Supervisor & Query Orchestrator:** Continuous reconciliation of desired state across substrates — **split out and mostly resequenced ahead of item 1**; see the *App Supervisor Split* amendment above and [M05A-app-supervisor](./milestones/M05A-app-supervisor/task.md). What remains here is the half that genuinely needs item 1's primitives (durable push delivery, retry against offline substrates, DLQ, single-writer lease). Separately, introduce foundational DataFusion logical planning and Substrait serialization for federated queries. This includes:
    - Defining the DataFusion `TableProvider` interface for Syneroym Data Services.
    - Defining the plan-fragment serialization contract (Substrait schema version pinning).
