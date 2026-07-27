@@ -524,6 +524,7 @@ impl SyneroymClient {
                 interfaces,
             }),
             registry_certificate,
+            instance_certificate: None,
         };
         let params = serde_json::to_value((service_id, manifest))?;
         let res = self.request("orchestrator", "deploy", params).await?;
@@ -556,6 +557,7 @@ impl SyneroymClient {
             },
             service_type: ServiceType::Tcp(TcpManifest { endpoints }),
             registry_certificate,
+            instance_certificate: None,
         };
         let params = serde_json::to_value((service_id, manifest))?;
         let res = self.request("orchestrator", "deploy", params).await?;
@@ -596,6 +598,7 @@ impl SyneroymClient {
                 volumes,
             }),
             registry_certificate,
+            instance_certificate: None,
         };
         let params = serde_json::to_value((service_id, manifest))?;
         let res = self.request("orchestrator", "deploy", params).await?;

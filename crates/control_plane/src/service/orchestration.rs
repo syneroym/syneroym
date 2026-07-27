@@ -21,10 +21,13 @@ use syneroym_core::{
     util,
 };
 use syneroym_fdae::Policy;
+use syneroym_identity::{
+    DelegationCertificate, delegation::SCOPE_SERVICE_INSTANCE, substrate::derive_did_key,
+};
 use syneroym_rpc::{Ability, CallerContext, NativeService, ResourceUri};
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, ContainerManifest, DeployManifest, DeployedService, DeploymentPlan,
-    DocumentSource, ServiceType as WitServiceType, TcpManifest, WasmManifest,
+    DocumentSource, InstanceIdentity, ServiceType as WitServiceType, TcpManifest, WasmManifest,
 };
 use tokio::task;
 use tracing::info;
@@ -35,6 +38,15 @@ use crate::{config_utils, http_routes, synsvc_native::SynSvcNativeService};
 #[async_trait::async_trait]
 pub trait OrchestratorInterface {
     async fn readyz(&self, service_id: String, caller: &CallerContext) -> Result<(), String>;
+    /// The instance signing key this substrate would derive for `service_id`
+    /// under `caller`'s identity, answerable before the service is deployed
+    /// (ADR-0020 §3): the master holder certifies this key without the
+    /// substrate ever holding the master.
+    async fn instance_identity(
+        &self,
+        service_id: String,
+        caller: &CallerContext,
+    ) -> Result<InstanceIdentity, String>;
     async fn deploy(
         &self,
         service_id: String,
@@ -435,6 +447,33 @@ impl OrchestratorInterface for ControlPlaneService {
         Ok(())
     }
 
+    /// Gated like `readyz`'s per-service form: this returns a public key, not
+    /// an authority, but it is still `ORCHESTRATOR_STATUS`-scoped rather than
+    /// open, since enumerating `(owner, service_id)` pairs is otherwise free
+    /// reconnaissance of every derived instance key on the node.
+    async fn instance_identity(
+        &self,
+        service_id: String,
+        caller: &CallerContext,
+    ) -> Result<InstanceIdentity, String> {
+        if !self.has_node_wide_ability(caller, Ability::ORCHESTRATOR_STATUS) {
+            let resource = ResourceUri(format!("substrate:{}/app/{service_id}", self.node_did));
+            if !caller.has_capability(&resource, &Ability(Ability::ORCHESTRATOR_STATUS.to_string()))
+            {
+                return Err(format!(
+                    "caller {} holds no orchestrator/status grant for '{service_id}'",
+                    caller.caller_did
+                ));
+            }
+        }
+
+        let instance = self.node_identity.derive_service_identity(&caller.caller_did, &service_id);
+        Ok(InstanceIdentity {
+            instance_did: derive_did_key(&instance.public_key()),
+            pubkey_hex: hex::encode(instance.public_key().to_bytes()),
+        })
+    }
+
     async fn deploy(
         &self,
         service_id: String,
@@ -491,6 +530,46 @@ impl OrchestratorInterface for ControlPlaneService {
                 caller.caller_did
             ));
         }
+
+        // ADR-0020 §1 install-time verification, placed before any artifact
+        // work below so a bad certificate is rejected at deploy rather than
+        // discovered later as a routing failure. `None` leaves the service
+        // its own master -- the pre-existing fallback, unchanged.
+        let installed_instance_cert: Option<DelegationCertificate> =
+            match &manifest.instance_certificate {
+                Some(cert_json) => {
+                    let cert = DelegationCertificate::from_json(cert_json)
+                        .map_err(|e| format!("Invalid instance certificate: {e}"))?;
+                    // (1) the certificate is for *this* member.
+                    if cert.master_did != service_id {
+                        return Err(format!(
+                            "instance certificate master_did '{}' does not name this deploy's \
+                             service_id '{service_id}'",
+                            cert.master_did
+                        ));
+                    }
+                    // (2) it certifies *this node's* derived key, not some
+                    // other key the client chose.
+                    let derived_did = derive_did_key(
+                        &self
+                            .node_identity
+                            .derive_service_identity(&caller.caller_did, &service_id)
+                            .public_key(),
+                    );
+                    if cert.temporary_did != derived_did {
+                        return Err(format!(
+                            "instance certificate certifies '{}', not the key this substrate \
+                             would derive ('{derived_did}') for this caller and service_id",
+                            cert.temporary_did
+                        ));
+                    }
+                    // (3) signature, validity window, and the narrow scope.
+                    cert.verify(&service_id, &[SCOPE_SERVICE_INSTANCE])
+                        .map_err(|e| format!("Invalid instance certificate: {e}"))?;
+                    Some(cert)
+                }
+                None => None,
+            };
 
         if let Some(cert) = &manifest.registry_certificate {
             let cert_path = self.hosted_apps_dir.join(format!("{service_id}.json"));
@@ -785,6 +864,22 @@ impl OrchestratorInterface for ControlPlaneService {
             return Err(format!("Owner attribution failed: {e}"));
         }
 
+        // Installed right after the owner row, under the same rollback:
+        // already verified above, so this only fails on a storage error.
+        if let Some(cert) = installed_instance_cert
+            && let Err(e) = self.registry.set_instance_cert(service_id.clone(), cert).await
+        {
+            if let Err(undeploy_err) = self.undeploy(service_id.clone(), caller).await {
+                tracing::error!(
+                    "rollback after instance-certificate installation failure also failed: \
+                     {undeploy_err}"
+                );
+            }
+            self.rollback_config_generation(&service_id, new_gen).await;
+            self.rollback_fdae_policy(&service_id, &previous_fdae_policy).await;
+            return Err(format!("Instance certificate installation failed: {e}"));
+        }
+
         Ok(())
     }
 
@@ -944,6 +1039,13 @@ impl OrchestratorInterface for ControlPlaneService {
         if let Err(e) = self.registry.remove_owner(&service_id).await {
             tracing::warn!("Failed to remove owner record for service {}: {}", service_id, e);
         }
+        if let Err(e) = self.registry.remove_instance_cert(&service_id).await {
+            tracing::warn!(
+                "Failed to remove instance certificate for service {}: {}",
+                service_id,
+                e
+            );
+        }
 
         Ok(())
     }
@@ -962,6 +1064,8 @@ impl OrchestratorInterface for ControlPlaneService {
             if NATIVE_CAPABILITY_INTERFACES.contains(&interface.as_str()) {
                 continue;
             }
+            let instance_certificate_expires_at =
+                self.registry.instance_cert(&service_id).map(|cert| cert.expires_at_secs);
             let entry = services.entry(service_id.clone()).or_insert_with(|| DeployedService {
                 service_id: service_id.clone(),
                 interfaces: Vec::new(),
@@ -971,6 +1075,7 @@ impl OrchestratorInterface for ControlPlaneService {
                     SubstrateEndpoint::NativeHostChannel { .. } => "native".to_string(),
                     SubstrateEndpoint::TcpHostPort { .. } => "tcp".to_string(),
                 },
+                instance_certificate_expires_at,
             });
             entry.interfaces.push(interface);
         }
@@ -1187,6 +1292,7 @@ mod tests {
                         interfaces: vec![],
                     }),
                     registry_certificate: None,
+                    instance_certificate: None,
                 },
             }],
         };
@@ -1265,6 +1371,7 @@ mod tests {
                         interfaces: vec![],
                     }),
                     registry_certificate: None,
+                    instance_certificate: None,
                 },
             }],
         };
@@ -1344,6 +1451,7 @@ mod tests {
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
+            instance_certificate: None,
         };
 
         let result = service
@@ -1427,6 +1535,7 @@ mod tests {
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
+            instance_certificate: None,
         };
 
         let result = service
@@ -1511,6 +1620,7 @@ mod tests {
                 interfaces: vec![],
             }),
             registry_certificate: None,
+            instance_certificate: None,
         };
 
         let result = service
@@ -1588,6 +1698,7 @@ mod tests {
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
+            instance_certificate: None,
         };
 
         let result = service
@@ -1705,6 +1816,7 @@ mod tests {
                 interfaces: vec![],
             }),
             registry_certificate: None,
+            instance_certificate: None,
         };
 
         let result = service
@@ -1787,6 +1899,7 @@ mod tests {
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
+            instance_certificate: None,
         };
 
         let result = service
@@ -1868,6 +1981,7 @@ mod tests {
                 interfaces: vec![],
             }),
             registry_certificate: None,
+            instance_certificate: None,
         };
 
         let result = service
@@ -1943,6 +2057,7 @@ mod tests {
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
+            instance_certificate: None,
         };
 
         let caller = node_wide_caller("test-caller");
@@ -2020,6 +2135,7 @@ mod tests {
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
+            instance_certificate: None,
         };
         service.deploy("redeploy_fdae_svc".to_string(), with_policy, &caller).await.unwrap();
         let _ = fs::remove_file(&policy_filename);
@@ -2038,6 +2154,7 @@ mod tests {
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
+            instance_certificate: None,
         };
         service.deploy("redeploy_fdae_svc".to_string(), without_policy, &caller).await.unwrap();
         assert_eq!(
@@ -2111,6 +2228,7 @@ mod tests {
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
+            instance_certificate: None,
         };
         service.deploy("rollback_fdae_svc".to_string(), first, &caller).await.unwrap();
         let _ = fs::remove_file(&policy_1_filename);
@@ -2145,6 +2263,7 @@ mod tests {
                 interfaces: vec![],
             }),
             registry_certificate: None,
+            instance_certificate: None,
         };
         let result = service.deploy("rollback_fdae_svc".to_string(), second, &caller).await;
         let _ = fs::remove_file(&policy_2_filename);
@@ -2222,6 +2341,7 @@ mod tests {
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
+            instance_certificate: None,
         };
         service.deploy("dropped_rollback_svc".to_string(), first, &caller).await.unwrap();
         let _ = fs::remove_file(&policy_filename);
@@ -2254,6 +2374,7 @@ mod tests {
                 interfaces: vec![],
             }),
             registry_certificate: None,
+            instance_certificate: None,
         };
         let result = service.deploy("dropped_rollback_svc".to_string(), second, &caller).await;
         assert!(result.is_err(), "the WASM deploy must fail: {result:?}");
@@ -2388,6 +2509,7 @@ mod tests {
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
+            instance_certificate: None,
         };
         service.deploy("endpoint_reg_svc".to_string(), first, &caller).await.unwrap();
         let _ = fs::remove_file(&policy_1_filename);
@@ -2437,6 +2559,7 @@ mod tests {
                 interfaces: vec!["fails-to-register".to_string()],
             }),
             registry_certificate: None,
+            instance_certificate: None,
         };
         let result = service.deploy("endpoint_reg_svc".to_string(), second, &caller).await;
         let _ = fs::remove_file(&policy_2_filename);
@@ -2544,6 +2667,7 @@ mod tests {
                 }],
             }),
             registry_certificate: None,
+            instance_certificate: None,
         };
         service.deploy("tcp_rollback_svc".to_string(), first, &caller).await.unwrap();
         let _ = fs::remove_file(&policy_1_filename);
@@ -2583,6 +2707,7 @@ mod tests {
                 }],
             }),
             registry_certificate: None,
+            instance_certificate: None,
         };
         let result = service.deploy("tcp_rollback_svc".to_string(), second, &caller).await;
         let _ = fs::remove_file(&policy_2_filename);
@@ -2668,6 +2793,7 @@ mod tests {
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
+            instance_certificate: None,
         };
 
         let result = service
@@ -2753,6 +2879,7 @@ mod tests {
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
+            instance_certificate: None,
         };
 
         let result = service
@@ -2825,6 +2952,7 @@ mod tests {
                 },
                 service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
                 registry_certificate: None,
+                instance_certificate: None,
             };
 
             let result = service
@@ -2907,6 +3035,7 @@ mod tests {
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
+            instance_certificate: None,
         };
 
         let result = service
@@ -3158,6 +3287,7 @@ mod tests {
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
+            instance_certificate: None,
         };
         let caller = node_wide_caller("test-caller");
         service.deploy(service_id.clone(), manifest, &caller).await.unwrap();
@@ -3238,6 +3368,7 @@ mod tests {
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
+            instance_certificate: None,
         };
         service
             .deploy(service_id.clone(), manifest, &node_wide_caller("test-caller"))
@@ -3266,6 +3397,7 @@ mod tests {
                 }],
             }),
             registry_certificate: None,
+            instance_certificate: None,
         }
     }
 
@@ -3334,6 +3466,243 @@ mod tests {
         assert_eq!(registry.owner_of(&service_id), None);
     }
 
+    /// Like `node_wide_caller`, plus `orchestrator/status` -- needed by the
+    /// `instance_identity` tests below, which `deploy`/`undeploy` never gate
+    /// on.
+    fn status_capable_caller(caller_did: &str) -> CallerContext {
+        use syneroym_rpc::{AuthLevel, Capability, SessionContext};
+
+        let resource = ResourceUri::substrate("did:key:zTestNode");
+        CallerContext {
+            caller_did: caller_did.to_string(),
+            app_instance: None,
+            session: SessionContext {
+                subject_did: caller_did.to_string(),
+                capabilities: vec![
+                    Capability {
+                        with: resource.clone(),
+                        can: Ability(Ability::ORCHESTRATOR_DEPLOY.to_string()),
+                        caveats: None,
+                    },
+                    Capability {
+                        with: resource.clone(),
+                        can: Ability(Ability::ORCHESTRATOR_UNDEPLOY.to_string()),
+                        caveats: None,
+                    },
+                    Capability {
+                        with: resource,
+                        can: Ability(Ability::ORCHESTRATOR_STATUS.to_string()),
+                        caveats: None,
+                    },
+                ],
+                ..Default::default()
+            },
+            auth: AuthLevel::Delegated,
+            proof: None,
+        }
+    }
+
+    /// Builds a `ControlPlaneService` rooted at `temp_dir` with a caller-
+    /// supplied node identity (so tests can compute the exact instance key
+    /// the substrate will derive), returning the registry alongside it so
+    /// tests can inspect what got stored.
+    async fn service_with_node_identity(
+        temp_dir: &std::path::Path,
+        node_identity: Arc<syneroym_identity::Identity>,
+    ) -> (ControlPlaneService, EndpointRegistry) {
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider = Arc::new(SqliteStorageProvider::new(temp_dir, false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                registry.clone(),
+            )
+            .await
+            .unwrap(),
+        );
+        let container_engine = Arc::new(ContainerEngine::new("podman".to_string(), temp_dir, None));
+
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
+            app_sandbox,
+            container_engine,
+            registry.clone(),
+            temp_dir.to_path_buf(),
+            key_store,
+            storage_provider,
+            blob_provider,
+            messaging_broker,
+            NativeDispatchRegistry::default(),
+            Arc::new(DashMap::new()),
+            node_identity,
+        )
+        .await
+        .unwrap();
+
+        (service, registry)
+    }
+
+    #[tokio::test]
+    async fn the_derived_instance_identity_is_stable_across_calls() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
+        let (service, _registry) = service_with_node_identity(temp_dir.path(), node_identity).await;
+        let caller = status_capable_caller("did:key:zOwner");
+
+        let first = service.instance_identity("svc-a".to_string(), &caller).await.unwrap();
+        let second = service.instance_identity("svc-a".to_string(), &caller).await.unwrap();
+
+        assert_eq!(first.instance_did, second.instance_did);
+        assert_eq!(first.pubkey_hex, second.pubkey_hex);
+    }
+
+    #[tokio::test]
+    async fn two_owners_get_different_instance_identities_for_the_same_service_id() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
+        let (service, _registry) = service_with_node_identity(temp_dir.path(), node_identity).await;
+
+        let alice = status_capable_caller("did:key:zAlice");
+        let bob = status_capable_caller("did:key:zBob");
+
+        let for_alice = service.instance_identity("shared-svc".to_string(), &alice).await.unwrap();
+        let for_bob = service.instance_identity("shared-svc".to_string(), &bob).await.unwrap();
+
+        assert_ne!(for_alice.instance_did, for_bob.instance_did);
+    }
+
+    #[tokio::test]
+    async fn a_deploy_without_a_certificate_still_succeeds_and_stores_none() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
+        let (service, registry) = service_with_node_identity(temp_dir.path(), node_identity).await;
+        let caller = node_wide_caller("did:key:zOwner");
+        let service_id = "no-cert-svc".to_string();
+
+        service.deploy(service_id.clone(), owner_test_manifest(), &caller).await.unwrap();
+
+        assert_eq!(registry.instance_cert(&service_id), None);
+    }
+
+    #[tokio::test]
+    async fn a_deploy_is_rejected_when_the_certificates_master_is_not_the_service_id() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
+        let (service, registry) =
+            service_with_node_identity(temp_dir.path(), node_identity.clone()).await;
+        let caller = node_wide_caller("did:key:zOwner");
+        let service_id = "member-master-svc".to_string();
+
+        let wrong_master = syneroym_identity::Identity::generate().unwrap();
+        let derived = node_identity.derive_service_identity(&caller.caller_did, &service_id);
+        let cert = DelegationCertificate::issue(
+            &wrong_master,
+            derived.public_key(),
+            3600,
+            SCOPE_SERVICE_INSTANCE.to_string(),
+        )
+        .unwrap();
+        let mut manifest = owner_test_manifest();
+        manifest.instance_certificate = Some(cert.to_json().unwrap());
+
+        let err = service.deploy(service_id.clone(), manifest, &caller).await.unwrap_err();
+        assert!(err.contains("does not name this deploy's service_id"), "unexpected error: {err}");
+        assert_eq!(registry.instance_cert(&service_id), None);
+    }
+
+    #[tokio::test]
+    async fn a_deploy_is_rejected_when_the_certificate_certifies_a_different_key() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
+        let (service, registry) = service_with_node_identity(temp_dir.path(), node_identity).await;
+        let caller = node_wide_caller("did:key:zOwner");
+
+        let member_master = syneroym_identity::Identity::generate().unwrap();
+        let service_id = derive_did_key(&member_master.public_key());
+
+        // Certifies some *other* key, not the one this substrate would derive
+        // for (caller, service_id).
+        let wrong_instance = syneroym_identity::Identity::generate().unwrap();
+        let cert = DelegationCertificate::issue(
+            &member_master,
+            wrong_instance.public_key(),
+            3600,
+            SCOPE_SERVICE_INSTANCE.to_string(),
+        )
+        .unwrap();
+        let mut manifest = owner_test_manifest();
+        manifest.instance_certificate = Some(cert.to_json().unwrap());
+
+        let err = service.deploy(service_id.clone(), manifest, &caller).await.unwrap_err();
+        assert!(err.contains("not the key this substrate would derive"), "unexpected error: {err}");
+        assert_eq!(registry.instance_cert(&service_id), None);
+    }
+
+    #[tokio::test]
+    async fn a_deploy_is_rejected_when_the_certificate_carries_the_routing_scope() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
+        let (service, registry) =
+            service_with_node_identity(temp_dir.path(), node_identity.clone()).await;
+        let caller = node_wide_caller("did:key:zOwner");
+
+        let member_master = syneroym_identity::Identity::generate().unwrap();
+        let service_id = derive_did_key(&member_master.public_key());
+        let derived = node_identity.derive_service_identity(&caller.caller_did, &service_id);
+        let cert = DelegationCertificate::issue(
+            &member_master,
+            derived.public_key(),
+            3600,
+            "routing".to_string(),
+        )
+        .unwrap();
+        let mut manifest = owner_test_manifest();
+        manifest.instance_certificate = Some(cert.to_json().unwrap());
+
+        let err = service.deploy(service_id.clone(), manifest, &caller).await.unwrap_err();
+        assert!(err.contains("scope"), "unexpected error: {err}");
+        assert_eq!(registry.instance_cert(&service_id), None);
+    }
+
+    #[tokio::test]
+    async fn undeploy_removes_the_instance_certificate_with_the_owner_row() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
+        let (service, registry) =
+            service_with_node_identity(temp_dir.path(), node_identity.clone()).await;
+        let caller = node_wide_caller("did:key:zOwner");
+
+        let member_master = syneroym_identity::Identity::generate().unwrap();
+        let service_id = derive_did_key(&member_master.public_key());
+        let derived = node_identity.derive_service_identity(&caller.caller_did, &service_id);
+        let cert = DelegationCertificate::issue(
+            &member_master,
+            derived.public_key(),
+            3600,
+            SCOPE_SERVICE_INSTANCE.to_string(),
+        )
+        .unwrap();
+        let mut manifest = owner_test_manifest();
+        manifest.instance_certificate = Some(cert.to_json().unwrap());
+
+        service.deploy(service_id.clone(), manifest, &caller).await.unwrap();
+        assert!(registry.instance_cert(&service_id).is_some());
+
+        service.undeploy(service_id.clone(), &caller).await.unwrap();
+        assert_eq!(registry.instance_cert(&service_id), None);
+    }
+
     /// Builds a service rooted at `temp_dir`, for the inline-document tests
     /// below. They care about nothing in the wiring except that the working
     /// directory holds no schema or policy file.
@@ -3394,6 +3763,7 @@ mod tests {
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
+            instance_certificate: None,
         }
     }
 

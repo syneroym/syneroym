@@ -228,6 +228,7 @@ fn deploy_manifest(policy_json: Option<String>) -> DeployManifest {
         },
         service_type: ServiceType::Tcp(TcpManifest { endpoints: vec![] }),
         registry_certificate: None,
+        instance_certificate: None,
     }
 }
 

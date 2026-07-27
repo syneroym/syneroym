@@ -208,6 +208,7 @@ fn tcp_manifest(port: u16) -> DeployManifest {
             }],
         }),
         registry_certificate: None,
+        instance_certificate: None,
     }
 }
 

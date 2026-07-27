@@ -133,6 +133,7 @@ fn wasm_deploy_manifest(bytes: Vec<u8>) -> DeployManifest {
             interfaces: vec![TEST_DRIVER_INTERFACE.to_string()],
         }),
         registry_certificate: None,
+        instance_certificate: None,
     }
 }
 

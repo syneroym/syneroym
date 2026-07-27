@@ -118,13 +118,36 @@ interface orchestrator {
         service-type: service-type,
         /// Optional serialized SignedEndpointInfo to proxy registration to the community registry
         registry-certificate: option<string>,
+        /// JSON DelegationCertificate binding this substrate's derived instance
+        /// key to the member master that `service-id` names. Verified on
+        /// receipt; absent leaves the service its own master (ADR-0020 §1
+        /// fallback).
+        instance-certificate: option<string>,
     }
 
     record deployed-service {
         service-id: string,
         interfaces: list<string>,
         endpoint-type: string,
+        /// Unix seconds when the installed instance certificate expires, if
+        /// one is installed.
+        instance-certificate-expires-at: option<u64>,
     }
+
+    /// The instance signing key this substrate derives for `service-id` under
+    /// the calling identity. Deterministic and answerable before the service
+    /// is deployed, which is what lets the master holder certify the key
+    /// without the substrate ever holding the master.
+    record instance-identity {
+        /// did:key of the derived instance key.
+        instance-did: string,
+        /// Hex-encoded ed25519 public key -- the form a route preamble carries.
+        pubkey-hex: string,
+    }
+
+    /// Query the instance signing key this substrate would derive for
+    /// `service-id` under the calling identity, without deploying anything.
+    resolve-instance-identity: func(service-id: string) -> result<instance-identity, string>;
 
     /// Deploy a new service using a deployment manifest
     deploy: func(service-id: string, manifest: deploy-manifest) -> result<_, string>;

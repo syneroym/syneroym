@@ -192,6 +192,7 @@ pub fn map_deployment_plan_to_wit(plan: DeploymentPlan) -> anyhow::Result<WitDep
                 config: wit_config,
                 service_type,
                 registry_certificate: None,
+                instance_certificate: None,
             },
         });
     }
