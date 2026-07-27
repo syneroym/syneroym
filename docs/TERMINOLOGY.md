@@ -17,6 +17,29 @@ than restating it.
 | **Local Producer-Distributor Mesh** | Roym's second vertical (food + small retail); built thinner, for demonstration. |
 | **Bootstrap nodes / relays** | Small community-run nodes that help peers find each other and relay — end-to-end encrypted — the small fraction of connections that cannot be made directly. They store nothing and own nothing. |
 
+## Component names (engineering)
+
+The names above are positioning vocabulary, drawn from the thesis. This section
+is the engineering counterpart: internal component names that are easy to
+confuse with each other, written down because several near-synonyms are already
+taken by different things. Use these exactly; if a design discussion needs a new
+component name, add it here rather than picking a word from this table's
+neighbourhood.
+
+| Term | Meaning | Not to be confused with |
+|---|---|---|
+| **Community Registry** | Service discovery: signed `EndpointInfo` records mapping a **DID → endpoint** (how to reach it on the network). A live service, resolved per call. `crates/community_registry`. | App Registry — different mapping, different scope. |
+| **App Registry** | The **logical service name → member master DIDs** mapping within an app instance (a member set, not a single DID). A *trait* (`AppRegistry`) plus its topology state, not a deployed service. `crates/app_orchestration/src/resolver.rs`. | Community Registry; and note there is deliberately no live "app registry service" — see [ADR-0021](decisions/0021-binding-propagation-and-app-supervisor.md). |
+| **Control Plane** | The per-substrate RPC surface for `deploy` / `undeploy` / `list` and secret management. `crates/control_plane`. | The App Supervisor, which is a *client* of this. |
+| **Controller** | The owning entity (person or organization) that controls a substrate, established by a `ControllerAgreement`. A principal, never a process. | The App Supervisor. Do **not** call the supervisor a controller. |
+| **Orchestrator** | The native service on each substrate that manages that substrate's deployed-app catalog and runs its services. `crates/app_orchestration` + `crates/sandbox_wasm`. | The App Supervisor, which spans substrates and drives orchestrators. |
+| **App Supervisor** | The component that holds an app's desired state across substrates and keeps it true: deploy-time checks and retries, health monitoring, bounded remediation, alerting, and pushing dependency bindings into services. Exposes one interface, `supervisor`, consumed by `roymctl`. | Everything above. It has an operator-facing read surface (status, alerts, convergence) but **no service-facing directory interface** — no constituent service resolves anything by calling it. |
+| **App Inventory** | What is deployed for an app instance: services, placement, current bindings, health. Held by the App Supervisor. | Substrate Inventory. |
+| **Substrate Inventory** | The operator's list of *target* substrates — reachability, capabilities, and the deploy capability held on each. Held by the App Supervisor. | App Inventory. |
+| **Master DID (member)** | The stable identity of **one member** of a logical service — one per member, not one per service, so that round-robin and sharding have distinct principals to select over (a three-member redundant service has three). What FDAE policy, stored row attribution, and capability audiences all key on. Survives that member being relocated, restarted, or crash-recovered. See [ADR-0020](decisions/0020-stable-logical-service-identity.md). | Instance DID; and a single identity for the whole logical service, which is the granularity ADR-0020 §1 rejects. |
+| **Master DID (person/organization)** | The stable identity of a human or organizational principal, delegating to temporary device keys. The original sense of the term, unchanged. | Master DID (member). |
+| **Instance DID** | The transport-level identity of one physical service instance, delegated from its master DID. Appears in the route preamble and the hosting substrate's keystore, never in the application model. See [ADR-0020](decisions/0020-stable-logical-service-identity.md). | Master DID. |
+
 ## Key phrasings
 
 - **One-liner:** "A truly peer-to-peer foundation for group communication and
