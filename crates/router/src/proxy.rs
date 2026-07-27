@@ -341,23 +341,31 @@ impl ProxyRouter {
         // one and the call is genuinely substrate-internal (ADR-0016 §6 --
         // the destination re-verifies with `verify_preamble` and builds a
         // fresh `CallerContext`); otherwise present this node's own identity
-        // -- again only for `CallOrigin::Native`. A guest is never allowed
-        // to present a proof remotely, even one it legitimately carries
-        // today (Slice B3.5-fdae forwards a self-proxy caller's real
-        // `CallerContext`, proof included, whenever the target is the
-        // guest's own service -- `check_native_capability_gate`'s same-
-        // service check only restricts *native-capability* interfaces, so
-        // an ordinary interface the local registry doesn't happen to have
-        // registered still falls through to this remote path with that
-        // proof attached). Presenting either the caller's proof or this
-        // node's own key on a guest's behalf would let the guest steer its
-        // own freely-chosen `(interface, method, params)` onto the wire
-        // under a real, potentially privileged identity -- exactly the
-        // laundering this function's `CallOrigin::Guest` branch exists to
-        // prevent. Leaving `pubkey` unset instead makes the destination
-        // treat it as anonymous, which the native-dispatch arm already
-        // rejects and non-native paths already tolerate. Capabilities never
-        // cross either way.
+        // -- again only for `CallOrigin::Native`. A guest is never allowed to
+        // present the *caller's* proof or the *node's* key remotely, even one
+        // it legitimately carries today (Slice B3.5-fdae forwards a
+        // self-proxy caller's real `CallerContext`, proof included, whenever
+        // the target is the guest's own service -- `check_native_capability_
+        // gate`'s same-service check only restricts *native-capability*
+        // interfaces, so an ordinary interface the local registry doesn't
+        // happen to have registered still falls through to this remote path
+        // with that proof attached). Presenting either of those on a guest's
+        // behalf would let the guest steer its own freely-chosen `(interface,
+        // method, params)` onto the wire under a real, potentially
+        // privileged identity -- exactly the laundering this function's
+        // `CallOrigin::Guest` branch exists to prevent.
+        //
+        // What a guest *may* present is its own service's certified instance
+        // key (ADR-0020 §1): that grants no privilege the guest didn't
+        // already have as itself, since the guest still chooses the call --
+        // only the identity it travels under changes, from anonymous to the
+        // member master this substrate derived and was certified for. `None`
+        // for either the certificate or the recorded owner (a service
+        // deployed before an owner/certificate existed) falls back to
+        // presenting nothing, unchanged from before: the destination treats
+        // it as anonymous, which the native-dispatch arm already rejects and
+        // non-native paths already tolerate. Capabilities never cross either
+        // way.
         let mut preamble = RoutePreamble::binary_json_rpc(&req.target_service, &req.interface);
         match (&req.caller.proof, &req.origin) {
             (Some(proof), CallOrigin::Native) => {
@@ -370,7 +378,15 @@ impl ProxyRouter {
             (None, CallOrigin::Native) => {
                 preamble.pubkey = Some(hex::encode(self.node_identity.public_key().to_bytes()));
             }
-            (_, CallOrigin::Guest { .. }) => {}
+            (_, CallOrigin::Guest { service_id }) => {
+                if let Some(cert) = self.registry.instance_cert(service_id)
+                    && let Some(owner) = self.registry.owner_of(service_id)
+                {
+                    let instance = self.node_identity.derive_service_identity(&owner, service_id);
+                    preamble.pubkey = Some(hex::encode(instance.public_key().to_bytes()));
+                    preamble.delegation = Some(cert);
+                }
+            }
         }
 
         let json_rpc_request = JsonRpcRequest {
@@ -456,13 +472,15 @@ mod tests {
 
     use dashmap::DashMap;
     use iroh::SecretKey;
-    use syneroym_core::storage::MockStorage;
+    use syneroym_core::{dht_registry::MasterAnchorPayload, storage::MockStorage};
+    use syneroym_identity::{delegation::SCOPE_SERVICE_INSTANCE, substrate};
     use syneroym_rpc::{
         AuthLevel, CallerContext, CallerProof, NativeDispatchRegistry, NativeResponse,
         NativeService, RpcResult, SessionContext,
     };
 
     use super::*;
+    use crate::{HandshakeVerifier, MasterAnchorResolver};
 
     fn test_caller(did: &str) -> CallerContext {
         CallerContext {
@@ -955,5 +973,101 @@ mod tests {
              launder a real caller's identity onto the wire by steering a self-proxy call onto an \
              interface the local registry misses"
         );
+    }
+
+    struct EmptyAnchorResolver;
+    #[async_trait::async_trait]
+    impl MasterAnchorResolver for EmptyAnchorResolver {
+        async fn resolve_master_anchor(
+            &self,
+            _master_id: &str,
+        ) -> Result<MasterAnchorPayload, anyhow::Error> {
+            Ok(MasterAnchorPayload::default())
+        }
+    }
+
+    /// The slice's core claim: a service holding an installed instance
+    /// certificate makes a guest-origin remote call under its own member
+    /// master, not anonymous and not the node's identity -- and the
+    /// destination's handshake (fed the exact preamble this router
+    /// constructs) resolves that master, matching `HandshakeVerifier`'s
+    /// contract end to end.
+    #[tokio::test]
+    async fn a_guest_call_travels_under_its_services_member_master_not_the_node_identity() {
+        let hop = Arc::new(MockHop::with_outcomes(vec![MockOutcome::Success(Value::Null)]));
+        let node_identity = Arc::new(Identity::generate().unwrap());
+        let registry = empty_registry();
+
+        let owner_did = "did:key:zMemberOwner".to_string();
+        let service_id = "guest-with-cert".to_string();
+        registry.set_owner(service_id.clone(), owner_did.clone()).await.unwrap();
+
+        let member_master = Identity::generate().unwrap();
+        let member_master_did = substrate::derive_did_key(&member_master.public_key());
+        let instance = node_identity.derive_service_identity(&owner_did, &service_id);
+        let cert = DelegationCertificate::issue(
+            &member_master,
+            instance.public_key(),
+            3600,
+            SCOPE_SERVICE_INSTANCE.to_string(),
+        )
+        .unwrap();
+        registry.set_instance_cert(service_id.clone(), cert).await.unwrap();
+
+        let native_dispatch: NativeDispatchRegistry = Arc::new(DashMap::new());
+        let router = ProxyRouter::new(
+            registry,
+            empty_registry_client(),
+            Arc::downgrade(&native_dispatch),
+            Weak::new(),
+            hop.clone(),
+            node_identity,
+            RetryPolicy::default(),
+        );
+
+        let mut req = base_request("remote-svc", "greet");
+        req.origin = CallOrigin::Guest { service_id: service_id.clone() };
+        router.invoke_remote_at(&synthetic_addr(), &req).await.unwrap();
+
+        let preamble = hop.last_preamble.lock().unwrap().clone().unwrap();
+        assert_eq!(
+            preamble.pubkey.as_deref(),
+            Some(hex::encode(instance.public_key().to_bytes()).as_str())
+        );
+        assert!(preamble.delegation.is_some());
+
+        let verified = HandshakeVerifier::verify_preamble(&preamble, &EmptyAnchorResolver)
+            .await
+            .expect("the destination's handshake must admit a service-instance certificate");
+        assert_eq!(verified.master_did, member_master_did);
+    }
+
+    /// The unchanged path (D-A0-9's migration guarantee): a service with no
+    /// installed certificate presents nothing, exactly like before this arm
+    /// existed.
+    #[tokio::test]
+    async fn a_guest_call_from_a_service_without_a_certificate_is_still_anonymous() {
+        let hop = Arc::new(MockHop::with_outcomes(vec![MockOutcome::Success(Value::Null)]));
+        let registry = empty_registry();
+        registry.set_owner("no-cert-svc".to_string(), "did:key:zOwner".to_string()).await.unwrap();
+
+        let native_dispatch: NativeDispatchRegistry = Arc::new(DashMap::new());
+        let router = ProxyRouter::new(
+            registry,
+            empty_registry_client(),
+            Arc::downgrade(&native_dispatch),
+            Weak::new(),
+            hop.clone(),
+            Arc::new(Identity::generate().unwrap()),
+            RetryPolicy::default(),
+        );
+
+        let mut req = base_request("remote-svc", "greet");
+        req.origin = CallOrigin::Guest { service_id: "no-cert-svc".to_string() };
+        router.invoke_remote_at(&synthetic_addr(), &req).await.unwrap();
+
+        let preamble = hop.last_preamble.lock().unwrap().clone().unwrap();
+        assert_eq!(preamble.pubkey, None);
+        assert!(preamble.delegation.is_none());
     }
 }

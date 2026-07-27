@@ -353,4 +353,94 @@ mod tests {
         let res = HandshakeVerifier::verify_preamble(&preamble, &resolver).await;
         assert!(res.is_err(), "an expired service-instance certificate must fail closed");
     }
+
+    /// Matrix row 14's testable half: an instance certificate is revocable
+    /// without touching the member master. The anchor revokes instance key 1
+    /// (e.g. after a compromise or a planned rotation); the same master then
+    /// certifies a fresh instance key 2, and that connection still verifies.
+    #[tokio::test]
+    async fn a_revoked_instance_key_is_rejected_while_the_member_master_still_certifies_a_new_one()
+    {
+        let member_master = Identity::generate().unwrap();
+        let instance1 = Identity::generate().unwrap();
+        let instance1_pubkey_hex = hex::encode(instance1.public_key().to_bytes());
+        let instance1_did = substrate::derive_did_key(&instance1.public_key());
+
+        let cert1 = DelegationCertificate::issue(
+            &member_master,
+            instance1.public_key(),
+            3600,
+            "service-instance".to_string(),
+        )
+        .unwrap();
+        let cert1_hex = hex::encode(cert1.to_json().unwrap());
+        let preamble1 = RoutePreamble::parse(&format!(
+            "json-rpc://service?pubkey={instance1_pubkey_hex}&delegation={cert1_hex}"
+        ))
+        .unwrap();
+
+        let resolver = MockResolver { anchor: RwLock::new(MasterAnchorPayload::default()) };
+        resolver.anchor.write().unwrap().revoked_keys.push(instance1_did);
+
+        let res1 = HandshakeVerifier::verify_preamble(&preamble1, &resolver).await;
+        assert!(res1.is_err(), "a revoked instance key must be rejected");
+
+        let instance2 = Identity::generate().unwrap();
+        let instance2_pubkey_hex = hex::encode(instance2.public_key().to_bytes());
+        let cert2 = DelegationCertificate::issue(
+            &member_master,
+            instance2.public_key(),
+            3600,
+            "service-instance".to_string(),
+        )
+        .unwrap();
+        let cert2_hex = hex::encode(cert2.to_json().unwrap());
+        let preamble2 = RoutePreamble::parse(&format!(
+            "json-rpc://service?pubkey={instance2_pubkey_hex}&delegation={cert2_hex}"
+        ))
+        .unwrap();
+
+        let res2 = HandshakeVerifier::verify_preamble(&preamble2, &resolver).await;
+        assert!(
+            res2.is_ok(),
+            "a fresh instance key certified by the same master must still verify -- revoking one \
+             instance key must not touch the member's identity"
+        );
+    }
+
+    /// The reference scenario's step 4, at unit scale: a member
+    /// reinstantiated under a new instance key (a restart, or relocation to
+    /// another node) presents a different `temporary_did` but resolves to
+    /// the *same* `master_did` -- the identity a dependent's binding names,
+    /// and the identity `caller_did` ends up carrying.
+    #[tokio::test]
+    async fn a_second_instance_under_the_same_master_presents_the_same_authorization_identity() {
+        let member_master = Identity::generate().unwrap();
+        let member_master_did = substrate::derive_did_key(&member_master.public_key());
+
+        let mut master_dids = Vec::new();
+        for _ in 0..2 {
+            let instance = Identity::generate().unwrap();
+            let instance_pubkey_hex = hex::encode(instance.public_key().to_bytes());
+            let cert = DelegationCertificate::issue(
+                &member_master,
+                instance.public_key(),
+                3600,
+                "service-instance".to_string(),
+            )
+            .unwrap();
+            let cert_hex = hex::encode(cert.to_json().unwrap());
+            let preamble = RoutePreamble::parse(&format!(
+                "json-rpc://service?pubkey={instance_pubkey_hex}&delegation={cert_hex}"
+            ))
+            .unwrap();
+            let resolver = MockResolver { anchor: RwLock::new(MasterAnchorPayload::default()) };
+
+            let verified = HandshakeVerifier::verify_preamble(&preamble, &resolver).await.unwrap();
+            master_dids.push(verified.master_did);
+        }
+
+        assert_eq!(master_dids[0], master_dids[1]);
+        assert_eq!(master_dids[0], member_master_did);
+    }
 }
