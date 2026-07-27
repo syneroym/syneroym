@@ -471,8 +471,11 @@ rather than add them:
   That directly contradicts Syneroym's model — one host-managed DB per service,
   guests never touch a database, `system-architecture.md:1829`. A relation is
   either **local** (this service's DB) or **remote** (`service: <logical-name>`,
-  resolved through the app-context registry that already exists). This removes
-  a config section, a class of misconfiguration, and a credential-leak surface.
+  resolved through the app-context registry that already exists — inaccurate as
+  written, corrected by the 2026-07-24 amendment in
+  [ADR-0017](../decisions/0017-fdae-policy-schema-and-compilation.md); built as
+  [M05A](./milestones/M05A-app-supervisor/task.md) slice A2). This removes a
+  config section, a class of misconfiguration, and a credential-leak surface.
 - **`hierarchies` folds into `relations`** as `recursive: true`. It was never a
   separate kind of thing — just a self-join that needs `WITH RECURSIVE`. One
   concept fewer for the same expressiveness.

@@ -257,11 +257,35 @@ until this lands.
 
 ## Interstitial: Live App-Context Registry (between Milestone 4 and Milestone 5)
 
-> Not yet started. Reserved here (2026-07-24) while planning M04B Slice B3
-> Phase 4, so the gap below is tracked as committed future work rather than
-> left as an informal note. No ADR/plan doc yet — per this file's own
-> "Standard Milestone Documentation Format," a full `task.md` is generated
-> when work begins.
+> **Superseded 2026-07-27 by [M05A-app-supervisor](./milestones/M05A-app-supervisor/task.md).**
+> Both goals below are carried forward; the *mechanism* changed. Designing this
+> out produced [ADR-0020](../decisions/0020-stable-logical-service-identity.md)
+> and [ADR-0021](../decisions/0021-binding-propagation-and-app-supervisor.md),
+> which conclude that a **live** registry queried at runtime is the wrong shape:
+> a service's master DID is stable across relocation, so the logical-name
+> mapping changes only on genuine membership change, and pushing it into each
+> dependent's configuration removes a hot-path dependency on the control plane
+> for a cold event.
+>
+> **How each goal is now met** — the two are still one build, as argued below:
+> 1. *Logical-name resolution backed by real deployment state* — the App
+>    Supervisor holds that state and pushes the resolved member set into each
+>    dependent. `StaticInventory` remains the `AppRegistry` implementation; what
+>    changes is that something finally calls `.register()` on it. The
+>    resolution itself moves **host-side** (ADR-0021 §2), so a guest names a
+>    *declared dependency* — not a `LogicalServiceRef`, which would let it
+>    address an arbitrary app instance — and can never hold a stale DID.
+> 2. *`expected_asserter_did` publication (B3's D-B3-8 residual)* — carried
+>    forward unchanged in intent: the pushed binding carries
+>    `{member_master_did, expected_asserter_did}` per member rather than a bare
+>    `service_id`, so an
+>    FDAE policy author's lookup still resolves both "who backs this logical
+>    name" and "what will it sign with" from one place. Push versus pull does
+>    not affect this; it is a question of what the entry contains.
+>
+> The rest of this section is retained as the original statement of the problem
+> and of the verified state that motivated it. Where it says "live registry,"
+> read "the supervisor's state, pushed."
 
 **Goal:** Give `[PLT-DAP-01]`'s "app-context registry" — named in
 `system-architecture.md`'s "Logical Names and Public Aliases" section and in
@@ -300,16 +324,11 @@ callers today (only re-exported from `app_orchestration::lib`). The
 deployment diffs but do not track per-service health, and nothing currently
 publishes a live topology entry when a service actually comes up.
 
-**Scope:** an `AppRegistry` impl backed by the orchestrator's own live
-deployment/reconciliation state (populated as services deploy/undeploy and,
-ideally, as health checks pass/fail — health checking itself does not exist
-yet either and may need to be scoped in or explicitly split out), wired so a
-deploy-time or query-time logical-name lookup reflects what is actually
-running, not a static snapshot. Each entry should also carry the deployed
-service's `expected_asserter_did` (computable at deploy time from
-`(owner_did, service_id)`, the same inputs `resolve-relation`'s signing side
-already derives from), so an FDAE policy author's lookup resolves both "who
-backs this logical name" and "what will it sign with" from one place.
+**Scope:** superseded — see [M05A slices A0-A2](./milestones/M05A-app-supervisor/task.md).
+The original scope paragraph here prescribed a live registry backend and has
+been removed rather than left to be read as current design; what replaced it
+is push-based propagation over a stable per-member identity, with the
+`expected_asserter_did` goal above carried into the pushed binding entry.
 
 **Why it's not a Slice B3 deliverable.** It is an `app_orchestration`-crate,
 cross-milestone concern (also serves `[PLT-DAP-01]`'s physical-sharding
@@ -387,6 +406,52 @@ the order in which their slices are picked up.
 
 ---
 
+## Build-Order Amendment: App Supervisor Split (2026-07-27)
+
+> **What changed:** M5 item 2's "Active Controller" was scoped as a *live
+> registry* — a Server SynApp that services query at runtime to resolve
+> logical names. Designing it produced two decisions that shrink it
+> substantially and change where it sits in the order:
+> [ADR-0020](../decisions/0020-stable-logical-service-identity.md) (each
+> *member* of a logical service has a stable master DID, so relocation and
+> restart stop changing who that member *is*) and
+> [ADR-0021](../decisions/0021-binding-propagation-and-app-supervisor.md)
+> (bindings are pushed into service config; there is no live directory). The
+> component is renamed the **App Supervisor** and runs as a substrate role,
+> not a WASM `SynApp`.
+
+**Consequence for build order:** most of this work no longer depends on M5's
+async primitives and moves **before** them; only the durable-delivery half
+waits.
+
+1. **Lands ahead of M5's async primitives** — tracked in
+   [M05A-app-supervisor](./milestones/M05A-app-supervisor/task.md):
+   stable master DID per member of a logical service; endpoint records
+   published under that master; host-side dependency resolution in the proxy
+   target; multi-substrate placement plus the substrate inventory; health
+   definition and read-only monitoring; and the supervisor loop itself with
+   best-effort synchronous delivery.
+2. **Waits for M5 item 1** (Outbox/DLQ/cron leases): durable push delivery and
+   retry against offline substrates, terminal-failure handling, and the
+   single-writer lease if redundant supervisors are ever wanted. These sit
+   behind one narrow "apply this action to that substrate" trait so the
+   pre-M5 implementation is replaced rather than unwound — deliberately, so
+   the project does not grow a second retry mechanism.
+3. **Waits for M7** (replication): remediation by *relocating* a stateful
+   service. Until a service's data can follow it, remediation is
+   restart-in-place only. ADR-0020 removes the identity blocker; replication
+   remains.
+4. **Hard dependency, unchanged:** the `ControllerAgreement` creation tool
+   (item 5 below) gates authenticated deploy to any substrate the operator
+   does not already own, so it becomes load-bearing for a multi-substrate
+   supervisor rather than merely outstanding.
+
+The federated-query orchestrator (M5 item 2's *other* half, DataFusion /
+Substrait) is untouched by this amendment and stays deferred to the final
+phase per the 2026-07-16 resequencing.
+
+---
+
 ## Milestone 5: Async Lifecycle and Developer Experience
 
 > **Build order:** see the *M5–M7 Resequencing* amendment above — item 1
@@ -407,7 +472,7 @@ the order in which their slices are picked up.
 
 **Implementation Approach:**
 1. **Async Primitives:** Implement the Outbox queue, cron lease mechanisms, Dead Letter Queue (DLQ), long-running task restart rules, and compensating transactions (sagas).
-2. **Active Controller & Query Orchestrator:** Deploy the controller `SynApp` that continuously reconciles desired state. Introduce foundational DataFusion logical planning and Substrait serialization for federated queries. This includes:
+2. **App Supervisor & Query Orchestrator:** Continuous reconciliation of desired state across substrates — **split out and mostly resequenced ahead of item 1**; see the *App Supervisor Split* amendment above and [M05A-app-supervisor](./milestones/M05A-app-supervisor/task.md). What remains here is the half that genuinely needs item 1's primitives (durable push delivery, retry against offline substrates, DLQ, single-writer lease). Separately, introduce foundational DataFusion logical planning and Substrait serialization for federated queries. This includes:
    - Defining the DataFusion `TableProvider` interface for Syneroym Data Services.
    - Defining the plan-fragment serialization contract (Substrait schema version pinning).
    - Defining the network protocol for distributing plan fragments to edge nodes.
@@ -415,7 +480,7 @@ the order in which their slices are picked up.
    - *(Design TBD to resolve before M5: How the Orchestrator discovers which node holds which shard, and how data routing tables are maintained for `[PLT-DAP-01]`)*
 3. **Versioning:** Implement pre-upgrade SQLite snapshotting and automatic rollback mechanisms.
 4. **Developer Tools:** Release the mock SDK, project templates, the zero-drift `roymctl dev` local environment, and remote package retrieval over HTTP/OCI for the `ManifestCatalog`.
-5. **`ControllerAgreement` Creation Tool:** Build the `roymctl` tool to create/sign a `ControllerAgreement`, spun out of M04A Slice B7 (`docs/planning/milestones/M04A-proxy-and-auth-foundation/plans/B7.md` §6; task.md's post-B7b item list). Until this exists, B7b's ownership/deploy capability gate is inert — every substrate remains unowned, so this closes that gap. Bundled with it: the deferred registry-trust-model ADR, multiple-substrate-owners representation (F12), and Tier 1 for the five data native-capability interfaces (F3).
+5. **`ControllerAgreement` Creation Tool:** Build the `roymctl` tool to create/sign a `ControllerAgreement`, spun out of M04A Slice B7 (`docs/planning/milestones/M04A-proxy-and-auth-foundation/plans/B7.md` §6; task.md's post-B7b item list). Until this exists, B7b's ownership/deploy capability gate is inert — every substrate remains unowned, so this closes that gap. **Amended 2026-07-27:** the tool itself is **pulled forward into [M05A](./milestones/M05A-app-supervisor/task.md) as Slice P0**, because item 5 has no position in the 2026-07-16 resequencing (which front-loads item 1 and defers items 2-4) and M05A's multi-substrate placement cannot ship responsibly while ownership is unestablishable. Of the three items bundled with it: the **registry-trust-model ADR is discharged** by [ADR-0020](../decisions/0020-stable-logical-service-identity.md) §6 plus M05A slice A1 — the same change to `verify()`'s contract, with B7's "needs a real consumer" gate met; **multiple-substrate-owners representation (F12)** and **Tier 1 for the five data native-capability interfaces (F3)** stay here, neither being needed for single-owner multi-substrate placement.
 
 > **Note:** Decentralized Pub/Sub completion (`[PLT-DAP-04]`, adapting the
 > M3B in-process `rumqttd` broker to synchronise its topic log with peer

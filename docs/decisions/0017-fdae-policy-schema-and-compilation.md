@@ -67,8 +67,11 @@ Three deletions from the archived spec:
   contradicts the platform model — one host-managed DB per service, guests never
   touch a database (`system-architecture.md:1829`). A relation is either **local**
   (this service's own DB) or **remote** (`service: <logical-name>`, resolved
-  through the app-context registry that already exists). This removes a config
-  section, a class of misconfiguration, and a credential-leak surface.
+  through the app-context registry that already exists — corrected by the
+  2026-07-24 amendment below: it does *not* exist today, and is built as
+  [M05A](../planning/milestones/M05A-app-supervisor/task.md) slice A2). This
+  removes a config section, a class of misconfiguration, and a credential-leak
+  surface.
 - **`hierarchies` folds into `relations`** as `recursive: true`. It was never a
   separate kind of thing — a self-join needing `WITH RECURSIVE`.
 - **App abilities fold into `permissions`** (ADR-0015 A2). A permission declares
