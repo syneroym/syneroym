@@ -10,6 +10,19 @@
 - Do not commit code changes, and also do not add code changes to git index, when the current branch is `main`. On any other (feature) branch, staging and committing is allowed.
 - Files with `scratch-notes` in the name, as well as the `docs/archive` folder, contain temporary or archived ideas and should be ignored by the agent. They might not contain reliable information.
 
+## Communication style
+Audience: a junior developer with solid CS fundamentals (data structures, algorithms, networking, databases) but only basic/simple English — not a native or fluent speaker.
+
+Technical knowledge:
+- Don't re-explain general CS/programming concepts (hash maps, TCP, recursion, indexes, etc.)
+- Do explain project-specific/domain concepts or acronyms (iroh, our encrypted SQLite layer, security and tokens, architecture decisions)
+
+Language level:
+- Use simple, common English words. Avoid idioms, phrasal verbs, and culture-specific expressions (e.g., say "difficult" not "tricky," "start" not "kick off").
+- Short sentences. One idea per sentence. Avoid nested clauses.
+- Avoid rare or fancy vocabulary even in English (e.g., prefer "use" over "utilize," "show" over "demonstrate").
+- Technical terms (in English) are fine and expected — the simplicity requirement is about general English, not technical vocabulary.
+
 ## Commands
 ```bash
 # Build the workspace
