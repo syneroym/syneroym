@@ -192,6 +192,19 @@ certificate. Resolution stays one lookup; A0's one-master-per-member rule means
 at most one live publisher per master, so today's last-writer-wins insert is
 already correct.
 
+**Two verification paths, not one — found while planning A0.** This bullet and
+ADR-0020 §6 both cite only `registry.rs:234`, the HTTP registry. The BEP0044
+DHT path has its own: `SignedEndpointInfo::verify`
+([dht_registry.rs:137-146](../../../../crates/core/src/dht_registry.rs#L137))
+already checks a delegation certificate attached to a published record — with
+the **inverse** keying of §6, requiring `cert.temporary_did == info.service_id`
+(record keyed by the *temporary* DID, certificate naming its master) where §6
+specifies a record keyed by the *master* DID and signed by the instance key.
+A1 changes both and decides whether the DHT path adopts §6's shape or keeps its
+own. A0 pins that site's scope argument to the service-instance scope — free
+today, since `EndpointInfo.delegation` is set nowhere in the tree — and leaves
+the reconciliation here.
+
 Covers every `ServiceType` with no special case: instance keys are HKDF-derived
 from the hosting node's identity ([keys.rs:240-257](../../../../crates/identity/src/keys.rs#L240))
 rather than stored, so a TCP or container service has one exactly as a WASM
@@ -223,6 +236,27 @@ callers: guest self-proxy, native dispatch, and external/`roymctl` callers.
 Binding entries carry `{member_master_did, expected_asserter_did}` per member,
 closing D-B3-8's publication gap. `StaticInventory` gains its first real
 `.register()` callers.
+
+**Also in A2, found while planning A0: make `expected_asserter_did` survive
+reinstantiation.** A service signs its `RelationshipProof` with its *instance*
+key — `asserter_did` comes from `derive_service_identity(owner_did, service_id)`
+([synsvc_native.rs](../../../../crates/control_plane/src/synsvc_native.rs),
+[relationship_proof.rs](../../../../crates/rpc/src/relationship_proof.rs)) — and
+the fetching side requires **exact equality** with the policy-declared
+`expected_asserter_did`. So a member reinstantiated on another node, or
+redeployed by a different owner, silently stops satisfying every policy and
+every binding that names it: the exact failure ADR-0020 exists to prevent, on a
+credential path that ADR never mentions. Republishing on each reinstantiation
+is not available — the reference scenario's step 4 requires that reinstantiating
+a member propagates *nothing*. So A2 declares `expected_asserter_did` as the
+**member master** DID and teaches `RelationshipProof::verify` to accept an
+instance-key signature carrying a `DelegationCertificate` from that master —
+A1's trust-chain move at a third site, cheap once A1 lands, and load-bearing:
+without it A2 publishes bindings that go stale on the first restart.
+
+Also here: `ProxyRouter::invoke_remote_at`'s `CallOrigin::Native` arm still
+presents the *node's* key on the wire (A0 changes only the guest-origin arm),
+which is the transport half of the same gap.
 
 ### A3 — Multi-substrate placement and the substrate inventory
 Placement selector in the manifest (v1: a global default plus per-service
@@ -256,6 +290,30 @@ bounded restart-in-place remediation with backoff, max attempts, and a terminal
 (ADR-0021 §7). Delivery is **best-effort synchronous** behind a narrow "apply
 this action to that substrate" trait, and the supervisor's status output says so
 rather than implying convergence it cannot guarantee.
+
+**Plus the online-key posture, which nothing before A5 can carry.** A0 ships the
+attended posture only: an operator issues instance certificates on their own
+cadence, and A0's contribution to a missed cadence is visibility (a near-expiry
+warning on the heartbeat sweep, an expiry column on `svc list`), not automation.
+It cannot be otherwise — automatic renewal needs a component holding member
+master keys that runs unattended, and putting a renewal timer on the substrate
+would put the master key there, which ADR-0020 §3 forbids outright. So A5 owns
+three things A0 deliberately left out:
+
+- **Custody**: member master keys held in the supervisor's own substrate vault
+  rather than on disk beside a config (ADR-0020 §4). A0 leaves them as ordinary
+  `roymctl` identities under a computable name, so adoption is a read, not a
+  scan.
+- **Unattended issue and renewal**, so relocation and renewal both just work
+  (ADR-0020 §3's online-key posture) — and with it the operator's choice between
+  the two postures becomes real rather than nominal.
+- **`RotationPolicy`** (`models.rs`) finally becomes load-bearing: with renewal
+  automated, whether a service tolerates in-place certificate replacement or
+  needs a restart is a decision something actually makes. A0 does not use it
+  because operator-initiated replacement is always in-place.
+
+Until A5 lands, **a missed renewal cadence is an outage** (matrix row 3), and
+that is the milestone's standing operating cost through A0–A4.
 
 ### A6 — Durable delivery *(post-M5 item 1 — do not start before it lands)*
 Replace the A5 trait's implementation with an outbox/DLQ-backed one: durable push
@@ -351,6 +409,7 @@ under its master and step 2's second lookup would fail.
 | 16 | **`security` call (`inject-kek`/`rotate-kek`/`set-secret`) without `substrate/admin`** | Rejected. Ungated entirely today (P0 item 2); the gate only becomes holdable once P0 item 1 ships |
 | 17 | **Deploy to an unowned substrate once F4 flips** | Rejected; the bootstrap path becomes establishing ownership with the P0 tool, not an open deploy grant |
 | 18 | Bound cross-app dependency replaced, **attended posture** | No master key, so no active probe: detection is passive, on the first real call that fails. Weaker by design, and the operator chose it |
+| 19 | **Member reinstantiated under a policy declaring `expected_asserter_did`** | Its cross-service `RelationshipProof` still verifies. Today it would not: `asserter_did` is the *instance* key and the check is exact equality, so a restart on another node silently breaks every policy naming that service (A2) |
 
 ---
 

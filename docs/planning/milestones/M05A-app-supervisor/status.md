@@ -11,7 +11,7 @@
 | Slice | Scope | Status | Gate |
 |---|---|---|---|
 | P0 | `ControllerAgreement` creation tool — **pulled forward from M5 item 5** | Not started | None; gates A3 |
-| A0 | Stable member identity (master DID per member + delegated instance keys + ingress `scope` enforcement) | Not started | None — independently mergeable |
+| A0 | Stable member identity (master DID per member + delegated instance keys + ingress `scope` enforcement) | **Planned** — [implementation plan](slice-a0-implementation-plan.md) (2026-07-28), no code | None — independently mergeable |
 | A1 | Endpoint records published under the member master DID | Not started | A0 |
 | A2 | Host-side dependency resolution; bindings carry `expected_asserter_did` | Not started | A1 |
 | A3 | Multi-substrate placement + substrate inventory | Not started | `ControllerAgreement` tool (see below) |
@@ -25,6 +25,34 @@ verifies a record against the key resolved from the `service_id` it is keyed
 under, so an instance key cannot publish under its master, and
 `MasterAnchorPayload` is a revocation list with no forward index. Without A1,
 relocation silently stops resolving — the exact failure A0 exists to prevent.
+
+**A0 planning found four places where the design of record asserts something
+the tree does not do** ([slice-a0-implementation-plan.md](slice-a0-implementation-plan.md)
+§6), and **one of them changed a later slice's scope**:
+
+- ADR-0020 §1 describes a service instance presenting its certificate on its
+  route preamble "the same way a delegated client does today," but no service
+  presents its own identity on an outbound call at all — a guest-originated
+  remote call presents nothing (`router/src/proxy.rs`), and a substrate-internal
+  one presents the *node's* key. A0 builds that arm rather than inheriting it.
+- ADR-0020 §1's "this needs no change to FDAE" holds for the sieve and misses a
+  second credential path: a `RelationshipProof` is signed with the *instance*
+  key and checked for **exact** equality against the policy's
+  `expected_asserter_did` (`rpc/src/relationship_proof.rs`), so a reinstantiated
+  member silently stops satisfying every policy naming it. Republishing per
+  restart is ruled out by the reference scenario's step 4. **Now in A2's scope**
+  (declare `expected_asserter_did` as the member master; accept an instance
+  signature carrying a delegation from it) with failure-matrix row 19.
+- `ServiceId`'s meaning change is not purely semantic: today's plan ids are
+  fabricated DIDs with no private key, which `resolve_did_key` rejects.
+- The ingress scope check is necessarily an allowlist of the two transport
+  scopes; the narrow single-value comparison lands at A1.
+
+ADR-0020 needs an amendment on all four at A0 sign-off. **A5 also gained
+explicit text** for what A0 deliberately left out — member-master vault custody,
+unattended renewal, and `RotationPolicy`'s first real use — so the online-key
+posture is a named deliverable rather than a backlog row pointing at a slice
+that never mentions it.
 
 ## Dependencies pulled in
 
