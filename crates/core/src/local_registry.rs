@@ -270,6 +270,14 @@ impl EndpointRegistry {
         self.service_certs.remove(service_id);
         Ok(())
     }
+
+    /// Every installed instance certificate, keyed by `service_id`. For the
+    /// heartbeat sweep that warns on a near-expiry certificate -- the only
+    /// consumer that needs the whole set rather than one lookup.
+    #[must_use]
+    pub fn all_instance_certs(&self) -> Vec<(String, DelegationCertificate)> {
+        self.service_certs.iter().map(|e| (e.key().clone(), e.value().clone())).collect()
+    }
 }
 
 #[cfg(test)]
@@ -393,5 +401,22 @@ mod tests {
 
         registry.remove_instance_cert("svc-1").await.unwrap();
         assert_eq!(registry.instance_cert("svc-1"), None);
+    }
+
+    #[tokio::test]
+    async fn all_instance_certs_returns_every_installed_certificate() {
+        let storage = Arc::new(MockStorage::new());
+        let registry = EndpointRegistry::new(storage).await.unwrap();
+        assert!(registry.all_instance_certs().is_empty());
+
+        let master = syneroym_identity::Identity::generate().unwrap();
+        registry.set_instance_cert("svc-1".to_string(), test_cert(&master, "svc-1")).await.unwrap();
+        registry.set_instance_cert("svc-2".to_string(), test_cert(&master, "svc-2")).await.unwrap();
+
+        let mut all = registry.all_instance_certs();
+        all.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].0, "svc-1");
+        assert_eq!(all[1].0, "svc-2");
     }
 }

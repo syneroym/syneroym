@@ -21,6 +21,7 @@ rustls.workspace = true
 semver.workspace = true
 ed25519-dalek.workspace = true
 hex.workspace = true
+chrono.workspace = true
 
 [dev-dependencies]
 assert_cmd.workspace = true

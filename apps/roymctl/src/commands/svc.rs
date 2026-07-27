@@ -163,13 +163,17 @@ pub async fn handle(
         SvcCommands::List => {
             // Lists all installed SynSvcs registered in the local substrate registry.
             let services = client.list_svcs().await?;
-            println!("{:<50} {:<10} {:<50}", "SERVICE ID", "TYPE", "INTERFACES");
-            println!("{:-<110}", "");
+            println!(
+                "{:<50} {:<10} {:<30} {:<50}",
+                "SERVICE ID", "TYPE", "INSTANCE CERT EXPIRES", "INTERFACES"
+            );
+            println!("{:-<145}", "");
             for svc in services {
                 println!(
-                    "{:<50} {:<10} {:<50}",
+                    "{:<50} {:<10} {:<30} {:<50}",
                     svc.service_id,
                     svc.endpoint_type,
+                    format_expiry(svc.instance_certificate_expires_at),
                     svc.interfaces.join(", ")
                 );
             }
@@ -190,6 +194,18 @@ pub async fn handle(
     Ok(())
 }
 
+/// `-` for a service with no installed instance certificate; otherwise an
+/// RFC 3339 timestamp, so "when does this fall over" is answerable without
+/// reading logs (ADR-0020 §3).
+fn format_expiry(expires_at_secs: Option<u64>) -> String {
+    match expires_at_secs {
+        Some(secs) => chrono::DateTime::from_timestamp(secs as i64, 0)
+            .map(|dt| dt.to_rfc3339())
+            .unwrap_or_else(|| "-".to_string()),
+        None => "-".to_string(),
+    }
+}
+
 fn get_host_port_from_tcp_addr(tcp_addr: &str) -> anyhow::Result<(String, u16)> {
     let parts: Vec<&str> = tcp_addr.split(':').collect();
     if parts.len() != 2 {
@@ -206,4 +222,20 @@ fn load_identity(dir: &Path, name: &str) -> anyhow::Result<Identity> {
         anyhow::bail!("Identity '{}' not found at {}", name, key_path.display());
     }
     Identity::load_from_path(&key_path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_expiry_shows_a_dash_for_no_certificate() {
+        assert_eq!(format_expiry(None), "-");
+    }
+
+    #[test]
+    fn format_expiry_shows_an_rfc3339_timestamp() {
+        // 2024-01-01T00:00:00Z
+        assert_eq!(format_expiry(Some(1_704_067_200)), "2024-01-01T00:00:00+00:00");
+    }
 }

@@ -11,7 +11,7 @@ use std::{
     path::PathBuf,
     pin,
     sync::Arc,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use axum::{Json, Router, routing};
@@ -58,6 +58,11 @@ pub struct InitializedRuntime {
     pub observability: ObservabilityEngine,
     pub services: RuntimeServices,
     pub connection_router: ConnectionRouter,
+    /// The same registry `connection_router` routes through -- kept here too
+    /// so `RuntimeServices::run_until_shutdown` can run the instance-
+    /// certificate expiry sweep without `ConnectionRouter` growing a getter
+    /// for something external to routing.
+    pub endpoint_registry: EndpointRegistry,
 }
 
 impl Debug for InitializedRuntime {
@@ -66,6 +71,7 @@ impl Debug for InitializedRuntime {
             .field("observability", &"ObservabilityEngine")
             .field("services", &self.services)
             .field("connection_router", &"ConnectionRouter")
+            .field("endpoint_registry", &"EndpointRegistry")
             .finish()
     }
 }
@@ -93,7 +99,15 @@ pub async fn run_with_signal<F>(
 where
     F: Future<Output = ()>,
 {
-    runtime.services.run_until_shutdown(&config, &runtime.connection_router, shutdown_signal).await;
+    runtime
+        .services
+        .run_until_shutdown(
+            &config,
+            &runtime.connection_router,
+            &runtime.endpoint_registry,
+            shutdown_signal,
+        )
+        .await;
 
     info!("shutting down substrate components");
     runtime.services.shutdown().await;
@@ -115,11 +129,11 @@ where
 pub async fn init(config: SubstrateConfig) -> anyhow::Result<InitializedRuntime> {
     info!(profile = %config.profile, "initializing substrate");
 
-    Ok(InitializedRuntime {
-        observability: ObservabilityEngine::init(&config)?,
-        services: RuntimeServices::init(&config).await?,
-        connection_router: setup_connection_router(&config).await?,
-    })
+    let observability = ObservabilityEngine::init(&config)?;
+    let services = RuntimeServices::init(&config).await?;
+    let (connection_router, endpoint_registry) = setup_connection_router(&config).await?;
+
+    Ok(InitializedRuntime { observability, services, connection_router, endpoint_registry })
 }
 
 pub struct RuntimeServices {
@@ -179,6 +193,7 @@ impl RuntimeServices {
         &mut self,
         config: &SubstrateConfig,
         connection_router: &ConnectionRouter,
+        endpoint_registry: &EndpointRegistry,
         shutdown_signal: F,
     ) where
         F: Future<Output = ()>,
@@ -276,6 +291,7 @@ impl RuntimeServices {
         });
 
         let mut connection_router_fut = pin::pin!(connection_router.run());
+        let mut expiry_sweep_fut = pin::pin!(instance_cert_expiry_sweep_loop(endpoint_registry));
         let mut shutdown_signal = pin::pin!(shutdown_signal);
 
         info!(profile = %config.profile, "starting substrate components");
@@ -286,6 +302,7 @@ impl RuntimeServices {
             res = &mut client_gateway_fut => log_component_exit("http proxy", res),
             res = &mut health_fut => log_component_exit("health server", res),
             res = &mut metrics_fut => log_component_exit("metrics server", res),
+            () = &mut expiry_sweep_fut => {},
             () = &mut shutdown_signal => warn!("received shutdown signal"),
         }
     }
@@ -330,7 +347,9 @@ fn log_component_exit(component: &str, result: anyhow::Result<()>) {
 /// Sets up the connection router and its tightly coupled dependencies,
 /// including the substrate identity, data store, endpoint registry, and the
 /// native service.
-async fn setup_connection_router(config: &SubstrateConfig) -> anyhow::Result<ConnectionRouter> {
+async fn setup_connection_router(
+    config: &SubstrateConfig,
+) -> anyhow::Result<(ConnectionRouter, EndpointRegistry)> {
     let (service_id, secret_key, verified_controller) = setup_identity_and_storage(config).await?;
 
     // A verified `ControllerAgreement` (mutually signed by the substrate and
@@ -363,7 +382,7 @@ async fn setup_connection_router(config: &SubstrateConfig) -> anyhow::Result<Con
         );
     }
 
-    let router = setup_router(config, &service_id, secret_key).await?;
+    let (router, endpoint_registry) = setup_router(config, &service_id, secret_key).await?;
 
     if (config.substrate.enable_bep0044_dht || config.substrate.registry_url.is_some())
         && let Some(endpoint_addr) = router.endpoint_addr()
@@ -381,7 +400,7 @@ async fn setup_connection_router(config: &SubstrateConfig) -> anyhow::Result<Con
         );
     }
 
-    Ok(router)
+    Ok((router, endpoint_registry))
 }
 
 async fn setup_identity_and_storage(
@@ -403,7 +422,7 @@ async fn setup_router(
     config: &SubstrateConfig,
     service_id: &str,
     secret_key: [u8; 32],
-) -> anyhow::Result<ConnectionRouter> {
+) -> anyhow::Result<(ConnectionRouter, EndpointRegistry)> {
     let data_store = registry_store::init_store(config).await?;
     let endpoint_registry = EndpointRegistry::new(data_store).await?;
 
@@ -421,14 +440,15 @@ async fn setup_router(
     let route_handler_deps =
         build_route_handler_deps(config, service_id, &endpoint_registry, secret_key).await?;
 
-    ConnectionRouter::init(
-        endpoint_registry,
+    let router = ConnectionRouter::init(
+        endpoint_registry.clone(),
         config.clone(),
         secret_key,
         service_id.to_string(),
         route_handler_deps,
     )
-    .await
+    .await?;
+    Ok((router, endpoint_registry))
 }
 
 /// Constructs every capability the connection router holds and dispatches
@@ -681,6 +701,50 @@ fn publish_to_community_registry(
     });
 }
 
+/// The attended posture's visibility half (ADR-0020 §3): nothing here
+/// renews a certificate, only warns before a missed renewal becomes an
+/// outage. Runs on the same cadence as the community-registry heartbeat
+/// above but as its own sibling loop in `RuntimeServices`'s `select!`,
+/// rather than growing `publish_to_community_registry`'s already-`#[allow(
+/// clippy::too_many_arguments)]` argument list with a registry it has no
+/// other reason to hold.
+async fn instance_cert_expiry_sweep_loop(registry: &EndpointRegistry) -> ! {
+    loop {
+        time::sleep(Duration::from_secs(HEARTBEAT_INTERVAL_SECS)).await;
+        warn_on_near_expiry_instance_certs(registry);
+    }
+}
+
+/// Warns for any installed instance certificate within 25% of its lifetime
+/// of expiring, and returns their `service_id`s. Split out from the sleep
+/// loop above -- and returning the warned set rather than only logging it --
+/// so it's testable without waiting on a real timer or scraping log output.
+fn warn_on_near_expiry_instance_certs(registry: &EndpointRegistry) -> Vec<String> {
+    let now_secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+
+    let mut near_expiry = Vec::new();
+    for (service_id, cert) in registry.all_instance_certs() {
+        let lifetime_secs = cert.expires_at_secs.saturating_sub(cert.issued_at_secs);
+        if lifetime_secs == 0 {
+            continue;
+        }
+        let remaining_secs = cert.expires_at_secs.saturating_sub(now_secs);
+        // remaining <= 25% of lifetime, computed without floating point.
+        if remaining_secs.saturating_mul(4) <= lifetime_secs {
+            warn!(
+                service_id = %service_id,
+                expires_at_secs = cert.expires_at_secs,
+                remaining_secs,
+                "instance certificate is within 25% of its lifetime of expiring -- renew with \
+                 `roymctl identity certify-instance` before it lapses, which fails the \
+                 handshake closed"
+            );
+            near_expiry.push(service_id);
+        }
+    }
+    near_expiry
+}
+
 fn build_signed_endpoint_info(
     service_id: &str,
     endpoint_addr: &EndpointAddr,
@@ -707,4 +771,51 @@ fn build_signed_endpoint_info(
 
     let identity = Identity::from_bytes(secret_key);
     info.sign(&identity)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use syneroym_core::storage::MockStorage;
+    use syneroym_identity::{DelegationCertificate, delegation::SCOPE_SERVICE_INSTANCE};
+
+    use super::*;
+
+    /// Matrix row 3's observability half: a certificate within 25% of its
+    /// lifetime of expiring is flagged; one nowhere near expiry is not.
+    #[tokio::test]
+    async fn a_certificate_near_expiry_is_warned_about_on_the_heartbeat_sweep() {
+        let registry = EndpointRegistry::new(Arc::new(MockStorage::new())).await.unwrap();
+        let master = Identity::generate().unwrap();
+        let instance = Identity::generate().unwrap();
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+
+        // 1000s lifetime, 100s (10%) remaining -- inside the 25% window.
+        let mut near_expiry = DelegationCertificate::issue(
+            &master,
+            instance.public_key(),
+            1000,
+            SCOPE_SERVICE_INSTANCE.to_string(),
+        )
+        .unwrap();
+        near_expiry.issued_at_secs = now - 900;
+        near_expiry.expires_at_secs = now + 100;
+        registry.set_instance_cert("near-expiry-svc".to_string(), near_expiry).await.unwrap();
+
+        // Freshly issued, nowhere near its 3600s expiry.
+        let mut fresh = DelegationCertificate::issue(
+            &master,
+            instance.public_key(),
+            3600,
+            SCOPE_SERVICE_INSTANCE.to_string(),
+        )
+        .unwrap();
+        fresh.issued_at_secs = now;
+        fresh.expires_at_secs = now + 3600;
+        registry.set_instance_cert("fresh-svc".to_string(), fresh).await.unwrap();
+
+        let warned = warn_on_near_expiry_instance_certs(&registry);
+        assert_eq!(warned, vec!["near-expiry-svc".to_string()]);
+    }
 }

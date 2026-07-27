@@ -36,6 +36,11 @@ pub struct DeployedService {
     pub service_id: String,
     pub interfaces: Vec<String>,
     pub endpoint_type: String,
+    /// Unix seconds when the installed instance certificate expires, if one
+    /// is installed. `#[serde(default)]` so a substrate predating this field
+    /// still deserializes.
+    #[serde(default)]
+    pub instance_certificate_expires_at: Option<u64>,
 }
 
 /// Default ceiling for establishing a connection to a single mechanism.

@@ -6156,6 +6156,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
+ "chrono",
  "clap",
  "ed25519-dalek 2.2.0",
  "hex",
