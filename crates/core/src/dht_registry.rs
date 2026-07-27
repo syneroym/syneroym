@@ -15,7 +15,9 @@ use pkarr::{
 };
 use reqwest::Client as ReqwestClient;
 use serde::{Deserialize, Serialize};
-use syneroym_identity::{DelegationCertificate, Identity, substrate};
+use syneroym_identity::{
+    DelegationCertificate, Identity, delegation::SCOPE_SERVICE_INSTANCE, substrate,
+};
 
 /// Default time-to-live for registry entries, aligned with BEP 0044 DHT expiry
 /// defaults.
@@ -136,7 +138,13 @@ impl SignedEndpointInfo {
         }
 
         if let Some(cert) = &self.info.delegation {
-            cert.verify(&cert.master_did)?;
+            // Publishing an endpoint record is the service-instance role, so
+            // only that scope is admitted here. Note this keys the record by
+            // the *temporary* DID with the certificate naming its master --
+            // the inverse of ADR-0020 §6, which keys by the master DID and
+            // signs with the instance key. Reconciling the two verification
+            // shapes is still open; this only narrows the accepted scope.
+            cert.verify(&cert.master_did, &[SCOPE_SERVICE_INSTANCE])?;
             if cert.temporary_did != self.info.service_id {
                 return Err(anyhow::anyhow!(
                     "Delegation certificate temporary_did does not match service_id"

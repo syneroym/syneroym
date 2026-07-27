@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use syneroym_core::dht_registry::{MasterAnchorPayload, RegistryClient};
-use syneroym_identity::substrate;
+use syneroym_identity::{delegation::TRANSPORT_SCOPES, substrate};
 use tokio::time;
 
 use crate::RoutePreamble;
@@ -62,8 +62,17 @@ impl HandshakeVerifier {
         if let Some(cert) = &preamble.delegation {
             let master_did = &cert.master_did;
 
-            // Verify certificate (expiry and signature match master)
-            cert.verify(master_did)?;
+            // `master_did` is read from the certificate itself, so this
+            // first argument is a no-op confused-deputy check on this path --
+            // the connection asserts "I am delegated by M" and M is whatever
+            // the certificate says; binding to a target is resolved
+            // downstream on `master_did`. The scope check is what actually
+            // enforces something here: both a person's delegated device key
+            // and a service instance route a connection under a master's
+            // identity, so the ingress accepts either transport scope and
+            // leaves narrowing to whoever admits the connection for a
+            // specific purpose.
+            cert.verify(master_did, &TRANSPORT_SCOPES)?;
 
             if cert.temporary_did != temporary_did {
                 return Err(anyhow!(
