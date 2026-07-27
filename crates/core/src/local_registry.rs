@@ -11,6 +11,7 @@ use std::{
 
 use anyhow::Result;
 use dashmap::DashMap;
+use syneroym_identity::DelegationCertificate;
 
 use crate::{
     storage::{EndpointStorage, MockStorage},
@@ -65,6 +66,11 @@ pub struct EndpointRegistry {
     /// `service_id` -> `owner_did` (M04A Slice B7a). Separate from
     /// `active_endpoints`, which is keyed per interface.
     service_owners: Arc<DashMap<String, String>>,
+    /// `service_id` -> the installed `DelegationCertificate` binding this
+    /// substrate's derived instance key to the member master that
+    /// `service_id` names. Absent for a service deployed without a master
+    /// (the pre-existing "service is its own master" fallback).
+    service_certs: Arc<DashMap<String, DelegationCertificate>>,
     /// Stable storage connection for persistence
     storage: Arc<dyn EndpointStorage>,
 }
@@ -86,6 +92,7 @@ impl EndpointRegistry {
             active_endpoints: Arc::new(DashMap::new()),
             interface_hashes: Arc::new(DashMap::new()),
             service_owners: Arc::new(DashMap::new()),
+            service_certs: Arc::new(DashMap::new()),
             storage,
         };
 
@@ -106,6 +113,20 @@ impl EndpointRegistry {
 
         for (service_id, owner_did) in self.storage.load_all_owners().await? {
             self.service_owners.insert(service_id, owner_did);
+        }
+
+        for (service_id, certificate_json) in self.storage.load_all_certs().await? {
+            match DelegationCertificate::from_json(&certificate_json) {
+                Ok(cert) => {
+                    self.service_certs.insert(service_id, cert);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to parse stored instance certificate for service_id: \
+                         {service_id}: {e:?}"
+                    );
+                }
+            }
         }
         Ok(())
     }
@@ -197,6 +218,7 @@ impl EndpointRegistry {
             active_endpoints: Arc::new(DashMap::new()),
             interface_hashes: Arc::new(DashMap::new()),
             service_owners: Arc::new(DashMap::new()),
+            service_certs: Arc::new(DashMap::new()),
             storage,
         }
     }
@@ -220,6 +242,32 @@ impl EndpointRegistry {
     pub async fn remove_owner(&self, service_id: &str) -> Result<()> {
         self.storage.remove_owner(service_id).await?;
         self.service_owners.remove(service_id);
+        Ok(())
+    }
+
+    /// Install `cert` as `service_id`'s instance certificate (upsert -- a
+    /// renewal replaces in place).
+    pub async fn set_instance_cert(
+        &self,
+        service_id: String,
+        cert: DelegationCertificate,
+    ) -> Result<()> {
+        self.storage.save_cert(&service_id, &cert.to_json()?).await?;
+        self.service_certs.insert(service_id, cert);
+        Ok(())
+    }
+
+    /// The installed instance certificate, or `None` for a service deployed
+    /// without a member master.
+    #[must_use]
+    pub fn instance_cert(&self, service_id: &str) -> Option<DelegationCertificate> {
+        self.service_certs.get(service_id).map(|e| e.value().clone())
+    }
+
+    /// Forget `service_id`'s instance certificate. Idempotent.
+    pub async fn remove_instance_cert(&self, service_id: &str) -> Result<()> {
+        self.storage.remove_cert(service_id).await?;
+        self.service_certs.remove(service_id);
         Ok(())
     }
 }
@@ -301,5 +349,49 @@ mod tests {
         let storage = Arc::new(MockStorage::new());
         let registry = EndpointRegistry::new(storage).await.unwrap();
         assert_eq!(registry.owner_of("never-deployed"), None);
+    }
+
+    fn test_cert(master: &syneroym_identity::Identity, service_id: &str) -> DelegationCertificate {
+        let instance = syneroym_identity::Identity::generate().unwrap();
+        let mut cert = DelegationCertificate::issue(
+            master,
+            instance.public_key(),
+            3600,
+            syneroym_identity::delegation::SCOPE_SERVICE_INSTANCE.to_string(),
+        )
+        .unwrap();
+        cert.temporary_did = service_id.to_string();
+        cert
+    }
+
+    #[tokio::test]
+    async fn an_instance_certificate_round_trips_through_storage() {
+        let storage = Arc::new(MockStorage::new());
+        let registry = EndpointRegistry::new(storage.clone()).await.unwrap();
+        let master = syneroym_identity::Identity::generate().unwrap();
+
+        assert_eq!(registry.instance_cert("svc-1"), None);
+
+        let cert = test_cert(&master, "svc-1");
+        registry.set_instance_cert("svc-1".to_string(), cert.clone()).await.unwrap();
+        assert_eq!(registry.instance_cert("svc-1"), Some(cert.clone()));
+
+        // Persists across a second `EndpointRegistry::new` on the same storage.
+        let registry2 = EndpointRegistry::new(storage).await.unwrap();
+        assert_eq!(registry2.instance_cert("svc-1"), Some(cert));
+    }
+
+    #[tokio::test]
+    async fn removing_a_service_forgets_its_instance_certificate() {
+        let storage = Arc::new(MockStorage::new());
+        let registry = EndpointRegistry::new(storage).await.unwrap();
+        let master = syneroym_identity::Identity::generate().unwrap();
+
+        let cert = test_cert(&master, "svc-1");
+        registry.set_instance_cert("svc-1".to_string(), cert).await.unwrap();
+        assert!(registry.instance_cert("svc-1").is_some());
+
+        registry.remove_instance_cert("svc-1").await.unwrap();
+        assert_eq!(registry.instance_cert("svc-1"), None);
     }
 }

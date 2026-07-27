@@ -173,6 +173,15 @@ impl EndpointStorage for RemoveOwnerFailingStorage {
     async fn remove_owner(&self, _service_id: &str) -> anyhow::Result<()> {
         Err(anyhow::anyhow!("simulated storage failure removing owner"))
     }
+    async fn load_all_certs(&self) -> anyhow::Result<Vec<(String, String)>> {
+        self.inner.load_all_certs().await
+    }
+    async fn save_cert(&self, service_id: &str, certificate_json: &str) -> anyhow::Result<()> {
+        self.inner.save_cert(service_id, certificate_json).await
+    }
+    async fn remove_cert(&self, service_id: &str) -> anyhow::Result<()> {
+        self.inner.remove_cert(service_id).await
+    }
 }
 
 /// A TCP manifest with one real endpoint -- `list()` only surfaces a

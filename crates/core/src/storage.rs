@@ -36,6 +36,15 @@ pub trait EndpointStorage: Send + Sync {
     async fn save_owner(&self, service_id: &str, owner_did: &str) -> Result<()>;
     /// Forget `service_id`'s owner. Idempotent.
     async fn remove_owner(&self, service_id: &str) -> Result<()>;
+
+    /// Load every recorded instance certificate as (`service_id`, certificate
+    /// JSON).
+    async fn load_all_certs(&self) -> Result<Vec<(String, String)>>;
+    /// Record `certificate_json` as the installed instance certificate for
+    /// `service_id` (upsert -- a renewal replaces in place).
+    async fn save_cert(&self, service_id: &str, certificate_json: &str) -> Result<()>;
+    /// Forget `service_id`'s instance certificate. Idempotent.
+    async fn remove_cert(&self, service_id: &str) -> Result<()>;
 }
 
 /// A thread-safe in-memory storage for testing.
@@ -43,6 +52,7 @@ pub trait EndpointStorage: Send + Sync {
 pub struct MockStorage {
     data: Arc<DashMap<(String, String), SubstrateEndpoint>>,
     owners: Arc<DashMap<String, String>>,
+    certs: Arc<DashMap<String, String>>,
 }
 
 impl Default for MockStorage {
@@ -54,7 +64,11 @@ impl Default for MockStorage {
 impl MockStorage {
     #[must_use]
     pub fn new() -> Self {
-        Self { data: Arc::new(DashMap::new()), owners: Arc::new(DashMap::new()) }
+        Self {
+            data: Arc::new(DashMap::new()),
+            owners: Arc::new(DashMap::new()),
+            certs: Arc::new(DashMap::new()),
+        }
     }
 }
 
@@ -84,6 +98,17 @@ impl EndpointStorage for MockStorage {
     }
     async fn remove_owner(&self, service_id: &str) -> Result<()> {
         self.owners.remove(service_id);
+        Ok(())
+    }
+    async fn load_all_certs(&self) -> Result<Vec<(String, String)>> {
+        Ok(self.certs.iter().map(|e| (e.key().clone(), e.value().clone())).collect())
+    }
+    async fn save_cert(&self, service_id: &str, certificate_json: &str) -> Result<()> {
+        self.certs.insert(service_id.to_string(), certificate_json.to_string());
+        Ok(())
+    }
+    async fn remove_cert(&self, service_id: &str) -> Result<()> {
+        self.certs.remove(service_id);
         Ok(())
     }
 }

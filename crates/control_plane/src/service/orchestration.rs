@@ -2304,6 +2304,15 @@ mod tests {
         async fn remove_owner(&self, service_id: &str) -> Result<()> {
             self.inner.remove_owner(service_id).await
         }
+        async fn load_all_certs(&self) -> Result<Vec<(String, String)>> {
+            self.inner.load_all_certs().await
+        }
+        async fn save_cert(&self, service_id: &str, certificate_json: &str) -> Result<()> {
+            self.inner.save_cert(service_id, certificate_json).await
+        }
+        async fn remove_cert(&self, service_id: &str) -> Result<()> {
+            self.inner.remove_cert(service_id).await
+        }
     }
 
     #[tokio::test]
