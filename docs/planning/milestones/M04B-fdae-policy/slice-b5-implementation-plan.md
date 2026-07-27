@@ -1,10 +1,10 @@
 # Slice B5-fdae Implementation Plan — Write-Side Tier 3 (Mode-A Write Authorization)
 
-**Status:** ready to implement, revision 2 (2026-07-26, post independent
-review). Five decisions answered — D-B5-2 (`USING` + `WITH CHECK`), D-B5-3
-(deny closed, no exemption), D-B5-5 (unify `creator_id`), plus two the review
-surfaced: D-B5-6 (`creator_id` immutable on update) and D-B5-7 (CLS on the
-write side).
+**Status:** ✅ Implemented (2026-07-26). Five decisions answered — D-B5-2
+(`USING` + `WITH CHECK`), D-B5-3 (deny closed, no exemption), D-B5-5 (unify
+`creator_id`), plus two the review surfaced: D-B5-6 (`creator_id` immutable
+on update) and D-B5-7 (CLS on the write side). Full verification evidence in
+`status.md`'s Slice B5-fdae section.
 
 **All line anchors are against `568c432`.** Revision 1 was written against
 `0b0e63b`; the branch advanced mid-plan and `host_capabilities.rs` /
@@ -86,9 +86,20 @@ evaluated against the row's post-image instead of its pre-image. Why:
   allowed to create could create a row attributed to someone else. The
   post-image check forbids that. *(For the **update** branch this argument
   does not carry on its own — see D-B5-6.)*
-- **The append-only case still works.** `allows: [data-layer/write]` with
-  `paths: []` (public) passes the post-image check for anything and, because
-  `allows` omits read, grants no read.
+- **A public-`paths` write permission is not automatically a public-read
+  one.** `allows: [data-layer/write]` with `paths: []` passes the post-image
+  check for anything, but *only* for a caller who already holds a capability
+  entailing `data-layer/write` on that resource. That is not "append-only
+  safety" in general: `Ability::entails` makes `write` ⊇ `read` (the tiered
+  `data-layer` hierarchy), so `applicable_permissions` finds this permission
+  applicable to a *read* too, and a caller who holds nothing above
+  `data-layer/read` never reaches it in the first place — but one who holds
+  `write` (or `admin`) gets `paths: []`'s `1=1` for reads as well. Whether
+  this permission ends up leaking read access therefore depends entirely on
+  which capabilities the policy's *other* permissions and the caller's own
+  grants put in play, not on `allows` "omitting read" (omission does not
+  narrow entailment). There is no schema-level way to express "write-only,
+  no read entailment" today.
 - **Zero new policy surface.** No `fdae-v1.json` change, no new `Permission`
   field, no deploy-time validation, no migration.
 
@@ -841,17 +852,26 @@ Budgets row to `task.md`.
 
 - [x] D-B5-2, D-B5-3, D-B5-5 answered (2026-07-26)
 - [x] D-B5-6, D-B5-7 raised by independent review and resolved (2026-07-26)
-- [ ] §3.7's three fixture families fixed **in the same commit** as §3.4
-- [ ] `cargo +nightly fmt --all`
-- [ ] `cargo clippy --workspace --all-targets --all-features` clean
-- [ ] `cargo test --workspace` green
-- [ ] `mise run test:e2e` green
-- [ ] ADR-0017 amendment: write-side model (§2.1 `WITH CHECK`, §4 enforcement,
+- [x] §3.7's fixture families fixed in the same commit as §3.4 -- the actual
+      set was wider than this plan's revision-2 scope named (see `status.md`'s
+      "Fixture remediation" for the two additional families found only by
+      running the suite: `build_hr_svc_proxy_router`/
+      `native_dispatch_query_resolves_a_cross_service_fetch_end_to_end`'s
+      local-service construction in `native_dispatch_identity.rs`, `test_
+      caller`'s `subject_did` fixture bug, `data-layer-test`'s guest export,
+      and Node B's write-only seeding tokens in `federated_fdae_e2e.rs`)
+- [x] `cargo +nightly fmt --all`
+- [x] `cargo clippy --workspace --all-targets --all-features` clean
+- [x] `cargo test --workspace` green (80/80 test-result blocks)
+- [x] `mise run test:e2e` green (12/12)
+- [x] ADR-0017 amendment: write-side model (§2.1 `WITH CHECK`, §4 enforcement,
       §7 stage-4 write deny, CLS on writes), dated, in the Amendments section
-- [ ] `task.md`: B5 marked complete; matrix rows added and the "All nine rows
-      are done" line corrected; Performance Budgets row added; D-04-02-f
-      flipped from ⛳ Open to resolved; the B5 scope line extended to columns
-- [ ] `deferred-backlog.md` per §7
-- [ ] `traceability-matrix.md` M4B row updated
-- [ ] `PERF_SUMMARY.md` write-check numbers
-- [ ] Import cleanup pass over every edited file (AGENTS.md)
+- [x] `task.md`: B5 marked complete; matrix rows added (10-12) and the "All
+      nine rows are done" line corrected (now twelve); Performance Budgets
+      row added; D-04-02-f flipped from ⛳ Open to resolved; the B5 scope
+      line extended to columns
+- [x] `deferred-backlog.md` per §7
+- [x] `traceability-matrix.md` M4B row updated (flipped to Complete -- B5-fdae
+      is the milestone's last slice)
+- [x] `PERF_SUMMARY.md` write-check numbers
+- [x] Import cleanup pass over every edited file (AGENTS.md)

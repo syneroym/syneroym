@@ -408,6 +408,7 @@ pub fn compile_read(
             service_id: service_id.to_string(),
             subject_did: session.subject_did.clone(),
             anchor_did: session.anchor_did.clone(),
+            operation: operation.0.clone(),
             operation_admitted: false,
             path_failed: Some(format!(
                 "policy requires {} remote relationship fetch(es), which compile_read \
@@ -451,6 +452,7 @@ pub fn plan_read(
             collection: collection.to_string(),
             service_id: service_id.to_string(),
             subject_did: session.subject_did.clone(),
+            operation: operation.0.clone(),
             operation_admitted: false,
             path_failed: Some(format!(
                 "no policy definition matches collection '{collection}' and the policy is strict"
@@ -512,6 +514,7 @@ pub fn plan_read(
                     service_id: service_id.to_string(),
                     subject_did: session.subject_did.clone(),
                     held: describe_caps(&holding_caps),
+                    operation: operation.0.clone(),
                     operation_admitted,
                     path_failed: Some(path_failed),
                     compiled_predicate: Some("0=1".to_string()),
@@ -602,10 +605,13 @@ pub fn plan_read(
         subject_did: session.subject_did.clone(),
         anchor_did: session.anchor_did.clone(),
         held: describe_caps(&entitling_caps),
+        operation: operation.0.clone(),
         operation_admitted: true,
         applicable_permissions: applicable.iter().cloned().collect(),
         compiled_predicate: Some(where_clause.clone()),
         rows_reached: None,
+        row_id: None,
+        write_phase: None,
         path_failed,
         caveats_applied,
         remote_fetches: Vec::new(),

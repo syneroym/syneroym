@@ -14,7 +14,10 @@ use tempfile::tempdir;
 
 use crate::{
     QueryAuth, ServiceStore, SqliteStorageProvider, StorageProvider,
-    host_store::{CollectionSchema, DataLayerError, QueryOptions, RecordWriteValue, SqlValue},
+    host_store::{
+        CollectionSchema, DataLayerError, Mutation, PatchMutation, QueryOptions, RecordWriteValue,
+        SqlValue,
+    },
 };
 
 /// `SqlValue` doesn't derive `PartialEq` (only `Clone`/`Debug`/serde) --
@@ -200,6 +203,60 @@ fn write_policy() -> Policy {
     .unwrap()
 }
 
+/// A `paths: []` (public/shared-team) write permission -- every row is
+/// reachable, regardless of who created it. Proves an upsert by a teammate
+/// who legitimately reaches the row cannot steal its `creator_id`
+/// (`ON CONFLICT` no longer refreshes that column).
+fn shared_write_policy() -> Policy {
+    parse_and_validate(
+        r#"{
+            "version": "fdae/v1",
+            "definitions": {
+                "document": {
+                    "table": "documents",
+                    "permissions": {
+                        "manage": {"allows": ["data-layer/write"], "paths": []}
+                    }
+                }
+            }
+        }"#,
+    )
+    .unwrap()
+}
+
+/// Same shape as `write_policy`, plus a CLS `fields.deny: ["ssn"]` on
+/// `manage` -- exercises write-side CLS enforcement.
+fn cls_write_policy() -> Policy {
+    parse_and_validate(
+        r#"{
+            "version": "fdae/v1",
+            "definitions": {
+                "document": {
+                    "table": "documents",
+                    "relations": {"creator": {"target": "user", "join_column": "creator_uuid"}},
+                    "permissions": {
+                        "manage": {
+                            "allows": ["data-layer/write"],
+                            "paths": [["creator", "caller"]],
+                            "fields": {"deny": ["ssn"]}
+                        }
+                    }
+                },
+                "user": {"table": "users", "principal_column": "did"}
+            }
+        }"#,
+    )
+    .unwrap()
+}
+
+fn write_cap(collection: &str) -> Capability {
+    Capability {
+        with: resource(collection),
+        can: Ability(Ability::DATA_LAYER_WRITE.to_string()),
+        caveats: None,
+    }
+}
+
 /// `document.creator` targets a definition (`ghost_user`) whose physical
 /// table is never created via `create_collection` -- ADR-0017's 2026-07-20
 /// `principal_column` amendment's residual "missing target table" case
@@ -227,11 +284,21 @@ async fn seed_creator_docs(store: &dyn ServiceStore) {
     store.create_collection(&plain_schema("users")).await.unwrap();
     store.create_collection(&plain_schema("documents")).await.unwrap();
     store
-        .put("users", &write_value("u-alice", &json!({"did": "did:key:alice"}).to_string()), "svc")
+        .put(
+            "users",
+            &write_value("u-alice", &json!({"did": "did:key:alice"}).to_string()),
+            "svc",
+            None,
+        )
         .await
         .unwrap();
     store
-        .put("users", &write_value("u-bob", &json!({"did": "did:key:bob"}).to_string()), "svc")
+        .put(
+            "users",
+            &write_value("u-bob", &json!({"did": "did:key:bob"}).to_string()),
+            "svc",
+            None,
+        )
         .await
         .unwrap();
     store
@@ -239,6 +306,7 @@ async fn seed_creator_docs(store: &dyn ServiceStore) {
             "documents",
             &write_value("doc-1", &json!({"creator_uuid": "u-alice"}).to_string()),
             "svc",
+            None,
         )
         .await
         .unwrap();
@@ -247,6 +315,7 @@ async fn seed_creator_docs(store: &dyn ServiceStore) {
             "documents",
             &write_value("doc-2", &json!({"creator_uuid": "u-bob"}).to_string()),
             "svc",
+            None,
         )
         .await
         .unwrap();
@@ -308,7 +377,10 @@ async fn resolved_sieve_preempts_compile_read_and_is_used_verbatim() {
         params: Vec::new(),
         masked_fields: Vec::new(),
         where_caveats: Vec::new(),
-        trace: DecisionTrace::default(),
+        trace: DecisionTrace {
+            operation: Ability::DATA_LAYER_READ.to_string(),
+            ..DecisionTrace::default()
+        },
         abac_permissions: Vec::new(),
     };
     let auth_resolved = QueryAuth {
@@ -321,6 +393,52 @@ async fn resolved_sieve_preempts_compile_read_and_is_used_verbatim() {
     let mut ids: Vec<_> = outcome.value.records.iter().map(|r| r.id.clone()).collect();
     ids.sort();
     assert_eq!(ids, vec!["doc-1".to_string(), "doc-2".to_string()]);
+}
+
+/// A pre-resolved sieve is trusted verbatim only for the operation it was
+/// actually compiled for: a sieve whose trace records `data-layer/read` must
+/// not authorize a `put` just because a caller (or a future ingress bug)
+/// handed it through on the write path -- `resolved_sieve` carries no
+/// type-level guarantee it matches the operation being performed, so
+/// `compile_sieve_for_op` must check.
+#[tokio::test]
+async fn a_resolved_sieve_compiled_for_a_different_operation_is_rejected() {
+    let store = setup_store().await;
+    seed_creator_docs(store.as_ref()).await;
+    let policy = single_hop_policy();
+    let alice = session("did:key:alice", vec![write_cap("documents")]);
+
+    // Deliberately mismatched: an always-true sieve, but its trace records
+    // `data-layer/read`, not the `data-layer/write` a `put` requires.
+    let read_sieve = CompiledSieve {
+        where_clause: "1=1".to_string(),
+        params: Vec::new(),
+        masked_fields: Vec::new(),
+        where_caveats: Vec::new(),
+        trace: DecisionTrace {
+            operation: Ability::DATA_LAYER_READ.to_string(),
+            ..DecisionTrace::default()
+        },
+        abac_permissions: Vec::new(),
+    };
+    let auth = QueryAuth {
+        policy: &policy,
+        session: &alice,
+        service_id: SERVICE_ID,
+        resolved_sieve: Some(read_sieve),
+    };
+
+    let err = store
+        .put(
+            "documents",
+            &write_value("doc-mismatch", &json!({"creator_uuid": "u-mallory"}).to_string()),
+            "did:key:alice",
+            Some(&auth),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataLayerError::PermissionDenied));
+    assert!(store.get("documents", "doc-mismatch", None).await.unwrap().value.is_none());
 }
 
 /// The anchor terminal reaching real SQL execution end to end, not just the
@@ -399,7 +517,10 @@ async fn resolved_sieve_preempts_compile_read_for_check_access_too() {
         params: Vec::new(),
         masked_fields: Vec::new(),
         where_caveats: Vec::new(),
-        trace: DecisionTrace::default(),
+        trace: DecisionTrace {
+            operation: Ability::DATA_LAYER_READ.to_string(),
+            ..DecisionTrace::default()
+        },
         abac_permissions: Vec::new(),
     };
     let auth = QueryAuth {
@@ -677,7 +798,12 @@ async fn binding_order_sieve_and_filter_and_cursor_with_caveat_where() {
     store.create_collection(&plain_schema("users")).await.unwrap();
     store.create_collection(&plain_schema("documents")).await.unwrap();
     store
-        .put("users", &write_value("u-alice", &json!({"did": "did:key:alice"}).to_string()), "svc")
+        .put(
+            "users",
+            &write_value("u-alice", &json!({"did": "did:key:alice"}).to_string()),
+            "svc",
+            None,
+        )
         .await
         .unwrap();
     for (id, region, kind) in
@@ -691,6 +817,7 @@ async fn binding_order_sieve_and_filter_and_cursor_with_caveat_where() {
                     &json!({"creator_uuid": "u-alice", "region": region, "kind": kind}).to_string(),
                 ),
                 "svc",
+                None,
             )
             .await
             .unwrap();
@@ -732,6 +859,7 @@ async fn missing_target_table_fails_closed_not_leak() {
             "documents",
             &write_value("doc-1", &json!({"creator_uuid": "u-alice"}).to_string()),
             "svc",
+            None,
         )
         .await
         .unwrap();
@@ -771,7 +899,7 @@ async fn policy_absent_definition_is_unfiltered_when_not_strict() {
     // `Ok(None)` path), which must also be unfiltered, not denied.
     let store = setup_store().await;
     store.create_collection(&plain_schema("unrelated")).await.unwrap();
-    store.put("unrelated", &write_value("r1", "{}"), "svc").await.unwrap();
+    store.put("unrelated", &write_value("r1", "{}"), "svc", None).await.unwrap();
 
     let policy = parse_and_validate(r#"{"version": "fdae/v1", "definitions": {}}"#).unwrap();
     let alice = session("did:key:alice", vec![]);
@@ -817,6 +945,37 @@ async fn differently_cased_collection_name_does_not_bypass_the_sieve() {
         outcome.value.records.is_empty(),
         "a differently-cased collection name must still resolve to the 'document' definition and \
          deny an uncapable caller, not silently return every row"
+    );
+}
+
+/// The write-side twin: `authorize_and_mutate`/`row_reachable` build fresh
+/// SQL that mixes the caller's own casing in `FROM {collection}` with the
+/// policy's casing inside the sieve clause -- this must still resolve to
+/// the same definition and deny an uncapable caller, not silently apply an
+/// unfiltered write because the differently-cased name missed the lookup.
+#[tokio::test]
+async fn differently_cased_collection_name_does_not_bypass_the_write_sieve() {
+    let store = setup_store().await;
+    seed_creator_docs(store.as_ref()).await;
+    let policy = write_policy();
+    let mallory = session("did:key:mallory", vec![]);
+    let auth = QueryAuth {
+        policy: &policy,
+        session: &mallory,
+        service_id: SERVICE_ID,
+        resolved_sieve: None,
+    };
+
+    let err = store
+        .patch("DOCUMENTS", "doc-1", br#"{"nickname":"stolen"}"#, Some(&auth))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataLayerError::PermissionDenied));
+    let record = store.get("documents", "doc-1", None).await.unwrap().value.unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&record.payload).unwrap();
+    assert!(
+        payload.get("nickname").is_none(),
+        "a differently-cased collection name must not bypass the write sieve: {payload:?}"
     );
 }
 
@@ -983,4 +1142,653 @@ async fn strict_mode_never_logs_an_unvalidated_collection_name() {
         !logs_content.contains("injected=true") && !logs_content.contains("FORGED LOG LINE"),
         "the unvalidated collection name must never reach a trace log: logs were: {logs_content}"
     );
+}
+
+// -- Write-side Tier 3 (Mode-A write authorization) -------------------------
+
+#[tokio::test]
+async fn mode_a_write_denies_patch_of_an_unreachable_row() {
+    let store = setup_store().await;
+    seed_creator_docs(store.as_ref()).await;
+    let policy = write_policy();
+    let bob = session("did:key:bob", vec![write_cap("documents")]);
+    let auth =
+        QueryAuth { policy: &policy, session: &bob, service_id: SERVICE_ID, resolved_sieve: None };
+
+    let err = store
+        .patch("documents", "doc-1", br#"{"nickname": "stolen"}"#, Some(&auth))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataLayerError::PermissionDenied));
+    let record = store.get("documents", "doc-1", None).await.unwrap().value.unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&record.payload).unwrap();
+    assert!(payload.get("nickname").is_none(), "a denied patch must not be applied");
+}
+
+#[tokio::test]
+async fn mode_a_write_denies_delete_of_an_unreachable_row() {
+    let store = setup_store().await;
+    seed_creator_docs(store.as_ref()).await;
+    let policy = write_policy();
+    let bob = session("did:key:bob", vec![write_cap("documents")]);
+    let auth =
+        QueryAuth { policy: &policy, session: &bob, service_id: SERVICE_ID, resolved_sieve: None };
+
+    let err = store.delete("documents", "doc-1", Some(&auth)).await.unwrap_err();
+    assert!(matches!(err, DataLayerError::PermissionDenied));
+    assert!(store.get("documents", "doc-1", None).await.unwrap().value.is_some());
+}
+
+#[tokio::test]
+async fn mode_a_write_denies_put_update_of_an_unreachable_row() {
+    let store = setup_store().await;
+    seed_creator_docs(store.as_ref()).await;
+    let policy = write_policy();
+    let bob = session("did:key:bob", vec![write_cap("documents")]);
+    let auth =
+        QueryAuth { policy: &policy, session: &bob, service_id: SERVICE_ID, resolved_sieve: None };
+
+    let err = store
+        .put(
+            "documents",
+            &write_value(
+                "doc-1",
+                &json!({"creator_uuid": "u-alice", "hijacked": true}).to_string(),
+            ),
+            "did:key:bob",
+            Some(&auth),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataLayerError::PermissionDenied));
+    let record = store.get("documents", "doc-1", None).await.unwrap().value.unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&record.payload).unwrap();
+    assert!(payload.get("hijacked").is_none(), "a denied update must not be applied");
+}
+
+#[tokio::test]
+async fn mode_a_write_allows_patch_of_a_reachable_row() {
+    let store = setup_store().await;
+    seed_creator_docs(store.as_ref()).await;
+    let policy = write_policy();
+    let alice = session("did:key:alice", vec![write_cap("documents")]);
+    let auth = QueryAuth {
+        policy: &policy,
+        session: &alice,
+        service_id: SERVICE_ID,
+        resolved_sieve: None,
+    };
+
+    store.patch("documents", "doc-1", br#"{"nickname": "al"}"#, Some(&auth)).await.unwrap();
+    let record = store.get("documents", "doc-1", None).await.unwrap().value.unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&record.payload).unwrap();
+    assert_eq!(payload["nickname"], "al");
+    assert_eq!(payload["creator_uuid"], "u-alice", "sibling fields survive the merge patch");
+}
+
+#[tokio::test]
+async fn put_create_is_allowed_when_the_new_row_is_reachable() {
+    let store = setup_store().await;
+    seed_creator_docs(store.as_ref()).await;
+    let policy = write_policy();
+    let alice = session("did:key:alice", vec![write_cap("documents")]);
+    let auth = QueryAuth {
+        policy: &policy,
+        session: &alice,
+        service_id: SERVICE_ID,
+        resolved_sieve: None,
+    };
+
+    store
+        .put(
+            "documents",
+            &write_value("doc-new", &json!({"creator_uuid": "u-alice"}).to_string()),
+            "did:key:alice",
+            Some(&auth),
+        )
+        .await
+        .unwrap();
+    assert!(store.get("documents", "doc-new", None).await.unwrap().value.is_some());
+}
+
+#[tokio::test]
+async fn put_create_is_denied_when_the_new_row_would_be_unreachable() {
+    let store = setup_store().await;
+    seed_creator_docs(store.as_ref()).await;
+    let policy = write_policy();
+    let alice = session("did:key:alice", vec![write_cap("documents")]);
+    let auth = QueryAuth {
+        policy: &policy,
+        session: &alice,
+        service_id: SERVICE_ID,
+        resolved_sieve: None,
+    };
+
+    let err = store
+        .put(
+            "documents",
+            &write_value("doc-new", &json!({"creator_uuid": "u-bob"}).to_string()),
+            "did:key:alice",
+            Some(&auth),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataLayerError::PermissionDenied));
+    assert!(
+        store.get("documents", "doc-new", None).await.unwrap().value.is_none(),
+        "a denied create must roll back, not leave the row inserted"
+    );
+}
+
+#[tokio::test]
+async fn patch_is_denied_when_the_post_image_escapes_the_callers_reach() {
+    let store = setup_store().await;
+    seed_creator_docs(store.as_ref()).await;
+    let policy = write_policy();
+    let alice = session("did:key:alice", vec![write_cap("documents")]);
+    let auth = QueryAuth {
+        policy: &policy,
+        session: &alice,
+        service_id: SERVICE_ID,
+        resolved_sieve: None,
+    };
+
+    let err = store
+        .patch("documents", "doc-1", br#"{"creator_uuid": "u-bob"}"#, Some(&auth))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataLayerError::PermissionDenied));
+    let record = store.get("documents", "doc-1", None).await.unwrap().value.unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&record.payload).unwrap();
+    assert_eq!(
+        payload["creator_uuid"], "u-alice",
+        "a post-image-denying patch must roll back, not leave the row half-written"
+    );
+}
+
+#[tokio::test]
+async fn batch_mutate_rolls_back_entirely_when_one_mutation_is_unauthorized() {
+    let store = setup_store().await;
+    seed_creator_docs(store.as_ref()).await;
+    let policy = write_policy();
+    let alice = session("did:key:alice", vec![write_cap("documents")]);
+    let auth = QueryAuth {
+        policy: &policy,
+        session: &alice,
+        service_id: SERVICE_ID,
+        resolved_sieve: None,
+    };
+
+    let mutations = vec![
+        Mutation::Patch(PatchMutation {
+            id: "doc-1".to_string(),
+            patch_json: br#"{"nickname":"al"}"#.to_vec(),
+        }),
+        // Denied: doc-2 belongs to bob, unreachable to alice.
+        Mutation::Delete("doc-2".to_string()),
+        Mutation::Put(write_value("doc-new", &json!({"creator_uuid": "u-alice"}).to_string())),
+    ];
+    let err = store
+        .batch_mutate("documents", &mutations, "did:key:alice", Some(&auth))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataLayerError::PermissionDenied));
+
+    let doc1 = store.get("documents", "doc-1", None).await.unwrap().value.unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&doc1.payload).unwrap();
+    assert!(payload.get("nickname").is_none(), "the earlier patch must not have persisted");
+    assert!(
+        store.get("documents", "doc-2", None).await.unwrap().value.is_some(),
+        "bob's row survives"
+    );
+    assert!(
+        store.get("documents", "doc-new", None).await.unwrap().value.is_none(),
+        "the later put must not have persisted"
+    );
+}
+
+/// The existing rollback test above denies on a `Delete`; this pins the
+/// same all-or-nothing guarantee when the denied mutation is instead a
+/// `Put`-create -- a shape that runs through the `USING`/`WITH CHECK` split
+/// differently (no pre-image at all, only a post-image check).
+#[tokio::test]
+async fn batch_mutate_rolls_back_when_the_denied_mutation_is_a_put_create() {
+    let store = setup_store().await;
+    seed_creator_docs(store.as_ref()).await;
+    let policy = write_policy();
+    let alice = session("did:key:alice", vec![write_cap("documents")]);
+    let auth = QueryAuth {
+        policy: &policy,
+        session: &alice,
+        service_id: SERVICE_ID,
+        resolved_sieve: None,
+    };
+
+    let mutations = vec![
+        Mutation::Patch(PatchMutation {
+            id: "doc-1".to_string(),
+            patch_json: br#"{"nickname":"al"}"#.to_vec(),
+        }),
+        // Denied: the post-image is attributed to bob, unreachable to alice.
+        Mutation::Put(write_value("doc-new", &json!({"creator_uuid": "u-bob"}).to_string())),
+    ];
+    let err = store
+        .batch_mutate("documents", &mutations, "did:key:alice", Some(&auth))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataLayerError::PermissionDenied));
+
+    let doc1 = store.get("documents", "doc-1", None).await.unwrap().value.unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&doc1.payload).unwrap();
+    assert!(payload.get("nickname").is_none(), "the earlier patch must not have persisted");
+    assert!(
+        store.get("documents", "doc-new", None).await.unwrap().value.is_none(),
+        "the denied create must not have persisted"
+    );
+}
+
+/// CLS applies inside `batch_mutate` too, not only to a standalone `put`/
+/// `patch`: a mutation that would author or change a masked field is
+/// denied, and rolls back the whole batch alongside it.
+#[tokio::test]
+async fn batch_mutate_enforces_cls_and_rolls_back_the_whole_batch() {
+    let store = setup_store().await;
+    store.create_collection(&plain_schema("users")).await.unwrap();
+    store.create_collection(&plain_schema("documents")).await.unwrap();
+    store
+        .put(
+            "users",
+            &write_value("u-alice", &json!({"did": "did:key:alice"}).to_string()),
+            "svc",
+            None,
+        )
+        .await
+        .unwrap();
+    store
+        .put(
+            "documents",
+            &write_value(
+                "doc-existing",
+                &json!({"creator_uuid": "u-alice", "ssn": "111-11-1111"}).to_string(),
+            ),
+            "svc",
+            None,
+        )
+        .await
+        .unwrap();
+
+    let policy = cls_write_policy();
+    let alice = session("did:key:alice", vec![write_cap("documents")]);
+    let auth = QueryAuth {
+        policy: &policy,
+        session: &alice,
+        service_id: SERVICE_ID,
+        resolved_sieve: None,
+    };
+
+    let mutations = vec![
+        Mutation::Put(write_value(
+            "doc-plain",
+            &json!({"creator_uuid": "u-alice", "note": "no masked field"}).to_string(),
+        )),
+        // Denied: authoring a masked field on create.
+        Mutation::Patch(PatchMutation {
+            id: "doc-existing".to_string(),
+            patch_json: br#"{"ssn": "999-99-9999"}"#.to_vec(),
+        }),
+    ];
+    let err = store
+        .batch_mutate("documents", &mutations, "did:key:alice", Some(&auth))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataLayerError::PermissionDenied));
+
+    assert!(
+        store.get("documents", "doc-plain", None).await.unwrap().value.is_none(),
+        "the earlier, otherwise-valid create must not have persisted"
+    );
+    let existing = store.get("documents", "doc-existing", None).await.unwrap().value.unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&existing.payload).unwrap();
+    assert_eq!(payload["ssn"], "111-11-1111", "the denied masked-field change must roll back");
+}
+
+#[tokio::test]
+async fn a_read_only_permission_does_not_authorize_a_write() {
+    let store = setup_store().await;
+    seed_creator_docs(store.as_ref()).await;
+    let policy = single_hop_policy();
+    let alice = session("did:key:alice", vec![read_cap("documents")]);
+    let auth = QueryAuth {
+        policy: &policy,
+        session: &alice,
+        service_id: SERVICE_ID,
+        resolved_sieve: None,
+    };
+
+    let err =
+        store.patch("documents", "doc-1", br#"{"nickname": "al"}"#, Some(&auth)).await.unwrap_err();
+    assert!(matches!(err, DataLayerError::PermissionDenied));
+}
+
+#[tokio::test]
+async fn writes_are_unfiltered_when_no_definition_matches_the_collection() {
+    let store = setup_store().await;
+    store.create_collection(&plain_schema("unrelated")).await.unwrap();
+    let policy = parse_and_validate(r#"{"version": "fdae/v1", "definitions": {}}"#).unwrap();
+    let alice = session("did:key:alice", vec![]);
+    let auth = QueryAuth {
+        policy: &policy,
+        session: &alice,
+        service_id: SERVICE_ID,
+        resolved_sieve: None,
+    };
+
+    store.put("unrelated", &write_value("r1", "{}"), "did:key:alice", Some(&auth)).await.unwrap();
+    assert!(store.get("unrelated", "r1", None).await.unwrap().value.is_some());
+}
+
+#[tokio::test]
+async fn a_stage4_opted_permission_denies_single_row_writes_closed() {
+    let store = setup_store().await;
+    seed_creator_docs(store.as_ref()).await;
+    let policy = abac_policy();
+    let alice = session("did:key:alice", vec![write_cap("documents")]);
+    let auth = QueryAuth {
+        policy: &policy,
+        session: &alice,
+        service_id: SERVICE_ID,
+        resolved_sieve: None,
+    };
+
+    let err =
+        store.patch("documents", "doc-1", br#"{"nickname": "al"}"#, Some(&auth)).await.unwrap_err();
+    assert!(matches!(err, DataLayerError::PermissionDenied));
+}
+
+/// `CallerContext::service_system`'s empty-capability session (whatever
+/// ingress ultimately synthesizes it) can never satisfy any permission, so
+/// a policy-covered collection becomes unwritable from that
+/// caller. Deliberate -- see the follow-up recorded in the deferred backlog
+/// (threading a real principal into the anonymous-connection and
+/// proxied-WASM ingresses).
+#[tokio::test]
+async fn a_system_caller_write_is_denied_under_a_policy() {
+    let store = setup_store().await;
+    seed_creator_docs(store.as_ref()).await;
+    let policy = write_policy();
+    let system_like = session("system:svc", vec![]);
+    let auth = QueryAuth {
+        policy: &policy,
+        session: &system_like,
+        service_id: SERVICE_ID,
+        resolved_sieve: None,
+    };
+
+    let err = store
+        .put("documents", &write_value("doc-new", "{}"), "system:svc", Some(&auth))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataLayerError::PermissionDenied));
+}
+
+#[tokio::test]
+async fn delete_of_a_missing_row_denies_under_a_policy_but_stays_idempotent_without_one() {
+    let store = setup_store().await;
+    seed_creator_docs(store.as_ref()).await;
+    let policy = write_policy();
+    let alice = session("did:key:alice", vec![write_cap("documents")]);
+    let auth = QueryAuth {
+        policy: &policy,
+        session: &alice,
+        service_id: SERVICE_ID,
+        resolved_sieve: None,
+    };
+
+    let err = store.delete("documents", "does-not-exist", Some(&auth)).await.unwrap_err();
+    assert!(
+        matches!(err, DataLayerError::PermissionDenied),
+        "the pre-image check cannot distinguish absent from present-but-unreachable, and must not \
+         try to -- same CLS-masking existence-oracle refusal, one level up"
+    );
+
+    store.delete("documents", "does-not-exist", None).await.unwrap();
+}
+
+#[tokio::test]
+async fn patch_of_a_missing_row_denies_rather_than_reporting_not_found() {
+    let store = setup_store().await;
+    seed_creator_docs(store.as_ref()).await;
+    let policy = write_policy();
+    let alice = session("did:key:alice", vec![write_cap("documents")]);
+    let auth = QueryAuth {
+        policy: &policy,
+        session: &alice,
+        service_id: SERVICE_ID,
+        resolved_sieve: None,
+    };
+
+    let err =
+        store.patch("documents", "does-not-exist", br#"{"x": 1}"#, Some(&auth)).await.unwrap_err();
+    assert!(matches!(err, DataLayerError::PermissionDenied));
+
+    let err = store.patch("documents", "does-not-exist", br#"{"x": 1}"#, None).await.unwrap_err();
+    assert!(
+        matches!(err, DataLayerError::SchemaViolation(_)),
+        "the policy-absent path keeps today's not-found reporting exactly"
+    );
+}
+
+#[tokio::test]
+async fn an_upsert_by_a_teammate_does_not_steal_creator_id() {
+    let store = setup_store().await;
+    store.create_collection(&plain_schema("documents")).await.unwrap();
+    store.put("documents", &write_value("doc-1", "{}"), "did:key:alice", None).await.unwrap();
+
+    let policy = shared_write_policy();
+    let bob = session("did:key:bob", vec![write_cap("documents")]);
+    let auth =
+        QueryAuth { policy: &policy, session: &bob, service_id: SERVICE_ID, resolved_sieve: None };
+
+    // Bob legitimately reaches the row (the policy's `paths: []` is public)
+    // and successfully overwrites its payload -- but must not become its
+    // `creator_id`.
+    store
+        .put(
+            "documents",
+            &write_value("doc-1", r#"{"edited_by":"bob"}"#),
+            "did:key:bob",
+            Some(&auth),
+        )
+        .await
+        .unwrap();
+    let record = store.get("documents", "doc-1", None).await.unwrap().value.unwrap();
+    assert_eq!(record.creator_id, "did:key:alice", "an upsert must not reassign creator_id");
+    let payload: serde_json::Value = serde_json::from_slice(&record.payload).unwrap();
+    assert_eq!(payload["edited_by"], "bob", "the payload itself is legitimately updated");
+}
+
+#[tokio::test]
+async fn a_masked_field_cannot_be_written_on_create() {
+    let store = setup_store().await;
+    seed_creator_docs(store.as_ref()).await;
+    let policy = cls_write_policy();
+    let alice = session("did:key:alice", vec![write_cap("documents")]);
+    let auth = QueryAuth {
+        policy: &policy,
+        session: &alice,
+        service_id: SERVICE_ID,
+        resolved_sieve: None,
+    };
+
+    let err = store
+        .put(
+            "documents",
+            &write_value(
+                "doc-new",
+                &json!({"creator_uuid": "u-alice", "ssn": "999-99-9999"}).to_string(),
+            ),
+            "did:key:alice",
+            Some(&auth),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataLayerError::PermissionDenied));
+    assert!(store.get("documents", "doc-new", None).await.unwrap().value.is_none());
+}
+
+#[tokio::test]
+async fn a_masked_fields_value_cannot_be_changed_on_update() {
+    let store = setup_store().await;
+    store.create_collection(&plain_schema("users")).await.unwrap();
+    store.create_collection(&plain_schema("documents")).await.unwrap();
+    store
+        .put(
+            "users",
+            &write_value("u-alice", &json!({"did": "did:key:alice"}).to_string()),
+            "svc",
+            None,
+        )
+        .await
+        .unwrap();
+    store
+        .put(
+            "documents",
+            &write_value(
+                "doc-changed",
+                &json!({"creator_uuid": "u-alice", "ssn": "111-11-1111"}).to_string(),
+            ),
+            "svc",
+            None,
+        )
+        .await
+        .unwrap();
+    store
+        .put(
+            "documents",
+            &write_value("doc-added", &json!({"creator_uuid": "u-alice"}).to_string()),
+            "svc",
+            None,
+        )
+        .await
+        .unwrap();
+
+    let policy = cls_write_policy();
+    let alice = session("did:key:alice", vec![write_cap("documents")]);
+    let auth = QueryAuth {
+        policy: &policy,
+        session: &alice,
+        service_id: SERVICE_ID,
+        resolved_sieve: None,
+    };
+
+    // Changing a masked field's existing value is denied, and rolled back.
+    let err = store
+        .patch("documents", "doc-changed", br#"{"ssn": "222-22-2222"}"#, Some(&auth))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataLayerError::PermissionDenied));
+    let record = store.get("documents", "doc-changed", None).await.unwrap().value.unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&record.payload).unwrap();
+    assert_eq!(payload["ssn"], "111-11-1111", "a denied masked-field change must roll back");
+
+    // Adding a masked field that wasn't there before is equally denied.
+    let err = store
+        .patch("documents", "doc-added", br#"{"ssn": "333-33-3333"}"#, Some(&auth))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataLayerError::PermissionDenied));
+    let record = store.get("documents", "doc-added", None).await.unwrap().value.unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&record.payload).unwrap();
+    assert!(payload.get("ssn").is_none(), "a denied masked-field addition must roll back");
+
+    // Removing a previously-present masked field is equally denied.
+    let err = store
+        .patch("documents", "doc-changed", br#"{"ssn": null}"#, Some(&auth))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataLayerError::PermissionDenied));
+    let record = store.get("documents", "doc-changed", None).await.unwrap().value.unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&record.payload).unwrap();
+    assert_eq!(payload["ssn"], "111-11-1111", "a denied masked-field removal must roll back");
+}
+
+/// The consequence `data-layer.wit`'s `put` doc note now states explicitly:
+/// under a CLS-active policy, `put` (a full-payload replace, unlike `patch`'s
+/// merge) can only ever succeed on a row carrying a masked value if the
+/// caller resends that value completely unchanged. In practice a caller's
+/// own read of that row already had the field stripped
+/// (`strip_masked_fields`), so the ordinary read-modify-write loop always
+/// produces a post-image *missing* the masked field -- a change, hence
+/// denied -- leaving `patch` as the only usable update path for such a row.
+#[tokio::test]
+async fn a_masked_fields_value_survives_put_only_verbatim_never_via_read_modify_write() {
+    let store = setup_store().await;
+    store.create_collection(&plain_schema("users")).await.unwrap();
+    store.create_collection(&plain_schema("documents")).await.unwrap();
+    store
+        .put(
+            "users",
+            &write_value("u-alice", &json!({"did": "did:key:alice"}).to_string()),
+            "svc",
+            None,
+        )
+        .await
+        .unwrap();
+    store
+        .put(
+            "documents",
+            &write_value(
+                "doc-1",
+                &json!({"creator_uuid": "u-alice", "ssn": "111-11-1111", "note": "v1"}).to_string(),
+            ),
+            "svc",
+            None,
+        )
+        .await
+        .unwrap();
+
+    let policy = cls_write_policy();
+    let alice = session("did:key:alice", vec![write_cap("documents")]);
+    let auth = QueryAuth {
+        policy: &policy,
+        session: &alice,
+        service_id: SERVICE_ID,
+        resolved_sieve: None,
+    };
+
+    // Resending the masked field's value completely unchanged succeeds --
+    // `put` replaces the whole payload, but `ssn` didn't actually change.
+    store
+        .put(
+            "documents",
+            &write_value(
+                "doc-1",
+                &json!({"creator_uuid": "u-alice", "ssn": "111-11-1111", "note": "v2"}).to_string(),
+            ),
+            "did:key:alice",
+            Some(&auth),
+        )
+        .await
+        .unwrap();
+
+    // The realistic caller shape: read the row back (masked fields already
+    // stripped by the CLS-aware read path), edit the visible fields, and
+    // `put` the result. The post-image is now missing `ssn` entirely -- a
+    // change from the stored pre-image -- so this is denied, not merely
+    // "not updated."
+    let stripped_read = json!({"creator_uuid": "u-alice", "note": "v3"});
+    let err = store
+        .put(
+            "documents",
+            &write_value("doc-1", &stripped_read.to_string()),
+            "did:key:alice",
+            Some(&auth),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataLayerError::PermissionDenied));
+    let record = store.get("documents", "doc-1", None).await.unwrap().value.unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&record.payload).unwrap();
+    assert_eq!(payload["note"], "v2", "a denied put must roll back to the last successful write");
+    assert_eq!(payload["ssn"], "111-11-1111");
 }

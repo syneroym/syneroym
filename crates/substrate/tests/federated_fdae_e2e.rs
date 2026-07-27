@@ -331,6 +331,19 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
     );
     hr_deployer.connect().await.expect("failed to connect to node A for deploy");
 
+    // `seed` (`paths: []`, public) lets the deploying owner's own
+    // `substrate/admin` capability seed fixture rows -- the write-side gate
+    // now covers writes too, and `view_self` (read-only) doesn't cover
+    // `data-layer/write`. Realistic (a service owner seeding its own data).
+    // This does *not* widen the read assertions below because `allows:
+    // [data-layer/write]` entails a read check too (`write` ⊇ `read`, the
+    // tiered hierarchy) -- "omits read" does not narrow entailment. It's
+    // safe here only because the readers exercised further down never
+    // present a capability above `data-layer/read` on this resource, so
+    // they never become entitled to `seed` in the first place; it is not a
+    // property of this permission shape in general (contrast Node B's
+    // `alice_data_client` below, which deliberately keeps its write-or-
+    // better token off the query connection for exactly this reason).
     let hr_policy = r#"{
         "version": "fdae/v1",
         "definitions": {
@@ -339,7 +352,8 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
                 "principal_column": "did",
                 "resolvable_without_capability": true,
                 "permissions": {
-                    "view_self": {"allows": ["data-layer/read"], "paths": [["caller"]]}
+                    "view_self": {"allows": ["data-layer/read"], "paths": [["caller"]]},
+                    "seed": {"allows": ["data-layer/write"], "paths": []}
                 }
             }
         }
@@ -418,7 +432,8 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
                         "expected_asserter_did": "{expected_asserter_did}"
                     }}}},
                     "permissions": {{
-                        "view": {{"allows": ["data-layer/read"], "paths": [["owner", "anchor"]]}}
+                        "view": {{"allows": ["data-layer/read"], "paths": [["owner", "anchor"]]}},
+                        "seed": {{"allows": ["data-layer/write"], "paths": []}}
                     }}
                 }}
             }}
@@ -435,12 +450,40 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
     .await;
 
     // Same reasoning as `hr_data_client` above: seed through a client
-    // targeting `app_service_id` itself, not `node_b.did()`.
+    // targeting `app_service_id` itself, not `node_b.did()`. Node B is
+    // unowned (no `admin_ucan_root`), so -- unlike Node A's `hr_data_client`
+    // -- alice holds no capability at all without self-issuing one; a
+    // *write-only* token, trusted per ADR-0015 A6 (she owns the service she
+    // deployed), entitles the "seed" permission below. Deliberately a
+    // separate token from `alice_query_client`'s read-only one further
+    // down, on a separate connection -- `data-layer/write` entails
+    // `data-layer/read` (the tiered hierarchy), so a write capability
+    // presented on the *query* connection would make "seed"'s public
+    // `paths: []` applicable there too, leaking every document instead of
+    // just alice's own.
+    let seed_resource = ResourceUri(format!(
+        "{}/collection/documents",
+        ResourceUri::service(&app_service_id, &app_service_id).0
+    ));
+    let seed_token = CapabilityToken::issue(
+        &alice_identity,
+        &alice_did,
+        vec![Capability {
+            with: seed_resource,
+            can: Ability(Ability::DATA_LAYER_WRITE.to_string()),
+            caveats: None,
+        }],
+        Map::new(),
+        3600,
+        vec![],
+    )
+    .expect("failed to self-issue the seeding capability token");
     let mut alice_data_client = SyneroymClient::new_with_identity(
         app_service_id.clone(),
         node_b.registry_url.clone(),
         Identity::from_bytes(&alice_identity.to_bytes()),
-    );
+    )
+    .with_ucan(seed_token);
     alice_data_client.connect().await.expect("failed to connect to node B's app service");
 
     alice_data_client
@@ -565,7 +608,8 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
                         "expected_asserter_did": "did:key:z6MkNotTheRealHrSvcNode"
                     }}}},
                     "permissions": {{
-                        "view": {{"allows": ["data-layer/read"], "paths": [["owner", "anchor"]]}}
+                        "view": {{"allows": ["data-layer/read"], "paths": [["owner", "anchor"]]}},
+                        "seed": {{"allows": ["data-layer/write"], "paths": []}}
                     }}
                 }}
             }}
@@ -601,11 +645,33 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
     )
     .await;
 
+    // Write-only self-issued token, same reasoning as `alice_data_client`
+    // above: a separate connection from `bad_query_client`'s read-only one
+    // below, so "seed"'s public `paths: []` never becomes reachable for a
+    // read.
+    let bad_seed_resource = ResourceUri(format!(
+        "{}/collection/documents",
+        ResourceUri::service(&bad_app_service_id, &bad_app_service_id).0
+    ));
+    let bad_seed_token = CapabilityToken::issue(
+        &alice_identity_2,
+        &alice_did_2,
+        vec![Capability {
+            with: bad_seed_resource,
+            can: Ability(Ability::DATA_LAYER_WRITE.to_string()),
+            caveats: None,
+        }],
+        Map::new(),
+        3600,
+        vec![],
+    )
+    .expect("failed to self-issue the mismatch seeding capability token");
     let mut bad_app_data_client = SyneroymClient::new_with_identity(
         bad_app_service_id.clone(),
         node_b.registry_url.clone(),
         Identity::from_bytes(&alice_identity_2.to_bytes()),
-    );
+    )
+    .with_ucan(bad_seed_token);
     bad_app_data_client
         .connect()
         .await

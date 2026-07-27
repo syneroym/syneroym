@@ -49,7 +49,12 @@ fn bench_data_layer_crud(c: &mut Criterion) {
     c.bench_function("data_layer_put", |b| {
         b.to_async(&runtime).iter(|| async {
             store
-                .put("bench", black_box(&write_value("p1", r#"{"age": 30}"#)), "bench-creator")
+                .put(
+                    "bench",
+                    black_box(&write_value("p1", r#"{"age": 30}"#)),
+                    "bench-creator",
+                    None,
+                )
                 .await
                 .unwrap();
         });
@@ -57,7 +62,7 @@ fn bench_data_layer_crud(c: &mut Criterion) {
 
     // Benchmark: get (single record, warm reader pool)
     runtime
-        .block_on(store.put("bench", &write_value("g1", r#"{"age": 30}"#), "bench-creator"))
+        .block_on(store.put("bench", &write_value("g1", r#"{"age": 30}"#), "bench-creator", None))
         .unwrap();
     c.bench_function("data_layer_get", |b| {
         b.to_async(&runtime).iter(|| async {
@@ -72,6 +77,7 @@ fn bench_data_layer_crud(c: &mut Criterion) {
                 "bench",
                 &write_value(&format!("q{i}"), r#"{"kind": "target"}"#),
                 "c",
+                None,
             ))
             .unwrap();
     }
@@ -91,7 +97,10 @@ fn bench_data_layer_crud(c: &mut Criterion) {
         (0..50).map(|i| Mutation::Put(write_value(&format!("b{i}"), "{}"))).collect();
     c.bench_function("data_layer_batch_mutate_50", |b| {
         b.to_async(&runtime).iter(|| async {
-            store.batch_mutate("bench", black_box(&mutations), "bench-creator").await.unwrap();
+            store
+                .batch_mutate("bench", black_box(&mutations), "bench-creator", None)
+                .await
+                .unwrap();
         });
     });
 

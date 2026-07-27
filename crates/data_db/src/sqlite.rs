@@ -16,7 +16,7 @@ use regex::Regex;
 use rusqlite::{Connection, Error as SqliteError, params, types::Value as SqlValue};
 use serde_json::{Map, Value};
 use syneroym_data_keystore::{KeyStore, KeyStoreError};
-use syneroym_fdae::{CompiledSieve, Mode, compile_read};
+use syneroym_fdae::{CompiledSieve, DecisionTrace, Mode, compile_read};
 use syneroym_ucan::Ability;
 use tokio::{
     sync::{mpsc, oneshot},
@@ -173,11 +173,15 @@ fn do_put(
         .map_err(map_rusqlite_error)?;
     let created_at = existing_created_at.unwrap_or(now);
 
+    // `creator_id` is create-time-only, like `created_at` above -- an
+    // upsert must not let a later writer reassign a row's identity anchor
+    // to themselves, which would silently steal ownership out from under a
+    // `principal_column: "creator_id"` policy.
     conn.execute(
         &format!(
             "INSERT INTO {collection} (id, payload, creator_id, created_at, updated_at) VALUES \
              (?1, ?2, ?3, ?4, ?5) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, \
-             creator_id = excluded.creator_id, updated_at = excluded.updated_at"
+             updated_at = excluded.updated_at"
         ),
         params![value.id, payload_text, creator_id, created_at, now],
     )
@@ -292,6 +296,7 @@ fn do_batch_mutate(
     collection: &str,
     mutations: &[host_store::Mutation],
     creator_id: &str,
+    sieve: Option<&CompiledSieve>,
 ) -> Result<(), host_store::DataLayerError> {
     validate_identifier(collection)?;
     if mutations.len() > MAX_BATCH_SIZE {
@@ -302,15 +307,290 @@ fn do_batch_mutate(
     let tx = conn.transaction().map_err(map_rusqlite_error)?;
     for mutation in mutations {
         match mutation {
-            host_store::Mutation::Put(value) => do_put(&tx, collection, value, creator_id)?,
-            host_store::Mutation::Patch(patch_mutation) => {
-                do_patch(&tx, collection, &patch_mutation.id, &patch_mutation.patch_json)?
+            host_store::Mutation::Put(value) => {
+                // Only probed under a sieve (decides the create-vs-update
+                // branch of the `USING`/`WITH CHECK` split below) --
+                // `authorize_and_mutate` ignores `require_pre_image` entirely
+                // on the policy-absent path, so there is nothing to gain
+                // from paying this query when `sieve` is `None`.
+                let existed =
+                    if sieve.is_some() { row_exists(&tx, collection, &value.id)? } else { false };
+                authorize_and_mutate(
+                    &tx,
+                    collection,
+                    &value.id,
+                    sieve,
+                    existed,
+                    true,
+                    false,
+                    |c| do_put(c, collection, value, creator_id),
+                )?;
             }
-            host_store::Mutation::Delete(id) => do_delete(&tx, collection, id)?,
+            host_store::Mutation::Patch(patch_mutation) => {
+                authorize_and_mutate(
+                    &tx,
+                    collection,
+                    &patch_mutation.id,
+                    sieve,
+                    true,
+                    true,
+                    false,
+                    |c| do_patch(c, collection, &patch_mutation.id, &patch_mutation.patch_json),
+                )?;
+            }
+            host_store::Mutation::Delete(id) => {
+                authorize_and_mutate(&tx, collection, id, sieve, true, false, false, |c| {
+                    do_delete(c, collection, id)
+                })?;
+            }
         }
     }
     tx.commit().map_err(map_rusqlite_error)?;
     Ok(())
+}
+
+/// The unsieved create-vs-update probe: decides *which* rule applies
+/// (pre-image required, or not), not whether the write is allowed --
+/// both branches still end in `PermissionDenied` on failure, so this leaks
+/// nothing beyond "id `X` was free", inherent to any create-by-id API.
+fn row_exists(
+    conn: &Connection,
+    collection: &str,
+    id: &str,
+) -> Result<bool, host_store::DataLayerError> {
+    conn.query_row(
+        &format!("SELECT EXISTS(SELECT 1 FROM {collection} WHERE id = ?1)"),
+        params![id],
+        |row| row.get::<_, bool>(0),
+    )
+    .map_err(map_rusqlite_error)
+}
+
+/// Reads a record's raw JSON payload directly, bypassing the sieve -- only
+/// ever called from `authorize_and_mutate` after the relevant reachability
+/// check has already run (or for a create, where there is no pre-image).
+fn read_payload(
+    conn: &Connection,
+    collection: &str,
+    id: &str,
+) -> Result<Vec<u8>, host_store::DataLayerError> {
+    let payload: String = conn
+        .query_row(&format!("SELECT payload FROM {collection} WHERE id = ?1"), params![id], |row| {
+            row.get(0)
+        })
+        .map_err(map_rusqlite_error)?;
+    Ok(payload.into_bytes())
+}
+
+/// Whether every masked field's value is unchanged between a write's
+/// pre- and post-image (CLS extended to the write path). `pre: None` means
+/// a create -- any masked key present
+/// in `post` is a rejection, since a caller who cannot read a field cannot
+/// author it either. Fail-closed on a payload that won't parse as a JSON
+/// object while a non-empty mask applies, mirroring
+/// `auth::strip_masked_fields`'s own rule.
+fn masked_fields_unchanged(
+    pre: Option<&[u8]>,
+    post: &[u8],
+    masked: &[String],
+) -> Result<bool, host_store::DataLayerError> {
+    // Fail-closed as `PermissionDenied`, not `SchemaViolation` -- this is
+    // the same envelope `row_reachable` folds every abort into, and a
+    // caller must not be able to tell "CLS couldn't evaluate" apart from
+    // "CLS said no" (a distinguishable error is exactly the existence
+    // oracle CLS-masking already refuses to provide elsewhere in this
+    // file). A row stored as a non-object payload (a lifecycle write, or
+    // written before the policy existed) becomes unwritable under a
+    // CLS-active policy either way; the point is that it fails the same
+    // way a denial does.
+    fn as_object(payload: &[u8]) -> Result<Map<String, Value>, host_store::DataLayerError> {
+        match serde_json::from_slice(payload) {
+            Ok(Value::Object(map)) => Ok(map),
+            _ => Err(host_store::DataLayerError::PermissionDenied),
+        }
+    }
+
+    let post_map = as_object(post)?;
+    let pre_map = pre.map(as_object).transpose()?;
+    for field in masked {
+        let post_val = post_map.get(field);
+        let unchanged = match &pre_map {
+            None => post_val.is_none(),
+            Some(pre_map) => pre_map.get(field) == post_val,
+        };
+        if !unchanged {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Evaluates a `data-layer/write` sieve against exactly one row id on `conn`.
+/// The sieve is compiled in `Mode::Filter` (once per call, not per row), so
+/// the id predicate is appended here -- equivalent to `Mode::PointInTime`,
+/// without recompiling for every mutation in a batch.
+///
+/// Fail-closed: a watchdog interrupt, a malformed caveat, or a missing table
+/// is `Ok(false)`, never a silent pass. Same contract as `do_check_access`.
+fn row_reachable(
+    conn: &Connection,
+    collection: &str,
+    id: &str,
+    sieve: &CompiledSieve,
+    phase: &'static str,
+    trace_allows: bool,
+) -> Result<bool, host_store::DataLayerError> {
+    let outcome: Result<rusqlite::Result<bool>, host_store::DataLayerError> = (|| {
+        let _watchdog = install_watchdog(conn)?;
+        let (clause, mut params) = merge_sieve(sieve)?;
+        params.push(SqlValue::Text(id.to_string()));
+        Ok(conn.query_row(
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM {collection} WHERE ({clause}) AND {collection}.id = \
+                 ?)"
+            ),
+            rusqlite::params_from_iter(params.iter()),
+            |row| row.get::<_, bool>(0),
+        ))
+    })();
+
+    let allowed = matches!(outcome, Ok(Ok(true)));
+    if !allowed || trace_allows {
+        // Clone only the trace, not the whole compiled sieve (SQL text,
+        // bound params, caveats) -- `emit_mode_a_execution_trace` never
+        // reads anything else.
+        let mut trace = sieve.trace.clone();
+        trace.row_id = Some(id.to_string());
+        trace.write_phase = Some(phase.to_string());
+        emit_mode_a_execution_trace(
+            Some(&trace),
+            match &outcome {
+                Ok(Ok(true)) => ModeAOutcome::Matched,
+                Ok(Ok(false)) => ModeAOutcome::NotMatched,
+                Ok(Err(e)) => ModeAOutcome::Aborted(format!("{e}")),
+                Err(e) => ModeAOutcome::Aborted(format!("{e:?}")),
+            },
+        );
+    }
+    Ok(allowed)
+}
+
+/// One authorized single-row mutation (ADR-0017 §4 Mode A, write side).
+/// `sieve == None` (policy-absent, or an exempt caller) is today's
+/// unfiltered behavior, unchanged. `conn` is always inside a transaction the
+/// caller owns, so an `Err` here rolls the mutation back.
+#[allow(clippy::too_many_arguments)]
+fn authorize_and_mutate(
+    conn: &Connection,
+    collection: &str,
+    id: &str,
+    sieve: Option<&CompiledSieve>,
+    require_pre_image: bool,
+    check_post_image: bool,
+    trace_allows: bool,
+    mutate: impl FnOnce(&Connection) -> Result<(), host_store::DataLayerError>,
+) -> Result<(), host_store::DataLayerError> {
+    validate_identifier(collection)?;
+    let Some(sieve) = sieve else { return mutate(conn) };
+
+    // No candidate-row batch exists mid-mutation, so the stage-4 after-step
+    // cannot run -- deny closed, same rule as `do_delete_many`/`do_aggregate`.
+    if !sieve.abac_permissions.is_empty() {
+        return Err(host_store::DataLayerError::PermissionDenied);
+    }
+
+    // USING half: may the caller reach the row as it stands today? This
+    // subsumes existence -- a `delete`/`patch` of a row that does not exist
+    // under a policy therefore denies rather than reporting not-found, since
+    // this check cannot distinguish "absent" from "present but unreachable"
+    // without becoming the existence oracle CLS-masking already refuses to
+    // provide.
+    if require_pre_image && !row_reachable(conn, collection, id, sieve, "pre-image", trace_allows)?
+    {
+        return Err(host_store::DataLayerError::PermissionDenied);
+    }
+
+    // Capture the pre-image payload only when CLS is active *and* there's a
+    // post-image check to compare it against -- `delete` (`require_pre_image
+    // && !check_post_image`) never reads `pre_payload` below, so paying for
+    // it there would be a wasted read on every delete under a CLS policy.
+    let pre_payload = if !sieve.masked_fields.is_empty() && require_pre_image && check_post_image {
+        Some(read_payload(conn, collection, id)?)
+    } else {
+        None
+    };
+
+    mutate(conn)?;
+
+    // WITH CHECK half: may the caller reach the row they just wrote? Rejects
+    // both "create a row you could never see" and "rewrite a row out of
+    // your own reach". `Err` rolls the caller's transaction back.
+    if check_post_image && !row_reachable(conn, collection, id, sieve, "post-image", trace_allows)?
+    {
+        return Err(host_store::DataLayerError::PermissionDenied);
+    }
+
+    // A field the caller cannot read is one they cannot write.
+    if !sieve.masked_fields.is_empty() && check_post_image {
+        let post = read_payload(conn, collection, id)?;
+        if !masked_fields_unchanged(pre_payload.as_deref(), &post, &sieve.masked_fields)? {
+            return Err(host_store::DataLayerError::PermissionDenied);
+        }
+    }
+    Ok(())
+}
+
+/// Transaction wrapper for an authorized `put`. Opens a transaction only
+/// when a sieve is present, so the policy-absent hot path pays nothing new.
+fn do_authorized_put(
+    conn: &mut Connection,
+    collection: &str,
+    value: &host_store::RecordWriteValue,
+    creator_id: &str,
+    sieve: Option<&CompiledSieve>,
+) -> Result<(), host_store::DataLayerError> {
+    let Some(sieve) = sieve else { return do_put(conn, collection, value, creator_id) };
+    validate_identifier(collection)?;
+    let tx = conn.transaction().map_err(map_rusqlite_error)?;
+    let existed = row_exists(&tx, collection, &value.id)?;
+    authorize_and_mutate(&tx, collection, &value.id, Some(sieve), existed, true, true, |c| {
+        do_put(c, collection, value, creator_id)
+    })?;
+    tx.commit().map_err(map_rusqlite_error)
+}
+
+/// Transaction wrapper for an authorized `patch`. See `do_authorized_put`.
+fn do_authorized_patch(
+    conn: &mut Connection,
+    collection: &str,
+    id: &str,
+    patch_json: &[u8],
+    sieve: Option<&CompiledSieve>,
+) -> Result<(), host_store::DataLayerError> {
+    let Some(sieve) = sieve else { return do_patch(conn, collection, id, patch_json) };
+    validate_identifier(collection)?;
+    let tx = conn.transaction().map_err(map_rusqlite_error)?;
+    authorize_and_mutate(&tx, collection, id, Some(sieve), true, true, true, |c| {
+        do_patch(c, collection, id, patch_json)
+    })?;
+    tx.commit().map_err(map_rusqlite_error)
+}
+
+/// Transaction wrapper for an authorized `delete`. See `do_authorized_put`.
+/// No `WITH CHECK` half -- a deleted row has no post-image to evaluate.
+fn do_authorized_delete(
+    conn: &mut Connection,
+    collection: &str,
+    id: &str,
+    sieve: Option<&CompiledSieve>,
+) -> Result<(), host_store::DataLayerError> {
+    let Some(sieve) = sieve else { return do_delete(conn, collection, id) };
+    validate_identifier(collection)?;
+    let tx = conn.transaction().map_err(map_rusqlite_error)?;
+    authorize_and_mutate(&tx, collection, id, Some(sieve), true, false, true, |c| {
+        do_delete(c, collection, id)
+    })?;
+    tx.commit().map_err(map_rusqlite_error)
 }
 
 /// `sieve` is `Some` only for `Mode::PointInTime{id}` (`compile_read` already
@@ -357,7 +637,7 @@ fn do_get(
         })();
 
     emit_mode_a_execution_trace(
-        sieve,
+        sieve.map(|s| &s.trace),
         match &outcome {
             Ok(Ok(_)) => ModeAOutcome::Matched,
             Ok(Err(SqliteError::QueryReturnedNoRows)) => ModeAOutcome::NotMatched,
@@ -409,9 +689,9 @@ enum ModeAOutcome {
 /// the only place "rows not reached" (an admitted operation whose compiled
 /// predicate matched no row) -- or a policy-evaluation abort -- becomes
 /// knowable.
-fn emit_mode_a_execution_trace(sieve: Option<&CompiledSieve>, outcome: ModeAOutcome) {
-    let Some(s) = sieve else { return };
-    let mut trace = s.trace.clone();
+fn emit_mode_a_execution_trace(trace: Option<&DecisionTrace>, outcome: ModeAOutcome) {
+    let Some(trace) = trace else { return };
+    let mut trace = trace.clone();
     match outcome {
         ModeAOutcome::Matched => trace.rows_reached = Some(true),
         ModeAOutcome::NotMatched => {
@@ -573,7 +853,7 @@ fn do_check_access(
     })();
 
     emit_mode_a_execution_trace(
-        sieve,
+        sieve.map(|s| &s.trace),
         match &outcome {
             Ok(Ok(true)) => ModeAOutcome::Matched,
             Ok(Ok(false)) => ModeAOutcome::NotMatched,
@@ -847,13 +1127,25 @@ fn compile_sieve_for_op(
     mode: Mode,
 ) -> Result<Option<CompiledSieve>, host_store::DataLayerError> {
     let Some(auth) = auth else { return Ok(None) };
-    // Slice B3 Phase 4: a caller that already ran `plan_read` + the
-    // `resolve_fetches` orchestration + `finalize` (because the policy's
-    // selected paths needed a remote relationship fetch) hands the
-    // already-compiled sieve straight through -- `compile_read` below would
-    // otherwise fail closed on exactly that case (it's the local-only
-    // entry point, unchanged since Phase 2/3).
+    // A caller that already ran `plan_read` + the `resolve_fetches`
+    // orchestration + `finalize` (because the policy's selected paths
+    // needed a remote relationship fetch) hands the already-compiled sieve
+    // straight through -- `compile_read` below would otherwise fail closed
+    // on exactly that case (it's the local-only entry point).
+    //
+    // Asserted, not assumed: `QueryAuth` carries no type-level guarantee
+    // that a pre-resolved sieve was compiled for *this* `operation` --
+    // `resolved_sieve` is `pub` on a type callers outside this module can
+    // construct, and both current ingresses populate it unconditionally
+    // (not only for the cross-service-fetch case), so a mismatch would
+    // otherwise pass through silently and authorize `operation` against a
+    // predicate compiled for a different (possibly wider) ability. Every
+    // sieve records the ability it was compiled for in its own trace, so
+    // the check is one comparison, not a new field.
     if let Some(sieve) = &auth.resolved_sieve {
+        if sieve.trace.operation != operation {
+            return Err(host_store::DataLayerError::PermissionDenied);
+        }
         return Ok(Some(sieve.clone()));
     }
     // Validated here, before `collection` reaches `compile_read` and a
@@ -1163,17 +1455,22 @@ enum DbCommand {
         collection: String,
         value: host_store::RecordWriteValue,
         creator_id: String,
+        // Boxed for the same `clippy::large_enum_variant` reason `DeleteMany`
+        // already documents below.
+        sieve: Option<Box<CompiledSieve>>,
         resp: oneshot::Sender<Result<(), host_store::DataLayerError>>,
     },
     Patch {
         collection: String,
         id: String,
         patch_json: Vec<u8>,
+        sieve: Option<Box<CompiledSieve>>,
         resp: oneshot::Sender<Result<(), host_store::DataLayerError>>,
     },
     Delete {
         collection: String,
         id: String,
+        sieve: Option<Box<CompiledSieve>>,
         resp: oneshot::Sender<Result<(), host_store::DataLayerError>>,
     },
     DeleteMany {
@@ -1190,6 +1487,7 @@ enum DbCommand {
         collection: String,
         mutations: Vec<host_store::Mutation>,
         creator_id: String,
+        sieve: Option<Box<CompiledSieve>>,
         resp: oneshot::Sender<Result<(), host_store::DataLayerError>>,
     },
 }
@@ -1268,14 +1566,27 @@ fn run_writer_loop(
             DbCommand::ExecuteDdl { sql, resp } => {
                 let _ = resp.send(do_execute_ddl(&conn, &sql));
             }
-            DbCommand::Put { collection, value, creator_id, resp } => {
-                let _ = resp.send(do_put(&conn, &collection, &value, &creator_id));
+            DbCommand::Put { collection, value, creator_id, sieve, resp } => {
+                let _ = resp.send(do_authorized_put(
+                    &mut conn,
+                    &collection,
+                    &value,
+                    &creator_id,
+                    sieve.as_deref(),
+                ));
             }
-            DbCommand::Patch { collection, id, patch_json, resp } => {
-                let _ = resp.send(do_patch(&conn, &collection, &id, &patch_json));
+            DbCommand::Patch { collection, id, patch_json, sieve, resp } => {
+                let _ = resp.send(do_authorized_patch(
+                    &mut conn,
+                    &collection,
+                    &id,
+                    &patch_json,
+                    sieve.as_deref(),
+                ));
             }
-            DbCommand::Delete { collection, id, resp } => {
-                let _ = resp.send(do_delete(&conn, &collection, &id));
+            DbCommand::Delete { collection, id, sieve, resp } => {
+                let _ =
+                    resp.send(do_authorized_delete(&mut conn, &collection, &id, sieve.as_deref()));
             }
             DbCommand::DeleteMany { collection, filter, sieve, resp } => {
                 let _ = resp.send(do_delete_many(
@@ -1285,8 +1596,14 @@ fn run_writer_loop(
                     sieve.as_deref(),
                 ));
             }
-            DbCommand::BatchMutate { collection, mutations, creator_id, resp } => {
-                let _ = resp.send(do_batch_mutate(&mut conn, &collection, &mutations, &creator_id));
+            DbCommand::BatchMutate { collection, mutations, creator_id, sieve, resp } => {
+                let _ = resp.send(do_batch_mutate(
+                    &mut conn,
+                    &collection,
+                    &mutations,
+                    &creator_id,
+                    sieve.as_deref(),
+                ));
             }
         }
     }
@@ -1713,7 +2030,11 @@ impl ServiceStore for SqliteServiceStore {
         collection: &str,
         value: &host_store::RecordWriteValue,
         creator_id: &str,
+        auth: Option<&QueryAuth<'_>>,
     ) -> Result<(), host_store::DataLayerError> {
+        let sieve =
+            compile_sieve_for_op(auth, collection, Ability::DATA_LAYER_WRITE, Mode::Filter)?
+                .map(Box::new);
         let collection = collection.to_string();
         let value = value.clone();
         let creator_id = creator_id.to_string();
@@ -1721,6 +2042,7 @@ impl ServiceStore for SqliteServiceStore {
             collection,
             value,
             creator_id,
+            sieve,
             resp,
         })
         .await
@@ -1731,7 +2053,11 @@ impl ServiceStore for SqliteServiceStore {
         collection: &str,
         id: &str,
         patch_json: &[u8],
+        auth: Option<&QueryAuth<'_>>,
     ) -> Result<(), host_store::DataLayerError> {
+        let sieve =
+            compile_sieve_for_op(auth, collection, Ability::DATA_LAYER_WRITE, Mode::Filter)?
+                .map(Box::new);
         let collection = collection.to_string();
         let id = id.to_string();
         let patch_json = patch_json.to_vec();
@@ -1739,6 +2065,7 @@ impl ServiceStore for SqliteServiceStore {
             collection,
             id,
             patch_json,
+            sieve,
             resp,
         })
         .await
@@ -1813,10 +2140,24 @@ impl ServiceStore for SqliteServiceStore {
             })?
     }
 
-    async fn delete(&self, collection: &str, id: &str) -> Result<(), host_store::DataLayerError> {
+    async fn delete(
+        &self,
+        collection: &str,
+        id: &str,
+        auth: Option<&QueryAuth<'_>>,
+    ) -> Result<(), host_store::DataLayerError> {
+        let sieve =
+            compile_sieve_for_op(auth, collection, Ability::DATA_LAYER_WRITE, Mode::Filter)?
+                .map(Box::new);
         let collection = collection.to_string();
         let id = id.to_string();
-        send_write_command(&self.writer_tx, |resp| DbCommand::Delete { collection, id, resp }).await
+        send_write_command(&self.writer_tx, |resp| DbCommand::Delete {
+            collection,
+            id,
+            sieve,
+            resp,
+        })
+        .await
     }
 
     async fn delete_many(
@@ -1846,7 +2187,11 @@ impl ServiceStore for SqliteServiceStore {
         collection: &str,
         mutations: &[host_store::Mutation],
         creator_id: &str,
+        auth: Option<&QueryAuth<'_>>,
     ) -> Result<(), host_store::DataLayerError> {
+        let sieve =
+            compile_sieve_for_op(auth, collection, Ability::DATA_LAYER_WRITE, Mode::Filter)?
+                .map(Box::new);
         let collection = collection.to_string();
         let mutations = mutations.to_vec();
         let creator_id = creator_id.to_string();
@@ -1854,6 +2199,7 @@ impl ServiceStore for SqliteServiceStore {
             collection,
             mutations,
             creator_id,
+            sieve,
             resp,
         })
         .await
@@ -1888,10 +2234,19 @@ impl ServiceStore for SqliteServiceStore {
         // rather than propagating -- unlike Mode B's `query`/`get`, where a
         // compile error is a loud `Err` (a broken policy isn't "zero rows").
         let sieve = match auth {
-            // Slice B3 Phase 4: honor a caller-pre-resolved sieve exactly
-            // like `compile_sieve_for_op` does, before ever calling the
-            // local-only `compile_read`.
-            Some(a) if a.resolved_sieve.is_some() => a.resolved_sieve.clone(),
+            // Honor a caller-pre-resolved sieve exactly like
+            // `compile_sieve_for_op` does, before ever calling the
+            // local-only `compile_read` -- including that function's
+            // operation-match assertion: a pre-resolved sieve compiled for a
+            // different ability than requested here must not be trusted
+            // verbatim.
+            Some(a) if a.resolved_sieve.is_some() => {
+                match &a.resolved_sieve {
+                    Some(s) if s.trace.operation != operation => return Ok(false),
+                    _ => {}
+                }
+                a.resolved_sieve.clone()
+            }
             Some(a) => match compile_read(
                 a.policy,
                 collection,
@@ -1961,8 +2316,9 @@ impl ServiceStore for Arc<SqliteServiceStore> {
         collection: &str,
         value: &host_store::RecordWriteValue,
         creator_id: &str,
+        auth: Option<&QueryAuth<'_>>,
     ) -> Result<(), host_store::DataLayerError> {
-        self.as_ref().put(collection, value, creator_id).await
+        self.as_ref().put(collection, value, creator_id, auth).await
     }
 
     async fn patch(
@@ -1970,8 +2326,9 @@ impl ServiceStore for Arc<SqliteServiceStore> {
         collection: &str,
         id: &str,
         patch_json: &[u8],
+        auth: Option<&QueryAuth<'_>>,
     ) -> Result<(), host_store::DataLayerError> {
-        self.as_ref().patch(collection, id, patch_json).await
+        self.as_ref().patch(collection, id, patch_json, auth).await
     }
 
     async fn get(
@@ -2001,8 +2358,13 @@ impl ServiceStore for Arc<SqliteServiceStore> {
         self.as_ref().aggregate(collection, pipeline, auth).await
     }
 
-    async fn delete(&self, collection: &str, id: &str) -> Result<(), host_store::DataLayerError> {
-        self.as_ref().delete(collection, id).await
+    async fn delete(
+        &self,
+        collection: &str,
+        id: &str,
+        auth: Option<&QueryAuth<'_>>,
+    ) -> Result<(), host_store::DataLayerError> {
+        self.as_ref().delete(collection, id, auth).await
     }
 
     async fn delete_many(
@@ -2019,8 +2381,9 @@ impl ServiceStore for Arc<SqliteServiceStore> {
         collection: &str,
         mutations: &[host_store::Mutation],
         creator_id: &str,
+        auth: Option<&QueryAuth<'_>>,
     ) -> Result<(), host_store::DataLayerError> {
-        self.as_ref().batch_mutate(collection, mutations, creator_id).await
+        self.as_ref().batch_mutate(collection, mutations, creator_id, auth).await
     }
 
     async fn query_raw(
@@ -2914,5 +3277,32 @@ mod tests {
         // *next* command on this same connection unaffected.
         let deleted = do_delete_many(&conn, "documents", None, None).unwrap();
         assert_eq!(deleted, 1);
+    }
+
+    /// On the write path, a watchdog interrupt during `row_reachable`'s
+    /// pre-image check is `Ok(false)`
+    /// (fail-closed, same contract as `do_check_access`), which
+    /// `authorize_and_mutate` turns into an ordinary `PermissionDenied` --
+    /// unlike the read paths above, which surface `QuotaExceeded`
+    /// distinctly. The mutation itself never runs, and the connection stays
+    /// usable afterward.
+    #[test]
+    fn fdae_watchdog_interrupt_denies_a_write_and_rolls_back() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        seed_one_row_documents(&conn);
+        let sieve = pathological_sieve();
+        let err = do_authorized_patch(&mut conn, "documents", "doc-1", br#"{"x":1}"#, Some(&sieve))
+            .unwrap_err();
+        assert!(matches!(err, host_store::DataLayerError::PermissionDenied));
+
+        let record = do_get(&conn, "documents", "doc-1", None).unwrap().unwrap();
+        let payload: Value = serde_json::from_slice(&record.payload).unwrap();
+        assert!(payload.get("x").is_none(), "a watchdog-denied write must not have applied");
+
+        // The connection remains fully usable afterward.
+        do_authorized_patch(&mut conn, "documents", "doc-1", br#"{"x":1}"#, None).unwrap();
+        let record = do_get(&conn, "documents", "doc-1", None).unwrap().unwrap();
+        let payload: Value = serde_json::from_slice(&record.payload).unwrap();
+        assert_eq!(payload["x"], 1);
     }
 }

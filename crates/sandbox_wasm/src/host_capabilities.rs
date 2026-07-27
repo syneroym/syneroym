@@ -609,6 +609,22 @@ impl store::Host for HostState {
         if self.read_only {
             return Err(DataLayerError::PermissionDenied);
         }
+        // Admin-capability gate, identical to `execute_ddl`'s: dropping an
+        // *existing* collection bypasses any per-row policy on it entirely
+        // (every row a write-capable-but-otherwise-unreachable caller could
+        // not delete individually goes with it), so it must not be
+        // reachable through an ordinary write capability. `create_collection`
+        // stays ungated deliberately: a never-yet-existing collection has no
+        // policy-protected rows to destroy, and an owner-rooted UCAN chain
+        // can never carry `data-layer/admin` at all (`router/src/route_
+        // handler/io.rs`'s `is_root` excludes admin-entailing capabilities
+        // from per-service owner-rooting on purpose) -- gating creation too
+        // would make it impossible for a service on an unowned substrate to
+        // provision its own schema at all.
+        let resource = ResourceUri::service(&self.component_id, &self.component_id);
+        if !self.caller.has_capability(&resource, &Ability(Ability::DATA_LAYER_ADMIN.to_string())) {
+            return Err(DataLayerError::PermissionDenied);
+        }
         let store = open_store(
             self.component_id.clone(),
             self.key_store.clone(),
@@ -626,14 +642,25 @@ impl store::Host for HostState {
         if self.read_only {
             return Err(DataLayerError::PermissionDenied);
         }
-        let creator_id = self.component_id.clone();
+        // Owned locals first -- `resolve_query_auth` takes `&mut self` and
+        // the returned `QueryAuth<'_>` borrows it, so nothing may touch
+        // `self` afterwards. Same discipline `get`/`query` already document
+        // above.
+        let creator_id = self.caller.write_attribution(&self.component_id);
         let store = open_store(
             self.component_id.clone(),
             self.key_store.clone(),
             self.storage_provider.clone(),
         )
         .await?;
-        store.put(&collection, &value, &creator_id).await
+        let query_auth = self
+            .resolve_query_auth(
+                &collection,
+                &Ability(Ability::DATA_LAYER_WRITE.to_string()),
+                Mode::Filter,
+            )
+            .await?;
+        store.put(&collection, &value, &creator_id, query_auth.as_ref()).await
     }
 
     async fn patch(
@@ -651,7 +678,14 @@ impl store::Host for HostState {
             self.storage_provider.clone(),
         )
         .await?;
-        store.patch(&collection, &id, &patch_json).await
+        let query_auth = self
+            .resolve_query_auth(
+                &collection,
+                &Ability(Ability::DATA_LAYER_WRITE.to_string()),
+                Mode::Filter,
+            )
+            .await?;
+        store.patch(&collection, &id, &patch_json, query_auth.as_ref()).await
     }
 
     async fn get(
@@ -809,7 +843,14 @@ impl store::Host for HostState {
             self.storage_provider.clone(),
         )
         .await?;
-        store.delete(&collection, &id).await
+        let query_auth = self
+            .resolve_query_auth(
+                &collection,
+                &Ability(Ability::DATA_LAYER_WRITE.to_string()),
+                Mode::Filter,
+            )
+            .await?;
+        store.delete(&collection, &id, query_auth.as_ref()).await
     }
 
     async fn delete_many(
@@ -916,14 +957,22 @@ impl store::Host for HostState {
         if self.read_only {
             return Err(DataLayerError::PermissionDenied);
         }
-        let creator_id = self.component_id.clone();
+        // Owned locals first -- see `put`'s identical comment.
+        let creator_id = self.caller.write_attribution(&self.component_id);
         let store = open_store(
             self.component_id.clone(),
             self.key_store.clone(),
             self.storage_provider.clone(),
         )
         .await?;
-        store.batch_mutate(&collection, &mutations, &creator_id).await
+        let query_auth = self
+            .resolve_query_auth(
+                &collection,
+                &Ability(Ability::DATA_LAYER_WRITE.to_string()),
+                Mode::Filter,
+            )
+            .await?;
+        store.batch_mutate(&collection, &mutations, &creator_id, query_auth.as_ref()).await
     }
 
     async fn execute_ddl(&mut self, sql: String) -> Result<(), DataLayerError> {
@@ -1953,6 +2002,112 @@ pub(crate) mod tests {
                 .await
                 .unwrap();
         assert_eq!(deleted, 1, "only alice's own document is deletable");
+    }
+
+    /// Through the `store::Host` guest boundary: a
+    /// write-capable caller who cannot reach a row via the compiled sieve
+    /// is denied `put`/`patch`/`delete` on it; the same caller against a
+    /// row they do reach succeeds.
+    #[tokio::test]
+    async fn fdae_put_patch_delete_deny_an_unreachable_row_and_allow_a_reachable_one() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage_provider: Arc<dyn StorageProvider> =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        fdae_seed_documents(storage_provider.clone()).await;
+        let policy = Arc::new(fdae_write_policy());
+        let alice = fdae_caller("did:key:alice", vec![fdae_write_cap("documents")]);
+        let mut host = fdae_host_state(storage_provider, alice, Some(policy));
+
+        // doc-2 belongs to bob -- unreachable to alice under the write sieve.
+        let err = store::Host::patch(
+            &mut host,
+            "documents".to_string(),
+            "doc-2".to_string(),
+            br#"{"x":1}"#.to_vec(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, DataLayerError::PermissionDenied));
+
+        let err = store::Host::delete(&mut host, "documents".to_string(), "doc-2".to_string())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DataLayerError::PermissionDenied));
+
+        let err = store::Host::put(
+            &mut host,
+            "documents".to_string(),
+            RecordWriteValue {
+                id: "doc-2".to_string(),
+                payload: json!({"creator_uuid": "u-bob", "hijacked": true})
+                    .to_string()
+                    .into_bytes(),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, DataLayerError::PermissionDenied));
+
+        // doc-1 belongs to alice -- reachable.
+        store::Host::patch(
+            &mut host,
+            "documents".to_string(),
+            "doc-1".to_string(),
+            br#"{"nickname":"al"}"#.to_vec(),
+        )
+        .await
+        .unwrap();
+        let record = store::Host::get(&mut host, "documents".to_string(), "doc-1".to_string())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(payload_json(&record)["nickname"], "al");
+
+        store::Host::delete(&mut host, "documents".to_string(), "doc-1".to_string()).await.unwrap();
+        assert!(
+            store::Host::get(&mut host, "documents".to_string(), "doc-1".to_string())
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// `drop_collection` bypasses any per-row policy on the collection
+    /// entirely, so it must not be reachable through an ordinary write
+    /// capability: a caller holding only `data-layer/write` on `documents`
+    /// (able to `put`/`patch`/`delete` rows it can individually reach) is
+    /// denied `drop_collection("documents")` outright; a caller holding
+    /// `data-layer/admin` on the service succeeds.
+    #[tokio::test]
+    async fn drop_collection_requires_admin_not_an_ordinary_write_capability() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage_provider: Arc<dyn StorageProvider> =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        fdae_seed_documents(storage_provider.clone()).await;
+
+        let writer = fdae_caller("did:key:alice", vec![fdae_write_cap("documents")]);
+        let mut host = fdae_host_state(storage_provider.clone(), writer, None);
+        let err =
+            store::Host::drop_collection(&mut host, "documents".to_string()).await.unwrap_err();
+        assert!(matches!(err, DataLayerError::PermissionDenied));
+        assert!(
+            store::Host::get(&mut host, "documents".to_string(), "doc-1".to_string())
+                .await
+                .unwrap()
+                .is_some(),
+            "a denied drop_collection must leave the collection intact"
+        );
+
+        let admin = fdae_caller(
+            "did:key:admin",
+            vec![Capability {
+                with: ResourceUri::service(FDAE_SERVICE_ID, FDAE_SERVICE_ID),
+                can: Ability(Ability::DATA_LAYER_ADMIN.to_string()),
+                caveats: None,
+            }],
+        );
+        let mut host = fdae_host_state(storage_provider, admin, None);
+        store::Host::drop_collection(&mut host, "documents".to_string()).await.unwrap();
     }
 
     /// **D-04-02-g CLS-narrowing pin** (task.md Decision Register): the same

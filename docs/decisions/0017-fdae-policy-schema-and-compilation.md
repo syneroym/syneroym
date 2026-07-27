@@ -463,3 +463,55 @@ review that found these.
   written the same call into their service code" reasoning, stated
   explicitly since an early implementation draft mischaracterized it as
   sieve-filtered.
+
+**2026-07-26 (Slice B5-fdae, write-side model: §2.1/§4 completed, §7
+extended to writes, CLS extended to writes).** D-04-02-f (write-side
+integrity) was left open when this ADR was accepted, on the assumption it
+would need a policy-schema amendment (a new collection-scoped "who may
+create" permission kind). Implementing it found the ADR already contained
+the answer, half-stated:
+
+- **§2.1's Postgres analogy stops one step short.** It maps `GRANT` to the
+  capability and `CREATE POLICY` (RLS) to the `permissions:` block, and
+  stops. Postgres's RLS itself splits into `USING` (which existing rows a
+  policy exposes) and `WITH CHECK` (which rows a write may produce) — and
+  that split *is* D-04-02-f's missing half. `patch`/`delete` of an existing
+  row evaluate `USING` (may the caller reach the row as it stands); `put`
+  (create or update) additionally evaluates `WITH CHECK` (may the caller
+  reach the row they are about to write). A collection-scoped "who may
+  create" permission would have been strictly more schema than needed, and
+  would still have left open who may create *what* — `WITH CHECK` answers
+  both at once with the `paths:` a read permission already declares. Zero
+  policy-schema or compiler change.
+- **§4's Mode A description undersold itself.** It describes Mode A as "a
+  new explicit `check`-style host function," true as far as it goes but
+  silent on host-*enforced* write authorization — the distinction being
+  "a guest can ask" vs. "the host decides before committing." B5-fdae is
+  the latter: `data_db`'s writer actor runs the same compiled predicate the
+  `check-access` host function exposes, in the same transaction as the
+  mutation, before it commits — not merely a primitive a guest may
+  optionally consult first. `check-access` itself is unchanged and remains
+  useful for a guest that wants to ask ahead of time, with one caveat now
+  documented on the WIT: it cannot answer a *create* pre-check (there is no
+  row yet to evaluate `USING` against, and `check-access` takes no payload
+  to evaluate a hypothetical `WITH CHECK`), so a guest that pre-checks
+  before creating may see `false` and then succeed anyway.
+- **§7's restrict-only stage-4 after-step now also gates single-row
+  writes, closed.** `data_db` has no WASM engine and a mutation in flight
+  has no candidate-row batch to hand the after-step (the same reason
+  `aggregate`/`delete_many` already deny a stage-4-opted policy outright) —
+  so `authorize_and_mutate` denies closed whenever the compiled sieve's
+  `abac_permissions` is non-empty, extending the existing category rather
+  than creating a new one.
+- **CLS (§1's `fields.deny`) now applies to writes, not only projection.**
+  A caller who cannot read a field could previously write it freely — the
+  same "masking only the projection turns the predicate into an oracle"
+  finding this ADR's implementation already applied to query filters
+  (`do_query` rejecting a filter that references a masked field) has an
+  integrity twin: a masked field may not be authored on create, and its
+  value may not change (add, remove, or edit) on update.
+
+Full design, the sub-decisions this needed (`creator_id` attribution and
+immutability, `System`-caller deny-closed, the idempotency change for a
+missing row under a policy), and verification evidence:
+`slice-b5-implementation-plan.md` and `status.md`'s Slice B5-fdae section.

@@ -699,6 +699,30 @@ impl SynSvcNativeService {
                 to_payload(&())
             }
             "drop-collection" | "drop_collection" => {
+                // Admin-capability gate -- identical to `execute-ddl` below:
+                // dropping an *existing* collection bypasses any per-row
+                // policy on it entirely (every row a write-capable-but-
+                // otherwise-unreachable caller could not delete individually
+                // goes with it), so it must not be reachable through an
+                // ordinary write capability. `create-collection` stays
+                // ungated deliberately: a never-yet-existing collection has
+                // no policy-protected rows to destroy, and an owner-rooted
+                // UCAN chain can never carry `data-layer/admin` at all
+                // (`router/src/route_handler/io.rs`'s `is_root` excludes
+                // admin-entailing capabilities from per-service owner-rooting
+                // on purpose) -- gating creation too would make it
+                // impossible for a service on an unowned substrate to
+                // provision its own schema at all.
+                let resource = ResourceUri::service(
+                    invocation.caller.app_instance.as_deref().unwrap_or(&self.service_id),
+                    &self.service_id,
+                );
+                if !invocation
+                    .caller
+                    .has_capability(&resource, &Ability(Ability::DATA_LAYER_ADMIN.to_string()))
+                {
+                    return Err(data_layer_error(DataLayerError::PermissionDenied));
+                }
                 #[derive(serde::Deserialize)]
                 struct Req {
                     name: String,
@@ -714,12 +738,20 @@ impl SynSvcNativeService {
                     value: RecordWriteValue,
                 }
                 let req: Req = parse_params(&invocation)?;
-                let creator = invocation
-                    .caller
-                    .app_instance
-                    .as_deref()
-                    .unwrap_or(&invocation.caller.caller_did);
-                store.put(&req.collection, &req.value, creator).await.map_err(data_layer_error)?;
+                let creator = invocation.caller.write_attribution(&self.service_id);
+                let auth = self
+                    .resolve_query_auth(
+                        &invocation,
+                        &req.collection,
+                        &Ability(Ability::DATA_LAYER_WRITE.to_string()),
+                        Mode::Filter,
+                    )
+                    .await
+                    .map_err(data_layer_error)?;
+                store
+                    .put(&req.collection, &req.value, &creator, auth.as_ref())
+                    .await
+                    .map_err(data_layer_error)?;
                 to_payload(&())
             }
             "patch" => {
@@ -730,8 +762,17 @@ impl SynSvcNativeService {
                     patch_json: Vec<u8>,
                 }
                 let req: Req = parse_params(&invocation)?;
+                let auth = self
+                    .resolve_query_auth(
+                        &invocation,
+                        &req.collection,
+                        &Ability(Ability::DATA_LAYER_WRITE.to_string()),
+                        Mode::Filter,
+                    )
+                    .await
+                    .map_err(data_layer_error)?;
                 store
-                    .patch(&req.collection, &req.id, &req.patch_json)
+                    .patch(&req.collection, &req.id, &req.patch_json, auth.as_ref())
                     .await
                     .map_err(data_layer_error)?;
                 to_payload(&())
@@ -873,10 +914,23 @@ impl SynSvcNativeService {
                     id: String,
                 }
                 let req: Req = parse_params(&invocation)?;
-                store
-                    .delete(&req.collection, &req.id)
+                let auth = self
+                    .resolve_query_auth(
+                        &invocation,
+                        &req.collection,
+                        &Ability(Ability::DATA_LAYER_WRITE.to_string()),
+                        Mode::Filter,
+                    )
                     .await
-                    .map_err(|e| internal(e.to_string()))?;
+                    .map_err(data_layer_error)?;
+                // `data_layer_error`, not `internal` -- a stage-4/watchdog
+                // `PermissionDenied` (and an FDAE write denial) must surface
+                // as a permission denial, not an opaque internal error
+                // (pre-existing bug, fixed in passing).
+                store
+                    .delete(&req.collection, &req.id, auth.as_ref())
+                    .await
+                    .map_err(data_layer_error)?;
                 to_payload(&())
             }
             "delete-many" | "delete_many" => {
@@ -895,10 +949,16 @@ impl SynSvcNativeService {
                     )
                     .await
                     .map_err(data_layer_error)?;
+                // `data_layer_error`, not `internal` -- `delete_many`'s
+                // stage-4 `PermissionDenied` (`sqlite.rs`) was already
+                // surfacing as an opaque internal error rather than a
+                // permission denial before this fix (pre-existing bug,
+                // fixed in passing, same class as `delete`/`batch-mutate`
+                // above).
                 let affected = store
                     .delete_many(&req.collection, req.filter.as_deref(), auth.as_ref())
                     .await
-                    .map_err(|e| internal(e.to_string()))?;
+                    .map_err(data_layer_error)?;
                 to_payload(&affected)
             }
             "batch-mutate" | "batch_mutate" => {
@@ -928,15 +988,22 @@ impl SynSvcNativeService {
                         MutationDto::Delete(v) => Mutation::Delete(v),
                     })
                     .collect();
-                let creator = invocation
-                    .caller
-                    .app_instance
-                    .as_deref()
-                    .unwrap_or(&invocation.caller.caller_did);
-                store
-                    .batch_mutate(&req.collection, &mutations, creator)
+                let creator = invocation.caller.write_attribution(&self.service_id);
+                let auth = self
+                    .resolve_query_auth(
+                        &invocation,
+                        &req.collection,
+                        &Ability(Ability::DATA_LAYER_WRITE.to_string()),
+                        Mode::Filter,
+                    )
                     .await
-                    .map_err(|e| internal(e.to_string()))?;
+                    .map_err(data_layer_error)?;
+                // `data_layer_error`, not `internal` -- same fix as `delete`
+                // above (pre-existing bug, fixed in passing).
+                store
+                    .batch_mutate(&req.collection, &mutations, &creator, auth.as_ref())
+                    .await
+                    .map_err(data_layer_error)?;
                 to_payload(&())
             }
             "execute-ddl" | "execute_ddl" => {

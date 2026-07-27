@@ -17,7 +17,7 @@ use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use serde_json::json;
 use syneroym_data_db::{
     QueryAuth, ServiceStore, SqliteStorageProvider, StorageProvider,
-    host_store::{CollectionSchema, QueryOptions, RecordWriteValue},
+    host_store::{CollectionSchema, Mutation, PatchMutation, QueryOptions, RecordWriteValue},
 };
 use syneroym_data_keystore::KeyStore;
 use syneroym_fdae::{Policy, parse_and_validate};
@@ -89,7 +89,12 @@ async fn seed(store: &dyn ServiceStore) {
     store.create_collection(&schema("users")).await.unwrap();
     store.create_collection(&schema("documents")).await.unwrap();
     store
-        .put("users", &write_value("u-alice", &json!({"did": "did:key:alice"}).to_string()), "svc")
+        .put(
+            "users",
+            &write_value("u-alice", &json!({"did": "did:key:alice"}).to_string()),
+            "svc",
+            None,
+        )
         .await
         .unwrap();
     store
@@ -97,6 +102,7 @@ async fn seed(store: &dyn ServiceStore) {
             "users",
             &write_value("u-mallory", &json!({"did": "did:key:mallory"}).to_string()),
             "svc",
+            None,
         )
         .await
         .unwrap();
@@ -110,6 +116,7 @@ async fn seed(store: &dyn ServiceStore) {
                     &json!({"creator_uuid": creator, "n": i}).to_string(),
                 ),
                 "svc",
+                None,
             )
             .await
             .unwrap();
@@ -152,5 +159,124 @@ fn bench_fdae_pushdown_query(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_fdae_pushdown_query);
+/// A `manage` permission covering `data-layer/write` via the same creator
+/// relation -- the write-side sieve.
+fn write_policy() -> Policy {
+    parse_and_validate(
+        r#"{
+            "version": "fdae/v1",
+            "definitions": {
+                "document": {
+                    "table": "documents",
+                    "relations": {"creator": {"target": "user", "join_column": "creator_uuid"}},
+                    "permissions": {
+                        "manage": {"allows": ["data-layer/write"], "paths": [["creator", "caller"]]}
+                    }
+                },
+                "user": {"table": "users", "principal_column": "did"}
+            }
+        }"#,
+    )
+    .unwrap()
+}
+
+fn write_session(subject_did: &str) -> SessionContext {
+    SessionContext {
+        subject_did: subject_did.to_string(),
+        anchor_did: None,
+        capabilities: vec![Capability {
+            with: resource("documents"),
+            can: Ability(Ability::DATA_LAYER_WRITE.to_string()),
+            caveats: None,
+        }],
+        claims: serde_json::Map::new(),
+        verified_at_secs: 0,
+    }
+}
+
+/// The per-mutation `EXISTS` check (2 per row for
+/// `patch`/`put`-update, 1 for `delete`) an authorized write pays that an
+/// unauthorized (`auth: None`) one does not -- claim to establish per
+/// task.md's Performance Budgets table: it must not dominate write latency.
+/// `patch` alone and a 50-mutation `batch_mutate` (all of alice's own,
+/// even-numbered seeded rows), each against the unauthorized baseline.
+fn bench_fdae_authorized_writes(c: &mut Criterion) {
+    let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
+    let temp_dir = tempfile::tempdir().unwrap();
+    let provider = SqliteStorageProvider::new(temp_dir.path(), true).unwrap();
+    let key_store = Arc::new(KeyStore::new());
+    key_store.inject_kek([9u8; 32]).unwrap();
+
+    let store = runtime.block_on(provider.open_service_db(SERVICE_ID, &key_store)).unwrap();
+    runtime.block_on(seed(store.as_ref()));
+
+    let policy = write_policy();
+    let alice = write_session("did:key:alice");
+    let auth = QueryAuth {
+        policy: &policy,
+        session: &alice,
+        service_id: SERVICE_ID,
+        resolved_sieve: None,
+    };
+
+    // Every even-numbered seeded doc belongs to alice (`seed`'s own
+    // `i % 2 == 0` rule) -- 50 of the 100 records.
+    let batch: Vec<Mutation> = (0..RECORD_COUNT / 2)
+        .map(|i| {
+            Mutation::Patch(PatchMutation {
+                id: format!("doc-{}", i * 2),
+                patch_json: br#"{"touched":true}"#.to_vec(),
+            })
+        })
+        .collect();
+
+    let mut group = c.benchmark_group("fdae_authorized_write");
+    group.bench_function("patch_unauthorized_baseline", |b| {
+        b.to_async(&runtime).iter(|| async {
+            store
+                .patch("documents", black_box("doc-0"), black_box(br#"{"n":1}"#), None)
+                .await
+                .unwrap();
+        });
+    });
+    group.bench_function("patch_authorized", |b| {
+        b.to_async(&runtime).iter(|| async {
+            store
+                .patch(
+                    "documents",
+                    black_box("doc-0"),
+                    black_box(br#"{"n":1}"#),
+                    Some(black_box(&auth)),
+                )
+                .await
+                .unwrap();
+        });
+    });
+    group.bench_function("batch_mutate_50_unauthorized_baseline", |b| {
+        b.to_async(&runtime).iter(|| async {
+            store.batch_mutate("documents", black_box(&batch), "svc", None).await.unwrap();
+        });
+    });
+    group.bench_function("batch_mutate_50_authorized", |b| {
+        b.to_async(&runtime).iter(|| async {
+            store
+                .batch_mutate(
+                    "documents",
+                    black_box(&batch),
+                    "did:key:alice",
+                    Some(black_box(&auth)),
+                )
+                .await
+                .unwrap();
+        });
+    });
+    group.finish();
+
+    runtime.block_on(async {
+        drop(store);
+        drop(provider);
+    });
+}
+
+criterion_group!(benches, bench_fdae_pushdown_query, bench_fdae_authorized_writes);
 criterion_main!(benches);

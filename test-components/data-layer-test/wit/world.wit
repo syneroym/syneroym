@@ -9,6 +9,16 @@ interface test-driver {
 
     /// Fetches a record by id and returns its host-injected creator-id.
     get-creator-id: func(id: string) -> result<string, string>;
+
+    /// Queries `profiles` without writing anything first, returning the
+    /// number of records observed (as a decimal string, same convention as
+    /// `run-crud-scenario`). Lets a test seed `profiles` itself (e.g.
+    /// directly against the store, under a caller identity a guest could
+    /// never present) and then drive only the guest's own *read* path --
+    /// `run-crud-scenario`'s combined write+read shape can't isolate that
+    /// under an FDAE write-gated policy, since the guest's own `put` runs
+    /// as a capability-less caller and denies closed.
+    run-query-scenario: func(limit: u32) -> result<string, string>;
 }
 
 world data-layer-test {

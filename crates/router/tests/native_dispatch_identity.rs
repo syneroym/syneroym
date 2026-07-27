@@ -33,7 +33,9 @@ use syneroym_core::{
     storage::MockStorage,
 };
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
-use syneroym_data_db::SqliteStorageProvider;
+use syneroym_data_db::{
+    SqliteStorageProvider, StorageProvider, host_store, sqlite::MAX_BATCH_SIZE,
+};
 use syneroym_data_keystore::KeyStore;
 use syneroym_fdae::{MAX_FETCH_IDS, Mode, Policy, parse_and_validate};
 use syneroym_identity::substrate;
@@ -76,10 +78,52 @@ fn test_caller(did: &str) -> CallerContext {
     CallerContext {
         caller_did: did.to_string(),
         app_instance: None,
-        session: SessionContext::default(),
+        // `subject_did` mirrors `caller_did`, exactly as production's
+        // `build_caller` (`route_handler/io.rs:169`) always sets it --
+        // `write_attribution` reads the verified session identity,
+        // not the raw `caller_did` field, so a fixture leaving this at
+        // `SessionContext::default()`'s empty string would attribute writes
+        // to nobody instead of this caller.
+        session: SessionContext { subject_did: did.to_string(), ..Default::default() },
         auth: AuthLevel::Delegated,
         proof: None,
     }
+}
+
+/// Seeds one fixture row directly against a service's store, `auth: None`
+/// -- bypasses the write-side FDAE gate entirely, which these
+/// read-side tests are not about: their fixture policies declare no
+/// `data-layer/write` permission at all, so seeding through the gated
+/// `put`/`create-collection` JSON-RPC path would deny closed regardless of
+/// which caller presents it.
+async fn seed_via_store(
+    storage_provider: &Arc<dyn StorageProvider>,
+    key_store: &Arc<KeyStore>,
+    service_id: &str,
+    collection: &str,
+    id: &str,
+    payload: &Value,
+) {
+    let store = storage_provider.open_service_db(service_id, key_store).await.unwrap();
+    store
+        .create_collection(&host_store::CollectionSchema {
+            name: collection.to_string(),
+            indexes: vec![],
+        })
+        .await
+        .unwrap();
+    store
+        .put(
+            collection,
+            &host_store::RecordWriteValue {
+                id: id.to_string(),
+                payload: payload.to_string().into_bytes(),
+            },
+            service_id,
+            None,
+        )
+        .await
+        .unwrap();
 }
 
 /// The same `[iam].admin_ucan_root` grant `build_caller`
@@ -323,6 +367,52 @@ async fn execute_ddl_denied_for_ordinary_native_caller() {
     assert_eq!(
         resp["error"]["code"], -32010,
         "an ordinary caller must be denied execute-ddl: {resp:?}"
+    );
+}
+
+/// `drop-collection` (native) is gated on `data-layer/admin`, identical to
+/// `execute-ddl`: dropping an existing collection bypasses any per-row
+/// policy on it entirely, so an ordinary caller holding no admin capability
+/// must be denied even though it could reach the same service's ordinary
+/// write operations.
+#[tokio::test]
+async fn drop_collection_denied_for_ordinary_native_caller() {
+    let (route_handler, _http_routes) = test_route_handler().await;
+
+    let service_id = "drop-collection-deny-svc".to_string();
+    let key_store = Arc::new(KeyStore::new());
+    let temp_dir = tempfile::tempdir().unwrap();
+    let storage_provider = Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+    let blob_provider: Arc<dyn BlobProvider> =
+        Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+    let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+    let data_service = Arc::new(SynSvcNativeService::new(
+        service_id.clone(),
+        key_store,
+        storage_provider,
+        blob_provider,
+        messaging_broker,
+        None,
+        Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        "did:key:zTestOwner",
+        syneroym_sandbox_wasm::empty_service_proxy(),
+        syneroym_rpc::empty_row_authorizer(),
+    ));
+    route_handler.register_native_service(service_id.clone(), data_service);
+
+    let pipeline = raw_pipeline(&service_id);
+    let preamble = preamble_for(&service_id, "data-layer");
+    let caller = test_caller("did:key:z6MkOrdinaryDropCollectionCaller");
+
+    let body = json_rpc_body("drop-collection", json!({"name": "items"}));
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&caller), &body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert_eq!(
+        resp["error"]["code"], -32010,
+        "an ordinary caller must be denied drop-collection: {resp:?}"
     );
 }
 
@@ -1014,10 +1104,11 @@ async fn native_fdae_policy_row_filters_and_masks_for_two_distinct_verified_call
         Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
     let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
     let policy = Arc::new(native_fdae_policy());
+    let storage_provider: Arc<dyn StorageProvider> = storage_provider;
     let data_service = Arc::new(SynSvcNativeService::new(
         service_id.clone(),
-        key_store,
-        storage_provider,
+        key_store.clone(),
+        storage_provider.clone(),
         blob_provider,
         messaging_broker,
         Some(policy),
@@ -1031,30 +1122,13 @@ async fn native_fdae_policy_row_filters_and_masks_for_two_distinct_verified_call
     let pipeline = raw_pipeline(&service_id);
     let preamble = preamble_for(&service_id, "data-layer");
 
-    // Seed via an elevated, unentitled-by-policy caller: `put`/
-    // `create-collection` carry no FDAE gate (write-side Tier 3 is Slice
-    // B5-fdae), so any verified caller can seed fixture rows.
-    let seeder = test_caller("did:key:z6MkSeeder");
     for (collection, id, payload) in [
         ("users", "u-alice", json!({"did": "did:key:alice"})),
         ("users", "u-bob", json!({"did": "did:key:bob"})),
         ("documents", "doc-1", json!({"creator_uuid": "u-alice", "ssn": "111-11-1111"})),
         ("documents", "doc-2", json!({"creator_uuid": "u-bob", "ssn": "222-22-2222"})),
     ] {
-        let create_body = json_rpc_body("create-collection", json!({"name": collection}));
-        let _ = route_handler
-            .dispatch_json_rpc_once(&pipeline, &preamble, Some(&seeder), &create_body)
-            .await;
-        let put_body = json_rpc_body(
-            "put",
-            json!({"collection": collection, "value": {"id": id, "payload": payload.to_string().into_bytes()}}),
-        );
-        let resp = route_handler
-            .dispatch_json_rpc_once(&pipeline, &preamble, Some(&seeder), &put_body)
-            .await
-            .unwrap();
-        let resp: Value = serde_json::from_slice(&resp).unwrap();
-        assert!(resp.get("error").is_none(), "seeding {collection}/{id} failed: {resp:?}");
+        seed_via_store(&storage_provider, &key_store, &service_id, collection, id, &payload).await;
     }
 
     // Alice sees only her own document, with `ssn` stripped.
@@ -1114,6 +1188,216 @@ async fn native_fdae_policy_row_filters_and_masks_for_two_distinct_verified_call
     let records = resp["result"]["records"].as_array().expect("query must return records");
     assert_eq!(records.len(), 1, "bob's query must exclude alice's document: {resp:?}");
     assert_eq!(records[0]["id"], "doc-2");
+}
+
+/// Mirrors `native_fdae_policy_row_
+/// filters_and_masks_for_two_distinct_verified_callers` above, for the
+/// write side. Two verified callers, each holding a `data-layer/write`
+/// capability on `documents`, may each patch only their own row and are
+/// denied patching the other's.
+#[tokio::test]
+async fn native_fdae_policy_authorizes_writes_for_one_verified_caller_and_denies_another() {
+    let (route_handler, _http_routes) = test_route_handler().await;
+
+    let service_id = "native-fdae-write-authz-svc".to_string();
+    let key_store = Arc::new(KeyStore::new());
+    let temp_dir = tempfile::tempdir().unwrap();
+    let storage_provider: Arc<dyn StorageProvider> =
+        Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+    let blob_provider: Arc<dyn BlobProvider> =
+        Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+    let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+    let policy = Arc::new(native_fdae_write_policy());
+    let data_service = Arc::new(SynSvcNativeService::new(
+        service_id.clone(),
+        key_store.clone(),
+        storage_provider.clone(),
+        blob_provider,
+        messaging_broker,
+        Some(policy),
+        Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        "did:key:zTestOwner",
+        syneroym_sandbox_wasm::empty_service_proxy(),
+        syneroym_rpc::empty_row_authorizer(),
+    ));
+    route_handler.register_native_service(service_id.clone(), data_service);
+
+    let pipeline = raw_pipeline(&service_id);
+    let preamble = preamble_for(&service_id, "data-layer");
+
+    for (collection, id, payload) in [
+        ("users", "u-alice", json!({"did": "did:key:alice"})),
+        ("users", "u-bob", json!({"did": "did:key:bob"})),
+        ("documents", "doc-1", json!({"creator_uuid": "u-alice"})),
+        ("documents", "doc-2", json!({"creator_uuid": "u-bob"})),
+    ] {
+        seed_via_store(&storage_provider, &key_store, &service_id, collection, id, &payload).await;
+    }
+
+    let alice = fdae_writer_caller("did:key:alice", &service_id);
+    let bob = fdae_writer_caller("did:key:bob", &service_id);
+
+    // Alice may patch her own row.
+    let patch_own = json_rpc_body(
+        "patch",
+        json!({
+            "collection": "documents", "id": "doc-1",
+            "patch_json": b"{\"nickname\":\"al\"}".to_vec()
+        }),
+    );
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&alice), &patch_own)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert!(resp.get("error").is_none(), "alice patching her own row must succeed: {resp:?}");
+
+    // Alice is denied patching bob's row.
+    let patch_other = json_rpc_body(
+        "patch",
+        json!({
+            "collection": "documents", "id": "doc-2",
+            "patch_json": b"{\"nickname\":\"stolen\"}".to_vec()
+        }),
+    );
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&alice), &patch_other)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert_eq!(resp["error"]["code"], -32010, "alice patching bob's row must be denied: {resp:?}");
+
+    // Bob may still patch his own row afterward.
+    let bob_patch = json_rpc_body(
+        "patch",
+        json!({
+            "collection": "documents", "id": "doc-2",
+            "patch_json": b"{\"nickname\":\"bo\"}".to_vec()
+        }),
+    );
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&bob), &bob_patch)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert!(resp.get("error").is_none(), "bob patching his own row must succeed: {resp:?}");
+}
+
+/// The headline write-authz test above only exercises `patch`. `put`
+/// (both create and update), `delete`, and `batch-mutate` all wrap the same
+/// `authorize_and_mutate` envelope but are otherwise untested end to end
+/// through the native JSON-RPC dispatch path -- this pins that each denies
+/// with the same `-32010` permission-denied code, not an opaque internal
+/// error, and that a denied `batch-mutate` rolls back a mutation earlier in
+/// the same batch that would otherwise have succeeded.
+#[tokio::test]
+async fn native_fdae_policy_denies_put_delete_and_batch_mutate_for_an_unreachable_row() {
+    let (route_handler, _http_routes) = test_route_handler().await;
+
+    let service_id = "native-fdae-write-denials-svc".to_string();
+    let key_store = Arc::new(KeyStore::new());
+    let temp_dir = tempfile::tempdir().unwrap();
+    let storage_provider: Arc<dyn StorageProvider> =
+        Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+    let blob_provider: Arc<dyn BlobProvider> =
+        Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+    let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+    let policy = Arc::new(native_fdae_write_policy());
+    let data_service = Arc::new(SynSvcNativeService::new(
+        service_id.clone(),
+        key_store.clone(),
+        storage_provider.clone(),
+        blob_provider,
+        messaging_broker,
+        Some(policy),
+        Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        "did:key:zTestOwner",
+        syneroym_sandbox_wasm::empty_service_proxy(),
+        syneroym_rpc::empty_row_authorizer(),
+    ));
+    route_handler.register_native_service(service_id.clone(), data_service);
+
+    let pipeline = raw_pipeline(&service_id);
+    let preamble = preamble_for(&service_id, "data-layer");
+
+    for (collection, id, payload) in [
+        ("users", "u-alice", json!({"did": "did:key:alice"})),
+        ("users", "u-bob", json!({"did": "did:key:bob"})),
+        ("documents", "doc-alice", json!({"creator_uuid": "u-alice"})),
+        ("documents", "doc-bob", json!({"creator_uuid": "u-bob"})),
+    ] {
+        seed_via_store(&storage_provider, &key_store, &service_id, collection, id, &payload).await;
+    }
+
+    let alice = fdae_writer_caller("did:key:alice", &service_id);
+
+    // `put`-create: alice creating a row attributed to bob is denied --
+    // the post-image is unreachable to her.
+    let create_other = json_rpc_body(
+        "put",
+        json!({
+            "collection": "documents",
+            "value": {"id": "doc-new", "payload": json!({"creator_uuid": "u-bob"}).to_string().into_bytes()}
+        }),
+    );
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&alice), &create_other)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert_eq!(
+        resp["error"]["code"], -32010,
+        "alice creating a row attributed to bob must be denied: {resp:?}"
+    );
+
+    // `delete`: alice deleting bob's row is denied -- unreachable to her.
+    let delete_other = json_rpc_body("delete", json!({"collection": "documents", "id": "doc-bob"}));
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&alice), &delete_other)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert_eq!(resp["error"]["code"], -32010, "alice deleting bob's row must be denied: {resp:?}");
+
+    // `batch-mutate`: alice's own patch (would succeed alone) followed by a
+    // patch of bob's row (denied) must roll back the whole batch, not just
+    // the offending mutation.
+    let batch = json_rpc_body(
+        "batch-mutate",
+        json!({
+            "collection": "documents",
+            "mutations": [
+                {"type": "patch", "value": {"id": "doc-alice", "patch_json": b"{\"nickname\":\"al\"}".to_vec()}},
+                {"type": "patch", "value": {"id": "doc-bob", "patch_json": b"{\"nickname\":\"stolen\"}".to_vec()}},
+            ]
+        }),
+    );
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&alice), &batch)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert_eq!(
+        resp["error"]["code"], -32010,
+        "a batch containing a denied mutation must be denied: {resp:?}"
+    );
+
+    let get_body = json_rpc_body("get", json!({"collection": "documents", "id": "doc-alice"}));
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&alice), &get_body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    let result = resp.get("result").expect("get must return a result");
+    let payload: Value = serde_json::from_slice(
+        &serde_json::from_value::<Vec<u8>>(result["payload"].clone()).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        payload.get("nickname").is_none(),
+        "the denied batch's earlier, otherwise-valid mutation must have rolled back too: \
+         {payload:?}"
+    );
 }
 
 /// A `manage` permission covering `data-layer/write`, reachable via the same
@@ -1195,10 +1479,11 @@ async fn native_delete_many_is_row_filtered_as_a_write_operation() {
         Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
     let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
     let policy = Arc::new(native_fdae_write_policy());
+    let storage_provider: Arc<dyn StorageProvider> = storage_provider;
     let data_service = Arc::new(SynSvcNativeService::new(
         service_id.clone(),
-        key_store,
-        storage_provider,
+        key_store.clone(),
+        storage_provider.clone(),
         blob_provider,
         messaging_broker,
         Some(policy),
@@ -1212,27 +1497,13 @@ async fn native_delete_many_is_row_filtered_as_a_write_operation() {
     let pipeline = raw_pipeline(&service_id);
     let preamble = preamble_for(&service_id, "data-layer");
 
-    let seeder = test_caller("did:key:z6MkDeleteSeeder");
     for (collection, id, payload) in [
         ("users", "u-alice", json!({"did": "did:key:alice"})),
         ("users", "u-bob", json!({"did": "did:key:bob"})),
         ("documents", "doc-1", json!({"creator_uuid": "u-alice"})),
         ("documents", "doc-2", json!({"creator_uuid": "u-bob"})),
     ] {
-        let create_body = json_rpc_body("create-collection", json!({"name": collection}));
-        let _ = route_handler
-            .dispatch_json_rpc_once(&pipeline, &preamble, Some(&seeder), &create_body)
-            .await;
-        let put_body = json_rpc_body(
-            "put",
-            json!({"collection": collection, "value": {"id": id, "payload": payload.to_string().into_bytes()}}),
-        );
-        let resp = route_handler
-            .dispatch_json_rpc_once(&pipeline, &preamble, Some(&seeder), &put_body)
-            .await
-            .unwrap();
-        let resp: Value = serde_json::from_slice(&resp).unwrap();
-        assert!(resp.get("error").is_none(), "seeding {collection}/{id} failed: {resp:?}");
+        seed_via_store(&storage_provider, &key_store, &service_id, collection, id, &payload).await;
     }
 
     let alice = fdae_writer_caller("did:key:alice", &service_id);
@@ -1286,10 +1557,11 @@ async fn native_aggregate_is_row_filtered_through_native_dispatch() {
         Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
     let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
     let policy = Arc::new(native_fdae_rls_only_policy());
+    let storage_provider: Arc<dyn StorageProvider> = storage_provider;
     let data_service = Arc::new(SynSvcNativeService::new(
         service_id.clone(),
-        key_store,
-        storage_provider,
+        key_store.clone(),
+        storage_provider.clone(),
         blob_provider,
         messaging_broker,
         Some(policy),
@@ -1303,27 +1575,13 @@ async fn native_aggregate_is_row_filtered_through_native_dispatch() {
     let pipeline = raw_pipeline(&service_id);
     let preamble = preamble_for(&service_id, "data-layer");
 
-    let seeder = test_caller("did:key:z6MkAggregateSeeder");
     for (collection, id, payload) in [
         ("users", "u-alice", json!({"did": "did:key:alice"})),
         ("users", "u-bob", json!({"did": "did:key:bob"})),
         ("documents", "doc-1", json!({"creator_uuid": "u-alice"})),
         ("documents", "doc-2", json!({"creator_uuid": "u-bob"})),
     ] {
-        let create_body = json_rpc_body("create-collection", json!({"name": collection}));
-        let _ = route_handler
-            .dispatch_json_rpc_once(&pipeline, &preamble, Some(&seeder), &create_body)
-            .await;
-        let put_body = json_rpc_body(
-            "put",
-            json!({"collection": collection, "value": {"id": id, "payload": payload.to_string().into_bytes()}}),
-        );
-        let resp = route_handler
-            .dispatch_json_rpc_once(&pipeline, &preamble, Some(&seeder), &put_body)
-            .await
-            .unwrap();
-        let resp: Value = serde_json::from_slice(&resp).unwrap();
-        assert!(resp.get("error").is_none(), "seeding {collection}/{id} failed: {resp:?}");
+        seed_via_store(&storage_provider, &key_store, &service_id, collection, id, &payload).await;
     }
 
     let alice = fdae_reader_caller("did:key:alice", &service_id);
@@ -1471,10 +1729,19 @@ fn zero_capability_caller(subject_did: &str) -> CallerContext {
     }
 }
 
+type ResolveRelationHarness = (
+    RouteHandler,
+    RoutePipeline,
+    RoutePreamble,
+    tempfile::TempDir,
+    Arc<dyn StorageProvider>,
+    Arc<KeyStore>,
+);
+
 async fn resolve_relation_service_and_pipeline(
     service_id: &str,
     policy: Option<Policy>,
-) -> (RouteHandler, RoutePipeline, RoutePreamble, tempfile::TempDir) {
+) -> ResolveRelationHarness {
     resolve_relation_service_and_pipeline_with(
         service_id,
         policy,
@@ -1493,18 +1760,19 @@ async fn resolve_relation_service_and_pipeline_with(
     policy: Option<Policy>,
     node_identity: Arc<syneroym_identity::Identity>,
     owner_did: &str,
-) -> (RouteHandler, RoutePipeline, RoutePreamble, tempfile::TempDir) {
+) -> ResolveRelationHarness {
     let (route_handler, _http_routes) = test_route_handler().await;
     let key_store = Arc::new(KeyStore::new());
     let temp_dir = tempfile::tempdir().unwrap();
-    let storage_provider = Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+    let storage_provider: Arc<dyn StorageProvider> =
+        Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
     let blob_provider: Arc<dyn BlobProvider> =
         Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
     let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
     let data_service = Arc::new(SynSvcNativeService::new(
         service_id.to_string(),
-        key_store,
-        storage_provider,
+        key_store.clone(),
+        storage_provider.clone(),
         blob_provider,
         messaging_broker,
         policy.map(Arc::new),
@@ -1518,70 +1786,63 @@ async fn resolve_relation_service_and_pipeline_with(
     let pipeline = raw_pipeline(service_id);
     let preamble = preamble_for(service_id, "data-layer");
 
-    // Seed via an elevated, unentitled-by-policy caller -- `put`/
-    // `create-collection` carry no FDAE gate (write-side Tier 3 is Slice
-    // B5-fdae).
-    let seeder = test_caller("did:key:z6MkResolveRelationSeeder");
+    // Seeded directly against the store, `auth: None` -- `resolvable_
+    // employee_policy` (and every other fixture policy used here) declares
+    // no `data-layer/write` permission at all, so seeding through the
+    // gated `put`/`batch-mutate` JSON-RPC path would deny closed regardless
+    // of which caller presents it.
+    let store = storage_provider.open_service_db(service_id, &key_store).await.unwrap();
+    store
+        .create_collection(&host_store::CollectionSchema {
+            name: "employees".to_string(),
+            indexes: vec![],
+        })
+        .await
+        .unwrap();
     for (id, did) in [("emp-alice", "did:key:alice"), ("emp-bob", "did:key:bob")] {
-        let create_body = json_rpc_body("create-collection", json!({"name": "employees"}));
-        let _ = route_handler
-            .dispatch_json_rpc_once(&pipeline, &preamble, Some(&seeder), &create_body)
-            .await;
-        let put_body = json_rpc_body(
-            "put",
-            json!({
-                "collection": "employees",
-                "value": {"id": id, "payload": json!({"did": did}).to_string().into_bytes()}
-            }),
-        );
-        let resp = route_handler
-            .dispatch_json_rpc_once(&pipeline, &preamble, Some(&seeder), &put_body)
+        store
+            .put(
+                "employees",
+                &host_store::RecordWriteValue {
+                    id: id.to_string(),
+                    payload: json!({"did": did}).to_string().into_bytes(),
+                },
+                service_id,
+                None,
+            )
             .await
             .unwrap();
-        let resp: Value = serde_json::from_slice(&resp).unwrap();
-        assert!(resp.get("error").is_none(), "seeding employees/{id} failed: {resp:?}");
     }
+    drop(store);
 
-    (route_handler, pipeline, preamble, temp_dir)
+    (route_handler, pipeline, preamble, temp_dir, storage_provider, key_store)
 }
 
 /// Seeds `count` employee rows, all sharing `did` (so a single principal's
-/// `view_self`/structural lookup reaches all of them), via `batch-mutate`
-/// calls capped at `data_db`'s own `MAX_BATCH_SIZE` (200) per call --
-/// needed to construct an id-set bigger than `MAX_FETCH_IDS` (1000) for
-/// the overflow tests below.
+/// `view_self`/structural lookup reaches all of them), directly against the
+/// store (`resolvable_employee_policy` declares no `data-layer/write`
+/// permission, so the gated `batch-mutate` JSON-RPC path would deny closed
+/// regardless of caller, same reasoning as the fixed-row seeding above) --
+/// needed to construct an id-set bigger than `MAX_FETCH_IDS` (1000) for the
+/// overflow tests below.
 async fn seed_many_employees(
-    route_handler: &RouteHandler,
-    pipeline: &RoutePipeline,
-    preamble: &RoutePreamble,
+    storage_provider: &Arc<dyn StorageProvider>,
+    key_store: &Arc<KeyStore>,
+    service_id: &str,
     did: &str,
     count: usize,
 ) {
-    const BATCH: usize = 200;
-    let seeder = test_caller("did:key:z6MkBulkSeeder");
-    let mut seeded = 0usize;
-    while seeded < count {
-        let this_batch = BATCH.min(count - seeded);
-        let mutations: Vec<Value> = (0..this_batch)
-            .map(|i| {
-                let id = format!("emp-bulk-{}", seeded + i);
-                json!({
-                    "type": "put",
-                    "value": {"id": id, "payload": json!({"did": did}).to_string().into_bytes()}
-                })
+    let store = storage_provider.open_service_db(service_id, key_store).await.unwrap();
+    let mutations: Vec<host_store::Mutation> = (0..count)
+        .map(|i| {
+            host_store::Mutation::Put(host_store::RecordWriteValue {
+                id: format!("emp-bulk-{i}"),
+                payload: json!({"did": did}).to_string().into_bytes(),
             })
-            .collect();
-        let body = json_rpc_body(
-            "batch-mutate",
-            json!({"collection": "employees", "mutations": mutations}),
-        );
-        let resp = route_handler
-            .dispatch_json_rpc_once(pipeline, preamble, Some(&seeder), &body)
-            .await
-            .unwrap();
-        let resp: Value = serde_json::from_slice(&resp).unwrap();
-        assert!(resp.get("error").is_none(), "bulk seeding failed: {resp:?}");
-        seeded += this_batch;
+        })
+        .collect();
+    for chunk in mutations.chunks(MAX_BATCH_SIZE) {
+        store.batch_mutate("employees", chunk, service_id, None).await.unwrap();
     }
 }
 
@@ -1593,10 +1854,16 @@ async fn seed_many_employees(
 #[tokio::test]
 async fn resolve_relation_a1_overflow_maps_to_quota_exceeded() {
     let service_id = "resolve-relation-a1-overflow-svc";
-    let (route_handler, pipeline, preamble, _temp_dir) =
+    let (route_handler, pipeline, preamble, _temp_dir, storage_provider, key_store) =
         resolve_relation_service_and_pipeline(service_id, Some(resolvable_employee_policy())).await;
-    seed_many_employees(&route_handler, &pipeline, &preamble, "did:key:alice", MAX_FETCH_IDS + 1)
-        .await;
+    seed_many_employees(
+        &storage_provider,
+        &key_store,
+        service_id,
+        "did:key:alice",
+        MAX_FETCH_IDS + 1,
+    )
+    .await;
 
     let alice = employee_reader_caller("did:key:alice", service_id);
     let body = resolve_relation_body("employee", "did:key:alice");
@@ -1618,10 +1885,16 @@ async fn resolve_relation_a1_overflow_maps_to_quota_exceeded() {
 #[tokio::test]
 async fn resolve_relation_a2_overflow_maps_to_quota_exceeded() {
     let service_id = "resolve-relation-a2-overflow-svc";
-    let (route_handler, pipeline, preamble, _temp_dir) =
+    let (route_handler, pipeline, preamble, _temp_dir, storage_provider, key_store) =
         resolve_relation_service_and_pipeline(service_id, Some(resolvable_employee_policy())).await;
-    seed_many_employees(&route_handler, &pipeline, &preamble, "did:key:bob", MAX_FETCH_IDS + 1)
-        .await;
+    seed_many_employees(
+        &storage_provider,
+        &key_store,
+        service_id,
+        "did:key:bob",
+        MAX_FETCH_IDS + 1,
+    )
+    .await;
 
     let bob = zero_capability_caller("did:key:bob");
     let body = resolve_relation_body("employee", "did:key:bob");
@@ -1647,7 +1920,7 @@ fn resolve_relation_body(relation: &str, principal: &str) -> Vec<u8> {
 #[tokio::test]
 async fn resolve_relation_a1_resolves_via_the_capability_gated_sieve_and_verifies() {
     let service_id = "resolve-relation-a1-svc";
-    let (route_handler, pipeline, preamble, _temp_dir) =
+    let (route_handler, pipeline, preamble, _temp_dir, _storage_provider, _key_store) =
         resolve_relation_service_and_pipeline(service_id, Some(resolvable_employee_policy())).await;
 
     let alice = employee_reader_caller("did:key:alice", service_id);
@@ -1682,7 +1955,7 @@ async fn resolve_relation_co_hosted_services_sign_with_distinct_asserter_dids() 
     let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
     let owner_did = "did:key:zSharedOwner";
 
-    let (hr_handler, hr_pipeline, hr_preamble, _hr_dir) =
+    let (hr_handler, hr_pipeline, hr_preamble, _hr_dir, _hr_sp, _hr_ks) =
         resolve_relation_service_and_pipeline_with(
             "hr-svc",
             Some(resolvable_employee_policy()),
@@ -1690,14 +1963,20 @@ async fn resolve_relation_co_hosted_services_sign_with_distinct_asserter_dids() 
             owner_did,
         )
         .await;
-    let (finance_handler, finance_pipeline, finance_preamble, _finance_dir) =
-        resolve_relation_service_and_pipeline_with(
-            "finance-svc",
-            Some(resolvable_employee_policy()),
-            node_identity,
-            owner_did,
-        )
-        .await;
+    let (
+        finance_handler,
+        finance_pipeline,
+        finance_preamble,
+        _finance_dir,
+        _finance_sp,
+        _finance_ks,
+    ) = resolve_relation_service_and_pipeline_with(
+        "finance-svc",
+        Some(resolvable_employee_policy()),
+        node_identity,
+        owner_did,
+    )
+    .await;
 
     let bob = zero_capability_caller("did:key:bob");
     let body = resolve_relation_body("employee", "did:key:bob");
@@ -1750,7 +2029,7 @@ async fn resolve_relation_service_id_reused_by_a_different_owner_signs_distinctl
     let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
     let service_id = "reused-service-id-svc";
 
-    let (old_handler, old_pipeline, old_preamble, _old_dir) =
+    let (old_handler, old_pipeline, old_preamble, _old_dir, _old_sp, _old_ks) =
         resolve_relation_service_and_pipeline_with(
             service_id,
             Some(resolvable_employee_policy()),
@@ -1758,7 +2037,7 @@ async fn resolve_relation_service_id_reused_by_a_different_owner_signs_distinctl
             "did:key:zOldOwner",
         )
         .await;
-    let (new_handler, new_pipeline, new_preamble, _new_dir) =
+    let (new_handler, new_pipeline, new_preamble, _new_dir, _new_sp, _new_ks) =
         resolve_relation_service_and_pipeline_with(
             service_id,
             Some(resolvable_employee_policy()),
@@ -1797,7 +2076,7 @@ async fn resolve_relation_service_id_reused_by_a_different_owner_signs_distinctl
 #[tokio::test]
 async fn resolve_relation_an_unrelated_resource_capability_still_gets_a2() {
     let service_id = "resolve-relation-unrelated-resource-svc";
-    let (route_handler, pipeline, preamble, _temp_dir) =
+    let (route_handler, pipeline, preamble, _temp_dir, _storage_provider, _key_store) =
         resolve_relation_service_and_pipeline(service_id, Some(resolvable_employee_policy())).await;
 
     let caller = unrelated_resource_capability_caller("did:key:alice", service_id);
@@ -1823,7 +2102,7 @@ async fn resolve_relation_an_unrelated_resource_capability_still_gets_a2() {
 #[tokio::test]
 async fn resolve_relation_a1_deny_is_not_rescued_by_a2() {
     let service_id = "resolve-relation-a1-deny-svc";
-    let (route_handler, pipeline, preamble, _temp_dir) =
+    let (route_handler, pipeline, preamble, _temp_dir, _storage_provider, _key_store) =
         resolve_relation_service_and_pipeline(service_id, Some(resolvable_employee_policy())).await;
 
     let mallory = wrong_ability_on_the_right_resource_caller("did:key:alice", service_id);
@@ -1847,7 +2126,7 @@ async fn resolve_relation_a1_deny_is_not_rescued_by_a2() {
 #[tokio::test]
 async fn resolve_relation_a2_resolves_structurally_with_zero_capabilities() {
     let service_id = "resolve-relation-a2-svc";
-    let (route_handler, pipeline, preamble, _temp_dir) =
+    let (route_handler, pipeline, preamble, _temp_dir, _storage_provider, _key_store) =
         resolve_relation_service_and_pipeline(service_id, Some(resolvable_employee_policy())).await;
 
     let bob = zero_capability_caller("did:key:bob");
@@ -1876,7 +2155,7 @@ async fn resolve_relation_denies_when_not_opted_in_and_no_capabilities() {
         }"#,
     )
     .unwrap();
-    let (route_handler, pipeline, preamble, _temp_dir) =
+    let (route_handler, pipeline, preamble, _temp_dir, _storage_provider, _key_store) =
         resolve_relation_service_and_pipeline(service_id, Some(policy)).await;
 
     let bob = zero_capability_caller("did:key:bob");
@@ -1897,7 +2176,7 @@ async fn resolve_relation_denies_when_not_opted_in_and_no_capabilities() {
 #[tokio::test]
 async fn resolve_relation_denies_for_an_undeclared_relation_not_unfiltered() {
     let service_id = "resolve-relation-undeclared-svc";
-    let (route_handler, pipeline, preamble, _temp_dir) =
+    let (route_handler, pipeline, preamble, _temp_dir, _storage_provider, _key_store) =
         resolve_relation_service_and_pipeline(service_id, Some(resolvable_employee_policy())).await;
 
     let bob = zero_capability_caller("did:key:bob");
@@ -1921,7 +2200,7 @@ async fn resolve_relation_denies_for_an_undeclared_relation_not_unfiltered() {
 #[tokio::test]
 async fn resolve_relation_denies_when_principal_does_not_match_the_caller() {
     let service_id = "resolve-relation-mismatch-svc";
-    let (route_handler, pipeline, preamble, _temp_dir) =
+    let (route_handler, pipeline, preamble, _temp_dir, _storage_provider, _key_store) =
         resolve_relation_service_and_pipeline(service_id, Some(resolvable_employee_policy())).await;
 
     let alice = employee_reader_caller("did:key:alice", service_id);
@@ -1943,7 +2222,7 @@ async fn resolve_relation_denies_when_principal_does_not_match_the_caller() {
 #[tokio::test]
 async fn resolve_relation_is_empty_when_no_policy_is_deployed() {
     let service_id = "resolve-relation-no-policy-svc";
-    let (route_handler, pipeline, preamble, _temp_dir) =
+    let (route_handler, pipeline, preamble, _temp_dir, _storage_provider, _key_store) =
         resolve_relation_service_and_pipeline(service_id, None).await;
 
     let bob = zero_capability_caller("did:key:bob");
@@ -1997,11 +2276,12 @@ fn resolvable_employee_policy_with_stage4() -> Policy {
 #[tokio::test]
 async fn resolve_relation_a1_denies_closed_under_a_stage4_definition() {
     let service_id = "resolve-relation-a1-stage4-svc";
-    let (route_handler, pipeline, preamble, _temp_dir) = resolve_relation_service_and_pipeline(
-        service_id,
-        Some(resolvable_employee_policy_with_stage4()),
-    )
-    .await;
+    let (route_handler, pipeline, preamble, _temp_dir, _storage_provider, _key_store) =
+        resolve_relation_service_and_pipeline(
+            service_id,
+            Some(resolvable_employee_policy_with_stage4()),
+        )
+        .await;
 
     let alice = employee_reader_caller("did:key:alice", service_id);
     let body = resolve_relation_body("employee", "did:key:alice");
@@ -2023,11 +2303,12 @@ async fn resolve_relation_a1_denies_closed_under_a_stage4_definition() {
 #[tokio::test]
 async fn resolve_relation_a2_denies_closed_under_a_stage4_definition() {
     let service_id = "resolve-relation-a2-stage4-svc";
-    let (route_handler, pipeline, preamble, _temp_dir) = resolve_relation_service_and_pipeline(
-        service_id,
-        Some(resolvable_employee_policy_with_stage4()),
-    )
-    .await;
+    let (route_handler, pipeline, preamble, _temp_dir, _storage_provider, _key_store) =
+        resolve_relation_service_and_pipeline(
+            service_id,
+            Some(resolvable_employee_policy_with_stage4()),
+        )
+        .await;
 
     let bob = zero_capability_caller("did:key:bob");
     let body = resolve_relation_body("employee", "did:key:bob");
@@ -2080,14 +2361,15 @@ async fn build_hr_svc_proxy_router(
 
     let key_store = Arc::new(KeyStore::new());
     let temp_dir = tempfile::tempdir().unwrap();
-    let storage_provider = Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+    let storage_provider: Arc<dyn StorageProvider> =
+        Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
     let blob_provider: Arc<dyn BlobProvider> =
         Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
     let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
     let hr_service = Arc::new(SynSvcNativeService::new(
         hr_service_id.to_string(),
-        key_store,
-        storage_provider,
+        key_store.clone(),
+        storage_provider.clone(),
         blob_provider,
         messaging_broker,
         Some(Arc::new(resolvable_employee_policy())),
@@ -2096,28 +2378,20 @@ async fn build_hr_svc_proxy_router(
         syneroym_sandbox_wasm::empty_service_proxy(),
         syneroym_rpc::empty_row_authorizer(),
     ));
-    let seeder = test_caller("did:key:z6MkResolveRelationSeeder");
+    // Seeded directly against the store, `auth: None` -- `resolvable_
+    // employee_policy` declares no `data-layer/write` permission at all, so
+    // seeding through the gated native `"put"` dispatch would deny closed
+    // regardless of caller.
     for (id, did) in [("emp-alice", "did:key:alice"), ("emp-bob", "did:key:bob")] {
-        let _ = hr_service
-            .dispatch(NativeInvocation {
-                interface: "data-layer".to_string(),
-                method: "create-collection".to_string(),
-                params: json!({"name": "employees"}),
-                caller: seeder.clone(),
-            })
-            .await;
-        hr_service
-            .dispatch(NativeInvocation {
-                interface: "data-layer".to_string(),
-                method: "put".to_string(),
-                params: json!({
-                    "collection": "employees",
-                    "value": {"id": id, "payload": json!({"did": did}).to_string().into_bytes()}
-                }),
-                caller: seeder.clone(),
-            })
-            .await
-            .unwrap();
+        seed_via_store(
+            &storage_provider,
+            &key_store,
+            hr_service_id,
+            "employees",
+            id,
+            &json!({"did": did}),
+        )
+        .await;
     }
 
     let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
@@ -2331,15 +2605,16 @@ async fn native_dispatch_query_resolves_a_cross_service_fetch_end_to_end() {
 
     let key_store = Arc::new(KeyStore::new());
     let temp_dir = tempfile::tempdir().unwrap();
-    let storage_provider = Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+    let storage_provider: Arc<dyn StorageProvider> =
+        Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
     let blob_provider: Arc<dyn BlobProvider> =
         Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
     let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
     let service_proxy: Arc<dyn ServiceProxy> = proxy_router;
     let app_service = SynSvcNativeService::new(
         local_service_id.to_string(),
-        key_store,
-        storage_provider,
+        key_store.clone(),
+        storage_provider.clone(),
         blob_provider,
         messaging_broker,
         Some(Arc::new(local_policy)),
@@ -2349,32 +2624,19 @@ async fn native_dispatch_query_resolves_a_cross_service_fetch_end_to_end() {
         syneroym_rpc::empty_row_authorizer(),
     );
 
-    let seeder = test_caller("did:key:z6MkQueryThroughDispatchSeeder");
-    app_service
-        .dispatch(NativeInvocation {
-            interface: "data-layer".to_string(),
-            method: "create-collection".to_string(),
-            params: json!({"name": "documents"}),
-            caller: seeder.clone(),
-        })
-        .await
-        .unwrap();
+    // Seeded directly against the store, `auth: None` -- `local_policy`
+    // declares only a `view` (read) permission, so seeding through the
+    // gated native `"put"` dispatch would deny closed regardless of caller.
     for (id, owner_uuid) in [("doc-1", "emp-alice"), ("doc-2", "emp-bob")] {
-        app_service
-            .dispatch(NativeInvocation {
-                interface: "data-layer".to_string(),
-                method: "put".to_string(),
-                params: json!({
-                    "collection": "documents",
-                    "value": {
-                        "id": id,
-                        "payload": json!({"owner_uuid": owner_uuid}).to_string().into_bytes()
-                    }
-                }),
-                caller: seeder.clone(),
-            })
-            .await
-            .unwrap();
+        seed_via_store(
+            &storage_provider,
+            &key_store,
+            local_service_id,
+            "documents",
+            id,
+            &json!({"owner_uuid": owner_uuid}),
+        )
+        .await;
     }
 
     // Alice's proxying caller, same shape as the hand-wired join test above.

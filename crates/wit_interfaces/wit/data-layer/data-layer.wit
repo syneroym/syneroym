@@ -83,8 +83,31 @@ interface store {
 
     drop-collection: func(name: string) -> result<_, data-layer-error>;
 
+    /// Under a deployed FDAE policy (ADR-0017 §4), may return
+    /// `permission-denied`: the caller must reach the row both as it stands
+    /// today (an update) and as it will read after the write (a create or
+    /// an update), plus CLS -- a field the caller cannot read may not be
+    /// authored either. `check-access` answers about an *existing* row and
+    /// is not a create pre-check: for an id that does not exist yet it
+    /// returns `false`, while `put` will *allow* the create if the
+    /// post-image is reachable -- a guest that pre-checks before creating
+    /// would see "no" and then succeed anyway.
+    ///
+    /// **Under a CLS-active policy (a non-empty masked-field set), `put`
+    /// cannot update a row that carries a masked value.** `put` replaces the
+    /// whole payload, and any payload the caller read back first already
+    /// had its masked fields stripped -- so the ordinary read-modify-write
+    /// loop always produces a post-image missing those fields, which counts
+    /// as a change and is denied. Use `patch` instead: it merges into the
+    /// existing payload, so a masked field the caller never touches simply
+    /// isn't part of the merge.
     put: func(collection: string, value: record-write-value) -> result<_, data-layer-error>;
 
+    /// See `put`'s FDAE doc note. `patch` of a row that does not exist
+    /// returns `permission-denied` rather than `schema-violation` under a
+    /// policy -- the pre-image reachability check cannot distinguish
+    /// "absent" from "present but unreachable" without becoming an
+    /// existence oracle, which CLS-masking already refuses to provide.
     patch: func(collection: string, id: string, patch-json: list<u8>) -> result<_, data-layer-error>;
 
     get: func(collection: string, id: string) -> result<option<record-read-value>, data-layer-error>;
@@ -118,6 +141,10 @@ interface store {
     /// cap: page *k* is `{"$skip": k*pagesize, "$limit": pagesize}`.
     aggregate: func(collection: string, pipeline: string) -> result<raw-query-result, data-layer-error>;
 
+    /// See `put`'s FDAE doc note -- `delete` of a row that does not exist
+    /// under a policy also returns `permission-denied`, no longer
+    /// unconditionally idempotent (idempotent only on the policy-absent
+    /// path).
     delete: func(collection: string, id: string) -> result<_, data-layer-error>;
 
     delete-many: func(collection: string, filter: string) -> result<u64, data-layer-error>;
@@ -126,6 +153,11 @@ interface store {
     ///
     /// NOTE: The host must enforce a strict MAX_BATCH_SIZE limit on the number of
     /// mutations to prevent starvation of the single-writer SQLite database.
+    ///
+    /// Under a deployed FDAE policy (ADR-0017 §4), each mutation is
+    /// authorized individually, in the same transaction as the batch; the
+    /// first unauthorized mutation returns `permission-denied` and rolls
+    /// back every mutation in the batch, not just the offending one.
     batch-mutate: func(collection: string, mutations: list<mutation>) -> result<_, data-layer-error>;
 
     /// Executes arbitrary DDL statements.

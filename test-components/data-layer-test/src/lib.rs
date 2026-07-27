@@ -65,4 +65,13 @@ impl TestDriverGuest for DataLayerTestComponent {
         let record = store::get("profiles", &id).map_err(|e| format!("{e:?}"))?;
         record.map(|r| r.creator_id).ok_or_else(|| "record not found".to_string())
     }
+
+    fn run_query_scenario(limit: u32) -> Result<String, String> {
+        let result = store::query(
+            "profiles",
+            &QueryOptions { filter: None, limit: Some(limit), cursor: None },
+        )
+        .map_err(|e| format!("{e:?}"))?;
+        Ok(result.records.len().to_string())
+    }
 }
