@@ -316,6 +316,9 @@ mod tests {
             EndpointInfo, EndpointMechanism, EndpointType, MASTER_ANCHOR_SCHEMA_V1,
             MasterAnchorPayload, RegistryClient,
         },
+        endpoint_publisher::EndpointPublisher,
+        local_registry::EndpointRegistry,
+        storage::MockStorage,
         util,
     };
     use syneroym_identity::{
@@ -739,6 +742,155 @@ mod tests {
 
         let stored = registry.state.master_anchors.get(&master_did).unwrap();
         assert_eq!(stored.0.pkarr_packet_hex, corrupt.pkarr_packet_hex);
+    }
+
+    /// D-A1-12's `master_id` equality tightening, against
+    /// `fetch_own_master_anchor` (reached through `refresh_master_anchor`).
+    /// Unlike `refreshing_refuses_to_overwrite_an_anchor_it_cannot_read`'s
+    /// corrupted anchor, this one has a perfectly valid signature -- it is
+    /// honestly signed by `other`, and only the identity it is served under
+    /// is wrong, the shape a compromised or buggy registry would produce by
+    /// answering a lookup for one master with another's anchor.
+    #[tokio::test]
+    async fn refresh_refuses_an_anchor_served_under_the_wrong_master() {
+        let (registry, url) = spawn_registry().await;
+        let client = RegistryClient::new(false, Some(url));
+        let requested_master = Identity::generate().unwrap();
+        let requested_master_did = substrate::derive_did_key(&requested_master.public_key());
+
+        let other_master = Identity::generate().unwrap();
+        let other_anchor = MasterAnchorPayload::default().sign(&other_master).unwrap();
+        registry
+            .state
+            .master_anchors
+            .insert(requested_master_did.clone(), (other_anchor, Instant::now()));
+
+        let err = client.refresh_master_anchor(&requested_master).await;
+        assert!(err.is_err(), "a validly-signed anchor for a different master must be refused");
+    }
+
+    /// The same D-A1-12 tightening, against `resolve_master_anchor` -- the
+    /// consumer-facing read path, not the refresh path above.
+    #[tokio::test]
+    async fn resolve_master_anchor_refuses_an_anchor_served_under_the_wrong_master() {
+        let (registry, url) = spawn_registry().await;
+        let client = RegistryClient::new(false, Some(url));
+        let requested_master = Identity::generate().unwrap();
+        let requested_master_did = substrate::derive_did_key(&requested_master.public_key());
+
+        let other_master = Identity::generate().unwrap();
+        let other_anchor = MasterAnchorPayload::default().sign(&other_master).unwrap();
+        registry
+            .state
+            .master_anchors
+            .insert(requested_master_did.clone(), (other_anchor, Instant::now()));
+
+        let err = client.resolve_master_anchor(&requested_master_did, None).await;
+        assert!(err.is_err(), "a validly-signed anchor for a different master must be refused");
+    }
+
+    /// D-A1-3's recovery path, against a live registry -- `build_record`'s
+    /// own tests (`crates/core/src/endpoint_publisher.rs`) exercise the
+    /// decision table but never call `publish_all_services` itself, since
+    /// `register` against no registry is a silent no-op rather than the
+    /// failure this test needs. Two masters keep the two certified
+    /// services' records at distinct lookup keys, so a missing one is
+    /// directly assertable rather than shadowed by a last-writer-wins
+    /// collision.
+    #[tokio::test]
+    async fn publish_all_services_covers_certified_and_stored_only_services_and_survives_one_failing()
+     {
+        let (_registry, url) = spawn_registry().await;
+        let hosted_apps_dir = tempfile::tempdir().unwrap();
+        let node_identity = Identity::generate().unwrap();
+        let node_did = substrate::derive_did_key(&node_identity.public_key());
+        let local_registry = EndpointRegistry::new(Arc::new(MockStorage::default())).await.unwrap();
+
+        // Certified service 1: a live instance certificate, so it publishes.
+        let master1 = Identity::generate().unwrap();
+        let master1_did = substrate::derive_did_key(&master1.public_key());
+        let owner1 = "did:key:zOwner1".to_string();
+        local_registry.set_owner("svc-1".to_string(), owner1.clone()).await.unwrap();
+        let instance1 = node_identity.derive_service_identity(&owner1, "svc-1");
+        let cert1 = DelegationCertificate::issue(
+            &master1,
+            instance1.public_key(),
+            3600,
+            SCOPE_SERVICE_INSTANCE.to_string(),
+        )
+        .unwrap();
+        local_registry.set_instance_cert("svc-1".to_string(), cert1).await.unwrap();
+
+        // Certified service 2: a live certificate whose instance key its own
+        // master has revoked, so the registry rejects it at admission
+        // (D-A1-6) -- a genuine `Err` from `publish_service`, not the benign
+        // `Ok(false)` an expired certificate would produce. The sweep must
+        // survive it and still cover svc-1 and the stored-only service
+        // below.
+        let master2 = Identity::generate().unwrap();
+        let master2_did = substrate::derive_did_key(&master2.public_key());
+        let owner2 = "did:key:zOwner2".to_string();
+        local_registry.set_owner("svc-2".to_string(), owner2.clone()).await.unwrap();
+        let instance2 = node_identity.derive_service_identity(&owner2, "svc-2");
+        let instance2_did = substrate::derive_did_key(&instance2.public_key());
+        let cert2 = DelegationCertificate::issue(
+            &master2,
+            instance2.public_key(),
+            3600,
+            SCOPE_SERVICE_INSTANCE.to_string(),
+        )
+        .unwrap();
+        local_registry.set_instance_cert("svc-2".to_string(), cert2).await.unwrap();
+        let anchor_client = RegistryClient::new(false, Some(url.clone()));
+        anchor_client
+            .publish_master_anchor(&master2_did, vec![instance2_did], None, &master2, false)
+            .await
+            .unwrap();
+
+        // Stored-only service 3: no certificate, replays its self-signed
+        // file -- the other half of the id union, alongside the two
+        // certified services above.
+        let identity3 = Identity::generate().unwrap();
+        let did3 = substrate::derive_did_key(&identity3.public_key());
+        let info3 = EndpointInfo {
+            service_id: did3.clone(),
+            substrate_id: did3.clone(),
+            endpoint_type: EndpointType::Service,
+            mechanisms: vec![],
+            nickname: None,
+            is_private: false,
+            ttl: None,
+            delegation: None,
+        };
+        std::fs::write(
+            hosted_apps_dir.path().join(format!("{did3}.json")),
+            serde_json::to_string(&info3.sign(&identity3).unwrap()).unwrap(),
+        )
+        .unwrap();
+
+        let publisher = EndpointPublisher::new(
+            Arc::new(RegistryClient::new(false, Some(url.clone()))),
+            local_registry,
+            Arc::new(node_identity),
+            node_did,
+            hosted_apps_dir.path().to_path_buf(),
+        );
+
+        publisher.publish_all_services().await;
+
+        let client = RegistryClient::new(false, Some(url));
+        assert!(
+            client.lookup(&master1_did, false).await.is_ok(),
+            "the certified, publishable service must have been published"
+        );
+        assert!(
+            client.lookup(&master2_did, false).await.is_err(),
+            "the revoked instance's record must not exist -- its publish was rejected"
+        );
+        assert!(
+            client.lookup(&did3, false).await.is_ok(),
+            "the stored-only service must still have been replayed despite svc-2's failure"
+        );
     }
 
     /// Mirrors `MasterAnchorPayload::sign`, backdated -- kept in this test

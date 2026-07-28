@@ -486,3 +486,21 @@ edited into §6's prose. Full reasoning is in
     real master key, turning an unauthenticated tamper into a permanent
     authentic one. Fixed by comparing the whole parsed struct instead of one
     field, on both types (D-A1-9, D-A1-13).
+14. **§6 gains a Publishing/Reading split this ADR never described
+    (D-A1-10).** `SignedEndpointInfo::verify` now takes a `RecordTrust`
+    argument. Admitting a record (`Publishing`) checks the full validity
+    window, exactly as before. Reading one (`Reading`) checks the master
+    match, scope, and signature but not wall-clock expiry — a record some
+    other party already admitted while the certificate was live does not
+    re-adjudicate that credential on every read. The two structural
+    window checks (a non-positive window, and an issuance timestamp too far
+    in the future) stay enforced at both trust levels regardless: they are
+    proof a certificate was never a live credential at all, which is a
+    different claim from "this one has since lapsed," and `Reading` was
+    never meant to admit the former. One consequence follows directly:
+    **the moment a member's instance certificate lapses, its record stops
+    being *refreshed*, but existing readers keep resolving it until the
+    registry's own TTL drops it** (`DEFAULT_REGISTRY_TTL_SECS`, two hours).
+    A missed renewal therefore degrades name resolution on that clock
+    rather than failing every lookup the instant the certificate expires —
+    task.md's failure-matrix row 3 was rewritten to say so.

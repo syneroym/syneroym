@@ -111,18 +111,25 @@ impl DelegationCertificate {
         now_secs >= self.expires_at_secs
     }
 
-    /// The master match, the scope, and the signature -- everything `verify`
-    /// checks except the validity window.
+    /// The master match, the scope, the signature, and every structural
+    /// property of the window that does not depend on *when* this is
+    /// called -- a non-positive window (`issued_at >= expires_at`) and an
+    /// issuance timestamp too far in the future are proof this was never a
+    /// live credential at all, not evidence it has since lapsed, so both
+    /// stay checked here regardless of trust level. The one thing this
+    /// skips is whether `expires_at_secs` has passed *by now*.
     ///
-    /// For one case only: reading a record that some other party already
-    /// admitted while this certificate was live. Re-checking the window
-    /// there turns a lapsed renewal into an immediate resolution failure for
-    /// every consumer, when the thing the credential proves -- that the
-    /// master authorized this key -- has not stopped being true.
+    /// That skip is for one case only: reading a record that some other
+    /// party already admitted while this certificate was live. Re-checking
+    /// wall-clock expiry there turns a lapsed renewal into an immediate
+    /// resolution failure for every consumer, when the thing the credential
+    /// proves -- that the master authorized this key -- has not stopped
+    /// being true.
     ///
     /// **Never admit anything with this.** Connecting, publishing, and
-    /// installing all check the window, because there the certificate is a
-    /// live credential being presented. When in doubt, use `verify`.
+    /// installing all check the full window via `verify`, because there the
+    /// certificate is a live credential being presented. When in doubt, use
+    /// `verify`.
     ///
     /// `expected_master_did` is a confused-deputy check against whatever the
     /// caller already believes the master to be. On the router's only
@@ -153,6 +160,25 @@ impl DelegationCertificate {
             ));
         }
 
+        if self.issued_at_secs >= self.expires_at_secs {
+            return Err(anyhow!("Delegation certificate has non-positive validity window"));
+        }
+
+        let now_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .context("System time is before UNIX epoch")?
+            .as_secs();
+
+        // Reject certs issued more than 300 seconds in the future (clock skew
+        // tolerance). Monotonic, not a lapse: real time only advances, so a
+        // certificate that clears this check once clears it forever after --
+        // unlike wall-clock expiry, deferring it to `verify` would buy
+        // nothing and would let a forged future `issued_at` slip past a
+        // reader.
+        if self.issued_at_secs > now_secs + 300 {
+            return Err(anyhow!("Delegation certificate issued_at is in the future"));
+        }
+
         // 1. Resolve master public key
         let master_pubkey = substrate::resolve_did_key(&self.master_did)
             .context("Failed to resolve master DID in delegation certificate")?;
@@ -180,27 +206,17 @@ impl DelegationCertificate {
         Ok(())
     }
 
-    /// `verify_chain` plus the validity window: the certificate must not be
-    /// issued in the future, have a non-positive window, or already be
-    /// expired. Use this at every trust boundary that presents, publishes, or
-    /// installs a certificate as a live credential.
+    /// `verify_chain` plus wall-clock expiry: the certificate must not
+    /// already be past `expires_at_secs`. Use this at every trust boundary
+    /// that presents, publishes, or installs a certificate as a live
+    /// credential.
     pub fn verify(&self, expected_master_did: &str, accepted_scopes: &[&str]) -> Result<()> {
         self.verify_chain(expected_master_did, accepted_scopes)?;
-
-        if self.issued_at_secs >= self.expires_at_secs {
-            return Err(anyhow!("Delegation certificate has non-positive validity window"));
-        }
 
         let now_secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .context("System time is before UNIX epoch")?
             .as_secs();
-
-        // Reject certs issued more than 300 seconds in the future (clock skew
-        // tolerance)
-        if self.issued_at_secs > now_secs + 300 {
-            return Err(anyhow!("Delegation certificate issued_at is in the future"));
-        }
 
         if now_secs >= self.expires_at_secs {
             return Err(anyhow!(
@@ -427,5 +443,105 @@ mod tests {
             err.to_string().contains("scope"),
             "failure should be the scope error, not an expiry error: {err}"
         );
+    }
+
+    /// Builds a certificate with an arbitrary, caller-chosen window rather
+    /// than one derived from "now" -- `issue` always stamps `issued_at_secs`
+    /// as the current time, so it cannot produce a certificate that was
+    /// valid in the past and has since lapsed. Uses the crate-private
+    /// `canonical_payload_bytes` directly (same module tree), the same way
+    /// `issue` itself does.
+    fn issue_with_window(
+        master: &Identity,
+        temp_pubkey: VerifyingKey,
+        issued_at_secs: u64,
+        expires_at_secs: u64,
+        scope: &str,
+    ) -> DelegationCertificate {
+        let master_did = substrate::derive_did_key(&master.public_key());
+        let temporary_did = substrate::derive_did_key(&temp_pubkey);
+        let payload_bytes = DelegationCertificate::canonical_payload_bytes(
+            &master_did,
+            &temporary_did,
+            issued_at_secs,
+            expires_at_secs,
+            scope,
+        )
+        .unwrap();
+        let signature = z32::encode(&master.sign(&payload_bytes).to_bytes());
+        DelegationCertificate {
+            master_did,
+            temporary_did,
+            issued_at_secs,
+            expires_at_secs,
+            scope: scope.to_string(),
+            signature,
+        }
+    }
+
+    fn now_secs() -> u64 {
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
+    }
+
+    #[test]
+    fn verify_chain_accepts_a_window_that_has_lapsed_since_but_verify_still_rejects_it() {
+        let master = Identity::generate().unwrap();
+        let temp = Identity::generate().unwrap();
+        let now = now_secs();
+        // A window that was genuinely valid at mint time and has since
+        // passed -- the shape D-A1-10 exists for: a reader trusts that the
+        // master authorized this key even though the live credential has
+        // lapsed.
+        let cert = issue_with_window(
+            &master,
+            temp.public_key(),
+            now - 7200,
+            now - 3600,
+            SCOPE_SERVICE_INSTANCE,
+        );
+
+        assert!(
+            cert.verify_chain(&cert.master_did, &[SCOPE_SERVICE_INSTANCE]).is_ok(),
+            "a reader must accept a certificate that was valid while live"
+        );
+        assert!(
+            cert.verify(&cert.master_did, &[SCOPE_SERVICE_INSTANCE]).is_err(),
+            "a live-credential check must still reject the same, now-lapsed certificate"
+        );
+    }
+
+    #[test]
+    fn verify_chain_rejects_a_non_positive_window_even_though_it_never_lapsed() {
+        let master = Identity::generate().unwrap();
+        let temp = Identity::generate().unwrap();
+        let now = now_secs();
+        // issued_at == expires_at: never a live credential for even an
+        // instant, which is a different claim from "this one has lapsed" --
+        // the Reading trust level must not admit it.
+        let cert = issue_with_window(&master, temp.public_key(), now, now, SCOPE_SERVICE_INSTANCE);
+
+        let err = cert
+            .verify_chain(&cert.master_did, &[SCOPE_SERVICE_INSTANCE])
+            .expect_err("a non-positive window must never verify, reading or not");
+        assert!(err.to_string().contains("non-positive"));
+    }
+
+    #[test]
+    fn verify_chain_rejects_a_certificate_issued_too_far_in_the_future() {
+        let master = Identity::generate().unwrap();
+        let temp = Identity::generate().unwrap();
+        let now = now_secs();
+        let cert = issue_with_window(
+            &master,
+            temp.public_key(),
+            now + 400,
+            now + 4000,
+            SCOPE_SERVICE_INSTANCE,
+        );
+
+        let err = cert
+            .verify_chain(&cert.master_did, &[SCOPE_SERVICE_INSTANCE])
+            .expect_err("a certificate issued in the future must never verify, reading or not");
+        assert!(err.to_string().contains("future"));
     }
 }

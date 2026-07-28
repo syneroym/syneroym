@@ -191,20 +191,31 @@ implementation started; ADR-0020 now carries a second dated amendment.
   deploy`, and `app deploy`, calling `refresh_master_anchor` once per master
   and warning loudly when omitted (D-A1-7).
 
-**Tests added:** 10 new unit tests in `crates/identity/src/delegation.rs`
-region (verify/verify_chain split, existing six still green), 15 in
-`crates/core/src/dht_registry.rs` (record verification shapes, D-A1-9's
-tamper tests, D-A1-2's DHT-leg error, D-A1-10's publish/read split, D-A1-12's
-stale-anchor split, D-A1-13's whole-payload anchor tamper tests), 6 in
+**Tests added:** 3 new unit tests in `crates/identity/src/delegation.rs`
+(`verify_chain`'s own direct coverage: a lapsed-but-once-valid window is
+accepted for reading and still rejected for a live-credential check, a
+non-positive window and a future-issued certificate are rejected at both
+trust levels — added in post-review fix-up, see below; existing thirteen
+tests still green), 15 in `crates/core/src/dht_registry.rs` (record
+verification shapes, D-A1-9's tamper tests — now asserting both trust levels
+— D-A1-2's DHT-leg error, D-A1-10's publish/read split, D-A1-12's
+stale-anchor split, D-A1-13's whole-payload anchor tamper tests), 9 in
 `crates/community_registry/src/registry.rs` (delegation-signed
-register/lookup, revoked-key admission rejection, alias-by-master, and three
+register/lookup, revoked-key admission rejection, alias-by-master, three
 `refresh_master_anchor` regression guards including the stale-anchor and
-unreadable-anchor cases), 10 in `crates/core/src/endpoint_publisher.rs`
-(`build_record`'s full decision table plus the sweep's union-and-survive-one-
-failure behavior), 1 in `crates/control_plane/src/service.rs`
-(`set_endpoint_publisher` is set-once), and 2 CLI parse-level tests in
-`apps/roymctl/src/commands/svc.rs` (D-A1-8's two flag-carrying shapes) — 44
-new unit/CLI tests total. One new two-real-substrate e2e test,
+unreadable-anchor cases, two D-A1-12 `master_id`-equality regression tests
+against a validly-signed anchor served under the wrong master, and a live
+`publish_all_services` sweep test proving the id-union and per-service
+failure containment — the last three added in post-review fix-up), 10 in
+`crates/core/src/endpoint_publisher.rs` (`build_record`'s full decision
+table — the sweep's own union/failure-containment behavior is proven in
+`community_registry`, not here, see below), 1 in
+`crates/control_plane/src/service.rs` (`set_endpoint_publisher` is set-once),
+and 2 CLI parse-level tests in `apps/roymctl/src/commands/svc.rs` (D-A1-8's
+two flag-carrying shapes) — **40 new unit/CLI tests total**, counted directly
+from `git diff main` rather than asserted (a prior revision of this section
+overcounted by naming ten phantom `delegation.rs` tests before any existed
+there). One new two-real-substrate e2e test,
 `a_member_master_did_resolves_to_an_address_and_follows_the_member_across_nodes`
 (`crates/substrate/tests/master_endpoint_record_e2e.rs`), Node A hosting the
 shared community registry and Node B pointed at it (D-A1-2's requirement,
@@ -226,17 +237,66 @@ wire.
 - `cargo clippy --workspace --all-targets --all-features`: clean, zero
   warnings.
 - `cargo test --workspace` (sandboxed): green except the same category of
-  pre-existing, environmental socket-bind failures as A0 above, confirmed by
-  a direct diff against an unmodified `main` checkout run the same way (main:
-  12 failing targets; this branch: the identical 12 plus exactly two new
-  ones — `syneroym-community-registry --lib` and `syneroym-substrate --test
-  master_endpoint_record_e2e`, both needing real port binds and both verified
-  passing individually with the sandbox disabled, the latter twice in a row,
-  ~14-15s each).
+  pre-existing, environmental sandbox failures as A0 above — real socket
+  binds the sandbox denies outright, plus an intermittent mainline-DHT
+  actor-thread crash (`actor thread unexpectedly shutdown`, `mainline`
+  crate) that a handful of DHT-touching test binaries hit under sandboxed
+  parallel execution. **The exact failing-target count varies run to run by
+  about ±1 for this reason on both `main` and this branch** — measured twice
+  each: `main` showed 11 and 12 failing targets across two runs (the
+  variable member is `syneroym-router --test native_dispatch_identity`,
+  confirmed passing 39/39 with the sandbox disabled both times it was
+  checked); this branch showed 13 and 14 across two runs, consistently
+  `main`'s set plus exactly the same two new targets needing real port binds
+  — `syneroym-community-registry --lib` and `syneroym-substrate --test
+  master_endpoint_record_e2e` — both independently verified passing with the
+  sandbox disabled, the latter twice in a row (~14-15s each). No target
+  outside that DHT-actor-flake set differs between `main` and this branch.
 - `mise run test:e2e` (sandbox disabled, required for real port binds): 12/12
   green (8 main + 4 multi-hop), unchanged from before this slice.
 - `wasm32-wasip2`: `data-layer-test`, `greeter`, and `proxy-test` all still
   build clean — A1 touches no WIT interface.
+
+**Independent review (2026-07-28).** A post-merge review found fifteen
+findings, none blocking the slice's own claims. All fifteen were
+incorporated rather than argued against:
+
+- **Trust-window bug (high):** `verify_chain` was skipping the
+  non-positive-window and future-issuance checks entirely, not just
+  wall-clock expiry as D-A1-10 intended — a certificate that was never a
+  live credential at all (e.g. a zero-length window) would pass a `Reading`
+  check. Fixed: those two structural checks stay in `verify_chain`
+  regardless of trust level; only wall-clock expiry moves to `verify`. Three
+  new direct `delegation.rs` tests cover it.
+- **Evidence-accuracy bug (high):** this section previously claimed ten new
+  `delegation.rs` tests where the commit added none, inflating the stated
+  total to 44 against an actual 34. Corrected above to a `git diff`-verified
+  40 (34 pre-review-fix, plus 6 the fixes themselves added).
+- **D-A1-12's `master_id`-equality regression test asserted the wrong
+  failure** (an unresolvable literal DID, not the equality guard against a
+  validly-signed anchor served under the wrong master). Renamed for honesty
+  and paired with two new real regression tests against
+  `fetch_own_master_anchor` and `resolve_master_anchor`.
+- **`publish_all_services` — the recovery path D-A1-3 explicitly asked for
+  its own test — had none**; the test bearing its name only called
+  `build_record`. Renamed for honesty; a real sweep test against a live
+  registry now proves the id-union and per-service failure containment.
+- **No HTTP timeout anywhere in `RegistryClient`** (five bare
+  `ReqwestClient::new()` sites), so an unresponsive registry could stall
+  `deploy` for an OS-level connect timeout. Fixed: one `reqwest::Client`
+  with a 10 s timeout, built once and reused.
+- **`refresh_master_anchor` forced a synchronous mainline-DHT publish onto
+  `roymctl`'s deploy paths.** Switched to fire-and-forget for the DHT leg;
+  the HTTP publish — the guarantee D-A1-2 actually requires — stays
+  synchronous.
+- Six low-severity fixes: D-A1-9's tamper tests now assert both trust
+  levels; the heartbeat sweep's directory scan regained its `is_file()`
+  guard it had before this slice; `build_record` moved off a blocking
+  `std::fs` call inside an async fn; a stale doc comment on
+  `all_instance_certs`; a duplicate `RegistryClient` in `runtime.rs`
+  (substrate now builds one pkarr DHT client, not two); dead/unreachable
+  code in `svc.rs`'s `--master` arm; and a silent no-op when `--nickname` is
+  given with nothing to sign the envelope with now warns.
 
 ## Dependencies pulled in
 

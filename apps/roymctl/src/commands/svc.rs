@@ -153,6 +153,18 @@ pub async fn handle(
                 (None, None) => None,
             };
 
+            // `--nickname` alone -- none of `--identity`, `--master`, or
+            // `--instance-certificate` -- has nothing to sign the envelope
+            // with, so the nickname is silently dropped (pre-A1 behaviour,
+            // unchanged). Warn rather than fail: the deploy itself still
+            // succeeds, and a silently-lost nickname is confusing to debug.
+            if nickname.is_some() && signing_identity.is_none() {
+                eprintln!(
+                    "Warning: --nickname has no effect without --identity, --master, or \
+                     --instance-certificate -- it will not be published."
+                );
+            }
+
             let cert = match signing_identity {
                 Some(id) => Some(
                     EndpointInfo {
@@ -170,29 +182,27 @@ pub async fn handle(
                 None => None,
             };
 
-            let instance_cert = match (master, instance_certificate) {
-                (Some(name), _) => {
-                    let master_identity = master_identity.as_ref().ok_or_else(|| {
-                        anyhow::anyhow!("master identity '{name}' failed to load")
-                    })?;
-                    let master_did = substrate::derive_did_key(&master_identity.public_key());
+            let instance_cert = match (&master_identity, instance_certificate) {
+                (Some(resolved_master), _) => {
+                    let master_did = substrate::derive_did_key(&resolved_master.public_key());
                     if master_did != *svc_id {
                         anyhow::bail!(
-                            "--master '{name}' resolves to {master_did}, which does not match \
+                            "--master '{}' resolves to {master_did}, which does not match \
                              --svc-id {svc_id} -- an install-time certificate for this pair would \
-                             be rejected"
+                             be rejected",
+                            master.as_deref().unwrap_or("?")
                         );
                     }
                     let cert = member_identity::certify_instance(
                         &client,
-                        master_identity,
+                        resolved_master,
                         svc_id,
                         DEFAULT_INSTANCE_CERT_EXPIRES_HOURS,
                     )
                     .await?;
                     member_identity::refresh_anchor_or_warn(
                         registry_url.as_deref(),
-                        master_identity,
+                        resolved_master,
                     )
                     .await?;
                     Some(cert)

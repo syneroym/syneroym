@@ -206,10 +206,23 @@ impl SignedEndpointInfo {
     }
 }
 
+/// How long a registry request waits before giving up. `reqwest::Client`
+/// sets no default -- an unresponsive-but-not-refusing registry (packets
+/// dropped rather than an RST) would otherwise stall the caller for the OS
+/// connect timeout, which on some networks is minutes, not seconds. Every
+/// call site here treats a registry failure as non-fatal already (warn and
+/// continue, or fall back to the DHT), so a short timeout only trades a
+/// slightly less patient retry loop for never blocking the caller this long.
+const HTTP_REQUEST_TIMEOUT: time::Duration = time::Duration::from_secs(10);
+
 #[derive(Debug)]
 pub struct RegistryClient {
     dht_client: Option<Client>,
     registry_url: Option<String>,
+    /// Built once and reused across every request this client makes, rather
+    /// than a fresh `ReqwestClient::new()` per call: cheaper (connection
+    /// pooling) and the only place the timeout above needs to be set.
+    http_client: ReqwestClient,
 }
 
 async fn do_publish(dht: Client, signed_packet: SignedPacket, context: &'static str) {
@@ -238,7 +251,11 @@ async fn publish_dht_packet(
 impl RegistryClient {
     pub fn new(enable_dht: bool, registry_url: Option<String>) -> Self {
         let dht_client = if enable_dht { Client::builder().build().ok() } else { None };
-        Self { dht_client, registry_url }
+        let http_client = ReqwestClient::builder()
+            .timeout(HTTP_REQUEST_TIMEOUT)
+            .build()
+            .unwrap_or_else(|_| ReqwestClient::new());
+        Self { dht_client, registry_url, http_client }
     }
 
     /// Registers the endpoint to the DHT and optionally the HTTP registry.
@@ -261,7 +278,7 @@ impl RegistryClient {
         let mut http_success = self.registry_url.is_none();
 
         if let Some(url) = &self.registry_url {
-            let client = ReqwestClient::new();
+            let client = &self.http_client;
             let register_url = format!("{url}/register");
             tracing::debug!("Registry register: {}", register_url);
 
@@ -318,7 +335,7 @@ impl RegistryClient {
 
         // Try HTTP registry first
         if let Some(url) = &self.registry_url {
-            let client = ReqwestClient::new();
+            let client = &self.http_client;
             let lookup_url = format!("{url}/lookup/{id}");
             tracing::debug!("Registry lookup: {}", lookup_url);
 
@@ -400,7 +417,7 @@ impl RegistryClient {
 
         // Try HTTP registry first
         if let Some(url) = &self.registry_url {
-            let client = ReqwestClient::new();
+            let client = &self.http_client;
             let lookup_url = format!("{url}/lookup_master/{master_id}");
             tracing::debug!("Registry Master Anchor lookup: {}", lookup_url);
 
@@ -489,7 +506,7 @@ impl RegistryClient {
         let mut http_success = self.registry_url.is_none();
 
         if let Some(url) = &self.registry_url {
-            let client = ReqwestClient::new();
+            let client = &self.http_client;
             let register_url = format!("{url}/register_master");
             tracing::debug!("Registry register_master_anchor: {}", register_url);
 
@@ -543,7 +560,7 @@ impl RegistryClient {
             return Ok(None);
         };
 
-        let client = ReqwestClient::new();
+        let client = &self.http_client;
         let lookup_url = format!("{url}/lookup_master/{master_did}");
         tracing::debug!("Registry Master Anchor lookup (own): {}", lookup_url);
 
@@ -614,7 +631,16 @@ impl RegistryClient {
             .await?
             .map(|prev| (prev.revoked_keys, prev.revoke_list_registry))
             .unwrap_or_default();
-        self.publish_master_anchor(&master_did, revoked_keys, revoke_list_registry, master, true)
+        // `sync_dht: false`: the HTTP publish above (awaited inside
+        // `publish_master_anchor`) is the operative guarantee -- D-A1-2
+        // already established that resolution requires a configured HTTP
+        // registry, so the DHT copy is redundant, best-effort backup. This
+        // is called from `roymctl`'s deploy paths (`svc deploy --master`,
+        // `app deploy --mint-masters`, once per master), and blocking one of
+        // those on a real mainline-DHT publish -- which can take seconds or
+        // hang without connectivity -- would trade a synchronous guarantee
+        // this function does not need for one it does not need either.
+        self.publish_master_anchor(&master_did, revoked_keys, revoke_list_registry, master, false)
             .await
     }
 }
@@ -910,7 +936,11 @@ mod tests {
         let mut signed = sample_endpoint_info(&did).sign(&identity).unwrap();
         signed.info.substrate_id = "did:key:zAttacker".to_string();
 
+        // The attack this guards against -- a relay rewriting substrate_id
+        // so a lookup follows it to a host the attacker controls -- is a
+        // read-path attack, so both trust levels must reject it.
         assert!(signed.verify(RecordTrust::Publishing).is_err());
+        assert!(signed.verify(RecordTrust::Reading).is_err());
     }
 
     #[test]
@@ -942,6 +972,7 @@ mod tests {
         signed.info.delegation = Some(other_cert);
 
         assert!(signed.verify(RecordTrust::Publishing).is_err());
+        assert!(signed.verify(RecordTrust::Reading).is_err());
     }
 
     #[test]
@@ -990,13 +1021,20 @@ mod tests {
         let master = Identity::generate().unwrap();
         let instance = Identity::generate().unwrap();
 
+        // A genuinely lapsed certificate, not a never-valid one: a
+        // zero-length window (`expires_in_secs = 0`) is caught by
+        // `verify_chain`'s non-positive-window check regardless of trust
+        // level (D-A1-10's read/publish split only ever waives wall-clock
+        // expiry), so this test needs a certificate that really was live for
+        // a moment and has since passed.
         let cert = DelegationCertificate::issue(
             &master,
             instance.public_key(),
-            0,
+            1,
             SCOPE_SERVICE_INSTANCE.to_string(),
         )
         .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
         let signed = sample_endpoint_info("placeholder").sign_as_instance(&instance, cert).unwrap();
 
         assert!(signed.verify(RecordTrust::Publishing).is_err());
@@ -1016,7 +1054,13 @@ mod tests {
     }
 
     #[test]
-    fn an_anchor_for_a_different_master_is_rejected() {
+    fn an_anchor_whose_master_id_does_not_resolve_is_rejected() {
+        // Not the D-A1-12 `master_id` equality tightening (that guard lives
+        // in `fetch_own_master_anchor`/`resolve_master_anchor`, which need a
+        // real registry to exercise -- see `crates/community_registry`'s
+        // `refresh_refuses_an_anchor_served_under_the_wrong_master*` tests).
+        // This is the pre-existing key-resolution failure: an unresolvable
+        // `master_id` string can never verify at all.
         let identity = Identity::generate().unwrap();
         let payload = MasterAnchorPayload::default();
 

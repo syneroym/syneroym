@@ -34,11 +34,20 @@ impl EndpointPublisher {
         Self { registry_client, registry, node_identity, node_did, hosted_apps_dir }
     }
 
+    /// The registry client this publisher publishes through. Lets a caller
+    /// that already holds an `EndpointPublisher` reuse its client instead of
+    /// building a second one from the same config -- each opens its own
+    /// pkarr DHT client when the DHT is enabled.
+    #[must_use]
+    pub fn registry_client(&self) -> Arc<RegistryClient> {
+        self.registry_client.clone()
+    }
+
     /// Publishes `service_id`'s endpoint record. `Ok(false)` means there was
     /// nothing to publish -- no installed certificate and no stored record --
     /// which is a normal state, not a failure.
     pub async fn publish_service(&self, service_id: &str) -> anyhow::Result<bool> {
-        let Some(record) = self.build_record(service_id) else {
+        let Some(record) = self.build_record(service_id).await else {
             return Ok(false);
         };
         self.registry_client.register(&record, false).await?;
@@ -54,7 +63,10 @@ impl EndpointPublisher {
 
         if let Ok(mut entries) = tokio::fs::read_dir(&self.hosted_apps_dir).await {
             while let Ok(Some(entry)) = entries.next_entry().await {
-                if let Some(stem) = entry.path().file_stem().and_then(|s| s.to_str()) {
+                if let Ok(file_type) = entry.file_type().await
+                    && file_type.is_file()
+                    && let Some(stem) = entry.path().file_stem().and_then(|s| s.to_str())
+                {
                     ids.insert(stem.to_string());
                 }
             }
@@ -73,7 +85,7 @@ impl EndpointPublisher {
 
     /// Split out from `publish_service` so the whole decision table is
     /// testable without a registry to publish to.
-    fn build_record(&self, service_id: &str) -> Option<SignedEndpointInfo> {
+    async fn build_record(&self, service_id: &str) -> Option<SignedEndpointInfo> {
         // On the certificate path this blob is metadata only, and its
         // signature is neither trusted nor checked: with
         // `--instance-certificate` it is signed by an ephemeral key and
@@ -81,8 +93,10 @@ impl EndpointPublisher {
         // certificate never republishes it verbatim -- and the no-certificate
         // branch below verifies before it does.
         let stored_path = self.hosted_apps_dir.join(format!("{service_id}.json"));
-        let stored: Option<SignedEndpointInfo> =
-            std::fs::read_to_string(&stored_path).ok().and_then(|s| serde_json::from_str(&s).ok());
+        let stored: Option<SignedEndpointInfo> = tokio::fs::read_to_string(&stored_path)
+            .await
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok());
 
         let Some(cert) = self.registry.instance_cert(service_id) else {
             // Pre-A0 path: replay, but only a record that still verifies. A
@@ -203,7 +217,7 @@ mod tests {
         registry.set_instance_cert("svc-1".to_string(), cert.clone()).await.unwrap();
 
         let pub_ = publisher(registry, node_identity, tmp.path().to_path_buf());
-        let record = pub_.build_record("svc-1").expect("a record should be built");
+        let record = pub_.build_record("svc-1").await.expect("a record should be built");
 
         assert_eq!(record.info.service_id, master_did);
         assert_eq!(record.info.substrate_id, node_did);
@@ -231,7 +245,7 @@ mod tests {
         registry.set_instance_cert("svc-1".to_string(), cert).await.unwrap();
 
         let pub_ = publisher(registry, node_identity, tmp.path().to_path_buf());
-        assert!(pub_.build_record("svc-1").is_none());
+        assert!(pub_.build_record("svc-1").await.is_none());
     }
 
     #[tokio::test]
@@ -256,7 +270,7 @@ mod tests {
 
         let registry = new_registry().await;
         let pub_ = publisher(registry, node_identity, tmp.path().to_path_buf());
-        let record = pub_.build_record(&did).expect("the stored record should be replayed");
+        let record = pub_.build_record(&did).await.expect("the stored record should be replayed");
 
         assert_eq!(record.info.service_id, signed.info.service_id);
         assert_eq!(record.pkarr_packet_hex, signed.pkarr_packet_hex);
@@ -299,7 +313,7 @@ mod tests {
         write_stored_record(tmp.path(), "svc-1", &stored_signed);
 
         let pub_ = publisher(registry, node_identity, tmp.path().to_path_buf());
-        let record = pub_.build_record("svc-1").expect("a record should be built");
+        let record = pub_.build_record("svc-1").await.expect("a record should be built");
 
         assert_eq!(record.info.nickname, Some("member-one".to_string()));
         assert!(record.info.is_private);
@@ -325,7 +339,7 @@ mod tests {
         registry.set_instance_cert("svc-1".to_string(), cert).await.unwrap();
 
         let pub_ = publisher(registry, node_identity, tmp.path().to_path_buf());
-        assert!(pub_.build_record("svc-1").is_none());
+        assert!(pub_.build_record("svc-1").await.is_none());
     }
 
     #[tokio::test]
@@ -352,7 +366,7 @@ mod tests {
         registry.set_instance_cert("svc-1".to_string(), cert).await.unwrap();
 
         let pub_ = publisher(registry, node_identity, tmp.path().to_path_buf());
-        assert!(pub_.build_record("svc-1").is_none());
+        assert!(pub_.build_record("svc-1").await.is_none());
     }
 
     #[tokio::test]
@@ -391,7 +405,7 @@ mod tests {
         write_stored_record(tmp.path(), "svc-1", &stored_signed);
 
         let pub_ = publisher(registry, node_identity, tmp.path().to_path_buf());
-        let record = pub_.build_record("svc-1").expect("a record should still be built");
+        let record = pub_.build_record("svc-1").await.expect("a record should still be built");
 
         assert_eq!(record.info.nickname, Some("member-one".to_string()));
     }
@@ -420,7 +434,7 @@ mod tests {
 
         let registry = new_registry().await;
         let pub_ = publisher(registry, node_identity, tmp.path().to_path_buf());
-        assert!(pub_.build_record("svc-1").is_none());
+        assert!(pub_.build_record("svc-1").await.is_none());
     }
 
     #[tokio::test]
@@ -457,13 +471,20 @@ mod tests {
         write_stored_record(tmp.path(), "svc-1", &stored_signed);
 
         let pub_ = publisher(registry, node_identity, tmp.path().to_path_buf());
-        let record = pub_.build_record("svc-1").expect("a record should be built");
+        let record = pub_.build_record("svc-1").await.expect("a record should be built");
 
         assert_eq!(record.info.ttl, None);
     }
 
+    /// Exercises `build_record` across all three id sources -- the decision
+    /// table itself. The sweep's own id-union and per-service failure
+    /// containment need a real registry to exercise honestly (`register`
+    /// against no registry is a no-op, not a failure -- see
+    /// `crates/community_registry`'s
+    /// `publish_all_services_covers_certified_and_stored_only_services_and_survives_one_failing`,
+    /// which drives `publish_all_services` itself against a live one).
     #[tokio::test]
-    async fn the_sweep_covers_certified_and_stored_only_services_and_survives_one_failing() {
+    async fn build_record_covers_certified_and_stored_only_services() {
         let tmp = TempDir::new().unwrap();
         let node_identity = Identity::generate().unwrap();
         let master = Identity::generate().unwrap();
@@ -482,8 +503,8 @@ mod tests {
         .unwrap();
         registry.set_instance_cert("svc-1".to_string(), cert).await.unwrap();
 
-        // Certified service 2: expired, so it fails to publish -- the sweep
-        // must not stop because of it.
+        // Certified service 2: expired, so build_record produces nothing
+        // for it.
         let other_instance = Identity::generate().unwrap();
         let expired_cert = DelegationCertificate::issue(
             &master,
@@ -511,8 +532,8 @@ mod tests {
 
         let pub_ = publisher(registry, node_identity, tmp.path().to_path_buf());
 
-        assert!(pub_.build_record("svc-1").is_some());
-        assert!(pub_.build_record("svc-2").is_none());
-        assert!(pub_.build_record(&did3).is_some());
+        assert!(pub_.build_record("svc-1").await.is_some());
+        assert!(pub_.build_record("svc-2").await.is_none());
+        assert!(pub_.build_record(&did3).await.is_some());
     }
 }

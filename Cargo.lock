@@ -7546,6 +7546,7 @@ dependencies = [
  "serde_json",
  "syneroym-core",
  "syneroym-identity",
+ "tempfile",
  "tokio",
  "tracing",
  "z32",

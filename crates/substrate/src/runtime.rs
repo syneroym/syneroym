@@ -390,8 +390,6 @@ async fn setup_connection_router(
     {
         let relay_url = config.parent_coordinator.iroh.as_ref().map(|c| c.url.clone());
         publish_to_community_registry(
-            config.substrate.registry_url.clone(),
-            config.substrate.enable_bep0044_dht,
             service_id,
             endpoint_addr,
             relay_url,
@@ -654,10 +652,7 @@ fn build_blob_provider(config: &SubstrateConfig) -> anyhow::Result<Arc<dyn BlobP
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn publish_to_community_registry(
-    registry_url: Option<String>,
-    enable_bep0044_dht: bool,
     service_id: String,
     endpoint_addr: EndpointAddr,
     relay_url: Option<String>,
@@ -666,7 +661,11 @@ fn publish_to_community_registry(
     publisher: Arc<EndpointPublisher>,
 ) {
     tokio::spawn(async move {
-        let registry_client = RegistryClient::new(enable_bep0044_dht, registry_url.clone());
+        // Reuses the publisher's own client rather than building a second
+        // one from the same config: each opens its own pkarr DHT client
+        // when the DHT is enabled, so a duplicate is a real (if small) cost,
+        // not just noise.
+        let registry_client = publisher.registry_client();
 
         loop {
             // Register native substrate endpoint
@@ -726,9 +725,8 @@ fn publish_to_community_registry(
 /// renews a certificate, only warns before a missed renewal becomes an
 /// outage. Runs on the same cadence as the community-registry heartbeat
 /// above but as its own sibling loop in `RuntimeServices`'s `select!`,
-/// rather than growing `publish_to_community_registry`'s already-`#[allow(
-/// clippy::too_many_arguments)]` argument list with a registry it has no
-/// other reason to hold.
+/// rather than growing `publish_to_community_registry`'s argument list with
+/// a registry it has no other reason to hold.
 async fn instance_cert_expiry_sweep_loop(registry: &EndpointRegistry) -> ! {
     loop {
         warn_on_near_expiry_instance_certs(registry);
