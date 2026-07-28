@@ -9,6 +9,7 @@ use std::{
     time::Duration,
 };
 
+use chrono::DateTime;
 use clap::Subcommand;
 use syneroym_core::dht_registry::{EndpointInfo, EndpointType};
 use syneroym_identity::{Identity, substrate};
@@ -199,7 +200,7 @@ pub async fn handle(
 /// reading logs (ADR-0020 §3).
 fn format_expiry(expires_at_secs: Option<u64>) -> String {
     match expires_at_secs {
-        Some(secs) => chrono::DateTime::from_timestamp(secs as i64, 0)
+        Some(secs) => DateTime::from_timestamp(secs as i64, 0)
             .map(|dt| dt.to_rfc3339())
             .unwrap_or_else(|| "-".to_string()),
         None => "-".to_string(),

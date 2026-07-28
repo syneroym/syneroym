@@ -12,6 +12,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use ed25519_dalek::VerifyingKey;
 use syneroym_app_orchestration::models::{DeploymentPlan, LogicalServiceRef, ServiceId};
 use syneroym_identity::{
     DelegationCertificate, Identity, delegation::SCOPE_SERVICE_INSTANCE, substrate,
@@ -114,7 +115,7 @@ pub async fn certify_instance(
     let pubkey_array: [u8; 32] = pubkey_bytes.try_into().map_err(|_| {
         anyhow::anyhow!("substrate returned an instance pubkey of the wrong length")
     })?;
-    let pubkey = ed25519_dalek::VerifyingKey::from_bytes(&pubkey_array)
+    let pubkey = VerifyingKey::from_bytes(&pubkey_array)
         .context("substrate returned an invalid ed25519 instance pubkey")?;
 
     DelegationCertificate::issue(

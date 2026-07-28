@@ -282,6 +282,8 @@ impl EndpointRegistry {
 
 #[cfg(test)]
 mod tests {
+    use syneroym_identity::{Identity, delegation::SCOPE_SERVICE_INSTANCE};
+
     use super::*;
     use crate::storage::MockStorage;
 
@@ -359,13 +361,13 @@ mod tests {
         assert_eq!(registry.owner_of("never-deployed"), None);
     }
 
-    fn test_cert(master: &syneroym_identity::Identity, service_id: &str) -> DelegationCertificate {
-        let instance = syneroym_identity::Identity::generate().unwrap();
+    fn test_cert(master: &Identity, service_id: &str) -> DelegationCertificate {
+        let instance = Identity::generate().unwrap();
         let mut cert = DelegationCertificate::issue(
             master,
             instance.public_key(),
             3600,
-            syneroym_identity::delegation::SCOPE_SERVICE_INSTANCE.to_string(),
+            SCOPE_SERVICE_INSTANCE.to_string(),
         )
         .unwrap();
         cert.temporary_did = service_id.to_string();
@@ -376,7 +378,7 @@ mod tests {
     async fn an_instance_certificate_round_trips_through_storage() {
         let storage = Arc::new(MockStorage::new());
         let registry = EndpointRegistry::new(storage.clone()).await.unwrap();
-        let master = syneroym_identity::Identity::generate().unwrap();
+        let master = Identity::generate().unwrap();
 
         assert_eq!(registry.instance_cert("svc-1"), None);
 
@@ -393,7 +395,7 @@ mod tests {
     async fn removing_a_service_forgets_its_instance_certificate() {
         let storage = Arc::new(MockStorage::new());
         let registry = EndpointRegistry::new(storage).await.unwrap();
-        let master = syneroym_identity::Identity::generate().unwrap();
+        let master = Identity::generate().unwrap();
 
         let cert = test_cert(&master, "svc-1");
         registry.set_instance_cert("svc-1".to_string(), cert).await.unwrap();
@@ -409,7 +411,7 @@ mod tests {
         let registry = EndpointRegistry::new(storage).await.unwrap();
         assert!(registry.all_instance_certs().is_empty());
 
-        let master = syneroym_identity::Identity::generate().unwrap();
+        let master = Identity::generate().unwrap();
         registry.set_instance_cert("svc-1".to_string(), test_cert(&master, "svc-1")).await.unwrap();
         registry.set_instance_cert("svc-2".to_string(), test_cert(&master, "svc-2")).await.unwrap();
 

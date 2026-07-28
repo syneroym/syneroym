@@ -153,22 +153,32 @@ The bundle's remaining item, the registry-trust-model ADR, is **discharged** by
 [ADR-0020 §6](../../../decisions/0020-stable-logical-service-identity.md) plus
 Slice A1 (see A1), not scheduled here.
 
-### A0 — Stable member identity
-Design of record: [ADR-0020](../../../decisions/0020-stable-logical-service-identity.md) §1-§5.
+### A0 — Stable member identity — **Complete (2026-07-28)**
+Design of record: [ADR-0020](../../../decisions/0020-stable-logical-service-identity.md) §1-§5
+([amended](../../../decisions/0020-stable-logical-service-identity.md#amendment-2026-07-28-after-slice-a0-implementation)
+2026-07-28 against what actually shipped). Implementation plan:
+[slice-a0-implementation-plan.md](slice-a0-implementation-plan.md). Verification
+evidence: [status.md](status.md)'s A0 section.
 
 Master keypair per **member** of a `LogicalServiceRef` (one for a `Singleton`,
-N for an N-member redundant or sharded service), minted by the deployer through
-the existing `roymctl identity` storage; instance keys generated on the hosting
-substrate and certified with a `DelegationCertificate` under a distinct
-service-instance scope; deploy issues and installs the certificate; renewal on a
-schedule under the online-key posture, or on an operator cadence under the
-attended posture.
+N for an N-member redundant or sharded service), minted by the deployer — the
+`<dir>/identities/*.key` storage is reused, but minting needed a new verb,
+`roymctl identity certify-instance`, since the existing `identity delegate`
+requires `--temp-did`, which the operator does not have until the substrate
+reports it; instance keys generated on the hosting substrate and certified with
+a `DelegationCertificate` under a distinct service-instance scope; deploy issues
+and installs the certificate. **Renewal**: this slice ships the **attended
+posture only** (an operator re-runs `certify-instance` on their own cadence,
+with a near-expiry warning on the heartbeat sweep and an expiry column on `svc
+list`); the **online-key posture** (unattended renewal, needs a component
+holding member master keys) is A5's, per ADR-0020 §3.
 
-**Includes ingress-side `scope` enforcement**, which does not exist today —
-`scope` is signed but never read by `DelegationCertificate::verify` or
-`verify_identity`, so a `"routing"` certificate is currently accepted where a
-service-instance one belongs. The verifier must compare presented scope against
-required scope and reject a mismatch.
+**Includes ingress-side `scope` enforcement**, which did not exist before this
+slice — `scope` was signed but never read by `DelegationCertificate::verify` or
+the ingress verifier (`HandshakeVerifier::verify_preamble`), so a `"routing"`
+certificate was accepted where a service-instance one belonged. The verifier now
+compares the presented scope against a caller-supplied accepted set and rejects
+a mismatch.
 
 *Independently mergeable* — identity/deploy work, valuable on its own before any
 supervisor exists.
@@ -391,9 +401,9 @@ under its master and step 2's second lookup would fail.
 
 | # | Case | Expected |
 |---|---|---|
-| 1 | Instance certificate expired | Handshake fails closed (already does); renewed on schedule under the online-key posture |
-| 2 | **Certificate presented with the wrong `scope`** | Rejected at ingress. New enforcement — `scope` is signed but unchecked today (A0) |
-| 3 | **Attended posture, renewal cadence missed** | Instance fails closed; this is an outage, not a degradation, and the docs say so (ADR-0020 §3) |
+| 1 | Instance certificate expired | Handshake fails closed. **✅ A0**: already true of the general mechanism, and pinned specifically for a service-instance certificate by `an_expired_instance_certificate_fails_the_handshake_closed` (`crates/router/src/handshake.rs`). Unattended renewal under the online-key posture is A5's; through A0-A4 renewal is an operator-run cadence (see row 3) |
+| 2 | **Certificate presented with the wrong `scope`** | Rejected. **✅ A0, at two granularities**: the ingress (`handshake.rs`) admits either transport scope and rejects anything outside that set (`a_certificate_scoped_outside_transport_is_rejected_at_the_handshake`); the narrow single-value check — "this record/install may only be admitted by a `service-instance` certificate" — lives at the deploy-time install verification (`a_deploy_is_rejected_when_the_certificate_carries_the_routing_scope`, `crates/control_plane/src/service/orchestration.rs`) and, for A1, at endpoint-record admission. Proven live over two real substrates in `crates/substrate/tests/instance_identity_e2e.rs` (a `routing`-scoped certificate rejected at deploy) |
+| 3 | **Attended posture, renewal cadence missed** | Instance fails closed; this is an outage, not a degradation, and the docs say so (ADR-0020 §3). **✅ A0**: not a distinct code behavior — the failure mode *is* row 1 — so the evidence is row 1's test plus the near-expiry heartbeat warning (`a_certificate_near_expiry_is_warned_about_on_the_heartbeat_sweep`, `crates/substrate/src/runtime.rs`) and the `svc list` expiry column, which make the cadence operable without making a miss survivable |
 | 4 | **Endpoint record keyed by a master, signed by a non-delegated key** | Rejected; only a valid `DelegationCertificate` from that master admits the record (A1) |
 | 5 | Out-of-order binding write (stale epoch) | Rejected by the substrate; mapping does not regress |
 | 6 | **Binding write re-sent at the current epoch, identical content** | Idempotent no-op, reported as success — distinct from the stale rejection above |
@@ -404,7 +414,7 @@ under its master and step 2's second lookup would fail.
 | 11 | Dependent unreachable during a push | Instance marked `Degraded`; retried; state visible on the operator read surface |
 | 12 | Partial app deploy (3 of 5 services) | No rollback; `Degraded`; failed services retried |
 | 13 | Remediation exceeds max attempts | Terminal `Degraded`; alerting only; no restart loop |
-| 14 | Supervisor holds master keys and is compromised | Blast radius bounded to the members it manages; instance certificates short-lived and revocable (ADR-0020 §3) |
+| 14 | Supervisor holds master keys and is compromised | Blast radius bounded to the members it manages; instance certificates short-lived and revocable (ADR-0020 §3). **Split.** **✅ A0** proves the testable bound: an instance certificate is revocable without touching the member master, and a fresh instance key from the same master still verifies (`a_revoked_instance_key_is_rejected_while_the_member_master_still_certifies_a_new_one`, `crates/router/src/handshake.rs`). The other half — blast radius actually bounded to what a supervisor manages — needs a supervisor and is A5's |
 | 15 | Bound cross-app dependency replaced, **online-key posture** | Active probe fails on a call the supervisor makes *as the depending member*; A's owner alerted (ADR-0021 §7) |
 | 16 | **`security` call (`inject-kek`/`rotate-kek`/`set-secret`) without `substrate/admin`** | Rejected. Ungated entirely today (P0 item 2); the gate only becomes holdable once P0 item 1 ships |
 | 17 | **Deploy to an unowned substrate once F4 flips** | Rejected; the bootstrap path becomes establishing ownership with the P0 tool, not an open deploy grant |

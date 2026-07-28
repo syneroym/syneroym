@@ -39,6 +39,7 @@
 
 use std::time::Duration;
 
+use ed25519_dalek::VerifyingKey;
 use rustls::crypto::ring;
 use serde_json::json;
 use syneroym_core::config::{
@@ -245,7 +246,7 @@ async fn a_member_master_authorizes_a_distinct_instance_key_on_each_real_node_it
          not just the caller and service_id"
     );
 
-    let pubkey_a = ed25519_dalek::VerifyingKey::from_bytes(
+    let pubkey_a = VerifyingKey::from_bytes(
         &hex::decode(&instance_identity_a.pubkey_hex).unwrap().try_into().unwrap(),
     )
     .unwrap();
@@ -296,7 +297,7 @@ async fn a_member_master_authorizes_a_distinct_instance_key_on_each_real_node_it
     // above), but the certificate's own master_did is the identical member
     // master both times -- the reference scenario's step 4 claim, now at
     // two-real-substrate scale rather than in-process.
-    let pubkey_b = ed25519_dalek::VerifyingKey::from_bytes(
+    let pubkey_b = VerifyingKey::from_bytes(
         &hex::decode(&instance_identity_b.pubkey_hex).unwrap().try_into().unwrap(),
     )
     .unwrap();

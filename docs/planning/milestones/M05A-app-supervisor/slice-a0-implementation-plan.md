@@ -1006,27 +1006,27 @@ below says which it is.
 
 ## 8. Completion checklist
 
-- [ ] D-A0-1 … D-A0-10 confirmed against the tree at merge time (line anchors
+- [x] D-A0-1 … D-A0-10 confirmed against the tree at merge time (line anchors
       re-checked if the branch has advanced)
-- [ ] `cargo +nightly fmt --all`
-- [ ] `cargo clippy --workspace --all-targets --all-features` clean
-- [ ] `cargo test --workspace` green
-- [ ] `mise run test:e2e` green
-- [ ] `wasm32-wasip2` compilation (the WIT changes in §3.4 cross the guest
+- [x] `cargo +nightly fmt --all`
+- [x] `cargo clippy --workspace --all-targets --all-features` clean
+- [x] `cargo test --workspace` green
+- [x] `mise run test:e2e` green
+- [x] `wasm32-wasip2` compilation (the WIT changes in §3.4 cross the guest
       boundary)
-- [ ] ADR-0020 amendment, dated, covering every §6 item that lands on the ADR:
+- [x] ADR-0020 amendment, dated, covering every §6 item that lands on the ADR:
       the `verify_identity` → `verify_preamble` naming fix (item 1), §5's stale
       scope citation (item 2), §1's presentation-path correction (item 3),
       §2's value-substitution correction (item 4), §6's incomplete derivation
       inputs (item 5), §6's second endpoint-record path (item 6), and §1's
       "no change to FDAE" versus `RelationshipProof` (item 7)
-- [ ] `task.md`: A0 marked complete; matrix rows 1/2/3/14 pointed at their
+- [x] `task.md`: A0 marked complete; matrix rows 1/2/3/14 pointed at their
       evidence, with row 2's two granularities (§6 item 11) and row 14's split
       stated; the A0 bullet's "existing `roymctl identity` storage" claim
       corrected per §6 item 12
-- [ ] `status.md`: A0 row flipped, with the verification evidence
-- [ ] `deferred-backlog.md` per §7
-- [ ] `traceability-matrix.md` `[FND-IDT]` row extended (**not** flipped to
+- [x] `status.md`: A0 row flipped, with the verification evidence
+- [x] `deferred-backlog.md` per §7
+- [x] `traceability-matrix.md` `[FND-IDT]` row extended (**not** flipped to
       Complete — A1 and A2 are still outstanding under the same requirement)
-- [ ] Stale comments in §6 items 8, 9, 14 corrected in the files A0 touches
-- [ ] Import cleanup pass over every edited file (AGENTS.md)
+- [x] Stale comments in §6 items 8, 9, 14 corrected in the files A0 touches
+- [x] Import cleanup pass over every edited file (AGENTS.md)
