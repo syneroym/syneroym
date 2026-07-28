@@ -293,6 +293,7 @@ async fn test_wasm_app_scenario(ctx: &SubstrateTestContext) {
             vec![GREETER_INTERFACE_NAME.to_string()],
             wasm_bytes,
             None,
+            None,
         )
         .await
         .expect("SDK Deploy request failed");
@@ -380,6 +381,7 @@ async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
                 host: "localhost".to_string(),
                 port: app_port,
             }],
+            None,
             None,
         )
         .await
@@ -500,6 +502,7 @@ async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
                 host: "localhost".to_string(),
                 port: https_port,
             }],
+            None,
             None,
         )
         .await

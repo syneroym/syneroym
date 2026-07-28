@@ -4,14 +4,15 @@
 [ADR-0020](../../../decisions/0020-stable-logical-service-identity.md),
 [ADR-0021](../../../decisions/0021-binding-propagation-and-app-supervisor.md)
 
-**Overall:** Not started. Design accepted 2026-07-27; no code written.
+**Overall:** Design accepted 2026-07-27. Slice A0 complete (2026-07-28); A1-A6
+not started.
 
 ## Slice status
 
 | Slice | Scope | Status | Gate |
 |---|---|---|---|
 | P0 | `ControllerAgreement` creation tool — **pulled forward from M5 item 5** | Not started | None; gates A3 |
-| A0 | Stable member identity (master DID per member + delegated instance keys + ingress `scope` enforcement) | **Planned** — [implementation plan](slice-a0-implementation-plan.md) (2026-07-28), no code | None — independently mergeable |
+| A0 | Stable member identity (master DID per member + delegated instance keys + ingress `scope` enforcement) | **Complete (2026-07-28)** — [implementation plan](slice-a0-implementation-plan.md), evidence below | None — independently mergeable |
 | A1 | Endpoint records published under the member master DID | Not started | A0 |
 | A2 | Host-side dependency resolution; bindings carry `expected_asserter_did` | Not started | A1 |
 | A3 | Multi-substrate placement + substrate inventory | Not started | `ControllerAgreement` tool (see below) |
@@ -53,6 +54,88 @@ explicit text** for what A0 deliberately left out — member-master vault custod
 unattended renewal, and `RotationPolicy`'s first real use — so the online-key
 posture is a named deliverable rather than a backlog row pointing at a slice
 that never mentions it.
+
+## A0 — Verification evidence (2026-07-28)
+
+A review pass over the implementation plan (before any code) found a fifth
+inaccuracy beyond the four above (§6 item 6: the DHT endpoint-record path has
+its own delegation check with the *inverse* keying of ADR-0020 §6, which names
+only the HTTP registry path) plus three coverage corrections, folded into
+[slice-a0-implementation-plan.md](slice-a0-implementation-plan.md) before
+implementation started. [ADR-0020](../../../decisions/0020-stable-logical-service-identity.md)
+now carries a dated amendment covering all seven.
+
+**What shipped**, phase by phase (see the implementation plan's phase table for
+the full gate history):
+
+- `SCOPE_ROUTING`/`SCOPE_SERVICE_INSTANCE`/`TRANSPORT_SCOPES` and
+  `DelegationCertificate::verify`'s now-required `accepted_scopes` argument
+  (`crates/identity/src/delegation.rs`), enforced at the ingress
+  (`crates/router/src/handshake.rs`).
+- The instance-certificate store on `EndpointRegistry`/`EndpointStorage`,
+  implemented by all four backends including the production SQLite one, whose
+  schema creation now runs unconditionally on every open instead of gating on
+  `PRAGMA user_version == 0` (D-A0-10) — the gate would have silently skipped
+  the new table on every database that predates it.
+- `orchestrator/resolve-instance-identity` (the pre-deploy pubkey query),
+  deploy-time four-step certificate verification, and undeploy cleanup
+  (`crates/control_plane/src/service/orchestration.rs`).
+- `ProxyRouter`'s `CallOrigin::Guest` arm presenting a service's own certified
+  instance key instead of going anonymous when one is installed
+  (`crates/router/src/proxy.rs`) — the load-bearing gap the plan's §0 called
+  out: no service presented its own identity on an outbound call before this.
+- `roymctl identity certify-instance`, `svc deploy --master`, and
+  `app deploy --mint-masters` (post-compile service-id substitution on a copy
+  of the plan, taken *after* the deployment journal already recorded the
+  fabricated ids, so the journal never holds master-DID-bearing plans)
+  (`apps/roymctl/src/commands`).
+- The heartbeat near-expiry warning and `svc list`'s expiry column
+  (`crates/substrate/src/runtime.rs`).
+
+**Tests added:** 6 new unit tests in `crates/identity/src/delegation.rs`
+(scope enforcement), 6 in `crates/router/src/handshake.rs` (ingress scope +
+revocation + reinstantiation), 8 in `crates/control_plane/src/service/
+orchestration.rs` (instance-identity determinism + install verification), 4 in
+`crates/router/src/proxy.rs` (guest-origin presentation, expired-certificate
+fallback, and the node-level-interface deny), 4 in
+`crates/data_db/src/registry_store.rs` (the schema-gate regression D-A0-10
+exists to prevent, plus upsert/removal), 3 in `crates/core/src/local_registry.rs`,
+1 in `crates/substrate/src/runtime.rs` (near-expiry warning), 11 in
+`apps/roymctl` (naming, resolve/mint, CLI parsing, expiry formatting), and one
+new two-real-substrate e2e test,
+`a_member_master_authorizes_a_distinct_instance_key_on_each_real_node_it_deploys_to`
+(`crates/substrate/tests/instance_identity_e2e.rs`) — proves live that
+`instance-identity` derives a distinct key per real node for the identical
+`(caller, service_id)` pair, that `deploy` verifies and installs a certificate
+(rejecting a wrong-scope one), that `list` reports the installed certificate's
+real expiry, and that the reference scenario's step-4 claim holds across two
+independently-keyed real substrates: reinstantiating a member on a second node
+yields a new instance key while the certified member master identity does not
+change. **Not covered** by that fixture: a live, wire-level proof that a
+guest-origin call presents its certified instance key across a real cross-node
+QUIC hop (that needs a WASM guest; recorded in `deferred-backlog.md`) — the
+guest-arm's own code path is proven at the router level instead.
+
+**Gates, run 2026-07-28:**
+
+- `cargo +nightly fmt --all -- --check`: clean.
+- `cargo clippy --workspace --all-targets --all-features`: clean, zero
+  warnings.
+- `cargo test --workspace` (sandboxed, matching this repo's established fast/
+  deterministic default): green except the same category of pre-existing,
+  environmental socket-bind failures documented throughout this milestone's
+  and M04A/M04B's status docs (real port/DHT/relay binds the sandbox denies) —
+  confirmed by a direct diff against an unmodified `main` checkout run the same
+  way, which shows the identical failure set. The new e2e test above is in
+  that same category under the sandboxed run (it needs real port binds) and
+  was verified passing individually, sandbox disabled, twice in a row
+  (~14-15s each).
+- `mise run test:e2e` (sandbox disabled, required for real port binds): 12/12
+  green (8 main + 4 multi-hop), unchanged from before this slice.
+- `wasm32-wasip2`: `data-layer-test`, `greeter`, and `proxy-test` all still
+  build clean — the WIT changes in this slice (`instance-identity`,
+  `deploy-manifest.instance-certificate`, `deployed-service.instance-
+  certificate-expires-at`) touch no interface any guest fixture imports.
 
 ## Dependencies pulled in
 

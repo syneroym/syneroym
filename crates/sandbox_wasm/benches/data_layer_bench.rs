@@ -186,6 +186,7 @@ fn bench_lifecycle_hooks(c: &mut Criterion) {
             interfaces: vec![],
         }),
         registry_certificate: None,
+        instance_certificate: None,
     });
 
     // Benchmark: WASM init() hook (first deploy of a fresh service). Uses

@@ -114,6 +114,7 @@ async fn deployed_engine() -> Option<AppSandboxEngine> {
             interfaces: vec![],
         }),
         registry_certificate: None,
+        instance_certificate: None,
     };
     engine.deploy_wasm(SERVICE_ID, &manifest).await.unwrap();
     // `temp_dir` must outlive the engine's own use of it; leaked

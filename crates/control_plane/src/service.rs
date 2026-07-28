@@ -338,6 +338,22 @@ impl NativeService for ControlPlaneService {
                     .map_err(RpcError::InternalError)?;
                 Ok(ready_response())
             }
+            "resolve-instance-identity" => {
+                let (service_id,): (String,) = serde_json::from_value(invocation.params.clone())
+                    .or_else(|_| serde_json::from_value::<String>(invocation.params).map(|s| (s,)))
+                    .map_err(|e| {
+                        RpcError::InvalidParams(format!(
+                            "Failed to parse resolve-instance-identity params: {e}"
+                        ))
+                    })?;
+                let identity = self
+                    .instance_identity(service_id, &invocation.caller)
+                    .await
+                    .map_err(RpcError::InternalError)?;
+                Ok(NativeResponse {
+                    payload: serde_json::to_value(identity).unwrap_or(Value::Null),
+                })
+            }
             "deploy" => {
                 let (service_id, manifest): (String, DeployManifest) =
                     serde_json::from_value(invocation.params).map_err(|e| {
@@ -466,6 +482,7 @@ mod tests {
                 interfaces: vec![MESSAGING_TEST_DRIVER_INTERFACE.to_string()],
             }),
             registry_certificate: None,
+            instance_certificate: None,
         }
     }
 
@@ -720,6 +737,7 @@ mod tests {
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
+            instance_certificate: None,
         };
         let test_caller = node_wide_caller("test-caller");
         service.deploy(service_id.clone(), manifest, &test_caller).await.unwrap();
@@ -984,6 +1002,7 @@ mod tests {
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
+            instance_certificate: None,
         };
         service
             .deploy(service_id.clone(), manifest, &node_wide_caller("test-caller"))
@@ -1121,6 +1140,7 @@ mod tests {
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
+            instance_certificate: None,
         };
         service
             .deploy(service_id.clone(), manifest, &node_wide_caller("test-caller"))
@@ -1483,6 +1503,7 @@ mod tests {
                 interfaces: vec![STREAM_TEST_DRIVER_INTERFACE.to_string()],
             }),
             registry_certificate: None,
+            instance_certificate: None,
         }
     }
 

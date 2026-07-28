@@ -347,10 +347,10 @@ impl RouteHandler {
                 .await,
             ),
             Err(e) => {
-                // A *malformed* delegation (cert for a different DID,
-                // revoked, expired) is still a hard reject here, matching
-                // the existing failure test "delegation cert for a
-                // different service's DID -> rejected".
+                // A *malformed* delegation is still a hard reject here: a
+                // certificate whose `temporary_did` doesn't match the
+                // preamble's own pubkey, that's expired, revoked, or carries
+                // a scope outside TRANSPORT_SCOPES.
                 if preamble.delegation.is_some() {
                     tracing::warn!("Handshake verification failed: {e}");
                     let _ = writer.write_all(b"Unauthorized\n").await;

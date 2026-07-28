@@ -3,13 +3,15 @@
 //! Commands to generate node keypairs, create agreements, and inspect node
 //! DIDs.
 
-use std::{fs, path::Path};
+use std::{fs, path::Path, time::Duration};
 
 use anyhow::Context;
 use clap::Subcommand;
 use syneroym_core::dht_registry::RegistryClient;
 use syneroym_identity::{DelegationCertificate, Identity, substrate};
 use syneroym_ucan::{Ability, Capability, CapabilityToken, ResourceUri};
+
+use super::member_identity;
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum IdentityCommands {
@@ -43,11 +45,10 @@ pub enum IdentityCommands {
         #[arg(long)]
         registry_url: String,
     },
-    /// Issue a UCAN `CapabilityToken` granting an ability to another DID
-    /// (M04A Slice B7b) -- e.g. the substrate owner granting
-    /// `orchestrator/deploy` on `substrate:<node>/app/*` to an operator.
-    /// Prints the signed token as JSON; present it with the global `--ucan
-    /// <path>` flag.
+    /// Issue a UCAN `CapabilityToken` granting an ability to another DID --
+    /// e.g. the substrate owner granting `orchestrator/deploy` on
+    /// `substrate:<node>/app/*` to an operator. Prints the signed token as
+    /// JSON; present it with the global `--ucan <path>` flag.
     IssueGrant {
         /// Name of the locally-stored identity issuing the grant (the root
         /// of trust for `--with`'s resource -- e.g. the substrate owner, or
@@ -71,10 +72,42 @@ pub enum IdentityCommands {
         #[arg(long)]
         no_delegate: bool,
     },
+    /// Certify the instance key a substrate would derive for a member
+    /// master, so that master can be presented on the deployed service's
+    /// outbound calls (ADR-0020 §1). The primitive `--master`/renewal
+    /// command: queries `--substrate` for the instance key it would derive
+    /// under this operator's identity for the master's own DID, then signs a
+    /// `service-instance`-scoped certificate over it and prints the
+    /// certificate JSON -- pass it to `svc deploy --instance-certificate` or
+    /// re-deploy with `svc deploy --master` to install it.
+    ///
+    /// `identity delegate` cannot do this job: it requires `--temp-did`,
+    /// which is exactly what the operator does not have until the substrate
+    /// reports it.
+    CertifyInstance {
+        /// Name of the local member master identity issuing the
+        /// certificate. The certificate always names this identity's own
+        /// resolved DID as the service_id being certified -- there is no
+        /// other value it could validly hold, so it is derived rather than
+        /// taken as a separate flag.
+        #[arg(long)]
+        master: String,
+        /// DID of the substrate to query for its derived instance key.
+        #[arg(long)]
+        substrate: String,
+        #[arg(long, default_value_t = 24)]
+        expires_hours: u64,
+    },
 }
 
 /// Handle local identity subcommands
-pub async fn handle(command: &IdentityCommands, dir: &Path) -> anyhow::Result<()> {
+pub async fn handle(
+    command: &IdentityCommands,
+    api_url: &str,
+    dir: &Path,
+    run_as: Option<&str>,
+    ucan_path: Option<&Path>,
+) -> anyhow::Result<()> {
     match command {
         IdentityCommands::Create { name } => {
             let identities_dir = dir.join("identities");
@@ -187,6 +220,23 @@ pub async fn handle(command: &IdentityCommands, dir: &Path) -> anyhow::Result<()
                 vec![],
             )?;
             println!("{}", serde_json::to_string_pretty(&token)?);
+        }
+        IdentityCommands::CertifyInstance { master, substrate: substrate_did, expires_hours } => {
+            let master_identity = member_identity::resolve_member_master(dir, master)?;
+            let service_id = substrate::derive_did_key(&master_identity.public_key());
+
+            let mut client =
+                super::client_for(substrate_did.clone(), api_url, dir, run_as, ucan_path)?;
+            client.wait_for_ready(Duration::from_secs(5)).await?;
+
+            let cert = member_identity::certify_instance(
+                &client,
+                &master_identity,
+                &service_id,
+                *expires_hours,
+            )
+            .await?;
+            println!("{}", cert.to_json()?);
         }
     }
     Ok(())

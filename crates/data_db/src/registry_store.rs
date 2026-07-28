@@ -50,35 +50,51 @@ impl SqliteEndpointStorage {
         let conn = task::spawn_blocking(move || -> Result<Connection> {
             let conn = Connection::open(path)?;
 
-            // Schema versioning
-            let version: u32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-            if version == 0 {
-                // Basic schema creation for endpoints
-                conn.execute(
-                    "CREATE TABLE IF NOT EXISTS local_endpoints (
-                        service_id TEXT NOT NULL,
-                        interface_name TEXT NOT NULL,
-                        endpoint_type TEXT NOT NULL,
-                        endpoint_data TEXT NOT NULL,
-                        PRIMARY KEY (service_id, interface_name)
-                    );",
-                    [],
-                )?;
-                // M04A Slice B7a: service ownership. Separate table, not a
-                // column on local_endpoints -- ownership is per service, and
-                // local_endpoints is keyed (service_id, interface_name), so a
-                // column would duplicate the owner across every interface and
-                // admit disagreement between rows.
-                conn.execute(
-                    "CREATE TABLE IF NOT EXISTS service_owners (
-                        service_id TEXT PRIMARY KEY,
-                        owner_did  TEXT NOT NULL,
-                        created_at INTEGER NOT NULL
-                    );",
-                    [],
-                )?;
-                conn.execute("PRAGMA user_version = 1", [])?;
-            }
+            // Schema creation runs unconditionally on every open, not gated
+            // on `PRAGMA user_version`. It did use to gate on `version == 0`,
+            // but every dev and test database created since `service_owners`
+            // was added is already at version 1 -- a table added inside that
+            // gate would never be created on any of them. `CREATE TABLE IF
+            // NOT EXISTS` is already idempotent, so the gate bought nothing
+            // it doesn't already provide, and this makes every future
+            // in-place schema addition correct by default (pre-release: no
+            // compat shims, no version ladders).
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS local_endpoints (
+                    service_id TEXT NOT NULL,
+                    interface_name TEXT NOT NULL,
+                    endpoint_type TEXT NOT NULL,
+                    endpoint_data TEXT NOT NULL,
+                    PRIMARY KEY (service_id, interface_name)
+                );",
+                [],
+            )?;
+            // M04A Slice B7a: service ownership. Separate table, not a
+            // column on local_endpoints -- ownership is per service, and
+            // local_endpoints is keyed (service_id, interface_name), so a
+            // column would duplicate the owner across every interface and
+            // admit disagreement between rows.
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS service_owners (
+                    service_id TEXT PRIMARY KEY,
+                    owner_did  TEXT NOT NULL,
+                    created_at INTEGER NOT NULL
+                );",
+                [],
+            )?;
+            // Instance certificates (ADR-0020 §1): the DelegationCertificate
+            // binding this substrate's derived instance key to the member
+            // master a service_id names. Same shape as service_owners --
+            // one row per service, upserted on renewal.
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS service_instance_certs (
+                    service_id  TEXT PRIMARY KEY,
+                    certificate TEXT NOT NULL,
+                    created_at  INTEGER NOT NULL
+                );",
+                [],
+            )?;
+            conn.execute("PRAGMA user_version = 1", [])?;
 
             Ok(conn)
         })
@@ -221,6 +237,56 @@ impl EndpointStorage for SqliteEndpointStorage {
         task::spawn_blocking(move || -> Result<()> {
             let conn = lock_db(&conn_arc)?;
             conn.execute("DELETE FROM service_owners WHERE service_id = ?1", params![sid])?;
+            Ok(())
+        })
+        .await?
+    }
+
+    async fn load_all_certs(&self) -> Result<Vec<(String, String)>> {
+        let conn_arc = self.conn.clone();
+        task::spawn_blocking(move || -> Result<Vec<(String, String)>> {
+            let conn = lock_db(&conn_arc)?;
+            let mut stmt =
+                conn.prepare("SELECT service_id, certificate FROM service_instance_certs")?;
+            let mut certs = Vec::new();
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                certs.push((row.get(0)?, row.get(1)?));
+            }
+            Ok(certs)
+        })
+        .await?
+    }
+
+    async fn save_cert(&self, service_id: &str, certificate_json: &str) -> Result<()> {
+        let conn_arc = self.conn.clone();
+        let sid = service_id.to_string();
+        let cert = certificate_json.to_string();
+        let created_at: i64 =
+            SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+
+        task::spawn_blocking(move || -> Result<()> {
+            let conn = lock_db(&conn_arc)?;
+            conn.execute(
+                "INSERT INTO service_instance_certs (service_id, certificate, created_at)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(service_id) DO UPDATE SET
+                    certificate = excluded.certificate,
+                    created_at = excluded.created_at",
+                params![sid, cert, created_at],
+            )?;
+            Ok(())
+        })
+        .await?
+    }
+
+    async fn remove_cert(&self, service_id: &str) -> Result<()> {
+        let conn_arc = self.conn.clone();
+        let sid = service_id.to_string();
+
+        task::spawn_blocking(move || -> Result<()> {
+            let conn = lock_db(&conn_arc)?;
+            conn.execute("DELETE FROM service_instance_certs WHERE service_id = ?1", params![sid])?;
             Ok(())
         })
         .await?
@@ -397,5 +463,79 @@ mod tests {
     async fn test_remove_owner_is_idempotent() {
         let (store, _dir) = make_store().await;
         store.remove_owner("never-owned").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_fresh_db_gets_the_certificate_table() {
+        let (store, _dir) = make_store().await;
+        store.save_cert("svc-1", r#"{"fake":"cert"}"#).await.unwrap();
+        let certs = store.load_all_certs().await.unwrap();
+        assert_eq!(certs, vec![("svc-1".to_string(), r#"{"fake":"cert"}"#.to_string())]);
+    }
+
+    #[tokio::test]
+    async fn saving_a_certificate_upserts() {
+        let (store, _dir) = make_store().await;
+        store.save_cert("svc-1", r#"{"v":1}"#).await.unwrap();
+        store.save_cert("svc-1", r#"{"v":2}"#).await.unwrap();
+
+        let certs = store.load_all_certs().await.unwrap();
+        assert_eq!(certs, vec![("svc-1".to_string(), r#"{"v":2}"#.to_string())]);
+    }
+
+    #[tokio::test]
+    async fn removing_a_service_removes_its_certificate() {
+        let (store, _dir) = make_store().await;
+        store.save_cert("svc-1", r#"{"fake":"cert"}"#).await.unwrap();
+        store.remove_cert("svc-1").await.unwrap();
+        assert!(store.load_all_certs().await.unwrap().is_empty());
+    }
+
+    /// An existing database, already at `PRAGMA user_version == 1` from
+    /// before the certificate table existed, must still gain it on the next
+    /// open -- this is the regression a `version < 2` migration gate would
+    /// have reintroduced. Built with a raw `Connection` rather than
+    /// `SqliteEndpointStorage::new`: that constructor already creates the
+    /// certificate table unconditionally, so opening through it here would
+    /// make this test pass identically whether or not the gate it exists to
+    /// catch was reintroduced -- it has to reproduce the pre-existing,
+    /// version-1, certificate-table-less file directly.
+    #[tokio::test]
+    async fn an_existing_database_gains_the_certificate_table_on_open() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute(
+                "CREATE TABLE local_endpoints (
+                    service_id TEXT NOT NULL,
+                    interface_name TEXT NOT NULL,
+                    endpoint_type TEXT NOT NULL,
+                    endpoint_data TEXT NOT NULL,
+                    PRIMARY KEY (service_id, interface_name)
+                );",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "CREATE TABLE service_owners (
+                    service_id TEXT PRIMARY KEY,
+                    owner_did  TEXT NOT NULL,
+                    created_at INTEGER NOT NULL
+                );",
+                [],
+            )
+            .unwrap();
+            conn.execute("PRAGMA user_version = 1", []).unwrap();
+        }
+
+        // Reopen through the real constructor -- schema creation must run
+        // unconditionally and add the certificate table to this
+        // pre-existing, version-1 file.
+        let store = SqliteEndpointStorage::new(&path).await.unwrap();
+        store.save_cert("svc-1", r#"{"fake":"cert"}"#).await.unwrap();
+        let certs = store.load_all_certs().await.unwrap();
+        assert_eq!(certs, vec![("svc-1".to_string(), r#"{"fake":"cert"}"#.to_string())]);
     }
 }

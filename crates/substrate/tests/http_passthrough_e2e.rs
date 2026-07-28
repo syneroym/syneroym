@@ -46,6 +46,7 @@ fn tcp_deploy_manifest(http_routes: serde_json::Value) -> DeployManifest {
         },
         service_type: ServiceType::Tcp(syneroym_sdk::TcpManifest { endpoints: vec![] }),
         registry_certificate: None,
+        instance_certificate: None,
     }
 }
 
@@ -70,6 +71,7 @@ fn wasm_deploy_manifest(
             interfaces,
         }),
         registry_certificate: None,
+        instance_certificate: None,
     }
 }
 

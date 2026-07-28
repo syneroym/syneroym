@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use syneroym_identity::{DelegationCertificate, Identity};
+use syneroym_identity::{DelegationCertificate, Identity, delegation::TRANSPORT_SCOPES};
 
 fn bench_delegation(c: &mut Criterion) {
     let master = Identity::generate().unwrap();
@@ -26,7 +26,7 @@ fn bench_delegation(c: &mut Criterion) {
 
     c.bench_function("DelegationCertificate::verify", |b| {
         b.iter(|| {
-            let _ = cert.verify(black_box(&cert.master_did));
+            let _ = cert.verify(black_box(&cert.master_did), black_box(&TRANSPORT_SCOPES));
         })
     });
 }

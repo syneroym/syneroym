@@ -9,9 +9,17 @@ use std::{
     time::Duration,
 };
 
+use chrono::DateTime;
 use clap::Subcommand;
 use syneroym_core::dht_registry::{EndpointInfo, EndpointType};
-use syneroym_identity::Identity;
+use syneroym_identity::{DelegationCertificate, Identity, substrate};
+
+use super::member_identity;
+
+/// The attended posture's default certificate lifetime for a deploy-time
+/// certification via `svc deploy --master` -- `identity certify-instance`
+/// is the dedicated renewal command for a longer- or shorter-lived one.
+const DEFAULT_INSTANCE_CERT_EXPIRES_HOURS: u64 = 24;
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum SvcCommands {
@@ -35,6 +43,22 @@ pub enum SvcCommands {
         /// Optional nickname for the registry
         #[arg(long)]
         nickname: Option<String>,
+        /// Name of a local member master identity (ADR-0020 §1). When
+        /// present, `--svc-id` must equal that identity's DID; the substrate
+        /// is queried for the instance key it would derive, a
+        /// `service-instance` certificate is issued and installed at
+        /// deploy. Absent leaves the service its own master, exactly as
+        /// before this flag existed.
+        #[arg(long, conflicts_with = "instance_certificate")]
+        master: Option<String>,
+        /// Path to a JSON `DelegationCertificate` already minted with
+        /// `identity certify-instance` -- installed as-is instead of this
+        /// command minting a fresh one itself. The one path that lets an
+        /// operator pick a non-default `--expires-hours`, or install a
+        /// certificate signed on a different machine than this deploy runs
+        /// from. Mutually exclusive with `--master`.
+        #[arg(long, conflicts_with = "master")]
+        instance_certificate: Option<PathBuf>,
     },
     /// Remove an installed `SynSvc` via API
     Remove {
@@ -69,7 +93,16 @@ pub async fn handle(
     client.wait_for_ready(Duration::from_secs(5)).await?;
 
     match command {
-        SvcCommands::Deploy { svc_id, interfaces, wasm, tcp, identity, nickname } => {
+        SvcCommands::Deploy {
+            svc_id,
+            interfaces,
+            wasm,
+            tcp,
+            identity,
+            nickname,
+            master,
+            instance_certificate,
+        } => {
             let ifaces: Vec<String> = interfaces.split(',').map(|s| s.trim().to_string()).collect();
 
             let mut cert = None;
@@ -89,11 +122,52 @@ pub async fn handle(
                 cert = Some(info.sign(&id)?);
             }
 
+            let instance_cert = match (master, instance_certificate) {
+                (Some(name), _) => {
+                    let master_identity = member_identity::resolve_member_master(dir, name)?;
+                    let master_did = substrate::derive_did_key(&master_identity.public_key());
+                    if master_did != *svc_id {
+                        anyhow::bail!(
+                            "--master '{name}' resolves to {master_did}, which does not match \
+                             --svc-id {svc_id} -- an install-time certificate for this pair would \
+                             be rejected"
+                        );
+                    }
+                    Some(
+                        member_identity::certify_instance(
+                            &client,
+                            &master_identity,
+                            svc_id,
+                            DEFAULT_INSTANCE_CERT_EXPIRES_HOURS,
+                        )
+                        .await?,
+                    )
+                }
+                (None, Some(path)) => {
+                    let cert_json = fs::read_to_string(path).map_err(|e| {
+                        anyhow::anyhow!(
+                            "failed to read --instance-certificate at {}: {e}",
+                            path.display()
+                        )
+                    })?;
+                    Some(DelegationCertificate::from_json(&cert_json)?)
+                }
+                (None, None) => None,
+            };
+
             if let Some(wasm_path) = wasm {
                 let wasm_bytes = fs::read(wasm_path)?;
                 let interfaces_list =
                     if ifaces.is_empty() { vec!["default".to_string()] } else { ifaces };
-                client.deploy_svc_wasm(svc_id.clone(), interfaces_list, wasm_bytes, cert).await?;
+                client
+                    .deploy_svc_wasm(
+                        svc_id.clone(),
+                        interfaces_list,
+                        wasm_bytes,
+                        cert,
+                        instance_cert,
+                    )
+                    .await?;
                 println!("Successfully deployed WASM svc {svc_id}");
             } else if let Some(tcp_addr) = tcp {
                 if ifaces.len() > 1 {
@@ -103,7 +177,7 @@ pub async fn handle(
                 let iface = ifaces.first().cloned().unwrap_or_else(|| "default".to_string());
                 let endpoints =
                     vec![syneroym_sdk::NetworkEndpoint { interface_name: iface, host, port }];
-                client.deploy_svc_tcp(svc_id.clone(), endpoints, cert).await?;
+                client.deploy_svc_tcp(svc_id.clone(), endpoints, cert, instance_cert).await?;
                 println!("Successfully deployed TCP service {svc_id}");
             } else {
                 anyhow::bail!("Either --wasm or --tcp must be provided for deployment");
@@ -116,13 +190,17 @@ pub async fn handle(
         SvcCommands::List => {
             // Lists all installed SynSvcs registered in the local substrate registry.
             let services = client.list_svcs().await?;
-            println!("{:<50} {:<10} {:<50}", "SERVICE ID", "TYPE", "INTERFACES");
-            println!("{:-<110}", "");
+            println!(
+                "{:<50} {:<10} {:<30} {:<50}",
+                "SERVICE ID", "TYPE", "INSTANCE CERT EXPIRES", "INTERFACES"
+            );
+            println!("{:-<145}", "");
             for svc in services {
                 println!(
-                    "{:<50} {:<10} {:<50}",
+                    "{:<50} {:<10} {:<30} {:<50}",
                     svc.service_id,
                     svc.endpoint_type,
+                    format_expiry(svc.instance_certificate_expires_at),
                     svc.interfaces.join(", ")
                 );
             }
@@ -143,6 +221,18 @@ pub async fn handle(
     Ok(())
 }
 
+/// `-` for a service with no installed instance certificate; otherwise an
+/// RFC 3339 timestamp, so "when does this fall over" is answerable without
+/// reading logs (ADR-0020 §3).
+fn format_expiry(expires_at_secs: Option<u64>) -> String {
+    match expires_at_secs {
+        Some(secs) => DateTime::from_timestamp(secs as i64, 0)
+            .map(|dt| dt.to_rfc3339())
+            .unwrap_or_else(|| "-".to_string()),
+        None => "-".to_string(),
+    }
+}
+
 fn get_host_port_from_tcp_addr(tcp_addr: &str) -> anyhow::Result<(String, u16)> {
     let parts: Vec<&str> = tcp_addr.split(':').collect();
     if parts.len() != 2 {
@@ -159,4 +249,53 @@ fn load_identity(dir: &Path, name: &str) -> anyhow::Result<Identity> {
         anyhow::bail!("Identity '{}' not found at {}", name, key_path.display());
     }
     Identity::load_from_path(&key_path)
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::{Parser, error::ErrorKind};
+
+    use super::*;
+
+    #[derive(Debug, Parser)]
+    struct Wrapper {
+        #[command(subcommand)]
+        cmd: SvcCommands,
+    }
+
+    /// A0-04: `--instance-certificate` installs an already-minted
+    /// certificate as-is; `--master` mints and installs a fresh one itself.
+    /// Together they're ambiguous about which certificate actually gets
+    /// installed, so clap must reject the combination before either flag's
+    /// handler ever runs.
+    #[test]
+    fn deploy_rejects_master_and_instance_certificate_together() {
+        let err = Wrapper::try_parse_from([
+            "svc",
+            "deploy",
+            "--svc-id",
+            "did:key:zTest",
+            "--interfaces",
+            "default",
+            "--tcp",
+            "localhost:1",
+            "--master",
+            "m",
+            "--instance-certificate",
+            "/tmp/cert.json",
+        ])
+        .unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn format_expiry_shows_a_dash_for_no_certificate() {
+        assert_eq!(format_expiry(None), "-");
+    }
+
+    #[test]
+    fn format_expiry_shows_an_rfc3339_timestamp() {
+        // 2024-01-01T00:00:00Z
+        assert_eq!(format_expiry(Some(1_704_067_200)), "2024-01-01T00:00:00+00:00");
+    }
 }

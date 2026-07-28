@@ -88,6 +88,7 @@ fn wasm_deploy_manifest(bytes: Vec<u8>, interfaces: Vec<String>) -> DeployManife
             interfaces,
         }),
         registry_certificate: None,
+        instance_certificate: None,
     }
 }
 
