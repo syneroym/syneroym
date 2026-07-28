@@ -124,7 +124,7 @@ so they ship as one slice:
 2. **Gate the `security` interface on `substrate/admin`** (B7 F3.1).
    `inject-kek`, `rotate-kek`, and `set-secret` are dispatched with **no
    capability check at all** today — see the standing `TODO(M04B/FDAE)` at
-   [service.rs:234-239](../../../../crates/control_plane/src/service.rs#L234),
+   [service.rs:256-260](../../../../crates/control_plane/src/service.rs#L256),
    whose named milestone has since closed without it being addressed. Any
    verified caller can rotate the KEK that encrypts every service database on
    the node. *Alone:* gating it bricks the interface, since nobody can hold
@@ -183,8 +183,12 @@ a mismatch.
 *Independently mergeable* — identity/deploy work, valuable on its own before any
 supervisor exists.
 
-### A1 — Endpoint records under the member master DID
-Design of record: [ADR-0020](../../../decisions/0020-stable-logical-service-identity.md) §6.
+### A1 — Endpoint records under the member master DID — **Complete (2026-07-28)**
+Design of record: [ADR-0020](../../../decisions/0020-stable-logical-service-identity.md) §6
+([amended](../../../decisions/0020-stable-logical-service-identity.md#amendment-2026-07-28-after-slice-a1-implementation)
+2026-07-28 against what actually shipped). Implementation plan:
+[slice-a1-implementation-plan.md](slice-a1-implementation-plan.md). Verification
+evidence: [status.md](status.md)'s A1 section.
 
 **Added after review found the mapping this design assumed does not exist.**
 The registry today verifies an endpoint record's signature against the key
@@ -195,31 +199,38 @@ a revocation list with no forward index. Without this slice, a dependent holding
 a master DID cannot resolve it to an address at all, and relocation silently
 stops working — the exact failure A0 exists to prevent.
 
-`verify_endpoint_signature` gains a second acceptance path: a record keyed by a
-master DID, signed by an instance key that presents a valid
-`DelegationCertificate` from that master. The publish path attaches the
-certificate. Resolution stays one lookup; A0's one-master-per-member rule means
-at most one live publisher per master, so today's last-writer-wins insert is
-already correct.
+`SignedEndpointInfo::verify` gains a second acceptance path: a record keyed by
+a master DID, signed by an instance key that presents a valid
+`DelegationCertificate` from that master. A substrate-side `EndpointPublisher`
+now builds and signs that record at deploy and on the heartbeat — there was no
+publish path for it before this slice, only a replay of an operator-signed
+file. Master-DID resolution requires a configured HTTP registry: BEP0044/pkarr
+keys a packet by its signing key, so a delegation-signed record has no DHT-only
+home under its master DID.
 
-**Two verification paths, not one — found while planning A0.** This bullet and
-ADR-0020 §6 both cite only `registry.rs:234`, the HTTP registry. The BEP0044
-DHT path has its own: `SignedEndpointInfo::verify`
-([dht_registry.rs:137-146](../../../../crates/core/src/dht_registry.rs#L137))
-already checks a delegation certificate attached to a published record — with
-the **inverse** keying of §6, requiring `cert.temporary_did == info.service_id`
-(record keyed by the *temporary* DID, certificate naming its master) where §6
-specifies a record keyed by the *master* DID and signed by the instance key.
-A1 changes both and decides whether the DHT path adopts §6's shape or keeps its
-own. A0 pins that site's scope argument to the service-instance scope — free
-today, since `EndpointInfo.delegation` is set nowhere in the tree — and leaves
-the reconciliation here.
+**One verification function, not two — corrected after planning found the
+mapping this design assumed does not exist.** `verify_endpoint_signature`
+([registry.rs:234](../../../../crates/community_registry/src/registry.rs#L234))
+*calls* `SignedEndpointInfo::verify`; its own body only ever resolved a key for
+a debug log a single caller discarded. The genuinely separate path is
+`RegistryClient::lookup`'s **DHT branch**
+([dht_registry.rs](../../../../crates/core/src/dht_registry.rs)), which never
+called `verify` at all and, by construction, can never carry a delegation-signed
+record for a master DID (pkarr keys a packet by its signing key). A1 rewrote
+the one verification function to accept §6's keying, added a `RecordTrust`
+parameter distinguishing admission (the certificate's expiry is checked) from
+reading a record another party already admitted (it is not, so a lapsed
+renewal degrades on the registry's TTL clock rather than breaking resolution
+instantly), and left the DHT branch untouched.
 
-Covers every `ServiceType` with no special case: instance keys are HKDF-derived
-from the hosting node's identity ([keys.rs:240-257](../../../../crates/identity/src/keys.rs#L240))
-rather than stored, so a TCP or container service has one exactly as a WASM
-service does, and relocation produces a new instance key with no key generation,
-storage, or transport added anywhere.
+Covers every `ServiceType`'s *key derivation* with no special case — instance
+keys are HKDF-derived from the hosting node's identity
+([keys.rs:240-257](../../../../crates/identity/src/keys.rs#L240)) rather than
+stored, so a TCP or container service has one exactly as a WASM service does.
+The *surface* is narrower: `SyneroymClient::deploy_container` and `roymctl svc
+deploy` have no way to carry a member master for a container service today, so
+a container-hosted member cannot yet get a master-keyed record (backlog row 79,
+retargeted off this slice — it needs a container-deploy CLI surface first).
 
 **Discharges the deferred registry-trust-model ADR** that M04A Slice B7 recorded
 as owed (§6.2 / F9 option 2: relax `verify()` to accept a record for X signed by
@@ -403,8 +414,8 @@ under its master and step 2's second lookup would fail.
 |---|---|---|
 | 1 | Instance certificate expired | Handshake fails closed. **✅ A0**: already true of the general mechanism, and pinned specifically for a service-instance certificate by `an_expired_instance_certificate_fails_the_handshake_closed` (`crates/router/src/handshake.rs`). Unattended renewal under the online-key posture is A5's; through A0-A4 renewal is an operator-run cadence (see row 3) |
 | 2 | **Certificate presented with the wrong `scope`** | Rejected. **✅ A0, at two granularities**: the ingress (`handshake.rs`) admits either transport scope and rejects anything outside that set (`a_certificate_scoped_outside_transport_is_rejected_at_the_handshake`); the narrow single-value check — "this record/install may only be admitted by a `service-instance` certificate" — lives at the deploy-time install verification (`a_deploy_is_rejected_when_the_certificate_carries_the_routing_scope`, `crates/control_plane/src/service/orchestration.rs`) and, for A1, at endpoint-record admission. Proven live over two real substrates in `crates/substrate/tests/instance_identity_e2e.rs` (a `routing`-scoped certificate rejected at deploy) |
-| 3 | **Attended posture, renewal cadence missed** | Instance fails closed; this is an outage, not a degradation, and the docs say so (ADR-0020 §3). **✅ A0**: not a distinct code behavior — the failure mode *is* row 1 — so the evidence is row 1's test plus the near-expiry heartbeat warning (`a_certificate_near_expiry_is_warned_about_on_the_heartbeat_sweep`, `crates/substrate/src/runtime.rs`) and the `svc list` expiry column, which make the cadence operable without making a miss survivable |
-| 4 | **Endpoint record keyed by a master, signed by a non-delegated key** | Rejected; only a valid `DelegationCertificate` from that master admits the record (A1) |
+| 3 | **Attended posture, renewal cadence missed** | Instance fails closed; this is an outage, not a degradation, and the docs say so (ADR-0020 §3). **✅ A0** proves the handshake half: not a distinct code behavior there — the failure mode *is* row 1 — so the evidence is row 1's test plus the near-expiry heartbeat warning (`a_certificate_near_expiry_is_warned_about_on_the_heartbeat_sweep`, `crates/substrate/src/runtime.rs`) and the `svc list` expiry column. **A1 adds a second, distinct failure mode** (D-A1-10): a lapsed certificate also stops `EndpointPublisher` refreshing the member's record, so name *resolution* fails too — on the registry's TTL clock (`DEFAULT_REGISTRY_TTL_SECS`, two hours) rather than the handshake's instant cliff. **✅ A1**: `an_expired_certificate_blocks_publishing_but_not_reading` (`crates/core/src/dht_registry.rs`) and `an_expired_certificate_publishes_nothing` (`crates/core/src/endpoint_publisher.rs`) |
+| 4 | **Endpoint record keyed by a master, signed by a non-delegated key** | Rejected; only a valid `DelegationCertificate` from that master admits the record. **✅ A1**: `a_record_keyed_by_a_master_is_rejected_when_signed_by_an_uncertified_key` (`crates/core/src/dht_registry.rs`), proven live over two real substrates by the negative half of `a_member_master_did_resolves_to_an_address_and_follows_the_member_across_nodes` (`crates/substrate/tests/master_endpoint_record_e2e.rs`) — a hand-built record posted to the registry is rejected with `401` |
 | 5 | Out-of-order binding write (stale epoch) | Rejected by the substrate; mapping does not regress |
 | 6 | **Binding write re-sent at the current epoch, identical content** | Idempotent no-op, reported as success — distinct from the stale rejection above |
 | 7 | **Binding write at the current epoch, *different* content** | Rejected as a conflict, reported distinctly; this is the two-writer signal |

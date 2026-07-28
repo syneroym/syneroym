@@ -13,7 +13,10 @@ use std::{
 
 use anyhow::Result;
 use serde_json::Value;
-use syneroym_core::{http_routes::HttpRouteRegistry, local_registry::EndpointRegistry};
+use syneroym_core::{
+    endpoint_publisher::EndpointPublisher, http_routes::HttpRouteRegistry,
+    local_registry::EndpointRegistry,
+};
 use syneroym_data_blob::BlobProvider;
 use syneroym_data_db::traits::StorageProvider;
 use syneroym_data_keystore::KeyStore;
@@ -80,6 +83,14 @@ pub struct ControlPlaneService {
     /// implementation, is constructed in `RouteHandler::init`, which runs
     /// after this service) and same two-phase `OnceLock` wiring.
     pub row_authorizer: OnceLock<Weak<dyn RowAuthorizer>>,
+    /// Set after construction by the substrate's composition root. A setter
+    /// rather than an `init` parameter because `init` has many call sites,
+    /// almost all of them tests with nothing to publish. Same two-phase
+    /// wiring `service_proxy` already uses, for the same ordering reason --
+    /// unlike that field, this one is a strong `Arc`: `EndpointPublisher`
+    /// holds no reference back to `ControlPlaneService`, so there is no
+    /// cycle to guard against with a `Weak`.
+    endpoint_publisher: OnceLock<Arc<EndpointPublisher>>,
     // `Weak`, not `NativeDispatchRegistry` -- see the cycle explained in
     // `syneroym_rpc::dispatch_registry`'s module docs. `RouteHandlerInner`
     // owns the strong clone for as long as the router itself is alive.
@@ -139,9 +150,19 @@ impl ControlPlaneService {
             node_identity,
             service_proxy: OnceLock::new(),
             row_authorizer: OnceLock::new(),
+            endpoint_publisher: OnceLock::new(),
             native_dispatch: Arc::downgrade(&native_dispatch),
             http_routes,
         })
+    }
+
+    /// Wires in the substrate's `EndpointPublisher` so `deploy` can publish
+    /// an endpoint record immediately (D-A1-3) instead of waiting for the
+    /// next heartbeat. A no-op past the first call -- `OnceLock::set` simply
+    /// returns `Err`, which is discarded, mirroring `service_proxy`'s and
+    /// `row_authorizer`'s two-phase wiring.
+    pub fn set_endpoint_publisher(&self, publisher: Arc<EndpointPublisher>) {
+        let _ = self.endpoint_publisher.set(publisher);
     }
 
     /// Never-constructed marker type coerced to an unsized `Weak<dyn
@@ -1590,5 +1611,73 @@ mod tests {
             "undeploy must remove the stream-protocol registration along with every other \
              registered interface"
         );
+    }
+
+    #[tokio::test]
+    async fn set_endpoint_publisher_is_set_once() {
+        use syneroym_core::{dht_registry::RegistryClient, endpoint_publisher::EndpointPublisher};
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+            )
+            .await
+            .unwrap(),
+        );
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+
+        let native_dispatch = NativeDispatchRegistry::default();
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
+            app_sandbox,
+            container_engine,
+            registry.clone(),
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider,
+            blob_provider,
+            messaging_broker,
+            native_dispatch,
+            Arc::new(DashMap::new()),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        )
+        .await
+        .unwrap();
+
+        let make_publisher = || {
+            Arc::new(EndpointPublisher::new(
+                Arc::new(RegistryClient::new(false, None)),
+                registry.clone(),
+                Arc::new(syneroym_identity::Identity::generate().unwrap()),
+                "did:key:zTestNode".to_string(),
+                temp_dir.path().to_path_buf(),
+            ))
+        };
+
+        let first = make_publisher();
+        let second = make_publisher();
+
+        service.set_endpoint_publisher(first.clone());
+        service.set_endpoint_publisher(second);
+
+        let stored = service.endpoint_publisher.get().expect("publisher should be set");
+        assert!(Arc::ptr_eq(stored, &first), "a second call must not replace the first");
     }
 }

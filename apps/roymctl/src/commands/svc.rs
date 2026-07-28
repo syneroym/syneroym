@@ -37,7 +37,12 @@ pub enum SvcCommands {
         /// TCP host:port for an existing service (e.g. "localhost:8080")
         #[arg(long)]
         tcp: Option<String>,
-        /// Optional identity name for signing a registry certificate
+        /// Optional identity name for signing a registry certificate. This
+        /// is the self-signed publish route for a service with no member
+        /// master. With `--master` or `--instance-certificate` the substrate
+        /// publishes the record itself, keyed by the member master DID
+        /// (D-A1-3); this blob then carries operator metadata (nickname,
+        /// privacy) only.
         #[arg(long)]
         identity: Option<String>,
         /// Optional nickname for the registry
@@ -59,6 +64,14 @@ pub enum SvcCommands {
         /// from. Mutually exclusive with `--master`.
         #[arg(long, conflicts_with = "master")]
         instance_certificate: Option<PathBuf>,
+        /// Community registry URL to publish/refresh the master's anchor at
+        /// when `--master` mints a fresh certificate (D-A1-7). Ignored on
+        /// the `--instance-certificate` path, since that certificate was
+        /// minted (and its anchor published, if at all) elsewhere. Without
+        /// it, a certificate minted here is unusable on the wire until an
+        /// anchor exists some other way (`roymctl identity publish-anchor`).
+        #[arg(long)]
+        registry_url: Option<String>,
     },
     /// Remove an installed `SynSvc` via API
     Remove {
@@ -102,29 +115,66 @@ pub async fn handle(
             nickname,
             master,
             instance_certificate,
+            registry_url,
         } => {
             let ifaces: Vec<String> = interfaces.split(',').map(|s| s.trim().to_string()).collect();
 
-            let mut cert = None;
-            if let Some(name) = identity {
-                let id = load_identity(dir, name)?;
-
-                let info = EndpointInfo {
-                    service_id: svc_id.clone(),
-                    substrate_id: substrate_did.clone(),
-                    endpoint_type: EndpointType::Service,
-                    mechanisms: vec![],
-                    nickname: nickname.clone(),
-                    is_private: false,
-                    ttl: None,
-                    delegation: None,
+            // The record the substrate stores at deploy. Whenever an
+            // instance certificate is involved the substrate re-signs its
+            // own record with the certified instance key and reads only
+            // this one's nickname and privacy (D-A1-4), so any key at all is
+            // enough to carry it -- `--identity` is the no-master path's
+            // actual self-signed publish route.
+            //
+            // Bound owned, chosen by reference: `Identity` is not `Clone`,
+            // and the `--master` arm below needs the same key again.
+            let named_identity = match identity {
+                Some(name) => Some(load_identity(dir, name)?),
+                None => None,
+            };
+            let master_identity = match master {
+                Some(name) => Some(member_identity::resolve_member_master(dir, name)?),
+                None => None,
+            };
+            // No master key and no named identity, but a nickname to carry:
+            // sign the envelope with a throwaway key. There is no operator
+            // key to reach for -- without `--as`, `client_for` mints a fresh
+            // ephemeral one rather than loading a file -- and the substrate
+            // discards this signature anyway (D-A1-8).
+            let envelope_identity =
+                match (nickname, &named_identity, &master_identity, instance_certificate) {
+                    (Some(_), None, None, Some(_)) => Some(Identity::generate()?),
+                    _ => None,
                 };
-                cert = Some(info.sign(&id)?);
-            }
+
+            let signing_identity: Option<&Identity> = match (&named_identity, nickname) {
+                (Some(id), _) => Some(id),
+                (None, Some(_)) => master_identity.as_ref().or(envelope_identity.as_ref()),
+                (None, None) => None,
+            };
+
+            let cert = match signing_identity {
+                Some(id) => Some(
+                    EndpointInfo {
+                        service_id: svc_id.clone(),
+                        substrate_id: substrate_did.clone(),
+                        endpoint_type: EndpointType::Service,
+                        mechanisms: vec![],
+                        nickname: nickname.clone(),
+                        is_private: false,
+                        ttl: None,
+                        delegation: None,
+                    }
+                    .sign(id)?,
+                ),
+                None => None,
+            };
 
             let instance_cert = match (master, instance_certificate) {
                 (Some(name), _) => {
-                    let master_identity = member_identity::resolve_member_master(dir, name)?;
+                    let master_identity = master_identity.as_ref().ok_or_else(|| {
+                        anyhow::anyhow!("master identity '{name}' failed to load")
+                    })?;
                     let master_did = substrate::derive_did_key(&master_identity.public_key());
                     if master_did != *svc_id {
                         anyhow::bail!(
@@ -133,15 +183,19 @@ pub async fn handle(
                              be rejected"
                         );
                     }
-                    Some(
-                        member_identity::certify_instance(
-                            &client,
-                            &master_identity,
-                            svc_id,
-                            DEFAULT_INSTANCE_CERT_EXPIRES_HOURS,
-                        )
-                        .await?,
+                    let cert = member_identity::certify_instance(
+                        &client,
+                        master_identity,
+                        svc_id,
+                        DEFAULT_INSTANCE_CERT_EXPIRES_HOURS,
                     )
+                    .await?;
+                    member_identity::refresh_anchor_or_warn(
+                        registry_url.as_deref(),
+                        master_identity,
+                    )
+                    .await?;
+                    Some(cert)
                 }
                 (None, Some(path)) => {
                     let cert_json = fs::read_to_string(path).map_err(|e| {
@@ -286,6 +340,61 @@ mod tests {
         ])
         .unwrap_err();
         assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+    }
+
+    /// D-A1-8: `--master` plus `--nickname` needs no `--identity` -- the
+    /// master identity already loaded on this arm carries the envelope.
+    #[test]
+    fn deploy_with_a_master_and_a_nickname_needs_no_identity_flag() {
+        let cmd = Wrapper::try_parse_from([
+            "svc",
+            "deploy",
+            "--svc-id",
+            "did:key:zTest",
+            "--interfaces",
+            "default",
+            "--tcp",
+            "localhost:1",
+            "--master",
+            "m",
+            "--nickname",
+            "alice",
+        ])
+        .expect("--master with --nickname and no --identity must parse");
+        let SvcCommands::Deploy { master, nickname, identity, .. } = cmd.cmd else {
+            panic!("expected SvcCommands::Deploy");
+        };
+        assert_eq!(master.as_deref(), Some("m"));
+        assert_eq!(nickname.as_deref(), Some("alice"));
+        assert!(identity.is_none());
+    }
+
+    /// D-A1-8's third shape: no `--as` is required to carry a nickname
+    /// alongside a pre-minted `--instance-certificate` -- the envelope is
+    /// signed with a throwaway key rather than needing an operator identity.
+    #[test]
+    fn deploy_with_an_instance_certificate_and_a_nickname_needs_no_identity_flag() {
+        let cmd = Wrapper::try_parse_from([
+            "svc",
+            "deploy",
+            "--svc-id",
+            "did:key:zTest",
+            "--interfaces",
+            "default",
+            "--tcp",
+            "localhost:1",
+            "--instance-certificate",
+            "/tmp/cert.json",
+            "--nickname",
+            "alice",
+        ])
+        .expect("--instance-certificate with --nickname and no --identity must parse");
+        let SvcCommands::Deploy { instance_certificate, nickname, identity, .. } = cmd.cmd else {
+            panic!("expected SvcCommands::Deploy");
+        };
+        assert_eq!(instance_certificate, Some(PathBuf::from("/tmp/cert.json")));
+        assert_eq!(nickname.as_deref(), Some("alice"));
+        assert!(identity.is_none());
     }
 
     #[test]

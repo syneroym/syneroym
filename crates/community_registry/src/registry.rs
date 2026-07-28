@@ -17,15 +17,15 @@ use axum::{
     routing::{get, post},
 };
 use dashmap::DashMap;
-use ed25519_dalek::VerifyingKey;
 use oneshot::Sender;
 use reqwest::Client;
 use syneroym_core::{
     config::SubstrateConfig,
-    dht_registry::{DEFAULT_REGISTRY_TTL_SECS, SignedEndpointInfo, SignedMasterAnchor},
+    dht_registry::{
+        DEFAULT_REGISTRY_TTL_SECS, RecordTrust, SignedEndpointInfo, SignedMasterAnchor,
+    },
     util,
 };
-use syneroym_identity::substrate;
 use tokio::{net::TcpListener, sync::oneshot, task::JoinHandle, time};
 use tracing::{debug, error, info, warn};
 
@@ -201,7 +201,7 @@ async fn register_endpoint(
 ) -> Result<StatusCode, (StatusCode, String)> {
     let service_id = &payload.info.service_id;
 
-    verify_endpoint_signature(&payload)?;
+    verify_endpoint_signature(&state, &payload)?;
 
     let alias = util::generate_alias(payload.info.nickname.as_deref(), service_id);
 
@@ -232,20 +232,30 @@ async fn register_endpoint(
 }
 
 fn verify_endpoint_signature(
+    state: &RegistryState,
     payload: &SignedEndpointInfo,
-) -> Result<VerifyingKey, (StatusCode, String)> {
-    let service_id = &payload.info.service_id;
-
-    if let Err(e) = payload.verify() {
-        return Err((StatusCode::UNAUTHORIZED, format!("Signature verification failed: {}", e)));
+) -> Result<(), (StatusCode, String)> {
+    if let Err(e) = payload.verify(RecordTrust::Publishing) {
+        return Err((StatusCode::UNAUTHORIZED, format!("Signature verification failed: {e}")));
     }
 
-    // Resolve public key
-    let pubkey = substrate::resolve_did_key(service_id)
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid service_id (did:key): {e}")))?;
-    debug!("Registering public key: {:?} to registry", pubkey);
+    // Defence in depth, not the gate: this stops a revoked instance key from
+    // refreshing a record at a registry that already holds the master's
+    // anchor. It costs a map lookup and no network call. Revocation is
+    // actually enforced at the handshake, where a revoked temporary DID
+    // cannot complete a connection at all -- so a record that slips past
+    // this check still buys its holder nothing.
+    if let Some(cert) = &payload.info.delegation
+        && let Some(anchor) = state.master_anchors.get(&cert.master_did)
+        && anchor.0.payload.revoked_keys.contains(&cert.temporary_did)
+    {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            format!("instance key {} has been revoked by its master", cert.temporary_did),
+        ));
+    }
 
-    Ok(pubkey)
+    Ok(())
 }
 
 fn propagate_registration(payload: SignedEndpointInfo, parent_url: String) {
@@ -301,18 +311,52 @@ async fn lookup_master_endpoint(
 mod tests {
     use axum::http::StatusCode;
     use syneroym_core::{
+        config::{AccessControl, ServiceRegistryRole, SubstrateConfig},
         dht_registry::{
             EndpointInfo, EndpointMechanism, EndpointType, MASTER_ANCHOR_SCHEMA_V1,
-            MasterAnchorPayload,
+            MasterAnchorPayload, RegistryClient,
         },
         util,
     };
-    use syneroym_identity::Identity;
+    use syneroym_identity::{
+        DelegationCertificate, Identity, delegation::SCOPE_SERVICE_INSTANCE, substrate,
+    };
 
     use super::*;
 
     fn create_signed_info(identity: &Identity, info: EndpointInfo) -> SignedEndpointInfo {
         info.sign(identity).unwrap()
+    }
+
+    fn sample_service_info() -> EndpointInfo {
+        EndpointInfo {
+            service_id: "placeholder".to_string(),
+            substrate_id: "did:key:zSubstrate".to_string(),
+            endpoint_type: EndpointType::Service,
+            nickname: None,
+            mechanisms: vec![],
+            is_private: false,
+            ttl: None,
+            delegation: None,
+        }
+    }
+
+    async fn spawn_registry() -> (EcosystemRegistry, String) {
+        let config = SubstrateConfig {
+            roles: syneroym_core::config::RolesConfig {
+                community_registry: Some(ServiceRegistryRole {
+                    access: AccessControl::String("everyone".to_string()),
+                    http_bind_address: "127.0.0.1:0".to_string(),
+                    parent_registry_url: None,
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut registry = EcosystemRegistry::init(&config).await.unwrap();
+        let url = registry.bind().await.unwrap();
+        registry.spawn().await.unwrap();
+        (registry, url)
     }
 
     #[tokio::test]
@@ -545,5 +589,190 @@ mod tests {
 
         assert!(res.is_err());
         assert_eq!(res.unwrap_err(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn a_delegation_signed_record_registers_and_looks_up_under_its_master_did() {
+        let state = Arc::new(RegistryState::default());
+        let master = Identity::generate().unwrap();
+        let instance = Identity::generate().unwrap();
+        let master_did = substrate::derive_did_key(&master.public_key());
+
+        let cert = DelegationCertificate::issue(
+            &master,
+            instance.public_key(),
+            3600,
+            SCOPE_SERVICE_INSTANCE.to_string(),
+        )
+        .unwrap();
+        let signed = sample_service_info().sign_as_instance(&instance, cert).unwrap();
+
+        let res = register_endpoint(State(state.clone()), Json(signed.clone())).await;
+        assert_eq!(res.unwrap(), StatusCode::OK);
+
+        let lookup_res = lookup_endpoint(Path(master_did.clone()), State(state)).await;
+        let Json(retrieved) = lookup_res.unwrap();
+        assert_eq!(retrieved.info.service_id, master_did);
+    }
+
+    #[tokio::test]
+    async fn a_record_signed_by_a_revoked_instance_key_is_rejected_at_admission() {
+        let state = Arc::new(RegistryState::default());
+        let master = Identity::generate().unwrap();
+        let instance = Identity::generate().unwrap();
+        let master_did = substrate::derive_did_key(&master.public_key());
+        let instance_did = substrate::derive_did_key(&instance.public_key());
+
+        let anchor_payload =
+            MasterAnchorPayload { revoked_keys: vec![instance_did.clone()], ..Default::default() };
+        let signed_anchor = anchor_payload.sign(&master).unwrap();
+        state.master_anchors.insert(master_did, (signed_anchor, Instant::now()));
+
+        let cert = DelegationCertificate::issue(
+            &master,
+            instance.public_key(),
+            3600,
+            SCOPE_SERVICE_INSTANCE.to_string(),
+        )
+        .unwrap();
+        let signed = sample_service_info().sign_as_instance(&instance, cert).unwrap();
+
+        let res = register_endpoint(State(state), Json(signed)).await;
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err().0, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn a_delegated_records_alias_is_derived_from_its_master_did() {
+        let state = Arc::new(RegistryState::default());
+        let master = Identity::generate().unwrap();
+        let instance = Identity::generate().unwrap();
+        let master_did = substrate::derive_did_key(&master.public_key());
+
+        let cert = DelegationCertificate::issue(
+            &master,
+            instance.public_key(),
+            3600,
+            SCOPE_SERVICE_INSTANCE.to_string(),
+        )
+        .unwrap();
+        let mut info = sample_service_info();
+        info.nickname = Some("member-one".to_string());
+        let signed = info.sign_as_instance(&instance, cert).unwrap();
+
+        register_endpoint(State(state.clone()), Json(signed)).await.unwrap();
+
+        let master_hash = util::short_hash(&master_did);
+        let alias = format!("member-one-p{master_hash}");
+        let lookup_res = lookup_endpoint(Path(alias), State(state)).await;
+        let Json(retrieved) = lookup_res.unwrap();
+        assert_eq!(retrieved.info.service_id, master_did);
+    }
+
+    #[tokio::test]
+    async fn refreshing_a_master_anchor_keeps_its_revocations_and_its_revoke_list_registry() {
+        let (_registry, url) = spawn_registry().await;
+        let client = RegistryClient::new(false, Some(url));
+        let master = Identity::generate().unwrap();
+        let master_did = substrate::derive_did_key(&master.public_key());
+
+        client
+            .publish_master_anchor(
+                &master_did,
+                vec!["did:key:zRevoked".to_string()],
+                Some("https://revocations.example/list".to_string()),
+                &master,
+                true,
+            )
+            .await
+            .unwrap();
+
+        client.refresh_master_anchor(&master).await.unwrap();
+
+        let refreshed = client.resolve_master_anchor(&master_did, None).await.unwrap();
+        assert_eq!(refreshed.revoked_keys, vec!["did:key:zRevoked".to_string()]);
+        assert_eq!(
+            refreshed.revoke_list_registry,
+            Some("https://revocations.example/list".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn refreshing_a_stale_master_anchor_keeps_its_revocations() {
+        let (registry, url) = spawn_registry().await;
+        let client = RegistryClient::new(false, Some(url));
+        let master = Identity::generate().unwrap();
+        let master_did = substrate::derive_did_key(&master.public_key());
+
+        // Seed the registry directly with a backdated, but genuinely signed,
+        // anchor -- the common case a late operator hits, per D-A1-12.
+        let stale_payload = MasterAnchorPayload {
+            revoked_keys: vec!["did:key:zRevoked".to_string()],
+            ..Default::default()
+        };
+        let stale_signed = sign_backdated(stale_payload, &master, 25);
+        registry.state.master_anchors.insert(master_did.clone(), (stale_signed, Instant::now()));
+
+        client.refresh_master_anchor(&master).await.unwrap();
+
+        let refreshed = client.resolve_master_anchor(&master_did, None).await.unwrap();
+        assert_eq!(refreshed.revoked_keys, vec!["did:key:zRevoked".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn refreshing_refuses_to_overwrite_an_anchor_it_cannot_read() {
+        let (registry, url) = spawn_registry().await;
+        let client = RegistryClient::new(false, Some(url));
+        let master = Identity::generate().unwrap();
+        let master_did = substrate::derive_did_key(&master.public_key());
+
+        // A corrupted anchor: signed by a different master than the one it
+        // claims (`master_id` mismatches the signing key), so it can never
+        // pass `verify_signature`.
+        let other = Identity::generate().unwrap();
+        let mut corrupt = MasterAnchorPayload::default().sign(&other).unwrap();
+        corrupt.master_id = master_did.clone();
+        registry.state.master_anchors.insert(master_did.clone(), (corrupt.clone(), Instant::now()));
+
+        let err = client.refresh_master_anchor(&master).await;
+        assert!(err.is_err());
+
+        let stored = registry.state.master_anchors.get(&master_did).unwrap();
+        assert_eq!(stored.0.pkarr_packet_hex, corrupt.pkarr_packet_hex);
+    }
+
+    /// Mirrors `MasterAnchorPayload::sign`, backdated -- kept in this test
+    /// module too, since
+    /// `refreshing_a_stale_master_anchor_keeps_its_revocations`
+    /// needs to seed a registry directly rather than go through a
+    /// `RegistryClient`.
+    fn sign_backdated(
+        mut payload: MasterAnchorPayload,
+        identity: &Identity,
+        hours_ago: u64,
+    ) -> SignedMasterAnchor {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        use pkarr::{
+            Keypair, SignedPacket, Timestamp,
+            dns::{CLASS, Name, ResourceRecord, rdata::RData},
+        };
+        use syneroym_core::dht_registry::{PKARR_DNS_NAME, PKARR_TTL};
+
+        let master_id = substrate::derive_did_key(&identity.public_key());
+        let keypair = Keypair::from_secret_key(&identity.to_bytes());
+
+        let now_micros = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_micros() as u64;
+        let backdated_micros = now_micros - hours_ago * 60 * 60 * 1_000_000;
+        let timestamp = Timestamp::from(backdated_micros);
+        payload.timestamp = timestamp.as_u64();
+
+        let json_str = serde_json::to_string(&payload).unwrap();
+        let txt_rdata = pkarr::dns::rdata::TXT::try_from(json_str.as_str()).unwrap();
+        let name = Name::new(PKARR_DNS_NAME).unwrap();
+        let records = vec![ResourceRecord::new(name, CLASS::IN, PKARR_TTL, RData::TXT(txt_rdata))];
+        let signed_packet = SignedPacket::new(&keypair, &records, timestamp).unwrap();
+        let pkarr_packet_hex = hex::encode(signed_packet.to_relay_payload());
+        SignedMasterAnchor { master_id, payload, pkarr_packet_hex }
     }
 }

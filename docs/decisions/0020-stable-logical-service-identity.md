@@ -410,3 +410,79 @@ gap between design and what actually shipped is legible in one place.
    into the paired milestone's dependency-binding slice, which is what
    publishes `expected_asserter_did` per member and is positioned to declare
    it as the member master rather than the instance key.
+
+**Amendment (2026-07-28, after Slice A1 implementation).** Planning and
+implementing Slice A1 found six more places where §6 describes the tree
+inaccurately or asserts a property it does not have. Recorded here for the
+same reason as A0's seven above: legible in one place rather than silently
+edited into §6's prose. Full reasoning is in
+[slice-a1-implementation-plan.md](../planning/milestones/M05A-app-supervisor/slice-a1-implementation-plan.md)
+§6; only the corrections themselves are repeated here.
+
+8. **§6: "keeps resolution at exactly one lookup, unchanged from today."**
+   True on the HTTP registry, and impossible on the DHT: BEP0044 keys a
+   packet by its signing key, so a delegation-signed record can never be
+   stored at, or resolved by, the master DID it names. Slice A1 makes
+   `RegistryClient::register` skip the DHT leg for a delegation-signed
+   record and error when no HTTP registry is configured, rather than
+   silently failing every publish the way an unmodified DHT-only attempt
+   would (`dht_registry.rs`, D-A1-2). **Master-DID resolution therefore
+   requires a configured HTTP registry** — a real narrowing this ADR did
+   not state.
+9. **§6: "Revocation continues to work unchanged... a record signed by a
+   revoked key stops verifying."** False before Slice A1 and still not the
+   whole picture after it: `SignedEndpointInfo::verify` never consulted a
+   master anchor, and `DelegationCertificate::verify` checks signature,
+   window, and scope only, never revocation. Slice A1 adds a best-effort,
+   registry-local revocation check at record *admission*
+   (`community_registry/src/registry.rs`, D-A1-6) — a `DashMap` lookup
+   against the anchors the registry already holds, no new network call. It
+   stops a revoked instance key from *refreshing* a stale record; the real
+   gate stays the handshake, where a revoked temporary DID cannot complete a
+   connection at all. Resolution itself still performs no revocation check,
+   deliberately: adding one would cost a second network lookup, which the
+   milestone's own performance budget forbids.
+10. **§6: "the publish path attaches the certificate," implying one
+    exists.** It did not: before Slice A1 the substrate held no key a
+    master-keyed record could be signed with, and only ever replayed an
+    operator-signed file from `hosted_apps_dir` on the hourly heartbeat. The
+    substrate never *built* a record. Slice A1 adds that path —
+    `EndpointPublisher` (`crates/core/src/endpoint_publisher.rs`), called at
+    deploy (so a reinstantiated member becomes resolvable within the
+    milestone's 5 s convergence budget rather than waiting for the hourly
+    sweep) and from the heartbeat as the repair pass for a publish that
+    failed (D-A1-3).
+11. **A0 gap, live until Slice A1: no master anchor is ever published for a
+    minted member master.** `HandshakeVerifier::verify_preamble` resolves
+    the presented certificate's master anchor and fails closed when it is
+    missing, so a guest-origin call presenting an A0-minted instance
+    certificate was rejected at every destination — A0's own e2e fixture
+    never drove the guest arm over a real hop, so nothing caught it. Fixed
+    by Slice A1's `RegistryClient::refresh_master_anchor`
+    (`crates/core/src/dht_registry.rs`, D-A1-7), called by `roymctl` at
+    every certificate-minting site. It is a read-modify-write, not a bare
+    publish: `MasterAnchorPayload` carries state (`revoked_keys`,
+    `revoke_list_registry`) that a naive republish would silently wipe,
+    undoing failure-matrix row 14's revocation guarantee.
+12. **§6 and task.md both lean on "at most one live publisher per
+    master."** Nothing enforces that invariant, and it stopped being merely
+    theoretical once Slice A1 shipped: every node with an installed
+    certificate now rebuilds and republishes hourly, so a relocation that
+    leaves the old instance still deployed produces a **permanent** flap
+    between two `substrate_id` values, not the one-off duplicate insert §6
+    imagined. Not fixed in A1 — it needs either a publisher generation stamp
+    or the supervisor's own placement view, both later-slice work
+    (D-A1-11); tracked in `deferred-backlog.md`.
+13. **Pre-existing, sharper after Slice A1: `SignedEndpointInfo::verify`
+    and `SignedMasterAnchor::verify` each authenticated only one field of
+    what they serve.** The former compared just `service_id`, leaving
+    `substrate_id` — the field a lookup follows to an address — rewritable
+    by anything that relays the record; the latter compared just
+    `timestamp`, leaving `revoked_keys` and `revoke_list_registry`
+    rewritable by a hostile or compromised registry. Both predate this
+    slice, but Slice A1 is what makes them load-bearing: D-A1-7 gives every
+    certified member master an anchor for the first time, and its
+    read-modify-write would re-sign a tampered revocation list with the
+    real master key, turning an unauthenticated tamper into a permanent
+    authentic one. Fixed by comparing the whole parsed struct instead of one
+    field, on both types (D-A1-9, D-A1-13).

@@ -111,8 +111,18 @@ impl DelegationCertificate {
         now_secs >= self.expires_at_secs
     }
 
-    /// Verifies the signature of the DelegationCertificate, that its `scope`
-    /// is one the caller accepts, and that it's not expired.
+    /// The master match, the scope, and the signature -- everything `verify`
+    /// checks except the validity window.
+    ///
+    /// For one case only: reading a record that some other party already
+    /// admitted while this certificate was live. Re-checking the window
+    /// there turns a lapsed renewal into an immediate resolution failure for
+    /// every consumer, when the thing the credential proves -- that the
+    /// master authorized this key -- has not stopped being true.
+    ///
+    /// **Never admit anything with this.** Connecting, publishing, and
+    /// installing all check the window, because there the certificate is a
+    /// live credential being presented. When in doubt, use `verify`.
     ///
     /// `expected_master_did` is a confused-deputy check against whatever the
     /// caller already believes the master to be. On the router's only
@@ -123,10 +133,10 @@ impl DelegationCertificate {
     /// *target* resolved downstream on `master_did`. Do not "fix" this by
     /// tightening the comparison; there is nothing independent to compare
     /// against on that path. `accepted_scopes` is the check that actually
-    /// bites: an unlisted scope is rejected before the validity window is
-    /// even examined, so a certificate minted for one purpose can't be
-    /// replayed where a different one is required.
-    pub fn verify(&self, expected_master_did: &str, accepted_scopes: &[&str]) -> Result<()> {
+    /// bites: an unlisted scope is rejected before the signature is even
+    /// examined, so a certificate minted for one purpose can't be replayed
+    /// where a different one is required.
+    pub fn verify_chain(&self, expected_master_did: &str, accepted_scopes: &[&str]) -> Result<()> {
         if self.master_did != expected_master_did {
             return Err(anyhow!(
                 "Confused deputy prevention: expected master DID {}, but certificate is for {}",
@@ -140,29 +150,6 @@ impl DelegationCertificate {
                 "certificate scope '{}' is not accepted here (accepted: {:?})",
                 self.scope,
                 accepted_scopes
-            ));
-        }
-
-        if self.issued_at_secs >= self.expires_at_secs {
-            return Err(anyhow!("Delegation certificate has non-positive validity window"));
-        }
-
-        let now_secs = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .context("System time is before UNIX epoch")?
-            .as_secs();
-
-        // Reject certs issued more than 300 seconds in the future (clock skew
-        // tolerance)
-        if self.issued_at_secs > now_secs + 300 {
-            return Err(anyhow!("Delegation certificate issued_at is in the future"));
-        }
-
-        if now_secs >= self.expires_at_secs {
-            return Err(anyhow!(
-                "Delegation certificate has expired (expired at {}, now {})",
-                self.expires_at_secs,
-                now_secs
             ));
         }
 
@@ -189,6 +176,39 @@ impl DelegationCertificate {
         master_pubkey
             .verify(&payload_bytes, &signature)
             .context("Delegation certificate signature verification failed")?;
+
+        Ok(())
+    }
+
+    /// `verify_chain` plus the validity window: the certificate must not be
+    /// issued in the future, have a non-positive window, or already be
+    /// expired. Use this at every trust boundary that presents, publishes, or
+    /// installs a certificate as a live credential.
+    pub fn verify(&self, expected_master_did: &str, accepted_scopes: &[&str]) -> Result<()> {
+        self.verify_chain(expected_master_did, accepted_scopes)?;
+
+        if self.issued_at_secs >= self.expires_at_secs {
+            return Err(anyhow!("Delegation certificate has non-positive validity window"));
+        }
+
+        let now_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .context("System time is before UNIX epoch")?
+            .as_secs();
+
+        // Reject certs issued more than 300 seconds in the future (clock skew
+        // tolerance)
+        if self.issued_at_secs > now_secs + 300 {
+            return Err(anyhow!("Delegation certificate issued_at is in the future"));
+        }
+
+        if now_secs >= self.expires_at_secs {
+            return Err(anyhow!(
+                "Delegation certificate has expired (expired at {}, now {})",
+                self.expires_at_secs,
+                now_secs
+            ));
+        }
 
         Ok(())
     }
