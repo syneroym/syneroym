@@ -40,6 +40,14 @@ use crate::{
 pub const NATIVE_CAPABILITY_INTERFACES: [&str; 6] =
     ["data-layer", "vault", "app-config", "blob-store", "messaging", "http-native"];
 
+/// `orchestrator`/`security`: every substrate registers these under its
+/// **own** DID (`runtime.rs`'s `setup_router`), not under a deployed
+/// service's id. Unlike `NATIVE_CAPABILITY_INTERFACES`, a guest has no
+/// same-service exemption to fall back to -- there is no legitimate reason
+/// for a WASM guest to reach either directly through the proxy, so these are
+/// denied outright rather than gated on `target_service`.
+pub const NODE_NATIVE_INTERFACES: [&str; 2] = ["orchestrator", "security"];
+
 /// A deployable entity within the Substrate.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum SubstrateEndpoint {

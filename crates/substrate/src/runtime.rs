@@ -710,8 +710,8 @@ fn publish_to_community_registry(
 /// other reason to hold.
 async fn instance_cert_expiry_sweep_loop(registry: &EndpointRegistry) -> ! {
     loop {
-        time::sleep(Duration::from_secs(HEARTBEAT_INTERVAL_SECS)).await;
         warn_on_near_expiry_instance_certs(registry);
+        time::sleep(Duration::from_secs(HEARTBEAT_INTERVAL_SECS)).await;
     }
 }
 

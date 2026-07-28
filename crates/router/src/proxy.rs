@@ -16,7 +16,9 @@ use serde_json::Value;
 use syneroym_core::{
     config::RetryPolicy,
     dht_registry::RegistryClient,
-    local_registry::{EndpointRegistry, NATIVE_CAPABILITY_INTERFACES, SubstrateEndpoint},
+    local_registry::{
+        EndpointRegistry, NATIVE_CAPABILITY_INTERFACES, NODE_NATIVE_INTERFACES, SubstrateEndpoint,
+    },
     retry, util,
 };
 use syneroym_identity::{DelegationCertificate, Identity};
@@ -214,9 +216,31 @@ impl ProxyRouter {
         // right back to the literal name for dispatch). Matching only the
         // literal string here let a guest bypass this gate entirely by
         // passing the hash instead of the name.
-        let is_native_capability = NATIVE_CAPABILITY_INTERFACES
-            .iter()
-            .any(|name| *name == req.interface || util::short_hash(name) == req.interface);
+        let matches_interface =
+            |name: &&str| *name == req.interface || util::short_hash(name) == req.interface;
+
+        // `orchestrator`/`security` are node-level, not service-scoped, so
+        // the same-service exemption below (which only makes sense for an
+        // interface a service can itself hold) does not apply -- denied
+        // outright, for any target. Since ADR-0020 §1, a guest whose own
+        // service holds an installed instance certificate presents a
+        // *verified* identity on outbound calls (see `invoke_remote_at`);
+        // without this, that verified identity would reach these two
+        // node-owned interfaces exactly like a legitimate native caller,
+        // including the unowned-substrate bootstrap grant
+        // (`route_handler/io.rs`) and `security`'s still-ungated dispatch
+        // (P0 item 2, `control_plane::service`) -- a WASM guest was never
+        // able to present a verified identity to a native interface at all
+        // before that certificate mechanism existed.
+        if NODE_NATIVE_INTERFACES.iter().any(matches_interface) {
+            return Err(ProxyError::PermissionDenied(format!(
+                "component '{service_id}' may not reach node-level interface '{}' through the \
+                 proxy",
+                req.interface
+            )));
+        }
+
+        let is_native_capability = NATIVE_CAPABILITY_INTERFACES.iter().any(matches_interface);
         if !is_native_capability {
             return Ok(());
         }
@@ -379,7 +403,16 @@ impl ProxyRouter {
                 preamble.pubkey = Some(hex::encode(self.node_identity.public_key().to_bytes()));
             }
             (_, CallOrigin::Guest { service_id }) => {
+                // An expired certificate is worse than none: the
+                // destination hard-rejects any connection whose delegation
+                // fails to verify (`route_handler/io.rs`), where a `None`
+                // pubkey instead falls back to anonymous -- which non-
+                // native-dispatch destinations already tolerate. Presenting
+                // it anyway would turn a missed renewal into an outage for
+                // passthrough/relay calls that never cared about identity
+                // before this certificate mechanism existed.
                 if let Some(cert) = self.registry.instance_cert(service_id)
+                    && !cert.is_expired()
                     && let Some(owner) = self.registry.owner_of(service_id)
                 {
                     let instance = self.node_identity.derive_service_identity(&owner, service_id);
@@ -719,6 +752,47 @@ mod tests {
         req.origin = CallOrigin::Guest { service_id: "svc-a".to_string() };
         let result = router.invoke(req).await;
         assert!(matches!(result, Err(ProxyError::PermissionDenied(_))));
+        assert_eq!(service.invoked.load(Ordering::SeqCst), 0);
+    }
+
+    /// A0-01: `orchestrator`/`security` are node-level (registered under the
+    /// node's own DID, not any deployed service's), so unlike the
+    /// `NATIVE_CAPABILITY_INTERFACES` gate above there is no same-service
+    /// exemption -- a guest whose own service is the node's own DID (which
+    /// cannot legitimately happen, but a guest freely chooses
+    /// `target_service`) must still be denied. Guards against a guest whose
+    /// service holds an installed instance certificate (ADR-0020 §1) walking
+    /// its now-verified identity into the unowned-substrate `orchestrator`
+    /// bootstrap grant or `security`'s still-ungated dispatch (P0 item 2) --
+    /// neither of which a guest could reach at all before that certificate
+    /// mechanism existed, since a guest-origin call always presented
+    /// anonymous.
+    #[tokio::test]
+    async fn guest_cannot_reach_node_level_orchestrator_or_security_through_the_proxy() {
+        let registry = empty_registry();
+        let native_dispatch: NativeDispatchRegistry = Arc::new(DashMap::new());
+        let service = Arc::new(RecordingNativeService::default());
+        native_dispatch.insert("node-did".to_string(), service.clone() as Arc<dyn NativeService>);
+
+        let router = ProxyRouter::new(
+            registry,
+            empty_registry_client(),
+            Arc::downgrade(&native_dispatch),
+            Weak::new(),
+            Arc::new(MockHop::default()),
+            Arc::new(Identity::generate().unwrap()),
+            RetryPolicy::default(),
+        );
+
+        for interface in ["orchestrator", "security"] {
+            let mut req = base_request("node-did", interface);
+            req.origin = CallOrigin::Guest { service_id: "svc-a".to_string() };
+            let result = router.invoke(req).await;
+            assert!(
+                matches!(result, Err(ProxyError::PermissionDenied(_))),
+                "interface '{interface}' must be denied, got {result:?}"
+            );
+        }
         assert_eq!(service.invoked.load(Ordering::SeqCst), 0);
     }
 
@@ -1064,6 +1138,54 @@ mod tests {
 
         let mut req = base_request("remote-svc", "greet");
         req.origin = CallOrigin::Guest { service_id: "no-cert-svc".to_string() };
+        router.invoke_remote_at(&synthetic_addr(), &req).await.unwrap();
+
+        let preamble = hop.last_preamble.lock().unwrap().clone().unwrap();
+        assert_eq!(preamble.pubkey, None);
+        assert!(preamble.delegation.is_none());
+    }
+
+    /// A0-07: an already-expired installed certificate must fall back to
+    /// anonymous exactly like no certificate at all -- not get attached and
+    /// then hard-rejected at the destination (`route_handler/io.rs` rejects
+    /// any connection whose delegation fails to verify), which would turn a
+    /// missed renewal into an outage for passthrough/relay calls that
+    /// tolerated anonymous before this certificate mechanism existed.
+    #[tokio::test]
+    async fn a_guest_call_from_a_service_with_an_expired_certificate_is_anonymous_not_rejected() {
+        let hop = Arc::new(MockHop::with_outcomes(vec![MockOutcome::Success(Value::Null)]));
+        let node_identity = Arc::new(Identity::generate().unwrap());
+        let registry = empty_registry();
+
+        let owner_did = "did:key:zMemberOwner".to_string();
+        let service_id = "expired-cert-svc".to_string();
+        registry.set_owner(service_id.clone(), owner_did.clone()).await.unwrap();
+
+        let member_master = Identity::generate().unwrap();
+        let instance = node_identity.derive_service_identity(&owner_did, &service_id);
+        let cert = DelegationCertificate::issue(
+            &member_master,
+            instance.public_key(),
+            0,
+            SCOPE_SERVICE_INSTANCE.to_string(),
+        )
+        .unwrap();
+        assert!(cert.is_expired());
+        registry.set_instance_cert(service_id.clone(), cert).await.unwrap();
+
+        let native_dispatch: NativeDispatchRegistry = Arc::new(DashMap::new());
+        let router = ProxyRouter::new(
+            registry,
+            empty_registry_client(),
+            Arc::downgrade(&native_dispatch),
+            Weak::new(),
+            hop.clone(),
+            node_identity,
+            RetryPolicy::default(),
+        );
+
+        let mut req = base_request("remote-svc", "greet");
+        req.origin = CallOrigin::Guest { service_id: service_id.clone() };
         router.invoke_remote_at(&synthetic_addr(), &req).await.unwrap();
 
         let preamble = hop.last_preamble.lock().unwrap().clone().unwrap();

@@ -494,18 +494,45 @@ mod tests {
     /// An existing database, already at `PRAGMA user_version == 1` from
     /// before the certificate table existed, must still gain it on the next
     /// open -- this is the regression a `version < 2` migration gate would
-    /// have reintroduced.
+    /// have reintroduced. Built with a raw `Connection` rather than
+    /// `SqliteEndpointStorage::new`: that constructor already creates the
+    /// certificate table unconditionally, so opening through it here would
+    /// make this test pass identically whether or not the gate it exists to
+    /// catch was reintroduced -- it has to reproduce the pre-existing,
+    /// version-1, certificate-table-less file directly.
     #[tokio::test]
     async fn an_existing_database_gains_the_certificate_table_on_open() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("test.db");
 
         {
-            let store = SqliteEndpointStorage::new(&path).await.unwrap();
-            store.save_owner("svc-1", "did:key:zOwner").await.unwrap();
+            let conn = Connection::open(&path).unwrap();
+            conn.execute(
+                "CREATE TABLE local_endpoints (
+                    service_id TEXT NOT NULL,
+                    interface_name TEXT NOT NULL,
+                    endpoint_type TEXT NOT NULL,
+                    endpoint_data TEXT NOT NULL,
+                    PRIMARY KEY (service_id, interface_name)
+                );",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "CREATE TABLE service_owners (
+                    service_id TEXT PRIMARY KEY,
+                    owner_did  TEXT NOT NULL,
+                    created_at INTEGER NOT NULL
+                );",
+                [],
+            )
+            .unwrap();
+            conn.execute("PRAGMA user_version = 1", []).unwrap();
         }
 
-        // Reopen the same file -- schema creation runs again, unconditionally.
+        // Reopen through the real constructor -- schema creation must run
+        // unconditionally and add the certificate table to this
+        // pre-existing, version-1 file.
         let store = SqliteEndpointStorage::new(&path).await.unwrap();
         store.save_cert("svc-1", r#"{"fake":"cert"}"#).await.unwrap();
         let certs = store.load_all_certs().await.unwrap();

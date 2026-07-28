@@ -76,26 +76,25 @@ pub enum IdentityCommands {
     /// master, so that master can be presented on the deployed service's
     /// outbound calls (ADR-0020 §1). The primitive `--master`/renewal
     /// command: queries `--substrate` for the instance key it would derive
-    /// under this operator's identity for `--service`, then signs a
+    /// under this operator's identity for the master's own DID, then signs a
     /// `service-instance`-scoped certificate over it and prints the
     /// certificate JSON -- pass it to `svc deploy --instance-certificate` or
-    /// re-deploy to install it.
+    /// re-deploy with `svc deploy --master` to install it.
     ///
     /// `identity delegate` cannot do this job: it requires `--temp-did`,
     /// which is exactly what the operator does not have until the substrate
     /// reports it.
     CertifyInstance {
         /// Name of the local member master identity issuing the
-        /// certificate.
+        /// certificate. The certificate always names this identity's own
+        /// resolved DID as the service_id being certified -- there is no
+        /// other value it could validly hold, so it is derived rather than
+        /// taken as a separate flag.
         #[arg(long)]
         master: String,
         /// DID of the substrate to query for its derived instance key.
         #[arg(long)]
         substrate: String,
-        /// The member master's own DID -- must equal `--master`'s resolved
-        /// DID, checked client-side before any network call.
-        #[arg(long)]
-        service: String,
         #[arg(long, default_value_t = 24)]
         expires_hours: u64,
     },
@@ -222,16 +221,18 @@ pub async fn handle(
             )?;
             println!("{}", serde_json::to_string_pretty(&token)?);
         }
-        IdentityCommands::CertifyInstance { master, substrate, service, expires_hours } => {
+        IdentityCommands::CertifyInstance { master, substrate: substrate_did, expires_hours } => {
             let master_identity = member_identity::resolve_member_master(dir, master)?;
+            let service_id = substrate::derive_did_key(&master_identity.public_key());
 
-            let mut client = super::client_for(substrate.clone(), api_url, dir, run_as, ucan_path)?;
+            let mut client =
+                super::client_for(substrate_did.clone(), api_url, dir, run_as, ucan_path)?;
             client.wait_for_ready(Duration::from_secs(5)).await?;
 
             let cert = member_identity::certify_instance(
                 &client,
                 &master_identity,
-                service,
+                &service_id,
                 *expires_hours,
             )
             .await?;

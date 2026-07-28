@@ -12,7 +12,7 @@ use std::{
 use chrono::DateTime;
 use clap::Subcommand;
 use syneroym_core::dht_registry::{EndpointInfo, EndpointType};
-use syneroym_identity::{Identity, substrate};
+use syneroym_identity::{DelegationCertificate, Identity, substrate};
 
 use super::member_identity;
 
@@ -49,8 +49,16 @@ pub enum SvcCommands {
         /// `service-instance` certificate is issued and installed at
         /// deploy. Absent leaves the service its own master, exactly as
         /// before this flag existed.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "instance_certificate")]
         master: Option<String>,
+        /// Path to a JSON `DelegationCertificate` already minted with
+        /// `identity certify-instance` -- installed as-is instead of this
+        /// command minting a fresh one itself. The one path that lets an
+        /// operator pick a non-default `--expires-hours`, or install a
+        /// certificate signed on a different machine than this deploy runs
+        /// from. Mutually exclusive with `--master`.
+        #[arg(long, conflicts_with = "master")]
+        instance_certificate: Option<PathBuf>,
     },
     /// Remove an installed `SynSvc` via API
     Remove {
@@ -85,7 +93,16 @@ pub async fn handle(
     client.wait_for_ready(Duration::from_secs(5)).await?;
 
     match command {
-        SvcCommands::Deploy { svc_id, interfaces, wasm, tcp, identity, nickname, master } => {
+        SvcCommands::Deploy {
+            svc_id,
+            interfaces,
+            wasm,
+            tcp,
+            identity,
+            nickname,
+            master,
+            instance_certificate,
+        } => {
             let ifaces: Vec<String> = interfaces.split(',').map(|s| s.trim().to_string()).collect();
 
             let mut cert = None;
@@ -105,8 +122,8 @@ pub async fn handle(
                 cert = Some(info.sign(&id)?);
             }
 
-            let instance_cert = match master {
-                Some(name) => {
+            let instance_cert = match (master, instance_certificate) {
+                (Some(name), _) => {
                     let master_identity = member_identity::resolve_member_master(dir, name)?;
                     let master_did = substrate::derive_did_key(&master_identity.public_key());
                     if master_did != *svc_id {
@@ -126,7 +143,16 @@ pub async fn handle(
                         .await?,
                     )
                 }
-                None => None,
+                (None, Some(path)) => {
+                    let cert_json = fs::read_to_string(path).map_err(|e| {
+                        anyhow::anyhow!(
+                            "failed to read --instance-certificate at {}: {e}",
+                            path.display()
+                        )
+                    })?;
+                    Some(DelegationCertificate::from_json(&cert_json)?)
+                }
+                (None, None) => None,
             };
 
             if let Some(wasm_path) = wasm {
@@ -227,7 +253,40 @@ fn load_identity(dir: &Path, name: &str) -> anyhow::Result<Identity> {
 
 #[cfg(test)]
 mod tests {
+    use clap::{Parser, error::ErrorKind};
+
     use super::*;
+
+    #[derive(Debug, Parser)]
+    struct Wrapper {
+        #[command(subcommand)]
+        cmd: SvcCommands,
+    }
+
+    /// A0-04: `--instance-certificate` installs an already-minted
+    /// certificate as-is; `--master` mints and installs a fresh one itself.
+    /// Together they're ambiguous about which certificate actually gets
+    /// installed, so clap must reject the combination before either flag's
+    /// handler ever runs.
+    #[test]
+    fn deploy_rejects_master_and_instance_certificate_together() {
+        let err = Wrapper::try_parse_from([
+            "svc",
+            "deploy",
+            "--svc-id",
+            "did:key:zTest",
+            "--interfaces",
+            "default",
+            "--tcp",
+            "localhost:1",
+            "--master",
+            "m",
+            "--instance-certificate",
+            "/tmp/cert.json",
+        ])
+        .unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+    }
 
     #[test]
     fn format_expiry_shows_a_dash_for_no_certificate() {

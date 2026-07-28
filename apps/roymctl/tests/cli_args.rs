@@ -142,7 +142,6 @@ fn test_identity_certify_instance_help() -> Result<(), Box<dyn Error>> {
         .success()
         .stdout(contains("--master"))
         .stdout(contains("--substrate"))
-        .stdout(contains("--service"))
         .stdout(contains("--expires-hours"));
     Ok(())
 }

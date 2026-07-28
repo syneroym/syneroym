@@ -865,10 +865,18 @@ impl OrchestratorInterface for ControlPlaneService {
         }
 
         // Installed right after the owner row, under the same rollback:
-        // already verified above, so this only fails on a storage error.
-        if let Some(cert) = installed_instance_cert
-            && let Err(e) = self.registry.set_instance_cert(service_id.clone(), cert).await
-        {
+        // already verified above, so `Some` only fails on a storage error.
+        // `None` clears any certificate a previous deploy of this
+        // service_id installed -- the WIT contract's "absent leaves the
+        // service its own master" (control-plane.wit) must hold on every
+        // deploy, not only the first, or a redeploy that drops `--master`
+        // silently keeps presenting the stale certificate's now-mismatched
+        // `temporary_did` on outbound guest calls.
+        let cert_result = match installed_instance_cert {
+            Some(cert) => self.registry.set_instance_cert(service_id.clone(), cert).await,
+            None => self.registry.remove_instance_cert(&service_id).await,
+        };
+        if let Err(e) = cert_result {
             if let Err(undeploy_err) = self.undeploy(service_id.clone(), caller).await {
                 tracing::error!(
                     "rollback after instance-certificate installation failure also failed: \
@@ -1064,8 +1072,7 @@ impl OrchestratorInterface for ControlPlaneService {
             if NATIVE_CAPABILITY_INTERFACES.contains(&interface.as_str()) {
                 continue;
             }
-            let instance_certificate_expires_at =
-                self.registry.instance_cert(&service_id).map(|cert| cert.expires_at_secs);
+            let registry = &self.registry;
             let entry = services.entry(service_id.clone()).or_insert_with(|| DeployedService {
                 service_id: service_id.clone(),
                 interfaces: Vec::new(),
@@ -1075,7 +1082,9 @@ impl OrchestratorInterface for ControlPlaneService {
                     SubstrateEndpoint::NativeHostChannel { .. } => "native".to_string(),
                     SubstrateEndpoint::TcpHostPort { .. } => "tcp".to_string(),
                 },
-                instance_certificate_expires_at,
+                instance_certificate_expires_at: registry
+                    .instance_cert(&service_id)
+                    .map(|cert| cert.expires_at_secs),
             });
             entry.interfaces.push(interface);
         }
@@ -3673,6 +3682,43 @@ mod tests {
         let err = service.deploy(service_id.clone(), manifest, &caller).await.unwrap_err();
         assert!(err.contains("scope"), "unexpected error: {err}");
         assert_eq!(registry.instance_cert(&service_id), None);
+    }
+
+    /// A0-02: `deploy-manifest.instance-certificate`'s WIT doc says "absent
+    /// leaves the service its own master" -- that must hold on a redeploy
+    /// that drops `--master`, not only on the first deploy of a service_id,
+    /// or the stale certificate keeps being presented on outbound guest
+    /// calls under a `temporary_did` the redeploy's new owner no longer
+    /// derives to.
+    #[tokio::test]
+    async fn a_redeploy_without_a_certificate_clears_a_previously_installed_one() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
+        let (service, registry) =
+            service_with_node_identity(temp_dir.path(), node_identity.clone()).await;
+        let caller = node_wide_caller("did:key:zOwner");
+
+        let member_master = syneroym_identity::Identity::generate().unwrap();
+        let service_id = derive_did_key(&member_master.public_key());
+        let derived = node_identity.derive_service_identity(&caller.caller_did, &service_id);
+        let cert = DelegationCertificate::issue(
+            &member_master,
+            derived.public_key(),
+            3600,
+            SCOPE_SERVICE_INSTANCE.to_string(),
+        )
+        .unwrap();
+        let mut manifest = owner_test_manifest();
+        manifest.instance_certificate = Some(cert.to_json().unwrap());
+        service.deploy(service_id.clone(), manifest, &caller).await.unwrap();
+        assert!(registry.instance_cert(&service_id).is_some());
+
+        service.deploy(service_id.clone(), owner_test_manifest(), &caller).await.unwrap();
+        assert_eq!(
+            registry.instance_cert(&service_id),
+            None,
+            "a redeploy without --master must clear the previously installed certificate"
+        );
     }
 
     #[tokio::test]

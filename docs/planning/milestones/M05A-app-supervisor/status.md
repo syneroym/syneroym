@@ -92,14 +92,15 @@ the full gate history):
 - The heartbeat near-expiry warning and `svc list`'s expiry column
   (`crates/substrate/src/runtime.rs`).
 
-**Tests added:** 7 new unit tests in `crates/identity/src/delegation.rs`
-(scope enforcement), 4 in `crates/router/src/handshake.rs` (ingress scope +
-revocation + reinstantiation), 4 in `crates/control_plane/src/service/
+**Tests added:** 6 new unit tests in `crates/identity/src/delegation.rs`
+(scope enforcement), 6 in `crates/router/src/handshake.rs` (ingress scope +
+revocation + reinstantiation), 8 in `crates/control_plane/src/service/
 orchestration.rs` (instance-identity determinism + install verification), 4 in
-`crates/router/src/proxy.rs` (guest-origin presentation), 4 in
+`crates/router/src/proxy.rs` (guest-origin presentation, expired-certificate
+fallback, and the node-level-interface deny), 4 in
 `crates/data_db/src/registry_store.rs` (the schema-gate regression D-A0-10
-exists to prevent, plus upsert/removal), 2 in `crates/core/src/local_registry.rs`,
-1 in `crates/substrate/src/runtime.rs` (near-expiry warning), 9 in
+exists to prevent, plus upsert/removal), 3 in `crates/core/src/local_registry.rs`,
+1 in `crates/substrate/src/runtime.rs` (near-expiry warning), 11 in
 `apps/roymctl` (naming, resolve/mint, CLI parsing, expiry formatting), and one
 new two-real-substrate e2e test,
 `a_member_master_authorizes_a_distinct_instance_key_on_each_real_node_it_deploys_to`

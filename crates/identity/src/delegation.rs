@@ -99,6 +99,18 @@ impl DelegationCertificate {
         serde_json::from_str(s).context("Failed to deserialize DelegationCertificate from JSON")
     }
 
+    /// Whether this certificate is already past `expires_at_secs`. A cheap,
+    /// infallible pre-check for a caller deciding whether to *present* a
+    /// certificate at all -- unlike `verify`, never rejects on signature,
+    /// scope, or clock skew, so it must not be used as a substitute for
+    /// `verify` at an actual trust boundary.
+    #[must_use]
+    pub fn is_expired(&self) -> bool {
+        let now_secs =
+            SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        now_secs >= self.expires_at_secs
+    }
+
     /// Verifies the signature of the DelegationCertificate, that its `scope`
     /// is one the caller accepts, and that it's not expired.
     ///

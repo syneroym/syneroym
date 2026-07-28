@@ -9,11 +9,12 @@
 //! identity` derives a *different* instance key per hosting node for the
 //! identical `(caller, service_id)` pair; `deploy` verifies an installed
 //! instance certificate and rejects a wrong one; `list` reports the
-//! installed certificate's expiry; and -- the reference scenario's step 4,
-//! at real-substrate scale -- deploying the *same* member master
+//! installed certificate's expiry; and deploying the *same* member master
 //! (`service_id`) to a *second*, independently-keyed node produces a new
-//! instance key while the certified master identity stays the one thing
-//! that does not change.
+//! instance key there too, certified cleanly by a fresh certificate from
+//! that same master. The reference scenario's step 4 claim that the member
+//! master *itself* persists across reinstantiation is proven at unit scale
+//! instead, in `crates/router/src/handshake.rs`.
 //!
 //! Uses its own `Node`, not `tests/common`'s `SubstrateTestContext`:
 //! `SubstrateTestContext` holds its setup-serialization lock for the whole
@@ -294,9 +295,16 @@ async fn a_member_master_authorizes_a_distinct_instance_key_on_each_real_node_it
 
     // Reinstantiation on a second, independently-keyed real node: the same
     // service_id (the member master DID) gets a *new* instance key (proven
-    // above), but the certificate's own master_did is the identical member
-    // master both times -- the reference scenario's step 4 claim, now at
-    // two-real-substrate scale rather than in-process.
+    // above by `assert_ne!` on the two `instance_did`s). This deploy
+    // certifies that new key from the identical `member_master` used for
+    // node A -- by construction here, since both certificates are minted
+    // from the same in-test `Identity` -- so what this half of the fixture
+    // actually exercises is that a fresh certificate for the *same* member
+    // master installs cleanly on a second real substrate. The system-level
+    // claim that a member master itself persists across reinstantiation is
+    // proven at unit scale instead, in `crates/router/src/handshake.rs`'s
+    // `a_revoked_instance_key_is_rejected_while_the_member_master_still_
+    // certifies_a_new_one`.
     let pubkey_b = VerifyingKey::from_bytes(
         &hex::decode(&instance_identity_b.pubkey_hex).unwrap().try_into().unwrap(),
     )
@@ -308,10 +316,6 @@ async fn a_member_master_authorizes_a_distinct_instance_key_on_each_real_node_it
         SCOPE_SERVICE_INSTANCE.to_string(),
     )
     .unwrap();
-    assert_eq!(
-        cert_a.master_did, cert_b.master_did,
-        "both certificates name the same member master"
-    );
     deploy(
         &operator_b,
         &member_master_did,
@@ -327,7 +331,9 @@ async fn a_member_master_authorizes_a_distinct_instance_key_on_each_real_node_it
         .expect("the reinstantiated member master must appear in node B's list");
     assert_eq!(listed_b.instance_certificate_expires_at, Some(cert_b.expires_at_secs));
 
-    // Undeploy removes the installed certificate along with the owner row.
+    // Undeploy removes the deployed service; the certificate itself is
+    // covered at the control-plane unit level
+    // (`undeploy_removes_the_instance_certificate_with_the_owner_row`).
     operator_a.undeploy(member_master_did.clone()).await.expect("undeploy on node A failed");
     let services_a_after =
         operator_a.list_svcs().await.expect("list on node A after undeploy failed");
