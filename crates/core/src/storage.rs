@@ -76,6 +76,17 @@ pub trait EndpointStorage: Send + Sync {
         dependency_name: &str,
         topology_entry_json: &str,
     ) -> Result<()>;
+
+    /// Load every recorded app-instance owner as (`app_instance_id`,
+    /// `owner_did`) (A2 post-review fix, first-write-wins deploy takeover
+    /// guard -- see `save_app_instance_owner`).
+    async fn load_all_app_instance_owners(&self) -> Result<Vec<(String, String)>>;
+    /// Record `owner_did` as the first caller to declare `app_instance_id`
+    /// in a deploy's `app_context` (upsert). Overwrites any existing entry
+    /// -- the takeover check is the caller's responsibility
+    /// (`ControlPlaneService::deploy_with_context`), not this store's, the
+    /// same split `save_owner` already uses for `service_id` ownership.
+    async fn save_app_instance_owner(&self, app_instance_id: &str, owner_did: &str) -> Result<()>;
 }
 
 /// A thread-safe in-memory storage for testing.
@@ -86,6 +97,7 @@ pub struct MockStorage {
     certs: Arc<DashMap<String, String>>,
     app_contexts: Arc<DashMap<String, (String, String)>>,
     bindings: Arc<DashMap<(String, String), (String, String)>>,
+    app_instance_owners: Arc<DashMap<String, String>>,
 }
 
 impl Default for MockStorage {
@@ -103,6 +115,7 @@ impl MockStorage {
             certs: Arc::new(DashMap::new()),
             app_contexts: Arc::new(DashMap::new()),
             bindings: Arc::new(DashMap::new()),
+            app_instance_owners: Arc::new(DashMap::new()),
         }
     }
 }
@@ -190,6 +203,13 @@ impl EndpointStorage for MockStorage {
             (service_id.to_string(), dependency_name.to_string()),
             (app_instance_id.to_string(), topology_entry_json.to_string()),
         );
+        Ok(())
+    }
+    async fn load_all_app_instance_owners(&self) -> Result<Vec<(String, String)>> {
+        Ok(self.app_instance_owners.iter().map(|e| (e.key().clone(), e.value().clone())).collect())
+    }
+    async fn save_app_instance_owner(&self, app_instance_id: &str, owner_did: &str) -> Result<()> {
+        self.app_instance_owners.insert(app_instance_id.to_string(), owner_did.to_string());
         Ok(())
     }
 }

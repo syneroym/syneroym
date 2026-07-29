@@ -668,22 +668,32 @@ level (the real-WASM-guest test above).
 - `cargo +nightly fmt --all`: clean.
 - `cargo clippy --workspace --all-targets --all-features`: clean, zero
   warnings.
-- `cargo test --workspace` (sandboxed, `--no-fail-fast`): 13 failing
-  targets, all in the same pre-existing, environmental category documented
-  throughout this milestone's status — real port/socket binds the sandbox
-  denies outright (`syneroym-community-registry --lib`,
-  `syneroym-coordinator-iroh` `connection_limit`/`multi_hop_relay`/
-  `tls_rotation`, `syneroym-mqtt-broker --lib`, `syneroym-sdk --test
-  connect_timeout`, and every `syneroym-substrate` e2e test:
-  `basic_lifecycle`, `federated_fdae_e2e`, `http_passthrough_e2e`,
+- `cargo test --workspace --no-fail-fast` (sandboxed; the plain
+  `cargo test --workspace` form exits 101 and stops at the first failing
+  crate, so `--no-fail-fast` is required to see the rest of the suite, not
+  optional detail): every target that binds a real socket or starts the
+  mainline DHT actor fails outright, all in the same pre-existing,
+  environmental category documented throughout this milestone's status —
+  `syneroym-community-registry --lib`, `syneroym-coordinator-iroh`
+  `connection_limit`/`multi_hop_relay`/`tls_rotation`, `syneroym-mqtt-broker
+  --lib`, `syneroym-sdk --test connect_timeout`, every `syneroym-substrate`
+  e2e test (`basic_lifecycle`, `federated_fdae_e2e`, `http_passthrough_e2e`,
   `instance_identity_e2e`, `master_endpoint_record_e2e`,
-  `messaging_client_e2e`, `stream_client_e2e`). Every one of these targets
-  was independently re-verified passing with the sandbox disabled this
-  pass (`cargo test -p syneroym-substrate -p syneroym-community-registry -p
-  syneroym-coordinator-iroh -p syneroym-sdk -p syneroym-mqtt-broker`, all
-  green, including `federated_fdae_e2e` at 72s and the other e2e tests at
-  10-56s each) — no target outside that documented sandbox-bind category
-  differs from expected.
+  `messaging_client_e2e`, `stream_client_e2e`), plus whichever of
+  `syneroym-router --test native_dispatch_identity` /
+  `syneroym-router --test proxy_dispatch` happen to start the mainline DHT
+  actor under sandboxed load that run (`.../mainline-6.2.0/src/dht.rs:143`
+  panics, "actor thread unexpectedly shutdown" — the same bind-denial
+  category as the rest, not an A2 defect): **14-15 failing targets observed
+  across runs, count drifting with machine load** — a pinned number here
+  would itself be a stale, brittle claim, so this is deliberately a category
+  description instead. Every target in the category was independently
+  re-verified passing with the sandbox disabled this pass (`cargo test -p
+  syneroym-substrate -p syneroym-community-registry -p syneroym-coordinator-iroh
+  -p syneroym-sdk -p syneroym-mqtt-broker -p syneroym-router`, all green,
+  including `federated_fdae_e2e` at 72s, the other e2e tests at 10-56s each,
+  and `proxy_dispatch` 8/8 on three consecutive solo runs) — no target
+  outside this documented sandbox-bind category differs from expected.
 - `mise run test:e2e` (sandbox disabled, required for real port binds):
   12/12 green (8 main + 4 multi-hop), unchanged from before this slice.
 - `wasm32-wasip2`: `greeter`, `data-layer-test`, and `proxy-test` all build

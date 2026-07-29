@@ -460,9 +460,12 @@ pub fn range_select(table: &RangeRoutingTable, key: &[u8]) -> Result<ServiceId> 
 /// entries.
 ///
 /// Cache entries are invalidated when:
-/// - The stored epoch differs from the registry entry's epoch.
 /// - The cache TTL has elapsed.
-/// - The caller explicitly calls [`LogicalResolver::invalidate`].
+/// - The caller explicitly calls [`LogicalResolver::invalidate`] or
+///   [`LogicalResolver::register`].
+///
+/// A cache **hit** does *not* compare epochs against the registry -- see the
+/// module-level "Cache invalidation" section above.
 #[derive(Debug)]
 pub struct LogicalResolver {
     registry: Arc<dyn AppRegistry>,

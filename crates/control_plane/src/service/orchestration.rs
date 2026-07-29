@@ -75,6 +75,21 @@ fn map_topology_mode(mode: WitTopologyMode) -> AppTopologyMode {
     }
 }
 
+/// A deploy's `app_context`, validated but not yet written (A2, post-review
+/// fix). Validation runs early -- a malformed or unauthorized binding is a
+/// deploy failure, not a routing failure discovered later -- but the actual
+/// registry/resolver write is deferred until every other fallible deploy
+/// step has succeeded, so a deploy that goes on to fail never leaves a
+/// binding installed. See `deploy_with_context` and `install_app_context`.
+struct PreparedAppContext {
+    instance_id: AppInstanceId,
+    raw_instance_id: String,
+    raw_service_name: String,
+    /// (`dependency_name` as sent on the wire, the validated
+    /// `LogicalServiceName`, the resolved `TopologyEntry`) per binding.
+    bindings: Vec<(String, LogicalServiceName, TopologyEntry)>,
+}
+
 /// Resolves a manifest document to its content. `Inline` arrives with the
 /// deploy call itself; `Path` is read from the substrate host's own
 /// filesystem, under `deploy_docs`' traversal and size guards, on a blocking
@@ -212,6 +227,66 @@ impl ControlPlaneService {
                 .await?;
         }
         Ok(())
+    }
+
+    /// Writes `prepared`'s app-context and binding rows plus its
+    /// first-write-wins app-instance ownership record (A2, post-review
+    /// fix). Called only once every earlier fallible step in `deploy_
+    /// with_context` has already succeeded -- see the call site's own
+    /// comment -- so a storage error here is the *only* way this can fail,
+    /// never a validation problem (`prepared`'s fields already passed
+    /// `try_new`).
+    async fn install_app_context(
+        &self,
+        service_id: &str,
+        caller_did: &str,
+        prepared: &PreparedAppContext,
+    ) -> Result<(), String> {
+        // A redeploy fully declares this service's app context, so its
+        // previous rows go first -- a dependency dropped from the manifest
+        // must not survive as a stale row (the same "absence means
+        // removal" rule `fdae_policy` follows above). Safe to do here,
+        // unlike at the deploy's original early call site: every field of
+        // `prepared` already passed `try_new` before this method is ever
+        // called, so this removal can only be followed by a fresh write,
+        // never by a validation failure that leaves the old rows gone and
+        // nothing in their place.
+        self.registry.remove_app_context(service_id).await.map_err(|e| e.to_string())?;
+        self.registry
+            .set_app_context(
+                service_id.to_string(),
+                prepared.raw_instance_id.clone(),
+                prepared.raw_service_name.clone(),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        for (raw_dependency_name, dependency_name, entry) in &prepared.bindings {
+            let entry_json = serde_json::to_string(entry).map_err(|e| e.to_string())?;
+            self.registry
+                .save_binding(
+                    service_id,
+                    &prepared.raw_instance_id,
+                    raw_dependency_name,
+                    &entry_json,
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            // Last-write-wins (D-A2-10). ADR-0021 §3's four-case epoch
+            // guard -- lower rejects, equal+identical no-ops, equal+
+            // different is a reported conflict, higher applies -- belongs
+            // at exactly this call and is the supervisor slice's.
+            self.logical_resolver.register(
+                prepared.instance_id.clone(),
+                dependency_name.clone(),
+                entry.clone(),
+            );
+        }
+
+        self.registry
+            .set_app_instance_owner(prepared.raw_instance_id.clone(), caller_did.to_string())
+            .await
+            .map_err(|e| e.to_string())
     }
 
     /// Logs (but does not propagate) a failure to roll back a config
@@ -670,43 +745,86 @@ impl ControlPlaneService {
                 None => None,
             };
 
-        // ADR-0021 §2: the dependent's host resolves declared dependency
-        // names, so the bindings have to be on file before the service can
-        // serve a single call. Written before the artifact work for the
-        // same reason the certificate is: a malformed binding is a deploy
-        // failure, not a routing failure discovered later.
-        if let Some(ctx) = &app_context {
-            // A redeploy fully declares this service's app context, so its
-            // previous rows go first -- a dependency dropped from the
-            // manifest must not survive as a stale row (the same "absence
-            // means removal" rule `fdae_policy` already follows above).
-            self.registry.remove_app_context(&service_id).await.map_err(|e| e.to_string())?;
-            // Validate before storing, so a later read of this row can
-            // only fail on real corruption rather than on something a
-            // deploy caller sent. The registry itself stores plain
-            // `String`s (D-A2-7), so this is the only place the shape can
-            // be enforced on the way in.
-            AppInstanceId::try_new(&ctx.app_instance_id)
+        // ADR-0021 §2 / D-A2-2: validated here, before the artifact work,
+        // for the same reason the certificate is -- a malformed or
+        // unauthorized binding is a deploy failure, not a routing failure
+        // discovered later. The write itself is deferred past every other
+        // fallible step below (schema validation, FDAE policy, artifact
+        // delivery, `deploy_wasm_service`/`deploy_tcp_service`/
+        // `deploy_container_service`): see `install_app_context`, called
+        // near owner attribution. A deploy that fails after validating here
+        // but before that call must not leave a binding installed for a
+        // service that never actually started.
+        let prepared_app_context: Option<PreparedAppContext> = if let Some(ctx) = &app_context {
+            // Validate before anything touches storage, so a later read of
+            // these rows can only fail on real corruption rather than on
+            // something a deploy caller sent. The registry itself stores
+            // plain `String`s (D-A2-7), so this is the only place the shape
+            // can be enforced on the way in.
+            let instance_id = AppInstanceId::try_new(&ctx.app_instance_id)
                 .map_err(|e| format!("app context names an invalid app instance id: {e}"))?;
             LogicalServiceName::try_new(&ctx.service_name)
                 .map_err(|e| format!("app context names an invalid service name: {e}"))?;
-            self.registry
-                .set_app_context(
-                    service_id.clone(),
-                    ctx.app_instance_id.clone(),
-                    ctx.service_name.clone(),
-                )
-                .await
-                .map_err(|e| e.to_string())?;
 
+            // D-A2-2 / ADR-0021 §2: A2 resolves intra-app dependencies only
+            // -- a deploy may bind dependencies for its own declared app
+            // instance, never a different one. `DependencyBinding.
+            // app_instance_id` is deliberately caller-supplied, ahead of
+            // the cross-app `Bind` surface the WIT comment reserves it for
+            // ("equal to the dependent's own app-instance-id today"); without
+            // this comparison it goes unenforced, and one authorized deploy
+            // could silently overwrite the binding a *different* app
+            // instance's services resolve.
+            for binding in &ctx.bindings {
+                if binding.app_instance_id != ctx.app_instance_id {
+                    return Err(format!(
+                        "binding '{}' names app instance '{}', but this deploy's app context is \
+                         '{}' -- a deploy may only bind dependencies for its own app instance",
+                        binding.dependency_name, binding.app_instance_id, ctx.app_instance_id
+                    ));
+                }
+            }
+
+            // An app instance's first successful deploy becomes its owner
+            // (first-write-wins, the same shape `service_id` ownership uses
+            // just above -- including that check's own F7 note: on an
+            // unowned substrate every caller holds node-wide orchestrator
+            // authority (F4), so `has_node_wide_ability` short-circuits
+            // this and it never actually fires, same as the `service_id`
+            // check above never firing today. Also the same accepted
+            // TOCTOU gap: this read
+            // and the eventual `set_app_instance_owner` write in
+            // `install_app_context` are separated by the whole deploy body,
+            // so two concurrent *first* deploys claiming the same brand-new
+            // app instance id can both observe `app_instance_owner_of ==
+            // None` and race -- whichever write lands last wins. Same
+            // reasoning as the `service_id` note: this cannot defeat an
+            // *existing* owner's protection, only decide attribution on an
+            // app instance nobody owns yet). Without the check itself, the
+            // equality check above is not enough on its own: any caller
+            // authorized to deploy *some* service could still name an
+            // existing, unrelated app instance in its own `app_context` and
+            // overwrite the bindings that instance's other services
+            // resolve -- it would just have to also lie about which app
+            // instance its own service belongs to, which costs it nothing.
+            if let Some(existing) = self.registry.app_instance_owner_of(&ctx.app_instance_id)
+                && existing != caller.caller_did
+                && !self.has_node_wide_ability(caller, Ability::ORCHESTRATOR_DEPLOY)
+            {
+                return Err(format!(
+                    "app instance '{}' is owned by {existing}; a deploy that joins it must come \
+                     from its owner or a substrate owner",
+                    ctx.app_instance_id
+                ));
+            }
+
+            let mut bindings = Vec::with_capacity(ctx.bindings.len());
             for binding in &ctx.bindings {
                 // D-A2-15: all three of these are caller-supplied strings,
                 // so all three are fallible. `LogicalServiceName::new`
                 // *panics* on an empty name or one containing '/', which
                 // would let an authorized-but-buggy deploy caller kill the
                 // control-plane task.
-                let instance_id = AppInstanceId::try_new(&binding.app_instance_id)
-                    .map_err(|e| format!("binding names an invalid app instance id: {e}"))?;
                 let dependency_name = LogicalServiceName::try_new(&binding.dependency_name)
                     .map_err(|e| format!("binding names an invalid dependency name: {e}"))?;
                 let entry = TopologyEntry {
@@ -726,24 +844,18 @@ impl ControlPlaneService {
                     epoch: TopologyEpoch(binding.epoch),
                     cache_ttl: std::time::Duration::from_millis(binding.cache_ttl_ms),
                 };
-                let entry_json = serde_json::to_string(&entry).map_err(|e| e.to_string())?;
-                self.registry
-                    .save_binding(
-                        &service_id,
-                        &binding.app_instance_id,
-                        &binding.dependency_name,
-                        &entry_json,
-                    )
-                    .await
-                    .map_err(|e| e.to_string())?;
-                // Last-write-wins (D-A2-10). ADR-0021 §3's four-case epoch
-                // guard -- lower rejects, equal+identical no-ops,
-                // equal+different is a reported conflict, higher applies --
-                // belongs at exactly this call and is the supervisor
-                // slice's.
-                self.logical_resolver.register(instance_id, dependency_name, entry);
+                bindings.push((binding.dependency_name.clone(), dependency_name, entry));
             }
-        }
+
+            Some(PreparedAppContext {
+                instance_id,
+                raw_instance_id: ctx.app_instance_id.clone(),
+                raw_service_name: ctx.service_name.clone(),
+                bindings,
+            })
+        } else {
+            None
+        };
 
         if let Some(cert) = &manifest.registry_certificate {
             let cert_path = self.hosted_apps_dir.join(format!("{service_id}.json"));
@@ -1063,6 +1175,29 @@ impl ControlPlaneService {
             return Err(format!("Instance certificate installation failed: {e}"));
         }
 
+        // A2 write (finding 03/post-review fix), deferred until every
+        // fallible step above -- schema validation, FDAE policy, artifact
+        // delivery, the wasm/tcp/container deploy itself, native capability
+        // registration, owner attribution, instance-certificate install --
+        // has succeeded. Under the same undeploy+rollback idiom as the
+        // failure branches just above: nothing here can run for a deploy
+        // that is about to fail, so nothing here can leave a binding
+        // installed for a service that never actually started.
+        if let Some(prepared) = &prepared_app_context
+            && let Err(e) =
+                self.install_app_context(&service_id, &caller.caller_did, prepared).await
+        {
+            if let Err(undeploy_err) = self.undeploy(service_id.clone(), caller).await {
+                tracing::error!(
+                    "rollback after app-context/binding installation failure also failed: \
+                     {undeploy_err}"
+                );
+            }
+            self.rollback_config_generation(&service_id, new_gen).await;
+            self.rollback_fdae_policy(&service_id, &previous_fdae_policy).await;
+            return Err(e);
+        }
+
         // Publish now rather than at the next heartbeat: a member
         // reinstantiated here has to become resolvable under its unchanged
         // master DID promptly, and the heartbeat runs hourly. Never fatal --
@@ -1253,6 +1388,20 @@ impl ControlPlaneService {
         // does `backend` live in instance X"), not a per-dependent one;
         // removing it when one of several dependents goes away would break
         // the others.
+        //
+        // Same call, same reasoning, on `install_app_context`'s redeploy
+        // path: a redeploy that drops a dependency from its manifest calls
+        // this exact method, and the entry it wrote into `StaticInventory`
+        // stays too -- decided here explicitly, not inherited by accident,
+        // because the "app-scoped, not per-dependent" argument above holds
+        // just as much for a redeploy that stops declaring a dependency as
+        // it does for an undeploy that removes the dependent entirely. The
+        // two do diverge across a restart: `replay_persisted_bindings`
+        // rebuilds `StaticInventory` from `service_bindings` alone, so an
+        // entry no longer backed by any persisted row silently drops out on
+        // restart even though it kept resolving right up to that point.
+        // That is `StaticInventory`'s memory-vs-storage split working as
+        // designed (deferred-backlog.md), not a new gap this call opens.
         if let Err(e) = self.registry.remove_app_context(&service_id).await {
             tracing::warn!("Failed to remove app context for service {}: {}", service_id, e);
         }
@@ -1323,6 +1472,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use dashmap::DashMap;
+    use syneroym_app_orchestration::LogicalServiceRef;
     use syneroym_core::{
         config::SubstrateConfig,
         http_routes::HttpRouteRegistry,
@@ -1372,6 +1522,34 @@ mod tests {
                         caveats: None,
                     },
                 ],
+                ..Default::default()
+            },
+            auth: AuthLevel::Delegated,
+            proof: None,
+        }
+    }
+
+    /// M04A Slice B7b: a caller holding an app-scoped `orchestrator/deploy`
+    /// grant for exactly `service_id` (`substrate:<node>/app/<service_id>`
+    /// selector) rather than `node_wide_caller`'s bare, node-wide form.
+    /// `has_node_wide_ability` returns `false` for this caller -- needed for
+    /// tests that must reach *past* the admission gate to exercise a
+    /// takeover/ownership rejection, which a node-wide caller always
+    /// bypasses.
+    fn scoped_deploy_caller(caller_did: &str, service_id: &str) -> CallerContext {
+        use syneroym_rpc::{AuthLevel, Capability, SessionContext};
+
+        let resource = ResourceUri(format!("substrate:did:key:zTestNode/app/{service_id}"));
+        CallerContext {
+            caller_did: caller_did.to_string(),
+            app_instance: None,
+            session: SessionContext {
+                subject_did: caller_did.to_string(),
+                capabilities: vec![Capability {
+                    with: resource,
+                    can: Ability(Ability::ORCHESTRATOR_DEPLOY.to_string()),
+                    caveats: None,
+                }],
                 ..Default::default()
             },
             auth: AuthLevel::Delegated,
@@ -1857,9 +2035,9 @@ mod tests {
         let resolved = service
             .logical_resolver
             .resolve(
-                &syneroym_app_orchestration::LogicalServiceRef {
-                    app_instance_id: syneroym_app_orchestration::AppInstanceId::new("app-1"),
-                    service_name: syneroym_app_orchestration::LogicalServiceName::new("backend"),
+                &LogicalServiceRef {
+                    app_instance_id: AppInstanceId::new("app-1"),
+                    service_name: LogicalServiceName::new("backend"),
                 },
                 None,
             )
@@ -1906,6 +2084,254 @@ mod tests {
         assert!(
             service.registry.all_bindings().await.unwrap().is_empty(),
             "a redeploy that drops a dependency must not leave its persisted row behind"
+        );
+    }
+
+    /// D-A2-9, extended explicitly to redeploy (post-review): a `Topology
+    /// Entry` is an app-scoped fact, not a per-dependent one, so dropping
+    /// the only dependent that declared it must not evict the in-memory
+    /// `StaticInventory` entry other dependents in the same app instance
+    /// might still rely on. Pins the decision either way, as the review
+    /// asked for -- this asserts "keep it", matching `undeploy`'s existing
+    /// behavior and the same reasoning restated at its call site.
+    #[tokio::test]
+    async fn a_redeploy_that_drops_a_dependency_still_resolves_it_in_memory() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let caller = node_wide_caller("test-caller");
+
+        service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(app_context(
+                    "app-1",
+                    "frontend",
+                    vec![dependency_binding("backend", vec!["did:key:zBackendMember"])],
+                )),
+                &caller,
+            )
+            .await
+            .unwrap();
+
+        // A redeploy whose manifest no longer declares any dependency.
+        service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(app_context("app-1", "frontend", vec![])),
+                &caller,
+            )
+            .await
+            .unwrap();
+
+        let resolved = service
+            .logical_resolver
+            .resolve(
+                &LogicalServiceRef {
+                    app_instance_id: AppInstanceId::new("app-1"),
+                    service_name: LogicalServiceName::new("backend"),
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            resolved.to_string(),
+            "did:key:zBackendMember",
+            "the persisted row is gone (asserted above), but the in-memory StaticInventory entry \
+             a different dependent in the same app instance might still rely on must survive \
+             until restart"
+        );
+    }
+
+    /// D-A2-2 / ADR-0021 §2 (post-review fix): a deploy may only bind
+    /// dependencies for its own declared app instance. Without this check,
+    /// a `DependencyBinding.app_instance_id` that disagrees with its own
+    /// `AppContext.app_instance_id` would silently write into a different
+    /// app instance's resolution table.
+    #[tokio::test]
+    async fn a_binding_naming_a_different_app_instance_than_its_own_context_fails_the_deploy() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+
+        let mismatched_binding = DependencyBinding {
+            dependency_name: "backend".to_string(),
+            app_instance_id: "app-2".to_string(),
+            mode: WitTopologyMode::Singleton,
+            members: vec!["did:key:zBackendMember".to_string()],
+            epoch: 0,
+            cache_ttl_ms: 60_000,
+        };
+        let err = service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(app_context("app-1", "frontend", vec![mismatched_binding])),
+                &node_wide_caller("test-caller"),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("app-1") && err.contains("app-2"), "{err}");
+
+        // Nothing must have been written -- the rejection is at validation
+        // time, before any registry write.
+        assert!(service.registry.all_bindings().await.unwrap().is_empty());
+    }
+
+    /// A2 post-review fix: an app instance's first successful deploy
+    /// becomes its owner (first-write-wins, the same shape `service_id`
+    /// ownership already uses). Without it, any caller authorized to
+    /// deploy *some* service could name a different, already-claimed app
+    /// instance in its own `app_context` and overwrite the binding that
+    /// instance's other, unrelated services resolve -- reachable even
+    /// though every `binding.app_instance_id` here correctly matches its
+    /// own `app_context.app_instance_id` (finding 02's check alone does
+    /// not close this: it only forces the attacker to also lie about which
+    /// app instance its own service belongs to).
+    #[tokio::test]
+    async fn a_deploy_cannot_claim_an_app_instance_owned_by_a_different_caller() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+
+        service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(app_context(
+                    "app-1",
+                    "frontend",
+                    vec![dependency_binding("backend", vec!["did:key:zBackendMember"])],
+                )),
+                &scoped_deploy_caller("did:key:zAlice", "frontend-svc"),
+            )
+            .await
+            .unwrap();
+
+        let attacker_binding = DependencyBinding {
+            dependency_name: "backend".to_string(),
+            app_instance_id: "app-1".to_string(),
+            mode: WitTopologyMode::Singleton,
+            members: vec!["did:key:zAttackerMember".to_string()],
+            epoch: 0,
+            cache_ttl_ms: 60_000,
+        };
+        let err = service
+            .deploy_with_context(
+                "evil-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(app_context("app-1", "evil", vec![attacker_binding])),
+                &scoped_deploy_caller("did:key:zBob", "evil-svc"),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("app-1") && err.contains("owned by"), "{err}");
+
+        let resolved = service
+            .logical_resolver
+            .resolve(
+                &LogicalServiceRef {
+                    app_instance_id: AppInstanceId::new("app-1"),
+                    service_name: LogicalServiceName::new("backend"),
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            resolved.to_string(),
+            "did:key:zBackendMember",
+            "the rejected deploy must not have overwritten alice's binding"
+        );
+    }
+
+    /// Positive-path counterpart: the app instance's own owner may go on
+    /// deploying further services into it, and a second service sharing an
+    /// app instance with the first is the ordinary multi-service-per-app
+    /// shape A2 exists for -- the ownership check above must not lock out
+    /// the caller who legitimately owns the app instance.
+    #[tokio::test]
+    async fn an_app_instance_owner_may_deploy_a_second_service_into_it() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let alice_frontend = scoped_deploy_caller("did:key:zAlice", "frontend-svc");
+        let alice_worker = scoped_deploy_caller("did:key:zAlice", "worker-svc");
+
+        service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(app_context(
+                    "app-1",
+                    "frontend",
+                    vec![dependency_binding("backend", vec!["did:key:zBackendMember"])],
+                )),
+                &alice_frontend,
+            )
+            .await
+            .unwrap();
+
+        let result = service
+            .deploy_with_context(
+                "worker-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(app_context(
+                    "app-1",
+                    "worker",
+                    vec![dependency_binding("backend", vec!["did:key:zBackendMember"])],
+                )),
+                &alice_worker,
+            )
+            .await;
+        assert!(result.is_ok(), "the app instance's own owner must be able to join it: {result:?}");
+    }
+
+    /// Finding 04 (post-review fix): the app-context/binding write is
+    /// deferred until every fallible step earlier in the deploy has
+    /// succeeded (`install_app_context`, called near owner attribution),
+    /// so a redeploy whose `app_context.service_name` fails validation must
+    /// leave the previous deploy's bindings completely untouched -- not
+    /// removed-then-never-replaced, which is what happened when the same
+    /// removal ran before validation.
+    #[tokio::test]
+    async fn a_redeploy_with_an_invalid_service_name_preserves_the_previous_bindings() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let caller = node_wide_caller("test-caller");
+
+        service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(app_context(
+                    "app-1",
+                    "frontend",
+                    vec![dependency_binding("backend", vec!["did:key:zBackendMember"])],
+                )),
+                &caller,
+            )
+            .await
+            .unwrap();
+
+        // `LogicalServiceName::try_new` rejects a name containing '/'.
+        let err = service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(app_context("app-1", "bad/name", vec![])),
+                &caller,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("invalid service name"), "{err}");
+
+        assert_eq!(
+            service.registry.app_context_of("frontend-svc"),
+            Some(("app-1".to_string(), "frontend".to_string())),
+            "the failed redeploy must not have removed the previous app context"
+        );
+        assert_eq!(
+            service.registry.all_bindings().await.unwrap().len(),
+            1,
+            "the failed redeploy must not have removed the previous binding row"
         );
     }
 
@@ -2862,6 +3288,16 @@ mod tests {
             self.inner
                 .save_binding(service_id, app_instance_id, dependency_name, topology_entry_json)
                 .await
+        }
+        async fn load_all_app_instance_owners(&self) -> Result<Vec<(String, String)>> {
+            self.inner.load_all_app_instance_owners().await
+        }
+        async fn save_app_instance_owner(
+            &self,
+            app_instance_id: &str,
+            owner_did: &str,
+        ) -> Result<()> {
+            self.inner.save_app_instance_owner(app_instance_id, owner_did).await
         }
     }
 

@@ -117,6 +117,24 @@ impl SqliteEndpointStorage {
                 );",
                 [],
             )?;
+            // A2 (post-review fix): which caller first declared an app
+            // instance in a deploy's `app_context`. `deploy` uses this as a
+            // first-write-wins takeover guard -- the same shape as
+            // `service_owners`, but keyed by `app_instance_id` instead of
+            // `service_id`, since a binding write targets an app instance
+            // that can span several services. Without it, any caller
+            // authorized to deploy *some* service could name a different,
+            // already-running app instance in its own `app_context` and
+            // overwrite the bindings that instance's other services
+            // resolve.
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS app_instance_owners (
+                    app_instance_id TEXT PRIMARY KEY,
+                    owner_did       TEXT NOT NULL,
+                    created_at      INTEGER NOT NULL
+                );",
+                [],
+            )?;
             conn.execute("PRAGMA user_version = 1", [])?;
 
             Ok(conn)
@@ -379,9 +397,13 @@ impl EndpointStorage for SqliteEndpointStorage {
         let conn_arc = self.conn.clone();
         task::spawn_blocking(move || -> Result<Vec<(String, String, String, String)>> {
             let conn = lock_db(&conn_arc)?;
+            // `ORDER BY` makes a multi-writer conflict on the same
+            // `(app_instance_id, dependency_name)` (D-A2-10, last-write-
+            // wins) replay the same way on every restart instead of
+            // depending on SQLite's unspecified row order.
             let mut stmt = conn.prepare(
                 "SELECT service_id, app_instance_id, dependency_name, entry_json FROM \
-                 service_bindings",
+                 service_bindings ORDER BY service_id, dependency_name",
             )?;
             let mut bindings = Vec::new();
             let mut rows = stmt.query([])?;
@@ -419,6 +441,44 @@ impl EndpointStorage for SqliteEndpointStorage {
                     entry_json = excluded.entry_json,
                     created_at = excluded.created_at",
                 params![sid, instance, name, entry, created_at],
+            )?;
+            Ok(())
+        })
+        .await?
+    }
+
+    async fn load_all_app_instance_owners(&self) -> Result<Vec<(String, String)>> {
+        let conn_arc = self.conn.clone();
+        task::spawn_blocking(move || -> Result<Vec<(String, String)>> {
+            let conn = lock_db(&conn_arc)?;
+            let mut stmt =
+                conn.prepare("SELECT app_instance_id, owner_did FROM app_instance_owners")?;
+            let mut owners = Vec::new();
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                owners.push((row.get(0)?, row.get(1)?));
+            }
+            Ok(owners)
+        })
+        .await?
+    }
+
+    async fn save_app_instance_owner(&self, app_instance_id: &str, owner_did: &str) -> Result<()> {
+        let conn_arc = self.conn.clone();
+        let instance = app_instance_id.to_string();
+        let owner = owner_did.to_string();
+        let created_at: i64 =
+            SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+
+        task::spawn_blocking(move || -> Result<()> {
+            let conn = lock_db(&conn_arc)?;
+            conn.execute(
+                "INSERT INTO app_instance_owners (app_instance_id, owner_did, created_at)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(app_instance_id) DO UPDATE SET
+                    owner_did = excluded.owner_did,
+                    created_at = excluded.created_at",
+                params![instance, owner, created_at],
             )?;
             Ok(())
         })
@@ -743,6 +803,35 @@ mod tests {
                 "backend".to_string(),
                 r#"{"v":2}"#.to_string()
             )]
+        );
+    }
+
+    /// Finding 05 (post-review fix): `load_all_bindings`'s replay consumer
+    /// (`substrate::runtime::replay_persisted_bindings`) discards
+    /// `service_id` and keys purely on `(app_instance_id, dependency_name)`
+    /// -- last-write-wins (D-A2-10) means a conflict between two services'
+    /// rows for the same instance/name depends entirely on iteration order.
+    /// Inserted deliberately out of both id order and insertion order, so a
+    /// `SELECT` with no `ORDER BY` (SQLite's row order is otherwise
+    /// unspecified) would have a real chance of returning them unsorted.
+    #[tokio::test]
+    async fn loading_all_bindings_is_ordered_by_service_id_then_dependency_name() {
+        let (store, _dir) = make_store().await;
+        store.save_binding("svc-b", "app-1", "y-dep", r#"{"v":1}"#).await.unwrap();
+        store.save_binding("svc-a", "app-1", "z-dep", r#"{"v":1}"#).await.unwrap();
+        store.save_binding("svc-a", "app-1", "x-dep", r#"{"v":1}"#).await.unwrap();
+        store.save_binding("svc-b", "app-1", "a-dep", r#"{"v":1}"#).await.unwrap();
+
+        let bindings = store.load_all_bindings().await.unwrap();
+        let ids: Vec<(&str, &str)> = bindings
+            .iter()
+            .map(|(sid, _instance, dep, _entry)| (sid.as_str(), dep.as_str()))
+            .collect();
+        assert_eq!(
+            ids,
+            vec![("svc-a", "x-dep"), ("svc-a", "z-dep"), ("svc-b", "a-dep"), ("svc-b", "y-dep")],
+            "replay must be reproducible across restarts regardless of insertion order or \
+             SQLite's own unspecified row order"
         );
     }
 

@@ -1383,7 +1383,10 @@ impl wasmtime::ResourceLimiter for HostState {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use std::sync::Mutex;
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     use serde_json::json;
     use syneroym_core::{local_registry::EndpointRegistry, storage::MockStorage};
@@ -1431,14 +1434,21 @@ pub(crate) mod tests {
     /// Records the last `ProxyRequest` it was invoked with, so a test can
     /// inspect what `proxy::Host::call` actually built (in particular
     /// `caller`) without needing a real downstream service to answer.
+    /// `invoke_count` lets a test pin the "no network hop" budget (plan §7):
+    /// a dependency resolution that went through the router/supervisor
+    /// instead of resolving host-side, before the `ProxyRequest` exists,
+    /// would still land here, but with more than the one `invoke` a single
+    /// call is supposed to cost.
     #[derive(Debug, Default)]
     struct RecordingProxy {
         last_request: Mutex<Option<ProxyRequest>>,
+        invoke_count: AtomicUsize,
     }
 
     #[async_trait::async_trait]
     impl ServiceProxy for RecordingProxy {
         async fn invoke(&self, request: ProxyRequest) -> Result<Value, RpcProxyError> {
+            self.invoke_count.fetch_add(1, Ordering::SeqCst);
             let recorded = request.clone();
             *self.last_request.lock().unwrap() = Some(recorded);
             Ok(Value::Null)
@@ -1597,6 +1607,12 @@ pub(crate) mod tests {
 
         let received = proxy.last_request.lock().unwrap().take().unwrap();
         assert_eq!(received.target_service, "did:key:zBackendMember");
+        // Plan §7's "no network hop" budget: dependency resolution happens
+        // host-side, before the `ProxyRequest` is built, so one dependency
+        // call must cost exactly one `invoke` -- never a second hop to ask
+        // a supervisor or router to resolve it (ADR-0021 §8 forbids that
+        // outright).
+        assert_eq!(proxy.invoke_count.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

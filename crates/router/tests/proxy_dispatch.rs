@@ -406,11 +406,18 @@ async fn guest_dependency_target_reaches_the_bound_member_and_a_re_registration_
         .await
         .unwrap();
     let response: Value = serde_json::from_slice(&response_bytes).unwrap();
-    let result = response.get("result").and_then(Value::as_str).unwrap_or_default();
+    let error_message = response
+        .get("error")
+        .and_then(|e| e.get("message"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     assert!(
-        result.contains("ServiceNotFound") || response.get("error").is_some(),
+        error_message.contains("ServiceNotFound") && error_message.contains("zNoSuchMember"),
         "re-registering the binding must change what the *same* declared name resolves to on the \
-         very next call, proving the guest never held a snapshot of the old target: {response:?}"
+         very next call, proving the guest never held a snapshot of the old target -- a transport \
+         hiccup or an unrelated deserialization fault must not pass this assertion, so only the \
+         specific ServiceNotFound-for-the-new-target error the re-registration should produce \
+         counts: {response:?}"
     );
 }
 
