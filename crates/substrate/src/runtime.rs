@@ -23,8 +23,8 @@ use syneroym_coordinator::EcosystemCoordinator;
 use syneroym_core::{
     config::{BlobBackend, SubstrateConfig},
     dht_registry::{
-        EndpointInfo, EndpointMechanism, EndpointType, HEARTBEAT_INTERVAL_SECS, RegistryClient,
-        SignedEndpointInfo,
+        DEFAULT_ENDPOINT_NOT_AFTER_SECS, EndpointInfo, EndpointMechanism, EndpointType,
+        HEARTBEAT_INTERVAL_SECS, RegistryClient, SignedEndpointInfo,
     },
     endpoint_publisher::EndpointPublisher,
     http_routes::HttpRouteRegistry,
@@ -460,9 +460,6 @@ async fn setup_router(
                     config.substrate.enable_bep0044_dht,
                     config.substrate.registry_url.clone(),
                 )),
-                endpoint_registry.clone(),
-                Arc::new(Identity::from_bytes(&secret_key)),
-                service_id.to_string(),
                 config.hosted_apps_dir(),
             ))
         });
@@ -777,6 +774,12 @@ fn build_signed_endpoint_info(
     let endpoint_addr_bytes = serde_json::to_vec(&pruned_addr)
         .map_err(|e| anyhow::anyhow!("Failed to serialize endpoint addr: {e}"))?;
 
+    let not_after = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+        .saturating_add(DEFAULT_ENDPOINT_NOT_AFTER_SECS);
+
     let info = EndpointInfo {
         service_id: service_id.to_string(),
         substrate_id: service_id.to_string(),
@@ -785,7 +788,7 @@ fn build_signed_endpoint_info(
         mechanisms: vec![EndpointMechanism::Iroh { endpoint_addr_bytes, relay_url }],
         is_private: false,
         ttl: None,
-        delegation: None,
+        not_after,
     };
 
     let identity = Identity::from_bytes(secret_key);

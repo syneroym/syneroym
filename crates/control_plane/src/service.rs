@@ -1664,9 +1664,6 @@ mod tests {
         let make_publisher = || {
             Arc::new(EndpointPublisher::new(
                 Arc::new(RegistryClient::new(false, None)),
-                registry.clone(),
-                Arc::new(syneroym_identity::Identity::generate().unwrap()),
-                "did:key:zTestNode".to_string(),
                 temp_dir.path().to_path_buf(),
             ))
         };

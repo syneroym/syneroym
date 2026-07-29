@@ -1,11 +1,12 @@
 # ADR-0020: Stable Logical-Service Identity
 
-**Status**: Accepted (2026-07-27). Surfaced while designing the App Supervisor
-(multi-substrate deployment plus unattended monitoring and remediation), where
-"move a service to another substrate" turned out to be unimplementable under the
-current identity model. Paired with
-[ADR-0021](0021-binding-propagation-and-app-supervisor.md), which depends on this
-one.
+**Status**: Accepted (2026-07-27, amended 2026-07-28 and 2026-07-29 — see the
+dated amendment notes under §8's Consequences below). Surfaced while designing
+the App Supervisor (multi-substrate deployment plus unattended monitoring and
+remediation), where "move a service to another substrate" turned out to be
+unimplementable under the current identity model. Paired with
+[ADR-0021](0021-binding-propagation-and-app-supervisor.md), which depends on
+this one.
 
 **Context**:
 
@@ -202,7 +203,7 @@ exists for the adjacent key-rotation case and is the natural place to express
 whether a service tolerates in-place certificate replacement or requires a
 restart.
 
-## 6. Endpoint records are published under the member master DID
+## 6. Endpoint records are published under the member master DID, signed by that key
 
 The paired ADR resolves a member master DID to an endpoint. **That lookup does
 not work today**, and this section is what makes it work.
@@ -224,12 +225,34 @@ Left unaddressed, §2's removal of the instance DID from the application model
 would make a relocated service unresolvable: dependents hold a master DID that
 nothing can turn into an address.
 
-**Decision: the registry accepts an `EndpointInfo` keyed by a master DID when
-the record is signed by an instance key presenting a valid
-`DelegationCertificate` from that master.** `verify_endpoint_signature` gains
-that second acceptance path; the publish path attaches the certificate. This is
-the same trust chain `verify_identity` already walks on every inbound
-connection, applied at a second site — not a new trust model.
+**Decision: the record is signed by the member master key itself, by whoever
+holds it — the deployer — never by the hosting substrate.** The substrate does
+not build, sign, or modify an endpoint record for a member it hosts at all. It
+receives a finished, self-verifying `EndpointInfo` at deploy time, stores it
+verbatim, and replays those exact bytes on every heartbeat until the record
+stops verifying. `EndpointInfo` carries no certificate and no instance-key
+reference; verification is the ordinary self-signed check — the key
+`service_id` resolves to must be the key that signed the packet — applied
+uniformly to every record, member or not.
+
+**An earlier version of this design had the hosting substrate sign instead,
+using its delegated instance key, with the record carrying a
+`DelegationCertificate` binding that key to the master.** That shape worked,
+but forced two costs this one avoids entirely:
+
+- **No DHT home.** BEP0044/pkarr keys a published packet by its *signing* key.
+  A record keyed by the master DID but signed by a different (instance) key
+  has no slot on the DHT under the master's key — only the HTTP registry could
+  carry it, narrowing where the whole scheme works. Every record is now signed
+  by the same key its `service_id` resolves to, so this mismatch cannot occur:
+  master-DID resolution works on the DHT exactly as any other record does.
+- **A revocation-checking, certificate-verifying record path that duplicated
+  the handshake's own logic**, and needed to expire the certificate for
+  admission while not expiring it for reads (to avoid turning a routine missed
+  renewal into an instant, sitewide resolution failure) — real complexity
+  bought only by having the substrate sign at all. With the deployer signing
+  directly, none of it is needed: the record has nothing to revoke, and its
+  only freshness question is its own `not_after`.
 
 **Why this and not a forward index in the anchor.** Extending
 `MasterAnchorPayload` with current instance DIDs is a smaller cryptographic
@@ -238,47 +261,56 @@ endpoint) and puts a second network lookup on the call path, which the paired
 milestone's own performance budget forbids. The registry change keeps resolution
 at exactly one lookup, unchanged from today.
 
-**§1 removes this option's only real complication.** Delegation-signed records
-would otherwise need a rule for N concurrent instances publishing under one
-master — a record set, or a last-writer race. With one master per *member*,
-there is at most one live instance per master (§2), so the existing
-last-writer-wins insert
-([registry.rs:224](../../crates/community_registry/src/registry.rs#L224)) is
-already the correct semantics, and a relocation is just the new instance
-publishing over the old record.
+**§1 removes this option's only real complication.** A design where multiple
+instances could concurrently publish under one master would need a rule for
+that — a record set, or a last-writer race. With one master per *member*,
+there is at most one live instance per master (§2), so the last-writer-wins
+question collapses to exactly two records ever contending for one key: the
+current one and its replacement at relocation. Contention is settled by two
+mechanisms working together:
 
-Revocation continues to work unchanged: the master anchor's `revoked_keys` kills
-a retired instance key, and a record signed by a revoked key stops verifying.
+- **A monotonic freshness bound (`EndpointInfo.not_after`).** Every signed
+  record declares a Unix-seconds instant after which it must be treated as
+  absent, regardless of what store holds it. It is generous — weeks, not
+  hours — because it is a backstop for "the signer stopped renewing
+  altogether" (a lost key, a decommissioned member), not the routine control.
+- **Compare-and-swap on the pkarr/BEP44 sequence number, uniformly at both
+  stores.** That sequence number is the packet's own signed timestamp — it
+  cannot be forged without the signing key, and mainline's own DHT nodes
+  already refuse a `put` whose sequence number is lower than the one they
+  hold. The HTTP registry now enforces the identical rule: a record is
+  admitted only if its timestamp is newer than what is stored, or equal and
+  byte-identical (the routine heartbeat replay, which must succeed as a
+  refresh rather than being rejected as a conflict). A relocated-away
+  substrate that keeps replaying its last blob therefore cannot resurrect a
+  stale mapping once the master has signed a newer one for the new
+  substrate — at either store, without needing them to coordinate.
 
-**Every service type already has an instance key, and it costs nothing to
-relocate.** Instance keys are not stored per service — they are HKDF-derived
-from the *hosting node's* identity plus `(owner_did, service_id)`
-([keys.rs:240-257](../../crates/identity/src/keys.rs#L240)), deterministic and
-node-private. Two consequences fall out. A TCP, container, or native-host
-service has a derivable instance key exactly as a WASM one does, so this section
-covers every `ServiceType` without a special case. And relocating a member to a
-different node yields a different instance key automatically, because the node
-identity in the derivation changed — no key generation, storage, or transport is
-added anywhere. The substrate reports the derived public key; the master key
-holder issues the certificate over it (§3).
+Revocation is no longer an endpoint-record concern at all: with no certificate
+on the record, there is nothing there to revoke. It remains exactly what it
+already was for every other purpose — a property the connection handshake
+enforces on the *instance* key a caller presents, checked against the master
+anchor's `revoked_keys` at the moment a connection is attempted, not at the
+moment a record is read.
 
-**This discharges a deferred ADR that was already owed.** M04A Slice B7 dropped
-"item 4" and recorded it as needing its own ADR: relaxing `verify()` "to accept
-a substrate-signed record for X carrying a proof that X's owner authorized this
-substrate to host it — a real change to the registry's trust model"
+**This still discharges the deferred ADR that was already owed.** M04A Slice B7
+dropped "item 4" and recorded it as needing its own ADR: relaxing `verify()` "to
+accept a substrate-signed record for X carrying a proof that X's owner
+authorized this substrate to host it — a real change to the registry's trust
+model"
 ([B7.md §6.2 / F9 option 2](../planning/milestones/M04A-proxy-and-auth-foundation/plans/B7.md)).
-This section is that change, reached from the opposite direction. It differs in
-mechanism, and deliberately: B7's sketch has the **substrate's own key** publish,
-proving authorization out of B7a's `owner_of` store, whereas this has the
-**instance key** publish, proving it with a `DelegationCertificate` the ingress
-path already verifies on every inbound connection. The delegation route needs no
-owner-store lookup and introduces no credential that does not already exist.
+This section is not that change in the form B7 sketched — B7's sketch has the
+**substrate's own key** publish, proving authorization out of B7a's `owner_of`
+store. This has the **owner's own key** publish, needing no proof step at all,
+since the signature *is* the authorization. It closes the same gap (a
+substrate-hosted record's provenance was previously unauthenticated) with a
+simpler trust model than either B7's sketch or this ADR's own first draft.
 
 B7 also set a gate on doing this at all — F9 found the original motivation
 unsound ("non-discoverability is a posture, not a gap") and concluded it "needs
-a real consumer before it is worth doing." Slice A1 of the paired milestone is
-that consumer, and a load-bearing one: without it a relocated member cannot be
-resolved at all. The gate is met.
+a real consumer before it is worth doing." The paired milestone's endpoint-record
+work is that consumer, and a load-bearing one: without it a relocated member
+cannot be resolved at all. The gate is met.
 
 ## 7. Rejected: make the logical name the authorization subject
 
@@ -504,3 +536,51 @@ edited into §6's prose. Full reasoning is in
     A missed renewal therefore degrades name resolution on that clock
     rather than failing every lookup the instant the certificate expires —
     task.md's failure-matrix row 3 was rewritten to say so.
+
+**Amendment (2026-07-29, fifth pass — before merge, reopening §6 itself).**
+An operator question surfaced that item 8's premise ("the hosting substrate
+signs the record") was never actually required — the deployer already holds
+the member master key and can sign the record directly. That single change
+reverses or removes items 6, 8, 9, 10, and 12 above, which is corrected here
+rather than edited into them, for the same reason as the two amendments
+before this one. §6 itself is rewritten in place to describe the design that
+shipped; these items are what changed and why.
+
+15. **Item 6 no longer applies.** There is exactly one endpoint-record
+    verification path and exactly one keying shape: self-signed by the key
+    `service_id` resolves to. Nothing carries a certificate to reconcile a
+    second shape against.
+16. **Item 8's narrowing reverses.** "Master-DID resolution requires a
+    configured HTTP registry" is no longer true. It was a consequence of the
+    substrate signing with a delegated instance key while the record was
+    keyed by the master DID — a mismatch pkarr's signer-keyed storage could
+    not carry. With the deployer signing directly, the signing key and the
+    record's key are always the same, so **every record has a DHT home**,
+    exactly as §6 originally implied before item 8 corrected it.
+17. **Item 9's revocation-at-admission check is deleted, not merely
+    unchanged.** With no certificate on the record, there is no instance key
+    named on it to check against `revoked_keys` at admission. Item 9's
+    closing sentence is now the *whole* answer, not half of one: revocation
+    is purely a handshake-time property, checked on the connection a caller
+    presents, never on a record at rest.
+18. **Item 10's Publishing/Reading split is deleted.** There is no
+    certificate expiry to split a trust level over. Item 10's own concern —
+    a routine missed renewal must not turn into an instant, sitewide
+    resolution failure — still holds, answered differently: `EndpointInfo`
+    now carries its own `not_after`, checked identically whichever way a
+    record is reached (no split needed, since it is the record's own claim
+    about itself, not a credential being re-adjudicated), and set generously
+    (30 days) so it is a backstop for a signer that stops renewing
+    altogether, not a routine cadence concern.
+19. **Item 12's flap is narrowed, not fixed, by a new mechanism.** Every
+    record now carries the pkarr/BEP44 timestamp it was signed with, and
+    both the DHT and the HTTP registry now enforce that a record is admitted
+    only if that timestamp is newer than what is stored, or equal and
+    byte-identical (the routine heartbeat replay of a frozen, deployer-signed
+    blob, which must succeed as a refresh). A substrate a member has moved
+    away from can therefore no longer resurrect a stale mapping once the
+    master has signed a newer record elsewhere — the flap's symmetric form
+    is closed. What is not closed: the old substrate still *attempts* to
+    publish and does not learn it has lost: detecting and stopping that
+    losing publisher still needs the placement view item 12 already deferred
+    to a later slice.

@@ -16,14 +16,12 @@ use axum::{
     http::StatusCode,
     routing::{get, post},
 };
-use dashmap::DashMap;
+use dashmap::{DashMap, Entry};
 use oneshot::Sender;
 use reqwest::Client;
 use syneroym_core::{
     config::SubstrateConfig,
-    dht_registry::{
-        DEFAULT_REGISTRY_TTL_SECS, RecordTrust, SignedEndpointInfo, SignedMasterAnchor,
-    },
+    dht_registry::{DEFAULT_REGISTRY_TTL_SECS, SignedEndpointInfo, SignedMasterAnchor},
     util,
 };
 use tokio::{net::TcpListener, sync::oneshot, task::JoinHandle, time};
@@ -51,8 +49,10 @@ impl Debug for EcosystemRegistry {
 
 #[derive(Debug)]
 struct RegistryState {
-    // Map of service_id -> (SignedEndpointInfo, std::time::Instant)
-    endpoints: DashMap<String, (SignedEndpointInfo, Instant)>,
+    // Map of service_id -> (SignedEndpointInfo, admitted-at, pkarr/BEP44
+    // timestamp of the admitted record -- the compare-and-swap key, kept
+    // alongside rather than re-derived by re-verifying on every write).
+    endpoints: DashMap<String, (SignedEndpointInfo, Instant, u64)>,
     // Map of alias -> service_id
     aliases: DashMap<String, String>,
     // Map of master_id -> (SignedMasterAnchor, std::time::Instant)
@@ -153,6 +153,8 @@ impl EcosystemRegistry {
                         expired_keys.push(entry.key().clone());
                     }
                 }
+                // (`entry.value().2`, the CAS timestamp, is not read by the
+                // sweep -- it only ever gates admission, on the write path.)
                 for key in expired_keys {
                     state_clone.endpoints.remove(&key);
                     state_clone.aliases.retain(|_, v| *v != key);
@@ -199,14 +201,14 @@ async fn register_endpoint(
     State(state): State<Arc<RegistryState>>,
     Json(payload): Json<SignedEndpointInfo>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let service_id = &payload.info.service_id;
+    let service_id = payload.info.service_id.clone();
 
-    verify_endpoint_signature(&state, &payload)?;
+    let timestamp = verify_endpoint_signature(&payload)?;
 
-    let alias = util::generate_alias(payload.info.nickname.as_deref(), service_id);
+    let alias = util::generate_alias(payload.info.nickname.as_deref(), &service_id);
 
     if let Some(existing_id) = state.aliases.get(&alias)
-        && *existing_id != *service_id
+        && *existing_id != service_id
     {
         return Err((
             StatusCode::CONFLICT,
@@ -215,12 +217,11 @@ async fn register_endpoint(
         ));
     }
 
-    // Remove any previous aliases associated with this service_id
-    state.aliases.retain(|_, id| *id != *service_id);
+    admit_endpoint(&state.endpoints, service_id.clone(), payload.clone(), timestamp)?;
 
-    // Store in DashMap
-    state.aliases.insert(alias, service_id.clone());
-    state.endpoints.insert(service_id.clone(), (payload.clone(), Instant::now()));
+    // Remove any previous aliases associated with this service_id
+    state.aliases.retain(|_, id| *id != service_id);
+    state.aliases.insert(alias, service_id);
 
     if let Some(parent_url) = &state.parent_registry_url
         && !payload.info.is_private
@@ -231,30 +232,55 @@ async fn register_endpoint(
     Ok(StatusCode::OK)
 }
 
-fn verify_endpoint_signature(
-    state: &RegistryState,
-    payload: &SignedEndpointInfo,
+fn verify_endpoint_signature(payload: &SignedEndpointInfo) -> Result<u64, (StatusCode, String)> {
+    payload
+        .verify()
+        .map(|ts| ts.as_u64())
+        .map_err(|e| (StatusCode::UNAUTHORIZED, format!("Signature verification failed: {e}")))
+}
+
+/// Admits `payload` under `service_id`, last-writer-wins by pkarr/BEP44
+/// timestamp rather than by arrival order -- the same rule
+/// `mainline`'s own server enforces for the DHT leg, so a rollback that the
+/// DHT would refuse cannot land here just because the registry answers
+/// lookups first (`RegistryClient::lookup` tries HTTP before falling back).
+/// A record that has moved to another substrate carries a strictly newer
+/// timestamp (a fresh `EndpointInfo::sign`), so the old host cannot
+/// resurrect its stale mapping by continuing to heartbeat it here.
+///
+/// Equal timestamp, byte-identical bytes is accepted and treated as a
+/// refresh (resets the TTL clock) rather than a conflict: a substrate that
+/// cannot re-sign a master-signed record replays the exact same blob on
+/// every heartbeat, and that replay is what keeps the record from expiring
+/// on this registry's TTL sweep. Equal timestamp with *different* bytes --
+/// two distinct records claiming the same instant -- is rejected exactly
+/// like an older one; it cannot be resolved by preferring one arbitrarily.
+fn admit_endpoint(
+    endpoints: &DashMap<String, (SignedEndpointInfo, Instant, u64)>,
+    service_id: String,
+    payload: SignedEndpointInfo,
+    timestamp: u64,
 ) -> Result<(), (StatusCode, String)> {
-    if let Err(e) = payload.verify(RecordTrust::Publishing) {
-        return Err((StatusCode::UNAUTHORIZED, format!("Signature verification failed: {e}")));
+    match endpoints.entry(service_id) {
+        Entry::Occupied(mut e) => {
+            let (stored_payload, _, stored_timestamp) = e.get();
+            if timestamp < *stored_timestamp
+                || (timestamp == *stored_timestamp
+                    && stored_payload.pkarr_packet_hex != payload.pkarr_packet_hex)
+            {
+                return Err((
+                    StatusCode::CONFLICT,
+                    "a newer or equally-recent endpoint record is already registered for this \
+                     service_id"
+                        .to_string(),
+                ));
+            }
+            e.insert((payload, Instant::now(), timestamp));
+        }
+        Entry::Vacant(e) => {
+            e.insert((payload, Instant::now(), timestamp));
+        }
     }
-
-    // Defence in depth, not the gate: this stops a revoked instance key from
-    // refreshing a record at a registry that already holds the master's
-    // anchor. It costs a map lookup and no network call. Revocation is
-    // actually enforced at the handshake, where a revoked temporary DID
-    // cannot complete a connection at all -- so a record that slips past
-    // this check still buys its holder nothing.
-    if let Some(cert) = &payload.info.delegation
-        && let Some(anchor) = state.master_anchors.get(&cert.master_did)
-        && anchor.0.payload.revoked_keys.contains(&cert.temporary_did)
-    {
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            format!("instance key {} has been revoked by its master", cert.temporary_did),
-        ));
-    }
-
     Ok(())
 }
 
@@ -295,7 +321,31 @@ async fn register_master_endpoint(
         return Err((StatusCode::UNAUTHORIZED, format!("Signature verification failed: {}", e)));
     }
 
-    state.master_anchors.insert(payload.master_id.clone(), (payload, Instant::now()));
+    // Same last-writer-wins discipline as `admit_endpoint`, applied to the
+    // anchor for consistency: `MasterAnchorPayload.timestamp` is already
+    // authenticated as equal to the packet's own signed timestamp by
+    // `verify()`'s whole-payload check, so it doubles as the CAS key with
+    // no extra field needed.
+    match state.master_anchors.entry(payload.master_id.clone()) {
+        Entry::Occupied(mut e) => {
+            let stored_timestamp = e.get().0.payload.timestamp;
+            if payload.payload.timestamp < stored_timestamp
+                || (payload.payload.timestamp == stored_timestamp
+                    && e.get().0.pkarr_packet_hex != payload.pkarr_packet_hex)
+            {
+                return Err((
+                    StatusCode::CONFLICT,
+                    "a newer or equally-recent master anchor is already registered for this \
+                     master_id"
+                        .to_string(),
+                ));
+            }
+            e.insert((payload, Instant::now()));
+        }
+        Entry::Vacant(e) => {
+            e.insert((payload, Instant::now()));
+        }
+    }
     Ok(StatusCode::OK)
 }
 
@@ -309,6 +359,8 @@ async fn lookup_master_endpoint(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use axum::http::StatusCode;
     use syneroym_core::{
         config::{AccessControl, ServiceRegistryRole, SubstrateConfig},
@@ -317,13 +369,9 @@ mod tests {
             MasterAnchorPayload, RegistryClient,
         },
         endpoint_publisher::EndpointPublisher,
-        local_registry::EndpointRegistry,
-        storage::MockStorage,
         util,
     };
-    use syneroym_identity::{
-        DelegationCertificate, Identity, delegation::SCOPE_SERVICE_INSTANCE, substrate,
-    };
+    use syneroym_identity::{Identity, substrate};
 
     use super::*;
 
@@ -331,16 +379,20 @@ mod tests {
         info.sign(identity).unwrap()
     }
 
-    fn sample_service_info() -> EndpointInfo {
+    fn far_future() -> u64 {
+        u64::MAX / 2
+    }
+
+    fn sample_service_info_for(service_id: &str) -> EndpointInfo {
         EndpointInfo {
-            service_id: "placeholder".to_string(),
+            service_id: service_id.to_string(),
             substrate_id: "did:key:zSubstrate".to_string(),
             endpoint_type: EndpointType::Service,
             nickname: None,
             mechanisms: vec![],
             is_private: false,
             ttl: None,
-            delegation: None,
+            not_after: far_future(),
         }
     }
 
@@ -409,7 +461,7 @@ mod tests {
             }],
             is_private: false,
             ttl: None,
-            delegation: None,
+            not_after: far_future(),
         };
 
         let signed_info = create_signed_info(&identity, info);
@@ -442,7 +494,7 @@ mod tests {
             mechanisms: vec![],
             is_private: false,
             ttl: None,
-            delegation: None,
+            not_after: far_future(),
         };
 
         // Sign with OTHER identity
@@ -466,7 +518,7 @@ mod tests {
             mechanisms: vec![],
             is_private: false,
             ttl: None,
-            delegation: None,
+            not_after: far_future(),
         };
 
         let signed_info = create_signed_info(&identity, info);
@@ -495,11 +547,13 @@ mod tests {
                 }],
                 is_private: false,
                 ttl: None,
-                delegation: None,
+                not_after: far_future(),
             },
             pkarr_packet_hex: "mock-hex".to_string(),
         };
-        state.endpoints.insert(substrate_id.to_string(), (substrate_info.clone(), Instant::now()));
+        state
+            .endpoints
+            .insert(substrate_id.to_string(), (substrate_info.clone(), Instant::now(), 0));
 
         // Mock a service record pointing to that substrate
         let service_info = SignedEndpointInfo {
@@ -511,11 +565,11 @@ mod tests {
                 mechanisms: vec![],
                 is_private: false,
                 ttl: None,
-                delegation: None,
+                not_after: far_future(),
             },
             pkarr_packet_hex: "mock-hex".to_string(),
         };
-        state.endpoints.insert(service_id.to_string(), (service_info, Instant::now()));
+        state.endpoints.insert(service_id.to_string(), (service_info, Instant::now(), 0));
 
         // Lookup service
         let lookup_res = lookup_endpoint(Path(service_id.to_string()), State(state.clone())).await;
@@ -540,7 +594,7 @@ mod tests {
             mechanisms: vec![],
             is_private: false,
             ttl: None,
-            delegation: None,
+            not_after: far_future(),
         };
 
         let signed_info = create_signed_info(&identity, info);
@@ -570,7 +624,7 @@ mod tests {
             mechanisms: vec![],
             is_private: false,
             ttl: None,
-            delegation: None,
+            not_after: far_future(),
         };
 
         let signed_info = create_signed_info(&identity, info);
@@ -595,20 +649,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_delegation_signed_record_registers_and_looks_up_under_its_master_did() {
+    async fn a_master_signed_endpoint_record_registers_and_looks_up_under_its_own_did() {
+        // The one keying shape this design has: a member's endpoint record
+        // is signed by the deployer's own member master key,
+        // self-consistently, exactly like any other self-signed record --
+        // there is no longer a separate "signed by a delegated instance
+        // key, keyed by a different master DID" shape to exercise.
         let state = Arc::new(RegistryState::default());
         let master = Identity::generate().unwrap();
-        let instance = Identity::generate().unwrap();
         let master_did = substrate::derive_did_key(&master.public_key());
 
-        let cert = DelegationCertificate::issue(
-            &master,
-            instance.public_key(),
-            3600,
-            SCOPE_SERVICE_INSTANCE.to_string(),
-        )
-        .unwrap();
-        let signed = sample_service_info().sign_as_instance(&instance, cert).unwrap();
+        let signed = sample_service_info_for(&master_did).sign(&master).unwrap();
 
         let res = register_endpoint(State(state.clone()), Json(signed.clone())).await;
         assert_eq!(res.unwrap(), StatusCode::OK);
@@ -619,49 +670,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_record_signed_by_a_revoked_instance_key_is_rejected_at_admission() {
+    async fn a_masters_records_alias_is_derived_from_its_own_did() {
         let state = Arc::new(RegistryState::default());
         let master = Identity::generate().unwrap();
-        let instance = Identity::generate().unwrap();
-        let master_did = substrate::derive_did_key(&master.public_key());
-        let instance_did = substrate::derive_did_key(&instance.public_key());
-
-        let anchor_payload =
-            MasterAnchorPayload { revoked_keys: vec![instance_did.clone()], ..Default::default() };
-        let signed_anchor = anchor_payload.sign(&master).unwrap();
-        state.master_anchors.insert(master_did, (signed_anchor, Instant::now()));
-
-        let cert = DelegationCertificate::issue(
-            &master,
-            instance.public_key(),
-            3600,
-            SCOPE_SERVICE_INSTANCE.to_string(),
-        )
-        .unwrap();
-        let signed = sample_service_info().sign_as_instance(&instance, cert).unwrap();
-
-        let res = register_endpoint(State(state), Json(signed)).await;
-        assert!(res.is_err());
-        assert_eq!(res.unwrap_err().0, StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn a_delegated_records_alias_is_derived_from_its_master_did() {
-        let state = Arc::new(RegistryState::default());
-        let master = Identity::generate().unwrap();
-        let instance = Identity::generate().unwrap();
         let master_did = substrate::derive_did_key(&master.public_key());
 
-        let cert = DelegationCertificate::issue(
-            &master,
-            instance.public_key(),
-            3600,
-            SCOPE_SERVICE_INSTANCE.to_string(),
-        )
-        .unwrap();
-        let mut info = sample_service_info();
+        let mut info = sample_service_info_for(&master_did);
         info.nickname = Some("member-one".to_string());
-        let signed = info.sign_as_instance(&instance, cert).unwrap();
+        let signed = info.sign(&master).unwrap();
 
         register_endpoint(State(state.clone()), Json(signed)).await.unwrap();
 
@@ -793,103 +809,75 @@ mod tests {
     /// own tests (`crates/core/src/endpoint_publisher.rs`) exercise the
     /// decision table but never call `publish_all_services` itself, since
     /// `register` against no registry is a silent no-op rather than the
-    /// failure this test needs. Two masters keep the two certified
-    /// services' records at distinct lookup keys, so a missing one is
-    /// directly assertable rather than shadowed by a last-writer-wins
-    /// collision.
+    /// failure this test needs.
+    ///
+    /// The failure exercised here is D-A1-14's compare-and-swap: a stored
+    /// record whose `service_id` a strictly newer record already occupies
+    /// at the live registry (as if a relocation already published one
+    /// elsewhere) is a genuine `Err` from `publish_service`, not the benign
+    /// `Ok(false)` a verification failure would produce. The sweep must
+    /// survive it and still publish the other stored record.
+    ///
+    /// **The rejected record's filename is load-bearing and must keep
+    /// sorting first.** The sweep walks a `BTreeSet`, so ids run in
+    /// ascending byte order; naming it to sort *last* would let every
+    /// assertion below hold even under an implementation that aborted on
+    /// the first error. `aaa-` (0x61) precedes `did:key:` (0x64), so the
+    /// rejection happens before the other record is reached. The filename
+    /// is independent of the record's own `info.service_id` --
+    /// `build_record` looks the file up by the sweep's id, not by what is
+    /// inside it -- so naming the file for sort order does not change what
+    /// gets registered.
     #[tokio::test]
-    async fn publish_all_services_covers_certified_and_stored_only_services_and_survives_one_failing()
-     {
+    async fn publish_all_services_survives_a_record_rejected_by_admission() {
         let (_registry, url) = spawn_registry().await;
         let hosted_apps_dir = tempfile::tempdir().unwrap();
-        let node_identity = Identity::generate().unwrap();
-        let node_did = substrate::derive_did_key(&node_identity.public_key());
-        let local_registry = EndpointRegistry::new(Arc::new(MockStorage::default())).await.unwrap();
+        let client = RegistryClient::new(false, Some(url.clone()));
 
-        // Certified service 1: a live instance certificate, so it publishes.
-        let master1 = Identity::generate().unwrap();
-        let master1_did = substrate::derive_did_key(&master1.public_key());
-        let owner1 = "did:key:zOwner1".to_string();
-        local_registry.set_owner("svc-1".to_string(), owner1.clone()).await.unwrap();
-        let instance1 = node_identity.derive_service_identity(&owner1, "svc-1");
-        let cert1 = DelegationCertificate::issue(
-            &master1,
-            instance1.public_key(),
-            3600,
-            SCOPE_SERVICE_INSTANCE.to_string(),
+        let identity = Identity::generate().unwrap();
+        let did = substrate::derive_did_key(&identity.public_key());
+
+        let stale = sample_service_info_for(&did).sign(&identity).unwrap();
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        let fresh = sample_service_info_for(&did).sign(&identity).unwrap();
+
+        // The fresher record lands first, as if a relocation had already
+        // published it elsewhere.
+        client.register(&fresh, false).await.unwrap();
+
+        fs::write(
+            hosted_apps_dir.path().join("aaa-conflicting.json"),
+            serde_json::to_string(&stale).unwrap(),
         )
         .unwrap();
-        local_registry.set_instance_cert("svc-1".to_string(), cert1).await.unwrap();
 
-        // Certified service 2: a live certificate whose instance key its own
-        // master has revoked, so the registry rejects it at admission
-        // (D-A1-6) -- a genuine `Err` from `publish_service`, not the benign
-        // `Ok(false)` an expired certificate would produce. The sweep must
-        // survive it and still cover svc-1 and the stored-only service
-        // below.
-        let master2 = Identity::generate().unwrap();
-        let master2_did = substrate::derive_did_key(&master2.public_key());
-        let owner2 = "did:key:zOwner2".to_string();
-        local_registry.set_owner("svc-2".to_string(), owner2.clone()).await.unwrap();
-        let instance2 = node_identity.derive_service_identity(&owner2, "svc-2");
-        let instance2_did = substrate::derive_did_key(&instance2.public_key());
-        let cert2 = DelegationCertificate::issue(
-            &master2,
-            instance2.public_key(),
-            3600,
-            SCOPE_SERVICE_INSTANCE.to_string(),
-        )
-        .unwrap();
-        local_registry.set_instance_cert("svc-2".to_string(), cert2).await.unwrap();
-        let anchor_client = RegistryClient::new(false, Some(url.clone()));
-        anchor_client
-            .publish_master_anchor(&master2_did, vec![instance2_did], None, &master2, false)
-            .await
-            .unwrap();
-
-        // Stored-only service 3: no certificate, replays its self-signed
-        // file -- the other half of the id union, alongside the two
-        // certified services above.
-        let identity3 = Identity::generate().unwrap();
-        let did3 = substrate::derive_did_key(&identity3.public_key());
-        let info3 = EndpointInfo {
-            service_id: did3.clone(),
-            substrate_id: did3.clone(),
-            endpoint_type: EndpointType::Service,
-            mechanisms: vec![],
-            nickname: None,
-            is_private: false,
-            ttl: None,
-            delegation: None,
-        };
-        std::fs::write(
-            hosted_apps_dir.path().join(format!("{did3}.json")),
-            serde_json::to_string(&info3.sign(&identity3).unwrap()).unwrap(),
+        // A second, unrelated service with a valid stored record -- sorts
+        // after the conflicting one, so reaching it proves the sweep
+        // continued rather than aborting.
+        let other_identity = Identity::generate().unwrap();
+        let other_did = substrate::derive_did_key(&other_identity.public_key());
+        let other_signed = sample_service_info_for(&other_did).sign(&other_identity).unwrap();
+        fs::write(
+            hosted_apps_dir.path().join(format!("{other_did}.json")),
+            serde_json::to_string(&other_signed).unwrap(),
         )
         .unwrap();
 
         let publisher = EndpointPublisher::new(
             Arc::new(RegistryClient::new(false, Some(url.clone()))),
-            local_registry,
-            Arc::new(node_identity),
-            node_did,
             hosted_apps_dir.path().to_path_buf(),
         );
 
         publisher.publish_all_services().await;
 
-        let client = RegistryClient::new(false, Some(url));
-        assert!(
-            client.lookup(&master1_did, false).await.is_ok(),
-            "the certified, publishable service must have been published"
+        let looked_up = client.lookup(&did, false).await.unwrap();
+        assert_eq!(
+            looked_up.pkarr_packet_hex, fresh.pkarr_packet_hex,
+            "the stale record must not have overwritten the fresh one"
         );
         assert!(
-            client.lookup(&master2_did, false).await.is_err(),
-            "the revoked instance's record must not exist -- its publish was rejected"
-        );
-        assert!(
-            client.lookup(&did3, false).await.is_ok(),
-            "the stored-only service must still have been replayed despite svc-2's failure"
+            client.lookup(&other_did, false).await.is_ok(),
+            "the other stored record must still have been published despite the conflict"
         );
     }
 

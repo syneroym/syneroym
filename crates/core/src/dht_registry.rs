@@ -15,9 +15,7 @@ use pkarr::{
 };
 use reqwest::Client as ReqwestClient;
 use serde::{Deserialize, Serialize};
-use syneroym_identity::{
-    DelegationCertificate, Identity, delegation::SCOPE_SERVICE_INSTANCE, substrate,
-};
+use syneroym_identity::{Identity, substrate};
 
 /// Default time-to-live for registry entries, aligned with BEP 0044 DHT expiry
 /// defaults.
@@ -26,6 +24,21 @@ pub const DEFAULT_REGISTRY_TTL_SECS: u64 = 7200; // 2 hours
 /// Interval at which substrates republish their endpoints to prevent them from
 /// expiring.
 pub const HEARTBEAT_INTERVAL_SECS: u64 = 3600; // 1 hour
+
+/// Default lifetime of an `EndpointInfo.not_after` bound from the moment a
+/// signer signs it. This is a freshness backstop, not the sharp control: the
+/// sharp control is the monotonic pkarr/BEP44 timestamp every record carries
+/// -- a newer record from the same signer always displaces an older one, at
+/// both the DHT and the HTTP registry (`community_registry`'s
+/// compare-and-swap), so a substrate a member has moved away from cannot
+/// keep pointing at itself just by staying up and replaying its last blob.
+/// `not_after` only matters when the signer stops renewing *at all* -- a
+/// lost master key, a decommissioned member -- so it is set generously,
+/// deliberately far longer than an instance certificate's lifetime (hours):
+/// a reader that enforced it tightly would turn a routine missed renewal
+/// into an instant resolution failure for every consumer, the exact cliff
+/// the certificate `not_after` split existed to avoid.
+pub const DEFAULT_ENDPOINT_NOT_AFTER_SECS: u64 = 30 * 24 * 3600; // 30 days
 
 /// Internal pkarr DHT DNS name used in published packets
 pub const PKARR_DNS_NAME: &str = "syneroym";
@@ -69,8 +82,11 @@ pub struct EndpointInfo {
     pub is_private: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ttl: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub delegation: Option<DelegationCertificate>,
+    /// Unix seconds after which this record must be treated as absent, even
+    /// by a store whose own expiry never fires (a substrate replaying a
+    /// master-signed blob it cannot re-sign has no other way to let a
+    /// record go stale). See `DEFAULT_ENDPOINT_NOT_AFTER_SECS`.
+    pub not_after: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,80 +111,25 @@ impl EndpointInfo {
         let pkarr_packet_hex = hex::encode(signed_packet.to_relay_payload());
         Ok(SignedEndpointInfo { info: self, pkarr_packet_hex })
     }
-
-    /// Signs this record with `instance` -- the substrate-derived key that
-    /// `cert` certifies -- so it can be keyed by the member master DID
-    /// instead of by the signer's own (ADR-0020 §6). Sets `service_id` and
-    /// `delegation` from the certificate rather than trusting the caller to
-    /// keep all three in agreement.
-    pub fn sign_as_instance(
-        mut self,
-        instance: &Identity,
-        cert: DelegationCertificate,
-    ) -> Result<SignedEndpointInfo, anyhow::Error> {
-        let instance_did = substrate::derive_did_key(&instance.public_key());
-        if instance_did != cert.temporary_did {
-            return Err(anyhow::anyhow!(
-                "signing key {instance_did} is not the key this certificate certifies ({})",
-                cert.temporary_did
-            ));
-        }
-        self.service_id = cert.master_did.clone();
-        self.delegation = Some(cert);
-        self.sign(instance)
-    }
-}
-
-/// Which side of a record's life this verification is on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RecordTrust {
-    /// Admitting a record for storage. The certificate must be valid now.
-    Publishing,
-    /// Reading a record a registry already admitted. The trust chain is
-    /// checked; the certificate's expiry is not (D-A1-10).
-    Reading,
 }
 
 impl SignedEndpointInfo {
-    /// Verifies the pkarr packet against the record's claimed identity.
+    /// Verifies the pkarr packet against the record's claimed identity, and
+    /// returns the packet's signed timestamp on success -- the caller doing
+    /// last-writer-wins admission (`community_registry`'s compare-and-swap)
+    /// needs it, and this is the only place that already parses the packet
+    /// to get it.
     ///
-    /// Two acceptance shapes (ADR-0020 §6). Without a certificate a record is
-    /// self-signed and keyed by the signer's own DID -- the original rule.
-    /// With one, the record is keyed by a *member master* DID and signed by
-    /// an instance key the certificate binds to that master, which is how a
-    /// substrate holding only a delegated key publishes for the member it
-    /// hosts.
-    ///
-    /// Unlike the router's ingress check, the expected master here is not
-    /// read from the certificate: it is the key the record is stored under,
-    /// which is independent of what the certificate claims. So the
-    /// confused-deputy comparison genuinely bites on this path.
-    /// `service-instance` alone is accepted -- publishing a record is that
-    /// role and no other, so a `routing` certificate must not admit one.
-    ///
-    /// Expiry is checked when admitting a record and not when reading one: a
-    /// reader re-adjudicating a publishing credential would turn a lapsed
-    /// renewal into an instant resolution failure for every consumer, where
-    /// letting the registry's TTL drop the unrefreshed record fails closed
-    /// with a window instead of a cliff.
-    pub fn verify(&self, trust: RecordTrust) -> Result<(), anyhow::Error> {
-        let signer_did = match &self.info.delegation {
-            Some(cert) => {
-                match trust {
-                    RecordTrust::Publishing => {
-                        cert.verify(&self.info.service_id, &[SCOPE_SERVICE_INSTANCE])?
-                    }
-                    RecordTrust::Reading => {
-                        cert.verify_chain(&self.info.service_id, &[SCOPE_SERVICE_INSTANCE])?
-                    }
-                }
-                cert.temporary_did.as_str()
-            }
-            None => self.info.service_id.as_str(),
-        };
-
-        let pubkey = substrate::resolve_did_key(signer_did)
-            .map_err(|e| anyhow::anyhow!("Failed to parse public key from signer DID: {e}"))?;
+    /// One keying shape: every record is self-signed by the key its own
+    /// `service_id` resolves to. A member endpoint record's `service_id` is
+    /// a member master DID, so it is signed by the *deployer's* master key
+    /// (ADR-0020 §3, §6) -- never by the hosting substrate, which holds only
+    /// a delegated instance key and cannot produce this signature. The
+    /// substrate stores whatever signed blob it was given at deploy and
+    /// replays it verbatim; it has no way to re-sign one.
+    pub fn verify(&self) -> Result<Timestamp, anyhow::Error> {
+        let pubkey = substrate::resolve_did_key(&self.info.service_id)
+            .map_err(|e| anyhow::anyhow!("Failed to parse public key from service_id: {e}"))?;
         let expected_pkarr_pubkey = PublicKey::try_from(pubkey.as_bytes())
             .map_err(|e| anyhow::anyhow!("Invalid ed25519 pubkey for pkarr: {e}"))?;
 
@@ -179,10 +140,12 @@ impl SignedEndpointInfo {
             .map_err(|e| anyhow::anyhow!("Invalid pkarr packet signature or structure: {e}"))?;
 
         if signed_packet.public_key() != expected_pkarr_pubkey {
-            return Err(anyhow::anyhow!("Signed packet public key does not match the signer DID"));
+            return Err(anyhow::anyhow!(
+                "Signed packet public key does not match the key service_id resolves to"
+            ));
         }
 
-        // The whole record, not just its service_id (D-A1-9): the registry
+        // The whole record, not just its service_id: the registry
         // stores and serves this outer copy, and `substrate_id` is what a
         // lookup follows to an address, so anything left uncompared here is
         // rewritable by whoever relays the record.
@@ -202,7 +165,18 @@ impl SignedEndpointInfo {
             return Err(anyhow::anyhow!("pkarr packet does not contain this exact EndpointInfo"));
         }
 
-        Ok(())
+        let now = time::SystemTime::now()
+            .duration_since(time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        if self.info.not_after < now {
+            return Err(anyhow::anyhow!(
+                "endpoint record expired at {}, now {now}",
+                self.info.not_after
+            ));
+        }
+
+        Ok(signed_packet.timestamp())
     }
 }
 
@@ -264,17 +238,6 @@ impl RegistryClient {
         signed_info: &SignedEndpointInfo,
         sync_dht: bool,
     ) -> anyhow::Result<()> {
-        if signed_info.info.delegation.is_some() && self.registry_url.is_none() {
-            // pkarr keys a packet by its signing key, so a delegation-signed
-            // record can only ever land under the instance DID -- never under
-            // the master DID a dependent looks up. There is no DHT-only home
-            // for it.
-            return Err(anyhow::anyhow!(
-                "a delegation-signed endpoint record needs an HTTP registry; the DHT keys records \
-                 by their signing key and cannot hold one under its master DID"
-            ));
-        }
-
         let mut http_success = self.registry_url.is_none();
 
         if let Some(url) = &self.registry_url {
@@ -299,24 +262,21 @@ impl RegistryClient {
             return Err(anyhow::anyhow!("Failed to register endpoint via HTTP registry"));
         }
 
-        // Publish to DHT (fire-and-forget in background) if HTTP succeeded or wasn't
-        // configured
+        // Publish to DHT (fire-and-forget in background) if HTTP succeeded or
+        // wasn't configured. Every record is self-signed under a key that
+        // resolves from its own `service_id`, so unlike A1's committed
+        // design -- where a delegation-signed record could only ever land
+        // under the instance key's own DID on the DHT, never the master's --
+        // this always has a home there.
         if let Some(dht) = &self.dht_client {
-            if signed_info.info.delegation.is_some() {
-                tracing::debug!(
-                    service_id = %signed_info.info.service_id,
-                    "skipping DHT publish for a delegation-signed endpoint record"
-                );
-            } else {
-                tracing::debug!("Publishing to Mainline DHT (background)");
-                let packet_bytes = hex::decode(&signed_info.pkarr_packet_hex)?;
-                let bytes_obj = Bytes::from(packet_bytes);
-                let pubkey = substrate::resolve_did_key(&signed_info.info.service_id)?;
-                let pkarr_pubkey = PublicKey::try_from(pubkey.as_bytes())?;
-                let signed_packet = SignedPacket::from_relay_payload(&pkarr_pubkey, &bytes_obj)?;
+            tracing::debug!("Publishing to Mainline DHT (background)");
+            let packet_bytes = hex::decode(&signed_info.pkarr_packet_hex)?;
+            let bytes_obj = Bytes::from(packet_bytes);
+            let pubkey = substrate::resolve_did_key(&signed_info.info.service_id)?;
+            let pkarr_pubkey = PublicKey::try_from(pubkey.as_bytes())?;
+            let signed_packet = SignedPacket::from_relay_payload(&pkarr_pubkey, &bytes_obj)?;
 
-                publish_dht_packet(dht.clone(), signed_packet, sync_dht, "endpoint info").await;
-            }
+            publish_dht_packet(dht.clone(), signed_packet, sync_dht, "endpoint info").await;
         }
 
         Ok(())
@@ -343,7 +303,7 @@ impl RegistryClient {
                 && response.status().is_success()
                 && let Ok(info) = response.json::<SignedEndpointInfo>().await
             {
-                if let Err(e) = info.verify(RecordTrust::Reading) {
+                if let Err(e) = info.verify() {
                     // FAIL FAST: Don't fall back to DHT if registry returned invalid data
                     return Err(anyhow::anyhow!("Registry returned invalid data for {id}: {e}"));
                 }
@@ -797,7 +757,7 @@ impl SignedMasterAnchor {
 
 #[cfg(test)]
 mod tests {
-    use syneroym_identity::{Identity, delegation::SCOPE_ROUTING};
+    use syneroym_identity::Identity;
 
     use super::*;
 
@@ -810,7 +770,7 @@ mod tests {
             nickname: None,
             is_private: false,
             ttl: None,
-            delegation: None,
+            not_after: u64::MAX / 2, // far future -- not what these tests are about
         }
     }
 
@@ -841,91 +801,49 @@ mod tests {
     }
 
     #[test]
-    fn a_record_keyed_by_its_master_verifies_when_signed_by_a_certified_instance_key() {
-        let master = Identity::generate().unwrap();
-        let instance = Identity::generate().unwrap();
-        let master_did = substrate::derive_did_key(&master.public_key());
-        let cert = DelegationCertificate::issue(
-            &master,
-            instance.public_key(),
-            3600,
-            SCOPE_SERVICE_INSTANCE.to_string(),
-        )
-        .unwrap();
-
-        let signed = sample_endpoint_info(&master_did).sign_as_instance(&instance, cert).unwrap();
-
-        assert_eq!(signed.info.service_id, master_did);
-        assert!(signed.verify(RecordTrust::Publishing).is_ok());
-        assert!(signed.verify(RecordTrust::Reading).is_ok());
-    }
-
-    #[test]
-    fn a_record_keyed_by_a_master_is_rejected_when_signed_by_an_uncertified_key() {
-        let master = Identity::generate().unwrap();
-        let instance = Identity::generate().unwrap();
-        let master_did = substrate::derive_did_key(&master.public_key());
-
-        // No delegation certificate: `verify` treats the signer as the
-        // record's own claimed identity, but the packet is actually signed
-        // by the instance key, not the master's.
-        let signed = sample_endpoint_info(&master_did).sign(&instance).unwrap();
-
-        assert!(signed.verify(RecordTrust::Publishing).is_err());
-    }
-
-    #[test]
-    fn a_record_whose_certificate_names_a_different_master_is_rejected() {
-        let master = Identity::generate().unwrap();
-        let other_master = Identity::generate().unwrap();
-        let instance = Identity::generate().unwrap();
-        let master_did = substrate::derive_did_key(&master.public_key());
-
-        let cert = DelegationCertificate::issue(
-            &other_master,
-            instance.public_key(),
-            3600,
-            SCOPE_SERVICE_INSTANCE.to_string(),
-        )
-        .unwrap();
-
-        let mut info = sample_endpoint_info(&master_did);
-        info.delegation = Some(cert);
-        let signed = info.sign(&instance).unwrap();
-
-        assert!(signed.verify(RecordTrust::Publishing).is_err());
-    }
-
-    #[test]
-    fn a_record_carrying_a_routing_scoped_certificate_is_rejected() {
-        let master = Identity::generate().unwrap();
-        let instance = Identity::generate().unwrap();
-
-        let cert = DelegationCertificate::issue(
-            &master,
-            instance.public_key(),
-            3600,
-            SCOPE_ROUTING.to_string(),
-        )
-        .unwrap();
-
-        let signed = sample_endpoint_info("placeholder").sign_as_instance(&instance, cert).unwrap();
-
-        let err = signed
-            .verify(RecordTrust::Publishing)
-            .expect_err("a routing-scoped certificate must not admit an endpoint record");
-        assert!(err.to_string().contains("scope"));
-    }
-
-    #[test]
-    fn a_self_signed_record_still_verifies() {
+    fn a_self_signed_record_verifies() {
         let identity = Identity::generate().unwrap();
         let did = substrate::derive_did_key(&identity.public_key());
 
         let signed = sample_endpoint_info(&did).sign(&identity).unwrap();
 
-        assert!(signed.verify(RecordTrust::Publishing).is_ok());
-        assert!(signed.verify(RecordTrust::Reading).is_ok());
+        assert!(signed.verify().is_ok());
+    }
+
+    #[test]
+    fn verify_returns_the_packets_own_timestamp() {
+        // `community_registry`'s compare-and-swap needs this to reject a
+        // rollback -- it is the pkarr/BEP44 sequence number, and the only
+        // thing that makes "newer record wins" enforceable without a
+        // second, independently-trackable counter.
+        let identity = Identity::generate().unwrap();
+        let did = substrate::derive_did_key(&identity.public_key());
+
+        let signed = sample_endpoint_info(&did).sign(&identity).unwrap();
+        let ts = signed.verify().expect("a freshly self-signed record must verify");
+
+        let pubkey = substrate::resolve_did_key(&did).unwrap();
+        let pkarr_pubkey = PublicKey::try_from(pubkey.as_bytes()).unwrap();
+        let packet_bytes = hex::decode(&signed.pkarr_packet_hex).unwrap();
+        let packet =
+            SignedPacket::from_relay_payload(&pkarr_pubkey, &Bytes::from(packet_bytes)).unwrap();
+        assert_eq!(ts, packet.timestamp());
+    }
+
+    #[test]
+    fn a_record_is_rejected_when_signed_by_a_key_other_than_its_own_service_id() {
+        let claimed = Identity::generate().unwrap();
+        let actual_signer = Identity::generate().unwrap();
+        let claimed_did = substrate::derive_did_key(&claimed.public_key());
+
+        // The one keying shape this design allows: every record must be
+        // self-signed by the key its own `service_id` resolves to. A member
+        // endpoint record's `service_id` is a member master DID, so this is
+        // exactly the shape a hosting substrate cannot produce -- it never
+        // holds that key (ADR-0020 §3).
+        let signed = sample_endpoint_info(&claimed_did).sign(&actual_signer).unwrap();
+
+        assert!(signed.verify().is_err());
     }
 
     #[test]
@@ -936,109 +854,42 @@ mod tests {
         let mut signed = sample_endpoint_info(&did).sign(&identity).unwrap();
         signed.info.substrate_id = "did:key:zAttacker".to_string();
 
-        // The attack this guards against -- a relay rewriting substrate_id
-        // so a lookup follows it to a host the attacker controls -- is a
-        // read-path attack, so both trust levels must reject it.
-        assert!(signed.verify(RecordTrust::Publishing).is_err());
-        assert!(signed.verify(RecordTrust::Reading).is_err());
+        // The attack this guards against: a relay rewriting substrate_id so
+        // a lookup follows it to a host the attacker controls.
+        assert!(signed.verify().is_err());
     }
 
     #[test]
-    fn rewriting_the_delegation_after_signing_is_rejected() {
-        let master = Identity::generate().unwrap();
-        let instance = Identity::generate().unwrap();
+    fn an_expired_record_is_rejected() {
+        let identity = Identity::generate().unwrap();
+        let did = substrate::derive_did_key(&identity.public_key());
 
-        let cert = DelegationCertificate::issue(
-            &master,
-            instance.public_key(),
-            3600,
-            SCOPE_SERVICE_INSTANCE.to_string(),
-        )
-        .unwrap();
-        let mut signed =
-            sample_endpoint_info("placeholder").sign_as_instance(&instance, cert).unwrap();
+        let mut info = sample_endpoint_info(&did);
+        info.not_after = 1; // long past, regardless of when this test runs
+        let signed = info.sign(&identity).unwrap();
 
-        // A second, independently valid certificate for the same master and
-        // instance, swapped in after signing: the pkarr packet still
-        // verifies cryptographically, but no longer matches the outer
-        // EndpointInfo it is supposed to authenticate.
-        let other_cert = DelegationCertificate::issue(
-            &master,
-            instance.public_key(),
-            7200,
-            SCOPE_SERVICE_INSTANCE.to_string(),
-        )
-        .unwrap();
-        signed.info.delegation = Some(other_cert);
-
-        assert!(signed.verify(RecordTrust::Publishing).is_err());
-        assert!(signed.verify(RecordTrust::Reading).is_err());
-    }
-
-    #[test]
-    fn sign_as_instance_rejects_a_key_the_certificate_does_not_name() {
-        let master = Identity::generate().unwrap();
-        let instance = Identity::generate().unwrap();
-        let other_instance = Identity::generate().unwrap();
-
-        let cert = DelegationCertificate::issue(
-            &master,
-            instance.public_key(),
-            3600,
-            SCOPE_SERVICE_INSTANCE.to_string(),
-        )
-        .unwrap();
-
-        let result = sample_endpoint_info("placeholder").sign_as_instance(&other_instance, cert);
-
-        assert!(result.is_err());
+        let err = signed.verify().expect_err("an expired record must not verify");
+        assert!(err.to_string().contains("expired"));
     }
 
     #[tokio::test]
-    async fn a_delegation_signed_record_cannot_be_registered_without_an_http_registry() {
-        let master = Identity::generate().unwrap();
-        let instance = Identity::generate().unwrap();
-
-        let cert = DelegationCertificate::issue(
-            &master,
-            instance.public_key(),
-            3600,
-            SCOPE_SERVICE_INSTANCE.to_string(),
-        )
-        .unwrap();
-        let signed = sample_endpoint_info("placeholder").sign_as_instance(&instance, cert).unwrap();
+    async fn a_self_signed_record_registers_to_the_dht_with_no_http_registry_configured() {
+        // Reverses an earlier restriction on this design: a delegation-
+        // signed record used to be keyed by a master DID but signed by a
+        // different (instance) key, so pkarr -- which keys a packet by its
+        // *signing* key -- had no DHT slot for it. Every record is now
+        // self-signed by the key its own `service_id` resolves to, so that
+        // mismatch cannot occur and every record has a DHT home.
+        let identity = Identity::generate().unwrap();
+        let did = substrate::derive_did_key(&identity.public_key());
+        let signed = sample_endpoint_info(&did).sign(&identity).unwrap();
 
         let client = RegistryClient::new(true, None);
-        let err = client
-            .register(&signed, false)
-            .await
-            .expect_err("a delegation-signed record needs an HTTP registry");
-        assert!(err.to_string().contains("HTTP registry"));
-    }
-
-    #[test]
-    fn an_expired_certificate_blocks_publishing_but_not_reading() {
-        let master = Identity::generate().unwrap();
-        let instance = Identity::generate().unwrap();
-
-        // A genuinely lapsed certificate, not a never-valid one: a
-        // zero-length window (`expires_in_secs = 0`) is caught by
-        // `verify_chain`'s non-positive-window check regardless of trust
-        // level (D-A1-10's read/publish split only ever waives wall-clock
-        // expiry), so this test needs a certificate that really was live for
-        // a moment and has since passed.
-        let cert = DelegationCertificate::issue(
-            &master,
-            instance.public_key(),
-            1,
-            SCOPE_SERVICE_INSTANCE.to_string(),
-        )
-        .unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(1100));
-        let signed = sample_endpoint_info("placeholder").sign_as_instance(&instance, cert).unwrap();
-
-        assert!(signed.verify(RecordTrust::Publishing).is_err());
-        assert!(signed.verify(RecordTrust::Reading).is_ok());
+        // `sync_dht: false` backgrounds the real network publish (fire-and-
+        // forget), so this returns immediately without needing live DHT
+        // connectivity -- it is `register`'s early HTTP-registry-required
+        // refusal this test disproves, not the DHT publish itself.
+        assert!(client.register(&signed, false).await.is_ok());
     }
 
     #[test]

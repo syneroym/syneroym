@@ -114,7 +114,7 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
         mechanisms: mechanisms.clone(),
         is_private: false,
         ttl: None,
-        delegation: None,
+        not_after: u64::MAX / 2,
     };
     let signed_info = info_reg.sign(&app_identity).unwrap();
 
@@ -305,7 +305,7 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
                         mechanisms: mechanisms_clone.clone(),
                         is_private: false,
                         ttl: None,
-                        delegation: None,
+                        not_after: u64::MAX / 2,
                     };
                     let signed_info = info_reg.sign(&churn_identity).unwrap();
 

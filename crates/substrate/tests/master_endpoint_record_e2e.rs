@@ -1,22 +1,42 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! Slice A1: endpoint records published under the member master DID
-//! (ADR-0020 §6), proven across two genuinely independent
-//! `syneroym-substrate` instances -- the mapping this slice exists to build,
-//! since nothing before it lets a dependent turn a member master DID into a
-//! network address at all.
+//! Endpoint records published under the member master DID (ADR-0020 §6),
+//! proven across two genuinely independent `syneroym-substrate` instances --
+//! the mapping this slice exists to build, since nothing before it lets a
+//! dependent turn a member master DID into a network address at all.
 //!
-//! Node A hosts the shared community registry (D-A1-2: a delegation-signed
-//! record has no DHT-only home under its master DID, so master-DID
-//! resolution requires a configured HTTP registry); node B points at it.
-//! A member master `M` is certified and deployed on node B; its record --
-//! built and signed by the substrate itself (D-A1-3), never by an operator
-//! -- is resolved by `M`, not by node B's own DID, proving the master-DID
-//! ->  address mapping works end to end. `M` is then relocated to node A: a
-//! clean relocation (`undeploy` before the second `deploy`, deliberately --
-//! leaving both deployed would create D-A1-11's two-publisher flap, which
-//! this fixture does not exercise), after which the same DID resolves to
-//! node A's address instead, with no operator republish action -- the
-//! reference scenario's step 4.
+//! **The record is signed by the deployer's own master key, never by the
+//! hosting substrate** -- the substrate holds only a delegated instance key
+//! for the member it hosts (ADR-0020 §3) and cannot produce this signature.
+//! So this fixture plays the deployer's role directly: it signs the
+//! `EndpointInfo` itself and hands the finished, self-verifying blob to
+//! `deploy` as `registry_certificate`, exactly as `roymctl svc deploy
+//! --master` does. The substrate's whole job is to store that blob and
+//! replay it verbatim -- proven here by asserting the looked-up record's
+//! signed bytes are byte-identical to what was signed, not merely that some
+//! record exists.
+//!
+//! Every record is now self-signed by the key its own `service_id` resolves
+//! to (no more instance-vs-master mismatch), so unlike the design this
+//! fixture originally proved, master-DID resolution no longer needs a
+//! configured HTTP registry -- it works on the DHT too. This fixture keeps
+//! its HTTP registry regardless, since only the HTTP registry is not a real
+//! network dependency in a `cargo test` sandbox.
+//!
+//! A member master `M` is deployed on node B; its record is resolved by
+//! `M`, not by node B's own DID, proving the master-DID -> address mapping
+//! works end to end. `M` is then relocated to node A: a clean relocation
+//! (`undeploy` before the second `deploy`, deliberately -- leaving both
+//! deployed would create the two-publisher flap the compare-and-swap
+//! admission rule exists to bound, which this fixture does not exercise),
+//! after which the same DID resolves to node A's address instead, with no
+//! operator republish action -- the reference scenario's step 4.
+//!
+//! An instance certificate is still minted and installed on every deploy
+//! here, and still asserted to differ per node: that mechanism is unrelated
+//! to the endpoint record now, but it is what `orchestration.rs`'s
+//! install-time verification requires whenever `instance_certificate` is
+//! `Some`, and what `proxy.rs`'s outbound-call authentication and
+//! `runtime.rs`'s expiry-warning sweep actually consume it for.
 //!
 //! Uses its own `Node`, not `tests/common`'s `SubstrateTestContext` (for the
 //! same reason `instance_identity_e2e.rs`'s own module doc gives -- two live
@@ -25,7 +45,7 @@
 //! and a shared relay, so node B's own self-published record and node A's
 //! registry are the same registry a real cross-node lookup needs.
 
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ed25519_dalek::VerifyingKey;
 use reqwest::Client as HttpClient;
@@ -36,7 +56,7 @@ use syneroym_core::{
         ClientGatewayRole, CoordinatorIrohConfig, CoordinatorRole, IrohParentConfig, LogTarget,
         ServiceRegistryRole, SubstrateConfig,
     },
-    dht_registry::{EndpointInfo, EndpointType, RecordTrust, RegistryClient},
+    dht_registry::{DEFAULT_ENDPOINT_NOT_AFTER_SECS, EndpointInfo, EndpointType, RegistryClient},
 };
 use syneroym_identity::{
     DelegationCertificate, Identity, delegation::SCOPE_SERVICE_INSTANCE, substrate,
@@ -162,10 +182,16 @@ impl Node {
 }
 
 /// Mirrors `instance_identity_e2e.rs`'s own `bare_tcp_manifest`: a minimal
-/// TCP service carrying an instance certificate, exercising only the
-/// orchestrator's deploy/instance-identity surface and the substrate's own
-/// endpoint-publishing hook -- never actually dialed.
-fn bare_tcp_manifest(port: u16, instance_certificate: Option<String>) -> DeployManifest {
+/// TCP service, exercising only the orchestrator's deploy/instance-identity
+/// surface and the substrate's own endpoint-publishing hook -- never
+/// actually dialed. `registry_certificate` is the deployer-signed
+/// `EndpointInfo` (serialized), the only way an endpoint record ever gets
+/// published now that the substrate cannot sign one itself.
+fn bare_tcp_manifest(
+    port: u16,
+    registry_certificate: Option<String>,
+    instance_certificate: Option<String>,
+) -> DeployManifest {
     DeployManifest {
         config: ServiceConfig {
             env: vec![],
@@ -183,9 +209,17 @@ fn bare_tcp_manifest(port: u16, instance_certificate: Option<String>) -> DeployM
                 port,
             }],
         }),
-        registry_certificate: None,
+        registry_certificate,
         instance_certificate,
     }
+}
+
+fn far_future_not_after() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        .saturating_add(DEFAULT_ENDPOINT_NOT_AFTER_SECS)
 }
 
 async fn deploy(
@@ -262,13 +296,36 @@ async fn a_member_master_did_resolves_to_an_address_and_follows_the_member_acros
     )
     .unwrap();
 
+    // The deployer's own job now: sign the endpoint record with the member
+    // master key. The substrate never sees this key and could not produce
+    // this signature itself (ADR-0020 §3).
+    let record_b = EndpointInfo {
+        service_id: member_master_did.clone(),
+        substrate_id: node_b.did().to_string(),
+        endpoint_type: EndpointType::Service,
+        mechanisms: vec![],
+        nickname: None,
+        is_private: false,
+        ttl: None,
+        not_after: far_future_not_after(),
+    }
+    .sign(&member_master)
+    .expect("failed to sign the member's endpoint record with its master key");
+
     deploy(
         &operator_b,
         &member_master_did,
-        bare_tcp_manifest(41001, Some(cert_b.to_json().unwrap())),
+        bare_tcp_manifest(
+            41001,
+            Some(serde_json::to_string(&record_b).unwrap()),
+            Some(cert_b.to_json().unwrap()),
+        ),
     )
     .await
-    .expect("deploy on node B with a valid instance certificate must succeed");
+    .expect(
+        "deploy on node B with a master-signed record and a valid instance certificate must \
+         succeed",
+    );
 
     // Resolve, not just read -- the assertion this slice exists for.
     let signed = registry_client
@@ -276,11 +333,6 @@ async fn a_member_master_did_resolves_to_an_address_and_follows_the_member_acros
         .await
         .expect("lookup(resolve = true) for the member master DID must succeed");
     assert_eq!(signed.info.service_id, member_master_did);
-    assert_eq!(
-        signed.info.delegation.as_ref().map(|c| c.temporary_did.clone()),
-        Some(instance_identity_b.instance_did.clone()),
-        "the record's certificate must name node B's derived instance key"
-    );
 
     // `verify` re-checks the whole record against the signed pkarr packet
     // (D-A1-9), and `resolve = true` deliberately overwrites `mechanisms`
@@ -291,9 +343,11 @@ async fn a_member_master_did_resolves_to_an_address_and_follows_the_member_acros
         .lookup(&member_master_did, false)
         .await
         .expect("direct (non-resolving) lookup for the member master DID must succeed");
-    assert!(
-        signed_direct.verify(RecordTrust::Publishing).is_ok(),
-        "the substrate-built record must verify under the strict, admission-time trust chain"
+    assert!(signed_direct.verify().is_ok(), "the deployer-signed record must verify");
+    assert_eq!(
+        signed_direct.pkarr_packet_hex, record_b.pkarr_packet_hex,
+        "the substrate must have stored and replayed the deployer-signed bytes verbatim -- it \
+         holds no key that could ever re-sign this record (ADR-0020 §3)"
     );
 
     let node_b_substrate_record = registry_client
@@ -349,13 +403,40 @@ async fn a_member_master_did_resolves_to_an_address_and_follows_the_member_acros
         SCOPE_SERVICE_INSTANCE.to_string(),
     )
     .unwrap();
+
+    // A fresh record, signed now rather than reused from the deploy on node
+    // B: it names node A as `substrate_id`, and its pkarr/BEP44 timestamp
+    // must be strictly newer than `record_b`'s for the registry's
+    // compare-and-swap admission to accept it -- `EndpointInfo::sign` stamps
+    // `Timestamp::now()`, so real elapsed wall-clock time (the RPC round
+    // trips above) already guarantees that ordering without any explicit
+    // wait.
+    let record_a = EndpointInfo {
+        service_id: member_master_did.clone(),
+        substrate_id: node_a.did().to_string(),
+        endpoint_type: EndpointType::Service,
+        mechanisms: vec![],
+        nickname: None,
+        is_private: false,
+        ttl: None,
+        not_after: far_future_not_after(),
+    }
+    .sign(&member_master)
+    .expect("failed to sign the relocated record with the same master key");
+
     deploy(
         &operator_a,
         &member_master_did,
-        bare_tcp_manifest(41002, Some(cert_a.to_json().unwrap())),
+        bare_tcp_manifest(
+            41002,
+            Some(serde_json::to_string(&record_a).unwrap()),
+            Some(cert_a.to_json().unwrap()),
+        ),
     )
     .await
-    .expect("deploy on node A with a fresh certificate from the same master must succeed");
+    .expect(
+        "deploy on node A with a fresh record and certificate from the same master must succeed",
+    );
 
     let signed_after = registry_client
         .lookup(&member_master_did, true)
@@ -366,9 +447,9 @@ async fn a_member_master_did_resolves_to_an_address_and_follows_the_member_acros
         "service_id -- the member master DID -- is unchanged by relocation"
     );
     assert_eq!(
-        signed_after.info.delegation.as_ref().map(|c| c.temporary_did.clone()),
-        Some(instance_identity_a.instance_did.clone()),
-        "the record now names node A's derived instance key"
+        signed_after.info.substrate_id,
+        node_a.did(),
+        "the record now points at node A, the substrate the member actually moved to"
     );
 
     let resolved_addr_after = resolve_iroh_addr(&registry_client, &member_master_did)
@@ -386,8 +467,10 @@ async fn a_member_master_did_resolves_to_an_address_and_follows_the_member_acros
         "relocation must actually move the resolved address, with no operator republish action"
     );
 
-    // Negative, failure-matrix row 4, over the wire: a record keyed by the
-    // master but signed by a key holding no certificate from it at all.
+    // Negative, failure-matrix row 4, over the wire: a record claiming the
+    // master DID as its `service_id` but signed by an unrelated key -- the
+    // one keying shape verification can ever reject now that a record
+    // carries no certificate of its own.
     let uncertified = Identity::generate().unwrap();
     let forged = EndpointInfo {
         service_id: member_master_did.clone(),
@@ -397,7 +480,7 @@ async fn a_member_master_did_resolves_to_an_address_and_follows_the_member_acros
         nickname: None,
         is_private: false,
         ttl: None,
-        delegation: None,
+        not_after: far_future_not_after(),
     }
     .sign(&uncertified)
     .expect("failed to sign forged record");

@@ -553,7 +553,7 @@ async fn register_app_in_registry(
         mechanisms: substrate_mechanisms,
         is_private: false,
         ttl: None,
-        delegation: None,
+        not_after: u64::MAX / 2,
     };
     let info_value = serde_json::to_value(&info).unwrap();
     let _canonical_value = substrate::canonicalize_json_value(&info_value);

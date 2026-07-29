@@ -74,7 +74,7 @@ pub async fn run_scenario() -> Result<()> {
         mechanisms,
         is_private: false,
         ttl: None,
-        delegation: None,
+        not_after: u64::MAX / 2,
     };
     let signed_info = info.sign(&app_identity).unwrap();
 

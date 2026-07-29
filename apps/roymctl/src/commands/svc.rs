@@ -6,12 +6,12 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use chrono::DateTime;
 use clap::Subcommand;
-use syneroym_core::dht_registry::{EndpointInfo, EndpointType};
+use syneroym_core::dht_registry::{DEFAULT_ENDPOINT_NOT_AFTER_SECS, EndpointInfo, EndpointType};
 use syneroym_identity::{DelegationCertificate, Identity, substrate};
 
 use super::member_identity;
@@ -37,23 +37,25 @@ pub enum SvcCommands {
         /// TCP host:port for an existing service (e.g. "localhost:8080")
         #[arg(long)]
         tcp: Option<String>,
-        /// Optional identity name for signing a registry certificate. This
-        /// is the self-signed publish route for a service with no member
-        /// master. With `--master` or `--instance-certificate` the substrate
-        /// publishes the record itself, keyed by the member master DID
-        /// (D-A1-3); this blob then carries operator metadata (nickname,
-        /// privacy) only.
+        /// Optional identity name for signing the published endpoint
+        /// record. The self-signed publish route for a service with no
+        /// member master -- named identity's own DID must equal `--svc-id`.
+        /// With `--master`, that identity signs instead: a member's
+        /// endpoint record must be signed by its master key (ADR-0020 §3),
+        /// since the hosting substrate never holds it and cannot produce
+        /// this signature itself.
         #[arg(long)]
         identity: Option<String>,
         /// Optional nickname for the registry
         #[arg(long)]
         nickname: Option<String>,
         /// Name of a local member master identity (ADR-0020 §1). When
-        /// present, `--svc-id` must equal that identity's DID; the substrate
-        /// is queried for the instance key it would derive, a
-        /// `service-instance` certificate is issued and installed at
-        /// deploy. Absent leaves the service its own master, exactly as
-        /// before this flag existed.
+        /// present, `--svc-id` must equal that identity's DID. Signs the
+        /// published endpoint record (above); separately, the substrate is
+        /// queried for the instance key it would derive and a
+        /// `service-instance` certificate is issued and installed for
+        /// outbound-call authentication. Absent leaves the service its own
+        /// master, exactly as before this flag existed.
         #[arg(long, conflicts_with = "instance_certificate")]
         master: Option<String>,
         /// Path to a JSON `DelegationCertificate` already minted with
@@ -119,12 +121,14 @@ pub async fn handle(
         } => {
             let ifaces: Vec<String> = interfaces.split(',').map(|s| s.trim().to_string()).collect();
 
-            // The record the substrate stores at deploy. Whenever an
-            // instance certificate is involved the substrate re-signs its
-            // own record with the certified instance key and reads only
-            // this one's nickname and privacy (D-A1-4), so any key at all is
-            // enough to carry it -- `--identity` is the no-master path's
-            // actual self-signed publish route.
+            // The record the substrate publishes and replays verbatim: it
+            // holds no key of its own that could ever produce this
+            // signature for a `--master` deploy (ADR-0020 §3), so this is
+            // the *only* place a member's endpoint record is ever signed,
+            // and it must be signed on every `--master` deploy, not only
+            // when a nickname is given -- unlike A1's committed design,
+            // where the substrate re-signed with a delegated instance key
+            // and this blob's own signature was never trusted.
             //
             // Bound owned, chosen by reference: `Identity` is not `Clone`,
             // and the `--master` arm below needs the same key again.
@@ -136,34 +140,32 @@ pub async fn handle(
                 Some(name) => Some(member_identity::resolve_member_master(dir, name)?),
                 None => None,
             };
-            // No master key and no named identity, but a nickname to carry:
-            // sign the envelope with a throwaway key. There is no operator
-            // key to reach for -- without `--as`, `client_for` mints a fresh
-            // ephemeral one rather than loading a file -- and the substrate
-            // discards this signature anyway (D-A1-8).
-            let envelope_identity =
-                match (nickname, &named_identity, &master_identity, instance_certificate) {
-                    (Some(_), None, None, Some(_)) => Some(Identity::generate()?),
-                    _ => None,
-                };
 
-            let signing_identity: Option<&Identity> = match (&named_identity, nickname) {
-                (Some(id), _) => Some(id),
-                (None, Some(_)) => master_identity.as_ref().or(envelope_identity.as_ref()),
-                (None, None) => None,
-            };
+            // `--identity` wins if both are somehow given (clap does not
+            // forbid it, since neither conflicts with the other); otherwise
+            // `--master` is the record's signer. Neither present means
+            // `--instance-certificate` alone: there is no local key that
+            // could sign a record which would verify under `svc_id`, so
+            // deploy proceeds without one.
+            let signing_identity: Option<&Identity> =
+                named_identity.as_ref().or(master_identity.as_ref());
 
-            // `--nickname` alone -- none of `--identity`, `--master`, or
-            // `--instance-certificate` -- has nothing to sign the envelope
-            // with, so the nickname is silently dropped (pre-A1 behaviour,
-            // unchanged). Warn rather than fail: the deploy itself still
-            // succeeds, and a silently-lost nickname is confusing to debug.
+            // Nothing to sign with, but a nickname was given: it is silently
+            // dropped (pre-A1 behaviour, unchanged). Warn rather than fail:
+            // the deploy itself still succeeds, and a silently-lost nickname
+            // is confusing to debug.
             if nickname.is_some() && signing_identity.is_none() {
                 eprintln!(
-                    "Warning: --nickname has no effect without --identity, --master, or \
-                     --instance-certificate -- it will not be published."
+                    "Warning: --nickname has no effect without --identity or --master -- it will \
+                     not be published."
                 );
             }
+
+            let not_after = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
+                .saturating_add(DEFAULT_ENDPOINT_NOT_AFTER_SECS);
 
             let cert = match signing_identity {
                 Some(id) => Some(
@@ -175,7 +177,7 @@ pub async fn handle(
                         nickname: nickname.clone(),
                         is_private: false,
                         ttl: None,
-                        delegation: None,
+                        not_after,
                     }
                     .sign(id)?,
                 ),
@@ -379,9 +381,11 @@ mod tests {
         assert!(identity.is_none());
     }
 
-    /// D-A1-8's third shape: no `--as` is required to carry a nickname
-    /// alongside a pre-minted `--instance-certificate` -- the envelope is
-    /// signed with a throwaway key rather than needing an operator identity.
+    /// `--instance-certificate` alone (no `--identity`/`--master`) parses
+    /// fine with a `--nickname`, even though there is no local key that
+    /// could sign a record verifying under `svc_id` -- the nickname is
+    /// silently dropped with a warning at runtime, not rejected at parse
+    /// time.
     #[test]
     fn deploy_with_an_instance_certificate_and_a_nickname_needs_no_identity_flag() {
         let cmd = Wrapper::try_parse_from([

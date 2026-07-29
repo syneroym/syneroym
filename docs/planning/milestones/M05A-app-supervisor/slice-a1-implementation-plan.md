@@ -85,6 +85,46 @@ inaccurately or asserts a property it does not have (§6). One of them (§6
 item 6) is a real, currently-broken behavior that Slice A0 shipped without
 noticing.
 
+**A fifth pass reopened the design itself, on branch, before merge.** An
+operator question surfaced a load-bearing false premise in D-A1-2: it treated
+"the hosting substrate signs the record" as fixed, when nothing requires it —
+the *deployer* already holds the member master key and can sign the record
+directly. That single change collapses most of what this slice built to make
+delegation-signed records work at all:
+
+- **D-A1-2 reverses.** Every record is now self-signed by the key its own
+  `service_id` resolves to, so the DHT-cannot-carry-it restriction this
+  decision existed to contain no longer applies — every record has a DHT home.
+- **D-A1-1's second keying shape, D-A1-5, D-A1-6, and D-A1-10 are deleted.**
+  A record carries no certificate to check, expire, or revoke; verification is
+  the single self-signed check every record (member or not) now shares.
+- **D-A1-3 and D-A1-4 survive with a narrower job**: the substrate stores and
+  replays the deployer-signed blob verbatim; it never builds or signs one.
+- **D-A1-8 changes**: `--master` always signs the record now, not only when
+  `--nickname` is given, and the ephemeral-key envelope shape it used to fall
+  back to is gone — a record signed by a throwaway key can never verify under
+  the master's own `service_id`, so there is nothing left for that shape to
+  do.
+- **Two new decisions close what the reversal opens up.** Without the
+  substrate re-signing on every heartbeat, a relocated-away substrate could
+  keep replaying its last blob forever with nothing to stop it — a real
+  version of the flap D-A1-11 first described. **D-A1-14** adds a
+  last-writer-wins compare-and-swap on the record's own pkarr/BEP44 timestamp,
+  uniformly at the DHT and the HTTP registry, so a strictly newer
+  master-signed record always displaces an older one and a rollback is
+  refused at both stores. **D-A1-15** adds `EndpointInfo.not_after`, a
+  generous freshness backstop for the one case the timestamp alone does not
+  cover: the signer stopping renewal altogether.
+- **D-A1-7, D-A1-9, D-A1-12, D-A1-13 are untouched** — all four are anchor-side
+  or whole-record-authentication decisions, orthogonal to who signs the
+  endpoint record.
+
+Net effect: less code than the fourth pass shipped, not more, and one
+deferred-backlog row this slice opened (§7) closes outright — *master-DID
+resolution requires an HTTP registry* — rather than needing a follow-up
+slice to close it. Two more rows narrow without closing; see §7 for exactly
+what changed and what is honestly still open.
+
 **All line anchors are against `f50febd`** (`feat(identity): stable member
 identity`, #109 -- the squash that landed A0 on `main`). Planning for this slice
 was done on the pre-squash branch tip `f7d8d0a`, which is no longer an ancestor
@@ -107,18 +147,28 @@ A0 made a member's identity its **master DID**, so a service keeps the same
 identity when it is restarted or moved. But nothing can turn a master DID into
 a network address. An endpoint record is verified against the key resolved from
 the `service_id` it is keyed under, and the hosting substrate holds only a
-*delegated instance key*, so it cannot publish under the master. A1 adds the
-second acceptance path from ADR-0020 §6: a record keyed by a master DID is
-admitted when it is signed by an instance key that presents a valid
-`service-instance` certificate from that master. It also builds the thing that
-produces such a record — **there is no substrate-side publish path for service
-endpoint records today at all** (§6 item 5). Today the substrate only replays a
-file the deploying operator signed, on an hourly heartbeat.
+*delegated instance key*, never the master's — so the substrate cannot sign a
+record that verifies under the master. A1 builds the thing that produces such
+a record — **there is no publish path for service endpoint records under a
+master DID today at all** (§6 item 5). Today the substrate only replays a file
+the deploying operator signed, on an hourly heartbeat.
 
-**The load-bearing constraint is that BEP0044/pkarr keys a record by its
-signing key.** A packet signed by the instance key can only live at the
-instance key's public key, never at the master's. So §6's keying works on the
-HTTP registry and *cannot* work on the DHT. See D-A1-2.
+**Resolved (fifth pass, per ADR-0020 §6): the deployer signs the record
+directly, with the master key it already holds.** The hosting substrate never
+builds, signs, or modifies an endpoint record for a member it hosts — it
+stores whatever finished, self-verifying blob the deploy call carried, and
+replays those exact bytes on every heartbeat. Verification is the ordinary
+self-signed check (the key `service_id` resolves to must be the key that
+signed the packet), applied uniformly to every record. There is no
+certificate on the record, and nothing for the registry to check at admission
+beyond that one signature.
+
+An earlier version of this slice had the *substrate* sign, using its
+delegated instance key, with the record carrying a `DelegationCertificate`
+binding that key to the master. §1's history below keeps that reasoning
+visible rather than erasing it, since three review passes were spent getting
+it right before the premise itself turned out to be avoidable — but the
+design that shipped is the one above.
 
 ---
 
@@ -126,7 +176,16 @@ HTTP registry and *cannot* work on the DHT. See D-A1-2.
 
 ### D-A1-1 — One verification function, two keying shapes
 
-**Resolved: rewrite `SignedEndpointInfo::verify`
+**Superseded (fifth pass).** The second keying shape below (`Some(cert)`) is
+gone: a record carries no certificate at all now, so there is exactly **one**
+keying shape — the `None` row, applied unconditionally. `verify` no longer
+takes a trust-level argument (D-A1-10, below, is what that argument existed
+for, and it is gone too). What's still true: this remains one verification
+function with the same two production consumers named below, and D-A1-9's
+whole-record comparison (not just `service_id`) still applies. Kept for the
+reasoning that carries forward.
+
+**Resolved (original): rewrite `SignedEndpointInfo::verify`
 ([dht_registry.rs:103-156](../../../../crates/core/src/dht_registry.rs#L103)).
 Do not add a second verifier.**
 
@@ -169,7 +228,17 @@ Two things follow:
 
 ### D-A1-2 — The DHT cannot carry a delegation-signed record, and that must fail loudly, not silently
 
-**Resolved: a delegation-signed record publishes to the HTTP registry only.
+**Reversed (fifth pass).** This whole decision was a consequence of the
+substrate signing with a delegated instance key while the record was keyed by
+the master DID — a mismatch pkarr's signer-keyed storage cannot carry. With
+the deployer signing directly, the signing key and the record's key are
+always the same, so the mismatch cannot occur: **every record now has a DHT
+home**, and `register`'s HTTP-registry-required refusal is deleted along with
+the DHT-skip branch. Kept for the reasoning that carries forward: pkarr keys a
+published packet by its signing key, full stop, and that fact is still what
+makes the design work now, not what constrains it.
+
+**Resolved (original): a delegation-signed record publishes to the HTTP registry only.
 The DHT leg is skipped with a `debug!`, and `register` returns an error when
 there is no HTTP registry to publish it to.**
 
@@ -289,9 +358,15 @@ follows automatically. This is the mechanism the slice exists for, so §5.7
 tests it through `lookup(resolve = true)` and `resolve_iroh_addr`, not by
 reading record fields.
 
-### D-A1-5 — An expired certificate publishes nothing
+### D-A1-5 — An expired certificate publishes nothing (deleted, fifth pass)
 
-**Resolved: skip and warn.** Same posture as A0 took on the proxy's
+**No longer applicable.** A record carries no certificate to expire. What
+replaces this concern is D-A1-15: the record's own `not_after`, checked the
+same way — a record that fails to verify (now including an elapsed
+`not_after`) is skipped and warned, never force-published. Body kept for the
+superseded reasoning.
+
+**Resolved (original): skip and warn.** Same posture as A0 took on the proxy's
 presentation arm ([proxy.rs:405-422](../../../../crates/router/src/proxy.rs#L405)):
 publishing a record that no verifier accepts is worse than publishing nothing.
 There is no fallback to a self-signed record — the substrate has no master key,
@@ -303,9 +378,17 @@ the previous record carries the *same* certificate, so it stops verifying at
 the same moment. What actually bounds the exposure is D-A1-10 plus the
 registry's TTL — see there.
 
-### D-A1-6 — Revocation is checked at admission, not at lookup
+### D-A1-6 — Revocation is checked at admission, not at lookup (deleted, fifth pass)
 
-**Resolved: a best-effort, registry-local revocation check in
+**No longer applicable.** With no certificate on the record, there is no
+instance key named on it to check against `revoked_keys` at admission —
+revocation is now purely what it already was for every other purpose: a
+handshake-time check on the connection a caller presents, per this decision's
+own closing paragraph below. Body kept for the superseded reasoning; the
+honest-revocation-scope correction to ADR-0020 §6 that this decision produced
+carries forward unchanged into the amended §6.
+
+**Resolved (original): a best-effort, registry-local revocation check in
 `register_endpoint`. Nothing added to `verify` and nothing added to the
 resolution path.**
 
@@ -423,7 +506,20 @@ destination until an anchor exists.
 
 ### D-A1-8 — `roymctl svc deploy`: three shapes, not two
 
-**Resolved: keep `--identity`, change what it is for, and give all three
+**Revised (fifth pass).** The third row below — `--instance-certificate`
+signing with a fresh ephemeral key — is gone. It relied on the substrate
+re-signing and discarding the outer signature (D-A1-4's old job); with no
+re-signing, a record signed by a throwaway key can never verify under
+`service_id` and would never be replayed, so the shape bought nothing under
+the new design and is deleted rather than kept as dead capability. The
+`--master` row changes too: it now signs **unconditionally**, not only when
+`--nickname` is given, because it is the *only* way a member's record is ever
+produced — not an optional metadata carrier. Concretely: `signing_identity`
+collapses from a three-armed match to
+`named_identity.as_ref().or(master_identity.as_ref())`. Body kept for the
+reasoning that still applies to the surviving two shapes.
+
+**Resolved (original): keep `--identity`, change what it is for, and give all three
 deploy shapes a way to carry a nickname.**
 
 Today `--nickname` is only read inside `if let Some(name) = identity`
@@ -515,9 +611,18 @@ which runs **after** the DHT backfill `register` call
 ([:312](../../../../crates/core/src/dht_registry.rs#L312)) — so no mutated
 record is ever re-verified. Confirmed, not assumed.
 
-### D-A1-10 — Certificate expiry is checked when publishing, not when reading
+### D-A1-10 — Certificate expiry is checked when publishing, not when reading (deleted, fifth pass)
 
-**New, from review point 2. This is the change that keeps A1 from turning a
+**No longer applicable.** There is no certificate on the record to have an
+expiry, and `verify` no longer takes a trust-level argument at all — every
+call site uses the single `verify()`. The cliff this decision existed to
+avoid is real again in a different shape, and D-A1-15 is its replacement:
+`not_after` is checked uniformly (no publish/read split), but is set
+generously enough that the routine case — a signer that renews on a normal
+cadence — never gets near it. Body kept for the reasoning that carries
+forward into D-A1-15's own rationale.
+
+**New (original), from review point 2. This is the change that keeps A1 from turning a
 missed renewal into a name-resolution outage.**
 
 `RegistryClient::lookup`'s HTTP branch calls `info.verify()` and returns `Err`
@@ -614,7 +719,19 @@ it, with no grace period at all.
 
 ### D-A1-11 — Two live publishers under one master: the heartbeat changes the race
 
-**New, from review point 6. Not fixed in A1; named, tested around, and given a
+**Narrowed (fifth pass) rather than resolved.** D-A1-14's compare-and-swap
+closes the flap's *symmetric* form: once the master signs a strictly newer
+record for the new placement, the old substrate's replayed heartbeat — same
+bytes, same timestamp, forever — is rejected as stale at both stores, not
+merely raced against. What D-A1-14 does not close: the old substrate is still
+*trying* to publish, and it does not know it has lost the race, so the flap
+this decision names becomes "one silently-failing publisher plus one
+succeeding one" instead of "two nodes alternately winning." Detecting and
+stopping the losing publisher from trying at all still needs a placement view
+neither this slice nor D-A1-14 has — the backlog row narrows rather than
+closes. Body kept for the reasoning that still applies to the residual case.
+
+**New (original), from review point 6. Not fixed in A1; named, tested around, and given a
 backlog row.**
 
 ADR-0020 §6 and task.md both argue that one master per member means at most one
@@ -818,6 +935,70 @@ never an automatic one.
 `signed.payload.timestamp` and expects `Err`, which it now gets from the
 equality check rather than the timestamp check.
 
+### D-A1-14 — New (fifth pass). A monotonic timestamp, uniformly enforced at the DHT and the HTTP registry
+
+**Resolved: `SignedEndpointInfo::verify` returns the pkarr packet's own
+signed timestamp; the registry admits a record only if that timestamp is
+strictly newer than what is stored, or equal and byte-identical.**
+
+Once the substrate stops re-signing, the record it replays on every heartbeat
+is frozen — the exact bytes handed to it at deploy. That is what makes a
+rollback attack against the *registry* newly meaningful in a way it was not
+before: a substrate the member has moved away from can keep POSTing that same
+frozen blob forever, and the registry's plain `DashMap::insert`
+([registry.rs:223](../../../../crates/community_registry/src/registry.rs#L223)
+in the pre-fifth-pass tree) accepts whatever arrives last with no ordering
+check at all. The DHT already does not have this hole — `mainline`'s own
+server refuses a `put` whose sequence number is lower than the one it holds —
+but `RegistryClient::lookup` tries the HTTP registry first, so the weaker of
+the two stores is the one that actually answers a lookup.
+
+The fix reuses the number mainline already trusts rather than inventing a
+second one: pkarr signs `<timestamp><packet>`, and that timestamp *is*
+BEP44's `seq`. It is already inside the signed bytes (unforgeable without the
+signing key) and already the number the DHT compares. Two new fields would
+give two numbers that could disagree; one field, read out of the packet
+`verify` already parses, cannot.
+
+The registry's own admission rule mirrors mainline's, including the case that
+would be easy to get wrong: an **equal** timestamp with byte-identical bytes
+must succeed as a refresh (it resets the TTL clock), not fail as a conflict —
+the substrate replays the identical frozen blob every heartbeat now, and
+rejecting that would mean the record simply expires two hours after every
+deploy, never refreshed again. Equal-but-different is rejected, same as
+older: two records claiming the same instant cannot be resolved by preferring
+one arbitrarily. `DashMap::entry` is used rather than a read followed by a
+write, so two concurrent refreshes cannot interleave into the older one
+landing last.
+
+Applied identically to master-anchor registration for consistency
+(`MasterAnchorPayload.timestamp`, already authenticated as equal to the
+packet's own timestamp by D-A1-13's whole-payload check, serves as the same
+CAS key with no new field).
+
+### D-A1-15 — New (fifth pass). `EndpointInfo.not_after`: a generous freshness backstop, not the sharp control
+
+**Resolved: a required `not_after: u64` (Unix seconds) field, checked by
+`verify` uniformly — no publish/read split, unlike D-A1-10's now-deleted
+certificate-expiry split.**
+
+D-A1-14's timestamp ordering is the sharp control for the case it covers — a
+member that actually moves. It does nothing for the case where a signer stops
+renewing *at all*: a lost master key, a decommissioned member whose last
+substrate just keeps heartbeating the same never-superseded blob forever.
+`not_after` is the backstop for that case alone, which is why it can be — and
+should be — generous: weeks, not hours. `DEFAULT_ENDPOINT_NOT_AFTER_SECS` is
+30 days, deliberately far longer than an instance certificate's lifetime
+(hours), because a reader that enforced it tightly would recreate exactly the
+cliff D-A1-10 existed to avoid: a routine missed renewal would turn into an
+instant, sitewide resolution failure the moment the bound lapsed, rather than
+the record quietly aging past a backstop nobody was relying on day to day.
+
+No publish/read split is needed here the way D-A1-10 needed one for
+certificates: `not_after` is not a credential a reader is re-adjudicating, it
+is the record's own stated claim about itself, so there is only one question
+("has this record's own bound passed?") and one place to ask it.
+
 ---
 
 ## 2. Phase plan
@@ -838,6 +1019,20 @@ Each phase compiles and its tests pass on its own.
 ---
 
 ## 3. Exact changes
+
+**Superseded by the fifth pass for the sections it touched (§3.2
+`dht_registry.rs`, §3.3 `community_registry/registry.rs`, §3.4
+`endpoint_publisher.rs`, §3.6's `EndpointPublisher::new` call and
+`build_signed_endpoint_info` snippets, §3.7 `svc.rs`) — kept as the record of
+the fourth-pass design, not as a diff of what shipped.** The snippets build
+the instance-key-signs-with-a-delegation-certificate design D-A1-2's
+reversal replaced; §0 and the decisions in §1 describe what actually
+shipped, and the source files are the literal record of it. §3.1
+(`delegation.rs`), the rest of §3.5 (`control_plane`) and §3.6 (the
+substrate's own self-record's construction, its control-plane wiring, and
+its error handling), and §3.8 (`roymctl` anchor-publishing) are **not**
+superseded — none of that depends on who signs a member's endpoint record,
+so it still describes what shipped.
 
 ### 3.1 `crates/identity/src/delegation.rs`
 
@@ -1509,6 +1704,17 @@ blob carries metadata only.
 
 ## 5. Tests
 
+**Superseded by the fifth pass as a test list — the tests below exercised the
+design D-A1-2's reversal replaced, and most no longer exist under those
+names.** status.md's evidence section has the actual, `git diff`-verified
+test count and names for what shipped; that is the source of record, kept in
+sync at merge time rather than duplicated here. Kept below for what test
+*shapes* mattered and why, which still transfers: whole-record tamper
+checks, the anchor's stale/wrong-master/tamper regression tests (D-A1-12,
+D-A1-13, all still present), and a live-registry sweep test proving
+per-service failure containment all still exist under the new design, just
+against a smaller decision table with no certificate to route around.
+
 ### 5.1 Unit — `crates/core/src/dht_registry.rs`
 
 1. `a_record_keyed_by_its_master_verifies_when_signed_by_a_certified_instance_key`
@@ -1750,6 +1956,29 @@ Run with the sandbox disabled — real port binds, per this repo's standing note
 ---
 
 ## 7. Deferred-backlog updates (mandatory, per AGENTS.md)
+
+**One row below is fully resolved by the fifth pass and moved to "Recently
+resolved" in [deferred-backlog.md](../../deferred-backlog.md) directly, not
+narrated again here**: *Master-DID endpoint resolution requires an HTTP
+registry* (D-A1-2 reversed — every record has a DHT home now). Two more rows
+are updated rather than resolved or closed, applied directly in
+deferred-backlog.md: *Two nodes can publish the same member master
+indefinitely* narrows — D-A1-14's compare-and-swap closes the flap's
+symmetric form (the losing publisher's replayed record is now permanently
+rejected everywhere once a newer one lands), but the losing publisher still
+does not know it has lost and needs the same placement view this row already
+named to actually stop trying. *A retired member's endpoint record lives
+until its TTL* is genuinely **unresolved** by this pass and stays open
+verbatim: `undeploy` deletes only the local stored file
+([orchestration.rs:965-972](../../../../crates/control_plane/src/service/orchestration.rs#L965));
+nothing publishes a superseding (or tombstoning) record to the registry or
+DHT on undeploy, so the mechanism that *would* let it be removed immediately
+exists (D-A1-14's monotonic timestamp) but nothing calls it yet. *Endpoint
+records are not revocation-checked at resolution* is reworded rather than
+resolved: with no certificate on a
+record, there is nothing there to revocation-check in the first place, so the
+row's remaining content is purely "the handshake is the actual gate," which
+was already true.
 
 **Move to "Recently resolved":**
 

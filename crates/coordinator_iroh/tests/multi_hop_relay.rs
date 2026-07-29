@@ -222,7 +222,7 @@ fn create_signed_info_with_full_addr(
         mechanisms: vec![EndpointMechanism::Iroh { endpoint_addr_bytes, relay_url: None }],
         is_private: false,
         ttl: None,
-        delegation: None,
+        not_after: u64::MAX / 2,
     };
     info.sign(identity).unwrap()
 }
@@ -243,7 +243,7 @@ fn create_signed_info(
         mechanisms: vec![EndpointMechanism::Iroh { endpoint_addr_bytes, relay_url }],
         is_private: false,
         ttl: None,
-        delegation: None,
+        not_after: u64::MAX / 2,
     };
 
     info.sign(identity).unwrap()

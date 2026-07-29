@@ -13,7 +13,7 @@ A2-A6 not started.
 |---|---|---|---|
 | P0 | `ControllerAgreement` creation tool — **pulled forward from M5 item 5** | Not started | None; gates A3 |
 | A0 | Stable member identity (master DID per member + delegated instance keys + ingress `scope` enforcement) | **Complete (2026-07-28)** — [implementation plan](slice-a0-implementation-plan.md), evidence below | None — independently mergeable |
-| A1 | Endpoint records published under the member master DID | **Complete (2026-07-28)** — [implementation plan](slice-a1-implementation-plan.md), evidence below | A0 |
+| A1 | Endpoint records published under the member master DID | **Complete (2026-07-28, design revised 2026-07-29 before merge)** — [implementation plan](slice-a1-implementation-plan.md), evidence below | A0 |
 | A2 | Host-side dependency resolution; bindings carry `expected_asserter_did` | Not started | A1 |
 | A3 | Multi-substrate placement + substrate inventory | Not started | `ControllerAgreement` tool (see below) |
 | A4 | Health declaration + read-only monitoring | Not started | A3 |
@@ -245,8 +245,10 @@ wire.
   about ±1 for this reason on both `main` and this branch** — measured twice
   each: `main` showed 11 and 12 failing targets across two runs (the
   variable member is `syneroym-router --test native_dispatch_identity`,
-  confirmed passing 39/39 with the sandbox disabled both times it was
-  checked); this branch showed 13 and 14 across two runs, consistently
+  which panics inside the `mainline` crate at `dht.rs:143` and hits
+  different tests each run — three *isolated* sandboxed reruns gave pass,
+  pass, fail, and it passes 39/39 unsandboxed every time; A1 touches no code
+  in that crate); this branch showed 13 and 14 across two runs, consistently
   `main`'s set plus exactly the same two new targets needing real port binds
   — `syneroym-community-registry --lib` and `syneroym-substrate --test
   master_endpoint_record_e2e` — both independently verified passing with the
@@ -297,6 +299,118 @@ incorporated rather than argued against:
   (substrate now builds one pkarr DHT client, not two); dead/unreachable
   code in `svc.rs`'s `--master` arm; and a silent no-op when `--nickname` is
   given with nothing to sign the envelope with now warns.
+
+**Follow-up review round (2026-07-28).** Three further comments; one was a
+real hole, two were already closed by the fix-up above and are recorded here
+so the disagreement is not re-litigated:
+
+- **The new sweep test could not fail on half of what it claimed.**
+  `publish_all_services` walks a `BTreeSet`, so ids run in ascending byte
+  order and the deliberately-failing service was named `svc-2` — the *last*
+  iteration. Every assertion still held under an implementation that aborted
+  on the first error, so only the id-union half was really covered. Renamed
+  to `aaa-revoked`, which sorts ahead of both `did:key:` and `svc-`, and the
+  comment now records that the name is load-bearing. Verified by mutation:
+  with the sweep changed to return on first error the test fails on the
+  `svc-1` assertion, and passes again when reverted.
+- **Test counts** were already corrected in the fix-up commit and
+  independently re-verified here by counting `#[test]`/`#[tokio::test]`
+  attributes added since `4e76f9d`: 35 in the slice commit plus 6 in the
+  fix-up = 41, of which 1 is the e2e test, giving the **40** unit/CLI stated
+  above and **3** in `delegation.rs`. No change needed.
+- **The sandboxed baseline** was likewise already restated as a category
+  rather than a fixed count. The follow-up round's sharper evidence — three
+  isolated sandboxed reruns of the variable target giving pass, pass, fail —
+  is folded into the gates section above.
+
+**Fifth pass (2026-07-29): the design itself reopened, before merge, on an
+operator question.** D-A1-2 treated "the hosting substrate signs the
+record" as fixed; it is not — the deployer already holds the member master
+key and can sign the record directly. That single change collapsed most of
+what the first four passes built to make delegation-signed records work at
+all. Full reasoning is in
+[slice-a1-implementation-plan.md](slice-a1-implementation-plan.md)'s own
+"fifth pass" note and its D-A1-1/2/5/6/8/10/11/14/15; ADR-0020 §6 is rewritten
+to match. Summary of what's true now, replacing the "What shipped, by crate"
+bullets above (kept for history, not current):
+
+- **`crates/core/src/dht_registry.rs`:** `EndpointInfo` carries no
+  `delegation` field; `EndpointInfo::sign_as_instance` and the `RecordTrust`
+  enum are deleted. `SignedEndpointInfo::verify` takes no trust-level
+  argument, checks the single self-signed keying shape uniformly, and returns
+  the packet's own pkarr/BEP44 timestamp for the compare-and-swap below.
+  `EndpointInfo` gains a required `not_after: u64` field (30-day default,
+  `DEFAULT_ENDPOINT_NOT_AFTER_SECS`), checked in `verify`. `RegistryClient::
+  register`'s DHT-leg refusal for a delegation-signed record is deleted —
+  every record now has a DHT home.
+- **`crates/core/src/endpoint_publisher.rs`:** `build_record` no longer reads
+  an instance certificate, derives an instance key, or signs anything. It
+  reads the stored, deployer-signed file and replays it verbatim if it still
+  verifies (self-signature and `not_after`); otherwise it publishes nothing.
+  `EndpointPublisher::new` drops the `EndpointRegistry`/node-identity/node-DID
+  parameters it no longer needs. `publish_all_services`'s id source is the
+  hosted-apps directory scan only — there is no second, certificate-derived
+  source of ids to union anymore.
+- **`crates/community_registry/src/registry.rs`:** `verify_endpoint_signature`
+  is `payload.verify()`, full stop — the registry-local revocation check is
+  deleted (nothing left to check; revocation is a handshake-only concern
+  now). `register_endpoint` and `register_master_endpoint` are
+  compare-and-swap on the record's/anchor's own timestamp via `DashMap::
+  entry`, last-writer-wins with an explicit equal-and-identical refresh
+  case — the blind `insert` this replaced accepted a rollback outright.
+- **`apps/roymctl/src/commands/svc.rs`:** `--master` always signs the
+  endpoint record now, unconditionally on `--nickname` — `signing_identity`
+  collapses to `named_identity.as_ref().or(master_identity.as_ref())`, and
+  the ephemeral-envelope-key shape for `--instance-certificate` is deleted
+  (a throwaway-signed record can never verify under the master's own
+  `service_id`, so it bought nothing once the substrate stopped re-signing).
+- **`crates/substrate/src/runtime.rs`, `crates/coordinator_iroh/src/coordinator.rs`,
+  `crates/smoke-tests`, `tests/perf`:** every remaining `EndpointInfo`
+  construction site (the substrate's own self-record, the coordinator's
+  self-record, smoke tests, perf-harness fixtures) threads `not_after`
+  through.
+- **`crates/control_plane`:** unchanged — the publish-on-deploy hook and
+  `set_endpoint_publisher` wiring do not depend on who signs the record.
+
+**Tests, `git diff` against the pre-fifth-pass tip (`d1f0eb9`):** net **-10**
+unit tests (`dht_registry.rs` 17→13, `endpoint_publisher.rs` 10→5,
+`community_registry/registry.rs` 17→16 — the certificate-shaped decision
+table shrank along with the code), all re-derived to match the design above
+rather than trimmed for count; the `delegation.rs` tests (3) and the e2e test
+(1, `master_endpoint_record_e2e.rs`, substantially rewritten internally —
+same name, same count) are untouched by the net change. **30 unit/CLI tests,
+1 e2e**, both counted by running the suites, not asserted: `cargo test -p
+syneroym-core --lib` (dht_registry.rs + endpoint_publisher.rs, 50 total in
+that crate including untouched modules), `cargo test -p syneroym-community-
+registry --lib` (16), `cargo test -p syneroym-substrate --test
+master_endpoint_record_e2e` (1, sandbox disabled for the real port binds).
+New coverage specific to the fifth pass: `verify_returns_the_packets_own_
+timestamp` and `a_self_signed_record_registers_to_the_dht_with_no_http_
+registry_configured` (`dht_registry.rs`); `publish_all_services_survives_a_
+record_rejected_by_admission` (`community_registry/registry.rs`, proving the
+compare-and-swap end to end against a live registry, including that a
+rejected record does not stop the sweep from publishing the others).
+
+**Gates, re-run 2026-07-29:**
+
+- `cargo +nightly fmt --all -- --check`: clean.
+- `cargo clippy --workspace --all-targets --all-features`: clean, zero
+  warnings.
+- `cargo test --workspace` (sandboxed, `--no-fail-fast`): 14 failing targets,
+  the identical category and count already documented above for this branch
+  — real port/socket binds the sandbox denies, plus the same
+  `native_dispatch_identity` DHT-actor flake. Every target in that set was
+  independently re-verified passing with the sandbox disabled this pass,
+  including the ones the fifth pass touched most directly:
+  `master_endpoint_record_e2e` (the flagship test, full scenario including
+  the relocation and the forged-record rejection), `basic_lifecycle`,
+  `federated_fdae_e2e`, `community_registry --lib`, `coordinator-iroh`'s full
+  suite (`multi_hop_relay`, `connection_limit`, `tls_rotation`, and the rest),
+  and every other `syneroym-substrate` e2e test
+  (`http_passthrough_e2e`, `instance_identity_e2e`, `messaging_client_e2e`,
+  `stream_client_e2e`). No target differs from the documented baseline.
+- `mise run test:e2e` (sandbox disabled, required for real port binds): 12/12
+  green (8 main + 4 multi-hop), unchanged.
 
 ## Dependencies pulled in
 
