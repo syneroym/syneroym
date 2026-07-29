@@ -32,10 +32,15 @@
 //!
 //! The topology cache is keyed by `(AppInstanceId, LogicalServiceName)`.
 //! An entry is invalidated when:
-//!  * `topology_epoch` of the stored entry differs from the registry entry.
 //!  * The entry's `cache_ttl` has elapsed.
-//!  * A caller explicitly triggers invalidation via
-//!    [`AppRegistry::invalidate`].
+//!  * A caller explicitly triggers invalidation via [`AppRegistry::invalidate`]
+//!    or [`LogicalResolver::register`].
+//!
+//! A cache **hit** does *not* compare epochs against the registry -- there is
+//! no live re-check on the hot path, only TTL and explicit eviction. A writer
+//! that wants a change visible before the TTL elapses (A2's binding write
+//! does, to meet the milestone's convergence budget) must call
+//! [`LogicalResolver::register`], never write the registry directly.
 
 use std::{
     collections::BTreeMap,
@@ -57,6 +62,11 @@ use crate::models::{
 // ─────────────────────────────────────────────────────────────
 // Domain types
 // ─────────────────────────────────────────────────────────────
+
+/// Default cache TTL for a binding written at deploy time (A2), matching
+/// what this module's own tests already treat as ordinary
+/// (`Duration::from_secs(60)`).
+pub const DEFAULT_BINDING_CACHE_TTL_MS: u64 = 60_000;
 
 /// Monotonically increasing counter that changes whenever the topology (member
 /// set or mode) for a logical service changes.  Cache entries are invalidated
@@ -450,9 +460,12 @@ pub fn range_select(table: &RangeRoutingTable, key: &[u8]) -> Result<ServiceId> 
 /// entries.
 ///
 /// Cache entries are invalidated when:
-/// - The stored epoch differs from the registry entry's epoch.
 /// - The cache TTL has elapsed.
-/// - The caller explicitly calls [`LogicalResolver::invalidate`].
+/// - The caller explicitly calls [`LogicalResolver::invalidate`] or
+///   [`LogicalResolver::register`].
+///
+/// A cache **hit** does *not* compare epochs against the registry -- see the
+/// module-level "Cache invalidation" section above.
 #[derive(Debug)]
 pub struct LogicalResolver {
     registry: Arc<dyn AppRegistry>,
@@ -502,6 +515,26 @@ impl LogicalResolver {
         self.registry.invalidate(&logical_ref.app_instance_id, &logical_ref.service_name);
     }
 
+    /// Register `entry` and drop any cached copy in one step -- the write
+    /// path's only entry point, so a binding write can never leave a stale
+    /// cached topology behind. `AppRegistry::register` alone would leave a
+    /// live cache entry serving the old membership for up to `cache_ttl`,
+    /// which is what would make a scale-out invisible for up to a minute --
+    /// well past the milestone's 5s convergence budget.
+    pub fn register(
+        &self,
+        instance_id: AppInstanceId,
+        service_name: LogicalServiceName,
+        entry: TopologyEntry,
+    ) {
+        let logical_ref = LogicalServiceRef {
+            app_instance_id: instance_id.clone(),
+            service_name: service_name.clone(),
+        };
+        self.registry.register(instance_id, service_name, entry);
+        self.cache.evict(&logical_ref);
+    }
+
     // ── Internal helpers ─────────────────────────────────────
 
     /// Retrieve the `ResolvedTopology` for `logical_ref`, using the cache
@@ -532,6 +565,17 @@ impl LogicalResolver {
 
         Ok(resolved)
     }
+}
+
+/// A `LogicalResolver` over a fresh, empty `StaticInventory` -- every
+/// non-production `AppSandboxEngine::init`/`ControlPlaneService::init` call
+/// site needs one of these and nothing else, so this saves each from
+/// repeating `Arc::new(LogicalResolver::new(Arc::new(StaticInventory::new())))`.
+/// Hidden: not part of this crate's public API, just a shared test fixture.
+#[doc(hidden)]
+#[must_use]
+pub fn empty_resolver() -> Arc<LogicalResolver> {
+    Arc::new(LogicalResolver::new(Arc::new(StaticInventory::new())))
 }
 
 /// Select one member from `topology`, applying the correct strategy.
@@ -1049,6 +1093,39 @@ mod tests {
         // Same epoch → cache was just evicted, re-fetch from registry.
         let got = resolver.resolve(&lref, None).unwrap();
         assert_eq!(got, svc_id("v2"), "explicit invalidate should evict cache");
+    }
+
+    #[test]
+    fn register_through_the_resolver_evicts_the_cached_topology() {
+        let inv = Arc::new(StaticInventory::new());
+        let id = inst("app-1");
+        let name = svc_name("backend");
+        inv.register(
+            id.clone(),
+            name.clone(),
+            make_entry(TopologyMode::Singleton, vec![svc_id("v1")], None),
+        );
+
+        let resolver = LogicalResolver::new(inv);
+        let lref = logical_ref("app-1", "backend");
+
+        // Populate the cache with a long TTL, so a plain TTL expiry could
+        // never explain a refresh below.
+        let got = resolver.resolve(&lref, None).unwrap();
+        assert_eq!(got, svc_id("v1"));
+
+        // A scale-out: two members now, written through the resolver's own
+        // `register`, not the registry directly.
+        resolver.register(
+            id,
+            name,
+            make_entry(TopologyMode::Redundant, vec![svc_id("v1"), svc_id("v2")], None),
+        );
+
+        // Visible immediately -- not after `cache_ttl` -- because `register`
+        // evicted the stale cached copy in the same step.
+        let all = resolver.resolve_all(&lref).unwrap();
+        assert_eq!(all.members, vec![svc_id("v1"), svc_id("v2")]);
     }
 
     #[test]

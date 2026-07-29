@@ -392,14 +392,34 @@ impl ProxyRouter {
         // way.
         let mut preamble = RoutePreamble::binary_json_rpc(&req.target_service, &req.interface);
         match (&req.caller.proof, &req.origin) {
-            (Some(proof), CallOrigin::Native) => {
+            (Some(proof), CallOrigin::Native { .. }) => {
                 preamble.pubkey = Some(proof.pubkey_hex.clone());
                 preamble.delegation = proof
                     .delegation_json
                     .as_deref()
                     .and_then(|json| DelegationCertificate::from_json(json).ok());
             }
-            (None, CallOrigin::Native) => {
+            // A0 built this for the guest-origin arm; the same reasoning
+            // applies to a substrate-internal call made on a service's
+            // behalf. Only the no-proof case: the arm above forwards the
+            // original caller's chain verbatim, which is what lets the
+            // destination re-derive `subject_did`/`anchor_did` and authorize
+            // the real caller (D-B3-9). Presenting the service's identity
+            // here instead would silently change who the destination thinks
+            // is asking.
+            (None, CallOrigin::Native { service_id: Some(sid) }) => {
+                if let Some(cert) = self.registry.instance_cert(sid)
+                    && !cert.is_expired()
+                    && let Some(owner) = self.registry.owner_of(sid)
+                {
+                    let instance = self.node_identity.derive_service_identity(&owner, sid);
+                    preamble.pubkey = Some(hex::encode(instance.public_key().to_bytes()));
+                    preamble.delegation = Some(cert);
+                } else {
+                    preamble.pubkey = Some(hex::encode(self.node_identity.public_key().to_bytes()));
+                }
+            }
+            (None, CallOrigin::Native { service_id: None }) => {
                 preamble.pubkey = Some(hex::encode(self.node_identity.public_key().to_bytes()));
             }
             (_, CallOrigin::Guest { service_id }) => {
@@ -532,7 +552,7 @@ mod tests {
             method: "get".to_string(),
             params: Value::Null,
             caller: test_caller("did:key:zTestCaller"),
-            origin: CallOrigin::Native,
+            origin: CallOrigin::Native { service_id: None },
             protocol: ProxyProtocol::JsonRpcV1,
             idempotent: false,
             timeout: Some(Duration::from_secs(1)),
@@ -872,7 +892,7 @@ mod tests {
         );
 
         let mut req = base_request("svc-b", "data-layer");
-        req.origin = CallOrigin::Native;
+        req.origin = CallOrigin::Native { service_id: None };
         let result = router.invoke(req).await;
         assert!(result.is_ok(), "{result:?}");
         assert_eq!(service.invoked.load(Ordering::SeqCst), 1);
@@ -1190,6 +1210,200 @@ mod tests {
 
         let preamble = hop.last_preamble.lock().unwrap().clone().unwrap();
         assert_eq!(preamble.pubkey, None);
+        assert!(preamble.delegation.is_none());
+    }
+
+    /// A2's transport half: a substrate-internal call made on a deployed
+    /// service's behalf (the FDAE relationship-proof fetch) presents that
+    /// service's certified instance key, not the node's -- the same
+    /// reasoning A0 applied to the guest-origin arm, now at the
+    /// `(None, Native { service_id: Some(_) })` site.
+    #[tokio::test]
+    async fn a_native_origin_call_on_a_services_behalf_presents_that_services_instance_key() {
+        let hop = Arc::new(MockHop::with_outcomes(vec![MockOutcome::Success(Value::Null)]));
+        let node_identity = Arc::new(Identity::generate().unwrap());
+        let registry = empty_registry();
+
+        let owner_did = "did:key:zMemberOwner".to_string();
+        let service_id = "hr-svc".to_string();
+        registry.set_owner(service_id.clone(), owner_did.clone()).await.unwrap();
+
+        let member_master = Identity::generate().unwrap();
+        let member_master_did = substrate::derive_did_key(&member_master.public_key());
+        let instance = node_identity.derive_service_identity(&owner_did, &service_id);
+        let cert = DelegationCertificate::issue(
+            &member_master,
+            instance.public_key(),
+            3600,
+            SCOPE_SERVICE_INSTANCE.to_string(),
+        )
+        .unwrap();
+        registry.set_instance_cert(service_id.clone(), cert).await.unwrap();
+
+        let native_dispatch: NativeDispatchRegistry = Arc::new(DashMap::new());
+        let router = ProxyRouter::new(
+            registry,
+            empty_registry_client(),
+            Arc::downgrade(&native_dispatch),
+            Weak::new(),
+            hop.clone(),
+            node_identity,
+            RetryPolicy::default(),
+        );
+
+        let mut req = base_request("remote-svc", "data-layer");
+        req.caller.proof = None;
+        req.origin = CallOrigin::Native { service_id: Some(service_id.clone()) };
+        router.invoke_remote_at(&synthetic_addr(), &req).await.unwrap();
+
+        let preamble = hop.last_preamble.lock().unwrap().clone().unwrap();
+        assert_eq!(
+            preamble.pubkey.as_deref(),
+            Some(hex::encode(instance.public_key().to_bytes()).as_str())
+        );
+        assert!(preamble.delegation.is_some());
+
+        let verified = HandshakeVerifier::verify_preamble(&preamble, &EmptyAnchorResolver)
+            .await
+            .expect("the destination's handshake must admit a service-instance certificate");
+        assert_eq!(verified.master_did, member_master_did);
+    }
+
+    /// D-B3-9's guard: when the caller already carries a signed proof (a
+    /// forwarded chain), a `Native` call must forward that proof verbatim
+    /// -- never substitute the service's own identity -- so the destination
+    /// can re-derive `subject_did`/`anchor_did` from the real chain. This is
+    /// what keeps FDAE's cross-service fetch authorizing the *real* caller
+    /// rather than the relaying service.
+    #[tokio::test]
+    async fn a_native_origin_call_with_a_caller_proof_still_forwards_the_proof_verbatim() {
+        let hop = Arc::new(MockHop::with_outcomes(vec![MockOutcome::Success(Value::Null)]));
+        let node_identity = Arc::new(Identity::generate().unwrap());
+        let registry = empty_registry();
+
+        let owner_did = "did:key:zMemberOwner".to_string();
+        let service_id = "hr-svc".to_string();
+        registry.set_owner(service_id.clone(), owner_did.clone()).await.unwrap();
+        let member_master = Identity::generate().unwrap();
+        let instance = node_identity.derive_service_identity(&owner_did, &service_id);
+        let cert = DelegationCertificate::issue(
+            &member_master,
+            instance.public_key(),
+            3600,
+            SCOPE_SERVICE_INSTANCE.to_string(),
+        )
+        .unwrap();
+        registry.set_instance_cert(service_id.clone(), cert).await.unwrap();
+
+        let native_dispatch: NativeDispatchRegistry = Arc::new(DashMap::new());
+        let router = ProxyRouter::new(
+            registry,
+            empty_registry_client(),
+            Arc::downgrade(&native_dispatch),
+            Weak::new(),
+            hop.clone(),
+            node_identity,
+            RetryPolicy::default(),
+        );
+
+        let forwarded_pubkey_hex = "aabbccdd".to_string();
+        let mut req = base_request("remote-svc", "data-layer");
+        req.caller.proof =
+            Some(CallerProof { pubkey_hex: forwarded_pubkey_hex.clone(), delegation_json: None });
+        req.origin = CallOrigin::Native { service_id: Some(service_id.clone()) };
+        router.invoke_remote_at(&synthetic_addr(), &req).await.unwrap();
+
+        let preamble = hop.last_preamble.lock().unwrap().clone().unwrap();
+        assert_eq!(
+            preamble.pubkey.as_deref(),
+            Some(forwarded_pubkey_hex.as_str()),
+            "an already-present caller proof must be forwarded verbatim, never replaced by the \
+             relaying service's own certified identity"
+        );
+    }
+
+    /// A native-origin call made on nobody's behalf (`service_id: None`,
+    /// substrate-internal tooling, tests) keeps presenting the node's own
+    /// identity, exactly as before this arm existed.
+    #[tokio::test]
+    async fn a_native_origin_call_with_no_service_id_still_presents_the_node_identity() {
+        let hop = Arc::new(MockHop::with_outcomes(vec![MockOutcome::Success(Value::Null)]));
+        let node_identity = Arc::new(Identity::generate().unwrap());
+        let native_dispatch: NativeDispatchRegistry = Arc::new(DashMap::new());
+        let router = ProxyRouter::new(
+            empty_registry(),
+            empty_registry_client(),
+            Arc::downgrade(&native_dispatch),
+            Weak::new(),
+            hop.clone(),
+            node_identity.clone(),
+            RetryPolicy::default(),
+        );
+
+        let mut req = base_request("remote-svc", "data-layer");
+        req.caller.proof = None;
+        req.origin = CallOrigin::Native { service_id: None };
+        router.invoke_remote_at(&synthetic_addr(), &req).await.unwrap();
+
+        let preamble = hop.last_preamble.lock().unwrap().clone().unwrap();
+        assert_eq!(
+            preamble.pubkey.as_deref(),
+            Some(hex::encode(node_identity.public_key().to_bytes()).as_str()),
+            "a node-level native call (no service_id) must still present the node's own identity"
+        );
+        assert!(preamble.delegation.is_none());
+    }
+
+    /// The same fallback A0 gave the guest arm: an installed-but-expired
+    /// certificate must fall back to the node identity, not anonymous -- a
+    /// substrate-internal call has always presented *something*, and
+    /// dropping to anonymous would break native-dispatch destinations that
+    /// reject an anonymous caller outright.
+    #[tokio::test]
+    async fn a_native_origin_call_with_an_expired_certificate_falls_back_to_the_node_identity() {
+        let hop = Arc::new(MockHop::with_outcomes(vec![MockOutcome::Success(Value::Null)]));
+        let node_identity = Arc::new(Identity::generate().unwrap());
+        let registry = empty_registry();
+
+        let owner_did = "did:key:zMemberOwner".to_string();
+        let service_id = "expired-cert-native-svc".to_string();
+        registry.set_owner(service_id.clone(), owner_did.clone()).await.unwrap();
+
+        let member_master = Identity::generate().unwrap();
+        let instance = node_identity.derive_service_identity(&owner_did, &service_id);
+        let cert = DelegationCertificate::issue(
+            &member_master,
+            instance.public_key(),
+            0,
+            SCOPE_SERVICE_INSTANCE.to_string(),
+        )
+        .unwrap();
+        assert!(cert.is_expired());
+        registry.set_instance_cert(service_id.clone(), cert).await.unwrap();
+
+        let native_dispatch: NativeDispatchRegistry = Arc::new(DashMap::new());
+        let router = ProxyRouter::new(
+            registry,
+            empty_registry_client(),
+            Arc::downgrade(&native_dispatch),
+            Weak::new(),
+            hop.clone(),
+            node_identity.clone(),
+            RetryPolicy::default(),
+        );
+
+        let mut req = base_request("remote-svc", "data-layer");
+        req.caller.proof = None;
+        req.origin = CallOrigin::Native { service_id: Some(service_id.clone()) };
+        router.invoke_remote_at(&synthetic_addr(), &req).await.unwrap();
+
+        let preamble = hop.last_preamble.lock().unwrap().clone().unwrap();
+        assert_eq!(
+            preamble.pubkey.as_deref(),
+            Some(hex::encode(node_identity.public_key().to_bytes()).as_str()),
+            "an expired certificate must fall back to the node identity, not anonymous -- a \
+             native-origin call has always presented something"
+        );
         assert!(preamble.delegation.is_none());
     }
 }

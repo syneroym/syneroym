@@ -38,8 +38,13 @@ impl TestDriverGuest for ProxyTestComponent {
         interface: String,
         method: String,
         params: String,
+        target_kind: String,
     ) -> Result<String, String> {
-        proxy::call(&service, &interface, &method, &params, None).map_err(|e| format!("{e:?}"))
+        let target = match target_kind.as_str() {
+            "dependency" => proxy::CallTarget::Dependency(service),
+            _ => proxy::CallTarget::Service(service),
+        };
+        proxy::call(&target, &interface, &method, &params, None).map_err(|e| format!("{e:?}"))
     }
 }
 

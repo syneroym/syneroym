@@ -95,6 +95,7 @@ async fn make_engine_with_limits(
             blob_provider,
             messaging_broker,
             registry,
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap(),

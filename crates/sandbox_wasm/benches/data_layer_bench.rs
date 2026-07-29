@@ -144,6 +144,7 @@ async fn fresh_engine() -> (tempfile::TempDir, AppSandboxEngine) {
         blob_provider,
         Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap()),
         EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+        syneroym_app_orchestration::empty_resolver(),
     )
     .await
     .unwrap();

@@ -381,8 +381,11 @@ pub struct PlannedService {
     pub logical_ref: LogicalServiceRef,
     #[serde(flatten)]
     pub config: ServiceConfig,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub resolved_dependencies: Vec<ServiceId>,
+    /// Declared dependency name -> the member master DIDs currently serving
+    /// it. One entry per `ServiceSpec.depends_on` name; the member list is
+    /// a single-element `Singleton` today.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub resolved_dependencies: BTreeMap<LogicalServiceName, Vec<ServiceId>>,
     #[serde(default)]
     pub topology_mode: TopologyMode,
 }
@@ -611,7 +614,7 @@ mod tests {
                     rotation_policy: RotationPolicy::RestartOnRotation,
                     fdae: None,
                 },
-                resolved_dependencies: vec![],
+                resolved_dependencies: BTreeMap::new(),
                 topology_mode: TopologyMode::Singleton,
             }],
         };
@@ -725,7 +728,7 @@ mod tests {
                     rotation_policy: RotationPolicy::RestartOnRotation,
                     fdae: None,
                 },
-                resolved_dependencies: vec![],
+                resolved_dependencies: BTreeMap::new(),
                 topology_mode: TopologyMode::Singleton,
             }],
         };

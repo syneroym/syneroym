@@ -161,11 +161,54 @@ interface orchestrator {
     /// Check the readiness of the orchestrator
     readyz: func(service-id: string) -> result<_, string>;
 
+    /// How a logical service name maps to physical members. Mirrors
+    /// `TopologyMode` in the app model.
+    variant topology-mode {
+        singleton,
+        redundant,
+        sharded,
+    }
+
+    /// One declared dependency of the service being deployed, resolved to
+    /// the member master DIDs that currently serve it. The dependent's
+    /// host resolves a guest-supplied dependency name through this;
+    /// nothing else in the substrate reads it.
+    record dependency-binding {
+        /// The name the depending service declared. Today always a
+        /// logical service name inside `app-instance-id`.
+        dependency-name: string,
+        /// The app instance the members live in. Equal to the dependent's
+        /// own `app-instance-id` today; a distinct value once a manifest
+        /// can express a cross-app bind.
+        app-instance-id: string,
+        mode: topology-mode,
+        /// Member master DIDs, in selection order.
+        members: list<string>,
+        /// Increments on any membership or mode change; the epoch guard
+        /// that reads it is the supervisor's.
+        epoch: u64,
+        cache-ttl-ms: u64,
+    }
+
+    /// Which app instance this service is being deployed as part of, and
+    /// what its declared dependencies currently resolve to. Absent for a
+    /// standalone deploy that participates in no app.
+    record app-context {
+        app-instance-id: string,
+        service-name: string,
+        bindings: list<dependency-binding>,
+    }
+
     /// A planned service in a deployment plan.
     record planned-service {
         service-id: string,
         logical-ref: string,
         manifest: deploy-manifest,
+        /// This service's app instance and dependency bindings (ADR-0021
+        /// §2). Absent leaves the service unable to resolve a declared
+        /// dependency name -- it can still be called, and can still call
+        /// out by DID.
+        app-context: option<app-context>,
     }
 
     /// A deployment plan containing multiple planned services.

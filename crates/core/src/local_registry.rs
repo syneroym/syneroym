@@ -79,6 +79,16 @@ pub struct EndpointRegistry {
     /// `service_id` names. Absent for a service deployed without a master
     /// (the pre-existing "service is its own master" fallback).
     service_certs: Arc<DashMap<String, DelegationCertificate>>,
+    /// `service_id` -> (`app_instance_id`, `service_name`) for a service
+    /// deployed as part of an app instance (A2). Absent for a standalone
+    /// `svc deploy`, which resolves no declared dependencies.
+    service_app_contexts: Arc<DashMap<String, (String, String)>>,
+    /// `app_instance_id` -> the `caller_did` whose deploy first declared it
+    /// (A2 post-review fix). First-write-wins takeover guard for the
+    /// binding write, the same shape as `service_owners` but keyed by app
+    /// instance instead of service, since a binding write targets an app
+    /// instance that can span several services.
+    app_instance_owners: Arc<DashMap<String, String>>,
     /// Stable storage connection for persistence
     storage: Arc<dyn EndpointStorage>,
 }
@@ -101,6 +111,8 @@ impl EndpointRegistry {
             interface_hashes: Arc::new(DashMap::new()),
             service_owners: Arc::new(DashMap::new()),
             service_certs: Arc::new(DashMap::new()),
+            service_app_contexts: Arc::new(DashMap::new()),
+            app_instance_owners: Arc::new(DashMap::new()),
             storage,
         };
 
@@ -135,6 +147,16 @@ impl EndpointRegistry {
                     );
                 }
             }
+        }
+
+        for (service_id, app_instance_id, service_name) in
+            self.storage.load_all_app_contexts().await?
+        {
+            self.service_app_contexts.insert(service_id, (app_instance_id, service_name));
+        }
+
+        for (app_instance_id, owner_did) in self.storage.load_all_app_instance_owners().await? {
+            self.app_instance_owners.insert(app_instance_id, owner_did);
         }
         Ok(())
     }
@@ -227,6 +249,8 @@ impl EndpointRegistry {
             interface_hashes: Arc::new(DashMap::new()),
             service_owners: Arc::new(DashMap::new()),
             service_certs: Arc::new(DashMap::new()),
+            service_app_contexts: Arc::new(DashMap::new()),
+            app_instance_owners: Arc::new(DashMap::new()),
             storage,
         }
     }
@@ -287,6 +311,75 @@ impl EndpointRegistry {
     #[must_use]
     pub fn all_instance_certs(&self) -> Vec<(String, DelegationCertificate)> {
         self.service_certs.iter().map(|e| (e.key().clone(), e.value().clone())).collect()
+    }
+
+    /// Record which app instance and logical name `service_id` was deployed
+    /// as (A2, upsert).
+    pub async fn set_app_context(
+        &self,
+        service_id: String,
+        app_instance_id: String,
+        service_name: String,
+    ) -> Result<()> {
+        self.storage.save_app_context(&service_id, &app_instance_id, &service_name).await?;
+        self.service_app_contexts.insert(service_id, (app_instance_id, service_name));
+        Ok(())
+    }
+
+    /// The recorded `(app_instance_id, service_name)`, or `None` for a
+    /// standalone deploy that participates in no app.
+    #[must_use]
+    pub fn app_context_of(&self, service_id: &str) -> Option<(String, String)> {
+        self.service_app_contexts.get(service_id).map(|e| e.value().clone())
+    }
+
+    /// Forget `service_id`'s app context and every binding row it wrote
+    /// (A2). Idempotent.
+    pub async fn remove_app_context(&self, service_id: &str) -> Result<()> {
+        self.storage.remove_app_context(service_id).await?;
+        self.service_app_contexts.remove(service_id);
+        Ok(())
+    }
+
+    /// Persist one dependency binding (A2). The in-memory `AppRegistry` is
+    /// written separately by the caller -- this store only makes the write
+    /// survive a restart.
+    pub async fn save_binding(
+        &self,
+        service_id: &str,
+        app_instance_id: &str,
+        dependency_name: &str,
+        entry_json: &str,
+    ) -> Result<()> {
+        self.storage.save_binding(service_id, app_instance_id, dependency_name, entry_json).await
+    }
+
+    /// Every persisted binding, for the composition root's startup replay
+    /// (A2).
+    pub async fn all_bindings(&self) -> Result<Vec<(String, String, String, String)>> {
+        self.storage.load_all_bindings().await
+    }
+
+    /// The `caller_did` that first declared `app_instance_id` in a deploy's
+    /// `app_context`, or `None` if no deploy has ever named it (A2 post-
+    /// review fix). Mirrors `owner_of`.
+    #[must_use]
+    pub fn app_instance_owner_of(&self, app_instance_id: &str) -> Option<String> {
+        self.app_instance_owners.get(app_instance_id).map(|e| e.value().clone())
+    }
+
+    /// Record `owner_did` as `app_instance_id`'s owner (upsert). Overwrites
+    /// any existing entry -- the takeover check is the caller's
+    /// responsibility (`ControlPlaneService::deploy_with_context`), not
+    /// this store's, mirroring `set_owner`.
+    pub async fn set_app_instance_owner(
+        &self,
+        app_instance_id: String,
+        owner_did: String,
+    ) -> Result<()> {
+        self.storage.save_app_instance_owner(&app_instance_id, &owner_did).await?;
+        self.app_instance_owners.insert(app_instance_id, owner_did);
+        Ok(())
     }
 }
 

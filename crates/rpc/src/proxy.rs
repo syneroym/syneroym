@@ -53,7 +53,13 @@ pub enum CallOrigin {
     /// native-capability gate -- enforcement for these lives at the
     /// data-owning node (ADR-0016 §6; M04B "enforce at the data-owning
     /// node").
-    Native,
+    Native {
+        /// The deployed service this call is made *on behalf of*, when there
+        /// is one -- the FDAE relationship-proof fetch, which must travel as
+        /// that service rather than as the node. `None` for node-level
+        /// internals and tests.
+        service_id: Option<String>,
+    },
 }
 
 /// A cross-service call. Locally constructed; `caller` is **never**

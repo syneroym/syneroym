@@ -89,6 +89,7 @@ async fn build_test_route_handler_deps(
             blob_provider.clone(),
             messaging_broker.clone(),
             registry.clone(),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await?,
     );
@@ -145,6 +146,7 @@ async fn build_test_route_handler_deps(
         native_dispatch.clone(),
         http_routes.clone(),
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        syneroym_app_orchestration::empty_resolver(),
     )
     .await?;
     let control_plane_service = Arc::new(control_plane_service);
@@ -792,6 +794,7 @@ async fn test_cross_node_proxy_call() -> Result<()> {
             "interface": test_constants::GREETER_INTERFACE_NAME,
             "method": "greet",
             "params": "[\"Cross-Node\"]",
+            "target-kind": "service",
         },
         "id": 1,
     }))?;
@@ -989,7 +992,7 @@ async fn test_cross_node_native_capability_identity_forwarding() -> Result<()> {
                 delegation_json: Some(cert.to_json()?),
             }),
         },
-        origin: CallOrigin::Native,
+        origin: CallOrigin::Native { service_id: None },
         protocol: ProxyProtocol::JsonRpcV1,
         idempotent: false,
         timeout: Some(Duration::from_secs(5)),

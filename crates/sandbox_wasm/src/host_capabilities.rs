@@ -15,6 +15,9 @@ use std::{
 };
 
 use serde_json::Value;
+use syneroym_app_orchestration::{
+    AppInstanceId, LogicalResolver, LogicalServiceName, LogicalServiceRef,
+};
 use syneroym_core::local_registry::SubstrateEndpoint;
 use syneroym_data_blob::{
     BlobError as BlobStoreError, HostDownloadSession, HostUploadSession, traits::BlobProvider,
@@ -45,7 +48,7 @@ use syneroym_wit_interfaces::host::syneroym::{
     },
     host::context::Host,
     messaging::host_api::{self, MessagingError},
-    proxy::proxy,
+    proxy::proxy::{self, CallOptions, CallTarget, CalleeError},
     vault::vault::{self, VaultError},
 };
 use tracing::error;
@@ -126,6 +129,16 @@ pub struct HostState {
     /// `Arc`: the only implementation is `AppSandboxEngine`, which owns this
     /// state's `Store` -- same cycle reasoning as `service_proxy`.
     pub row_authorizer: Weak<dyn RowAuthorizer>,
+    /// The app instance this component was deployed as part of, from the
+    /// substrate's own records -- never from the guest (ADR-0021 §2: a
+    /// guest that could name an app instance could address an arbitrary
+    /// one). `None` for a standalone deploy, which resolves no dependency.
+    pub app_instance_id: Option<String>,
+    /// Resolves a declared dependency name to a member's master DID.
+    /// `Arc`, unlike `service_proxy`: `LogicalResolver` holds only an
+    /// `Arc<dyn AppRegistry>` and no path back to the engine, so there is
+    /// no cycle to guard against.
+    pub logical_resolver: Arc<LogicalResolver>,
 }
 
 impl Debug for HostState {
@@ -155,6 +168,8 @@ impl HostState {
         fdae_policy: Option<Arc<Policy>>,
         read_only: bool,
         row_authorizer: Weak<dyn RowAuthorizer>,
+        app_instance_id: Option<String>,
+        logical_resolver: Arc<LogicalResolver>,
     ) -> Self {
         let wasi = WasiCtx::builder().build();
         let table = ResourceTable::new();
@@ -181,6 +196,8 @@ impl HostState {
             service_proxy,
             read_only,
             row_authorizer,
+            app_instance_id,
+            logical_resolver,
         }
     }
 
@@ -267,16 +284,22 @@ impl HostState {
             // Cloned to an owned value before the `.await` below, for the
             // same `Send`-future reason as above.
             let caller = self.caller.clone();
-            let results = syneroym_rpc::resolve_fetches(&plan.fetches, &caller, proxy.as_ref())
-                .await
-                .map_err(|e| {
-                    tracing::warn!(
-                        error = %e,
-                        collection,
-                        "fdae: cross-service relationship fetch failed, denying closed"
-                    );
-                    DataLayerError::PermissionDenied
-                })?;
+            let local_service_id = self.component_id.clone();
+            let results = syneroym_rpc::resolve_fetches(
+                &plan.fetches,
+                &caller,
+                proxy.as_ref(),
+                &local_service_id,
+            )
+            .await
+            .map_err(|e| {
+                tracing::warn!(
+                    error = %e,
+                    collection,
+                    "fdae: cross-service relationship fetch failed, denying closed"
+                );
+                DataLayerError::PermissionDenied
+            })?;
             let pending = plan.pending.ok_or_else(|| {
                 DataLayerError::Internal(
                     "internal: plan_read reported fetches but no pending sieve".to_string(),
@@ -1033,13 +1056,11 @@ fn map_proxy_error(e: RpcProxyError) -> proxy::ProxyError {
         RpcProxyError::PermissionDenied(s) => proxy::ProxyError::PermissionDenied(s),
         RpcProxyError::Transport(s) => proxy::ProxyError::Transport(s),
         RpcProxyError::Timeout(_) => proxy::ProxyError::TimedOut,
-        RpcProxyError::Callee { code, message, data } => {
-            proxy::ProxyError::Callee(proxy::CalleeError {
-                code,
-                message,
-                data: data.map(|v| v.to_string()),
-            })
-        }
+        RpcProxyError::Callee { code, message, data } => proxy::ProxyError::Callee(CalleeError {
+            code,
+            message,
+            data: data.map(|v| v.to_string()),
+        }),
         RpcProxyError::Internal(s) => proxy::ProxyError::Internal(s),
     }
 }
@@ -1052,11 +1073,11 @@ impl proxy::Host for HostState {
     /// cannot be bypassed from guest code.
     async fn call(
         &mut self,
-        service: String,
+        target: CallTarget,
         interface: String,
         method: String,
         params: String,
-        options: Option<proxy::CallOptions>,
+        options: Option<CallOptions>,
     ) -> Result<String, proxy::ProxyError> {
         // ADR-0017 §7 is *local* read-only lookups; a cross-service call
         // mid-query is exactly the N+1-over-the-network cost the ADR
@@ -1079,12 +1100,55 @@ impl proxy::Host for HostState {
                 .map_err(|e| proxy::ProxyError::Internal(format!("params must be JSON: {e}")))?
         };
 
-        let (protocol_tag, idempotent, timeout_ms) = match &options {
-            Some(o) => (o.protocol.as_deref(), o.idempotent, o.timeout_ms),
-            None => (None, false, None),
+        let (protocol_tag, idempotent, timeout_ms, routing_key) = match &options {
+            Some(o) => (o.protocol.as_deref(), o.idempotent, o.timeout_ms, o.routing_key.clone()),
+            None => (None, false, None, None),
         };
         let protocol =
             ProxyProtocol::parse(protocol_tag).map_err(proxy::ProxyError::UnsupportedProtocol)?;
+
+        // ADR-0021 §2: the host supplies `app_instance_id`, the guest
+        // supplies only the declared name. Resolution happens here, before
+        // the `ProxyRequest` exists, so a guest never holds the resolved DID
+        // and cannot snapshot it past a re-push.
+        let target_service = match target {
+            CallTarget::Service(service) => service,
+            CallTarget::Dependency(name) => {
+                let app_instance_id = self.app_instance_id.as_deref().ok_or_else(|| {
+                    proxy::ProxyError::DependencyNotBound(format!(
+                        "component '{}' was not deployed as part of an app instance, so it has no \
+                         declared dependency '{name}'",
+                        self.component_id
+                    ))
+                })?;
+                let logical_ref = LogicalServiceRef {
+                    // This string came out of a `service_app_context` row,
+                    // not out of the guest. A corrupted row is a
+                    // substrate-side fault, so it maps to `Internal`, not to
+                    // the guest-facing "you are not bound".
+                    app_instance_id: AppInstanceId::try_new(app_instance_id).map_err(|e| {
+                        proxy::ProxyError::Internal(format!(
+                            "stored app context for '{}' is unreadable: {e}",
+                            self.component_id
+                        ))
+                    })?,
+                    service_name: LogicalServiceName::try_new(&name).map_err(|e| {
+                        proxy::ProxyError::DependencyNotBound(format!(
+                            "invalid dependency name: {e}"
+                        ))
+                    })?,
+                };
+                self.logical_resolver
+                    .resolve(&logical_ref, routing_key.as_deref().map(str::as_bytes))
+                    .map_err(|e| {
+                        proxy::ProxyError::DependencyNotBound(format!(
+                            "dependency '{name}' of '{}' is not bound: {e}",
+                            self.component_id
+                        ))
+                    })?
+                    .to_string()
+            }
+        };
 
         // D-04-02-h ingress (ii): a guest proxying into its **own** service's
         // native `data-layer` forwards this invocation's real `HostState.
@@ -1101,14 +1165,17 @@ impl proxy::Host for HostState {
         // delegation exists in B0's model), so a proxied call to a
         // *different* service cannot be used to escalate to the original
         // caller's rights. Real cross-service caller-delegation is B1/UCAN,
-        // not yet built.
-        let caller = if service == self.component_id {
+        // not yet built. The self-proxy caller-forwarding rule is evaluated
+        // against the *resolved* target: a component that reaches its own
+        // service through a declared dependency name is still the same
+        // service, so it still forwards its real caller.
+        let caller = if target_service == self.component_id {
             self.caller.clone()
         } else {
             CallerContext::service_system(&self.component_id)
         };
         let req = ProxyRequest {
-            target_service: service,
+            target_service,
             interface,
             method,
             params,
@@ -1314,7 +1381,10 @@ impl wasmtime::ResourceLimiter for HostState {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use std::sync::Mutex;
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     use serde_json::json;
     use syneroym_core::{local_registry::EndpointRegistry, storage::MockStorage};
@@ -1362,14 +1432,21 @@ pub(crate) mod tests {
     /// Records the last `ProxyRequest` it was invoked with, so a test can
     /// inspect what `proxy::Host::call` actually built (in particular
     /// `caller`) without needing a real downstream service to answer.
+    /// `invoke_count` lets a test pin the "no network hop" budget (plan §7):
+    /// a dependency resolution that went through the router/supervisor
+    /// instead of resolving host-side, before the `ProxyRequest` exists,
+    /// would still land here, but with more than the one `invoke` a single
+    /// call is supposed to cost.
     #[derive(Debug, Default)]
     struct RecordingProxy {
         last_request: Mutex<Option<ProxyRequest>>,
+        invoke_count: AtomicUsize,
     }
 
     #[async_trait::async_trait]
     impl ServiceProxy for RecordingProxy {
         async fn invoke(&self, request: ProxyRequest) -> Result<Value, RpcProxyError> {
+            self.invoke_count.fetch_add(1, Ordering::SeqCst);
             let recorded = request.clone();
             *self.last_request.lock().unwrap() = Some(recorded);
             Ok(Value::Null)
@@ -1419,11 +1496,13 @@ pub(crate) mod tests {
             None,
             false,
             syneroym_rpc::empty_row_authorizer(),
+            None,
+            syneroym_app_orchestration::empty_resolver(),
         );
 
         proxy::Host::call(
             &mut host,
-            "svc-b".to_string(),
+            CallTarget::Service("svc-b".to_string()),
             "some-interface".to_string(),
             "some-method".to_string(),
             "null".to_string(),
@@ -1444,6 +1523,292 @@ pub(crate) mod tests {
             received.caller.session.capabilities.is_empty(),
             "a cross-service proxy call must never carry the guest's real capabilities: {:?}",
             received.caller.session.capabilities
+        );
+    }
+
+    // ── A2: dependency resolution through `proxy::Host::call` ──────────
+
+    fn dependency_topology_entry(members: Vec<&str>) -> syneroym_app_orchestration::TopologyEntry {
+        syneroym_app_orchestration::TopologyEntry {
+            mode: if members.len() > 1 {
+                syneroym_app_orchestration::TopologyMode::Redundant
+            } else {
+                syneroym_app_orchestration::TopologyMode::Singleton
+            },
+            members: members.into_iter().map(syneroym_app_orchestration::ServiceId::new).collect(),
+            sharding_strategy: None,
+            epoch: syneroym_app_orchestration::TopologyEpoch::default(),
+            cache_ttl: Duration::from_secs(60),
+        }
+    }
+
+    /// Builds a `HostState` naming `component_id` as deployed under
+    /// `app_instance_id` (or standalone, if `None`), backed by `resolver`
+    /// and `proxy`. `db_dir` must outlive the returned `HostState`.
+    fn dependency_host(
+        component_id: &str,
+        app_instance_id: Option<String>,
+        resolver: Arc<LogicalResolver>,
+        proxy: &Arc<RecordingProxy>,
+        db_dir: &std::path::Path,
+    ) -> HostState {
+        HostState::new(
+            component_id.to_string(),
+            None,
+            Arc::new(KeyStore::new()),
+            Arc::new(SqliteStorageProvider::new(db_dir, false).unwrap()),
+            test_blob_provider(),
+            CallerContext::service_system(component_id),
+            0,
+            test_messaging_context(),
+            test_streaming_context(),
+            Arc::downgrade(proxy) as Weak<dyn ServiceProxy>,
+            None,
+            false,
+            syneroym_rpc::empty_row_authorizer(),
+            app_instance_id,
+            resolver,
+        )
+    }
+
+    #[tokio::test]
+    async fn a_dependency_name_resolves_to_its_bound_member_before_the_request_is_built() {
+        use syneroym_app_orchestration::AppRegistry;
+
+        let registry = Arc::new(syneroym_app_orchestration::StaticInventory::new());
+        registry.register(
+            AppInstanceId::new("app-1"),
+            LogicalServiceName::new("backend"),
+            dependency_topology_entry(vec!["did:key:zBackendMember"]),
+        );
+        let resolver = Arc::new(LogicalResolver::new(registry));
+        let proxy = Arc::new(RecordingProxy::default());
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut host = dependency_host(
+            "frontend",
+            Some("app-1".to_string()),
+            resolver,
+            &proxy,
+            temp_dir.path(),
+        );
+
+        proxy::Host::call(
+            &mut host,
+            CallTarget::Dependency("backend".to_string()),
+            "greeter".to_string(),
+            "greet".to_string(),
+            "null".to_string(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let received = proxy.last_request.lock().unwrap().take().unwrap();
+        assert_eq!(received.target_service, "did:key:zBackendMember");
+        // Plan §7's "no network hop" budget: dependency resolution happens
+        // host-side, before the `ProxyRequest` is built, so one dependency
+        // call must cost exactly one `invoke` -- never a second hop to ask
+        // a supervisor or router to resolve it (ADR-0021 §8 forbids that
+        // outright).
+        assert_eq!(proxy.invoke_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn an_unbound_dependency_name_is_dependency_not_bound_and_never_reaches_the_proxy() {
+        let resolver = syneroym_app_orchestration::empty_resolver();
+        let proxy = Arc::new(RecordingProxy::default());
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut host = dependency_host(
+            "frontend",
+            Some("app-1".to_string()),
+            resolver,
+            &proxy,
+            temp_dir.path(),
+        );
+
+        let err = proxy::Host::call(
+            &mut host,
+            CallTarget::Dependency("backend".to_string()),
+            "greeter".to_string(),
+            "greet".to_string(),
+            "null".to_string(),
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(err, proxy::ProxyError::DependencyNotBound(_)),
+            "an unbound dependency name must fail as dependency-not-bound, not service-not-found: \
+             {err:?}"
+        );
+        assert!(
+            proxy.last_request.lock().unwrap().is_none(),
+            "resolution must fail before a ProxyRequest is ever built"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_component_with_no_app_context_cannot_name_a_dependency() {
+        let resolver = syneroym_app_orchestration::empty_resolver();
+        let proxy = Arc::new(RecordingProxy::default());
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut host = dependency_host("standalone-svc", None, resolver, &proxy, temp_dir.path());
+
+        let err = proxy::Host::call(
+            &mut host,
+            CallTarget::Dependency("backend".to_string()),
+            "greeter".to_string(),
+            "greet".to_string(),
+            "null".to_string(),
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, proxy::ProxyError::DependencyNotBound(_)));
+    }
+
+    #[tokio::test]
+    async fn a_raw_did_target_is_unchanged() {
+        let resolver = syneroym_app_orchestration::empty_resolver();
+        let proxy = Arc::new(RecordingProxy::default());
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut host = dependency_host(
+            "frontend",
+            Some("app-1".to_string()),
+            resolver,
+            &proxy,
+            temp_dir.path(),
+        );
+
+        proxy::Host::call(
+            &mut host,
+            CallTarget::Service("did:key:zSomeoneElse".to_string()),
+            "greeter".to_string(),
+            "greet".to_string(),
+            "null".to_string(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let received = proxy.last_request.lock().unwrap().take().unwrap();
+        assert_eq!(received.target_service, "did:key:zSomeoneElse");
+    }
+
+    #[tokio::test]
+    async fn a_routing_key_selects_deterministically_across_a_two_member_binding() {
+        use syneroym_app_orchestration::AppRegistry;
+
+        let registry = Arc::new(syneroym_app_orchestration::StaticInventory::new());
+        registry.register(
+            AppInstanceId::new("app-1"),
+            LogicalServiceName::new("backend"),
+            dependency_topology_entry(vec!["did:key:zMemberA", "did:key:zMemberB"]),
+        );
+        let resolver = Arc::new(LogicalResolver::new(registry));
+        let proxy = Arc::new(RecordingProxy::default());
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut host = dependency_host(
+            "frontend",
+            Some("app-1".to_string()),
+            resolver,
+            &proxy,
+            temp_dir.path(),
+        );
+
+        let options = Some(CallOptions {
+            protocol: None,
+            idempotent: false,
+            timeout_ms: None,
+            routing_key: Some("user-42".to_string()),
+        });
+        proxy::Host::call(
+            &mut host,
+            CallTarget::Dependency("backend".to_string()),
+            "greeter".to_string(),
+            "greet".to_string(),
+            "null".to_string(),
+            options.clone(),
+        )
+        .await
+        .unwrap();
+        let first = proxy.last_request.lock().unwrap().take().unwrap().target_service;
+
+        proxy::Host::call(
+            &mut host,
+            CallTarget::Dependency("backend".to_string()),
+            "greeter".to_string(),
+            "greet".to_string(),
+            "null".to_string(),
+            options,
+        )
+        .await
+        .unwrap();
+        let second = proxy.last_request.lock().unwrap().take().unwrap().target_service;
+
+        assert_eq!(first, second, "the same routing key must select the same member every time");
+    }
+
+    #[tokio::test]
+    async fn a_dependency_resolving_to_the_components_own_service_still_forwards_the_real_caller() {
+        use syneroym_app_orchestration::AppRegistry;
+
+        let registry = Arc::new(syneroym_app_orchestration::StaticInventory::new());
+        registry.register(
+            AppInstanceId::new("app-1"),
+            LogicalServiceName::new("self-dep"),
+            dependency_topology_entry(vec!["did:key:zSelf"]),
+        );
+        let resolver = Arc::new(LogicalResolver::new(registry));
+        let proxy = Arc::new(RecordingProxy::default());
+        let real_caller = CallerContext {
+            caller_did: "did:key:zRealCaller".to_string(),
+            app_instance: None,
+            session: SessionContext {
+                subject_did: "did:key:zRealCaller".to_string(),
+                ..Default::default()
+            },
+            auth: AuthLevel::Ucan,
+            proof: None,
+        };
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut host = HostState::new(
+            "did:key:zSelf".to_string(),
+            None,
+            Arc::new(KeyStore::new()),
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap()),
+            test_blob_provider(),
+            real_caller,
+            0,
+            test_messaging_context(),
+            test_streaming_context(),
+            Arc::downgrade(&proxy) as Weak<dyn ServiceProxy>,
+            None,
+            false,
+            syneroym_rpc::empty_row_authorizer(),
+            Some("app-1".to_string()),
+            resolver,
+        );
+
+        proxy::Host::call(
+            &mut host,
+            CallTarget::Dependency("self-dep".to_string()),
+            "greeter".to_string(),
+            "greet".to_string(),
+            "null".to_string(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let received = proxy.last_request.lock().unwrap().take().unwrap();
+        assert_eq!(received.target_service, "did:key:zSelf");
+        assert_eq!(
+            received.caller.caller_did, "did:key:zRealCaller",
+            "a dependency that resolves to the component's own service is still a self-proxy \
+             call, and must forward the real caller"
         );
     }
 
@@ -1470,6 +1835,8 @@ pub(crate) mod tests {
             None,
             false,
             syneroym_rpc::empty_row_authorizer(),
+            None,
+            syneroym_app_orchestration::empty_resolver(),
         );
 
         use app_config::Host as ConfigHost;
@@ -1521,6 +1888,8 @@ pub(crate) mod tests {
             None,
             false,
             syneroym_rpc::empty_row_authorizer(),
+            None,
+            syneroym_app_orchestration::empty_resolver(),
         );
         let mut host_b = HostState::new(
             "svc_b".to_string(),
@@ -1536,6 +1905,8 @@ pub(crate) mod tests {
             None,
             false,
             syneroym_rpc::empty_row_authorizer(),
+            None,
+            syneroym_app_orchestration::empty_resolver(),
         );
 
         let val_a = ConfigHost::get(&mut host_a_gen2, "mode".to_string()).await.unwrap().unwrap();
@@ -1558,6 +1929,8 @@ pub(crate) mod tests {
             None,
             false,
             syneroym_rpc::empty_row_authorizer(),
+            None,
+            syneroym_app_orchestration::empty_resolver(),
         );
         let val_a_old =
             ConfigHost::get(&mut host_a_gen1, "mode".to_string()).await.unwrap().unwrap();
@@ -1588,6 +1961,8 @@ pub(crate) mod tests {
             None,
             false,
             syneroym_rpc::empty_row_authorizer(),
+            None,
+            syneroym_app_orchestration::empty_resolver(),
         );
 
         let result = vault::Host::reveal(&mut host_state, "does-not-exist".to_string()).await;
@@ -1727,6 +2102,8 @@ pub(crate) mod tests {
             fdae_policy,
             false,
             syneroym_rpc::empty_row_authorizer(),
+            None,
+            syneroym_app_orchestration::empty_resolver(),
         )
     }
 
@@ -2226,6 +2603,7 @@ pub(crate) mod tests {
         let asserter_did = substrate::derive_did_key(&identity.public_key());
         let proof = syneroym_rpc::RelationshipProof::sign(
             &identity,
+            None,
             "employee",
             "did:key:alice",
             vec!["emp-alice".to_string()],
@@ -2250,6 +2628,8 @@ pub(crate) mod tests {
             Some(policy),
             false,
             syneroym_rpc::empty_row_authorizer(),
+            None,
+            syneroym_app_orchestration::empty_resolver(),
         );
 
         let own = store::Host::get(&mut host, "documents".to_string(), "doc-1".to_string())
@@ -2292,6 +2672,8 @@ pub(crate) mod tests {
             Some(policy),
             false,
             syneroym_rpc::empty_row_authorizer(),
+            None,
+            syneroym_app_orchestration::empty_resolver(),
         );
 
         let err = store::Host::get(&mut host, "documents".to_string(), "doc-1".to_string())

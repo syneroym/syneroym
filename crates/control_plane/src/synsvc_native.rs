@@ -36,7 +36,7 @@ use syneroym_data_db::{
 };
 use syneroym_data_keystore::KeyStore;
 use syneroym_fdae::{MAX_FETCH_IDS, Mode, Policy};
-use syneroym_identity::Identity;
+use syneroym_identity::{DelegationCertificate, Identity};
 use syneroym_mqtt_broker::{MqttBroker, namespace_topic_for_publish};
 use syneroym_rpc::{
     AbacError, Ability, CandidateRow, NativeInvocation, NativeResponse, NativeService,
@@ -89,7 +89,28 @@ pub struct SynSvcNativeService {
     /// a distinct identity rather than inheriting the previous owner's key.
     /// Deterministic and redeploy-stable for the *same* owner (same
     /// derivation every time), so no new persisted key material is needed.
+    ///
+    /// This key still does every signature (Model A is unchanged); what A2
+    /// adds is the DID the signature is *asserted under* -- with
+    /// `instance_cert` installed, `resolve_relation`'s `RelationshipProof`
+    /// asserts as the member master the certificate names, not this derived
+    /// instance key directly, so a member reinstantiated on another node
+    /// keeps satisfying every policy naming its master (ADR-0020 §2).
     service_identity: Identity,
+    /// The service's installed instance certificate (ADR-0020 §1), when one
+    /// exists -- `deploy` verifies and installs it, and passes the same
+    /// value here so `resolve_relation` can sign under the member master it
+    /// names. **Held by value from construction; `ProxyRouter` reads the
+    /// registry live on every call instead** (`proxy.rs`). Those cannot
+    /// drift today because the sole production writer of an instance
+    /// certificate (`orchestration.rs`) runs inside `deploy`, which rebuilds
+    /// this service in the same pass -- any future code that installs a
+    /// certificate outside `deploy` (an unattended renewal, A5) must also
+    /// refresh this service, or `RelationshipProof::verify`'s wall-clock
+    /// check starts rejecting every proof it signs with no fallback
+    /// (`asserter_did` is already the master, so there is nothing to fall
+    /// back to).
+    instance_cert: Option<DelegationCertificate>,
     /// The Universal Proxy (M04A Slice A1), needed for Slice B3 Phase 4's
     /// cross-service relationship-proof fetch: `resolve_query_auth` calls
     /// out through this to a remote service's `resolve-relation`. `Weak`,
@@ -309,16 +330,18 @@ fn to_payload<T: serde::Serialize>(value: &T) -> RpcResult<NativeResponse> {
 }
 
 /// Signs `ids` as a `syneroym_rpc::RelationshipProof` asserted by
-/// `identity`. Thin wrapper so this file's call sites don't need to know
-/// the proof lives in `syneroym-rpc` (shared with the requesting side,
+/// `identity`, under `certificate`'s master when one is installed. Thin
+/// wrapper so this file's call sites don't need to know the proof lives in
+/// `syneroym-rpc` (shared with the requesting side,
 /// `syneroym_rpc::fdae_fetch::resolve_fetches`, which verifies one).
 fn sign_relationship_proof(
     identity: &Identity,
+    certificate: Option<&DelegationCertificate>,
     relation: &str,
     principal: &str,
     ids: Vec<String>,
 ) -> RpcResult<RelationshipProof> {
-    RelationshipProof::sign(identity, relation, principal, ids)
+    RelationshipProof::sign(identity, certificate, relation, principal, ids)
         .map_err(|e| internal(format!("failed to sign relationship proof: {e}")))
 }
 
@@ -353,6 +376,7 @@ impl SynSvcNativeService {
         owner_did: &str,
         service_proxy: Weak<dyn ServiceProxy>,
         row_authorizer: Weak<dyn RowAuthorizer>,
+        instance_cert: Option<DelegationCertificate>,
     ) -> Self {
         // Derived here, once, rather than at every call site: every
         // existing (and future) construction site already passes the
@@ -370,6 +394,7 @@ impl SynSvcNativeService {
             download_sessions: Mutex::new(HashMap::new()),
             fdae_policy,
             service_identity,
+            instance_cert,
             service_proxy,
             row_authorizer,
         }
@@ -443,16 +468,21 @@ impl SynSvcNativeService {
                 )
             })?;
             let caller = invocation.caller.clone();
-            let results = syneroym_rpc::resolve_fetches(&plan.fetches, &caller, proxy.as_ref())
-                .await
-                .map_err(|e| {
-                    tracing::warn!(
-                        error = %e,
-                        collection,
-                        "fdae: cross-service relationship fetch failed, denying closed"
-                    );
-                    DataLayerError::PermissionDenied
-                })?;
+            let results = syneroym_rpc::resolve_fetches(
+                &plan.fetches,
+                &caller,
+                proxy.as_ref(),
+                &self.service_id,
+            )
+            .await
+            .map_err(|e| {
+                tracing::warn!(
+                    error = %e,
+                    collection,
+                    "fdae: cross-service relationship fetch failed, denying closed"
+                );
+                DataLayerError::PermissionDenied
+            })?;
             let pending = plan.pending.ok_or_else(|| {
                 DataLayerError::Internal(
                     "internal: plan_read reported fetches but no pending sieve".to_string(),
@@ -521,6 +551,7 @@ impl SynSvcNativeService {
         let Some(policy) = self.fdae_policy.as_ref() else {
             let proof = sign_relationship_proof(
                 &self.service_identity,
+                self.instance_cert.as_ref(),
                 &req.relation,
                 &req.principal,
                 Vec::new(),
@@ -543,6 +574,7 @@ impl SynSvcNativeService {
         let Some(table) = syneroym_fdae::definition_table(policy, &req.relation) else {
             let proof = sign_relationship_proof(
                 &self.service_identity,
+                self.instance_cert.as_ref(),
                 &req.relation,
                 &req.principal,
                 Vec::new(),
@@ -652,8 +684,13 @@ impl SynSvcNativeService {
         if ids.len() > MAX_FETCH_IDS {
             return Err(data_layer_error(DataLayerError::QuotaExceeded));
         }
-        let proof =
-            sign_relationship_proof(&self.service_identity, &req.relation, &req.principal, ids)?;
+        let proof = sign_relationship_proof(
+            &self.service_identity,
+            self.instance_cert.as_ref(),
+            &req.relation,
+            &req.principal,
+            ids,
+        )?;
         to_payload(&proof)
     }
 

@@ -94,6 +94,47 @@ impl SqliteEndpointStorage {
                 );",
                 [],
             )?;
+            // A2: which app instance and logical name a deployed service
+            // belongs to, and its resolved dependency bindings. Same
+            // unconditional-creation reasoning as the tables above.
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS service_app_context (
+                    service_id      TEXT PRIMARY KEY,
+                    app_instance_id TEXT NOT NULL,
+                    service_name    TEXT NOT NULL,
+                    created_at      INTEGER NOT NULL
+                );",
+                [],
+            )?;
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS service_bindings (
+                    service_id      TEXT NOT NULL,
+                    app_instance_id TEXT NOT NULL,
+                    dependency_name TEXT NOT NULL,
+                    entry_json      TEXT NOT NULL,
+                    created_at      INTEGER NOT NULL,
+                    PRIMARY KEY (service_id, dependency_name)
+                );",
+                [],
+            )?;
+            // A2 (post-review fix): which caller first declared an app
+            // instance in a deploy's `app_context`. `deploy` uses this as a
+            // first-write-wins takeover guard -- the same shape as
+            // `service_owners`, but keyed by `app_instance_id` instead of
+            // `service_id`, since a binding write targets an app instance
+            // that can span several services. Without it, any caller
+            // authorized to deploy *some* service could name a different,
+            // already-running app instance in its own `app_context` and
+            // overwrite the bindings that instance's other services
+            // resolve.
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS app_instance_owners (
+                    app_instance_id TEXT PRIMARY KEY,
+                    owner_did       TEXT NOT NULL,
+                    created_at      INTEGER NOT NULL
+                );",
+                [],
+            )?;
             conn.execute("PRAGMA user_version = 1", [])?;
 
             Ok(conn)
@@ -287,6 +328,158 @@ impl EndpointStorage for SqliteEndpointStorage {
         task::spawn_blocking(move || -> Result<()> {
             let conn = lock_db(&conn_arc)?;
             conn.execute("DELETE FROM service_instance_certs WHERE service_id = ?1", params![sid])?;
+            Ok(())
+        })
+        .await?
+    }
+
+    async fn load_all_app_contexts(&self) -> Result<Vec<(String, String, String)>> {
+        let conn_arc = self.conn.clone();
+        task::spawn_blocking(move || -> Result<Vec<(String, String, String)>> {
+            let conn = lock_db(&conn_arc)?;
+            let mut stmt = conn.prepare(
+                "SELECT service_id, app_instance_id, service_name FROM service_app_context",
+            )?;
+            let mut contexts = Vec::new();
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                contexts.push((row.get(0)?, row.get(1)?, row.get(2)?));
+            }
+            Ok(contexts)
+        })
+        .await?
+    }
+
+    async fn save_app_context(
+        &self,
+        service_id: &str,
+        app_instance_id: &str,
+        service_name: &str,
+    ) -> Result<()> {
+        let conn_arc = self.conn.clone();
+        let sid = service_id.to_string();
+        let instance = app_instance_id.to_string();
+        let name = service_name.to_string();
+        let created_at: i64 =
+            SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+
+        task::spawn_blocking(move || -> Result<()> {
+            let conn = lock_db(&conn_arc)?;
+            conn.execute(
+                "INSERT INTO service_app_context (service_id, app_instance_id, service_name, \
+                 created_at)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(service_id) DO UPDATE SET
+                    app_instance_id = excluded.app_instance_id,
+                    service_name = excluded.service_name,
+                    created_at = excluded.created_at",
+                params![sid, instance, name, created_at],
+            )?;
+            Ok(())
+        })
+        .await?
+    }
+
+    async fn remove_app_context(&self, service_id: &str) -> Result<()> {
+        let conn_arc = self.conn.clone();
+        let sid = service_id.to_string();
+
+        task::spawn_blocking(move || -> Result<()> {
+            let conn = lock_db(&conn_arc)?;
+            conn.execute("DELETE FROM service_app_context WHERE service_id = ?1", params![sid])?;
+            conn.execute("DELETE FROM service_bindings WHERE service_id = ?1", params![sid])?;
+            Ok(())
+        })
+        .await?
+    }
+
+    async fn load_all_bindings(&self) -> Result<Vec<(String, String, String, String)>> {
+        let conn_arc = self.conn.clone();
+        task::spawn_blocking(move || -> Result<Vec<(String, String, String, String)>> {
+            let conn = lock_db(&conn_arc)?;
+            // `ORDER BY` makes a multi-writer conflict on the same
+            // `(app_instance_id, dependency_name)` (D-A2-10, last-write-
+            // wins) replay the same way on every restart instead of
+            // depending on SQLite's unspecified row order.
+            let mut stmt = conn.prepare(
+                "SELECT service_id, app_instance_id, dependency_name, entry_json FROM \
+                 service_bindings ORDER BY service_id, dependency_name",
+            )?;
+            let mut bindings = Vec::new();
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                bindings.push((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?));
+            }
+            Ok(bindings)
+        })
+        .await?
+    }
+
+    async fn save_binding(
+        &self,
+        service_id: &str,
+        app_instance_id: &str,
+        dependency_name: &str,
+        topology_entry_json: &str,
+    ) -> Result<()> {
+        let conn_arc = self.conn.clone();
+        let sid = service_id.to_string();
+        let instance = app_instance_id.to_string();
+        let name = dependency_name.to_string();
+        let entry = topology_entry_json.to_string();
+        let created_at: i64 =
+            SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+
+        task::spawn_blocking(move || -> Result<()> {
+            let conn = lock_db(&conn_arc)?;
+            conn.execute(
+                "INSERT INTO service_bindings (service_id, app_instance_id, dependency_name, \
+                 entry_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(service_id, dependency_name) DO UPDATE SET
+                    app_instance_id = excluded.app_instance_id,
+                    entry_json = excluded.entry_json,
+                    created_at = excluded.created_at",
+                params![sid, instance, name, entry, created_at],
+            )?;
+            Ok(())
+        })
+        .await?
+    }
+
+    async fn load_all_app_instance_owners(&self) -> Result<Vec<(String, String)>> {
+        let conn_arc = self.conn.clone();
+        task::spawn_blocking(move || -> Result<Vec<(String, String)>> {
+            let conn = lock_db(&conn_arc)?;
+            let mut stmt =
+                conn.prepare("SELECT app_instance_id, owner_did FROM app_instance_owners")?;
+            let mut owners = Vec::new();
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                owners.push((row.get(0)?, row.get(1)?));
+            }
+            Ok(owners)
+        })
+        .await?
+    }
+
+    async fn save_app_instance_owner(&self, app_instance_id: &str, owner_did: &str) -> Result<()> {
+        let conn_arc = self.conn.clone();
+        let instance = app_instance_id.to_string();
+        let owner = owner_did.to_string();
+        let created_at: i64 =
+            SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+
+        task::spawn_blocking(move || -> Result<()> {
+            let conn = lock_db(&conn_arc)?;
+            conn.execute(
+                "INSERT INTO app_instance_owners (app_instance_id, owner_did, created_at)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(app_instance_id) DO UPDATE SET
+                    owner_did = excluded.owner_did,
+                    created_at = excluded.created_at",
+                params![instance, owner, created_at],
+            )?;
             Ok(())
         })
         .await?
@@ -537,5 +730,126 @@ mod tests {
         store.save_cert("svc-1", r#"{"fake":"cert"}"#).await.unwrap();
         let certs = store.load_all_certs().await.unwrap();
         assert_eq!(certs, vec![("svc-1".to_string(), r#"{"fake":"cert"}"#.to_string())]);
+    }
+
+    /// A2's own version of the same regression: a database that predates
+    /// `service_app_context`/`service_bindings` must still gain both tables
+    /// on the next open, for the identical reason `an_existing_database_
+    /// gains_the_certificate_table_on_open` exists one table over.
+    #[tokio::test]
+    async fn an_existing_database_gains_the_app_context_and_binding_tables_on_open() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute(
+                "CREATE TABLE local_endpoints (
+                    service_id TEXT NOT NULL,
+                    interface_name TEXT NOT NULL,
+                    endpoint_type TEXT NOT NULL,
+                    endpoint_data TEXT NOT NULL,
+                    PRIMARY KEY (service_id, interface_name)
+                );",
+                [],
+            )
+            .unwrap();
+            conn.execute("PRAGMA user_version = 1", []).unwrap();
+        }
+
+        let store = SqliteEndpointStorage::new(&path).await.unwrap();
+        store.save_app_context("svc-1", "app-1", "backend").await.unwrap();
+        store.save_binding("svc-1", "app-1", "backend", r#"{"fake":"entry"}"#).await.unwrap();
+        assert_eq!(
+            store.load_all_app_contexts().await.unwrap(),
+            vec![("svc-1".to_string(), "app-1".to_string(), "backend".to_string())]
+        );
+        assert_eq!(
+            store.load_all_bindings().await.unwrap(),
+            vec![(
+                "svc-1".to_string(),
+                "app-1".to_string(),
+                "backend".to_string(),
+                r#"{"fake":"entry"}"#.to_string()
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn saving_an_app_context_upserts() {
+        let (store, _dir) = make_store().await;
+        store.save_app_context("svc-1", "app-1", "backend").await.unwrap();
+        store.save_app_context("svc-1", "app-2", "backend-v2").await.unwrap();
+
+        let contexts = store.load_all_app_contexts().await.unwrap();
+        assert_eq!(
+            contexts,
+            vec![("svc-1".to_string(), "app-2".to_string(), "backend-v2".to_string())]
+        );
+    }
+
+    #[tokio::test]
+    async fn saving_a_binding_upserts_in_place() {
+        let (store, _dir) = make_store().await;
+        store.save_binding("svc-1", "app-1", "backend", r#"{"v":1}"#).await.unwrap();
+        store.save_binding("svc-1", "app-1", "backend", r#"{"v":2}"#).await.unwrap();
+
+        let bindings = store.load_all_bindings().await.unwrap();
+        assert_eq!(
+            bindings,
+            vec![(
+                "svc-1".to_string(),
+                "app-1".to_string(),
+                "backend".to_string(),
+                r#"{"v":2}"#.to_string()
+            )]
+        );
+    }
+
+    /// Finding 05 (post-review fix): `load_all_bindings`'s replay consumer
+    /// (`substrate::runtime::replay_persisted_bindings`) discards
+    /// `service_id` and keys purely on `(app_instance_id, dependency_name)`
+    /// -- last-write-wins (D-A2-10) means a conflict between two services'
+    /// rows for the same instance/name depends entirely on iteration order.
+    /// Inserted deliberately out of both id order and insertion order, so a
+    /// `SELECT` with no `ORDER BY` (SQLite's row order is otherwise
+    /// unspecified) would have a real chance of returning them unsorted.
+    #[tokio::test]
+    async fn loading_all_bindings_is_ordered_by_service_id_then_dependency_name() {
+        let (store, _dir) = make_store().await;
+        store.save_binding("svc-b", "app-1", "y-dep", r#"{"v":1}"#).await.unwrap();
+        store.save_binding("svc-a", "app-1", "z-dep", r#"{"v":1}"#).await.unwrap();
+        store.save_binding("svc-a", "app-1", "x-dep", r#"{"v":1}"#).await.unwrap();
+        store.save_binding("svc-b", "app-1", "a-dep", r#"{"v":1}"#).await.unwrap();
+
+        let bindings = store.load_all_bindings().await.unwrap();
+        let ids: Vec<(&str, &str)> = bindings
+            .iter()
+            .map(|(sid, _instance, dep, _entry)| (sid.as_str(), dep.as_str()))
+            .collect();
+        assert_eq!(
+            ids,
+            vec![("svc-a", "x-dep"), ("svc-a", "z-dep"), ("svc-b", "a-dep"), ("svc-b", "y-dep")],
+            "replay must be reproducible across restarts regardless of insertion order or \
+             SQLite's own unspecified row order"
+        );
+    }
+
+    #[tokio::test]
+    async fn removing_an_app_context_removes_its_binding_rows_too() {
+        let (store, _dir) = make_store().await;
+        store.save_app_context("svc-1", "app-1", "backend").await.unwrap();
+        store.save_binding("svc-1", "app-1", "backend-dep", r#"{"fake":"entry"}"#).await.unwrap();
+
+        store.remove_app_context("svc-1").await.unwrap();
+
+        assert!(store.load_all_app_contexts().await.unwrap().is_empty());
+        assert!(store.load_all_bindings().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn removing_an_app_context_is_idempotent() {
+        let (store, _dir) = make_store().await;
+        store.remove_app_context("never-deployed").await.unwrap();
     }
 }

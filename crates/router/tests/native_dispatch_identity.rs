@@ -168,6 +168,7 @@ async fn test_route_handler() -> (RouteHandler, HttpRouteRegistry) {
             blob_provider.clone(),
             messaging_broker.clone(),
             registry.clone(),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap(),
@@ -286,6 +287,7 @@ async fn authenticated_caller_identity_becomes_creator_id_not_service_id() {
         "did:key:zTestOwner",
         syneroym_sandbox_wasm::empty_service_proxy(),
         syneroym_rpc::empty_row_authorizer(),
+        None,
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -351,6 +353,7 @@ async fn execute_ddl_denied_for_ordinary_native_caller() {
         "did:key:zTestOwner",
         syneroym_sandbox_wasm::empty_service_proxy(),
         syneroym_rpc::empty_row_authorizer(),
+        None,
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -397,6 +400,7 @@ async fn drop_collection_denied_for_ordinary_native_caller() {
         "did:key:zTestOwner",
         syneroym_sandbox_wasm::empty_service_proxy(),
         syneroym_rpc::empty_row_authorizer(),
+        None,
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -441,6 +445,7 @@ async fn execute_ddl_allowed_for_admin_ucan_root_native_caller() {
         "did:key:zTestOwner",
         syneroym_sandbox_wasm::empty_service_proxy(),
         syneroym_rpc::empty_row_authorizer(),
+        None,
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -481,6 +486,7 @@ async fn ordinary_caller_denied_query_raw() {
         "did:key:zTestOwner",
         syneroym_sandbox_wasm::empty_service_proxy(),
         syneroym_rpc::empty_row_authorizer(),
+        None,
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -525,6 +531,7 @@ async fn admin_caller_admitted_query_raw() {
         "did:key:zTestOwner",
         syneroym_sandbox_wasm::empty_service_proxy(),
         syneroym_rpc::empty_row_authorizer(),
+        None,
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -568,6 +575,7 @@ async fn query_raw_binds_params_no_injection() {
         "did:key:zTestOwner",
         syneroym_sandbox_wasm::empty_service_proxy(),
         syneroym_rpc::empty_row_authorizer(),
+        None,
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -651,6 +659,7 @@ async fn query_raw_null_param_round_trips() {
         "did:key:zTestOwner",
         syneroym_sandbox_wasm::empty_service_proxy(),
         syneroym_rpc::empty_row_authorizer(),
+        None,
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -709,6 +718,7 @@ async fn query_raw_result_cells_are_round_trippable_as_params() {
         "did:key:zTestOwner",
         syneroym_sandbox_wasm::empty_service_proxy(),
         syneroym_rpc::empty_row_authorizer(),
+        None,
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -922,6 +932,7 @@ async fn ordinary_caller_admitted_aggregate() {
         "did:key:zTestOwner",
         syneroym_sandbox_wasm::empty_service_proxy(),
         syneroym_rpc::empty_row_authorizer(),
+        None,
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -997,6 +1008,7 @@ async fn aggregate_malformed_pipeline_is_schema_violation() {
         "did:key:zTestOwner",
         syneroym_sandbox_wasm::empty_service_proxy(),
         syneroym_rpc::empty_row_authorizer(),
+        None,
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -1116,6 +1128,7 @@ async fn native_fdae_policy_row_filters_and_masks_for_two_distinct_verified_call
         "did:key:zTestOwner",
         syneroym_sandbox_wasm::empty_service_proxy(),
         syneroym_rpc::empty_row_authorizer(),
+        None,
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -1219,6 +1232,7 @@ async fn native_fdae_policy_authorizes_writes_for_one_verified_caller_and_denies
         "did:key:zTestOwner",
         syneroym_sandbox_wasm::empty_service_proxy(),
         syneroym_rpc::empty_row_authorizer(),
+        None,
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -1314,6 +1328,7 @@ async fn native_fdae_policy_denies_put_delete_and_batch_mutate_for_an_unreachabl
         "did:key:zTestOwner",
         syneroym_sandbox_wasm::empty_service_proxy(),
         syneroym_rpc::empty_row_authorizer(),
+        None,
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -1491,6 +1506,7 @@ async fn native_delete_many_is_row_filtered_as_a_write_operation() {
         "did:key:zTestOwner",
         syneroym_sandbox_wasm::empty_service_proxy(),
         syneroym_rpc::empty_row_authorizer(),
+        None,
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -1569,6 +1585,7 @@ async fn native_aggregate_is_row_filtered_through_native_dispatch() {
         "did:key:zTestOwner",
         syneroym_sandbox_wasm::empty_service_proxy(),
         syneroym_rpc::empty_row_authorizer(),
+        None,
     ));
     route_handler.register_native_service(service_id.clone(), data_service);
 
@@ -1780,6 +1797,7 @@ async fn resolve_relation_service_and_pipeline_with(
         owner_did,
         syneroym_sandbox_wasm::empty_service_proxy(),
         syneroym_rpc::empty_row_authorizer(),
+        None,
     ));
     route_handler.register_native_service(service_id.to_string(), data_service);
 
@@ -2377,6 +2395,7 @@ async fn build_hr_svc_proxy_router(
         owner_did,
         syneroym_sandbox_wasm::empty_service_proxy(),
         syneroym_rpc::empty_row_authorizer(),
+        None,
     ));
     // Seeded directly against the store, `auth: None` -- `resolvable_
     // employee_policy` declares no `data-layer/write` permission at all, so
@@ -2510,10 +2529,14 @@ async fn plan_read_resolve_fetches_finalize_join_end_to_end_through_a_real_proxy
     // dispatches it to hr-svc's native `resolve-relation`, verifies the
     // returned `RelationshipProof` against `fetch.expected_asserter_did`,
     // and returns a `FetchResult` carrying real provenance.
-    let results =
-        syneroym_rpc::resolve_fetches(&plan.fetches, &proxying_caller, proxy_router.as_ref())
-            .await
-            .unwrap();
+    let results = syneroym_rpc::resolve_fetches(
+        &plan.fetches,
+        &proxying_caller,
+        proxy_router.as_ref(),
+        local_service_id,
+    )
+    .await
+    .unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].ids, vec!["emp-alice".to_string()]);
     assert_eq!(results[0].trace.asserter_did, expected_asserter_did);
@@ -2622,6 +2645,7 @@ async fn native_dispatch_query_resolves_a_cross_service_fetch_end_to_end() {
         "did:key:zAppSvcOwner",
         Arc::downgrade(&service_proxy),
         syneroym_rpc::empty_row_authorizer(),
+        None,
     );
 
     // Seeded directly against the store, `auth: None` -- `local_policy`
@@ -2732,9 +2756,14 @@ async fn resolve_fetches_denies_when_the_real_proxys_asserter_does_not_match_the
     )
     .unwrap();
 
-    let err = syneroym_rpc::resolve_fetches(&plan.fetches, &proxying_caller, proxy_router.as_ref())
-        .await
-        .unwrap_err();
+    let err = syneroym_rpc::resolve_fetches(
+        &plan.fetches,
+        &proxying_caller,
+        proxy_router.as_ref(),
+        "app-svc-mismatch-test",
+    )
+    .await
+    .unwrap_err();
     assert!(
         matches!(err, FetchError::ProofInvalid { .. }),
         "a real, correctly-signed proof from the wrong asserter must still be rejected: {err:?}"
@@ -2794,6 +2823,7 @@ async fn native_dispatch_denies_closed_on_a_cross_service_fetch_failure() {
         "did:key:zTestOwner",
         Arc::downgrade(&stub_proxy),
         syneroym_rpc::empty_row_authorizer(),
+        None,
     );
 
     let caller = CallerContext {

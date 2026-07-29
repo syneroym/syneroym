@@ -182,6 +182,44 @@ impl EndpointStorage for RemoveOwnerFailingStorage {
     async fn remove_cert(&self, service_id: &str) -> anyhow::Result<()> {
         self.inner.remove_cert(service_id).await
     }
+    async fn load_all_app_contexts(&self) -> anyhow::Result<Vec<(String, String, String)>> {
+        self.inner.load_all_app_contexts().await
+    }
+    async fn save_app_context(
+        &self,
+        service_id: &str,
+        app_instance_id: &str,
+        service_name: &str,
+    ) -> anyhow::Result<()> {
+        self.inner.save_app_context(service_id, app_instance_id, service_name).await
+    }
+    async fn remove_app_context(&self, service_id: &str) -> anyhow::Result<()> {
+        self.inner.remove_app_context(service_id).await
+    }
+    async fn load_all_bindings(&self) -> anyhow::Result<Vec<(String, String, String, String)>> {
+        self.inner.load_all_bindings().await
+    }
+    async fn save_binding(
+        &self,
+        service_id: &str,
+        app_instance_id: &str,
+        dependency_name: &str,
+        topology_entry_json: &str,
+    ) -> anyhow::Result<()> {
+        self.inner
+            .save_binding(service_id, app_instance_id, dependency_name, topology_entry_json)
+            .await
+    }
+    async fn load_all_app_instance_owners(&self) -> anyhow::Result<Vec<(String, String)>> {
+        self.inner.load_all_app_instance_owners().await
+    }
+    async fn save_app_instance_owner(
+        &self,
+        app_instance_id: &str,
+        owner_did: &str,
+    ) -> anyhow::Result<()> {
+        self.inner.save_app_instance_owner(app_instance_id, owner_did).await
+    }
 }
 
 /// A TCP manifest with one real endpoint -- `list()` only surfaces a
@@ -236,6 +274,7 @@ async fn test_service_with_registry(
             blob_provider.clone(),
             messaging_broker.clone(),
             registry.clone(),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap(),
@@ -258,6 +297,7 @@ async fn test_service_with_registry(
         native_dispatch,
         http_routes,
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        syneroym_app_orchestration::empty_resolver(),
     )
     .await
     .unwrap()

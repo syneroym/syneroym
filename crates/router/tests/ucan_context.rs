@@ -85,6 +85,7 @@ async fn test_route_handler(service_id: &str) -> RouteHandler {
             blob_provider.clone(),
             messaging_broker.clone(),
             registry.clone(),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap(),
@@ -102,6 +103,7 @@ async fn test_route_handler(service_id: &str) -> RouteHandler {
         "did:key:zTestOwner",
         syneroym_sandbox_wasm::empty_service_proxy(),
         syneroym_rpc::empty_row_authorizer(),
+        None,
     ));
 
     let deps = RouteHandlerDeps {

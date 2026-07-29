@@ -162,6 +162,7 @@ async fn test_service_with_registry(
             blob_provider.clone(),
             messaging_broker.clone(),
             registry.clone(),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap(),
@@ -184,6 +185,7 @@ async fn test_service_with_registry(
         native_dispatch,
         http_routes,
         Arc::new(syneroym_identity::Identity::generate().unwrap()),
+        syneroym_app_orchestration::empty_resolver(),
     )
     .await
     .unwrap()

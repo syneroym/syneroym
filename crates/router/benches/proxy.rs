@@ -48,7 +48,7 @@ fn base_request(target_service: &str, interface: &str, method: &str) -> ProxyReq
         method: method.to_string(),
         params: Value::Null,
         caller: CallerContext::service_system("bench-caller"),
-        origin: CallOrigin::Native,
+        origin: CallOrigin::Native { service_id: None },
         protocol: ProxyProtocol::JsonRpcV1,
         idempotent: false,
         timeout: None,
@@ -124,6 +124,7 @@ fn bench_proxy_local_wasm(c: &mut Criterion) {
                 blob_provider,
                 messaging_broker,
                 registry.clone(),
+                syneroym_app_orchestration::empty_resolver(),
             ))
             .unwrap(),
     );

@@ -16,6 +16,9 @@ use std::{
 use axum::{Json, Router, routing};
 use dashmap::DashMap;
 use iroh::EndpointAddr;
+use syneroym_app_orchestration::{
+    AppInstanceId, AppRegistry, LogicalResolver, LogicalServiceName, StaticInventory, TopologyEntry,
+};
 use syneroym_client_gateway::ClientGateway;
 use syneroym_community_registry::EcosystemRegistry;
 use syneroym_control_plane::ControlPlaneService;
@@ -480,6 +483,39 @@ async fn setup_router(
     Ok((router, endpoint_registry, publisher))
 }
 
+/// Rebuilds the in-memory `StaticInventory` from every dependency binding
+/// `EndpointRegistry` has persisted (A2, ADR-0021 §5) -- a restarted
+/// substrate must answer a guest's first call, and nothing re-pushes on
+/// restart. A row that fails to parse is warned and skipped, exactly like
+/// the unparseable-`TopologyEntry`-JSON case beside it: every one of the
+/// three stored strings is caller-supplied at some point in its history
+/// (D-A2-15), so `LogicalServiceName::new` would *panic* substrate startup
+/// on a row containing a `/`, which is a strictly worse outcome than
+/// skipping that one row.
+async fn replay_persisted_bindings(
+    registry: &EndpointRegistry,
+) -> anyhow::Result<Arc<StaticInventory>> {
+    let app_registry = Arc::new(StaticInventory::new());
+    for (_service_id, instance, dep_name, entry_json) in registry.all_bindings().await? {
+        let parsed = (|| -> anyhow::Result<_> {
+            Ok((
+                AppInstanceId::try_new(&instance)?,
+                LogicalServiceName::try_new(&dep_name)?,
+                serde_json::from_str::<TopologyEntry>(&entry_json)?,
+            ))
+        })();
+        match parsed {
+            Ok((instance_id, service_name, entry)) => {
+                app_registry.register(instance_id, service_name, entry);
+            }
+            Err(e) => {
+                warn!(%instance, %dep_name, error = %e, "skipping an unreadable persisted binding");
+            }
+        }
+    }
+    Ok(app_registry)
+}
+
 /// Constructs every capability the connection router holds and dispatches
 /// through but does not itself build: storage, blob, and messaging
 /// backends, the WASM and container sandboxes, and the control-plane
@@ -506,6 +542,13 @@ async fn build_route_handler_deps(
         channel_capacity: config.mqtt.channel_capacity as usize,
     })?);
 
+    // A2 (ADR-0021 §2): replay persisted bindings before anything can
+    // resolve one -- a restarted substrate must answer a guest's first
+    // call, and nothing re-pushes on restart (ADR-0021 §5 -- push failure
+    // is sticky, and so is push absence).
+    let app_registry = replay_persisted_bindings(registry).await?;
+    let logical_resolver = Arc::new(LogicalResolver::new(app_registry));
+
     let app_sandbox_engine = Arc::new(
         AppSandboxEngine::init(
             config,
@@ -515,6 +558,7 @@ async fn build_route_handler_deps(
             blob_provider.clone(),
             messaging_broker.clone(),
             registry.clone(),
+            logical_resolver.clone(),
         )
         .await?,
     );
@@ -559,6 +603,7 @@ async fn build_route_handler_deps(
         native_dispatch.clone(),
         http_routes.clone(),
         node_identity,
+        logical_resolver,
     )
     .await?;
     let control_plane_service = Arc::new(control_plane_service);
@@ -799,6 +844,7 @@ fn build_signed_endpoint_info(
 mod tests {
     use std::sync::Arc;
 
+    use syneroym_app_orchestration::{ServiceId, TopologyEpoch, TopologyMode};
     use syneroym_core::storage::MockStorage;
     use syneroym_identity::{DelegationCertificate, delegation::SCOPE_SERVICE_INSTANCE};
 
@@ -839,5 +885,47 @@ mod tests {
 
         let warned = warn_on_near_expiry_instance_certs(&registry);
         assert_eq!(warned, vec!["near-expiry-svc".to_string()]);
+    }
+
+    /// D-A2-15: a persisted binding row that would panic `LogicalServiceName::
+    /// new` (a `/` in the dependency name) or fails to parse as JSON must be
+    /// warned and skipped, not crash substrate startup -- and a good row
+    /// alongside it must still replay.
+    #[tokio::test]
+    async fn an_unreadable_persisted_binding_is_skipped_not_fatal() {
+        let storage = Arc::new(MockStorage::new());
+        let registry = EndpointRegistry::new(storage.clone()).await.unwrap();
+
+        registry
+            .save_binding("svc-slash", "app-1", "bad/name", r#"{"fake":"entry"}"#)
+            .await
+            .unwrap();
+        registry.save_binding("svc-badjson", "app-1", "backend", "not json").await.unwrap();
+        let good_entry = TopologyEntry {
+            mode: TopologyMode::Singleton,
+            members: vec![ServiceId::new("did:key:zGoodMember")],
+            sharding_strategy: None,
+            epoch: TopologyEpoch::default(),
+            cache_ttl: Duration::from_secs(60),
+        };
+        registry
+            .save_binding(
+                "svc-good",
+                "app-1",
+                "good-dep",
+                &serde_json::to_string(&good_entry).unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let app_registry = replay_persisted_bindings(&registry).await.unwrap();
+
+        assert!(
+            app_registry
+                .get(&AppInstanceId::new("app-1"), &LogicalServiceName::new("good-dep"))
+                .is_some(),
+            "the well-formed row alongside the corrupt ones must still replay"
+        );
+        assert_eq!(app_registry.list(&AppInstanceId::new("app-1")).len(), 1);
     }
 }

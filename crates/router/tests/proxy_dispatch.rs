@@ -18,6 +18,10 @@ use std::{
 
 use dashmap::DashMap;
 use serde_json::{Value, json};
+use syneroym_app_orchestration::{
+    AppInstanceId, LogicalResolver, LogicalServiceName, ServiceId, StaticInventory, TopologyEntry,
+    TopologyEpoch, TopologyMode,
+};
 use syneroym_control_plane::SynSvcNativeService;
 use syneroym_core::{
     config::SubstrateConfig,
@@ -105,6 +109,7 @@ async fn test_route_handler_with_proxy_components() -> Option<RouteHandler> {
             blob_provider.clone(),
             messaging_broker.clone(),
             registry.clone(),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap(),
@@ -167,6 +172,118 @@ async fn test_route_handler_with_proxy_components() -> Option<RouteHandler> {
     )
 }
 
+/// Same as `test_route_handler_with_proxy_components`, but `proxy-caller` is
+/// deployed as part of app instance `"app-1"`, with a declared dependency
+/// `"callee-dep"` bound to `proxy-callee` -- so a guest driving `call-peer`
+/// with `target-kind = "dependency"` exercises A2's real host-side
+/// resolution path end to end, not just the Rust-level unit tests in
+/// `sandbox_wasm::host_capabilities`.
+async fn test_route_handler_with_a_bound_dependency() -> Option<(RouteHandler, Arc<LogicalResolver>)>
+{
+    let proxy_test_bytes = fs::read(test_constants::proxy_test_wasm_path()).ok()?;
+    let greeter_bytes = fs::read(test_constants::greeter_wasm_path()).ok()?;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let config = SubstrateConfig::default();
+    let key_store = Arc::new(KeyStore::new());
+    let storage_provider = Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+    let blob_provider: Arc<dyn BlobProvider> =
+        Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+    let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+    let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+
+    registry
+        .set_app_context(
+            "proxy-caller".to_string(),
+            "app-1".to_string(),
+            "proxy-caller-svc".to_string(),
+        )
+        .await
+        .unwrap();
+
+    let app_registry = Arc::new(StaticInventory::new());
+    let logical_resolver = Arc::new(LogicalResolver::new(app_registry));
+    logical_resolver.register(
+        AppInstanceId::new("app-1"),
+        LogicalServiceName::new("callee-dep"),
+        TopologyEntry {
+            mode: TopologyMode::Singleton,
+            members: vec![ServiceId::new("did:key:zProxyCallee")],
+            sharding_strategy: None,
+            epoch: TopologyEpoch::default(),
+            cache_ttl: std::time::Duration::from_secs(60),
+        },
+    );
+
+    let app_sandbox_engine = Arc::new(
+        AppSandboxEngine::init(
+            &config,
+            vec![],
+            key_store.clone(),
+            storage_provider.clone(),
+            blob_provider.clone(),
+            messaging_broker.clone(),
+            registry.clone(),
+            logical_resolver.clone(),
+        )
+        .await
+        .unwrap(),
+    );
+    app_sandbox_engine.self_weak.set(Arc::downgrade(&app_sandbox_engine)).unwrap();
+
+    app_sandbox_engine
+        .deploy_wasm("proxy-caller", &wasm_deploy_manifest(proxy_test_bytes))
+        .await
+        .unwrap();
+    app_sandbox_engine
+        .deploy_wasm("did:key:zProxyCallee", &wasm_deploy_manifest(greeter_bytes))
+        .await
+        .unwrap();
+
+    registry
+        .register(
+            "proxy-caller".to_string(),
+            test_constants::PROXY_TEST_DRIVER_INTERFACE.to_string(),
+            SubstrateEndpoint::WasmChannel { service_id: "proxy-caller".to_string() },
+        )
+        .await
+        .unwrap();
+    registry
+        .register(
+            "did:key:zProxyCallee".to_string(),
+            test_constants::GREETER_INTERFACE_NAME.to_string(),
+            SubstrateEndpoint::WasmChannel { service_id: "did:key:zProxyCallee".to_string() },
+        )
+        .await
+        .unwrap();
+
+    let http_routes: HttpRouteRegistry = Arc::new(DashMap::new());
+    let deps = RouteHandlerDeps {
+        key_store,
+        storage_provider,
+        app_sandbox_engine,
+        messaging_broker,
+        native_dispatch: NativeDispatchRegistry::default(),
+        http_routes,
+        control_plane_service: Arc::new(NoopControlPlane),
+        control_plane: None,
+    };
+
+    Some((
+        RouteHandler::init(
+            "test-orchestrator".to_string(),
+            &config,
+            registry,
+            [9u8; 32],
+            None,
+            deps,
+        )
+        .await
+        .unwrap(),
+        logical_resolver,
+    ))
+}
+
 fn call_peer_pipeline() -> RoutePipeline {
     RoutePipeline {
         encryption: EncryptionStage::None,
@@ -211,6 +328,7 @@ async fn guest_to_guest_same_node_proxy_call_returns_typed_result() {
         "interface": test_constants::GREETER_INTERFACE_NAME,
         "method": "greet",
         "params": "[\"World\"]",
+        "target-kind": "service",
     });
     let body = json_rpc_body("call-peer", params);
 
@@ -224,6 +342,82 @@ async fn guest_to_guest_same_node_proxy_call_returns_typed_result() {
     assert!(
         result.contains("Hello, World!"),
         "expected the callee's greeting in the result, got: {result:?}"
+    );
+}
+
+/// A2 (ADR-0021 §2), the guest side, driven live: `proxy-caller` names its
+/// declared dependency `"callee-dep"` -- not `proxy-callee`'s DID -- and the
+/// host resolves it before the request is built. Then the binding is
+/// re-registered to a different member, and the *same* declared name reaches
+/// the new target on the next call with no guest-visible change -- proving a
+/// guest never holds the resolved identifier and cannot snapshot it past a
+/// re-push (the same claim `dependency_binding_e2e` would prove across two
+/// real substrates).
+#[tokio::test]
+async fn guest_dependency_target_reaches_the_bound_member_and_a_re_registration_takes_effect_on_the_next_call()
+ {
+    let Some((route_handler, logical_resolver)) =
+        test_route_handler_with_a_bound_dependency().await
+    else {
+        eprintln!("skipping: proxy-test/greeter wasm artifacts not built");
+        return;
+    };
+
+    let params = json!({
+        "service": "callee-dep",
+        "interface": test_constants::GREETER_INTERFACE_NAME,
+        "method": "greet",
+        "params": "[\"World\"]",
+        "target-kind": "dependency",
+    });
+    let body = json_rpc_body("call-peer", params.clone());
+
+    let response_bytes = route_handler
+        .dispatch_json_rpc_once(&call_peer_pipeline(), &call_peer_preamble(), None, &body)
+        .await
+        .unwrap();
+    let response: Value = serde_json::from_slice(&response_bytes).unwrap();
+    assert!(response.get("error").is_none(), "call-peer failed: {response:?}");
+    let result = response.get("result").and_then(Value::as_str).unwrap_or_default();
+    assert!(
+        result.contains("Hello, World!"),
+        "expected the bound member's greeting in the result, got: {result:?}"
+    );
+
+    // Re-register the same declared name onto a target that doesn't exist
+    // (`greeter`'s WIT interface isn't registered under this id) -- if the
+    // guest had somehow captured `proxy-callee`'s resolved DID rather than
+    // re-resolving `callee-dep` on every call, this would still succeed.
+    logical_resolver.register(
+        AppInstanceId::new("app-1"),
+        LogicalServiceName::new("callee-dep"),
+        TopologyEntry {
+            mode: TopologyMode::Singleton,
+            members: vec![ServiceId::new("did:key:zNoSuchMember")],
+            sharding_strategy: None,
+            epoch: TopologyEpoch(1),
+            cache_ttl: std::time::Duration::from_secs(60),
+        },
+    );
+
+    let body = json_rpc_body("call-peer", params);
+    let response_bytes = route_handler
+        .dispatch_json_rpc_once(&call_peer_pipeline(), &call_peer_preamble(), None, &body)
+        .await
+        .unwrap();
+    let response: Value = serde_json::from_slice(&response_bytes).unwrap();
+    let error_message = response
+        .get("error")
+        .and_then(|e| e.get("message"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        error_message.contains("ServiceNotFound") && error_message.contains("zNoSuchMember"),
+        "re-registering the binding must change what the *same* declared name resolves to on the \
+         very next call, proving the guest never held a snapshot of the old target -- a transport \
+         hiccup or an unrelated deserialization fault must not pass this assertion, so only the \
+         specific ServiceNotFound-for-the-new-target error the re-registration should produce \
+         counts: {response:?}"
     );
 }
 
@@ -243,6 +437,7 @@ async fn guest_cross_service_native_capability_through_proxy_is_permission_denie
         "interface": "data-layer",
         "method": "get",
         "params": "{}",
+        "target-kind": "service",
     });
     let body = json_rpc_body("call-peer", params);
 
@@ -334,6 +529,7 @@ async fn test_route_handler_with_self_native_data_layer(
             blob_provider.clone(),
             messaging_broker.clone(),
             registry.clone(),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap(),
@@ -389,6 +585,7 @@ async fn test_route_handler_with_self_native_data_layer(
         "did:key:zTestOwner",
         syneroym_sandbox_wasm::empty_service_proxy(),
         syneroym_rpc::empty_row_authorizer(),
+        None,
     ));
     native_dispatch.insert("proxy-caller".to_string(), native_service as Arc<dyn NativeService>);
 
@@ -451,6 +648,7 @@ async fn test_route_handler_with_self_native_data_layer_and_stage4(
             blob_provider.clone(),
             messaging_broker.clone(),
             registry.clone(),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap(),
@@ -511,6 +709,7 @@ async fn test_route_handler_with_self_native_data_layer_and_stage4(
         "did:key:zTestOwner",
         syneroym_sandbox_wasm::empty_service_proxy(),
         row_authorizer,
+        None,
     ));
     native_dispatch.insert("proxy-caller".to_string(), native_service as Arc<dyn NativeService>);
 
@@ -557,6 +756,7 @@ async fn self_proxy_call(
         "interface": "data-layer",
         "method": method,
         "params": params.to_string(),
+        "target-kind": "service",
     });
     let body = json_rpc_body("call-peer", call_params);
     let response_bytes = route_handler

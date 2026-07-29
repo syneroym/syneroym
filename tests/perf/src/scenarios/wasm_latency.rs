@@ -75,6 +75,8 @@ pub async fn run_scenario() -> Result<()> {
             None,
             false,
             empty_row_authorizer(),
+            None,
+            syneroym_app_orchestration::empty_resolver(),
         );
         let mut store = Store::new(&engine, host_state);
         let instance = linker.instantiate_async(&mut store, &component).await?;
@@ -111,6 +113,8 @@ pub async fn run_scenario() -> Result<()> {
             None,
             false,
             empty_row_authorizer(),
+            None,
+            syneroym_app_orchestration::empty_resolver(),
         );
         let mut store = Store::new(&engine, host_state);
         let instance = linker.instantiate_async(&mut store, &component).await?;

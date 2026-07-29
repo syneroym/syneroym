@@ -329,7 +329,7 @@ mod tests {
                     rotation_policy: Default::default(),
                     fdae: None,
                 },
-                resolved_dependencies: vec![],
+                resolved_dependencies: BTreeMap::new(),
                 topology_mode: TopologyMode::Singleton,
             }],
         }

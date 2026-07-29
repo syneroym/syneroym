@@ -45,6 +45,48 @@ pub trait EndpointStorage: Send + Sync {
     async fn save_cert(&self, service_id: &str, certificate_json: &str) -> Result<()>;
     /// Forget `service_id`'s instance certificate. Idempotent.
     async fn remove_cert(&self, service_id: &str) -> Result<()>;
+
+    /// Load every recorded app context as (`service_id`, `app_instance_id`,
+    /// `service_name`) (A2).
+    async fn load_all_app_contexts(&self) -> Result<Vec<(String, String, String)>>;
+    /// Record which app instance and logical name `service_id` was deployed
+    /// as (upsert).
+    async fn save_app_context(
+        &self,
+        service_id: &str,
+        app_instance_id: &str,
+        service_name: &str,
+    ) -> Result<()>;
+    /// Forget `service_id`'s app context and every binding row it wrote.
+    /// Idempotent.
+    async fn remove_app_context(&self, service_id: &str) -> Result<()>;
+
+    /// Load every recorded dependency binding as (`service_id`,
+    /// `app_instance_id`, `dependency_name`, `topology_entry_json`).
+    async fn load_all_bindings(&self) -> Result<Vec<(String, String, String, String)>>;
+    /// Record one dependency binding for `service_id` (upsert on
+    /// (`service_id`, `dependency_name`)). There is no `remove_binding`:
+    /// `remove_app_context` covers binding removal too, since a redeploy
+    /// overwrites the rows it still declares and `deploy` clears the
+    /// service's rows first.
+    async fn save_binding(
+        &self,
+        service_id: &str,
+        app_instance_id: &str,
+        dependency_name: &str,
+        topology_entry_json: &str,
+    ) -> Result<()>;
+
+    /// Load every recorded app-instance owner as (`app_instance_id`,
+    /// `owner_did`) (A2 post-review fix, first-write-wins deploy takeover
+    /// guard -- see `save_app_instance_owner`).
+    async fn load_all_app_instance_owners(&self) -> Result<Vec<(String, String)>>;
+    /// Record `owner_did` as the first caller to declare `app_instance_id`
+    /// in a deploy's `app_context` (upsert). Overwrites any existing entry
+    /// -- the takeover check is the caller's responsibility
+    /// (`ControlPlaneService::deploy_with_context`), not this store's, the
+    /// same split `save_owner` already uses for `service_id` ownership.
+    async fn save_app_instance_owner(&self, app_instance_id: &str, owner_did: &str) -> Result<()>;
 }
 
 /// A thread-safe in-memory storage for testing.
@@ -53,6 +95,9 @@ pub struct MockStorage {
     data: Arc<DashMap<(String, String), SubstrateEndpoint>>,
     owners: Arc<DashMap<String, String>>,
     certs: Arc<DashMap<String, String>>,
+    app_contexts: Arc<DashMap<String, (String, String)>>,
+    bindings: Arc<DashMap<(String, String), (String, String)>>,
+    app_instance_owners: Arc<DashMap<String, String>>,
 }
 
 impl Default for MockStorage {
@@ -68,6 +113,9 @@ impl MockStorage {
             data: Arc::new(DashMap::new()),
             owners: Arc::new(DashMap::new()),
             certs: Arc::new(DashMap::new()),
+            app_contexts: Arc::new(DashMap::new()),
+            bindings: Arc::new(DashMap::new()),
+            app_instance_owners: Arc::new(DashMap::new()),
         }
     }
 }
@@ -109,6 +157,59 @@ impl EndpointStorage for MockStorage {
     }
     async fn remove_cert(&self, service_id: &str) -> Result<()> {
         self.certs.remove(service_id);
+        Ok(())
+    }
+    async fn load_all_app_contexts(&self) -> Result<Vec<(String, String, String)>> {
+        Ok(self
+            .app_contexts
+            .iter()
+            .map(|e| (e.key().clone(), e.value().0.clone(), e.value().1.clone()))
+            .collect())
+    }
+    async fn save_app_context(
+        &self,
+        service_id: &str,
+        app_instance_id: &str,
+        service_name: &str,
+    ) -> Result<()> {
+        self.app_contexts.insert(
+            service_id.to_string(),
+            (app_instance_id.to_string(), service_name.to_string()),
+        );
+        Ok(())
+    }
+    async fn remove_app_context(&self, service_id: &str) -> Result<()> {
+        self.app_contexts.remove(service_id);
+        self.bindings.retain(|(sid, _), _| sid != service_id);
+        Ok(())
+    }
+    async fn load_all_bindings(&self) -> Result<Vec<(String, String, String, String)>> {
+        Ok(self
+            .bindings
+            .iter()
+            .map(|e| {
+                (e.key().0.clone(), e.value().0.clone(), e.key().1.clone(), e.value().1.clone())
+            })
+            .collect())
+    }
+    async fn save_binding(
+        &self,
+        service_id: &str,
+        app_instance_id: &str,
+        dependency_name: &str,
+        topology_entry_json: &str,
+    ) -> Result<()> {
+        self.bindings.insert(
+            (service_id.to_string(), dependency_name.to_string()),
+            (app_instance_id.to_string(), topology_entry_json.to_string()),
+        );
+        Ok(())
+    }
+    async fn load_all_app_instance_owners(&self) -> Result<Vec<(String, String)>> {
+        Ok(self.app_instance_owners.iter().map(|e| (e.key().clone(), e.value().clone())).collect())
+    }
+    async fn save_app_instance_owner(&self, app_instance_id: &str, owner_did: &str) -> Result<()> {
+        self.app_instance_owners.insert(app_instance_id.to_string(), owner_did.to_string());
         Ok(())
     }
 }

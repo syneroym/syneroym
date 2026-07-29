@@ -15,8 +15,24 @@ interface proxy {
         data: option<string>,
     }
 
+    /// What a call is addressed to. Raw-DID targeting stays for the callers
+    /// that are not dependency resolution: a guest's self-proxy into its own
+    /// native capabilities, native dispatch, and external/`roymctl` callers
+    /// that legitimately address a specific DID. A declared dependency is
+    /// resolved by the host against *this* component's own app instance --
+    /// a guest cannot name another app's instance, and cannot snapshot the
+    /// resolved DID, so a re-pushed binding takes effect on the next call.
+    variant call-target {
+        service(string),
+        dependency(string),
+    }
+
     variant proxy-error {
         service-not-found(string),
+        /// The named dependency resolves to nothing: never declared, or its
+        /// binding has not arrived yet. Distinct from `service-not-found`,
+        /// which is a DID that does not resolve to an address.
+        dependency-not-bound(string),
         unsupported-protocol(string),
         unsupported-target(string),
         permission-denied(string),
@@ -37,15 +53,20 @@ interface proxy {
         idempotent: bool,
         /// Per-call deadline; defaults to the host's 30s budget.
         timeout-ms: option<u32>,
+        /// Selection key for a multi-member dependency: rendezvous hashing
+        /// for `redundant`, required for `sharded`, ignored for
+        /// `singleton` and for a raw-DID target.
+        routing-key: option<string>,
     }
 
-    /// `service` is the target's DID (or a registry alias). `interface` is a
-    /// WIT interface name the target registered at deploy time. Native
-    /// capabilities (`data-layer`, `vault`, ...) of *another* service are
-    /// refused with `permission-denied` -- a component reaches its own
-    /// through its host imports.
+    /// `target` is the target's DID (or a registry alias), or a declared
+    /// dependency name resolved host-side. `interface` is a WIT interface
+    /// name the target registered at deploy time. Native capabilities
+    /// (`data-layer`, `vault`, ...) of *another* service are refused with
+    /// `permission-denied` -- a component reaches its own through its host
+    /// imports.
     call: func(
-        service: string,
+        target: call-target,
         %interface: string,
         method: string,
         params: string,
