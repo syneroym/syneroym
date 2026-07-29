@@ -48,7 +48,7 @@ use syneroym_wit_interfaces::host::syneroym::{
     },
     host::context::Host,
     messaging::host_api::{self, MessagingError},
-    proxy::proxy,
+    proxy::proxy::{self, CallOptions, CallTarget, CalleeError},
     vault::vault::{self, VaultError},
 };
 use tracing::error;
@@ -1056,13 +1056,11 @@ fn map_proxy_error(e: RpcProxyError) -> proxy::ProxyError {
         RpcProxyError::PermissionDenied(s) => proxy::ProxyError::PermissionDenied(s),
         RpcProxyError::Transport(s) => proxy::ProxyError::Transport(s),
         RpcProxyError::Timeout(_) => proxy::ProxyError::TimedOut,
-        RpcProxyError::Callee { code, message, data } => {
-            proxy::ProxyError::Callee(proxy::CalleeError {
-                code,
-                message,
-                data: data.map(|v| v.to_string()),
-            })
-        }
+        RpcProxyError::Callee { code, message, data } => proxy::ProxyError::Callee(CalleeError {
+            code,
+            message,
+            data: data.map(|v| v.to_string()),
+        }),
         RpcProxyError::Internal(s) => proxy::ProxyError::Internal(s),
     }
 }
@@ -1075,11 +1073,11 @@ impl proxy::Host for HostState {
     /// cannot be bypassed from guest code.
     async fn call(
         &mut self,
-        target: proxy::CallTarget,
+        target: CallTarget,
         interface: String,
         method: String,
         params: String,
-        options: Option<proxy::CallOptions>,
+        options: Option<CallOptions>,
     ) -> Result<String, proxy::ProxyError> {
         // ADR-0017 §7 is *local* read-only lookups; a cross-service call
         // mid-query is exactly the N+1-over-the-network cost the ADR
@@ -1114,8 +1112,8 @@ impl proxy::Host for HostState {
         // the `ProxyRequest` exists, so a guest never holds the resolved DID
         // and cannot snapshot it past a re-push.
         let target_service = match target {
-            proxy::CallTarget::Service(service) => service,
-            proxy::CallTarget::Dependency(name) => {
+            CallTarget::Service(service) => service,
+            CallTarget::Dependency(name) => {
                 let app_instance_id = self.app_instance_id.as_deref().ok_or_else(|| {
                     proxy::ProxyError::DependencyNotBound(format!(
                         "component '{}' was not deployed as part of an app instance, so it has no \
@@ -1504,7 +1502,7 @@ pub(crate) mod tests {
 
         proxy::Host::call(
             &mut host,
-            proxy::CallTarget::Service("svc-b".to_string()),
+            CallTarget::Service("svc-b".to_string()),
             "some-interface".to_string(),
             "some-method".to_string(),
             "null".to_string(),
@@ -1596,7 +1594,7 @@ pub(crate) mod tests {
 
         proxy::Host::call(
             &mut host,
-            proxy::CallTarget::Dependency("backend".to_string()),
+            CallTarget::Dependency("backend".to_string()),
             "greeter".to_string(),
             "greet".to_string(),
             "null".to_string(),
@@ -1630,7 +1628,7 @@ pub(crate) mod tests {
 
         let err = proxy::Host::call(
             &mut host,
-            proxy::CallTarget::Dependency("backend".to_string()),
+            CallTarget::Dependency("backend".to_string()),
             "greeter".to_string(),
             "greet".to_string(),
             "null".to_string(),
@@ -1659,7 +1657,7 @@ pub(crate) mod tests {
 
         let err = proxy::Host::call(
             &mut host,
-            proxy::CallTarget::Dependency("backend".to_string()),
+            CallTarget::Dependency("backend".to_string()),
             "greeter".to_string(),
             "greet".to_string(),
             "null".to_string(),
@@ -1686,7 +1684,7 @@ pub(crate) mod tests {
 
         proxy::Host::call(
             &mut host,
-            proxy::CallTarget::Service("did:key:zSomeoneElse".to_string()),
+            CallTarget::Service("did:key:zSomeoneElse".to_string()),
             "greeter".to_string(),
             "greet".to_string(),
             "null".to_string(),
@@ -1720,7 +1718,7 @@ pub(crate) mod tests {
             temp_dir.path(),
         );
 
-        let options = Some(proxy::CallOptions {
+        let options = Some(CallOptions {
             protocol: None,
             idempotent: false,
             timeout_ms: None,
@@ -1728,7 +1726,7 @@ pub(crate) mod tests {
         });
         proxy::Host::call(
             &mut host,
-            proxy::CallTarget::Dependency("backend".to_string()),
+            CallTarget::Dependency("backend".to_string()),
             "greeter".to_string(),
             "greet".to_string(),
             "null".to_string(),
@@ -1740,7 +1738,7 @@ pub(crate) mod tests {
 
         proxy::Host::call(
             &mut host,
-            proxy::CallTarget::Dependency("backend".to_string()),
+            CallTarget::Dependency("backend".to_string()),
             "greeter".to_string(),
             "greet".to_string(),
             "null".to_string(),
@@ -1796,7 +1794,7 @@ pub(crate) mod tests {
 
         proxy::Host::call(
             &mut host,
-            proxy::CallTarget::Dependency("self-dep".to_string()),
+            CallTarget::Dependency("self-dep".to_string()),
             "greeter".to_string(),
             "greet".to_string(),
             "null".to_string(),
