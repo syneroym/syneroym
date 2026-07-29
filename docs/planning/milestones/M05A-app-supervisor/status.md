@@ -412,6 +412,67 @@ rejected record does not stop the sweep from publishing the others).
 - `mise run test:e2e` (sandbox disabled, required for real port binds): 12/12
   green (8 main + 4 multi-hop), unchanged.
 
+**Sixth pass (2026-07-29): an independent review of the fifth pass's own
+commit (`89f96cf`)** found one high-severity gap the fifth pass introduced
+and three smaller ones. All four fixed directly, no pushback:
+
+- **High: `app deploy --mint-masters` published no endpoint record at all —
+  the reference scenario's own primary deploy path.** The fourth-pass design
+  let the substrate build a record from an installed instance certificate,
+  so `map_deployment_plan_to_wit` hardcoding `registry_certificate: None`
+  cost nothing; once the substrate stopped building records, that hardcoded
+  `None` meant an app-deployed member's master DID could never resolve to an
+  address, silently. Fixed: `substitute_and_certify_members`
+  (`apps/roymctl/src/commands/member_identity.rs`) now signs an
+  `EndpointInfo` per master alongside the instance certificate it already
+  mints; `map_deployment_plan_to_wit` (`crates/sdk/src/mapper.rs`) gained a
+  `registry_certificates` parameter mirroring `instance_certificates`
+  exactly, threaded through from `app.rs`'s deploy command.
+- **Medium: the DHT read path never called `verify()`**, so it never
+  checked `not_after` — unreachable under the fourth-pass design (a
+  delegation-signed record had no DHT home at all), exposed by this
+  design's own DHT reversal. Fixed by extracting the DHT branch's
+  packet-parsing into `extract_verified_endpoint_from_packet`
+  (`crates/core/src/dht_registry.rs`), which now calls `verify()` before
+  returning a candidate; two new unit tests exercise it directly (a signed
+  packet built in-memory, no live DHT needed).
+- **Medium: `not_after` had no near-expiry warning surface**, unlike the
+  instance certificate's `warn_on_near_expiry_instance_certs`. Added
+  `EndpointPublisher::warn_on_near_expiry_records`
+  (`crates/core/src/endpoint_publisher.rs`), called from the same heartbeat
+  loop that already calls `publish_all_services`, with its own fixed 7-day
+  window (a record has no `issued_at` to compute a lifetime fraction from,
+  unlike a certificate); three new unit tests.
+- **Medium: doc accuracy** — D-A1-3 and D-A1-4 in the implementation plan
+  were the only two fifth-pass decisions left without a supersession marker.
+  Both rewritten; D-A1-4's obsolete decision table (keyed entirely on
+  `registry.instance_cert(service_id)`, which `build_record` no longer
+  reads) is now the single row the shipped code actually has.
+- **Low, two precision fixes, no behavior change to one:** language in a few
+  places overstated the DHT side as "compare-and-swap" (the DHT side is
+  monotonic ordering via mainline's own unconditional sequence-number
+  rejection, `dht.publish(&packet, None)` — no `cas` requested; the HTTP
+  registry's `admit_endpoint` is the one genuine compare-and-swap) —
+  corrected in the two summary passages that conflated them. And: a stored
+  file that fails to *parse* (rather than fails to *verify*) used to be
+  silently indistinguishable from a missing file
+  (`build_record`'s `.ok()` chain); now reads, then parses, as two separate
+  steps, each warning distinctly on failure, with a `NotFound` read error
+  the sole silent case (the normal, common state for a service deployed
+  without `--identity`/`--master`).
+
+**Gates, re-run 2026-07-29 after the sixth pass:** `cargo +nightly fmt --all
+-- --check` clean; `cargo clippy --workspace --all-targets --all-features`
+clean, zero warnings; `cargo test -p syneroym-core -p
+syneroym-community-registry -p roymctl -p syneroym-sdk -p
+syneroym-control-plane` (sandbox disabled) all green, including 6 new unit
+tests (2 in `dht_registry.rs`, 4 in `endpoint_publisher.rs`); `cargo test -p
+syneroym-substrate` (sandbox disabled) all green, including the flagship
+`master_endpoint_record_e2e` and the previously-unaffected
+`a_certificate_near_expiry_is_warned_about_on_the_heartbeat_sweep` (proving
+the new near-expiry sweep call didn't disturb the existing one); `mise run
+test:e2e` 12/12, unchanged.
+
 ## Dependencies pulled in
 
 1. **`ControllerAgreement` creation tool + the two items B7 pairs with it**, all

@@ -27,11 +27,13 @@ pub const HEARTBEAT_INTERVAL_SECS: u64 = 3600; // 1 hour
 
 /// Default lifetime of an `EndpointInfo.not_after` bound from the moment a
 /// signer signs it. This is a freshness backstop, not the sharp control: the
-/// sharp control is the monotonic pkarr/BEP44 timestamp every record carries
-/// -- a newer record from the same signer always displaces an older one, at
-/// both the DHT and the HTTP registry (`community_registry`'s
-/// compare-and-swap), so a substrate a member has moved away from cannot
-/// keep pointing at itself just by staying up and replaying its last blob.
+/// sharp control is the monotonic pkarr/BEP44 timestamp every record
+/// carries -- a newer record from the same signer always displaces an older
+/// one, at both stores (mainline's own unconditional sequence-number
+/// rejection on the DHT side; `community_registry`'s explicit
+/// compare-and-swap on the HTTP side), so a substrate a member has moved
+/// away from cannot keep pointing at itself just by staying up and
+/// replaying its last blob.
 /// `not_after` only matters when the signer stops renewing *at all* -- a
 /// lost master key, a decommissioned member -- so it is set generously,
 /// deliberately far longer than an instance certificate's lifetime (hours):
@@ -222,6 +224,35 @@ async fn publish_dht_packet(
     }
 }
 
+/// Pulls `id`'s `EndpointInfo` out of a resolved DHT packet and re-verifies
+/// it before returning it. pkarr's own `resolve` already authenticated the
+/// packet's signature against the queried pubkey, so the only thing this
+/// re-parse actually checks is `not_after` -- a signer that stopped
+/// renewing must eventually stop resolving on the DHT too, not just on the
+/// HTTP registry's `verify()` call. `None` covers both "no matching TXT
+/// record" and "found one, but it no longer verifies."
+fn extract_verified_endpoint_from_packet(
+    id: &str,
+    signed_packet: &SignedPacket,
+) -> Option<SignedEndpointInfo> {
+    let mut found_info = None;
+    for answer in signed_packet.resource_records(PKARR_DNS_NAME) {
+        if let RData::TXT(txt) = &answer.rdata
+            && let Ok(full_string) = String::try_from(txt.clone())
+            && let Ok(parsed_info) = serde_json::from_str::<EndpointInfo>(&full_string)
+            && parsed_info.service_id == id
+        {
+            found_info = Some(parsed_info);
+            break;
+        }
+    }
+
+    let info = found_info?;
+    let pkarr_packet_hex = hex::encode(signed_packet.to_relay_payload());
+    let candidate = SignedEndpointInfo { info, pkarr_packet_hex };
+    candidate.verify().ok().map(|_| candidate)
+}
+
 impl RegistryClient {
     pub fn new(enable_dht: bool, registry_url: Option<String>) -> Self {
         let dht_client = if enable_dht { Client::builder().build().ok() } else { None };
@@ -322,23 +353,15 @@ impl RegistryClient {
                 if let Ok(pkarr_pubkey) = PublicKey::try_from(pubkey.as_bytes()) {
                     tracing::debug!("Falling back to DHT lookup for {}", id);
                     if let Some(signed_packet) = dht.resolve(&pkarr_pubkey).await {
-                        // Extract the EndpointInfo
-                        let mut found_info = None;
-                        for answer in signed_packet.resource_records(PKARR_DNS_NAME) {
-                            if let RData::TXT(txt) = &answer.rdata
-                                && let Ok(full_string) = String::try_from(txt.clone())
-                                && let Ok(parsed_info) =
-                                    serde_json::from_str::<EndpointInfo>(&full_string)
-                                && parsed_info.service_id == id
-                            {
-                                found_info = Some(parsed_info);
-                                break;
-                            }
-                        }
-
-                        if let Some(info) = found_info {
-                            let pkarr_packet_hex = hex::encode(signed_packet.to_relay_payload());
-                            result = Some(SignedEndpointInfo { info, pkarr_packet_hex });
+                        if let Some(candidate) =
+                            extract_verified_endpoint_from_packet(id, &signed_packet)
+                        {
+                            result = Some(candidate);
+                        } else {
+                            tracing::debug!(
+                                "DHT record for {} found but no longer verifies (likely expired)",
+                                id
+                            );
                         }
                     }
                 }
@@ -870,6 +893,47 @@ mod tests {
 
         let err = signed.verify().expect_err("an expired record must not verify");
         assert!(err.to_string().contains("expired"));
+    }
+
+    /// Decodes a signed record's own hex-encoded packet back into the
+    /// `SignedPacket` shape `RegistryClient::lookup`'s DHT branch gets from
+    /// `dht.resolve` -- the same reconstruction `verify` does internally, so
+    /// `extract_verified_endpoint_from_packet` can be exercised without a
+    /// live DHT.
+    fn packet_from(signed: &SignedEndpointInfo) -> SignedPacket {
+        let pubkey = substrate::resolve_did_key(&signed.info.service_id).unwrap();
+        let pkarr_pubkey = PublicKey::try_from(pubkey.as_bytes()).unwrap();
+        let packet_bytes = hex::decode(&signed.pkarr_packet_hex).unwrap();
+        SignedPacket::from_relay_payload(&pkarr_pubkey, &Bytes::from(packet_bytes)).unwrap()
+    }
+
+    #[test]
+    fn extract_verified_endpoint_from_packet_returns_a_live_record() {
+        let identity = Identity::generate().unwrap();
+        let did = substrate::derive_did_key(&identity.public_key());
+        let signed = sample_endpoint_info(&did).sign(&identity).unwrap();
+        let packet = packet_from(&signed);
+
+        let extracted = extract_verified_endpoint_from_packet(&did, &packet)
+            .expect("a live record must be returned");
+        assert_eq!(extracted.info.service_id, did);
+    }
+
+    #[test]
+    fn extract_verified_endpoint_from_packet_rejects_an_expired_one() {
+        // The DHT record itself is authentic -- pkarr's own signature check
+        // already passed by the time `resolve` returns it -- but its
+        // `not_after` has lapsed. This is exactly the case the HTTP registry
+        // branch already covered via `verify()`; the DHT branch used to skip
+        // it entirely.
+        let identity = Identity::generate().unwrap();
+        let did = substrate::derive_did_key(&identity.public_key());
+        let mut info = sample_endpoint_info(&did);
+        info.not_after = 1;
+        let signed = info.sign(&identity).unwrap();
+        let packet = packet_from(&signed);
+
+        assert!(extract_verified_endpoint_from_packet(&did, &packet).is_none());
     }
 
     #[tokio::test]

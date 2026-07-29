@@ -58,13 +58,16 @@ fn map_document_ref(doc: &DocumentRef, field_name: &str) -> anyhow::Result<Docum
 
 /// `instance_certificates` maps a `PlannedService.service_id` (post
 /// member-master substitution, if any) to the JSON-serialized
-/// `DelegationCertificate` to install for it. Empty for a plan run without
-/// member masters -- every service then maps to `None`, exactly as before
-/// this parameter existed. The mapper only *translates* a certificate that
-/// already exists; it never mints one.
+/// `DelegationCertificate` to install for it, and `registry_certificates` the
+/// same key to the JSON-serialized, master-signed `SignedEndpointInfo` to
+/// publish. Both are empty for a plan run without member masters -- every
+/// service then maps to `None` for both fields, exactly as before either
+/// parameter existed. The mapper only *translates* values that already
+/// exist; it never mints or signs anything itself.
 pub fn map_deployment_plan_to_wit(
     plan: DeploymentPlan,
     instance_certificates: &BTreeMap<ServiceId, String>,
+    registry_certificates: &BTreeMap<ServiceId, String>,
 ) -> anyhow::Result<WitDeploymentPlan> {
     let mut services = Vec::new();
     for svc in plan.services {
@@ -198,13 +201,14 @@ pub fn map_deployment_plan_to_wit(
             }
         };
         let instance_certificate = instance_certificates.get(&svc.service_id).cloned();
+        let registry_certificate = registry_certificates.get(&svc.service_id).cloned();
         services.push(PlannedService {
             service_id: svc.service_id.to_string(),
             logical_ref: svc.logical_ref.to_string(),
             manifest: DeployManifest {
                 config: wit_config,
                 service_type,
-                registry_certificate: None,
+                registry_certificate,
                 instance_certificate,
             },
         });
@@ -278,8 +282,12 @@ mod tests {
             policy: DocumentRef::Local(policy.to_string_lossy().into_owned()),
         });
 
-        let wit_plan =
-            map_deployment_plan_to_wit(plan_with_config(config), &BTreeMap::new()).unwrap();
+        let wit_plan = map_deployment_plan_to_wit(
+            plan_with_config(config),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )
+        .unwrap();
         match &wit_plan.services[0].manifest.config.fdae_policy {
             Some(DocumentSource::Inline(content)) => {
                 assert_eq!(content, r#"{"version":"fdae/v1"}"#);
@@ -295,8 +303,12 @@ mod tests {
             policy: DocumentRef::Remote { remote_path: "policies/shared.json".to_string() },
         });
 
-        let wit_plan =
-            map_deployment_plan_to_wit(plan_with_config(config), &BTreeMap::new()).unwrap();
+        let wit_plan = map_deployment_plan_to_wit(
+            plan_with_config(config),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )
+        .unwrap();
         match &wit_plan.services[0].manifest.config.fdae_policy {
             Some(DocumentSource::Path(path)) => assert_eq!(path, "policies/shared.json"),
             other => panic!("expected a host path, got {other:?}"),
@@ -309,13 +321,24 @@ mod tests {
         config.fdae =
             Some(FdaeManifest { policy: DocumentRef::Local("does-not-exist.json".to_string()) });
 
-        assert!(map_deployment_plan_to_wit(plan_with_config(config), &BTreeMap::new()).is_err());
+        assert!(
+            map_deployment_plan_to_wit(
+                plan_with_config(config),
+                &BTreeMap::new(),
+                &BTreeMap::new()
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn map_deployment_plan_to_wit_maps_absent_fdae_to_none() {
-        let wit_plan =
-            map_deployment_plan_to_wit(plan_with_config(base_config()), &BTreeMap::new()).unwrap();
+        let wit_plan = map_deployment_plan_to_wit(
+            plan_with_config(base_config()),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )
+        .unwrap();
         assert!(wit_plan.services[0].manifest.config.fdae_policy.is_none());
     }
 
@@ -351,6 +374,7 @@ mod tests {
         let wit_plan = map_deployment_plan_to_wit(
             plan_with_config(container_config(&custom)),
             &BTreeMap::new(),
+            &BTreeMap::new(),
         )
         .expect("volumes should parse");
         let volumes = &container_manifest_of(&wit_plan).volumes;
@@ -374,6 +398,7 @@ mod tests {
         let wit_plan = map_deployment_plan_to_wit(
             plan_with_config(container_config(custom)),
             &BTreeMap::new(),
+            &BTreeMap::new(),
         )
         .unwrap();
         let volumes = &container_manifest_of(&wit_plan).volumes;
@@ -390,6 +415,7 @@ mod tests {
         let err = map_deployment_plan_to_wit(
             plan_with_config(container_config(bad_volumes)),
             &BTreeMap::new(),
+            &BTreeMap::new(),
         )
         .unwrap_err()
         .to_string();
@@ -398,6 +424,7 @@ mod tests {
         let bad_ports = r#"{"ports":[{"interface_name":"default","port":80,"protocol":"tcp"}]}"#;
         let err = map_deployment_plan_to_wit(
             plan_with_config(container_config(bad_ports)),
+            &BTreeMap::new(),
             &BTreeMap::new(),
         )
         .unwrap_err()
@@ -416,9 +443,13 @@ mod tests {
         config.fdae =
             Some(FdaeManifest { policy: DocumentRef::Local(big.to_string_lossy().into_owned()) });
 
-        let err = map_deployment_plan_to_wit(plan_with_config(config), &BTreeMap::new())
-            .unwrap_err()
-            .to_string();
+        let err = map_deployment_plan_to_wit(
+            plan_with_config(config),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("exceeding the"), "{err}");
     }
 }

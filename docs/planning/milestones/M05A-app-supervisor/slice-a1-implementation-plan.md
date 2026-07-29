@@ -108,11 +108,12 @@ delegation-signed records work at all:
 - **Two new decisions close what the reversal opens up.** Without the
   substrate re-signing on every heartbeat, a relocated-away substrate could
   keep replaying its last blob forever with nothing to stop it — a real
-  version of the flap D-A1-11 first described. **D-A1-14** adds a
-  last-writer-wins compare-and-swap on the record's own pkarr/BEP44 timestamp,
-  uniformly at the DHT and the HTTP registry, so a strictly newer
-  master-signed record always displaces an older one and a rollback is
-  refused at both stores. **D-A1-15** adds `EndpointInfo.not_after`, a
+  version of the flap D-A1-11 first described. **D-A1-14** makes both stores
+  reject a rollback on the record's own pkarr/BEP44 timestamp: the HTTP
+  registry as an explicit, last-writer-wins compare-and-swap
+  (`community_registry`'s `admit_endpoint`); the DHT via mainline's own
+  unconditional sequence-number rejection, which the registry now matches
+  rather than falls short of. **D-A1-15** adds `EndpointInfo.not_after`, a
   generous freshness backstop for the one case the timestamp alone does not
   cover: the signer stopping renewal altogether.
 - **D-A1-7, D-A1-9, D-A1-12, D-A1-13 are untouched** — all four are anchor-side
@@ -124,6 +125,39 @@ deferred-backlog row this slice opened (§7) closes outright — *master-DID
 resolution requires an HTTP registry* — rather than needing a follow-up
 slice to close it. Two more rows narrow without closing; see §7 for exactly
 what changed and what is honestly still open.
+
+**A sixth pass, an independent review of the fifth pass's own commit
+(`89f96cf`), found one high-severity gap the fifth pass introduced and three
+smaller ones.** All four fixed directly:
+
+- **`app deploy --mint-masters` published no endpoint record at all** — the
+  reference scenario's own primary deploy path. The fourth-pass design let
+  the substrate build a record from an installed instance certificate, so
+  `map_deployment_plan_to_wit` hardcoding `registry_certificate: None`
+  ([mapper.rs:207](../../../../crates/sdk/src/mapper.rs#L207), pre-fix) cost
+  nothing; once the substrate stopped building records, that hardcoded
+  `None` meant an app-deployed member's master DID could never resolve to an
+  address, silently. Fixed in `substitute_and_certify_members`
+  ([member_identity.rs:170](../../../../apps/roymctl/src/commands/member_identity.rs#L170)),
+  which now signs an `EndpointInfo` per master alongside the instance
+  certificate it already mints — see D-A1-4's rewrite below.
+- **The DHT read path never called `verify()`**, so it never checked
+  `not_after` — unreachable before this pass (a delegation-signed record had
+  no DHT home at all under the fourth-pass design), exposed by D-A1-2's own
+  reversal. Fixed by extracting the DHT branch's packet-parsing into
+  `extract_verified_endpoint_from_packet`, which calls `verify()` before
+  returning a candidate
+  ([dht_registry.rs](../../../../crates/core/src/dht_registry.rs)).
+- **`not_after` had no near-expiry warning surface**, unlike the instance
+  certificate's `warn_on_near_expiry_instance_certs`. Added
+  `EndpointPublisher::warn_on_near_expiry_records`, called from the same
+  heartbeat loop that already calls `publish_all_services`
+  ([runtime.rs](../../../../crates/substrate/src/runtime.rs)), with its own
+  fixed 7-day window (a record has no `issued_at` to compute a lifetime
+  fraction from, unlike a certificate).
+- **This doc's own D-A1-3/D-A1-4 were the two fifth-pass decisions left
+  without a supersession marker** while seven others got one — both rewritten
+  below.
 
 **All line anchors are against `f50febd`** (`feat(identity): stable member
 identity`, #109 -- the squash that landed A0 on `main`). Planning for this slice
@@ -272,7 +306,17 @@ DHT for no benefit.
 
 ### D-A1-3 — The substrate publishes the record, at deploy and on the heartbeat
 
-**Resolved: a new `EndpointPublisher` in `crates/core`, called from
+**Revised (fifth pass).** "Publishes" survives; "builds and signs" does not.
+`EndpointPublisher` is still called from `deploy` and from the heartbeat, on
+the same triggers described below, but it never builds an `EndpointInfo` or
+signs anything now — it reads the stored, deployer-signed file and replays it
+verbatim if it still verifies. The two paragraphs on publish-at-deploy timing
+and publish-failure-never-fails-a-deploy are unaffected by the reversal and
+still describe what shipped; only the sentence "A1 gives it one -- the
+certified instance key -- so it can build and sign the record itself" is
+wrong and superseded by D-A1-1/D-A1-2's reversal above.
+
+**Resolved (original): a new `EndpointPublisher` in `crates/core`, called from
 `ControlPlaneService::deploy` and from the existing heartbeat loop.**
 
 ADR-0020 §6 says "the publish path attaches the certificate," which implies a
@@ -303,50 +347,52 @@ its own test (§5.4), not just incidental coverage.
 
 ### D-A1-4 — Which services the substrate publishes for, and what wins
 
-**Resolved: an installed instance certificate makes the substrate
-authoritative for that service's record. Everything else keeps today's replay
-behavior, byte for byte.**
+**Superseded (fifth pass).** The whole decision table below is gone: it keyed
+entirely on `registry.instance_cert(service_id)`, and `build_record` no
+longer reads instance certificates at all. There is exactly one row left:
+read `hosted_apps/<service_id>.json`, replay it if it still verifies
+(signature and `not_after`), publish nothing otherwise. No case builds or
+signs a record, so there is no "which path wins" question anymore — a
+service either has a stored, deployer-signed record file or it does not.
 
-Per service, at publish time:
+**A real gap this pass introduced and then closed.** The original text below
+claimed `app deploy` "never sets `registry_certificate` at all... That is
+intended." Both halves were wrong under the design that shipped: not setting
+it was never intended (it was the fourth-pass table's `None` row silently
+inheriting a `--master`-only assumption `app deploy --mint-masters` never
+actually satisfied), and once the substrate stopped building records for a
+certified service, an app-deployed member's endpoint record went from
+*possibly missing metadata* to *never existing at all* -- the master DID
+would never resolve to an address. Closed directly in code, not deferred:
+`substitute_and_certify_members`
+([member_identity.rs:170](../../../../apps/roymctl/src/commands/member_identity.rs#L170))
+now signs an `EndpointInfo` per master alongside the instance certificate it
+already minted, and `map_deployment_plan_to_wit`
+([mapper.rs:65](../../../../crates/sdk/src/mapper.rs#L65)) gained a
+`registry_certificates` parameter to carry it through to
+`registry_certificate`, mirroring `instance_certificates` exactly.
 
-| `registry.instance_cert(service_id)` | Behavior |
-|---|---|
-| `Some(cert)`, not expired, owner row present | Build a fresh record, key it by `cert.master_did`, sign with the derived instance key, attach `cert`. The stored file is read **only** for `nickname` and `is_private`. |
-| `Some(cert)`, expired | Publish nothing, `warn!`. (D-A1-5) |
-| `Some(cert)`, no recorded owner | Publish nothing, `warn!` — the instance key is derived from the owner DID, so without it there is no key to sign with. |
-| `None` | Replay `hosted_apps/<service_id>.json`, **after verifying it**. |
-
-The last row is what keeps pre-A0 services working untouched, matching A0's own
-`None`-means-fallback rule everywhere else. It gains one check today's
-heartbeat does not do: verify before replaying. Today the loop re-POSTs any
-file it finds and lets the registry reject it. After D-A1-8 a stored file may
-legitimately be unverifiable — a metadata envelope for a service that has a
-certificate — and a later redeploy *without* a certificate would leave that
-file behind to be replayed (`deploy` only overwrites the file when the manifest
-carries one). Verifying first turns a confusing 401 in the logs into a local
-warning, and is a strict improvement on blind replay regardless.
-
-**`ttl` is deliberately not carried over.** D-A1-10's safety argument rests on
-the registry's default TTL bounding how long an unrefreshed record survives,
-and the registry prefers `info.ttl` when it is set
+**`ttl` is deliberately not carried over.** D-A1-10's safety argument rested
+on the registry's default TTL bounding how long an unrefreshed record
+survives, and the registry prefers `info.ttl` when it is set
 ([registry.rs:151](../../../../crates/community_registry/src/registry.rs#L151)).
-Copying `ttl` out of an explicitly-unverified blob would make that bound
-operator-settable to any length. Nothing in the tree sets a non-`None` `ttl`
-today, so this costs nothing; if a real TTL surface ever appears, the right
-shape is a cap at `cert.expires_at_secs`, which is already in the record.
+D-A1-10 itself is gone, but the reasoning still holds under D-A1-15:
+`not_after` is the record's own explicit, generous bound, and there is still
+no reason to let an operator-set `ttl` override the registry's default on
+top of it. Nothing in the tree sets a non-`None` `ttl` today, so this costs
+nothing.
 
-**The stored file is the exception, not the norm** (review point 7). On the
-`--master` and `--instance-certificate` paths its *only* remaining job is to
-carry operator metadata; its signature is neither trusted nor checked, because
-a record built from it is never republished. And `app deploy` never sets
-`registry_certificate` at all
-([mapper.rs:207](../../../../crates/sdk/src/mapper.rs#L207)), so every
-app-deployed member — including both members of the milestone's own reference
-scenario — publishes with `nickname: None` and `is_private: false`. That is
-intended, but the table above must not read as though a stored file is the
-common case. Carrying this metadata inside a signed record is historical; the
-clean shape is a `DeployManifest` field, which is a WIT change plus ~40 test
-literals and is recorded in the backlog rather than taken here.
+**The record's `mechanisms` stay empty and `substrate_id` is the node's own
+DID.** That is what makes relocation work with no operator action:
+`lookup(resolve = true)` follows `substrate_id` to the hosting substrate's
+record and copies its mechanisms
+([dht_registry.rs:316-320](../../../../crates/core/src/dht_registry.rs#L316)),
+so a member that moves publishes a record naming its new host and resolution
+follows automatically. This is the mechanism the slice exists for, so §5.7
+tests it through `lookup(resolve = true)` and `resolve_iroh_addr`, not by
+reading record fields. Unaffected by the fifth pass -- unlike everything
+above this paragraph, this describes the record's *content*, not who signs
+it.
 
 **The record's `mechanisms` stay empty and `substrate_id` is the node's own
 DID.** That is what makes relocation work with no operator action:

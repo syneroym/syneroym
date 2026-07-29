@@ -133,7 +133,7 @@ pub async fn handle(
                 // Substitution runs on a copy, after the journal already
                 // holds the plan with its fabricated ids -- the journal must
                 // never record master-DID-bearing data.
-                let (deploy_plan, instance_certs) = if *mint_masters {
+                let (deploy_plan, instance_certs, registry_certs) = if *mint_masters {
                     member_identity::substitute_and_certify_members(
                         &client,
                         dir,
@@ -142,10 +142,14 @@ pub async fn handle(
                     )
                     .await?
                 } else {
-                    (target_plan.clone(), BTreeMap::new())
+                    (target_plan.clone(), BTreeMap::new(), BTreeMap::new())
                 };
 
-                let wit_plan = mapper::map_deployment_plan_to_wit(deploy_plan, &instance_certs)?;
+                let wit_plan = mapper::map_deployment_plan_to_wit(
+                    deploy_plan,
+                    &instance_certs,
+                    &registry_certs,
+                )?;
                 client.deploy_plan(wit_plan).await?;
 
                 journal.update_state(record_id, DeploymentState::Active)?;

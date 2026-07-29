@@ -706,11 +706,11 @@ fn publish_to_community_registry(
                 );
             }
 
-            // Hosted services. A service with an installed instance
-            // certificate gets a freshly built, instance-signed record keyed
-            // by its member master DID; one without keeps replaying the
-            // operator-signed record it was deployed with.
+            // Hosted services: replay every stored, still-verifying record
+            // verbatim. The substrate holds no key that could ever sign one
+            // itself (ADR-0020 §3), so this is pure replay, never a rebuild.
             publisher.publish_all_services().await;
+            publisher.warn_on_near_expiry_records().await;
 
             // Sleep until the next heartbeat interval
             time::sleep(Duration::from_secs(HEARTBEAT_INTERVAL_SECS)).await;
