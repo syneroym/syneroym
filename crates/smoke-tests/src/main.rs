@@ -164,7 +164,7 @@ async fn main() -> Result<()> {
         }],
         is_private: false,
         ttl: Some(300),
-        delegation: None,
+        not_after: u64::MAX / 2,
     };
 
     let signed_info = endpoint_info.sign(&identity).context("Failed to sign endpoint info")?;

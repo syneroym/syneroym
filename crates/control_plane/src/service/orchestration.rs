@@ -888,6 +888,17 @@ impl OrchestratorInterface for ControlPlaneService {
             return Err(format!("Instance certificate installation failed: {e}"));
         }
 
+        // Publish now rather than at the next heartbeat: a member
+        // reinstantiated here has to become resolvable under its unchanged
+        // master DID promptly, and the heartbeat runs hourly. Never fatal --
+        // a registry that is down must not fail a deploy, and the heartbeat
+        // sweep repairs it.
+        if let Some(publisher) = self.endpoint_publisher.get()
+            && let Err(e) = publisher.publish_service(&service_id).await
+        {
+            tracing::warn!("Failed to publish endpoint record for {}: {}", service_id, e);
+        }
+
         Ok(())
     }
 

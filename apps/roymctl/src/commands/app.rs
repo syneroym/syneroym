@@ -34,6 +34,12 @@ pub enum AppCommands {
         /// never silent: a new master's backup warning prints at mint time.
         #[arg(long)]
         mint_masters: bool,
+        /// Community registry URL to publish/refresh each minted master's
+        /// anchor at (D-A1-7). Ignored when `--mint-masters` is absent.
+        /// Without it, a minted certificate is unusable on the wire until an
+        /// anchor exists some other way (`roymctl identity publish-anchor`).
+        #[arg(long)]
+        registry_url: Option<String>,
     },
     /// Reconcile a deployment to recover or compute updates
     Reconcile {
@@ -57,7 +63,13 @@ pub async fn handle(
     ucan_path: Option<&Path>,
 ) -> anyhow::Result<()> {
     match command {
-        AppCommands::Deploy { instance_id, manifest_path, journal_path, mint_masters } => {
+        AppCommands::Deploy {
+            instance_id,
+            manifest_path,
+            journal_path,
+            mint_masters,
+            registry_url,
+        } => {
             let instance_id = AppInstanceId::try_new(instance_id.clone())?;
 
             let manifest = if manifest_path.extension().and_then(|s| s.to_str()) == Some("wasm") {
@@ -121,14 +133,23 @@ pub async fn handle(
                 // Substitution runs on a copy, after the journal already
                 // holds the plan with its fabricated ids -- the journal must
                 // never record master-DID-bearing data.
-                let (deploy_plan, instance_certs) = if *mint_masters {
-                    member_identity::substitute_and_certify_members(&client, dir, target_plan)
-                        .await?
+                let (deploy_plan, instance_certs, registry_certs) = if *mint_masters {
+                    member_identity::substitute_and_certify_members(
+                        &client,
+                        dir,
+                        target_plan,
+                        registry_url.as_deref(),
+                    )
+                    .await?
                 } else {
-                    (target_plan.clone(), BTreeMap::new())
+                    (target_plan.clone(), BTreeMap::new(), BTreeMap::new())
                 };
 
-                let wit_plan = mapper::map_deployment_plan_to_wit(deploy_plan, &instance_certs)?;
+                let wit_plan = mapper::map_deployment_plan_to_wit(
+                    deploy_plan,
+                    &instance_certs,
+                    &registry_certs,
+                )?;
                 client.deploy_plan(wit_plan).await?;
 
                 journal.update_state(record_id, DeploymentState::Active)?;

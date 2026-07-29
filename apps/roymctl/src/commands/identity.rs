@@ -97,6 +97,12 @@ pub enum IdentityCommands {
         substrate: String,
         #[arg(long, default_value_t = 24)]
         expires_hours: u64,
+        /// Community registry URL to publish/refresh this master's anchor at
+        /// (D-A1-7). Without it, the certificate this command mints is
+        /// unusable on the wire until an anchor exists some other way
+        /// (`roymctl identity publish-anchor`).
+        #[arg(long)]
+        registry_url: Option<String>,
     },
 }
 
@@ -221,7 +227,12 @@ pub async fn handle(
             )?;
             println!("{}", serde_json::to_string_pretty(&token)?);
         }
-        IdentityCommands::CertifyInstance { master, substrate: substrate_did, expires_hours } => {
+        IdentityCommands::CertifyInstance {
+            master,
+            substrate: substrate_did,
+            expires_hours,
+            registry_url,
+        } => {
             let master_identity = member_identity::resolve_member_master(dir, master)?;
             let service_id = substrate::derive_did_key(&master_identity.public_key());
 
@@ -236,6 +247,8 @@ pub async fn handle(
                 *expires_hours,
             )
             .await?;
+            member_identity::refresh_anchor_or_warn(registry_url.as_deref(), &master_identity)
+                .await?;
             println!("{}", cert.to_json()?);
         }
     }

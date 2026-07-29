@@ -9,7 +9,7 @@ use std::{
     net::SocketAddr,
     pin,
     sync::{Arc, atomic::AtomicUsize},
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result};
@@ -19,7 +19,10 @@ use iroh_relay::server::Server;
 use reqwest::Client;
 use syneroym_core::{
     config::{CoordinatorIrohConfig, CoordinatorRole, RetryPolicy, SubstrateConfig},
-    dht_registry::{EndpointInfo, EndpointMechanism, EndpointType, RegistryClient},
+    dht_registry::{
+        DEFAULT_ENDPOINT_NOT_AFTER_SECS, EndpointInfo, EndpointMechanism, EndpointType,
+        RegistryClient,
+    },
     retry::retry_with_backoff,
     tls::TlsCertLoader,
 };
@@ -450,6 +453,12 @@ async fn register_coordinator_in_registry(
     let identity = Identity::from_bytes(secret_key_bytes);
     let did = derive_did_key(&identity.public_key());
 
+    let not_after = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+        .saturating_add(DEFAULT_ENDPOINT_NOT_AFTER_SECS);
+
     let info = EndpointInfo {
         service_id: did.clone(),
         substrate_id: did.clone(),
@@ -458,7 +467,7 @@ async fn register_coordinator_in_registry(
         mechanisms: vec![EndpointMechanism::Iroh { endpoint_addr_bytes, relay_url }],
         is_private: false,
         ttl: None,
-        delegation: None,
+        not_after,
     };
 
     let signed_info = info.sign(&identity)?;

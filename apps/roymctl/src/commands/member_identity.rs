@@ -9,11 +9,15 @@
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result};
 use ed25519_dalek::VerifyingKey;
 use syneroym_app_orchestration::models::{DeploymentPlan, LogicalServiceRef, ServiceId};
+use syneroym_core::dht_registry::{
+    DEFAULT_ENDPOINT_NOT_AFTER_SECS, EndpointInfo, EndpointType, RegistryClient,
+};
 use syneroym_identity::{
     DelegationCertificate, Identity, delegation::SCOPE_SERVICE_INSTANCE, substrate,
 };
@@ -126,12 +130,40 @@ pub async fn certify_instance(
     )
 }
 
+/// Publishes or refreshes `master`'s anchor at `registry_url` (D-A1-7), or
+/// warns naming the consequence when none was supplied: a certificate just
+/// minted is unusable on the wire until its master's anchor is resolvable --
+/// `HandshakeVerifier::verify_preamble` resolves it on every delegated
+/// connection and fails closed when it is missing. Builds the client with
+/// the DHT enabled, matching `identity publish-anchor`: unlike an endpoint
+/// record, an anchor is self-signed by the master and has a valid DHT home.
+pub async fn refresh_anchor_or_warn(registry_url: Option<&str>, master: &Identity) -> Result<()> {
+    let master_did = substrate::derive_did_key(&master.public_key());
+    match registry_url {
+        Some(url) => {
+            RegistryClient::new(true, Some(url.to_string()))
+                .refresh_master_anchor(master)
+                .await
+                .with_context(|| format!("failed to publish master anchor for {master_did}"))?;
+        }
+        None => {
+            eprintln!(
+                "No --registry-url given, so no master anchor was published for \
+                 {master_did}.\nAny connection presenting this certificate will be rejected until \
+                 one is (`roymctl identity publish-anchor`)."
+            );
+        }
+    }
+    Ok(())
+}
+
 /// The `app deploy --mint-masters` path: resolves or mints one member master
 /// per service in the plan (index `0` -- nothing in today's manifest format
 /// can express more than one member per `PlannedService`), then returns a
 /// **new** plan with every `service_id` and `resolved_dependencies` entry
 /// substituted from the compiler's fabricated id to the resolved master DID,
-/// plus a certified instance certificate per resolved master.
+/// plus a certified instance certificate and a master-signed endpoint record
+/// per resolved master.
 ///
 /// Takes the already-compiled, already-journaled plan by reference and
 /// returns a copy rather than mutating it in place: the deployment journal
@@ -141,7 +173,8 @@ pub async fn substitute_and_certify_members(
     client: &SyneroymClient,
     dir: &Path,
     plan: &DeploymentPlan,
-) -> Result<(DeploymentPlan, BTreeMap<ServiceId, String>)> {
+    registry_url: Option<&str>,
+) -> Result<(DeploymentPlan, BTreeMap<ServiceId, String>, BTreeMap<ServiceId, String>)> {
     let mut substitution: BTreeMap<ServiceId, ServiceId> = BTreeMap::new();
     let mut masters: BTreeMap<ServiceId, Identity> = BTreeMap::new();
     for svc in &plan.services {
@@ -172,6 +205,7 @@ pub async fn substitute_and_certify_members(
     }
 
     let mut instance_certs = BTreeMap::new();
+    let mut registry_certs = BTreeMap::new();
     for (master_did, master) in &masters {
         let cert = certify_instance(
             client,
@@ -180,10 +214,37 @@ pub async fn substitute_and_certify_members(
             DEFAULT_INSTANCE_CERT_EXPIRES_HOURS,
         )
         .await?;
+        // Once per master (D-A1-7): `masters` is already deduplicated by
+        // master DID, unlike `plan.services`, which can name the same master
+        // more than once for a redundant member.
+        refresh_anchor_or_warn(registry_url, master).await?;
         instance_certs.insert(master_did.clone(), cert.to_json()?);
+
+        // The endpoint record: the substrate holds no key that could ever
+        // sign this (ADR-0020 §3), so unlike the instance certificate above
+        // this is the *only* place one gets produced for an app-deployed
+        // member -- without it, `master_did` never resolves to an address at
+        // all.
+        let not_after = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+            .saturating_add(DEFAULT_ENDPOINT_NOT_AFTER_SECS);
+        let record = EndpointInfo {
+            service_id: master_did.as_str().to_string(),
+            substrate_id: client.service_id().to_string(),
+            endpoint_type: EndpointType::Service,
+            mechanisms: vec![],
+            nickname: None,
+            is_private: false,
+            ttl: None,
+            not_after,
+        }
+        .sign(master)?;
+        registry_certs.insert(master_did.clone(), serde_json::to_string(&record)?);
     }
 
-    Ok((new_plan, instance_certs))
+    Ok((new_plan, instance_certs, registry_certs))
 }
 
 #[cfg(test)]

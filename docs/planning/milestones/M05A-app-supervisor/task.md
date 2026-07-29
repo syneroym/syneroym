@@ -39,7 +39,7 @@ supervisor.
 | Requirement ID | Sub-scope in M05A | Current matrix status |
 |---|---|---|
 | `[LFC-MGT]` (App Supervisor) | Multi-substrate placement, substrate inventory, unattended deploy with retry, health monitoring, bounded remediation, alerting, binding propagation | New row, status **Planned** |
-| `[FND-IDT]` (stable service identity) | Master DID per *member*; instance keys delegated via `DelegationCertificate`; ingress-side scope enforcement; delegation-signed endpoint records | Extends the existing `[FND-IDT]` row, whose scope is already "Master Key → Temporary Key delegation certificates" — the same mechanism applied to services. **Not** `[FND-IAM]`, which is Access Control. |
+| `[FND-IDT]` (stable service identity) | Master DID per *member*; instance keys delegated via `DelegationCertificate` for outbound-call authentication; ingress-side scope enforcement; master-signed endpoint records | Extends the existing `[FND-IDT]` row, whose scope is already "Master Key → Temporary Key delegation certificates" — the same mechanism applied to services. **Not** `[FND-IAM]`, which is Access Control. |
 | `[PLT-DAP-01]` (app-context registry) | Logical-name → member-set resolution backed by real deployment state; `expected_asserter_did` per member | Inherited from the superseded interstitial |
 
 ---
@@ -124,7 +124,7 @@ so they ship as one slice:
 2. **Gate the `security` interface on `substrate/admin`** (B7 F3.1).
    `inject-kek`, `rotate-kek`, and `set-secret` are dispatched with **no
    capability check at all** today — see the standing `TODO(M04B/FDAE)` at
-   [service.rs:234-239](../../../../crates/control_plane/src/service.rs#L234),
+   [service.rs:256-260](../../../../crates/control_plane/src/service.rs#L256),
    whose named milestone has since closed without it being addressed. Any
    verified caller can rotate the KEK that encrypts every service database on
    the node. *Alone:* gating it bricks the interface, since nobody can hold
@@ -183,8 +183,14 @@ a mismatch.
 *Independently mergeable* — identity/deploy work, valuable on its own before any
 supervisor exists.
 
-### A1 — Endpoint records under the member master DID
-Design of record: [ADR-0020](../../../decisions/0020-stable-logical-service-identity.md) §6.
+### A1 — Endpoint records under the member master DID — **Complete (2026-07-28, design revised 2026-07-29 before merge)**
+Design of record: [ADR-0020](../../../decisions/0020-stable-logical-service-identity.md)
+§6. Implementation plan:
+[slice-a1-implementation-plan.md](slice-a1-implementation-plan.md) (see its
+own note on a fifth review pass that reopened the design before merge —
+§3/§5's code and test listings describe an earlier, superseded shape; §0/§1's
+decisions describe what shipped). Verification evidence:
+[status.md](status.md)'s A1 section.
 
 **Added after review found the mapping this design assumed does not exist.**
 The registry today verifies an endpoint record's signature against the key
@@ -195,38 +201,54 @@ a revocation list with no forward index. Without this slice, a dependent holding
 a master DID cannot resolve it to an address at all, and relocation silently
 stops working — the exact failure A0 exists to prevent.
 
-`verify_endpoint_signature` gains a second acceptance path: a record keyed by a
-master DID, signed by an instance key that presents a valid
-`DelegationCertificate` from that master. The publish path attaches the
-certificate. Resolution stays one lookup; A0's one-master-per-member rule means
-at most one live publisher per master, so today's last-writer-wins insert is
-already correct.
+**The record is signed by the member master key directly, by whoever holds it
+— the deployer — never by the hosting substrate.** The substrate stores the
+finished, self-verifying `EndpointInfo` it receives at deploy time and
+replays those exact bytes on every heartbeat; it never builds or signs one
+itself. Verification is the ordinary self-signed check, applied uniformly:
+the key `service_id` resolves to must be the key that signed the packet.
+There is no certificate on the record and nothing to revoke there — an
+earlier version of this design had the substrate sign with a delegated
+instance key, carrying a certificate binding it to the master, but that
+shape had no DHT home (pkarr keys a packet by its signing key, and the
+signer and the record's key did not match) and needed real complexity to
+check the certificate's expiry and revocation. Master-DID resolution now
+works on the DHT exactly as any other record's does.
 
-**Two verification paths, not one — found while planning A0.** This bullet and
-ADR-0020 §6 both cite only `registry.rs:234`, the HTTP registry. The BEP0044
-DHT path has its own: `SignedEndpointInfo::verify`
-([dht_registry.rs:137-146](../../../../crates/core/src/dht_registry.rs#L137))
-already checks a delegation certificate attached to a published record — with
-the **inverse** keying of §6, requiring `cert.temporary_did == info.service_id`
-(record keyed by the *temporary* DID, certificate naming its master) where §6
-specifies a record keyed by the *master* DID and signed by the instance key.
-A1 changes both and decides whether the DHT path adopts §6's shape or keeps its
-own. A0 pins that site's scope argument to the service-instance scope — free
-today, since `EndpointInfo.delegation` is set nowhere in the tree — and leaves
-the reconciliation here.
+A monotonic pkarr/BEP44 timestamp, enforced identically at the DHT and the
+HTTP registry (a strictly newer record always displaces an older one; an
+equal, byte-identical one refreshes rather than conflicts), plus a generous
+`not_after` freshness bound on the record itself, together mean a substrate a
+member has relocated away from cannot keep its stale mapping alive by
+replaying its last blob forever.
 
-Covers every `ServiceType` with no special case: instance keys are HKDF-derived
-from the hosting node's identity ([keys.rs:240-257](../../../../crates/identity/src/keys.rs#L240))
-rather than stored, so a TCP or container service has one exactly as a WASM
-service does, and relocation produces a new instance key with no key generation,
-storage, or transport added anywhere.
+**One verification function, not two — corrected after planning found the
+mapping this design assumed does not exist.** `verify_endpoint_signature`
+([registry.rs:234](../../../../crates/community_registry/src/registry.rs#L234))
+*calls* `SignedEndpointInfo::verify`; its own body only ever resolved a key for
+a debug log a single caller discarded. The genuinely separate path is
+`RegistryClient::lookup`'s **DHT branch**
+([dht_registry.rs](../../../../crates/core/src/dht_registry.rs)), which never
+called `verify` at all. Both now share the identical single-keying-shape
+check.
+
+Covers every `ServiceType`'s *key derivation* with no special case — instance
+keys (still used for outbound-call authentication and FDAE, unrelated now to
+the endpoint record) are HKDF-derived from the hosting node's identity
+([keys.rs:240-257](../../../../crates/identity/src/keys.rs#L240)) rather than
+stored, so a TCP or container service has one exactly as a WASM service does.
+The *surface* is narrower: `SyneroymClient::deploy_container` and `roymctl svc
+deploy` have no way to carry a member master for a container service today, so
+a container-hosted member cannot yet get a master-keyed record (backlog row,
+retargeted off this slice — it needs a container-deploy CLI surface first).
 
 **Discharges the deferred registry-trust-model ADR** that M04A Slice B7 recorded
 as owed (§6.2 / F9 option 2: relax `verify()` to accept a record for X signed by
 someone other than X, carrying proof of authorization). B7 gated that work on
-finding "a real consumer" — this slice is it. The mechanism differs from B7's
-sketch deliberately: the delegation certificate the ingress path already
-verifies, rather than a proof drawn from B7a's `owner_of` store.
+finding "a real consumer" — this slice is it. The mechanism is simpler than
+B7's own sketch: the record is signed by the owner's own key, so the
+signature *is* the authorization proof, with no separate credential or
+owner-store lookup needed.
 
 **Sequences before A2.** Depends on A0.
 
@@ -261,8 +283,10 @@ is not available — the reference scenario's step 4 requires that reinstantiati
 a member propagates *nothing*. So A2 declares `expected_asserter_did` as the
 **member master** DID and teaches `RelationshipProof::verify` to accept an
 instance-key signature carrying a `DelegationCertificate` from that master —
-A1's trust-chain move at a third site, cheap once A1 lands, and load-bearing:
-without it A2 publishes bindings that go stale on the first restart.
+the same accept-an-instance-key-plus-certificate trust chain the handshake
+already walks on every inbound connection (A0), applied at a third site;
+load-bearing: without it A2 publishes bindings that go stale on the first
+restart.
 
 Also here: `ProxyRouter::invoke_remote_at`'s `CallOrigin::Native` arm still
 presents the *node's* key on the wire (A0 changes only the guest-origin arm),
@@ -391,9 +415,10 @@ A two-substrate app: `frontend` placed on substrate A, `backend` on substrate B,
 
 Steps 4 and 5 are the milestone's real claim, and the difference between them is
 the design: reinstantiating a member propagates nothing, while changing the
-member set propagates correctly. Step 4 also exercises A1 — without
-delegation-signed endpoint records the restarted member could not republish
-under its master and step 2's second lookup would fail.
+member set propagates correctly. Step 4 also exercises A1 — without a
+master-signed endpoint record on file, the restarted member would have
+nothing for the heartbeat sweep to replay, and step 2's second lookup would
+fail.
 
 ---
 
@@ -403,8 +428,8 @@ under its master and step 2's second lookup would fail.
 |---|---|---|
 | 1 | Instance certificate expired | Handshake fails closed. **✅ A0**: already true of the general mechanism, and pinned specifically for a service-instance certificate by `an_expired_instance_certificate_fails_the_handshake_closed` (`crates/router/src/handshake.rs`). Unattended renewal under the online-key posture is A5's; through A0-A4 renewal is an operator-run cadence (see row 3) |
 | 2 | **Certificate presented with the wrong `scope`** | Rejected. **✅ A0, at two granularities**: the ingress (`handshake.rs`) admits either transport scope and rejects anything outside that set (`a_certificate_scoped_outside_transport_is_rejected_at_the_handshake`); the narrow single-value check — "this record/install may only be admitted by a `service-instance` certificate" — lives at the deploy-time install verification (`a_deploy_is_rejected_when_the_certificate_carries_the_routing_scope`, `crates/control_plane/src/service/orchestration.rs`) and, for A1, at endpoint-record admission. Proven live over two real substrates in `crates/substrate/tests/instance_identity_e2e.rs` (a `routing`-scoped certificate rejected at deploy) |
-| 3 | **Attended posture, renewal cadence missed** | Instance fails closed; this is an outage, not a degradation, and the docs say so (ADR-0020 §3). **✅ A0**: not a distinct code behavior — the failure mode *is* row 1 — so the evidence is row 1's test plus the near-expiry heartbeat warning (`a_certificate_near_expiry_is_warned_about_on_the_heartbeat_sweep`, `crates/substrate/src/runtime.rs`) and the `svc list` expiry column, which make the cadence operable without making a miss survivable |
-| 4 | **Endpoint record keyed by a master, signed by a non-delegated key** | Rejected; only a valid `DelegationCertificate` from that master admits the record (A1) |
+| 3 | **Attended posture, renewal cadence missed** | Instance fails closed; this is an outage, not a degradation, and the docs say so (ADR-0020 §3). **✅ A0** proves the handshake half: not a distinct code behavior there — the failure mode *is* row 1 — so the evidence is row 1's test plus the near-expiry heartbeat warning (`a_certificate_near_expiry_is_warned_about_on_the_heartbeat_sweep`, `crates/substrate/src/runtime.rs`) and the `svc list` expiry column. **The instance certificate's own expiry is now unrelated to name resolution** (the endpoint record carries no certificate at all), so resolution has its own, independent freshness bound instead: `EndpointInfo.not_after`, checked uniformly whether admitting or reading a record — deliberately generous (30 days) so it is a backstop for a signer that stops renewing entirely, not a routine failure mode. **✅ A1**: `an_expired_record_is_rejected` (`crates/core/src/dht_registry.rs`) and `an_expired_stored_record_is_not_replayed` (`crates/core/src/endpoint_publisher.rs`) |
+| 4 | **Endpoint record keyed by a master DID, signed by an unrelated key** | Rejected; a record must be self-signed by the key its own `service_id` resolves to. **✅ A1**: `a_record_is_rejected_when_signed_by_a_key_other_than_its_own_service_id` (`crates/core/src/dht_registry.rs`), proven live over two real substrates by the negative half of `a_member_master_did_resolves_to_an_address_and_follows_the_member_across_nodes` (`crates/substrate/tests/master_endpoint_record_e2e.rs`) — a hand-built record posted to the registry is rejected with `401` |
 | 5 | Out-of-order binding write (stale epoch) | Rejected by the substrate; mapping does not regress |
 | 6 | **Binding write re-sent at the current epoch, identical content** | Idempotent no-op, reported as success — distinct from the stale rejection above |
 | 7 | **Binding write at the current epoch, *different* content** | Rejected as a conflict, reported distinctly; this is the two-writer signal |
@@ -420,6 +445,7 @@ under its master and step 2's second lookup would fail.
 | 17 | **Deploy to an unowned substrate once F4 flips** | Rejected; the bootstrap path becomes establishing ownership with the P0 tool, not an open deploy grant |
 | 18 | Bound cross-app dependency replaced, **attended posture** | No master key, so no active probe: detection is passive, on the first real call that fails. Weaker by design, and the operator chose it |
 | 19 | **Member reinstantiated under a policy declaring `expected_asserter_did`** | Its cross-service `RelationshipProof` still verifies. Today it would not: `asserter_did` is the *instance* key and the check is exact equality, so a restart on another node silently breaks every policy naming that service (A2) |
+| 20 | **A substrate a member has relocated away from keeps replaying its old endpoint record on its heartbeat** | Rejected, at both the DHT and the HTTP registry: a record's pkarr/BEP44 timestamp must be strictly newer than what is stored to be admitted, or equal and byte-identical (the routine heartbeat replay, admitted as a refresh, not a conflict). Since a substrate that cannot re-sign a member's record can only ever replay the same frozen bytes at the same timestamp, once the master has signed one newer record for the new placement, the old substrate's replay is permanently stale and rejected everywhere. **✅ A1**: `verify_returns_the_packets_own_timestamp` (`crates/core/src/dht_registry.rs`) and the registry-side compare-and-swap proven live in `publish_all_services_survives_a_record_rejected_by_admission` (`crates/community_registry/src/registry.rs`) |
 
 ---
 
@@ -438,8 +464,8 @@ under its master and step 2's second lookup would fail.
 - **Resolution adds no network hop.** A2 moves dependency resolution host-side;
   the name → master-DID step must stay an in-process cache lookup. The
   master-DID → endpoint step is the registry lookup that already happens today
-  (A1 keeps it at exactly one, which is why ADR-0020 §6 chose delegation-signed
-  records over a two-hop anchor index).
+  (A1 keeps it at exactly one, which is why ADR-0020 §6 chose a directly
+  master-signed record over a two-hop anchor index).
 
 ---
 

@@ -4,8 +4,8 @@
 [ADR-0020](../../../decisions/0020-stable-logical-service-identity.md),
 [ADR-0021](../../../decisions/0021-binding-propagation-and-app-supervisor.md)
 
-**Overall:** Design accepted 2026-07-27. Slice A0 complete (2026-07-28); A1-A6
-not started.
+**Overall:** Design accepted 2026-07-27. Slices A0-A1 complete (2026-07-28);
+A2-A6 not started.
 
 ## Slice status
 
@@ -13,7 +13,7 @@ not started.
 |---|---|---|---|
 | P0 | `ControllerAgreement` creation tool — **pulled forward from M5 item 5** | Not started | None; gates A3 |
 | A0 | Stable member identity (master DID per member + delegated instance keys + ingress `scope` enforcement) | **Complete (2026-07-28)** — [implementation plan](slice-a0-implementation-plan.md), evidence below | None — independently mergeable |
-| A1 | Endpoint records published under the member master DID | Not started | A0 |
+| A1 | Endpoint records published under the member master DID | **Complete (2026-07-28, design revised 2026-07-29 before merge)** — [implementation plan](slice-a1-implementation-plan.md), evidence below | A0 |
 | A2 | Host-side dependency resolution; bindings carry `expected_asserter_did` | Not started | A1 |
 | A3 | Multi-substrate placement + substrate inventory | Not started | `ControllerAgreement` tool (see below) |
 | A4 | Health declaration + read-only monitoring | Not started | A3 |
@@ -136,6 +136,342 @@ guest-arm's own code path is proven at the router level instead.
   build clean — the WIT changes in this slice (`instance-identity`,
   `deploy-manifest.instance-certificate`, `deployed-service.instance-
   certificate-expires-at`) touch no interface any guest fixture imports.
+
+## A1 — Verification evidence (2026-07-28)
+
+A0 shipped a master DID per member and delegated instance keys, but nothing
+could turn a master DID into a network address: the registry verified a
+record against the key resolved from the `service_id` it was keyed under, so
+an instance key could not publish under its master, and there was no
+substrate-side publish path for a service endpoint record at all — only a
+replay of an operator-signed file on the hourly heartbeat. Planning found
+thirteen more places where ADR-0020 §6 and task.md described the tree
+inaccurately or asserted a property it did not have (four review passes;
+[slice-a1-implementation-plan.md](slice-a1-implementation-plan.md) §1's
+thirteen numbered decisions and §6's corrections list), folded in before
+implementation started; ADR-0020 now carries a second dated amendment.
+
+**What shipped**, by crate:
+
+- **`crates/identity`:** `DelegationCertificate::verify_chain` split out from
+  `verify` — the master match, scope, and signature, without the validity
+  window — so a *reader* of an already-admitted record can check the trust
+  chain without re-adjudicating a live credential's expiry (D-A1-10).
+- **`crates/core/src/dht_registry.rs`:** `RecordTrust::{Publishing, Reading}`
+  and `SignedEndpointInfo::verify`'s rewrite implementing ADR-0020 §6's second
+  keying shape (a record keyed by a master DID, signed by an instance key
+  presenting a certificate from that master); `EndpointInfo::sign_as_instance`;
+  whole-struct `PartialEq` on `EndpointInfo` and `MasterAnchorPayload` so
+  `verify` authenticates the entire record/anchor rather than one field
+  (D-A1-9, D-A1-13); `RegistryClient::register`'s DHT-leg skip for a
+  delegation-signed record, since BEP0044 keys a packet by its signing key and
+  can never hold one under its master DID (D-A1-2); `SignedMasterAnchor::
+  verify_signature`/`fetch_own_master_anchor`/`refresh_master_anchor`, a
+  read-modify-write that carries every stateful anchor field forward rather
+  than wiping revocations on every renewal (D-A1-7, D-A1-12).
+- **`crates/community_registry`:** `verify_endpoint_signature` simplified to
+  one call plus a registry-local, best-effort revocation check at admission
+  (D-A1-6) — defence in depth; the real gate stays the handshake.
+- **`crates/core/src/endpoint_publisher.rs`** (new): `EndpointPublisher`,
+  built from the D-A1-4 decision table — a certified, unexpired service
+  publishes a fresh instance-signed record; an expired certificate or a
+  drifted owner row publishes nothing (warned); no certificate replays the
+  stored file, but only after verifying it still self-verifies.
+- **`crates/control_plane`:** `ControlPlaneService::set_endpoint_publisher`
+  (`OnceLock`, mirroring `service_proxy`'s two-phase wiring) and the
+  publish-on-deploy hook in `deploy`, so a reinstantiated member becomes
+  resolvable promptly rather than waiting for the hourly heartbeat.
+- **`crates/substrate/src/runtime.rs`:** `setup_router` builds the
+  `EndpointPublisher` and wires it into the control plane; the heartbeat's
+  hosted-apps block collapses to `publisher.publish_all_services().await`.
+- **`apps/roymctl`:** `svc deploy`'s three deploy shapes now all carry a
+  nickname without requiring `--identity` (D-A1-8, including an ephemeral
+  signing key on the `--instance-certificate` path, which has no operator key
+  to reach for); `--registry-url` on `identity certify-instance`, `svc
+  deploy`, and `app deploy`, calling `refresh_master_anchor` once per master
+  and warning loudly when omitted (D-A1-7).
+
+**Tests added:** 3 new unit tests in `crates/identity/src/delegation.rs`
+(`verify_chain`'s own direct coverage: a lapsed-but-once-valid window is
+accepted for reading and still rejected for a live-credential check, a
+non-positive window and a future-issued certificate are rejected at both
+trust levels — added in post-review fix-up, see below; existing thirteen
+tests still green), 15 in `crates/core/src/dht_registry.rs` (record
+verification shapes, D-A1-9's tamper tests — now asserting both trust levels
+— D-A1-2's DHT-leg error, D-A1-10's publish/read split, D-A1-12's
+stale-anchor split, D-A1-13's whole-payload anchor tamper tests), 9 in
+`crates/community_registry/src/registry.rs` (delegation-signed
+register/lookup, revoked-key admission rejection, alias-by-master, three
+`refresh_master_anchor` regression guards including the stale-anchor and
+unreadable-anchor cases, two D-A1-12 `master_id`-equality regression tests
+against a validly-signed anchor served under the wrong master, and a live
+`publish_all_services` sweep test proving the id-union and per-service
+failure containment — the last three added in post-review fix-up), 10 in
+`crates/core/src/endpoint_publisher.rs` (`build_record`'s full decision
+table — the sweep's own union/failure-containment behavior is proven in
+`community_registry`, not here, see below), 1 in
+`crates/control_plane/src/service.rs` (`set_endpoint_publisher` is set-once),
+and 2 CLI parse-level tests in `apps/roymctl/src/commands/svc.rs` (D-A1-8's
+two flag-carrying shapes) — **40 new unit/CLI tests total**, counted directly
+from `git diff main` rather than asserted (a prior revision of this section
+overcounted by naming ten phantom `delegation.rs` tests before any existed
+there). One new two-real-substrate e2e test,
+`a_member_master_did_resolves_to_an_address_and_follows_the_member_across_nodes`
+(`crates/substrate/tests/master_endpoint_record_e2e.rs`), Node A hosting the
+shared community registry and Node B pointed at it (D-A1-2's requirement,
+proven rather than merely stated): certifies and deploys a member master on
+node B, resolves it *by the master DID* via `RegistryClient::lookup(resolve =
+true)` and `net_iroh::resolve_iroh_addr`, asserting the returned mechanisms
+and address are node B's own and the record's certificate names node B's
+derived instance key; cleanly relocates the same master to node A
+(`undeploy` before the second `deploy`, deliberately, per D-A1-11) and
+re-resolves, showing the same DID now yields node A's address with no
+operator republish action — the reference scenario's step 4, live; and posts
+a hand-forged record (keyed by the master, signed by an uncertified key)
+straight to the registry, asserting `401` — failure-matrix row 4 over the
+wire.
+
+**Gates, run 2026-07-28:**
+
+- `cargo +nightly fmt --all -- --check`: clean.
+- `cargo clippy --workspace --all-targets --all-features`: clean, zero
+  warnings.
+- `cargo test --workspace` (sandboxed): green except the same category of
+  pre-existing, environmental sandbox failures as A0 above — real socket
+  binds the sandbox denies outright, plus an intermittent mainline-DHT
+  actor-thread crash (`actor thread unexpectedly shutdown`, `mainline`
+  crate) that a handful of DHT-touching test binaries hit under sandboxed
+  parallel execution. **The exact failing-target count varies run to run by
+  about ±1 for this reason on both `main` and this branch** — measured twice
+  each: `main` showed 11 and 12 failing targets across two runs (the
+  variable member is `syneroym-router --test native_dispatch_identity`,
+  which panics inside the `mainline` crate at `dht.rs:143` and hits
+  different tests each run — three *isolated* sandboxed reruns gave pass,
+  pass, fail, and it passes 39/39 unsandboxed every time; A1 touches no code
+  in that crate); this branch showed 13 and 14 across two runs, consistently
+  `main`'s set plus exactly the same two new targets needing real port binds
+  — `syneroym-community-registry --lib` and `syneroym-substrate --test
+  master_endpoint_record_e2e` — both independently verified passing with the
+  sandbox disabled, the latter twice in a row (~14-15s each). No target
+  outside that DHT-actor-flake set differs between `main` and this branch.
+- `mise run test:e2e` (sandbox disabled, required for real port binds): 12/12
+  green (8 main + 4 multi-hop), unchanged from before this slice.
+- `wasm32-wasip2`: `data-layer-test`, `greeter`, and `proxy-test` all still
+  build clean — A1 touches no WIT interface.
+
+**Independent review (2026-07-28).** A post-merge review found fifteen
+findings, none blocking the slice's own claims. All fifteen were
+incorporated rather than argued against:
+
+- **Trust-window bug (high):** `verify_chain` was skipping the
+  non-positive-window and future-issuance checks entirely, not just
+  wall-clock expiry as D-A1-10 intended — a certificate that was never a
+  live credential at all (e.g. a zero-length window) would pass a `Reading`
+  check. Fixed: those two structural checks stay in `verify_chain`
+  regardless of trust level; only wall-clock expiry moves to `verify`. Three
+  new direct `delegation.rs` tests cover it.
+- **Evidence-accuracy bug (high):** this section previously claimed ten new
+  `delegation.rs` tests where the commit added none, inflating the stated
+  total to 44 against an actual 34. Corrected above to a `git diff`-verified
+  40 (34 pre-review-fix, plus 6 the fixes themselves added).
+- **D-A1-12's `master_id`-equality regression test asserted the wrong
+  failure** (an unresolvable literal DID, not the equality guard against a
+  validly-signed anchor served under the wrong master). Renamed for honesty
+  and paired with two new real regression tests against
+  `fetch_own_master_anchor` and `resolve_master_anchor`.
+- **`publish_all_services` — the recovery path D-A1-3 explicitly asked for
+  its own test — had none**; the test bearing its name only called
+  `build_record`. Renamed for honesty; a real sweep test against a live
+  registry now proves the id-union and per-service failure containment.
+- **No HTTP timeout anywhere in `RegistryClient`** (five bare
+  `ReqwestClient::new()` sites), so an unresponsive registry could stall
+  `deploy` for an OS-level connect timeout. Fixed: one `reqwest::Client`
+  with a 10 s timeout, built once and reused.
+- **`refresh_master_anchor` forced a synchronous mainline-DHT publish onto
+  `roymctl`'s deploy paths.** Switched to fire-and-forget for the DHT leg;
+  the HTTP publish — the guarantee D-A1-2 actually requires — stays
+  synchronous.
+- Six low-severity fixes: D-A1-9's tamper tests now assert both trust
+  levels; the heartbeat sweep's directory scan regained its `is_file()`
+  guard it had before this slice; `build_record` moved off a blocking
+  `std::fs` call inside an async fn; a stale doc comment on
+  `all_instance_certs`; a duplicate `RegistryClient` in `runtime.rs`
+  (substrate now builds one pkarr DHT client, not two); dead/unreachable
+  code in `svc.rs`'s `--master` arm; and a silent no-op when `--nickname` is
+  given with nothing to sign the envelope with now warns.
+
+**Follow-up review round (2026-07-28).** Three further comments; one was a
+real hole, two were already closed by the fix-up above and are recorded here
+so the disagreement is not re-litigated:
+
+- **The new sweep test could not fail on half of what it claimed.**
+  `publish_all_services` walks a `BTreeSet`, so ids run in ascending byte
+  order and the deliberately-failing service was named `svc-2` — the *last*
+  iteration. Every assertion still held under an implementation that aborted
+  on the first error, so only the id-union half was really covered. Renamed
+  to `aaa-revoked`, which sorts ahead of both `did:key:` and `svc-`, and the
+  comment now records that the name is load-bearing. Verified by mutation:
+  with the sweep changed to return on first error the test fails on the
+  `svc-1` assertion, and passes again when reverted.
+- **Test counts** were already corrected in the fix-up commit and
+  independently re-verified here by counting `#[test]`/`#[tokio::test]`
+  attributes added since `4e76f9d`: 35 in the slice commit plus 6 in the
+  fix-up = 41, of which 1 is the e2e test, giving the **40** unit/CLI stated
+  above and **3** in `delegation.rs`. No change needed.
+- **The sandboxed baseline** was likewise already restated as a category
+  rather than a fixed count. The follow-up round's sharper evidence — three
+  isolated sandboxed reruns of the variable target giving pass, pass, fail —
+  is folded into the gates section above.
+
+**Fifth pass (2026-07-29): the design itself reopened, before merge, on an
+operator question.** D-A1-2 treated "the hosting substrate signs the
+record" as fixed; it is not — the deployer already holds the member master
+key and can sign the record directly. That single change collapsed most of
+what the first four passes built to make delegation-signed records work at
+all. Full reasoning is in
+[slice-a1-implementation-plan.md](slice-a1-implementation-plan.md)'s own
+"fifth pass" note and its D-A1-1/2/5/6/8/10/11/14/15; ADR-0020 §6 is rewritten
+to match. Summary of what's true now, replacing the "What shipped, by crate"
+bullets above (kept for history, not current):
+
+- **`crates/core/src/dht_registry.rs`:** `EndpointInfo` carries no
+  `delegation` field; `EndpointInfo::sign_as_instance` and the `RecordTrust`
+  enum are deleted. `SignedEndpointInfo::verify` takes no trust-level
+  argument, checks the single self-signed keying shape uniformly, and returns
+  the packet's own pkarr/BEP44 timestamp for the compare-and-swap below.
+  `EndpointInfo` gains a required `not_after: u64` field (30-day default,
+  `DEFAULT_ENDPOINT_NOT_AFTER_SECS`), checked in `verify`. `RegistryClient::
+  register`'s DHT-leg refusal for a delegation-signed record is deleted —
+  every record now has a DHT home.
+- **`crates/core/src/endpoint_publisher.rs`:** `build_record` no longer reads
+  an instance certificate, derives an instance key, or signs anything. It
+  reads the stored, deployer-signed file and replays it verbatim if it still
+  verifies (self-signature and `not_after`); otherwise it publishes nothing.
+  `EndpointPublisher::new` drops the `EndpointRegistry`/node-identity/node-DID
+  parameters it no longer needs. `publish_all_services`'s id source is the
+  hosted-apps directory scan only — there is no second, certificate-derived
+  source of ids to union anymore.
+- **`crates/community_registry/src/registry.rs`:** `verify_endpoint_signature`
+  is `payload.verify()`, full stop — the registry-local revocation check is
+  deleted (nothing left to check; revocation is a handshake-only concern
+  now). `register_endpoint` and `register_master_endpoint` are
+  compare-and-swap on the record's/anchor's own timestamp via `DashMap::
+  entry`, last-writer-wins with an explicit equal-and-identical refresh
+  case — the blind `insert` this replaced accepted a rollback outright.
+- **`apps/roymctl/src/commands/svc.rs`:** `--master` always signs the
+  endpoint record now, unconditionally on `--nickname` — `signing_identity`
+  collapses to `named_identity.as_ref().or(master_identity.as_ref())`, and
+  the ephemeral-envelope-key shape for `--instance-certificate` is deleted
+  (a throwaway-signed record can never verify under the master's own
+  `service_id`, so it bought nothing once the substrate stopped re-signing).
+- **`crates/substrate/src/runtime.rs`, `crates/coordinator_iroh/src/coordinator.rs`,
+  `crates/smoke-tests`, `tests/perf`:** every remaining `EndpointInfo`
+  construction site (the substrate's own self-record, the coordinator's
+  self-record, smoke tests, perf-harness fixtures) threads `not_after`
+  through.
+- **`crates/control_plane`:** unchanged — the publish-on-deploy hook and
+  `set_endpoint_publisher` wiring do not depend on who signs the record.
+
+**Tests, `git diff` against the pre-fifth-pass tip (`d1f0eb9`):** net **-10**
+unit tests (`dht_registry.rs` 17→13, `endpoint_publisher.rs` 10→5,
+`community_registry/registry.rs` 17→16 — the certificate-shaped decision
+table shrank along with the code), all re-derived to match the design above
+rather than trimmed for count; the `delegation.rs` tests (3) and the e2e test
+(1, `master_endpoint_record_e2e.rs`, substantially rewritten internally —
+same name, same count) are untouched by the net change. **30 unit/CLI tests,
+1 e2e**, both counted by running the suites, not asserted: `cargo test -p
+syneroym-core --lib` (dht_registry.rs + endpoint_publisher.rs, 50 total in
+that crate including untouched modules), `cargo test -p syneroym-community-
+registry --lib` (16), `cargo test -p syneroym-substrate --test
+master_endpoint_record_e2e` (1, sandbox disabled for the real port binds).
+New coverage specific to the fifth pass: `verify_returns_the_packets_own_
+timestamp` and `a_self_signed_record_registers_to_the_dht_with_no_http_
+registry_configured` (`dht_registry.rs`); `publish_all_services_survives_a_
+record_rejected_by_admission` (`community_registry/registry.rs`, proving the
+compare-and-swap end to end against a live registry, including that a
+rejected record does not stop the sweep from publishing the others).
+
+**Gates, re-run 2026-07-29:**
+
+- `cargo +nightly fmt --all -- --check`: clean.
+- `cargo clippy --workspace --all-targets --all-features`: clean, zero
+  warnings.
+- `cargo test --workspace` (sandboxed, `--no-fail-fast`): 14 failing targets,
+  the identical category and count already documented above for this branch
+  — real port/socket binds the sandbox denies, plus the same
+  `native_dispatch_identity` DHT-actor flake. Every target in that set was
+  independently re-verified passing with the sandbox disabled this pass,
+  including the ones the fifth pass touched most directly:
+  `master_endpoint_record_e2e` (the flagship test, full scenario including
+  the relocation and the forged-record rejection), `basic_lifecycle`,
+  `federated_fdae_e2e`, `community_registry --lib`, `coordinator-iroh`'s full
+  suite (`multi_hop_relay`, `connection_limit`, `tls_rotation`, and the rest),
+  and every other `syneroym-substrate` e2e test
+  (`http_passthrough_e2e`, `instance_identity_e2e`, `messaging_client_e2e`,
+  `stream_client_e2e`). No target differs from the documented baseline.
+- `mise run test:e2e` (sandbox disabled, required for real port binds): 12/12
+  green (8 main + 4 multi-hop), unchanged.
+
+**Sixth pass (2026-07-29): an independent review of the fifth pass's own
+commit (`89f96cf`)** found one high-severity gap the fifth pass introduced
+and three smaller ones. All four fixed directly, no pushback:
+
+- **High: `app deploy --mint-masters` published no endpoint record at all —
+  the reference scenario's own primary deploy path.** The fourth-pass design
+  let the substrate build a record from an installed instance certificate,
+  so `map_deployment_plan_to_wit` hardcoding `registry_certificate: None`
+  cost nothing; once the substrate stopped building records, that hardcoded
+  `None` meant an app-deployed member's master DID could never resolve to an
+  address, silently. Fixed: `substitute_and_certify_members`
+  (`apps/roymctl/src/commands/member_identity.rs`) now signs an
+  `EndpointInfo` per master alongside the instance certificate it already
+  mints; `map_deployment_plan_to_wit` (`crates/sdk/src/mapper.rs`) gained a
+  `registry_certificates` parameter mirroring `instance_certificates`
+  exactly, threaded through from `app.rs`'s deploy command.
+- **Medium: the DHT read path never called `verify()`**, so it never
+  checked `not_after` — unreachable under the fourth-pass design (a
+  delegation-signed record had no DHT home at all), exposed by this
+  design's own DHT reversal. Fixed by extracting the DHT branch's
+  packet-parsing into `extract_verified_endpoint_from_packet`
+  (`crates/core/src/dht_registry.rs`), which now calls `verify()` before
+  returning a candidate; two new unit tests exercise it directly (a signed
+  packet built in-memory, no live DHT needed).
+- **Medium: `not_after` had no near-expiry warning surface**, unlike the
+  instance certificate's `warn_on_near_expiry_instance_certs`. Added
+  `EndpointPublisher::warn_on_near_expiry_records`
+  (`crates/core/src/endpoint_publisher.rs`), called from the same heartbeat
+  loop that already calls `publish_all_services`, with its own fixed 7-day
+  window (a record has no `issued_at` to compute a lifetime fraction from,
+  unlike a certificate); three new unit tests.
+- **Medium: doc accuracy** — D-A1-3 and D-A1-4 in the implementation plan
+  were the only two fifth-pass decisions left without a supersession marker.
+  Both rewritten; D-A1-4's obsolete decision table (keyed entirely on
+  `registry.instance_cert(service_id)`, which `build_record` no longer
+  reads) is now the single row the shipped code actually has.
+- **Low, two precision fixes, no behavior change to one:** language in a few
+  places overstated the DHT side as "compare-and-swap" (the DHT side is
+  monotonic ordering via mainline's own unconditional sequence-number
+  rejection, `dht.publish(&packet, None)` — no `cas` requested; the HTTP
+  registry's `admit_endpoint` is the one genuine compare-and-swap) —
+  corrected in the two summary passages that conflated them. And: a stored
+  file that fails to *parse* (rather than fails to *verify*) used to be
+  silently indistinguishable from a missing file
+  (`build_record`'s `.ok()` chain); now reads, then parses, as two separate
+  steps, each warning distinctly on failure, with a `NotFound` read error
+  the sole silent case (the normal, common state for a service deployed
+  without `--identity`/`--master`).
+
+**Gates, re-run 2026-07-29 after the sixth pass:** `cargo +nightly fmt --all
+-- --check` clean; `cargo clippy --workspace --all-targets --all-features`
+clean, zero warnings; `cargo test -p syneroym-core -p
+syneroym-community-registry -p roymctl -p syneroym-sdk -p
+syneroym-control-plane` (sandbox disabled) all green, including 6 new unit
+tests (2 in `dht_registry.rs`, 4 in `endpoint_publisher.rs`); `cargo test -p
+syneroym-substrate` (sandbox disabled) all green, including the flagship
+`master_endpoint_record_e2e` and the previously-unaffected
+`a_certificate_near_expiry_is_warned_about_on_the_heartbeat_sweep` (proving
+the new near-expiry sweep call didn't disturb the existing one); `mise run
+test:e2e` 12/12, unchanged.
 
 ## Dependencies pulled in
 

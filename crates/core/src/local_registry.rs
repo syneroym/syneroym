@@ -279,9 +279,11 @@ impl EndpointRegistry {
         Ok(())
     }
 
-    /// Every installed instance certificate, keyed by `service_id`. For the
-    /// heartbeat sweep that warns on a near-expiry certificate -- the only
-    /// consumer that needs the whole set rather than one lookup.
+    /// Every installed instance certificate, keyed by `service_id`. For
+    /// consumers that need the whole set rather than one lookup: the
+    /// heartbeat sweep that warns on a near-expiry certificate, and
+    /// `EndpointPublisher::publish_all_services`' id union with the
+    /// stored-record directory scan.
     #[must_use]
     pub fn all_instance_certs(&self) -> Vec<(String, DelegationCertificate)> {
         self.service_certs.iter().map(|e| (e.key().clone(), e.value().clone())).collect()

@@ -8,7 +8,6 @@ use std::{
     fmt::{self, Debug, Formatter},
     future,
     future::Future,
-    path::PathBuf,
     pin,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -24,9 +23,10 @@ use syneroym_coordinator::EcosystemCoordinator;
 use syneroym_core::{
     config::{BlobBackend, SubstrateConfig},
     dht_registry::{
-        EndpointInfo, EndpointMechanism, EndpointType, HEARTBEAT_INTERVAL_SECS, RegistryClient,
-        SignedEndpointInfo,
+        DEFAULT_ENDPOINT_NOT_AFTER_SECS, EndpointInfo, EndpointMechanism, EndpointType,
+        HEARTBEAT_INTERVAL_SECS, RegistryClient, SignedEndpointInfo,
     },
+    endpoint_publisher::EndpointPublisher,
     http_routes::HttpRouteRegistry,
     local_registry::{EndpointRegistry, SubstrateEndpoint},
 };
@@ -40,7 +40,7 @@ use syneroym_router::{ConnectionRouter, RouteHandlerDeps};
 use syneroym_rpc::NativeDispatchRegistry;
 use syneroym_sandbox_podman::ContainerEngine;
 use syneroym_sandbox_wasm::AppSandboxEngine;
-use tokio::{fs, net::TcpListener, signal, time};
+use tokio::{net::TcpListener, signal, time};
 use tracing::{debug, error, info, warn};
 
 use crate::identity;
@@ -382,21 +382,20 @@ async fn setup_connection_router(
         );
     }
 
-    let (router, endpoint_registry) = setup_router(config, &service_id, secret_key).await?;
+    let (router, endpoint_registry, publisher) =
+        setup_router(config, &service_id, secret_key).await?;
 
-    if (config.substrate.enable_bep0044_dht || config.substrate.registry_url.is_some())
+    if let Some(publisher) = publisher
         && let Some(endpoint_addr) = router.endpoint_addr()
     {
         let relay_url = config.parent_coordinator.iroh.as_ref().map(|c| c.url.clone());
         publish_to_community_registry(
-            config.substrate.registry_url.clone(),
-            config.substrate.enable_bep0044_dht,
             service_id,
             endpoint_addr,
             relay_url,
             secret_key,
             config.identity.nickname.clone(),
-            config.hosted_apps_dir(),
+            publisher,
         );
     }
 
@@ -422,7 +421,7 @@ async fn setup_router(
     config: &SubstrateConfig,
     service_id: &str,
     secret_key: [u8; 32],
-) -> anyhow::Result<(ConnectionRouter, EndpointRegistry)> {
+) -> anyhow::Result<(ConnectionRouter, EndpointRegistry, Option<Arc<EndpointPublisher>>)> {
     let data_store = registry_store::init_store(config).await?;
     let endpoint_registry = EndpointRegistry::new(data_store).await?;
 
@@ -439,6 +438,7 @@ async fn setup_router(
 
     let route_handler_deps =
         build_route_handler_deps(config, service_id, &endpoint_registry, secret_key).await?;
+    let control_plane = route_handler_deps.control_plane.clone();
 
     let router = ConnectionRouter::init(
         endpoint_registry.clone(),
@@ -448,7 +448,36 @@ async fn setup_router(
         route_handler_deps,
     )
     .await?;
-    Ok((router, endpoint_registry))
+
+    // Built here rather than in `build_route_handler_deps` because it needs
+    // the finished `EndpointRegistry`, and handed to the control plane so a
+    // deploy can publish immediately instead of waiting for the heartbeat.
+    let publisher = (config.substrate.registry_url.is_some()
+        || config.substrate.enable_bep0044_dht)
+        .then(|| {
+            Arc::new(EndpointPublisher::new(
+                Arc::new(RegistryClient::new(
+                    config.substrate.enable_bep0044_dht,
+                    config.substrate.registry_url.clone(),
+                )),
+                config.hosted_apps_dir(),
+            ))
+        });
+
+    if let Some(publisher) = &publisher {
+        // A registry is configured, so a deploy must be able to publish. A
+        // type-erased control plane cannot, and silently skipping the wiring
+        // would leave deploy-time publishing off with nothing to notice it.
+        let control_plane = control_plane.ok_or_else(|| {
+            anyhow::anyhow!(
+                "a community registry is configured but no concrete ControlPlaneService was \
+                 built, so a deploy could not publish its endpoint record"
+            )
+        })?;
+        control_plane.set_endpoint_publisher(publisher.clone());
+    }
+
+    Ok((router, endpoint_registry, publisher))
 }
 
 /// Constructs every capability the connection router holds and dispatches
@@ -620,19 +649,20 @@ fn build_blob_provider(config: &SubstrateConfig) -> anyhow::Result<Arc<dyn BlobP
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn publish_to_community_registry(
-    registry_url: Option<String>,
-    enable_bep0044_dht: bool,
     service_id: String,
     endpoint_addr: EndpointAddr,
     relay_url: Option<String>,
     secret_key: [u8; 32],
     nickname: Option<String>,
-    hosted_apps_dir: PathBuf,
+    publisher: Arc<EndpointPublisher>,
 ) {
     tokio::spawn(async move {
-        let registry_client = RegistryClient::new(enable_bep0044_dht, registry_url.clone());
+        // Reuses the publisher's own client rather than building a second
+        // one from the same config: each opens its own pkarr DHT client
+        // when the DHT is enabled, so a duplicate is a real (if small) cost,
+        // not just noise.
+        let registry_client = publisher.registry_client();
 
         loop {
             // Register native substrate endpoint
@@ -676,24 +706,11 @@ fn publish_to_community_registry(
                 );
             }
 
-            // Proxy hosted apps
-            if hosted_apps_dir.exists()
-                && let Ok(mut entries) = fs::read_dir(&hosted_apps_dir).await
-            {
-                while let Ok(Some(entry)) = entries.next_entry().await {
-                    if let Ok(file_type) = entry.file_type().await
-                        && file_type.is_file()
-                        && let Ok(contents) = fs::read_to_string(entry.path()).await
-                        && let Ok(cert) = serde_json::from_str::<SignedEndpointInfo>(&contents)
-                    {
-                        if let Err(e) = registry_client.register(&cert, false).await {
-                            warn!("Failed to register hosted app {}: {}", cert.info.service_id, e);
-                        } else {
-                            info!("Successfully registered hosted app {}", cert.info.service_id);
-                        }
-                    }
-                }
-            }
+            // Hosted services: replay every stored, still-verifying record
+            // verbatim. The substrate holds no key that could ever sign one
+            // itself (ADR-0020 §3), so this is pure replay, never a rebuild.
+            publisher.publish_all_services().await;
+            publisher.warn_on_near_expiry_records().await;
 
             // Sleep until the next heartbeat interval
             time::sleep(Duration::from_secs(HEARTBEAT_INTERVAL_SECS)).await;
@@ -705,9 +722,8 @@ fn publish_to_community_registry(
 /// renews a certificate, only warns before a missed renewal becomes an
 /// outage. Runs on the same cadence as the community-registry heartbeat
 /// above but as its own sibling loop in `RuntimeServices`'s `select!`,
-/// rather than growing `publish_to_community_registry`'s already-`#[allow(
-/// clippy::too_many_arguments)]` argument list with a registry it has no
-/// other reason to hold.
+/// rather than growing `publish_to_community_registry`'s argument list with
+/// a registry it has no other reason to hold.
 async fn instance_cert_expiry_sweep_loop(registry: &EndpointRegistry) -> ! {
     loop {
         warn_on_near_expiry_instance_certs(registry);
@@ -758,6 +774,12 @@ fn build_signed_endpoint_info(
     let endpoint_addr_bytes = serde_json::to_vec(&pruned_addr)
         .map_err(|e| anyhow::anyhow!("Failed to serialize endpoint addr: {e}"))?;
 
+    let not_after = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+        .saturating_add(DEFAULT_ENDPOINT_NOT_AFTER_SECS);
+
     let info = EndpointInfo {
         service_id: service_id.to_string(),
         substrate_id: service_id.to_string(),
@@ -766,7 +788,7 @@ fn build_signed_endpoint_info(
         mechanisms: vec![EndpointMechanism::Iroh { endpoint_addr_bytes, relay_url }],
         is_private: false,
         ttl: None,
-        delegation: None,
+        not_after,
     };
 
     let identity = Identity::from_bytes(secret_key);

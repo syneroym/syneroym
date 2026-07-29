@@ -260,7 +260,7 @@ async fn register_service(
         mechanisms: host_mechanisms,
         is_private: false,
         ttl: None,
-        delegation: None,
+        not_after: u64::MAX / 2,
     };
     let signed_info = info.sign(service_identity).expect("failed to sign endpoint info");
     let res = HttpClient::new()

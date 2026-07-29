@@ -3,12 +3,15 @@
 //! Commands for querying, registering, and listing endpoints in the community
 //! registry.
 
-use std::path::Path;
+use std::{
+    path::Path,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use clap::{ArgAction, Subcommand};
 use reqwest::Client;
 use syneroym_core::{
-    dht_registry::{EndpointInfo, EndpointType, RegistryClient},
+    dht_registry::{DEFAULT_ENDPOINT_NOT_AFTER_SECS, EndpointInfo, EndpointType, RegistryClient},
     util,
 };
 use syneroym_identity::{Identity, substrate};
@@ -57,6 +60,12 @@ pub async fn handle(command: &RegistryCommands, api_url: &str, dir: &Path) -> an
             let identity = Identity::load_from_path(&key_path)?;
             let service_id = substrate::derive_did_key(&identity.public_key());
 
+            let not_after = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
+                .saturating_add(DEFAULT_ENDPOINT_NOT_AFTER_SECS);
+
             let info = EndpointInfo {
                 service_id: service_id.clone(),
                 substrate_id: substrate.clone(),
@@ -65,7 +74,7 @@ pub async fn handle(command: &RegistryCommands, api_url: &str, dir: &Path) -> an
                 nickname: nickname.clone(),
                 is_private: *private,
                 ttl: None,
-                delegation: None,
+                not_after,
             };
 
             let signed_info = info.sign(&identity)?;
