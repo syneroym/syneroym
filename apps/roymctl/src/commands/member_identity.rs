@@ -196,12 +196,18 @@ pub async fn substitute_and_certify_members(
         svc.resolved_dependencies = svc
             .resolved_dependencies
             .iter()
-            .map(|dep| {
-                substitution.get(dep).cloned().ok_or_else(|| {
-                    anyhow::anyhow!("no resolved member master for dependency {dep}")
-                })
+            .map(|(name, members)| {
+                let substituted = members
+                    .iter()
+                    .map(|dep| {
+                        substitution.get(dep).cloned().ok_or_else(|| {
+                            anyhow::anyhow!("no resolved member master for dependency {dep}")
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                Ok((name.clone(), substituted))
             })
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<Result<BTreeMap<_, _>>>()?;
     }
 
     let mut instance_certs = BTreeMap::new();

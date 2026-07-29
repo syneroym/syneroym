@@ -54,6 +54,7 @@ async fn test_route_handler() -> RouteHandler {
             blob_provider.clone(),
             messaging_broker.clone(),
             registry.clone(),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap(),

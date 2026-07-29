@@ -77,14 +77,20 @@ pub enum FetchError {
 /// (D-B3-8) aborts the whole batch. The caller (the WASM host path or
 /// native dispatch) must treat any `Err` here as a deny -- Mode B empty,
 /// Mode A `false` -- never as "no fetches needed."
+///
+/// `local_service_id` names the deployed service this fetch is made *on
+/// behalf of*, so `CallOrigin::Native { service_id }` lets the destination
+/// present that service's certified instance key rather than the node's own
+/// (A2, `ProxyRouter::invoke_remote_at`'s `(None, Native)` arm).
 pub async fn resolve_fetches(
     fetches: &[RemoteFetch],
     caller: &CallerContext,
     proxy: &dyn ServiceProxy,
+    local_service_id: &str,
 ) -> Result<Vec<FetchResult>, FetchError> {
     let mut results = Vec::with_capacity(fetches.len());
     for fetch in fetches {
-        results.push(resolve_one_fetch(fetch, caller, proxy).await?);
+        results.push(resolve_one_fetch(fetch, caller, proxy, local_service_id).await?);
     }
     Ok(results)
 }
@@ -93,6 +99,7 @@ async fn resolve_one_fetch(
     fetch: &RemoteFetch,
     caller: &CallerContext,
     proxy: &dyn ServiceProxy,
+    local_service_id: &str,
 ) -> Result<FetchResult, FetchError> {
     let request = ProxyRequest {
         target_service: fetch.service.clone(),
@@ -100,7 +107,7 @@ async fn resolve_one_fetch(
         method: "resolve-relation".to_string(),
         params: serde_json::json!({ "relation": fetch.relation, "principal": fetch.principal_did }),
         caller: caller.clone(),
-        origin: CallOrigin::Native,
+        origin: CallOrigin::Native { service_id: Some(local_service_id.to_string()) },
         protocol: ProxyProtocol::default(),
         // Read-only, idempotent by construction -- safe for the proxy's own
         // transport-failure retry loop.
@@ -260,6 +267,7 @@ mod tests {
         let asserter_did = substrate::derive_did_key(&identity.public_key());
         let proof = RelationshipProof::sign(
             &identity,
+            None,
             "employee",
             "did:key:alice",
             vec!["emp-1".to_string()],
@@ -270,14 +278,18 @@ mod tests {
             received: Mutex::new(None),
         });
         let caller = test_caller();
-        let results =
-            resolve_fetches(&[fetch(&asserter_did)], &caller, stub.as_ref()).await.unwrap();
+        let results = resolve_fetches(&[fetch(&asserter_did)], &caller, stub.as_ref(), "local-svc")
+            .await
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].ids, vec!["emp-1".to_string()]);
         assert_eq!(results[0].trace.asserter_did, asserter_did);
 
         let received = stub.received.lock().unwrap().take().unwrap();
-        assert!(matches!(received.origin, CallOrigin::Native));
+        assert!(matches!(
+            received.origin,
+            CallOrigin::Native { service_id: Some(ref sid) } if sid == "local-svc"
+        ));
         assert_eq!(received.caller.caller_did, caller.caller_did);
         assert_eq!(received.caller.session.anchor_did, caller.session.anchor_did);
     }
@@ -289,9 +301,10 @@ mod tests {
             received: Mutex::new(None),
         });
         let caller = test_caller();
-        let err = resolve_fetches(&[fetch("did:key:zAnything")], &caller, stub.as_ref())
-            .await
-            .unwrap_err();
+        let err =
+            resolve_fetches(&[fetch("did:key:zAnything")], &caller, stub.as_ref(), "local-svc")
+                .await
+                .unwrap_err();
         assert!(matches!(err, FetchError::Proxy { .. }));
     }
 
@@ -317,9 +330,10 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn resolve_fetches_denies_on_an_actually_elapsed_timeout() {
         let caller = test_caller();
-        let err = resolve_fetches(&[fetch("did:key:zAnything")], &caller, &StallingProxy)
-            .await
-            .unwrap_err();
+        let err =
+            resolve_fetches(&[fetch("did:key:zAnything")], &caller, &StallingProxy, "local-svc")
+                .await
+                .unwrap_err();
         match err {
             FetchError::Proxy { source: ProxyError::Timeout(d), .. } => {
                 assert_eq!(d, FDAE_FETCH_TIMEOUT);
@@ -336,6 +350,7 @@ mod tests {
         let identity = Identity::generate().unwrap();
         let proof = RelationshipProof::sign(
             &identity,
+            None,
             "employee",
             "did:key:alice",
             vec!["emp-1".to_string()],
@@ -346,9 +361,10 @@ mod tests {
             received: Mutex::new(None),
         });
         let caller = test_caller();
-        let err = resolve_fetches(&[fetch("did:key:zSomeoneElse")], &caller, stub.as_ref())
-            .await
-            .unwrap_err();
+        let err =
+            resolve_fetches(&[fetch("did:key:zSomeoneElse")], &caller, stub.as_ref(), "local-svc")
+                .await
+                .unwrap_err();
         assert!(matches!(err, FetchError::ProofInvalid { .. }));
     }
 
@@ -357,16 +373,22 @@ mod tests {
         let identity = Identity::generate().unwrap();
         let asserter_did = substrate::derive_did_key(&identity.public_key());
         // A validly-signed proof, but for a *different* relation than asked.
-        let proof =
-            RelationshipProof::sign(&identity, "team", "did:key:alice", vec!["team-1".to_string()])
-                .unwrap();
+        let proof = RelationshipProof::sign(
+            &identity,
+            None,
+            "team",
+            "did:key:alice",
+            vec!["team-1".to_string()],
+        )
+        .unwrap();
         let stub = Arc::new(StubProxy {
             response: Mutex::new(Some(Ok(serde_json::to_value(&proof).unwrap()))),
             received: Mutex::new(None),
         });
         let caller = test_caller();
-        let err =
-            resolve_fetches(&[fetch(&asserter_did)], &caller, stub.as_ref()).await.unwrap_err();
+        let err = resolve_fetches(&[fetch(&asserter_did)], &caller, stub.as_ref(), "local-svc")
+            .await
+            .unwrap_err();
         assert!(matches!(err, FetchError::MismatchedAnswer { .. }));
     }
 }

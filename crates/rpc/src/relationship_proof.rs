@@ -9,6 +9,7 @@
 use serde::{Deserialize, Serialize};
 use syneroym_identity::{
     Identity,
+    delegation::{DelegationCertificate, SCOPE_SERVICE_INSTANCE},
     substrate::{derive_did_key, verify_json_signature},
 };
 
@@ -41,11 +42,24 @@ pub fn now_secs() -> anyhow::Result<u64> {
 /// connection it arrived over.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RelationshipProof {
+    /// The **member master** DID this assertion is made under, when the
+    /// signer holds an instance certificate; otherwise the signer's own
+    /// DID (the pre-ADR-0020 shape, still what a service deployed without
+    /// a master produces). Checked against the policy-declared
+    /// `expected_asserter_did` -- which ADR-0020 §2 makes a member master
+    /// too, so a member reinstantiated on another node keeps satisfying
+    /// every policy that names it.
     pub asserter_did: String,
     pub relation: String,
     pub principal: String,
     pub ids: Vec<String>,
     pub valid_until_secs: u64,
+    /// JSON `DelegationCertificate` binding the instance key that produced
+    /// `signature` to `asserter_did`. Inside the signed payload, so it
+    /// cannot be swapped for another master's certificate. `None` = the
+    /// signature is `asserter_did`'s own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegation: Option<String>,
     /// z-base-32-encoded signature over the JSON-canonicalized form of this
     /// struct with `signature` itself set to `""` -- mirrors
     /// `Identity::sign_json`'s existing use elsewhere (e.g.
@@ -66,31 +80,45 @@ pub enum RelationshipProofError {
     Expired { now: u64, valid_until_secs: u64 },
     #[error("relationship proof signature is invalid: {0}")]
     BadSignature(String),
+    /// The proof carries a delegation certificate that does not tie its
+    /// signer to `asserter_did`, is outside its validity window, or is
+    /// scoped for something other than a service instance.
+    #[error("relationship proof delegation is invalid: {0}")]
+    BadDelegation(String),
     #[error("internal error verifying relationship proof: {0}")]
     Internal(String),
 }
 
 impl RelationshipProof {
-    /// Signs `ids` as a [`RelationshipProof`] asserted by `identity`. The
-    /// signature covers every field except itself (set to `""` for
-    /// signing, matching the canonicalize-then-sign convention
+    /// Signs `ids` with `instance`'s key. With `certificate`, the assertion is
+    /// made under that certificate's master and the certificate travels with
+    /// the proof; without one, the signer asserts as itself -- the
+    /// pre-ADR-0020 shape, and still what every non-certified caller
+    /// produces. The signature covers every field except itself (set to
+    /// `""` for signing, matching the canonicalize-then-sign convention
     /// `Identity::sign_json`'s other callers use).
     pub fn sign(
-        identity: &Identity,
+        instance: &Identity,
+        certificate: Option<&DelegationCertificate>,
         relation: &str,
         principal: &str,
         ids: Vec<String>,
     ) -> anyhow::Result<Self> {
+        let asserter_did = match certificate {
+            Some(cert) => cert.master_did.clone(),
+            None => derive_did_key(&instance.public_key()),
+        };
         let mut proof = Self {
-            asserter_did: derive_did_key(&identity.public_key()),
+            asserter_did,
             relation: relation.to_string(),
             principal: principal.to_string(),
             ids,
             valid_until_secs: now_secs()? + RELATIONSHIP_PROOF_TTL_SECS,
+            delegation: certificate.map(DelegationCertificate::to_json).transpose()?,
             signature: String::new(),
         };
         let unsigned = serde_json::to_value(&proof)?;
-        proof.signature = identity.sign_json(&unsigned)?;
+        proof.signature = instance.sign_json(&unsigned)?;
         Ok(proof)
     }
 
@@ -117,7 +145,25 @@ impl RelationshipProof {
         unsigned.signature = String::new();
         let unsigned_value = serde_json::to_value(&unsigned)
             .map_err(|e| RelationshipProofError::Internal(e.to_string()))?;
-        verify_json_signature(&self.asserter_did, &unsigned_value, &self.signature)
+
+        // The signing key is the instance key the certificate names, and the
+        // certificate is what ties it to `asserter_did`. Checked with the
+        // full `verify` (wall-clock expiry included), not A1's reader-level
+        // `verify_chain`: a relationship proof is minted per fetch and lives
+        // 60 seconds, so a lapsed certificate means the responder stopped
+        // renewing -- the attended posture's outage, surfaced here rather
+        // than silently accepted (D-A2-12).
+        let signer_did = match &self.delegation {
+            Some(json) => {
+                let cert = DelegationCertificate::from_json(json)
+                    .map_err(|e| RelationshipProofError::BadDelegation(e.to_string()))?;
+                cert.verify(&self.asserter_did, &[SCOPE_SERVICE_INSTANCE])
+                    .map_err(|e| RelationshipProofError::BadDelegation(e.to_string()))?;
+                cert.temporary_did
+            }
+            None => self.asserter_did.clone(),
+        };
+        verify_json_signature(&signer_did, &unsigned_value, &self.signature)
             .map_err(|e| RelationshipProofError::BadSignature(e.to_string()))
     }
 }
@@ -125,6 +171,8 @@ impl RelationshipProof {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
+    use syneroym_identity::delegation::SCOPE_ROUTING;
+
     use super::*;
 
     fn identity() -> Identity {
@@ -135,18 +183,28 @@ mod tests {
     fn sign_then_verify_round_trips() {
         let id = identity();
         let asserter_did = derive_did_key(&id.public_key());
-        let proof =
-            RelationshipProof::sign(&id, "employee", "did:key:alice", vec!["emp-1".to_string()])
-                .unwrap();
+        let proof = RelationshipProof::sign(
+            &id,
+            None,
+            "employee",
+            "did:key:alice",
+            vec!["emp-1".to_string()],
+        )
+        .unwrap();
         proof.verify(&asserter_did).unwrap();
     }
 
     #[test]
     fn verify_rejects_a_mismatched_expected_asserter() {
         let id = identity();
-        let proof =
-            RelationshipProof::sign(&id, "employee", "did:key:alice", vec!["emp-1".to_string()])
-                .unwrap();
+        let proof = RelationshipProof::sign(
+            &id,
+            None,
+            "employee",
+            "did:key:alice",
+            vec!["emp-1".to_string()],
+        )
+        .unwrap();
         let err = proof.verify("did:key:zSomeoneElse").unwrap_err();
         assert!(matches!(err, RelationshipProofError::AsserterMismatch { .. }));
     }
@@ -155,9 +213,14 @@ mod tests {
     fn verify_rejects_a_tampered_field() {
         let id = identity();
         let asserter_did = derive_did_key(&id.public_key());
-        let mut proof =
-            RelationshipProof::sign(&id, "employee", "did:key:alice", vec!["emp-1".to_string()])
-                .unwrap();
+        let mut proof = RelationshipProof::sign(
+            &id,
+            None,
+            "employee",
+            "did:key:alice",
+            vec!["emp-1".to_string()],
+        )
+        .unwrap();
         proof.ids.push("emp-2".to_string());
         let err = proof.verify(&asserter_did).unwrap_err();
         assert!(matches!(err, RelationshipProofError::BadSignature(_)));
@@ -167,9 +230,14 @@ mod tests {
     fn verify_rejects_an_expired_proof() {
         let id = identity();
         let asserter_did = derive_did_key(&id.public_key());
-        let mut proof =
-            RelationshipProof::sign(&id, "employee", "did:key:alice", vec!["emp-1".to_string()])
-                .unwrap();
+        let mut proof = RelationshipProof::sign(
+            &id,
+            None,
+            "employee",
+            "did:key:alice",
+            vec!["emp-1".to_string()],
+        )
+        .unwrap();
         // Re-sign with a `valid_until_secs` already in the past so the TTL
         // check fails while the signature itself stays valid.
         proof.valid_until_secs = 1;
@@ -181,5 +249,172 @@ mod tests {
         proof.signature = id.sign_json(&unsigned).unwrap();
         let err = proof.verify(&asserter_did).unwrap_err();
         assert!(matches!(err, RelationshipProofError::Expired { .. }));
+    }
+
+    #[test]
+    fn a_proof_signed_by_an_instance_key_with_a_certificate_verifies_against_the_master() {
+        let master = identity();
+        let instance = identity();
+        let cert = DelegationCertificate::issue(
+            &master,
+            instance.public_key(),
+            3600,
+            SCOPE_SERVICE_INSTANCE.to_string(),
+        )
+        .unwrap();
+        let proof = RelationshipProof::sign(
+            &instance,
+            Some(&cert),
+            "employee",
+            "did:key:alice",
+            vec!["emp-1".to_string()],
+        )
+        .unwrap();
+        assert_eq!(proof.asserter_did, cert.master_did);
+        proof.verify(&cert.master_did).unwrap();
+    }
+
+    #[test]
+    fn the_same_proof_fails_against_the_instance_did() {
+        let master = identity();
+        let instance = identity();
+        let cert = DelegationCertificate::issue(
+            &master,
+            instance.public_key(),
+            3600,
+            SCOPE_SERVICE_INSTANCE.to_string(),
+        )
+        .unwrap();
+        let proof = RelationshipProof::sign(
+            &instance,
+            Some(&cert),
+            "employee",
+            "did:key:alice",
+            vec!["emp-1".to_string()],
+        )
+        .unwrap();
+        let err = proof.verify(&cert.temporary_did).unwrap_err();
+        assert!(matches!(err, RelationshipProofError::AsserterMismatch { .. }));
+    }
+
+    #[test]
+    fn a_certificate_naming_a_different_master_than_the_proof_claims_is_rejected() {
+        let claimed_master = identity();
+        let actual_master = identity();
+        let instance = identity();
+        // The certificate genuinely delegates from `actual_master`, but the
+        // proof's own `asserter_did` claims `claimed_master` -- built by hand
+        // rather than through `sign`, since `sign` always derives
+        // `asserter_did` from the certificate it is given and could not
+        // produce this mismatch itself.
+        let cert = DelegationCertificate::issue(
+            &actual_master,
+            instance.public_key(),
+            3600,
+            SCOPE_SERVICE_INSTANCE.to_string(),
+        )
+        .unwrap();
+        let claimed_master_did = derive_did_key(&claimed_master.public_key());
+        let mut proof = RelationshipProof {
+            asserter_did: claimed_master_did.clone(),
+            relation: "employee".to_string(),
+            principal: "did:key:alice".to_string(),
+            ids: vec!["emp-1".to_string()],
+            valid_until_secs: now_secs().unwrap() + RELATIONSHIP_PROOF_TTL_SECS,
+            delegation: Some(cert.to_json().unwrap()),
+            signature: String::new(),
+        };
+        let unsigned = {
+            let mut cleared = proof.clone();
+            cleared.signature = String::new();
+            serde_json::to_value(&cleared).unwrap()
+        };
+        proof.signature = instance.sign_json(&unsigned).unwrap();
+        let err = proof.verify(&claimed_master_did).unwrap_err();
+        assert!(matches!(err, RelationshipProofError::BadDelegation(_)));
+    }
+
+    #[test]
+    fn an_expired_certificate_is_rejected() {
+        let master = identity();
+        let instance = identity();
+        // `expires_in_secs = 0` is already expired by the time `verify` runs
+        // (the same pattern `handshake.rs`'s expired-certificate tests use).
+        let cert = DelegationCertificate::issue(
+            &master,
+            instance.public_key(),
+            0,
+            SCOPE_SERVICE_INSTANCE.to_string(),
+        )
+        .unwrap();
+        let proof = RelationshipProof::sign(
+            &instance,
+            Some(&cert),
+            "employee",
+            "did:key:alice",
+            vec!["emp-1".to_string()],
+        )
+        .unwrap();
+        let err = proof.verify(&cert.master_did).unwrap_err();
+        assert!(matches!(err, RelationshipProofError::BadDelegation(_)));
+    }
+
+    #[test]
+    fn a_routing_scoped_certificate_is_rejected() {
+        let master = identity();
+        let instance = identity();
+        let cert = DelegationCertificate::issue(
+            &master,
+            instance.public_key(),
+            3600,
+            SCOPE_ROUTING.to_string(),
+        )
+        .unwrap();
+        let proof = RelationshipProof::sign(
+            &instance,
+            Some(&cert),
+            "employee",
+            "did:key:alice",
+            vec!["emp-1".to_string()],
+        )
+        .unwrap();
+        let err = proof.verify(&cert.master_did).unwrap_err();
+        assert!(matches!(err, RelationshipProofError::BadDelegation(_)));
+    }
+
+    #[test]
+    fn a_tampered_delegation_field_breaks_the_signature() {
+        let master = identity();
+        let instance = identity();
+        let other_instance = identity();
+        let cert = DelegationCertificate::issue(
+            &master,
+            instance.public_key(),
+            3600,
+            SCOPE_SERVICE_INSTANCE.to_string(),
+        )
+        .unwrap();
+        // A second, independently valid certificate from the *same* master,
+        // for a different instance key -- swapping it in proves the outer
+        // signature is what actually rejects the tamper, not a mismatch
+        // `DelegationCertificate::verify` would already catch on its own.
+        let other_cert = DelegationCertificate::issue(
+            &master,
+            other_instance.public_key(),
+            3600,
+            SCOPE_SERVICE_INSTANCE.to_string(),
+        )
+        .unwrap();
+        let mut proof = RelationshipProof::sign(
+            &instance,
+            Some(&cert),
+            "employee",
+            "did:key:alice",
+            vec!["emp-1".to_string()],
+        )
+        .unwrap();
+        proof.delegation = Some(other_cert.to_json().unwrap());
+        let err = proof.verify(&cert.master_did).unwrap_err();
+        assert!(matches!(err, RelationshipProofError::BadSignature(_)));
     }
 }

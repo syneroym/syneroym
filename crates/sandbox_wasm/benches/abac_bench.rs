@@ -94,6 +94,7 @@ async fn deployed_engine() -> Option<AppSandboxEngine> {
         blob_provider,
         Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap()),
         EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+        syneroym_app_orchestration::empty_resolver(),
     )
     .await
     .unwrap();

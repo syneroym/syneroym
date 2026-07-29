@@ -252,8 +252,11 @@ owner-store lookup needed.
 
 **Sequences before A2.** Depends on A0.
 
-### A2 — Host-side dependency resolution
+### A2 — Host-side dependency resolution — **Complete (2026-07-29)**
 Design of record: [ADR-0021](../../../decisions/0021-binding-propagation-and-app-supervisor.md) §2.
+Implementation plan:
+[slice-a2-implementation-plan.md](slice-a2-implementation-plan.md). Verification
+evidence: [status.md](status.md)'s A2 section.
 
 The guest names a **declared dependency**, not a `LogicalServiceRef` — the host
 supplies `app_instance_id` from its own `HostState` and resolves through
@@ -387,6 +390,14 @@ Pre-release, so changes are made in place with no compatibility shims
   Context problem (2), and pre-release we take it rather than build a
   re-attribution path. Existing deployments that hold data should be recreated
   under a master rather than migrated.
+- **A service deployed with an instance certificate now asserts `RelationshipProof`s
+  under its member master, not its derived instance DID (A2).** A policy
+  authored between A0 and A2 whose `expected_asserter_did` names the
+  instance DID (the only shape available in that window) stops verifying
+  the moment this slice merges; dependents must name the member master
+  instead. A service deployed *without* an instance certificate is
+  unaffected (self-asserted, unchanged). No compatibility shim: accepting
+  either DID would defeat D-B3-8's single-trust-anchor guarantee.
 
 ---
 
@@ -444,7 +455,7 @@ fail.
 | 16 | **`security` call (`inject-kek`/`rotate-kek`/`set-secret`) without `substrate/admin`** | Rejected. Ungated entirely today (P0 item 2); the gate only becomes holdable once P0 item 1 ships |
 | 17 | **Deploy to an unowned substrate once F4 flips** | Rejected; the bootstrap path becomes establishing ownership with the P0 tool, not an open deploy grant |
 | 18 | Bound cross-app dependency replaced, **attended posture** | No master key, so no active probe: detection is passive, on the first real call that fails. Weaker by design, and the operator chose it |
-| 19 | **Member reinstantiated under a policy declaring `expected_asserter_did`** | Its cross-service `RelationshipProof` still verifies. Today it would not: `asserter_did` is the *instance* key and the check is exact equality, so a restart on another node silently breaks every policy naming that service (A2) |
+| 19 | **Member reinstantiated under a policy declaring `expected_asserter_did`** | Its cross-service `RelationshipProof` still verifies. **✅ A2**: `RelationshipProof` carries an optional `delegation`; `sign`/`verify` assert and check under the certificate's master when one is installed (`a_proof_signed_by_an_instance_key_with_a_certificate_verifies_against_the_master`, `crates/rpc/src/relationship_proof.rs`). The transport half (`ProxyRouter::invoke_remote_at`'s `(None, Native)` arm) proven in `crates/router/src/proxy.rs` |
 | 20 | **A substrate a member has relocated away from keeps replaying its old endpoint record on its heartbeat** | Rejected, at both the DHT and the HTTP registry: a record's pkarr/BEP44 timestamp must be strictly newer than what is stored to be admitted, or equal and byte-identical (the routine heartbeat replay, admitted as a refresh, not a conflict). Since a substrate that cannot re-sign a member's record can only ever replay the same frozen bytes at the same timestamp, once the master has signed one newer record for the new placement, the old substrate's replay is permanently stale and rejected everywhere. **✅ A1**: `verify_returns_the_packets_own_timestamp` (`crates/core/src/dht_registry.rs`) and the registry-side compare-and-swap proven live in `publish_all_services_survives_a_record_rejected_by_admission` (`crates/community_registry/src/registry.rs`) |
 
 ---

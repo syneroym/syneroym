@@ -145,10 +145,20 @@ pub async fn handle(
                     (target_plan.clone(), BTreeMap::new(), BTreeMap::new())
                 };
 
+                if !*mint_masters
+                    && deploy_plan.services.iter().any(|s| !s.resolved_dependencies.is_empty())
+                {
+                    eprintln!(
+                        "warning: deploying without --mint-masters, so declared dependencies are \
+                         not bound. A guest calling one by name gets `dependency-not-bound` until \
+                         the app is redeployed with --mint-masters."
+                    );
+                }
                 let wit_plan = mapper::map_deployment_plan_to_wit(
                     deploy_plan,
                     &instance_certs,
                     &registry_certs,
+                    *mint_masters,
                 )?;
                 client.deploy_plan(wit_plan).await?;
 

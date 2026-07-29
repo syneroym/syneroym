@@ -14,6 +14,7 @@ use anyhow::{Context, Result, anyhow};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use syneroym_app_orchestration::LogicalResolver;
 use syneroym_chunk_transfer::{self as chunk_transfer, ChunkSink};
 use syneroym_core::{
     config::SubstrateConfig,
@@ -157,6 +158,12 @@ pub struct AppSandboxEngine {
     /// same registry the router reads from, giving restart-replay and
     /// undeploy-cleanup for free -- see ADR-0014 "Where Registration Lives".
     endpoint_registry: EndpointRegistry,
+    /// A2 (ADR-0021 §2): resolves a guest-declared dependency name to a
+    /// member master DID, host-side. One `LogicalResolver` per substrate,
+    /// shared with `ControlPlaneService`'s write side (`runtime.rs`'s
+    /// composition root) -- read and write share the same cache so a
+    /// binding write's eviction is visible here immediately.
+    logical_resolver: Arc<LogicalResolver>,
     /// Per-service open-stream-instance task tracking; see `StreamRegistry`.
     stream_registry: StreamRegistry,
     max_concurrent_streams_per_service: u32,
@@ -279,6 +286,7 @@ impl AppSandboxEngine {
         blob_provider: Arc<dyn BlobProvider>,
         messaging_broker: Arc<MqttBroker>,
         endpoint_registry: EndpointRegistry,
+        logical_resolver: Arc<LogicalResolver>,
     ) -> anyhow::Result<Self> {
         let component_dir = config.storage.blobs_dir.join("app_sandbox");
 
@@ -382,6 +390,7 @@ impl AppSandboxEngine {
             service_proxy: OnceLock::new(),
             subscriptions: DashMap::new(),
             endpoint_registry,
+            logical_resolver,
             stream_registry: StreamRegistry::new(),
             max_concurrent_streams_per_service,
             stream_instance_permits: Arc::new(Semaphore::new(stream_instance_budget as usize)),
@@ -898,6 +907,11 @@ impl AppSandboxEngine {
             syneroym_rpc::empty_row_authorizer()
         };
         let fdae_policy = self.resolve_fdae_policy(service_id).await;
+        // ADR-0021 §2: the host supplies `app_instance_id` from its own
+        // records, never from the guest -- a guest that could name its own
+        // app instance could address an arbitrary one.
+        let app_instance_id =
+            self.endpoint_registry.app_context_of(service_id).map(|(instance, _name)| instance);
         let host_state = HostState::new(
             service_id.to_string(),
             max_memory_bytes,
@@ -912,6 +926,8 @@ impl AppSandboxEngine {
             fdae_policy,
             opts.read_only,
             row_authorizer,
+            app_instance_id,
+            self.logical_resolver.clone(),
         );
 
         debug!("created wasi ctx and host state");
@@ -2195,6 +2211,8 @@ mod tests {
             None,
             false,
             syneroym_rpc::empty_row_authorizer(),
+            None,
+            syneroym_app_orchestration::empty_resolver(),
         );
 
         let mut store = Store::new(&engine, host_state);
@@ -2300,6 +2318,7 @@ mod tests {
             service_proxy: OnceLock::new(),
             subscriptions: DashMap::new(),
             endpoint_registry: EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+            logical_resolver: syneroym_app_orchestration::empty_resolver(),
             stream_registry: StreamRegistry::new(),
             max_concurrent_streams_per_service: 8,
             stream_instance_permits: Arc::new(Semaphore::new(8)),
@@ -2366,6 +2385,7 @@ mod tests {
             service_proxy: OnceLock::new(),
             subscriptions: DashMap::new(),
             endpoint_registry: EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+            logical_resolver: syneroym_app_orchestration::empty_resolver(),
             stream_registry: StreamRegistry::new(),
             max_concurrent_streams_per_service: 8,
             stream_instance_permits: Arc::new(Semaphore::new(8)),

@@ -66,6 +66,7 @@ async fn make_engine(dir: &Path) -> AppSandboxEngine {
         blob_provider,
         Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap()),
         EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+        syneroym_app_orchestration::empty_resolver(),
     )
     .await
     .unwrap()
@@ -118,6 +119,8 @@ async fn test_execute_ddl_denied_outside_lifecycle_context() {
         None,
         false,
         syneroym_rpc::empty_row_authorizer(),
+        None,
+        syneroym_app_orchestration::empty_resolver(),
     );
 
     let err = DataLayerHost::execute_ddl(&mut host_state, "CREATE TABLE x (id TEXT)".to_string())
@@ -153,6 +156,8 @@ async fn test_execute_ddl_allowed_for_local_elevated_lifecycle_context() {
         None,
         false,
         syneroym_rpc::empty_row_authorizer(),
+        None,
+        syneroym_app_orchestration::empty_resolver(),
     );
 
     DataLayerHost::execute_ddl(&mut host_state, "CREATE TABLE x (id TEXT)".to_string())
@@ -205,6 +210,8 @@ async fn test_execute_ddl_allowed_for_admin_ucan_root_caller() {
         None,
         false,
         syneroym_rpc::empty_row_authorizer(),
+        None,
+        syneroym_app_orchestration::empty_resolver(),
     );
 
     DataLayerHost::execute_ddl(&mut host_state, "CREATE TABLE x (id TEXT)".to_string())
@@ -237,6 +244,8 @@ async fn test_query_raw_denied_for_ordinary_caller() {
         None,
         false,
         syneroym_rpc::empty_row_authorizer(),
+        None,
+        syneroym_app_orchestration::empty_resolver(),
     );
 
     let err = DataLayerHost::query_raw(&mut host_state, "SELECT 1".to_string(), vec![])
@@ -270,6 +279,8 @@ async fn test_query_raw_allowed_for_local_elevated_lifecycle_context() {
         None,
         false,
         syneroym_rpc::empty_row_authorizer(),
+        None,
+        syneroym_app_orchestration::empty_resolver(),
     );
 
     let result = DataLayerHost::query_raw(

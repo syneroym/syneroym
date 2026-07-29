@@ -57,6 +57,7 @@ async fn make_engine(dir: &Path) -> Arc<AppSandboxEngine> {
             blob_provider,
             messaging_broker,
             EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap(),

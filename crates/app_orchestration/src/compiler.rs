@@ -131,7 +131,7 @@ fn compile_recursive<'a>(
                         app_instance_id: instance_id.clone(),
                         service_name: dep.clone(),
                     };
-                    derive_deterministic_service_id(&dep_ref)
+                    (dep.clone(), vec![derive_deterministic_service_id(&dep_ref)])
                 })
                 .collect();
 
@@ -261,11 +261,11 @@ mod tests {
         assert_eq!(plan.services[0].logical_ref.service_name.as_str(), "identity");
         assert_eq!(plan.services[1].logical_ref.service_name.as_str(), "echo");
 
-        // Check resolved dependencies
+        // Check resolved dependencies -- keyed by declared name
         let identity_id = &plan.services[0].service_id;
         let echo_deps = &plan.services[1].resolved_dependencies;
         assert_eq!(echo_deps.len(), 1);
-        assert_eq!(&echo_deps[0], identity_id);
+        assert_eq!(&echo_deps[&LogicalServiceName::new("identity")], &vec![identity_id.clone()]);
     }
 
     #[tokio::test]

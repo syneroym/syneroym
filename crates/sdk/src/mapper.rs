@@ -3,15 +3,21 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use syneroym_app_orchestration::models::{
-    DeploymentPlan, DocumentRef, RotationPolicy, ServiceId, ServiceType,
+use syneroym_app_orchestration::{
+    DEFAULT_BINDING_CACHE_TTL_MS,
+    models::{
+        DeploymentPlan, DocumentRef, LogicalServiceName, RotationPolicy, ServiceId, ServiceType,
+        TopologyMode,
+    },
 };
 use syneroym_core::{deploy_docs, util};
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
-    ArtifactSource, ContainerManifest, ContainerPortMapping, ContainerVolumeFile,
-    ContainerVolumeMapping, DeployManifest, DeploymentPlan as WitDeploymentPlan, DocumentSource,
-    NetworkEndpoint, PlannedService, ResourceQuota, RotationPolicy as WitRotationPolicy,
-    ServiceConfig as WitServiceConfig, ServiceType as WitServiceType, TcpManifest, WasmManifest,
+    AppContext as WitAppContext, ArtifactSource, ContainerManifest, ContainerPortMapping,
+    ContainerVolumeFile, ContainerVolumeMapping, DependencyBinding as WitDependencyBinding,
+    DeployManifest, DeploymentPlan as WitDeploymentPlan, DocumentSource, NetworkEndpoint,
+    PlannedService, ResourceQuota, RotationPolicy as WitRotationPolicy,
+    ServiceConfig as WitServiceConfig, ServiceType as WitServiceType, TcpManifest,
+    TopologyMode as WitTopologyMode, WasmManifest,
 };
 
 /// Author-side container volume, mirroring the wire record but with `files`
@@ -56,6 +62,17 @@ fn map_document_ref(doc: &DocumentRef, field_name: &str) -> anyhow::Result<Docum
     }
 }
 
+/// Maps the app model's `TopologyMode` to the wire `topology-mode` variant
+/// (A2). No `sharding-strategy` on the wire yet -- `sharded` means hash
+/// sharding until a manifest can express otherwise.
+fn map_mode(mode: TopologyMode) -> WitTopologyMode {
+    match mode {
+        TopologyMode::Singleton => WitTopologyMode::Singleton,
+        TopologyMode::Redundant => WitTopologyMode::Redundant,
+        TopologyMode::Sharded => WitTopologyMode::Sharded,
+    }
+}
+
 /// `instance_certificates` maps a `PlannedService.service_id` (post
 /// member-master substitution, if any) to the JSON-serialized
 /// `DelegationCertificate` to install for it, and `registry_certificates` the
@@ -68,7 +85,21 @@ pub fn map_deployment_plan_to_wit(
     plan: DeploymentPlan,
     instance_certificates: &BTreeMap<ServiceId, String>,
     registry_certificates: &BTreeMap<ServiceId, String>,
+    emit_bindings: bool,
 ) -> anyhow::Result<WitDeploymentPlan> {
+    // `plan.app_instance_id` is moved into `WitDeploymentPlan` at the end of
+    // this function; clone it now so every service's app-context can use it
+    // too.
+    let plan_instance_id = plan.app_instance_id.to_string();
+    // `mode` belongs to the *target* of a dependency, not the dependent --
+    // build the lookup once, over every service in the plan, before the
+    // per-service loop needs it.
+    let target_modes: BTreeMap<LogicalServiceName, TopologyMode> = plan
+        .services
+        .iter()
+        .map(|svc| (svc.logical_ref.service_name.clone(), svc.topology_mode))
+        .collect();
+
     let mut services = Vec::new();
     for svc in plan.services {
         let wit_config = WitServiceConfig {
@@ -202,6 +233,33 @@ pub fn map_deployment_plan_to_wit(
         };
         let instance_certificate = instance_certificates.get(&svc.service_id).cloned();
         let registry_certificate = registry_certificates.get(&svc.service_id).cloned();
+        let app_context = Some(WitAppContext {
+            app_instance_id: plan_instance_id.clone(),
+            service_name: svc.logical_ref.service_name.to_string(),
+            // D-A2-16: without member-master substitution these members are
+            // the compiler's fabricated `did:key:h...` ids, which resolve to
+            // no key. Publishing them would make `dependency(...)` resolve
+            // and then fail a layer down as `service-not-found`; an empty
+            // list gives the guest the true answer,
+            // `dependency-not-bound`.
+            bindings: if emit_bindings {
+                svc.resolved_dependencies
+                    .iter()
+                    .map(|(name, members)| WitDependencyBinding {
+                        dependency_name: name.to_string(),
+                        // Intra-app only (D-A2-2).
+                        app_instance_id: plan_instance_id.clone(),
+                        mode: map_mode(target_modes.get(name).copied().unwrap_or_default()),
+                        members: members.iter().map(ToString::to_string).collect(),
+                        // A2 mints no epochs; the supervisor does (A5).
+                        epoch: 0,
+                        cache_ttl_ms: DEFAULT_BINDING_CACHE_TTL_MS,
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            },
+        });
         services.push(PlannedService {
             service_id: svc.service_id.to_string(),
             logical_ref: svc.logical_ref.to_string(),
@@ -211,6 +269,7 @@ pub fn map_deployment_plan_to_wit(
                 registry_certificate,
                 instance_certificate,
             },
+            app_context,
         });
     }
 
@@ -262,7 +321,7 @@ mod tests {
                     service_name: LogicalServiceName::new("svc"),
                 },
                 config,
-                resolved_dependencies: vec![],
+                resolved_dependencies: BTreeMap::new(),
                 topology_mode: TopologyMode::Singleton,
             }],
         }
@@ -286,6 +345,7 @@ mod tests {
             plan_with_config(config),
             &BTreeMap::new(),
             &BTreeMap::new(),
+            true,
         )
         .unwrap();
         match &wit_plan.services[0].manifest.config.fdae_policy {
@@ -307,6 +367,7 @@ mod tests {
             plan_with_config(config),
             &BTreeMap::new(),
             &BTreeMap::new(),
+            true,
         )
         .unwrap();
         match &wit_plan.services[0].manifest.config.fdae_policy {
@@ -325,7 +386,8 @@ mod tests {
             map_deployment_plan_to_wit(
                 plan_with_config(config),
                 &BTreeMap::new(),
-                &BTreeMap::new()
+                &BTreeMap::new(),
+                true,
             )
             .is_err()
         );
@@ -337,6 +399,7 @@ mod tests {
             plan_with_config(base_config()),
             &BTreeMap::new(),
             &BTreeMap::new(),
+            true,
         )
         .unwrap();
         assert!(wit_plan.services[0].manifest.config.fdae_policy.is_none());
@@ -375,6 +438,7 @@ mod tests {
             plan_with_config(container_config(&custom)),
             &BTreeMap::new(),
             &BTreeMap::new(),
+            true,
         )
         .expect("volumes should parse");
         let volumes = &container_manifest_of(&wit_plan).volumes;
@@ -399,6 +463,7 @@ mod tests {
             plan_with_config(container_config(custom)),
             &BTreeMap::new(),
             &BTreeMap::new(),
+            true,
         )
         .unwrap();
         let volumes = &container_manifest_of(&wit_plan).volumes;
@@ -416,6 +481,7 @@ mod tests {
             plan_with_config(container_config(bad_volumes)),
             &BTreeMap::new(),
             &BTreeMap::new(),
+            true,
         )
         .unwrap_err()
         .to_string();
@@ -426,6 +492,7 @@ mod tests {
             plan_with_config(container_config(bad_ports)),
             &BTreeMap::new(),
             &BTreeMap::new(),
+            true,
         )
         .unwrap_err()
         .to_string();
@@ -447,9 +514,126 @@ mod tests {
             plan_with_config(config),
             &BTreeMap::new(),
             &BTreeMap::new(),
+            true,
         )
         .unwrap_err()
         .to_string();
         assert!(err.contains("exceeding the"), "{err}");
+    }
+
+    /// A plan with `frontend` depending on `backend`, `backend` deployed
+    /// `Redundant` with two members -- so a binding assertion exercises
+    /// both "one binding per `depends_on` entry" and "the mode is the
+    /// *target's* own topology mode, not the dependent's" (§3.3's landmine:
+    /// every service in this fixture is otherwise `Singleton`).
+    fn plan_with_a_dependency() -> DeploymentPlan {
+        let app_instance_id = AppInstanceId::new("inst-1");
+        let backend_ref = LogicalServiceRef {
+            app_instance_id: app_instance_id.clone(),
+            service_name: LogicalServiceName::new("backend"),
+        };
+        let frontend_ref = LogicalServiceRef {
+            app_instance_id: app_instance_id.clone(),
+            service_name: LogicalServiceName::new("frontend"),
+        };
+        DeploymentPlan {
+            app_instance_id,
+            blueprint_id: AppBlueprintId::new("syneroym:test-app"),
+            version: Version::parse("0.1.0").unwrap(),
+            services: vec![
+                PlannedService {
+                    service_id: ServiceId::new("did:key:hBackend"),
+                    logical_ref: backend_ref,
+                    config: base_config(),
+                    resolved_dependencies: BTreeMap::new(),
+                    topology_mode: TopologyMode::Redundant,
+                },
+                PlannedService {
+                    service_id: ServiceId::new("did:key:hFrontend"),
+                    logical_ref: frontend_ref,
+                    config: base_config(),
+                    resolved_dependencies: BTreeMap::from([(
+                        LogicalServiceName::new("backend"),
+                        vec![
+                            ServiceId::new("did:key:hBackendMember1"),
+                            ServiceId::new("did:key:hBackendMember2"),
+                        ],
+                    )]),
+                    topology_mode: TopologyMode::Singleton,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn the_app_context_carries_one_binding_per_depends_on_entry_with_the_targets_mode() {
+        let wit_plan = map_deployment_plan_to_wit(
+            plan_with_a_dependency(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            true,
+        )
+        .unwrap();
+
+        let frontend =
+            wit_plan.services.iter().find(|s| s.logical_ref.ends_with("frontend")).unwrap();
+        let ctx = frontend.app_context.as_ref().expect("frontend has an app context");
+        assert_eq!(ctx.app_instance_id, "inst-1");
+        assert_eq!(ctx.service_name, "frontend");
+        assert_eq!(ctx.bindings.len(), 1);
+        let binding = &ctx.bindings[0];
+        assert_eq!(binding.dependency_name, "backend");
+        assert_eq!(binding.app_instance_id, "inst-1");
+        assert!(
+            matches!(binding.mode, WitTopologyMode::Redundant),
+            "the binding's mode must be the *target's* topology mode, not the dependent's -- \
+             backend is Redundant, frontend (the dependent) is Singleton"
+        );
+        assert_eq!(binding.members, vec!["did:key:hBackendMember1", "did:key:hBackendMember2"]);
+
+        let backend =
+            wit_plan.services.iter().find(|s| s.logical_ref.ends_with("backend")).unwrap();
+        assert!(
+            backend.app_context.as_ref().unwrap().bindings.is_empty(),
+            "a service with no depends_on entry gets an empty binding list, not one for itself"
+        );
+    }
+
+    #[test]
+    fn a_plan_with_no_dependencies_emits_an_empty_binding_list() {
+        let wit_plan = map_deployment_plan_to_wit(
+            plan_with_config(base_config()),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            true,
+        )
+        .unwrap();
+        assert!(wit_plan.services[0].app_context.as_ref().unwrap().bindings.is_empty());
+    }
+
+    /// D-A2-16: without `--mint-masters`, `resolved_dependencies` still
+    /// holds the compiler's fabricated `did:key:h...` ids, which are not
+    /// real keys. Publishing them would let `dependency(...)` resolve and
+    /// then fail one layer down as `service-not-found`, destroying the
+    /// distinction `dependency-not-bound` exists to draw -- so
+    /// `emit_bindings: false` must publish no bindings at all, not the
+    /// fabricated ones.
+    #[test]
+    fn emit_bindings_false_publishes_no_fabricated_member_dids() {
+        let wit_plan = map_deployment_plan_to_wit(
+            plan_with_a_dependency(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            false,
+        )
+        .unwrap();
+
+        for svc in &wit_plan.services {
+            assert!(
+                svc.app_context.as_ref().unwrap().bindings.is_empty(),
+                "emit_bindings: false must publish no bindings for '{}', fabricated or otherwise",
+                svc.logical_ref
+            );
+        }
     }
 }

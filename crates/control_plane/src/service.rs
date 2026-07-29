@@ -66,6 +66,13 @@ pub struct ControlPlaneService {
     /// (`node_identity.to_doc(..).id`). Distinct from `node_did` above,
     /// which is only the DID string; this carries the actual key material.
     node_identity: Arc<Identity>,
+    /// A2 (ADR-0021 §2): the write side of dependency resolution. `deploy`
+    /// writes a binding's persisted row and its in-memory topology through
+    /// this in one step (`LogicalResolver::register`), so a scale-out is
+    /// never left serving a stale cached topology for up to `cache_ttl`.
+    /// Shared with `AppSandboxEngine`'s read side over the same
+    /// `StaticInventory` -- one registry, one resolver, two holders.
+    logical_resolver: Arc<syneroym_app_orchestration::LogicalResolver>,
     /// The Universal Proxy (M04A Slice A1), for Slice B3 Phase 4's
     /// cross-service relationship-proof fetch, threaded on into each
     /// deployed service's `SynSvcNativeService`. `pub` and a post-
@@ -129,6 +136,7 @@ impl ControlPlaneService {
         native_dispatch: NativeDispatchRegistry,
         http_routes: HttpRouteRegistry,
         node_identity: Arc<Identity>,
+        logical_resolver: Arc<syneroym_app_orchestration::LogicalResolver>,
     ) -> Result<Self> {
         info!("Initializing ControlPlaneService (Orchestrator)...");
 
@@ -148,6 +156,7 @@ impl ControlPlaneService {
             blob_provider,
             messaging_broker,
             node_identity,
+            logical_resolver,
             service_proxy: OnceLock::new(),
             row_authorizer: OnceLock::new(),
             endpoint_publisher: OnceLock::new(),
@@ -560,6 +569,7 @@ mod tests {
                 blob_provider.clone(),
                 messaging_broker.clone(),
                 EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
             )
             .await
             .unwrap(),
@@ -583,6 +593,7 @@ mod tests {
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap();
@@ -628,6 +639,7 @@ mod tests {
                 blob_provider.clone(),
                 messaging_broker.clone(),
                 EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
             )
             .await
             .unwrap(),
@@ -651,6 +663,7 @@ mod tests {
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap();
@@ -718,6 +731,7 @@ mod tests {
                 blob_provider.clone(),
                 messaging_broker.clone(),
                 EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
             )
             .await
             .unwrap(),
@@ -741,6 +755,7 @@ mod tests {
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap();
@@ -983,6 +998,7 @@ mod tests {
                 blob_provider.clone(),
                 messaging_broker.clone(),
                 EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
             )
             .await
             .unwrap(),
@@ -1006,6 +1022,7 @@ mod tests {
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap();
@@ -1121,6 +1138,7 @@ mod tests {
                 blob_provider.clone(),
                 messaging_broker.clone(),
                 EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
             )
             .await
             .unwrap(),
@@ -1144,6 +1162,7 @@ mod tests {
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap();
@@ -1230,6 +1249,7 @@ mod tests {
                 blob_provider.clone(),
                 messaging_broker.clone(),
                 EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
             )
             .await
             .unwrap(),
@@ -1254,6 +1274,7 @@ mod tests {
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap();
@@ -1318,6 +1339,7 @@ mod tests {
                 blob_provider.clone(),
                 messaging_broker.clone(),
                 EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
             )
             .await
             .unwrap(),
@@ -1342,6 +1364,7 @@ mod tests {
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap();
@@ -1432,6 +1455,7 @@ mod tests {
                     blob_provider.clone(),
                     broker1,
                     EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                    syneroym_app_orchestration::empty_resolver(),
                 )
                 .await
                 .unwrap(),
@@ -1471,6 +1495,7 @@ mod tests {
                 blob_provider,
                 broker2.clone(),
                 EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
             )
             .await
             .unwrap(),
@@ -1564,6 +1589,7 @@ mod tests {
                 blob_provider.clone(),
                 messaging_broker.clone(),
                 registry.clone(),
+                syneroym_app_orchestration::empty_resolver(),
             )
             .await
             .unwrap(),
@@ -1587,6 +1613,7 @@ mod tests {
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap();
@@ -1634,6 +1661,7 @@ mod tests {
                 blob_provider.clone(),
                 messaging_broker.clone(),
                 EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
             )
             .await
             .unwrap(),
@@ -1657,6 +1685,7 @@ mod tests {
             native_dispatch,
             Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap();

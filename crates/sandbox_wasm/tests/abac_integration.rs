@@ -140,6 +140,7 @@ async fn make_engine_with_storage(
         blob_provider.clone(),
         Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap()),
         EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+        syneroym_app_orchestration::empty_resolver(),
     )
     .await
     .unwrap();
@@ -219,6 +220,8 @@ fn build_host_state(
         Some(policy),
         false,
         row_authorizer,
+        None,
+        syneroym_app_orchestration::empty_resolver(),
     )
 }
 
@@ -842,6 +845,8 @@ async fn stage4_missing_export_under_an_opted_in_policy_denies_closed() {
         Some(policy),
         false,
         row_authorizer,
+        None,
+        syneroym_app_orchestration::empty_resolver(),
     );
 
     let opts = QueryOptions { filter: None, limit: None, cursor: None };

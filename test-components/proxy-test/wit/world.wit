@@ -6,11 +6,16 @@ interface test-driver {
     /// `proxy-error` debug-formatted as a string on failure -- sufficient for
     /// integration tests to assert on without needing a typed WIT variant on
     /// this side too.
+    /// `target-kind` selects which `call-target` variant `service` becomes:
+    /// `"service"` (a raw DID/alias) or `"dependency"` (a declared
+    /// dependency name, resolved host-side) -- one fixture driving both A2
+    /// variants.
     call-peer: func(
         service: string,
         %interface: string,
         method: string,
         params: string,
+        target-kind: string,
     ) -> result<string, string>;
 }
 

@@ -4,8 +4,8 @@
 [ADR-0020](../../../decisions/0020-stable-logical-service-identity.md),
 [ADR-0021](../../../decisions/0021-binding-propagation-and-app-supervisor.md)
 
-**Overall:** Design accepted 2026-07-27. Slices A0-A1 complete (2026-07-28);
-A2-A6 not started.
+**Overall:** Design accepted 2026-07-27. Slices A0-A2 complete (2026-07-29);
+A3-A6 not started.
 
 ## Slice status
 
@@ -14,7 +14,7 @@ A2-A6 not started.
 | P0 | `ControllerAgreement` creation tool — **pulled forward from M5 item 5** | Not started | None; gates A3 |
 | A0 | Stable member identity (master DID per member + delegated instance keys + ingress `scope` enforcement) | **Complete (2026-07-28)** — [implementation plan](slice-a0-implementation-plan.md), evidence below | None — independently mergeable |
 | A1 | Endpoint records published under the member master DID | **Complete (2026-07-28, design revised 2026-07-29 before merge)** — [implementation plan](slice-a1-implementation-plan.md), evidence below | A0 |
-| A2 | Host-side dependency resolution; bindings carry `expected_asserter_did` | Not started | A1 |
+| A2 | Host-side dependency resolution; bindings carry `expected_asserter_did` | **Complete (2026-07-29)** — [implementation plan](slice-a2-implementation-plan.md), evidence below | A1 |
 | A3 | Multi-substrate placement + substrate inventory | Not started | `ControllerAgreement` tool (see below) |
 | A4 | Health declaration + read-only monitoring | Not started | A3 |
 | A5 | Supervisor loop, best-effort delivery, operator read surface | Not started | A0–A4 |
@@ -472,6 +472,223 @@ syneroym-substrate` (sandbox disabled) all green, including the flagship
 `a_certificate_near_expiry_is_warned_about_on_the_heartbeat_sweep` (proving
 the new near-expiry sweep call didn't disturb the existing one); `mise run
 test:e2e` 12/12, unchanged.
+
+## A2 — Verification evidence (2026-07-29)
+
+Planning found seven places where `task.md`/ADR-0021 described a tree that
+does not exist or left an open choice — recorded in
+[slice-a2-implementation-plan.md](slice-a2-implementation-plan.md) §0's seven
+numbered findings (two review rounds, all incorporated before implementation
+started), most consequentially: `StaticInventory` had **no callers at all**
+anywhere in the workspace (not "no real ones" — `task.md`'s own phrasing
+overstated how much already existed), a cross-app `Bind` dependency has no
+manifest surface to be named through, and `{member_master_did,
+expected_asserter_did}` were one value written twice rather than two real
+fields. §1's fourteen decisions (D-A2-1 … D-A2-16) took those findings as
+given; ADR-0020/ADR-0021 still need a dated sign-off amendment covering all
+of §0, not yet written into the ADRs themselves (tracked as this section's
+own follow-up, not a separate backlog row).
+
+**What shipped**, by phase:
+
+- **Phase 3 (relationship-proof trust chain, shipped independently first
+  per the plan's suggested merge order):** `RelationshipProof` gains an
+  optional `delegation` field (a JSON `DelegationCertificate`) inside the
+  signed payload; `sign` asserts under the certificate's master when one is
+  given, falling back to the pre-ADR-0020 self-asserted shape otherwise;
+  `verify` checks the certificate with `DelegationCertificate::verify`
+  (live-credential strictness, not A1's reader-level `verify_chain`) and a
+  fixed `[SCOPE_SERVICE_INSTANCE]` accepted-scope set before ever checking
+  the outer signature (`crates/rpc/src/relationship_proof.rs`).
+  `SynSvcNativeService` carries an `instance_cert: Option<DelegationCertificate>`
+  field, populated from `deploy`'s already-four-times-verified certificate
+  (no second load or re-verification), and forwards it into every
+  `sign_relationship_proof` call (`crates/control_plane/src/synsvc_native.rs`).
+- **Phase 4 (transport half):** `CallOrigin::Native` gains `service_id:
+  Option<String>` (`crates/rpc/src/proxy.rs`); `ProxyRouter::invoke_remote_at`
+  gains a `(None, Native { service_id: Some(sid) })` arm presenting that
+  service's certified instance key (falling back to the node identity, not
+  anonymous, on an absent/expired certificate — a substrate-internal call has
+  always presented *something*), leaving the `(Some(proof), Native)` arm's
+  verbatim-forwarding behavior untouched per D-B3-9
+  (`crates/router/src/proxy.rs`). `resolve_fetches`/`resolve_one_fetch` gain a
+  `local_service_id: &str` parameter threaded from
+  `sandbox_wasm::host_capabilities` and `synsvc_native.rs` so the FDAE
+  relationship-proof fetch travels as the asking service, not the node.
+- **Phase 0 (registry ownership, persistence, startup replay — no behavior
+  change on its own):** `EndpointStorage` gains five methods
+  (`{load_all,save,remove}_app_context`-shaped plus `save_binding`/
+  `load_all_bindings`), implemented across all four backends (`MockStorage`,
+  `SqliteEndpointStorage` with two new tables created unconditionally per
+  D-A0-10's precedent, and the two test doubles in
+  `control_plane/src/service/orchestration.rs` and
+  `router/tests/service_ownership.rs`). `EndpointRegistry` gains the
+  in-memory mirror plus `set_app_context`/`app_context_of`/
+  `remove_app_context`/`save_binding`/`all_bindings`
+  (`crates/core/src/local_registry.rs`). `LogicalResolver::register` (new,
+  `crates/app_orchestration/src/resolver.rs`) makes "write the registry, evict
+  the cache" one atomic step — the module's own doc comment previously
+  overclaimed that a cache **hit** compares epochs against the registry; it
+  does not, so this method is the only thing that keeps a scale-out visible
+  before `cache_ttl` elapses, which the milestone's 5s convergence budget
+  depends on before the supervisor is even written. `AppSandboxEngine` and
+  `ControlPlaneService` both gain a `logical_resolver: Arc<LogicalResolver>`
+  field/constructor parameter, sharing one `StaticInventory` over one
+  `EndpointRegistry` (`crates/sandbox_wasm/src/engine.rs`,
+  `crates/control_plane/src/service.rs`). `crates/substrate/src/runtime.rs`'s
+  composition root replays every persisted binding into a fresh
+  `StaticInventory` before the router starts accepting connections
+  (`replay_persisted_bindings`, extracted as its own function so it is
+  unit-testable without a full composition-root harness), warning and
+  skipping a row that fails to parse rather than panicking substrate startup
+  (D-A2-15). Four crates (`sandbox_wasm`, `substrate`, `router` dev-deps,
+  `coordinator_iroh` dev-deps) gained a `syneroym-app-orchestration`
+  dependency; a `#[doc(hidden)] empty_resolver()` helper was added to
+  `app_orchestration` so the **56** `AppSandboxEngine::init` (the plan's own
+  tally of 55, plus one more this slice's own new
+  `router/tests/proxy_dispatch.rs` dependency-resolution test added) and
+  **37** `ControlPlaneService::init` test call sites, both counted directly
+  by `grep`, didn't need 93 copies of
+  `Arc::new(LogicalResolver::new(Arc::new(StaticInventory::new())))`.
+- **Phase 1 (bindings on the wire):** `control-plane.wit` gains
+  `topology-mode`, `dependency-binding`, and `app-context` records, plus one
+  `option<app-context>` field on `planned-service` — **not** on
+  `deploy-manifest` (D-A2-6: a 4-literal-site cost against 71, and the
+  correctness reason that `deploy-manifest` is a full-reinstall carrier
+  while `planned-service.app-context` is deliberately the *initial-deploy*
+  carrier only, never A5's push channel). `PlannedService.resolved_dependencies`
+  changes from `Vec<ServiceId>` to `BTreeMap<LogicalServiceName, Vec<ServiceId>>`
+  (`crates/app_orchestration/src/models.rs`), keyed by declared name so a
+  binding can carry the name the guest will actually ask for; `compiler.rs`
+  builds the map, `journal.rs`/`reconcile.rs`/`sdk/mapper.rs`'s test fixtures
+  updated to match. `syneroym_sdk::mapper::map_deployment_plan_to_wit` gains
+  an `emit_bindings: bool` parameter and builds one `dependency-binding` per
+  `depends_on` entry, reading the **target's** topology mode (not the
+  dependent's — every service in the pre-A2 tree happened to be `Singleton`,
+  which would have hidden this bug until the first `Redundant` service);
+  `emit_bindings: false` (the non-`--mint-masters` path) publishes an empty
+  binding list rather than the compiler's fabricated `did:key:h...` ids
+  (D-A2-16) — publishing those would let `dependency(...)` resolve and then
+  fail one layer down as `service-not-found`, destroying the distinction
+  `dependency-not-bound` exists to draw. `apps/roymctl/src/commands/app.rs`
+  passes `emit_bindings: *mint_masters` and prints a warning when deploying
+  a `depends_on`-declaring manifest without `--mint-masters`.
+  `member_identity.rs`'s `substitute_and_certify_members` substitutes the
+  map's **values** (the member DIDs), preserving the dependency names as
+  keys, so a binding never carries the compiler's fabricated ids once
+  `--mint-masters` runs. `ControlPlaneService::deploy` is split into a thin
+  trait-facing wrapper and an inherent `deploy_with_context` carrying the
+  entire original body plus the binding-write block (D-A2-6's naming);
+  `deploy_plan` calls `deploy_with_context` directly with
+  `service.app_context`. The binding-write block validates every
+  caller-supplied string with `try_new`, never `new` (D-A2-15 — `new` panics
+  on a bad value, which would let an authorized-but-buggy deploy caller kill
+  the control-plane task), writes the app context and every binding through
+  `EndpointRegistry`, and registers each one through
+  `LogicalResolver::register` in the same step so the write and the cache
+  eviction can never be separated. `undeploy`'s teardown gains a
+  `remove_app_context` call (persisted rows only; the in-memory
+  `StaticInventory` entry stays per D-A2-9).
+- **Phase 2 (guest names a dependency, host resolves):** `syneroym:proxy/proxy`
+  gains a `call-target` variant (`service`/`dependency`) replacing the bare
+  `service: string` parameter, a `dependency-not-bound` error variant, and
+  `call-options.routing-key: option<string>`
+  (`crates/wit_interfaces/wit/proxy/proxy.wit` — the single real file behind
+  the two committed symlinks, confirmed via `git ls-files -s`).
+  `HostState` gains `app_instance_id: Option<String>` and
+  `logical_resolver: Arc<LogicalResolver>`; `proxy::Host::call`'s
+  `CallTarget::Dependency` arm resolves host-side, before a `ProxyRequest`
+  ever exists, so a guest never holds the resolved DID and cannot snapshot
+  it past a re-push — `LogicalResolver::resolve` is synchronous and
+  lock-free on a cache hit, so this adds no `.await` and keeps the
+  no-network-hop budget true by construction
+  (`crates/sandbox_wasm/src/host_capabilities.rs`). The one WIT-visible
+  interface change meant rebuilding the one fixture that imports it:
+  `test-components/proxy-test` (`call-peer` gains a `target-kind` argument
+  selecting which variant it builds) — confirmed building clean for
+  `wasm32-wasip2`, along with `greeter` and `data-layer-test` (neither
+  imports `syneroym:proxy/proxy`, verified by `grep -rln proxy
+  test-components/`).
+
+**Tests added: 34 new unit/CLI/integration tests, counted directly from `git
+diff main` by counting `#[test]`/`#[tokio::test]` attributes added, not
+asserted** — 6 in `crates/rpc/src/relationship_proof.rs` (delegation-carrying
+sign/verify: master-vs-instance-DID, a certificate naming a different master
+than the proof claims, an expired certificate, a routing-scoped certificate,
+a tampered delegation field breaking the outer signature); 4 in
+`crates/router/src/proxy.rs` (the transport half: presents the service's
+instance key on its behalf, forwards an existing caller proof verbatim
+per D-B3-9, falls back to the node identity with no `service_id` and on an
+expired certificate); 1 in `crates/app_orchestration/src/resolver.rs`
+(`register_through_the_resolver_evicts_the_cached_topology`, pinning the
+§3.4 landmine a plain `AppRegistry::register` would have reintroduced); 5 in
+`crates/data_db/src/registry_store.rs` (the two new tables created on a
+database that predates them — the D-A0-10 regression one table over — plus
+upsert/removal semantics); 3 in `crates/sdk/src/mapper.rs` (one binding per
+`depends_on` entry with the target's mode, an empty binding list for a
+dependency-free plan, and `emit_bindings_false_publishes_no_fabricated_member_dids`
+pinning D-A2-16); 7 in `crates/control_plane/src/service/orchestration.rs` (a
+deploy carrying an app context registers a resolvable binding, a redeploy
+dropping a dependency leaves no stale row, an invalid member DID/dependency
+name/app instance id each fail the deploy with `try_new`'s `Err` rather than
+`new`'s panic, undeploy clears the persisted rows); 1 in
+`crates/substrate/src/runtime.rs`
+(`an_unreadable_persisted_binding_is_skipped_not_fatal`, a stored row with a
+`/` and a row with unparseable JSON both warn-and-skip while a well-formed
+row alongside them still replays); 6 in
+`crates/sandbox_wasm/src/host_capabilities.rs` (dependency resolution before
+the `ProxyRequest` is built, `dependency-not-bound` for an unbound name and
+for a standalone component with no app context, a raw-DID target unchanged,
+deterministic routing-key selection across a two-member binding, and a
+dependency that resolves to the component's own service still forwarding
+the real caller); 1 in `crates/router/tests/proxy_dispatch.rs`
+(`guest_dependency_target_reaches_the_bound_member_and_a_re_registration_takes_effect_on_the_next_call`,
+a **real WASM guest** driving `call-peer` with `target-kind = "dependency"`
+through a live `RouteHandler` composition, then re-registering the same
+declared name onto a different, nonexistent target and proving the very
+next call reaches it — the guest never held a snapshot of the old
+resolution).
+
+**Not covered by unit/single-node-integration tests — recorded as a backlog
+row, not silently dropped** (see
+[deferred-backlog.md](../../deferred-backlog.md) §3 "A2's own two-substrate
+e2e coverage is partial"): a `dependency_binding_e2e.rs` two-real-substrate
+test (modelled on `master_endpoint_record_e2e.rs`) proving the reference
+scenario's step 4 from the dependent's side, and `federated_fdae_e2e.rs`'s
+extension so the responding service holds an instance certificate and its
+`RelationshipProof` verifies against the member master over a real Iroh
+hop (failure-matrix row 19, live). Both are real two-substrate harness
+builds; the underlying mechanisms they would prove live are fully covered
+at the unit level (delegation-carrying `RelationshipProof`, host-side
+resolution, cache-eviction-on-write) and at the single-node integration
+level (the real-WASM-guest test above).
+
+**Gates, run 2026-07-29:**
+
+- `cargo +nightly fmt --all`: clean.
+- `cargo clippy --workspace --all-targets --all-features`: clean, zero
+  warnings.
+- `cargo test --workspace` (sandboxed, `--no-fail-fast`): 13 failing
+  targets, all in the same pre-existing, environmental category documented
+  throughout this milestone's status — real port/socket binds the sandbox
+  denies outright (`syneroym-community-registry --lib`,
+  `syneroym-coordinator-iroh` `connection_limit`/`multi_hop_relay`/
+  `tls_rotation`, `syneroym-mqtt-broker --lib`, `syneroym-sdk --test
+  connect_timeout`, and every `syneroym-substrate` e2e test:
+  `basic_lifecycle`, `federated_fdae_e2e`, `http_passthrough_e2e`,
+  `instance_identity_e2e`, `master_endpoint_record_e2e`,
+  `messaging_client_e2e`, `stream_client_e2e`). Every one of these targets
+  was independently re-verified passing with the sandbox disabled this
+  pass (`cargo test -p syneroym-substrate -p syneroym-community-registry -p
+  syneroym-coordinator-iroh -p syneroym-sdk -p syneroym-mqtt-broker`, all
+  green, including `federated_fdae_e2e` at 72s and the other e2e tests at
+  10-56s each) — no target outside that documented sandbox-bind category
+  differs from expected.
+- `mise run test:e2e` (sandbox disabled, required for real port binds):
+  12/12 green (8 main + 4 multi-hop), unchanged from before this slice.
+- `wasm32-wasip2`: `greeter`, `data-layer-test`, and `proxy-test` all build
+  clean; `proxy-test` is the one fixture whose WIT import changed
+  (`call-peer` gained a `target-kind` argument), rebuilt and confirmed.
 
 ## Dependencies pulled in
 

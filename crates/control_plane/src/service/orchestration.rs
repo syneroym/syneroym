@@ -10,11 +10,16 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fs,
     path::{Component, PathBuf},
+    result,
     sync::Arc,
 };
 
 use anyhow::Result;
 use serde_json::Value;
+use syneroym_app_orchestration::{
+    AppInstanceId, LogicalServiceName, ServiceId as AppServiceId, TopologyEntry, TopologyEpoch,
+    TopologyMode as AppTopologyMode,
+};
 use syneroym_core::{
     deploy_docs,
     local_registry::{NATIVE_CAPABILITY_INTERFACES, SubstrateEndpoint},
@@ -26,8 +31,9 @@ use syneroym_identity::{
 };
 use syneroym_rpc::{Ability, CallerContext, NativeService, ResourceUri};
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
-    ArtifactSource, ContainerManifest, DeployManifest, DeployedService, DeploymentPlan,
-    DocumentSource, InstanceIdentity, ServiceType as WitServiceType, TcpManifest, WasmManifest,
+    AppContext, ArtifactSource, ContainerManifest, DeployManifest, DeployedService, DeploymentPlan,
+    DocumentSource, InstanceIdentity, ServiceType as WitServiceType, TcpManifest,
+    TopologyMode as WitTopologyMode, WasmManifest,
 };
 use tokio::task;
 use tracing::info;
@@ -57,6 +63,16 @@ pub trait OrchestratorInterface {
     async fn list(&self, caller: &CallerContext) -> Result<Vec<DeployedService>, String>;
     async fn deploy_plan(&self, plan: DeploymentPlan, caller: &CallerContext)
     -> Result<(), String>;
+}
+
+/// Maps the wire `topology-mode` variant to the app model's `TopologyMode`
+/// (A2) -- the inverse of `syneroym_sdk::mapper`'s `map_mode`.
+fn map_topology_mode(mode: WitTopologyMode) -> AppTopologyMode {
+    match mode {
+        WitTopologyMode::Singleton => AppTopologyMode::Singleton,
+        WitTopologyMode::Redundant => AppTopologyMode::Redundant,
+        WitTopologyMode::Sharded => AppTopologyMode::Sharded,
+    }
 }
 
 /// Resolves a manifest document to its content. `Inline` arrives with the
@@ -480,6 +496,89 @@ impl OrchestratorInterface for ControlPlaneService {
         manifest: DeployManifest,
         caller: &CallerContext,
     ) -> Result<(), String> {
+        // A standalone deploy carries no app context (D-A2-2), so it
+        // resolves no declared dependency name -- it can still be called,
+        // and can still call out by DID.
+        self.deploy_with_context(service_id, manifest, None, caller).await
+    }
+
+    async fn undeploy(&self, service_id: String, caller: &CallerContext) -> Result<(), String> {
+        self.undeploy_impl(service_id, caller).await
+    }
+
+    async fn list(&self, caller: &CallerContext) -> Result<Vec<DeployedService>, String> {
+        self.list_impl(caller).await
+    }
+
+    async fn deploy_plan(
+        &self,
+        plan: DeploymentPlan,
+        caller: &CallerContext,
+    ) -> Result<(), String> {
+        for service in plan.services {
+            let service_id = service.service_id.clone();
+
+            // Only allow WASM sources that do not use path traversal and stay within an
+            // allowed directory Note: Since deploy-plan is handled over RPC, we
+            // restrict file source reads to the current directory
+            // or an explicit sandbox.
+            let mut deploy_manifest = service.manifest.clone();
+
+            match &mut deploy_manifest.service_type {
+                WitServiceType::Wasm(wasm_manifest) => {
+                    if let ArtifactSource::Binary(_) = &wasm_manifest.source {
+                        // Binary is fine, it was passed directly
+                    } else if let ArtifactSource::Url(url_or_path) = &wasm_manifest.source
+                        && !url_or_path.starts_with("http://")
+                        && !url_or_path.starts_with("https://")
+                    {
+                        // It's a local file path
+                        let path = PathBuf::from(url_or_path);
+
+                        // Path traversal check
+                        if path.components().any(|c| matches!(c, Component::ParentDir))
+                            || path.is_absolute()
+                        {
+                            return Err(format!(
+                                "Arbitrary file read prevented: Path traversal or absolute paths \
+                                 are not allowed in deploy-plan: {:?}",
+                                path
+                            ));
+                        }
+
+                        let bytes = util::read_local_artifact(&path).map_err(|e| {
+                            format!("Failed to read WASM file at {:?}: {}", path, e)
+                        })?;
+                        wasm_manifest.source = ArtifactSource::Binary(bytes);
+                    }
+                }
+                WitServiceType::Tcp(_) | WitServiceType::Container(_) => {
+                    // TCP and Container don't read host files directly in
+                    // deploy_plan logic for sources
+                }
+            }
+
+            self.deploy_with_context(service_id, deploy_manifest, service.app_context, caller)
+                .await?;
+        }
+
+        Ok(())
+    }
+}
+
+impl ControlPlaneService {
+    /// The trait method's entire body (§3.1's `deploy` <->
+    /// `deploy_with_context` split, D-A2-6): no app context, so no
+    /// bindings, unchanged for every existing caller including the JSON-RPC
+    /// `deploy` dispatch. `deploy_plan` calls this directly, passing
+    /// `service.app_context`.
+    async fn deploy_with_context(
+        &self,
+        service_id: String,
+        manifest: DeployManifest,
+        app_context: Option<AppContext>,
+        caller: &CallerContext,
+    ) -> Result<(), String> {
         // M04A Slice B7a / F7: a service_id already owned by someone else may
         // not be re-deployed into. On an unowned substrate every caller
         // holds node-wide orchestrator authority (F4), so this never fires
@@ -570,6 +669,81 @@ impl OrchestratorInterface for ControlPlaneService {
                 }
                 None => None,
             };
+
+        // ADR-0021 §2: the dependent's host resolves declared dependency
+        // names, so the bindings have to be on file before the service can
+        // serve a single call. Written before the artifact work for the
+        // same reason the certificate is: a malformed binding is a deploy
+        // failure, not a routing failure discovered later.
+        if let Some(ctx) = &app_context {
+            // A redeploy fully declares this service's app context, so its
+            // previous rows go first -- a dependency dropped from the
+            // manifest must not survive as a stale row (the same "absence
+            // means removal" rule `fdae_policy` already follows above).
+            self.registry.remove_app_context(&service_id).await.map_err(|e| e.to_string())?;
+            // Validate before storing, so a later read of this row can
+            // only fail on real corruption rather than on something a
+            // deploy caller sent. The registry itself stores plain
+            // `String`s (D-A2-7), so this is the only place the shape can
+            // be enforced on the way in.
+            AppInstanceId::try_new(&ctx.app_instance_id)
+                .map_err(|e| format!("app context names an invalid app instance id: {e}"))?;
+            LogicalServiceName::try_new(&ctx.service_name)
+                .map_err(|e| format!("app context names an invalid service name: {e}"))?;
+            self.registry
+                .set_app_context(
+                    service_id.clone(),
+                    ctx.app_instance_id.clone(),
+                    ctx.service_name.clone(),
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+
+            for binding in &ctx.bindings {
+                // D-A2-15: all three of these are caller-supplied strings,
+                // so all three are fallible. `LogicalServiceName::new`
+                // *panics* on an empty name or one containing '/', which
+                // would let an authorized-but-buggy deploy caller kill the
+                // control-plane task.
+                let instance_id = AppInstanceId::try_new(&binding.app_instance_id)
+                    .map_err(|e| format!("binding names an invalid app instance id: {e}"))?;
+                let dependency_name = LogicalServiceName::try_new(&binding.dependency_name)
+                    .map_err(|e| format!("binding names an invalid dependency name: {e}"))?;
+                let entry = TopologyEntry {
+                    mode: map_topology_mode(binding.mode),
+                    members: binding
+                        .members
+                        .iter()
+                        .map(AppServiceId::try_new)
+                        .collect::<result::Result<Vec<_>, _>>()
+                        .map_err(|e| {
+                            format!(
+                                "binding '{}' names an invalid member DID: {e}",
+                                binding.dependency_name
+                            )
+                        })?,
+                    sharding_strategy: None, // D-A2-4
+                    epoch: TopologyEpoch(binding.epoch),
+                    cache_ttl: std::time::Duration::from_millis(binding.cache_ttl_ms),
+                };
+                let entry_json = serde_json::to_string(&entry).map_err(|e| e.to_string())?;
+                self.registry
+                    .save_binding(
+                        &service_id,
+                        &binding.app_instance_id,
+                        &binding.dependency_name,
+                        &entry_json,
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+                // Last-write-wins (D-A2-10). ADR-0021 §3's four-case epoch
+                // guard -- lower rejects, equal+identical no-ops,
+                // equal+different is a reported conflict, higher applies --
+                // belongs at exactly this call and is the supervisor
+                // slice's.
+                self.logical_resolver.register(instance_id, dependency_name, entry);
+            }
+        }
 
         if let Some(cert) = &manifest.registry_certificate {
             let cert_path = self.hosted_apps_dir.join(format!("{service_id}.json"));
@@ -811,6 +985,7 @@ impl OrchestratorInterface for ControlPlaneService {
                     &caller.caller_did,
                     self.current_service_proxy(),
                     self.current_row_authorizer(),
+                    installed_instance_cert.clone(),
                 )) as Arc<dyn NativeService>,
             );
         } else {
@@ -919,7 +1094,15 @@ impl OrchestratorInterface for ControlPlaneService {
     /// which case this gate passes via that authority, not because the row
     /// matches `caller.caller_did`. All three pass; there is no branch where
     /// `deploy`'s own rollback gets rejected by this check.
-    async fn undeploy(&self, service_id: String, caller: &CallerContext) -> Result<(), String> {
+    ///
+    /// Renamed `undeploy_impl` (from `undeploy`) so the trait's own
+    /// `undeploy` -- a thin wrapper -- can call it without recursing; the
+    /// split mirrors `deploy`/`deploy_with_context` immediately above.
+    async fn undeploy_impl(
+        &self,
+        service_id: String,
+        caller: &CallerContext,
+    ) -> Result<(), String> {
         if let Some(owner) = self.registry.owner_of(&service_id)
             && owner != caller.caller_did
             && !self.has_node_wide_ability(caller, Ability::ORCHESTRATOR_UNDEPLOY)
@@ -1065,11 +1248,19 @@ impl OrchestratorInterface for ControlPlaneService {
                 e
             );
         }
+        // A2: persisted rows only -- the in-memory `StaticInventory` entry
+        // stays (D-A2-9). A `TopologyEntry` is an app-scoped fact ("where
+        // does `backend` live in instance X"), not a per-dependent one;
+        // removing it when one of several dependents goes away would break
+        // the others.
+        if let Err(e) = self.registry.remove_app_context(&service_id).await {
+            tracing::warn!("Failed to remove app context for service {}: {}", service_id, e);
+        }
 
         Ok(())
     }
 
-    async fn list(&self, caller: &CallerContext) -> Result<Vec<DeployedService>, String> {
+    async fn list_impl(&self, caller: &CallerContext) -> Result<Vec<DeployedService>, String> {
         let endpoints = self.registry.get_all_endpoints();
         let mut services: HashMap<String, DeployedService> = HashMap::new();
 
@@ -1124,60 +1315,6 @@ impl OrchestratorInterface for ControlPlaneService {
                 self.registry.owner_of(&s.service_id).as_deref() == Some(caller.caller_did.as_str())
             })
             .collect())
-    }
-
-    async fn deploy_plan(
-        &self,
-        plan: DeploymentPlan,
-        caller: &CallerContext,
-    ) -> Result<(), String> {
-        for service in plan.services {
-            let service_id = service.service_id.clone();
-
-            // Only allow WASM sources that do not use path traversal and stay within an
-            // allowed directory Note: Since deploy-plan is handled over RPC, we
-            // restrict file source reads to the current directory
-            // or an explicit sandbox.
-            let mut deploy_manifest = service.manifest.clone();
-
-            match &mut deploy_manifest.service_type {
-                WitServiceType::Wasm(wasm_manifest) => {
-                    if let ArtifactSource::Binary(_) = &wasm_manifest.source {
-                        // Binary is fine, it was passed directly
-                    } else if let ArtifactSource::Url(url_or_path) = &wasm_manifest.source
-                        && !url_or_path.starts_with("http://")
-                        && !url_or_path.starts_with("https://")
-                    {
-                        // It's a local file path
-                        let path = PathBuf::from(url_or_path);
-
-                        // Path traversal check
-                        if path.components().any(|c| matches!(c, Component::ParentDir))
-                            || path.is_absolute()
-                        {
-                            return Err(format!(
-                                "Arbitrary file read prevented: Path traversal or absolute paths \
-                                 are not allowed in deploy-plan: {:?}",
-                                path
-                            ));
-                        }
-
-                        let bytes = util::read_local_artifact(&path).map_err(|e| {
-                            format!("Failed to read WASM file at {:?}: {}", path, e)
-                        })?;
-                        wasm_manifest.source = ArtifactSource::Binary(bytes);
-                    }
-                }
-                WitServiceType::Tcp(_) | WitServiceType::Container(_) => {
-                    // TCP and Container don't read host files directly in
-                    // deploy_plan logic for sources
-                }
-            }
-
-            self.deploy(service_id, deploy_manifest, caller).await?;
-        }
-
-        Ok(())
     }
 }
 
@@ -1261,6 +1398,7 @@ mod tests {
                 blob_provider.clone(),
                 messaging_broker.clone(),
                 EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
             )
             .await
             .unwrap(),
@@ -1284,6 +1422,7 @@ mod tests {
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap();
@@ -1314,6 +1453,7 @@ mod tests {
                     registry_certificate: None,
                     instance_certificate: None,
                 },
+                app_context: None,
             }],
         };
 
@@ -1341,6 +1481,7 @@ mod tests {
                 blob_provider.clone(),
                 messaging_broker.clone(),
                 EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
             )
             .await
             .unwrap(),
@@ -1364,6 +1505,7 @@ mod tests {
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap();
@@ -1393,6 +1535,7 @@ mod tests {
                     registry_certificate: None,
                     instance_certificate: None,
                 },
+                app_context: None,
             }],
         };
 
@@ -1424,6 +1567,7 @@ mod tests {
                 blob_provider.clone(),
                 messaging_broker.clone(),
                 EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
             )
             .await
             .unwrap(),
@@ -1447,6 +1591,7 @@ mod tests {
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap();
@@ -1505,6 +1650,7 @@ mod tests {
                 blob_provider.clone(),
                 messaging_broker.clone(),
                 EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
             )
             .await
             .unwrap(),
@@ -1528,6 +1674,7 @@ mod tests {
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap();
@@ -1596,6 +1743,7 @@ mod tests {
                 blob_provider.clone(),
                 messaging_broker.clone(),
                 EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
             )
             .await
             .unwrap(),
@@ -1619,6 +1767,7 @@ mod tests {
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap();
@@ -1654,6 +1803,222 @@ mod tests {
         assert!(latest.is_none());
     }
 
+    // ── A2: app context and dependency bindings ─────────────────────────
+
+    use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::DependencyBinding;
+
+    fn app_context(
+        app_instance_id: &str,
+        service_name: &str,
+        bindings: Vec<DependencyBinding>,
+    ) -> AppContext {
+        AppContext {
+            app_instance_id: app_instance_id.to_string(),
+            service_name: service_name.to_string(),
+            bindings,
+        }
+    }
+
+    fn dependency_binding(name: &str, members: Vec<&str>) -> DependencyBinding {
+        DependencyBinding {
+            dependency_name: name.to_string(),
+            app_instance_id: "app-1".to_string(),
+            mode: WitTopologyMode::Singleton,
+            members: members.into_iter().map(str::to_string).collect(),
+            epoch: 0,
+            cache_ttl_ms: 60_000,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_deploy_carrying_an_app_context_registers_a_resolvable_binding() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+
+        let ctx = app_context(
+            "app-1",
+            "frontend",
+            vec![dependency_binding("backend", vec!["did:key:zBackendMember"])],
+        );
+        service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(ctx),
+                &node_wide_caller("test-caller"),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            service.registry.app_context_of("frontend-svc"),
+            Some(("app-1".to_string(), "frontend".to_string()))
+        );
+        let resolved = service
+            .logical_resolver
+            .resolve(
+                &syneroym_app_orchestration::LogicalServiceRef {
+                    app_instance_id: syneroym_app_orchestration::AppInstanceId::new("app-1"),
+                    service_name: syneroym_app_orchestration::LogicalServiceName::new("backend"),
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(resolved.to_string(), "did:key:zBackendMember");
+    }
+
+    #[tokio::test]
+    async fn a_redeploy_that_drops_a_dependency_leaves_no_stale_persisted_row() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let caller = node_wide_caller("test-caller");
+
+        service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(app_context(
+                    "app-1",
+                    "frontend",
+                    vec![dependency_binding("backend", vec!["did:key:zBackendMember"])],
+                )),
+                &caller,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            service.registry.all_bindings().await.unwrap().len(),
+            1,
+            "the first deploy must have written exactly one binding row"
+        );
+
+        // A redeploy whose manifest no longer declares any dependency.
+        service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(app_context("app-1", "frontend", vec![])),
+                &caller,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            service.registry.all_bindings().await.unwrap().is_empty(),
+            "a redeploy that drops a dependency must not leave its persisted row behind"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_binding_naming_a_non_did_key_member_fails_the_deploy() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+
+        let ctx = app_context(
+            "app-1",
+            "frontend",
+            vec![dependency_binding("backend", vec!["not-a-did"])],
+        );
+        let err = service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(ctx),
+                &node_wide_caller("test-caller"),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("invalid member DID"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn undeploy_clears_the_persisted_binding_rows() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let caller = node_wide_caller("test-caller");
+
+        service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(app_context(
+                    "app-1",
+                    "frontend",
+                    vec![dependency_binding("backend", vec!["did:key:zBackendMember"])],
+                )),
+                &caller,
+            )
+            .await
+            .unwrap();
+
+        service.undeploy("frontend-svc".to_string(), &caller).await.unwrap();
+
+        assert_eq!(service.registry.app_context_of("frontend-svc"), None);
+        assert!(service.registry.all_bindings().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_dependency_name_containing_a_slash_fails_the_deploy_rather_than_panicking() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+
+        let ctx = app_context(
+            "app-1",
+            "frontend",
+            vec![dependency_binding("bad/name", vec!["did:key:zBackendMember"])],
+        );
+        let err = service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(ctx),
+                &node_wide_caller("test-caller"),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("invalid dependency name"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn an_empty_dependency_name_fails_the_deploy_rather_than_panicking() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+
+        let ctx = app_context(
+            "app-1",
+            "frontend",
+            vec![dependency_binding("", vec!["did:key:zBackendMember"])],
+        );
+        let err = service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(ctx),
+                &node_wide_caller("test-caller"),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("invalid dependency name"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn an_empty_app_instance_id_in_the_app_context_fails_the_deploy() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+
+        let ctx = app_context("", "frontend", vec![]);
+        let err = service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(ctx),
+                &node_wide_caller("test-caller"),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("invalid app instance id"), "{err}");
+    }
+
     #[tokio::test]
     async fn test_deploy_fdae_policy_validates_persists_and_is_loadable() {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -1673,6 +2038,7 @@ mod tests {
                 blob_provider.clone(),
                 messaging_broker.clone(),
                 EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
             )
             .await
             .unwrap(),
@@ -1696,6 +2062,7 @@ mod tests {
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap();
@@ -1791,6 +2158,7 @@ mod tests {
                 blob_provider.clone(),
                 messaging_broker.clone(),
                 EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
             )
             .await
             .unwrap(),
@@ -1814,6 +2182,7 @@ mod tests {
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap();
@@ -1880,6 +2249,7 @@ mod tests {
                 blob_provider.clone(),
                 messaging_broker.clone(),
                 EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
             )
             .await
             .unwrap(),
@@ -1903,6 +2273,7 @@ mod tests {
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap();
@@ -1956,6 +2327,7 @@ mod tests {
                 blob_provider.clone(),
                 messaging_broker.clone(),
                 EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
             )
             .await
             .unwrap(),
@@ -1979,6 +2351,7 @@ mod tests {
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap();
@@ -2035,6 +2408,7 @@ mod tests {
                 blob_provider.clone(),
                 messaging_broker.clone(),
                 EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
             )
             .await
             .unwrap(),
@@ -2058,6 +2432,7 @@ mod tests {
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap();
@@ -2112,6 +2487,7 @@ mod tests {
                 blob_provider.clone(),
                 messaging_broker.clone(),
                 EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
             )
             .await
             .unwrap(),
@@ -2135,6 +2511,7 @@ mod tests {
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap();
@@ -2204,6 +2581,7 @@ mod tests {
                 blob_provider.clone(),
                 messaging_broker.clone(),
                 EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
             )
             .await
             .unwrap(),
@@ -2227,6 +2605,7 @@ mod tests {
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap();
@@ -2317,6 +2696,7 @@ mod tests {
                 blob_provider.clone(),
                 messaging_broker.clone(),
                 EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
             )
             .await
             .unwrap(),
@@ -2340,6 +2720,7 @@ mod tests {
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap();
@@ -2454,6 +2835,34 @@ mod tests {
         async fn remove_cert(&self, service_id: &str) -> Result<()> {
             self.inner.remove_cert(service_id).await
         }
+        async fn load_all_app_contexts(&self) -> Result<Vec<(String, String, String)>> {
+            self.inner.load_all_app_contexts().await
+        }
+        async fn save_app_context(
+            &self,
+            service_id: &str,
+            app_instance_id: &str,
+            service_name: &str,
+        ) -> Result<()> {
+            self.inner.save_app_context(service_id, app_instance_id, service_name).await
+        }
+        async fn remove_app_context(&self, service_id: &str) -> Result<()> {
+            self.inner.remove_app_context(service_id).await
+        }
+        async fn load_all_bindings(&self) -> Result<Vec<(String, String, String, String)>> {
+            self.inner.load_all_bindings().await
+        }
+        async fn save_binding(
+            &self,
+            service_id: &str,
+            app_instance_id: &str,
+            dependency_name: &str,
+            topology_entry_json: &str,
+        ) -> Result<()> {
+            self.inner
+                .save_binding(service_id, app_instance_id, dependency_name, topology_entry_json)
+                .await
+        }
     }
 
     #[tokio::test]
@@ -2475,6 +2884,7 @@ mod tests {
                 blob_provider.clone(),
                 messaging_broker.clone(),
                 EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
             )
             .await
             .unwrap(),
@@ -2507,6 +2917,7 @@ mod tests {
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap();
@@ -2631,6 +3042,7 @@ mod tests {
                 blob_provider.clone(),
                 messaging_broker.clone(),
                 EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
             )
             .await
             .unwrap(),
@@ -2659,6 +3071,7 @@ mod tests {
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap();
@@ -2770,6 +3183,7 @@ mod tests {
                 blob_provider.clone(),
                 messaging_broker.clone(),
                 EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
             )
             .await
             .unwrap(),
@@ -2793,6 +3207,7 @@ mod tests {
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap();
@@ -2856,6 +3271,7 @@ mod tests {
                 blob_provider.clone(),
                 messaging_broker.clone(),
                 EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
             )
             .await
             .unwrap(),
@@ -2879,6 +3295,7 @@ mod tests {
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap();
@@ -2932,6 +3349,7 @@ mod tests {
                 blob_provider.clone(),
                 messaging_broker.clone(),
                 EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
             )
             .await
             .unwrap(),
@@ -2955,6 +3373,7 @@ mod tests {
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap();
@@ -3006,6 +3425,7 @@ mod tests {
                 blob_provider.clone(),
                 messaging_broker.clone(),
                 EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
             )
             .await
             .unwrap(),
@@ -3029,6 +3449,7 @@ mod tests {
             native_dispatch.clone(),
             Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap();
@@ -3257,6 +3678,7 @@ mod tests {
                 blob_provider.clone(),
                 messaging_broker.clone(),
                 EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
             )
             .await
             .unwrap(),
@@ -3281,6 +3703,7 @@ mod tests {
             native_dispatch,
             http_routes.clone(),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap();
@@ -3347,6 +3770,7 @@ mod tests {
                 blob_provider.clone(),
                 messaging_broker.clone(),
                 EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
             )
             .await
             .unwrap(),
@@ -3371,6 +3795,7 @@ mod tests {
             native_dispatch,
             http_routes.clone(),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap();
@@ -3449,6 +3874,7 @@ mod tests {
                 blob_provider.clone(),
                 messaging_broker.clone(),
                 EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
             )
             .await
             .unwrap(),
@@ -3472,6 +3898,7 @@ mod tests {
             native_dispatch,
             Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap();
@@ -3546,6 +3973,7 @@ mod tests {
                 blob_provider.clone(),
                 messaging_broker.clone(),
                 registry.clone(),
+                syneroym_app_orchestration::empty_resolver(),
             )
             .await
             .unwrap(),
@@ -3566,6 +3994,7 @@ mod tests {
             NativeDispatchRegistry::default(),
             Arc::new(DashMap::new()),
             node_identity,
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap();
@@ -3779,6 +4208,7 @@ mod tests {
                 blob_provider.clone(),
                 messaging_broker.clone(),
                 EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
             )
             .await
             .unwrap(),
@@ -3798,6 +4228,7 @@ mod tests {
             NativeDispatchRegistry::default(),
             Arc::new(DashMap::new()),
             Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
         )
         .await
         .unwrap()

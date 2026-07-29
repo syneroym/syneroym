@@ -19,6 +19,7 @@ serde_json.workspace = true
 dirs.workspace = true
 toml.workspace = true
 syneroym-core.workspace = true
+syneroym-app-orchestration.workspace = true
 syneroym-data-db.workspace = true
 syneroym-data-keystore.workspace = true
 syneroym-data-blob.workspace = true

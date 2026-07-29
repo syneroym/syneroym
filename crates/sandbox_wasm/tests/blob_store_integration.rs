@@ -52,6 +52,8 @@ fn make_host_state(component_id: &str, storage_provider: Arc<dyn StorageProvider
         None,
         false,
         syneroym_rpc::empty_row_authorizer(),
+        None,
+        syneroym_app_orchestration::empty_resolver(),
     )
 }
 

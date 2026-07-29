@@ -58,8 +58,10 @@ pub const PROXY_TEST_DRIVER_INTERFACE: &str = "syneroym-test:proxy-test/test-dri
 
 /// Returns the workspace-relative path to the proxy-test component WASM
 /// module (imports `syneroym:proxy/proxy`, exports a `test-driver` interface
-/// with a single `call-peer` method that originates a Universal Proxy call --
-/// see `test-components/proxy-test`).
+/// with a single `call-peer` method that originates a Universal Proxy call,
+/// taking an extra `target-kind` ("service" or "dependency") argument
+/// selecting which `call-target` variant it builds -- see
+/// `test-components/proxy-test`).
 pub fn proxy_test_wasm_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
         "../../test-components/proxy-test/target/wasm32-wasip2/release/syneroym_test_proxy.wasm",
