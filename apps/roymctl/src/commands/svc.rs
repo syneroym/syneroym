@@ -13,6 +13,7 @@ use chrono::DateTime;
 use clap::Subcommand;
 use syneroym_core::dht_registry::{DEFAULT_ENDPOINT_NOT_AFTER_SECS, EndpointInfo, EndpointType};
 use syneroym_identity::{DelegationCertificate, Identity, substrate};
+use syneroym_sdk::{ContainerPortMapping, ContainerVolumeMapping, NetworkEndpoint};
 
 use super::member_identity;
 
@@ -21,6 +22,12 @@ use super::member_identity;
 /// is the dedicated renewal command for a longer- or shorter-lived one.
 const DEFAULT_INSTANCE_CERT_EXPIRES_HOURS: u64 = 24;
 
+// `Deploy` carries every flag across all three deploy kinds (WASM, TCP,
+// container) at once, so it is unavoidably far larger than `Remove`/`Start`/
+// `Stop`'s single `svc_id`. This is a one-shot, parsed-once CLI arg struct,
+// not a value stored in bulk, so the size difference the perf lint warns
+// about has no runtime cost here.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand, Debug, Clone)]
 pub enum SvcCommands {
     /// Deploy a new `SynSvc` via API
@@ -32,11 +39,32 @@ pub enum SvcCommands {
         #[arg(long)]
         interfaces: String,
         /// Path to the WASM component binary
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["tcp", "image"])]
         wasm: Option<PathBuf>,
         /// TCP host:port for an existing service (e.g. "localhost:8080")
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["wasm", "image"])]
         tcp: Option<String>,
+        /// Container image for a Podman-backed service (e.g.
+        /// "docker.io/library/nginx:alpine"). Mutually exclusive with
+        /// `--wasm`/`--tcp`; needs at least one `--port` to be reachable.
+        #[arg(long, conflicts_with_all = ["wasm", "tcp"])]
+        image: Option<String>,
+        /// Container port mapping, repeatable:
+        /// "interface:container_port[:host_port][:protocol]". `protocol` is
+        /// "tcp" (default) or "udp" -- only `tcp` mappings are reachable
+        /// through the substrate today, though Podman will still publish a
+        /// `udp` one on the host. Each interface name here must also appear
+        /// in `--interfaces`. Only meaningful alongside `--image` (checked
+        /// at runtime, not by clap -- see `validate_container_flags`).
+        #[arg(long = "port", requires = "image")]
+        ports: Vec<String>,
+        /// Container volume mapping, repeatable: "host_path:container_path".
+        /// Docker-style mount options (e.g. a trailing ":ro") are not
+        /// supported. In-volume file materialization is not exposed by this
+        /// flag -- use a `SynApp` manifest's `files` list instead. Only
+        /// meaningful alongside `--image` (see `--port` above).
+        #[arg(long = "volume")]
+        volumes: Vec<String>,
         /// Optional identity name for signing the published endpoint
         /// record. The self-signed publish route for a service with no
         /// member master -- named identity's own DID must equal `--svc-id`.
@@ -67,7 +95,7 @@ pub enum SvcCommands {
         #[arg(long, conflicts_with = "master")]
         instance_certificate: Option<PathBuf>,
         /// Community registry URL to publish/refresh the master's anchor at
-        /// when `--master` mints a fresh certificate (D-A1-7). Ignored on
+        /// when `--master` mints a fresh certificate. Ignored on
         /// the `--instance-certificate` path, since that certificate was
         /// minted (and its anchor published, if at all) elsewhere. Without
         /// it, a certificate minted here is unusable on the wire until an
@@ -113,12 +141,16 @@ pub async fn handle(
             interfaces,
             wasm,
             tcp,
+            image,
+            ports,
+            volumes,
             identity,
             nickname,
             master,
             instance_certificate,
             registry_url,
         } => {
+            validate_container_flags(image, ports, volumes)?;
             let ifaces: Vec<String> = interfaces.split(',').map(|s| s.trim().to_string()).collect();
 
             // The record the substrate publishes and replays verbatim: it
@@ -126,9 +158,9 @@ pub async fn handle(
             // signature for a `--master` deploy (ADR-0020 §3), so this is
             // the *only* place a member's endpoint record is ever signed,
             // and it must be signed on every `--master` deploy, not only
-            // when a nickname is given -- unlike A1's committed design,
-            // where the substrate re-signed with a delegated instance key
-            // and this blob's own signature was never trusted.
+            // when a nickname is given -- unlike an earlier design, where the
+            // substrate re-signed with a delegated instance key and this
+            // blob's own signature was never trusted.
             //
             // Bound owned, chosen by reference: `Identity` is not `Clone`,
             // and the `--master` arm below needs the same key again.
@@ -151,9 +183,9 @@ pub async fn handle(
                 named_identity.as_ref().or(master_identity.as_ref());
 
             // Nothing to sign with, but a nickname was given: it is silently
-            // dropped (pre-A1 behaviour, unchanged). Warn rather than fail:
-            // the deploy itself still succeeds, and a silently-lost nickname
-            // is confusing to debug.
+            // dropped (unchanged from before this flag existed). Warn rather
+            // than fail: the deploy itself still succeeds, and a
+            // silently-lost nickname is confusing to debug.
             if nickname.is_some() && signing_identity.is_none() {
                 eprintln!(
                     "Warning: --nickname has no effect without --identity or --master -- it will \
@@ -241,12 +273,32 @@ pub async fn handle(
                 }
                 let (host, port) = get_host_port_from_tcp_addr(tcp_addr)?;
                 let iface = ifaces.first().cloned().unwrap_or_else(|| "default".to_string());
-                let endpoints =
-                    vec![syneroym_sdk::NetworkEndpoint { interface_name: iface, host, port }];
+                let endpoints = vec![NetworkEndpoint { interface_name: iface, host, port }];
                 client.deploy_svc_tcp(svc_id.clone(), endpoints, cert, instance_cert).await?;
                 println!("Successfully deployed TCP service {svc_id}");
+            } else if let Some(image) = image {
+                let port_mappings = ports
+                    .iter()
+                    .map(|p| parse_container_port_mapping(p))
+                    .collect::<anyhow::Result<Vec<_>>>()?;
+                validate_container_ports(&ifaces, &port_mappings)?;
+                let volume_mappings = volumes
+                    .iter()
+                    .map(|v| parse_container_volume_mapping(v))
+                    .collect::<anyhow::Result<Vec<_>>>()?;
+                client
+                    .deploy_container(
+                        svc_id.clone(),
+                        image.clone(),
+                        port_mappings,
+                        volume_mappings,
+                        cert,
+                        instance_cert,
+                    )
+                    .await?;
+                println!("Successfully deployed container service {svc_id}");
             } else {
-                anyhow::bail!("Either --wasm or --tcp must be provided for deployment");
+                anyhow::bail!("Either --wasm, --tcp, or --image must be provided for deployment");
             }
         }
         SvcCommands::Remove { svc_id } => {
@@ -309,6 +361,106 @@ fn get_host_port_from_tcp_addr(tcp_addr: &str) -> anyhow::Result<(String, u16)> 
     Ok((host, port))
 }
 
+/// Podman's `-p`/`--publish` accepts only these two protocol suffixes.
+const CONTAINER_PORT_PROTOCOLS: [&str; 2] = ["tcp", "udp"];
+
+/// Parses a `--port` value of the form
+/// "interface:container_port[:host_port][:protocol]". `host_port` may be
+/// left empty (e.g. "iface:80::udp") to pick `protocol` without pinning a
+/// host port.
+fn parse_container_port_mapping(spec: &str) -> anyhow::Result<ContainerPortMapping> {
+    let parts: Vec<&str> = spec.split(':').collect();
+    if !(2..=4).contains(&parts.len()) {
+        anyhow::bail!(
+            "Invalid --port '{spec}'. Expected interface:container_port[:host_port][:protocol]"
+        );
+    }
+    if parts[0].is_empty() {
+        anyhow::bail!("Invalid --port '{spec}': interface name must not be empty");
+    }
+    let interface_name = parts[0].to_string();
+    let container_port = parts[1]
+        .parse::<u16>()
+        .map_err(|e| anyhow::anyhow!("Invalid container_port in --port '{spec}': {e}"))?;
+    let host_port = match parts.get(2) {
+        Some(&"") | None => None,
+        Some(raw) => Some(
+            raw.parse::<u16>()
+                .map_err(|e| anyhow::anyhow!("Invalid host_port in --port '{spec}': {e}"))?,
+        ),
+    };
+    let protocol = match parts.get(3) {
+        None => "tcp".to_string(),
+        Some(p) => {
+            if !CONTAINER_PORT_PROTOCOLS.contains(p) {
+                anyhow::bail!(
+                    "Invalid --port '{spec}': protocol '{p}' is not one of {}",
+                    CONTAINER_PORT_PROTOCOLS.join(", ")
+                );
+            }
+            p.to_string()
+        }
+    };
+    Ok(ContainerPortMapping { interface_name, host_port, container_port, protocol })
+}
+
+/// Parses a `--volume` value of the form "host_path:container_path". The
+/// in-volume file materialization (`ContainerVolumeMapping::files`) has no
+/// CLI flag yet, so it is always empty here.
+fn parse_container_volume_mapping(spec: &str) -> anyhow::Result<ContainerVolumeMapping> {
+    let parts: Vec<&str> = spec.split(':').collect();
+    if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
+        anyhow::bail!(
+            "Invalid --volume '{spec}'. Expected host_path:container_path -- Docker-style mount \
+             options (e.g. a trailing ':ro') are not supported"
+        );
+    }
+    Ok(ContainerVolumeMapping {
+        host_path: parts[0].to_string(),
+        container_path: parts[1].to_string(),
+        files: vec![],
+    })
+}
+
+/// `--port`/`--volume` are only meaningful alongside `--image`. clap's own
+/// `requires` cannot fully guard this: `--image` also `conflicts_with`
+/// `--wasm`/`--tcp`, and when one of those is present clap treats `--image`
+/// as unreachable and silently skips enforcing anything that requires it --
+/// so `--tcp ... --port ...` (no `--image`) parses fine at the clap layer.
+/// This is checked again here, at runtime, for every combination.
+fn validate_container_flags(
+    image: &Option<String>,
+    ports: &[String],
+    volumes: &[String],
+) -> anyhow::Result<()> {
+    if image.is_none() && (!ports.is_empty() || !volumes.is_empty()) {
+        anyhow::bail!("--port/--volume require --image");
+    }
+    Ok(())
+}
+
+/// Every deployed container needs at least one reachable port, and every
+/// `--port`'s interface must be one `--interfaces` actually declared --
+/// otherwise a typo registers a phantom interface with no warning.
+fn validate_container_ports(
+    ifaces: &[String],
+    port_mappings: &[ContainerPortMapping],
+) -> anyhow::Result<()> {
+    if port_mappings.is_empty() {
+        anyhow::bail!("--image requires at least one --port, or the container is unreachable");
+    }
+    for mapping in port_mappings {
+        if !ifaces.contains(&mapping.interface_name) {
+            anyhow::bail!(
+                "--port names interface '{}', which is not in --interfaces ({})",
+                mapping.interface_name,
+                ifaces.join(",")
+            );
+        }
+    }
+    Ok(())
+}
+
 fn load_identity(dir: &Path, name: &str) -> anyhow::Result<Identity> {
     let key_path = dir.join("identities").join(format!("{name}.key"));
     if !key_path.exists() {
@@ -329,8 +481,8 @@ mod tests {
         cmd: SvcCommands,
     }
 
-    /// A0-04: `--instance-certificate` installs an already-minted
-    /// certificate as-is; `--master` mints and installs a fresh one itself.
+    /// `--instance-certificate` installs an already-minted certificate
+    /// as-is; `--master` mints and installs a fresh one itself.
     /// Together they're ambiguous about which certificate actually gets
     /// installed, so clap must reject the combination before either flag's
     /// handler ever runs.
@@ -354,8 +506,107 @@ mod tests {
         assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
     }
 
-    /// D-A1-8: `--master` plus `--nickname` needs no `--identity` -- the
-    /// master identity already loaded on this arm carries the envelope.
+    /// `--wasm` and `--image` pick two different deploy kinds for the same
+    /// service -- clap must reject the combination, not silently prefer one
+    /// via if/else precedence in the handler.
+    #[test]
+    fn deploy_rejects_wasm_and_image_together() {
+        let err = Wrapper::try_parse_from([
+            "svc",
+            "deploy",
+            "--svc-id",
+            "did:key:zTest",
+            "--interfaces",
+            "default",
+            "--wasm",
+            "/tmp/app.wasm",
+            "--image",
+            "docker.io/library/nginx:alpine",
+        ])
+        .unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+    }
+
+    /// Same as `deploy_rejects_wasm_and_image_together`, for the other pair
+    /// of deploy-kind flags.
+    #[test]
+    fn deploy_rejects_tcp_and_image_together() {
+        let err = Wrapper::try_parse_from([
+            "svc",
+            "deploy",
+            "--svc-id",
+            "did:key:zTest",
+            "--interfaces",
+            "default",
+            "--tcp",
+            "localhost:1",
+            "--image",
+            "docker.io/library/nginx:alpine",
+        ])
+        .unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+    }
+
+    /// `--port`/`--volume` only mean anything alongside `--image`. clap
+    /// cannot reject this combination itself (see `validate_container_flags`
+    /// for why), so `--tcp ... --port ...` parses fine at the clap layer --
+    /// it is `validate_container_flags`, called from the handler before
+    /// either arm runs, that must catch it instead.
+    #[test]
+    fn deploy_with_tcp_and_port_parses_but_is_not_a_valid_combination() {
+        let cmd = Wrapper::try_parse_from([
+            "svc",
+            "deploy",
+            "--svc-id",
+            "did:key:zTest",
+            "--interfaces",
+            "default",
+            "--tcp",
+            "localhost:1",
+            "--port",
+            "default:80:8080",
+        ])
+        .expect("clap itself does not reject --tcp with --port");
+        let SvcCommands::Deploy { image, ports, .. } = cmd.cmd else {
+            panic!("expected SvcCommands::Deploy");
+        };
+        assert!(image.is_none());
+        assert_eq!(
+            validate_container_flags(&image, &ports, &[]).unwrap_err().to_string(),
+            "--port/--volume require --image"
+        );
+    }
+
+    #[test]
+    fn validate_container_flags_rejects_ports_without_image() {
+        let ports = vec!["default:80:8080".to_string()];
+        let err = validate_container_flags(&None, &ports, &[]).unwrap_err();
+        assert!(err.to_string().contains("--port/--volume require --image"));
+    }
+
+    #[test]
+    fn validate_container_flags_rejects_volumes_without_image() {
+        let volumes = vec!["html:/usr/share/nginx/html".to_string()];
+        let err = validate_container_flags(&None, &[], &volumes).unwrap_err();
+        assert!(err.to_string().contains("--port/--volume require --image"));
+    }
+
+    #[test]
+    fn validate_container_flags_accepts_ports_and_volumes_with_image() {
+        let image = Some("docker.io/library/nginx:alpine".to_string());
+        let ports = vec!["default:80:8080".to_string()];
+        let volumes = vec!["html:/usr/share/nginx/html".to_string()];
+        validate_container_flags(&image, &ports, &volumes).unwrap();
+    }
+
+    #[test]
+    fn validate_container_flags_accepts_image_with_no_ports_or_volumes() {
+        let image = Some("docker.io/library/nginx:alpine".to_string());
+        validate_container_flags(&image, &[], &[]).unwrap();
+    }
+
+    /// `--master` plus `--nickname` needs no `--identity` -- the master
+    /// identity already loaded on this arm carries the envelope.
     #[test]
     fn deploy_with_a_master_and_a_nickname_needs_no_identity_flag() {
         let cmd = Wrapper::try_parse_from([
@@ -409,6 +660,161 @@ mod tests {
         assert_eq!(instance_certificate, Some(PathBuf::from("/tmp/cert.json")));
         assert_eq!(nickname.as_deref(), Some("alice"));
         assert!(identity.is_none());
+    }
+
+    /// `--image` (with repeatable `--port`/`--volume`) parses and reaches
+    /// the container arm, mirroring `--wasm`/`--tcp`'s own presence-based
+    /// dispatch -- `wasm`/`tcp` stay `None` since only `--image` was given.
+    #[test]
+    fn deploy_with_image_port_and_volume_reaches_the_container_arm() {
+        let cmd = Wrapper::try_parse_from([
+            "svc",
+            "deploy",
+            "--svc-id",
+            "did:key:zTest",
+            "--interfaces",
+            "default",
+            "--image",
+            "docker.io/library/nginx:alpine",
+            "--port",
+            "default:80:8080:tcp",
+            "--volume",
+            "html:/usr/share/nginx/html",
+        ])
+        .expect("--image with --port and --volume must parse");
+        let SvcCommands::Deploy { image, ports, volumes, wasm, tcp, .. } = cmd.cmd else {
+            panic!("expected SvcCommands::Deploy");
+        };
+        assert_eq!(image.as_deref(), Some("docker.io/library/nginx:alpine"));
+        assert_eq!(ports, vec!["default:80:8080:tcp".to_string()]);
+        assert_eq!(volumes, vec!["html:/usr/share/nginx/html".to_string()]);
+        assert!(wasm.is_none());
+        assert!(tcp.is_none());
+    }
+
+    /// `--master` with `--image` parses, mirroring
+    /// `deploy_with_a_master_and_a_nickname_needs_no_identity_flag` for the
+    /// TCP arm -- a member master applies identically regardless of which
+    /// service type is being deployed.
+    #[test]
+    fn deploy_with_a_master_and_an_image_parses() {
+        let cmd = Wrapper::try_parse_from([
+            "svc",
+            "deploy",
+            "--svc-id",
+            "did:key:zTest",
+            "--interfaces",
+            "default",
+            "--image",
+            "docker.io/library/nginx:alpine",
+            "--master",
+            "m",
+        ])
+        .expect("--master with --image must parse");
+        let SvcCommands::Deploy { master, image, .. } = cmd.cmd else {
+            panic!("expected SvcCommands::Deploy");
+        };
+        assert_eq!(master.as_deref(), Some("m"));
+        assert_eq!(image.as_deref(), Some("docker.io/library/nginx:alpine"));
+    }
+
+    #[test]
+    fn parse_container_port_mapping_rejects_malformed_input() {
+        let err = parse_container_port_mapping("default").unwrap_err();
+        assert!(err.to_string().contains("Invalid --port"));
+    }
+
+    #[test]
+    fn parse_container_port_mapping_defaults_host_port_and_protocol() {
+        let mapping = parse_container_port_mapping("default:80").unwrap();
+        assert_eq!(mapping.interface_name, "default");
+        assert_eq!(mapping.container_port, 80);
+        assert_eq!(mapping.host_port, None);
+        assert_eq!(mapping.protocol, "tcp");
+    }
+
+    #[test]
+    fn parse_container_port_mapping_parses_host_port_and_protocol() {
+        let mapping = parse_container_port_mapping("default:80:8080:udp").unwrap();
+        assert_eq!(mapping.host_port, Some(8080));
+        assert_eq!(mapping.protocol, "udp");
+    }
+
+    #[test]
+    fn parse_container_port_mapping_allows_an_empty_host_port_with_a_protocol() {
+        let mapping = parse_container_port_mapping("default:80::udp").unwrap();
+        assert_eq!(mapping.host_port, None);
+        assert_eq!(mapping.protocol, "udp");
+    }
+
+    #[test]
+    fn parse_container_port_mapping_rejects_an_empty_interface_name() {
+        let err = parse_container_port_mapping(":80:8080").unwrap_err();
+        assert!(err.to_string().contains("interface name must not be empty"));
+    }
+
+    #[test]
+    fn parse_container_port_mapping_rejects_an_unsupported_protocol() {
+        let err = parse_container_port_mapping("default:80:8080:tpc").unwrap_err();
+        assert!(err.to_string().contains("protocol 'tpc' is not one of"));
+    }
+
+    #[test]
+    fn parse_container_port_mapping_rejects_too_many_segments() {
+        let err = parse_container_port_mapping("default:80:8080:tcp:extra").unwrap_err();
+        assert!(err.to_string().contains("Invalid --port"));
+    }
+
+    #[test]
+    fn parse_container_port_mapping_rejects_a_non_numeric_container_port() {
+        let err = parse_container_port_mapping("default:not-a-port").unwrap_err();
+        assert!(err.to_string().contains("Invalid container_port"));
+    }
+
+    #[test]
+    fn parse_container_volume_mapping_rejects_malformed_input() {
+        let err = parse_container_volume_mapping("no-colon-here").unwrap_err();
+        assert!(err.to_string().contains("Invalid --volume"));
+    }
+
+    #[test]
+    fn parse_container_volume_mapping_parses_host_and_container_path() {
+        let mapping = parse_container_volume_mapping("html:/usr/share/nginx/html").unwrap();
+        assert_eq!(mapping.host_path, "html");
+        assert_eq!(mapping.container_path, "/usr/share/nginx/html");
+        assert!(mapping.files.is_empty());
+    }
+
+    /// Docker/Podman users commonly type a trailing mount option like
+    /// `:ro` -- rejecting it with a clear message beats silently folding it
+    /// into `container_path` (`/var/lib/data:ro`, which podman would then
+    /// fail on with a much more confusing error).
+    #[test]
+    fn parse_container_volume_mapping_rejects_a_docker_style_mount_option() {
+        let err = parse_container_volume_mapping("/data:/var/lib/data:ro").unwrap_err();
+        assert!(err.to_string().contains("mount options"));
+    }
+
+    #[test]
+    fn validate_container_ports_rejects_no_ports() {
+        let ifaces = vec!["default".to_string()];
+        let err = validate_container_ports(&ifaces, &[]).unwrap_err();
+        assert!(err.to_string().contains("at least one --port"));
+    }
+
+    #[test]
+    fn validate_container_ports_rejects_a_port_interface_absent_from_interfaces() {
+        let ifaces = vec!["default".to_string()];
+        let mapping = parse_container_port_mapping("other:80").unwrap();
+        let err = validate_container_ports(&ifaces, &[mapping]).unwrap_err();
+        assert!(err.to_string().contains("not in --interfaces"));
+    }
+
+    #[test]
+    fn validate_container_ports_accepts_a_port_naming_a_declared_interface() {
+        let ifaces = vec!["default".to_string()];
+        let mapping = parse_container_port_mapping("default:80").unwrap();
+        validate_container_ports(&ifaces, &[mapping]).unwrap();
     }
 
     #[test]
