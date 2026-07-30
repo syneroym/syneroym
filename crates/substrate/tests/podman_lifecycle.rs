@@ -3,12 +3,15 @@
 
 use std::{process::Command, time::Duration};
 
+use ed25519_dalek::VerifyingKey;
 use rustls::crypto::ring;
 use syneroym_core::{
     config::{ClientGatewayRole, IrohParentConfig, LogTarget, SubstrateConfig},
     dht_registry::EndpointMechanism,
 };
-use syneroym_identity::{Identity, substrate};
+use syneroym_identity::{
+    DelegationCertificate, Identity, delegation::SCOPE_SERVICE_INSTANCE, substrate,
+};
 use syneroym_sdk::SyneroymClient;
 use syneroym_substrate::identity;
 use tempfile::TempDir;
@@ -188,6 +191,28 @@ async fn test_podman_lifecycle() {
         }],
     }];
 
+    // A container deploy carries an instance certificate exactly like a
+    // WASM/TCP deploy does (`--master`'s CLI path): `app_service_id` is
+    // `app_identity`'s own DID, so it can act as this service's member
+    // master and certify the instance key the substrate derives for it.
+    let instance_identity = ctx
+        .substrate_client
+        .instance_identity(&app_service_id)
+        .await
+        .expect("query instance identity");
+    let pubkey_bytes: [u8; 32] = hex::decode(&instance_identity.pubkey_hex)
+        .expect("valid hex pubkey")
+        .try_into()
+        .expect("pubkey is 32 bytes");
+    let instance_pubkey = VerifyingKey::from_bytes(&pubkey_bytes).expect("valid ed25519 pubkey");
+    let instance_cert = DelegationCertificate::issue(
+        &app_identity,
+        instance_pubkey,
+        3600,
+        SCOPE_SERVICE_INSTANCE.to_string(),
+    )
+    .expect("issue instance certificate");
+
     debug!(">>> Deploying nginx container");
     ctx.substrate_client
         .deploy_container(
@@ -196,6 +221,7 @@ async fn test_podman_lifecycle() {
             ports,
             volumes,
             None,
+            Some(instance_cert),
         )
         .await
         .expect("SDK Deploy container failed");
@@ -205,6 +231,10 @@ async fn test_podman_lifecycle() {
     assert!(services.iter().any(|s| s.service_id == app_service_id));
     let svc = services.iter().find(|s| s.service_id == app_service_id).unwrap();
     assert_eq!(svc.endpoint_type, "tcp"); // Registered as TcpHostPort
+    assert!(
+        svc.instance_certificate_expires_at.is_some(),
+        "a container deploy should install the instance certificate exactly like WASM/TCP does"
+    );
 
     // Give it a brief moment to warm up
     time::sleep(Duration::from_secs(3)).await;

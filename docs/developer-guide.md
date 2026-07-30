@@ -363,49 +363,25 @@ roymctl --dir <DIR> --as owner svc deploy \
 ```
 
 #### Deploy a Container Service (Podman)
-`roymctl svc deploy` has no `--container`/`--image` form yet (tracked in the
-deferred backlog), so this one genuinely has no `roymctl` equivalent today —
-it is shown as a raw JSON-RPC call for reference, but the same gateway
-caveat above applies: it can only ever be denied on a real substrate.
 ```bash
-curl -X POST http://localhost:7960/ \
-  -H "Host: <NICKNAME>-p<SUBSTRATE_DID_SHORTHASH>-iorchestrator.localhost" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "method": "deploy",
-    "params": [
-      "did:key:my-container-service",
-      ["default"],
-      {
-        "config": { "env": [], "args": [], "custom_config": null },
-        "service_type": {
-          "container": {
-            "source": { "binary": [] },
-            "hash": null,
-            "image": "docker.io/library/nginx:alpine",
-            "ports": [
-              {
-                "interface_name": "default",
-                "host_port": null,
-                "container_port": 80,
-                "protocol": "tcp"
-              }
-            ],
-            "volumes": [
-              {
-                "host_path": "html",
-                "container_path": "/usr/share/nginx/html",
-                "files": []
-              }
-            ]
-          }
-        }
-      }
-    ],
-    "id": 1
-  }'
+roymctl --dir <DIR> --as owner svc deploy \
+  --svc-id did:key:my-container-service \
+  --interfaces default \
+  --image docker.io/library/nginx:alpine \
+  --port default:80:8080 \
+  --volume html:/usr/share/nginx/html
 ```
+`--port` is repeatable: `interface:container_port[:host_port][:protocol]` —
+leaving `host_port` empty (e.g. `default:80`) lets Podman pick one
+dynamically. `protocol` is `tcp` (default) or `udp`, but only `tcp` mappings
+are reachable through the substrate's own routing today; a `udp` one is
+still published by Podman on the host, it just isn't reachable through
+`roymctl`/the client gateway. Each interface name must also appear in
+`--interfaces`.
+`--volume` is repeatable: `host_path:container_path` — Docker-style mount
+options like a trailing `:ro` are not supported. In-volume file
+materialization (see below) has no CLI flag yet; use a `SynApp` manifest's
+`files` list instead (below).
 
 ##### Mounting Configuration Files into a Container
 
