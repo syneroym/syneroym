@@ -26,6 +26,10 @@ This new crate will house the `MeshAdapter` and the physical interface implement
     3. **Re-broadcasting (Gossiping):** The neighbor increments the Hop Count and re-broadcasts the Announce to its own neighbors ("I can reach Node A in 1 hop").
     4. **Loop Prevention & Damping:** Re-broadcasting naturally damps down. A node will *only* re-broadcast an announce if it represents a brand new route or a route with fewer hops than one it already knows. Once a wave of announces washes over the mesh and optimal paths are found, nodes stop re-broadcasting. Additionally, announces carry a strict TTL (e.g., max 10 hops), creating a hard geographic "horizon" beyond which an announce never propagates.
     5. **Memory Limits & Pruning:** To prevent small nodes from running out of RAM, the routing table has a strict capacity limit (e.g., 500 routes). It acts as an LRU (Least Recently Used) cache weighted by distance. If the table fills up, it evicts routes that haven't been actively used for traffic, starting with the furthest nodes (highest hop count), because it's statistically less likely to need to relay for nodes very far away. If a node stops announcing entirely, its route simply expires and is pruned.
+    6. **Routing Algorithm Trade-offs:**
+       - *Distance-Vector (Syneroym/Reticulum):* High setup cost (nodes must announce and map the network before sending data), but extremely low runtime cost because data follows a known optimal path. Best for stable or slowly changing meshes.
+       - *Managed Flooding (Meshtastic):* Zero setup cost (no routing tables), but high runtime cost because every packet is re-broadcast by multiple nodes up to a hop limit. Works well for small, sparse networks.
+       - *Pure Epidemic Flooding (BitChat/Bitmessage):* Zero setup cost, but catastrophic runtime bandwidth cost. Excellent for privacy (metadata masking) or highly volatile ad-hoc scenarios where the topology changes too fast for tables to form.
 - **Mesh Packet Framing:** Define a lightweight binary packet structure for radio transmission:
   ```rust
   struct MeshPacket {
@@ -54,14 +58,16 @@ This new crate will house the `MeshAdapter` and the physical interface implement
 - Implement the `MeshAdapter` which ties the routing table, interfaces, and multiplexing together.
 - **Relay & DTN Logic:** 
   - *Deduplication:* The adapter maintains a rolling cache of recently seen `message_id`s. If a duplicate packet arrives, it is silently dropped.
-  - *Store-and-Forward:* If a path does not exist (or the next hop is currently unreachable), the packet is placed in a capped local DTN queue.
+  - *Store-and-Forward (DTN Role):* Because caching packets requires RAM, DTN functionality will be gated behind a configuration flag (e.g., `enable_dtn_storage = true`). Tiny microcontrollers will leave this off and drop unroutable packets, while larger nodes (like a Raspberry Pi) will act as dedicated mailboxes. If a path does not exist, a DTN-enabled node places the packet in a capped local queue.
+    - *Ownership Transfer:* If a DTN node is gracefully shutting down, it can attempt to dump its pending queue to another nearby DTN-enabled node before going offline. If it crashes unexpectedly, the packets are lost (unless Source-Copy routing was used).
   - *Multi-Path Retries & DTN Path Improvement:* In a DTN, if a packet is stuck at an intermediate node, there is a risk it never reaches the destination. If the *earlier* node (or the source) kept a copy, it could try alternate newly-discovered paths. This touches on formal DTN routing algorithms:
     - **Single-Copy Routing:** When Node A hands a packet to Node B, Node A deletes its copy. If Node B gets stuck, only Node B can retry if it learns a new route. (Bandwidth efficient, but lower delivery guarantee).
     - **Multi-Copy (Epidemic) Routing:** Nodes replicate the packet to every neighbor. Extremely robust but causes severe network flooding.
-    - **Syneroym Implementation Options (Under Consideration):** 
-      1. *Strict Single-Copy with Local Retries:* If an intermediate node accepts a packet for forwarding, it takes sole custody. The previous node (or source) drops its copy. The intermediate node is responsible for trying new paths if it gets stuck.
-      2. *Source-Copy + Intermediate Single-Copy:* The original source node retains a copy of the packet until an end-to-end ACK is received. Intermediate nodes use strict single-copy custody transfer. If the packet gets permanently stuck in the mesh, the source can eventually time out and retry down a completely different initial path. The `message_id` deduplication cache ensures safe handling of any duplicates.
-      3. *Spray and Wait (Bounded Multi-Copy):* A formal middle-ground algorithm. The source generates `N` copies (sprays them to `N` distinct neighbors). Those neighbors then only use Single-Copy routing towards the destination, increasing the probability of delivery without the unbounded flooding of Epidemic Routing.
+    - **Syneroym DTN Strategy: Bounded Multi-Copy (Spray and Wait):** To ensure redundancy and prevent a single point of failure if a DTN node crashes, Syneroym will utilize the `N-copies` approach. 
+      - The source generates a small, bounded number of copies (e.g., `N=3`).
+      - It "sprays" these copies to the first 3 distinct DTN-enabled nodes it encounters.
+      - These 3 nodes place the packet in their respective DTN queues, acting as redundant mailboxes. 
+      - If *any* of them discovers a path to the destination, it delivers the packet. The `message_id` deduplication cache at the destination will safely discard the other copies if they eventually arrive. This provides high reliability without the catastrophic bandwidth cost of Epidemic Flooding.
 - Wrap reliable connections (AWDL) and unreliable connections + ARQ/KCP (LoRa) inside the `yamux` stream multiplexer.
 - Expose a `listen()` method that yields `(AsyncRead + AsyncWrite)` streams to be handed to `syneroym_router::ConnectionRouter::handle_stream`.
 
