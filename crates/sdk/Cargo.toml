@@ -23,6 +23,7 @@ tracing.workspace = true
 iroh.workspace = true
 async-trait.workspace = true
 hex.workspace = true
+ed25519-dalek.workspace = true
 
 [dev-dependencies]
 rand.workspace = true

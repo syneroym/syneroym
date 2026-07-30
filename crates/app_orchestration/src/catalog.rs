@@ -60,13 +60,14 @@ impl LocalFilesystemCatalog {
         };
         services.insert(
             LogicalServiceName::new("legacy-main"),
-            ServiceSpec { config, depends_on: vec![] },
+            ServiceSpec { config, depends_on: vec![], placement: None },
         );
 
         let manifest = SynAppManifest {
             id: id.clone(),
             version: Version::new(0, 0, 0),
             description: Some("Legacy Single-WASM Shim".to_string()),
+            placement: None,
             services,
             dependencies: BTreeMap::new(),
         };

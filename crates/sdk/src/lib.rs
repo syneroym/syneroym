@@ -14,7 +14,12 @@ use iroh::{
     Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl,
     endpoint::{Connection, RecvStream, SendStream},
 };
+pub mod deploy;
 pub mod mapper;
+pub use deploy::{
+    ApplyReport, ApplyRequest, DeployTarget, PlanApplier, ServiceFailure, apply_plan,
+    resolve_targets,
+};
 use serde_json::Value;
 use syneroym_core::dht_registry::{EndpointMechanism, RegistryClient, SignedEndpointInfo};
 use syneroym_identity::{DelegationCertificate, Identity};
