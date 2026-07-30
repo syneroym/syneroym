@@ -83,6 +83,12 @@ impl SubstrateTestContext {
         config.parent_coordinator.iroh =
             Some(IrohParentConfig { url: format!("http://localhost:{iroh_port}") });
 
+        // M05A Slice P0: an unowned substrate now fails closed, so this
+        // harness must own its own node.
+        let owner = Identity::generate().expect("owner identity");
+        let owner_did = substrate::derive_did_key(&owner.public_key());
+        config.iam.admin_ucan_root = Some(owner_did);
+
         let substrate_identity_state =
             identity::setup_substrate_identity(&config.identity, &config.app_data_dir)
                 .expect("Failed to setup identity");
@@ -101,8 +107,11 @@ impl SubstrateTestContext {
             .expect("Substrate failed to run");
         });
 
-        let mut substrate_client =
-            SyneroymClient::new(substrate_service_id.clone(), registry_url.clone());
+        let mut substrate_client = SyneroymClient::new_with_identity(
+            substrate_service_id.clone(),
+            registry_url.clone(),
+            owner,
+        );
 
         substrate_client
             .wait_for_ready(Duration::from_secs(30))

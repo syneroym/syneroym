@@ -88,13 +88,11 @@ impl RouteHandler {
                 // Tier 1 -- a µs-scale grant-layer capability check, NOT an
                 // FDAE/M04B policy question (ADR-0017 Open, design §9.8; this
                 // comment previously mis-addressed it to M04B). B7b
-                // implements it for `orchestrator`. `security` and the five
-                // data native-capability interfaces remain open -- today any
-                // verified identity reaches any native service. `security`'s
-                // gate is `substrate/admin`, which is unholdable until a
-                // ControllerAgreement can be created, so it ships with that
-                // tool (B7.md F3.1). M04B/FDAE owns Tier 3 (rows/columns)
-                // only.
+                // implements it for `orchestrator`; M05A Slice P0 gates
+                // `security` on `substrate/admin`. The five data
+                // native-capability interfaces remain open -- today any
+                // verified identity reaches any native service there.
+                // M04B/FDAE owns Tier 3 (rows/columns) only.
                 // The `None` rejection below is correct and settled (design
                 // §6.1.2): native interfaces reject anonymous callers, WASM
                 // guests admit them.

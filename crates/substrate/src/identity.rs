@@ -5,7 +5,10 @@
 
 use std::{fs, path::Path};
 
-use syneroym_core::config::{DEFAULT_SUBSTRATE_KEY_FILE, IdentityConfig};
+use anyhow::Context;
+use syneroym_core::config::{
+    DEFAULT_CONTROLLER_AGREEMENT_FILE, DEFAULT_SUBSTRATE_KEY_FILE, IdentityConfig,
+};
 use syneroym_identity::{
     Identity,
     substrate::{ControllerAgreement, SubstrateIdentityState},
@@ -34,14 +37,26 @@ pub fn setup_substrate_identity(
         id
     };
 
-    // Load agreement if path is provided and exists
-    let agreement = if let Some(ref path) = config.agreement {
-        if path.exists() {
-            let json = fs::read_to_string(path)?;
-            Some(ControllerAgreement::from_json(&json)?)
-        } else {
-            None
-        }
+    // An explicit `[identity].agreement` wins; otherwise the substrate picks
+    // up `<app_data_dir>/agreement.json` if it exists -- `roymctl substrate
+    // claim`'s default output, so claim-then-restart establishes ownership
+    // with no config edit.
+    let agreement_path = config
+        .agreement
+        .clone()
+        .unwrap_or_else(|| app_data_dir.join(DEFAULT_CONTROLLER_AGREEMENT_FILE));
+
+    let agreement = if agreement_path.exists() {
+        let json = fs::read_to_string(&agreement_path).with_context(|| {
+            format!("failed to read controller agreement at {}", agreement_path.display())
+        })?;
+        // A present-but-unparseable agreement is a hard failure on both the
+        // explicit and the discovered path. Booting unowned because the
+        // ownership artifact was malformed is the exact silent failure this
+        // slice removes.
+        Some(ControllerAgreement::from_json(&json).with_context(|| {
+            format!("invalid controller agreement at {}", agreement_path.display())
+        })?)
     } else {
         None
     };
@@ -70,4 +85,52 @@ pub fn get_secret(config: &IdentityConfig, app_data_dir: &Path) -> anyhow::Resul
 
     let identity = Identity::load_from_path(&key_path)?;
     Ok(identity.to_bytes())
+}
+
+#[cfg(test)]
+mod tests {
+    use syneroym_identity::substrate::{SubstrateIdentityStatus, derive_did_key};
+    use tempfile::TempDir;
+
+    use super::*;
+
+    fn no_agreement_config() -> IdentityConfig {
+        IdentityConfig {
+            key: None,
+            controller_did: None,
+            agreement: None,
+            require_agreement: false,
+            nickname: None,
+        }
+    }
+
+    #[test]
+    fn a_discovered_agreement_is_loaded_without_config() {
+        let dir = TempDir::new().unwrap();
+        let node = Identity::generate().unwrap();
+        node.save_to_path(dir.path().join(DEFAULT_SUBSTRATE_KEY_FILE)).unwrap();
+        let controller = Identity::generate().unwrap();
+        let agreement = ControllerAgreement::issue(&node, &controller, None).unwrap();
+        fs::write(
+            dir.path().join(DEFAULT_CONTROLLER_AGREEMENT_FILE),
+            serde_json::to_string(&agreement).unwrap(),
+        )
+        .unwrap();
+
+        let state = setup_substrate_identity(&no_agreement_config(), dir.path()).unwrap();
+
+        assert_eq!(state.status, SubstrateIdentityStatus::Verified);
+        assert_eq!(state.controller, Some(derive_did_key(&controller.public_key())));
+    }
+
+    #[test]
+    fn a_malformed_discovered_agreement_fails_the_boot() {
+        let dir = TempDir::new().unwrap();
+        let node = Identity::generate().unwrap();
+        node.save_to_path(dir.path().join(DEFAULT_SUBSTRATE_KEY_FILE)).unwrap();
+        fs::write(dir.path().join(DEFAULT_CONTROLLER_AGREEMENT_FILE), "not json").unwrap();
+
+        let err = setup_substrate_identity(&no_agreement_config(), dir.path()).unwrap_err();
+        assert!(err.to_string().contains("invalid controller agreement"));
+    }
 }

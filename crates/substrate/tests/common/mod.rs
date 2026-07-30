@@ -15,6 +15,7 @@ use syneroym_core::{
     config::{ClientGatewayRole, IrohParentConfig, LogTarget, SubstrateConfig},
     dht_registry::EndpointMechanism,
 };
+use syneroym_identity::{Identity, substrate};
 use syneroym_sdk::SyneroymClient;
 use syneroym_substrate::identity;
 use tempfile::TempDir;
@@ -43,6 +44,11 @@ pub struct SubstrateTestContext {
     pub substrate_client: SyneroymClient,
     registry_url: String,
     pub substrate_mechanisms: Vec<EndpointMechanism>,
+    /// The DID that owns this substrate (M05A Slice P0: an unowned
+    /// substrate now fails closed, so every harness must own its own
+    /// node). Exposed for tests that build an extra client of their own.
+    #[allow(dead_code)]
+    pub owner_did: String,
     shutdown_tx: Sender<()>,
     substrate_handle: JoinHandle<()>,
     temp_dir: TempDir,
@@ -86,6 +92,15 @@ impl SubstrateTestContext {
             Some(IrohParentConfig { url: format!("http://localhost:{iroh_port}") });
         config.roles.client_gateway = Some(ClientGatewayRole { http_port: gateway_port });
 
+        // M05A Slice P0: an unowned substrate now fails closed, so this
+        // harness must own its own node -- mint an owner identity and
+        // configure it directly (`admin_ucan_root`), rather than going
+        // through the `roymctl substrate claim` file-discovery path this
+        // harness has no reason to also exercise.
+        let owner = Identity::generate().expect("owner identity");
+        let owner_did = substrate::derive_did_key(&owner.public_key());
+        config.iam.admin_ucan_root = Some(owner_did.clone());
+
         let substrate_identity_state =
             identity::setup_substrate_identity(&config.identity, &config.app_data_dir)
                 .expect("Failed to setup identity");
@@ -104,8 +119,11 @@ impl SubstrateTestContext {
             .expect("Substrate failed to run");
         });
 
-        let mut substrate_client =
-            SyneroymClient::new(substrate_service_id.clone(), registry_url.clone());
+        let mut substrate_client = SyneroymClient::new_with_identity(
+            substrate_service_id.clone(),
+            registry_url.clone(),
+            owner,
+        );
         substrate_client
             .wait_for_ready(Duration::from_secs(30))
             .await
@@ -120,6 +138,7 @@ impl SubstrateTestContext {
             substrate_client,
             registry_url,
             substrate_mechanisms,
+            owner_did,
             shutdown_tx,
             substrate_handle,
             temp_dir,

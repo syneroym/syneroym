@@ -147,8 +147,13 @@ pub async fn run_scenario() -> Result<()> {
     let app_service_id = substrate::derive_did_key(&app_identity.public_key());
 
     let registry_url = "http://127.0.0.1:7961".to_string();
-    let mut orchestrator_client =
-        SyneroymClient::new(env.substrate_did.clone(), registry_url.clone());
+    // M05A Slice P0: owner identity, not the ephemeral default -- an
+    // unowned substrate now fails closed on `orchestrator/deploy`.
+    let mut orchestrator_client = SyneroymClient::new_with_identity(
+        env.substrate_did.clone(),
+        registry_url.clone(),
+        Identity::from_bytes(&env.owner_key),
+    );
     orchestrator_client.wait_for_ready(Duration::from_secs(10)).await?;
 
     // Deploy WASM

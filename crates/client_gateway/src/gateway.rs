@@ -33,9 +33,14 @@ use tracing::{debug, error, info};
 ///
 /// TODO(post-B0): present the substrate-owner (controller) DID as caller by
 /// carrying an owner->node DelegationCertificate here (verify_preamble
-/// already resolves master_did from it). Requires provisioning that
-/// owner-signed delegation (none exists yet -- only ControllerAgreement).
-/// B0 uses node DID.
+/// already resolves master_did from it). `ControllerAgreement` now exists
+/// (M05A Slice P0), but that is a mutual attestation binding the two DIDs,
+/// not a delegation the node can present on the wire -- provisioning a
+/// separate owner-signed delegation for this purpose is still not built.
+/// B0 uses node DID. Consequence, new since P0: the gateway proxies as a
+/// DID that now holds nothing node-wide -- harmless today only because it
+/// proxies to deployed services, never to `orchestrator`/`security`
+/// (flagged, not fixed, at P0's own review; see the deferred backlog).
 fn load_or_generate_node_identity(config: &SubstrateConfig) -> Result<Identity> {
     let key_path = config
         .identity

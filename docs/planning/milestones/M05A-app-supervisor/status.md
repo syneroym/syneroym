@@ -4,18 +4,18 @@
 [ADR-0020](../../../decisions/0020-stable-logical-service-identity.md),
 [ADR-0021](../../../decisions/0021-binding-propagation-and-app-supervisor.md)
 
-**Overall:** Design accepted 2026-07-27. Slices A0-A2 complete (2026-07-29);
-A3-A6 not started.
+**Overall:** Design accepted 2026-07-27. Slices P0, A0-A2 complete
+(2026-07-30); A3-A6 not started.
 
 ## Slice status
 
 | Slice | Scope | Status | Gate |
 |---|---|---|---|
-| P0 | `ControllerAgreement` creation tool — **pulled forward from M5 item 5** | Not started | None; gates A3 |
+| P0 | `ControllerAgreement` creation tool — **pulled forward from M5 item 5** | **Complete (2026-07-30)** — [implementation plan](slice-p0-implementation-plan.md), evidence below | None — clears A3's gate |
 | A0 | Stable member identity (master DID per member + delegated instance keys + ingress `scope` enforcement) | **Complete (2026-07-28)** — [implementation plan](slice-a0-implementation-plan.md), evidence below | None — independently mergeable |
 | A1 | Endpoint records published under the member master DID | **Complete (2026-07-28, design revised 2026-07-29 before merge)** — [implementation plan](slice-a1-implementation-plan.md), evidence below | A0 |
 | A2 | Host-side dependency resolution; bindings carry `expected_asserter_did` | **Complete (2026-07-29)** — [implementation plan](slice-a2-implementation-plan.md), evidence below | A1 |
-| A3 | Multi-substrate placement + substrate inventory | Not started | `ControllerAgreement` tool (see below) |
+| A3 | Multi-substrate placement + substrate inventory | Not started | P0 (Complete) |
 | A4 | Health declaration + read-only monitoring | Not started | A3 |
 | A5 | Supervisor loop, best-effort delivery, operator read surface | Not started | A0–A4 |
 | A6 | Durable delivery via outbox/DLQ | **Deferred, post-M5** | M5 item 1 Complete |
@@ -54,6 +54,198 @@ explicit text** for what A0 deliberately left out — member-master vault custod
 unattended renewal, and `RotationPolicy`'s first real use — so the online-key
 posture is a named deliverable rather than a backlog row pointing at a slice
 that never mentions it.
+
+## P0 — Verification evidence (2026-07-30)
+
+Planning found eleven places where `task.md` described a tree that did not
+exist, left a decision unmade, or understated the blast radius — recorded in
+[slice-p0-implementation-plan.md](slice-p0-implementation-plan.md) §0's
+eleven numbered findings across two review rounds, five of which changed
+what P0 had to build (most consequentially §0.3/§0.3a: the fail-closed flip's
+blast radius is nine harnesses, not "reconsider a default," and the
+performance harness (`tests/perf`) is invisible to every other gate this
+slice's own gate list would otherwise have relied on). §1's twelve decisions
+(D-P0-1 … D-P0-12) took those findings as given.
+
+**What shipped**, by phase:
+
+- **Phase 1 (the tool, independently mergeable):** `roymctl substrate claim`
+  (aliased `roymctl node claim`) mints a mutually-signed `ControllerAgreement`
+  from two local key files — `ControllerAgreement::issue`
+  (`crates/identity/src/substrate.rs`) rejects a self-owned agreement
+  (D-P0-4, §0.1) and canonicalizes/signs both proofs over the
+  proof-less payload `SubstrateIdentityState::init` reconstructs.
+  `setup_substrate_identity` (`crates/substrate/src/identity.rs`) discovers
+  `<app_data_dir>/agreement.json` implicitly when `[identity].agreement` is
+  unset (D-P0-5), and treats a present-but-unparseable agreement — explicit
+  or discovered — as a hard boot failure rather than silently unowned
+  (D-P0-6, §0.2). `SubstrateIdentityState::init` gained two verification
+  tightenings: `agreement_type` must equal the literal `"ControllerAgreement"`
+  (D-P0-7), and a present-but-unparseable `expiresAt` is now an error instead
+  of fail-open "no expiry" (§0.9). `roymctl substrate init` now writes
+  `substrate.key`, not `identity.key` (§0.5, `DEFAULT_SUBSTRATE_KEY_FILE`),
+  closing the trap that both e2e Playwright configs previously papered over
+  with an explicit override.
+- **Phase 2 (gate `security` on `substrate/admin`):** the `TODO(M04B/FDAE)`
+  block in `ControlPlaneService::dispatch`
+  (`crates/control_plane/src/service.rs`) is replaced with a
+  `has_node_wide_ability(caller, Ability::SUBSTRATE_ADMIN)` check ahead of
+  every `security` method (`inject-kek`/`rotate-kek`/`set-secret`), denying
+  with `syneroym_rpc::PERMISSION_DENIED_CODE` (`-32010`, D-P0-9, promoted
+  from the literal `synsvc_native.rs` already used) rather than a generic
+  internal error, so a caller can assert *denial* without string-matching.
+  No exemption for substrate-injected callers (D-P0-8, §0.10) — nothing
+  inside the substrate dispatches to `security`.
+- **Phase 3 (fail closed):** `build_caller`
+  (`crates/router/src/route_handler/io.rs`) no longer issues the three
+  `orchestrator/*` abilities to every verified caller when `admin_root` is
+  `None` — an unowned substrate now grants **no** node-wide capability at
+  all (D-P0-10: unconditional, no `[iam].allow_unowned_deploy` escape
+  hatch). The boot-time `warn!` in `crates/substrate/src/runtime.rs` was
+  rewritten to describe the fail-closed posture and point at `roymctl
+  substrate claim` as the remedy.
+- **Call-site sweep (§5), all nine harnesses that reached the removed free
+  grant:** the three single-node integration harnesses
+  (`crates/substrate/tests/common/mod.rs`, `basic_lifecycle.rs`,
+  `podman_lifecycle.rs`) now mint an owner `Identity`, set
+  `admin_ucan_root`, and build their `substrate_client` with
+  `SyneroymClient::new_with_identity` (D-P0-11 — every existing
+  `deploy`/`inject_kek` call site downstream needed no edit).
+  `instance_identity_e2e.rs` and `master_endpoint_record_e2e.rs`'s `Node::boot`
+  now take an owner identity and own the node before any deploy/KEK call.
+  `federated_fdae_e2e.rs` is the non-mechanical one (§0.4): Node B gets its
+  own, *distinct* owner (not Node A's, not alice's — naming her would grant
+  `substrate/admin`, which entails `data-layer/write` everywhere on Node B
+  and defeat the file's whole point), and `alice_deployer`/`bad_app_deployer`
+  instead present an app-scoped `orchestrator/{deploy,undeploy,status}`
+  grant issued by that owner (`app_deploy_grant`, all three abilities
+  together per the `undeploy` rollback interaction documented at
+  `orchestration.rs`'s `undeploy_impl`). Both Playwright e2e configs
+  (`global-setup.ts`, `global-setup-multihop.ts`) now run the real
+  `identity create`/`substrate claim` flow before starting the substrate
+  (D-P0-12) and pass `--as owner` on their `svc deploy` calls; the
+  multi-hop config claims only `sz`/`sx` (nothing deploys to `c`/`cp`).
+  `tests/perf`'s `TestEnvironment::new` (§0.3a, §5.7) mints an owner and a
+  `ControllerAgreement` from the already-generated node identity before
+  `start_substrate`, and passes `run --agreement <path>` (the existing flag);
+  `owner_key: [u8; 32]` is exposed (not `Identity`, which is not `Clone`) so
+  each of the five orchestrator-targeting scenario clients — including
+  `soak.rs`'s deploy-churn loop, running inside a spawned task — can
+  reconstruct one with `Identity::from_bytes`. The six app-targeting
+  scenario clients (dialing a deployed service's own `service_id`, not the
+  substrate) were deliberately left alone.
+- **New e2e test:** `crates/substrate/tests/substrate_ownership_e2e.rs`'s
+  `a_claimed_substrate_admits_its_controller_and_denies_everyone_else` is the
+  only test exercising discovery, the handshake, and both gates together —
+  `ControllerAgreement::issue` writes `agreement.json` into
+  `app_data_dir` *before* the substrate ever boots, then a single real boot
+  must come up `Verified` with no `[identity].agreement` config line at all;
+  the controller deploys and injects a KEK, an unrelated verified identity
+  is denied both.
+- **Comment sweep (§3.3):** every stale `unowned`/`F4` reference this slice's
+  own code changes made false was corrected in the same pass — the
+  `has_node_wide_ability` and `build_caller` doc comments, the
+  `undeploy_impl`/takeover-check/list-visibility comments in
+  `orchestration.rs`, `crates/ucan/src/capability.rs`'s `is_substrate_scope`
+  doc, `crates/router/src/proxy.rs`'s node-level-interface denial comments,
+  and `crates/router/tests/service_ownership.rs` (including renaming
+  `unowned_substrate_lists_every_app_to_any_caller` to
+  `node_wide_authority_lists_every_app`, since the assertion no longer
+  describes an unowned substrate). `crates/client_gateway/src/gateway.rs`'s
+  `TODO(post-B0)` is corrected, not resolved (flagged, not fixed, §0.10):
+  the gateway still presents the node's own DID, which now holds nothing
+  node-wide — harmless only because the gateway never proxies to
+  `orchestrator`/`security`, a routing accident recorded as its own backlog
+  row.
+
+**Tests added: 15 new unit/CLI/e2e tests, plus 2 existing tests renamed and
+given updated bodies (their caller shape and/or assertions changed to match
+the post-P0 posture) — counted directly from `git diff main`, not asserted**
+— 7 in `crates/identity/src/substrate.rs` (`issue`'s round trip, self-owned
+rejection, wrong-`controlled` rejection, expiry, unparseable-expiry,
+unknown-type, and a tampered-field/re-signed-payload test); 2 in
+`crates/substrate/src/identity.rs` (discovered-agreement load,
+malformed-discovered-agreement hard failure); 3 CLI tests in
+`apps/roymctl/src/commands/substrate.rs` (`claim` writes a verifiable
+agreement, refuses to overwrite without `--force`, reports a missing
+substrate key with the `init` hint — factored into a testable `claim()`
+function per `commands.rs`'s `client_for_rejects_ucan_without_as`
+precedent); 1 in `crates/router/src/route_handler/io.rs`
+(`an_unowned_substrate_grants_no_node_wide_capability`, **matrix row 17**,
+replacing the test that used to assert the opposite); 1 in
+`crates/control_plane/src/service.rs`
+(`security_is_denied_without_substrate_admin`, **matrix row 16**, asserting
+`PERMISSION_DENIED_CODE` rather than string-matching) plus
+`security_is_allowed_for_a_substrate_admin_caller` (renamed from
+`test_security_dispatch_returns_sdk_statuses`, caller swapped to a new
+`substrate_admin_caller` helper kept deliberately distinct from
+`node_wide_caller`); `crates/router/tests/service_ownership.rs`'s
+`node_wide_authority_lists_every_app` (renamed, assertions unchanged) and
+`deploy_grant.rs`'s `deploy_denied_without_an_orchestrator_grant` (module
+doc extended in place, per the plan's own note that this test already
+covers matrix row 17 at the `ControlPlaneService` level — no duplicate
+test added); 1 new two-real-substrate e2e test,
+`a_claimed_substrate_admits_its_controller_and_denies_everyone_else`
+(`crates/substrate/tests/substrate_ownership_e2e.rs`).
+
+**Gates, run 2026-07-30:**
+
+- `cargo +nightly fmt --all -- --check`: clean.
+- `cargo clippy --workspace --all-targets --all-features`: clean, zero
+  warnings.
+- `cargo test --workspace --no-fail-fast` (sandboxed): 15 failing targets,
+  the same pre-existing environmental category documented throughout this
+  milestone's status — real socket/port binds the sandbox denies outright:
+  `syneroym-community-registry --lib`, `syneroym-coordinator-iroh`
+  (`connection_limit`/`multi_hop_relay`/`tls_rotation`),
+  `syneroym-mqtt-broker --lib`, `syneroym-router --test proxy_dispatch`,
+  `syneroym-sdk --test connect_timeout`, and every `syneroym-substrate` e2e
+  test (`basic_lifecycle`, `federated_fdae_e2e`, `http_passthrough_e2e`,
+  `instance_identity_e2e`, `master_endpoint_record_e2e`,
+  `messaging_client_e2e`, `stream_client_e2e`, and the new
+  `substrate_ownership_e2e`). Every one of the 15 was independently
+  re-verified passing with the sandbox disabled this pass, run individually
+  or in small groups (`instance_identity_e2e`/`master_endpoint_record_e2e`
+  together, 18-25s each; `federated_fdae_e2e` 89s; `community_registry`'s
+  16 tests, `mqtt-broker`'s 11, `sdk`'s `connect_timeout`,
+  `router`'s 8-test `proxy_dispatch`, and `coordinator-iroh`'s three tests
+  all green; the six single-node substrate e2e/basic/podman tests green).
+  No target outside this documented sandbox-bind category was affected.
+- `mise run test:e2e` (sandbox disabled, required for real port binds):
+  12/12 green (8 main + 4 multi-hop) — the real end-to-end operator claim
+  flow (`identity create` + `substrate claim` + `--as owner svc deploy`)
+  exercised live in both Playwright configs, unchanged pass count from
+  before this slice.
+- `mise run bench:latency` (§0.3a's own required gate, sandbox disabled):
+  the harness fix is proven — `orchestrator.deploy` succeeds via the
+  owner identity `TestEnvironment::new` now mints and passes through
+  `run --agreement`, visible live in the log
+  (`Orchestrator received dispatch: orchestrator.deploy` /
+  `Deploying TCP service …`). The run then hits `Error: wasm trap: all fuel
+  consumed by WebAssembly` inside a later WASM-call scenario — confirmed via
+  a side-by-side run against an unmodified `main` checkout in a scratch
+  worktree, which fails identically at the identical point, so this is the
+  pre-existing, already-tracked "WASM fuel metering: not yet configured"
+  gap (`deferred-backlog.md` §8), not a P0 regression. `bench:concurrency`/
+  `bench:soak` share the same harness fix and were not run separately
+  (§6's own note: one scenario is enough to prove it).
+- `mise run test:smoke`: passes, unaffected (§5.8's own claim, verified
+  rather than assumed) — no `orchestrator`/`security` call in that binary.
+- `wasm32-wasip2`: `greeter`, `data-layer-test`, and `proxy-test` all build
+  clean — P0 touches no WIT interface and no WASM-facing code.
+
+**Not covered — recorded as a backlog row, not silently dropped** (see
+`deferred-backlog.md` §3/§7/§8): no remote `ControllerAgreement` claim (the
+tool is local-and-offline by construction, §0.8); claiming a running
+substrate needs a restart (no `SIGUSR1`-style hot-reload); the client
+gateway still presents the node's own DID, which now holds nothing
+node-wide; `Capability::grants` still wildcards any bare `substrate:`
+resource regardless of which node's DID follows it (defense-in-depth, not a
+live hole); ownership transfer/revocation has no mechanism beyond `claim
+--force`; and A5's supervisor, if it provisions secrets on substrates it
+manages, will need node-wide `substrate/admin` on each — directly tensioning
+against failure-matrix row 14's blast-radius claim, flagged for evaluation
+before A5 commits to its custody model.
 
 ## A0 — Verification evidence (2026-07-28)
 

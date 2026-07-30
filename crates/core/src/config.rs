@@ -7,6 +7,10 @@ use serde::{Deserialize, Serialize};
 use crate::util;
 
 pub const DEFAULT_SUBSTRATE_KEY_FILE: &str = "substrate.key";
+/// Implicitly discovered under `app_data_dir` when `[identity].agreement`
+/// is unset -- `roymctl substrate claim`'s default output path, so claiming
+/// a node and restarting it establishes ownership with no config edit.
+pub const DEFAULT_CONTROLLER_AGREEMENT_FILE: &str = "agreement.json";
 
 fn default_app_config_dir() -> PathBuf {
     dirs::config_dir().unwrap_or_else(|| PathBuf::from(".")).join("syneroym")

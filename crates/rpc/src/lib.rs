@@ -44,6 +44,10 @@ pub use types::{
     MessagingNotification,
 };
 
+/// JSON-RPC application error code for an authorization denial. Shared so a
+/// caller can distinguish "denied" from "failed" without string-matching.
+pub const PERMISSION_DENIED_CODE: i32 = -32010;
+
 #[derive(Error, Debug)]
 pub enum RpcError {
     #[error("Method not found: {0}")]

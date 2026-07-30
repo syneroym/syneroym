@@ -176,6 +176,41 @@ To interact with services, you need your Substrate's **Short Hash**. You can com
 roymctl shorthash "<DID>"
 ```
 
+### Claiming a Substrate
+
+A freshly initialized substrate is **unowned**, and an unowned substrate now
+fails closed: no caller can deploy, undeploy, check status, or reach the
+`security` interface (KEK injection/rotation, vault secrets) until someone
+claims it. Claiming binds the node's own DID to a **controller** identity
+you hold, with a mutually-signed `ControllerAgreement` — from then on, only
+that controller (or a caller it delegates to) holds any node-wide
+capability.
+
+```bash
+# 1. Initialize the node (writes <dir>/substrate.key)
+roymctl substrate init --dir <DIR>
+
+# 2. Create the identity that will become the controller
+roymctl --dir <DIR> identity create --name owner
+
+# 3. Claim the substrate -- must run on the substrate host, since it signs
+#    with the node's own private key, which never leaves that filesystem
+roymctl --dir <DIR> substrate claim --controller owner
+
+# 4. Start (or restart) the substrate -- it reads the agreement once, at
+#    boot. If it uses <DIR> as its app_data_dir (e.g. via a [identity].key
+#    setting in a --config file that points there), <DIR>/agreement.json is
+#    discovered automatically with no further flag. Otherwise, point it at
+#    the files directly:
+syneroym-substrate run --key <DIR>/substrate.key --agreement <DIR>/agreement.json
+```
+
+From then on, control it with `roymctl --dir <DIR> --as owner ...` (or
+`--ucan <token>` for a narrower, delegated grant — see §5.1 below). There is
+no remote claim: the tool needs the node's own key file, so provisioning a
+fleet of substrates means running `claim` on each host (or shipping
+`agreement.json` out of band).
+
 ### Managing Identities
 
 Before registering a service, you need to create a local identity (private key) that will be used to sign the registration.
@@ -215,6 +250,19 @@ curl http://localhost:7961/lookup/did:key:z6MkhaXn...
 ### Managing Applications (Orchestrator)
 
 The Orchestrator is a native service running inside the substrate. You can interact with it via the Client Gateway (Port 7960).
+
+> **The `curl`-via-gateway examples below need a claimed substrate, and even
+> then are denied for anything but `list` today.** The client gateway
+> presents the *node's own* DID as caller, never the controller's (a
+> standing gap, see the deferred backlog's *Gateway caller = substrate-owner
+> DID threading* row) — so `deploy`/`undeploy`/`status` are always denied
+> through the gateway on a claimed substrate, and everything is denied on an
+> unowned one. `curl` also cannot present a signed operator identity at all.
+> For a real deploy, use `roymctl` directly against the substrate instead,
+> e.g. `roymctl --dir <DIR> --as owner svc deploy --svc-id <DID> --interfaces
+> <name> --tcp <host:port>` (see `roymctl svc deploy --help` for the WASM
+> and container forms) — only `roymctl` can sign as the claimed substrate's
+> controller.
 
 #### List Deployed Services
 ```bash
@@ -514,6 +562,14 @@ To generate a Master Identity and delegate access to a Temporary Identity:
      --master master-key \
      --registry-url http://localhost:7961
    ```
+
+> **A member master's instance certificate is a separate flow:**
+> `roymctl identity certify-instance --master <name> --substrate <did>`
+> (ADR-0020 §1) queries the target substrate over
+> `orchestrator/resolve-instance-identity`, which is gated the same as every
+> other `orchestrator/*` method (M05A Slice P0) — pass `--as <controller>`
+> (or a `--ucan <token>` covering this app) once the substrate is claimed.
+> It is denied outright on an unowned substrate.
 
 ### 5.2. TLS Setup & Zero-Downtime Reload
 

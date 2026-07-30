@@ -80,7 +80,12 @@ struct Node {
 }
 
 impl Node {
-    async fn boot(iroh_port: u16, registry_port: u16, gateway_port: u16) -> Self {
+    /// `owner`'s DID becomes this node's `[iam].admin_ucan_root` (M05A
+    /// Slice P0: an unowned substrate now fails closed, so the fixture must
+    /// own its own nodes) -- both nodes are owned by the same `operator`
+    /// identity below, which is also what every `orchestrator_client` call
+    /// presents, so no separate grant is needed.
+    async fn boot(iroh_port: u16, registry_port: u16, gateway_port: u16, owner: &Identity) -> Self {
         let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
         let base_path = temp_dir.path();
         let mut config = SubstrateConfig {
@@ -111,6 +116,7 @@ impl Node {
         config.parent_coordinator.iroh =
             Some(IrohParentConfig { url: format!("http://localhost:{iroh_port}") });
         config.roles.client_gateway = Some(ClientGatewayRole { http_port: gateway_port });
+        config.iam.admin_ucan_root = Some(substrate::derive_did_key(&owner.public_key()));
 
         let substrate_identity_state =
             identity::setup_substrate_identity(&config.identity, &config.app_data_dir)
@@ -130,8 +136,11 @@ impl Node {
             .expect("substrate failed to run");
         });
 
-        let mut substrate_client =
-            SyneroymClient::new(substrate_service_id.clone(), registry_url.clone());
+        let mut substrate_client = SyneroymClient::new_with_identity(
+            substrate_service_id.clone(),
+            registry_url.clone(),
+            Identity::from_bytes(&owner.to_bytes()),
+        );
         substrate_client
             .wait_for_ready(Duration::from_secs(30))
             .await
@@ -209,8 +218,18 @@ fn orchestrator_client(node: &Node, caller: Identity) -> SyneroymClient {
 async fn a_member_master_authorizes_a_distinct_instance_key_on_each_real_node_it_deploys_to() {
     let _ = ring::default_provider().install_default();
 
-    let node_a = Node::boot(NODE_A_IROH_PORT, NODE_A_REGISTRY_PORT, NODE_A_GATEWAY_PORT).await;
-    let node_b = Node::boot(NODE_B_IROH_PORT, NODE_B_REGISTRY_PORT, NODE_B_GATEWAY_PORT).await;
+    // One operator identity, reused against both nodes as both their owner
+    // (M05A Slice P0: an unowned substrate fails closed) and the caller of
+    // every `orchestrator/*` call below: `instance-identity` derives from
+    // (node identity, caller_did, service_id), so holding the caller and
+    // service_id fixed isolates the node as the only varying input in the
+    // comparison below.
+    let operator = Identity::generate().unwrap();
+
+    let node_a =
+        Node::boot(NODE_A_IROH_PORT, NODE_A_REGISTRY_PORT, NODE_A_GATEWAY_PORT, &operator).await;
+    let node_b =
+        Node::boot(NODE_B_IROH_PORT, NODE_B_REGISTRY_PORT, NODE_B_GATEWAY_PORT, &operator).await;
 
     // Default `storage.encryption = true` requires a KEK before any deployed
     // service's native-capability endpoints (registered regardless of
@@ -219,11 +238,6 @@ async fn a_member_master_authorizes_a_distinct_instance_key_on_each_real_node_it
     node_a.substrate_client.inject_kek("55".repeat(32)).await.expect("node A inject_kek failed");
     node_b.substrate_client.inject_kek("66".repeat(32)).await.expect("node B inject_kek failed");
 
-    // One operator identity, reused against both nodes: `instance-identity`
-    // derives from (node identity, caller_did, service_id), so holding the
-    // caller and service_id fixed isolates the node as the only varying
-    // input in the comparison below.
-    let operator = Identity::generate().unwrap();
     let member_master = Identity::generate().unwrap();
     let member_master_did = substrate::derive_did_key(&member_master.public_key());
 

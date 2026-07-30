@@ -1,5 +1,5 @@
 use std::{
-    env,
+    env, fs,
     path::PathBuf,
     process::Stdio,
     time::{Duration, Instant},
@@ -7,7 +7,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use reqwest::Client;
-use syneroym_identity::{Identity, substrate};
+use syneroym_identity::{Identity, substrate, substrate::ControllerAgreement};
 use tempfile::NamedTempFile;
 use tokio::{
     process::{Child, Command},
@@ -54,7 +54,16 @@ pub struct TestEnvironment {
     http_client: Client,
     pub substrate_identity: Identity,
     pub substrate_did: String,
+    /// The raw key bytes of the identity that owns this harness's
+    /// substrate (M05A Slice P0: an unowned substrate now fails closed, so
+    /// every orchestrator client below must present an owning or
+    /// app-scoped-granted identity). Exposed as bytes, not `Identity`
+    /// (deliberately not `Clone`), so a caller can reconstruct one with
+    /// `Identity::from_bytes` per client, including inside a spawned task
+    /// (`soak.rs`'s deploy-churn loop).
+    pub owner_key: [u8; 32],
     _key_file: NamedTempFile,
+    _agreement_file: NamedTempFile,
 }
 
 impl TestEnvironment {
@@ -64,13 +73,27 @@ impl TestEnvironment {
         let key_file = NamedTempFile::new()?;
         substrate_identity.save_to_path(key_file.path())?;
 
+        // M05A Slice P0: mint an owner and a `ControllerAgreement` here so
+        // the substrate boots owned and fails open (to its owner) rather
+        // than closed. `--agreement` (main.rs) is the alternative to a
+        // config-file edit this harness has no config file to make --
+        // `--key` points at a temp file, so implicit `agreement.json`
+        // discovery under `app_data_dir` would look in the wrong place.
+        let owner = Identity::generate()?;
+        let owner_key = owner.to_bytes();
+        let agreement = ControllerAgreement::issue(&substrate_identity, &owner, None)?;
+        let agreement_file = NamedTempFile::new()?;
+        fs::write(agreement_file.path(), serde_json::to_string(&agreement)?)?;
+
         Ok(Self {
             substrate: None,
             miniapp: None,
             http_client: Client::builder().timeout(Duration::from_secs(5)).build()?,
             substrate_identity,
             substrate_did,
+            owner_key,
             _key_file: key_file,
+            _agreement_file: agreement_file,
         })
     }
 
@@ -108,6 +131,8 @@ impl TestEnvironment {
             .arg("run")
             .arg("--key")
             .arg(self._key_file.path())
+            .arg("--agreement")
+            .arg(self._agreement_file.path())
             // Observability is on by default in dev_mode_config.
             // Using default dev_mode config.
             .stdout(Stdio::inherit())

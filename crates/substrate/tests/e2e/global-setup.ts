@@ -33,6 +33,15 @@ export default async function globalSetup() {
   console.log('Initializing local node identity...');
   execSync(`"${ROYMCTL_BIN}" node init --dir ${TEST_DIR}`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
 
+  // M05A Slice P0: an unowned substrate now fails closed, so the operator
+  // flow claims the node before it ever starts -- the real end-to-end
+  // path, not `[iam].admin_ucan_root` shortcutting past it. No `agreement =`
+  // line is needed below: the substrate discovers `<TEST_DIR>/agreement.json`
+  // (roymctl substrate claim's default output) with no config change.
+  console.log('Creating operator identity and claiming the substrate...');
+  execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR} identity create --name owner`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
+  execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR} substrate claim --controller owner`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
+
   // Generate syneroym.toml overrides
   const configContent = `
 config_version = 1
@@ -42,7 +51,7 @@ app_data_dir = "${TEST_DIR}"
 profile = "full"
 
 [identity]
-key = "identity.key"
+key = "substrate.key"
 nickname = "e2e-tester"
 
 [roles.community_registry]
@@ -152,7 +161,7 @@ registry_url = "http://127.0.0.1:7661"
   console.log('Deploying TCP Service (Passthrough)...');
   try {
     await new Promise(r => setTimeout(r, 2000));
-    execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR} --api-url http://127.0.0.1:7661 --substrate ${substrateDid} svc deploy --svc-id ${appDid} --interfaces http --tcp 127.0.0.1:3000`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
+    execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR} --api-url http://127.0.0.1:7661 --substrate ${substrateDid} --as owner svc deploy --svc-id ${appDid} --interfaces http --tcp 127.0.0.1:3000`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
   } catch (err: any) {
     console.error("Deploy failed!");
     throw err;

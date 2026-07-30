@@ -148,12 +148,10 @@ fn owning_service_id(res: &ResourceUri) -> Option<&str> {
 /// "May this caller touch this service at all?" is Tier 1 -- a µs-scale
 /// grant-layer capability check, NOT an FDAE/M04B policy question (ADR-0017
 /// Open, design §9.8; this comment previously mis-addressed it to M04B).
-/// B7b implements it for `orchestrator`. `security` and the five data
-/// native-capability interfaces remain open -- today any verified identity
-/// reaches any native service. `security`'s gate is `substrate/admin`,
-/// which is unholdable until a ControllerAgreement can be created, so it
-/// ships with that tool (B7.md F3.1). M04B/FDAE owns Tier 3 (rows/columns)
-/// only.
+/// B7b implements it for `orchestrator`; M05A Slice P0 gates `security` on
+/// `substrate/admin`. The five data native-capability interfaces remain
+/// open -- today any verified identity reaches any native service there.
+/// M04B/FDAE owns Tier 3 (rows/columns) only.
 /// The `None` rejection below is correct and settled (design §6.1.2):
 /// native interfaces reject anonymous callers, WASM guests admit them.
 async fn build_caller(
@@ -172,44 +170,22 @@ async fn build_caller(
     };
     let mut auth = AuthLevel::Delegated;
 
-    // M04A Slice B7a (F4): the substrate-owner capability is issued from
-    // this single site, with no "is this substrate owned?" branch anywhere
-    // downstream -- the unowned bootstrap posture is expressed as a real
-    // issued capability, not a skipped check (design §6.1.1).
-    let node_wide_abilities: Vec<&str> = match admin_root {
-        // Owned, and this caller is the owner: substrate/admin (kept from
-        // B0), entailing everything on the node.
-        Some(root) if root == id.master_did => vec![Ability::SUBSTRATE_ADMIN],
-        // Owned, but this caller is not the owner: nothing node-wide.
-        Some(_) => vec![],
-        // UNOWNED: no verified ControllerAgreement controller and no
-        // [iam].admin_ucan_root -- nobody can root an orchestrator grant, so
-        // default-deny would brick the substrate permanently (you could not
-        // deploy the thing that would establish ownership). Every verified
-        // caller therefore holds the orchestrator abilities here.
-        //
-        // NOT substrate/admin: that would entail data-layer/admin too
-        // (`Ability::entails`'s substrate/admin short-circuit), opening
-        // execute-ddl/query-raw to every verified caller -- strictly worse
-        // than today's `admin_root: None`, where nobody holds it and DDL is
-        // denied to all. Issuing the three orchestrator/* abilities instead
-        // costs nothing extra: `orchestrator/deploy.entails(data-layer/admin)`
-        // is false, so DDL stays denied exactly as today.
-        None => vec![
-            Ability::ORCHESTRATOR_DEPLOY,
-            Ability::ORCHESTRATOR_UNDEPLOY,
-            Ability::ORCHESTRATOR_STATUS,
-        ],
-    };
-    for ability in node_wide_abilities {
+    // The substrate-owner capability is issued from this single site (M04A
+    // Slice B7a's design §6.1.1: no "is this substrate owned?" branch
+    // anywhere downstream). M05A Slice P0 removed the unowned bootstrap
+    // grant that used to sit here: an unowned substrate issued
+    // `orchestrator/{deploy,undeploy,status}` to every verified caller,
+    // which was defensible while one operator hand-deployed to their own
+    // node and is not once substrates are unattended networked deploy
+    // targets. Bootstrap now happens off the wire entirely -- `roymctl
+    // substrate claim` mints a `ControllerAgreement` from the node's own
+    // key file on the node's own host -- so an unowned substrate can fail
+    // closed without becoming unrecoverable.
+    if admin_root == Some(id.master_did.as_str()) {
         session.capabilities.push(Capability {
-            // Bare `substrate:<node_did>` -- the resource is the node
-            // itself, not the caller's own DID (B0 named it after the
-            // caller; that was inert only because of the is_substrate_scope
-            // wildcard, and becomes wrong the moment a selector-bearing
-            // resource is evaluated against it, per B7b's F2/F6).
+            // Bare `substrate:<node_did>` -- the node itself, node-wide.
             with: ResourceUri::substrate(node_did),
-            can: Ability(ability.to_string()),
+            can: Ability(Ability::SUBSTRATE_ADMIN.to_string()),
             caveats: None,
         });
     }
@@ -1079,11 +1055,13 @@ mod tests {
         assert_eq!(preamble.service_id, "substrate-123");
     }
 
-    /// M04A Slice B7a (F4): on an unowned substrate (`admin_root: None`),
-    /// every verified caller holds the three `orchestrator/*` abilities on
-    /// the bare `substrate:<node_did>` resource -- the bootstrap posture.
+    /// **Matrix row 17** (task.md), M05A Slice P0: an unowned substrate
+    /// (`admin_root: None`) grants no node-wide capability at all -- neither
+    /// the `orchestrator/*` abilities M04A Slice B7a's bootstrap posture
+    /// used to issue, nor `substrate/admin`. Fails closed; the only route
+    /// to ownership is `roymctl substrate claim`, run off the wire.
     #[tokio::test]
-    async fn unowned_substrate_grants_orchestrator_abilities_to_any_verified_caller() {
+    async fn an_unowned_substrate_grants_no_node_wide_capability() {
         let client = Identity::generate().unwrap();
         let client_did = derive_did_key(&client.public_key());
         let node_did = "did:key:zNodeUnowned";
@@ -1100,18 +1078,21 @@ mod tests {
             Ability::ORCHESTRATOR_DEPLOY,
             Ability::ORCHESTRATOR_UNDEPLOY,
             Ability::ORCHESTRATOR_STATUS,
+            Ability::SUBSTRATE_ADMIN,
         ] {
             assert!(
-                caller.has_capability(&node_resource, &Ability(ability.to_string())),
-                "expected unowned substrate to grant {ability}"
+                !caller.has_capability(&node_resource, &Ability(ability.to_string())),
+                "expected unowned substrate to grant no node-wide capability, got {ability}"
             );
         }
     }
 
-    /// The regression test for F4's over-grant trap: an unowned substrate
-    /// must NOT grant `data-layer/admin` (or `substrate/admin`, which would
-    /// entail it) to a verified caller -- `execute-ddl`/`query-raw` stay
-    /// denied exactly as today. This is B7a's single most important test.
+    /// The regression test for the over-grant trap M04A Slice B7a's now-
+    /// removed unowned bootstrap grant carried: an unowned substrate must
+    /// NOT grant `data-layer/admin` (or `substrate/admin`, which would
+    /// entail it) to a verified caller. Passes trivially post-P0 (no
+    /// node-wide capability is granted at all), and is kept as a named
+    /// regression guard rather than folded into the test above.
     #[tokio::test]
     async fn unowned_substrate_does_not_grant_data_layer_admin() {
         let client = Identity::generate().unwrap();
@@ -1304,7 +1285,8 @@ mod tests {
 
     /// ADR-0015 A6: a service owner is an independent root for their own
     /// service, regardless of whether the substrate has a node-wide admin
-    /// root at all (`admin_root: None` here -- the F4 unowned posture).
+    /// root at all (`admin_root: None` here -- the unowned, fail-closed
+    /// posture as of M05A Slice P0).
     #[tokio::test]
     async fn owner_rooted_chain_grants_a_capability_on_the_owners_own_service() {
         let owner = Identity::generate().unwrap();
@@ -1470,8 +1452,8 @@ mod tests {
         let resolver = MockResolver { revoked: HashMap::new() };
 
         // An unrelated admin_root, distinct from `client` -- an owned
-        // substrate on which this caller is not the owner, so no F4
-        // bootstrap grant leaks in and masks the chain's own outcome.
+        // substrate on which this caller is not the owner, so no node-wide
+        // capability leaks in and masks the chain's own outcome.
         let admin_root = derive_did_key(&Identity::generate().unwrap().public_key());
         let caller =
             build_caller(&preamble, &id, Some(&admin_root), node_did, &registry, &resolver).await;
@@ -1567,8 +1549,8 @@ mod tests {
             MockResolver { revoked: HashMap::from([(owner_did, vec![id.master_did.clone()])]) };
 
         // An unrelated admin_root, distinct from `client` -- an owned
-        // substrate on which this caller is not the owner, so no F4
-        // bootstrap grant leaks in and masks the revocation's own effect.
+        // substrate on which this caller is not the owner, so no node-wide
+        // capability leaks in and masks the revocation's own effect.
         let admin_root = derive_did_key(&Identity::generate().unwrap().public_key());
         let caller =
             build_caller(&preamble, &id, Some(&admin_root), node_did, &registry, &resolver).await;
@@ -1630,7 +1612,7 @@ mod tests {
         let resolver = MockResolver { revoked: HashMap::new() };
 
         // An unrelated admin_root, distinct from `bob` -- an owned substrate
-        // on which this caller is not the owner, so no F4 bootstrap grant
+        // on which this caller is not the owner, so no node-wide capability
         // leaks in and masks the delegation block's own effect.
         let admin_root = derive_did_key(&Identity::generate().unwrap().public_key());
         let caller =

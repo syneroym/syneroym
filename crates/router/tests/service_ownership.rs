@@ -4,9 +4,9 @@
 //! `deploy`/`undeploy`/`list` themselves are behind a crate-private trait,
 //! matching `native_dispatch_identity.rs`'s dispatch-level style) to prove:
 //!
-//! 1. A caller holding node-wide orchestrator authority (the F4 unowned-
-//!    substrate grant, or a real substrate owner) sees every deployed app
-//!    regardless of who deployed it.
+//! 1. A caller holding node-wide orchestrator authority (a real substrate owner
+//!    -- a verified `ControllerAgreement` controller, M05A Slice P0) sees every
+//!    deployed app regardless of who deployed it.
 //! 2. An ordinary caller with no node-wide capability sees only the apps they
 //!    themselves deployed; an app deployed by someone else -- or deployed
 //!    before B7a and therefore unattributed -- is hidden.
@@ -15,7 +15,7 @@
 //!    non-owner, non-node-wide caller the same way (§2.3).
 //!
 //! `build_caller` (`crates/router/src/route_handler/io.rs`) is what actually
-//! issues the F4 grant on a real connection; its own unit tests cover that
+//! issues that grant on a real connection; its own unit tests cover that
 //! wiring. This file constructs `CallerContext`s by hand (as
 //! `native_dispatch_identity.rs` does) to exercise `ControlPlaneService`'s
 //! own ownership logic directly, independent of the router.
@@ -100,11 +100,11 @@ fn app_grantee(did: &str, service_id: &str) -> CallerContext {
     }
 }
 
-/// A caller holding node-wide orchestrator authority on `NODE_DID` -- the
-/// exact shape `build_caller` issues for the F4 unowned-substrate bootstrap
-/// grant (and, in spirit, what a real substrate owner's `substrate/admin`
-/// also satisfies via `Ability::entails`'s short-circuit). Holds all three
-/// `orchestrator/*` abilities together (matching F4's bundle), so it passes
+/// A caller holding node-wide orchestrator authority on `NODE_DID` -- what a
+/// real substrate owner's `substrate/admin` satisfies via `Ability::entails`'s
+/// short-circuit (`build_caller` issues that shape for a verified
+/// `ControllerAgreement` controller, M05A Slice P0). Holds all three
+/// `orchestrator/*` abilities together, so it passes
 /// `ControlPlaneService::has_node_wide_ability` regardless of which specific
 /// ability a given call site checks. Used here to drive that predicate
 /// directly without going through the router.
@@ -346,12 +346,12 @@ async fn list(service: &ControlPlaneService, caller: &CallerContext) -> Vec<Depl
     serde_json::from_value(response.payload).unwrap()
 }
 
-/// F4: a caller holding node-wide orchestrator authority (the unowned-
-/// substrate bootstrap grant, or a real owner) sees every deployed app,
-/// regardless of who deployed it -- today's pre-B7a behavior, preserved and
-/// now asserted directly rather than assumed.
+/// A caller holding node-wide orchestrator authority (a real substrate
+/// owner) sees every deployed app, regardless of who deployed it --
+/// today's pre-B7a behavior, preserved and now asserted directly rather
+/// than assumed.
 #[tokio::test]
-async fn unowned_substrate_lists_every_app_to_any_caller() {
+async fn node_wide_authority_lists_every_app() {
     let temp_dir = tempfile::tempdir().unwrap();
     let service = test_service(temp_dir.path()).await;
     let alice = app_grantee("did:key:zAlice", "svc-a");
@@ -483,9 +483,9 @@ async fn owner_can_redeploy_their_own_service() {
 }
 
 /// Positive-path counterpart of the takeover-rejection tests: a caller
-/// holding node-wide orchestrator authority (F4's unowned-substrate grant,
-/// or a real substrate owner) may redeploy over -- and thereby take
-/// ownership of -- a service someone else owns. Exercises the
+/// holding node-wide orchestrator authority (a real substrate owner) may
+/// redeploy over -- and thereby take ownership of -- a service someone
+/// else owns. Exercises the
 /// `!has_node_wide_ability(caller, ORCHESTRATOR_DEPLOY)` branch at
 /// `orchestration.rs`'s takeover check, which `redeploy_by_a_different_did_
 /// is_rejected` cannot reach (its `mallory` caller holds no capabilities at
@@ -540,13 +540,14 @@ async fn node_wide_caller_can_undeploy_a_foreign_owners_service() {
 /// (warn-not-fail, matching every other teardown step). If the storage
 /// write fails, the owner row survives a fully-undeployed service and blocks
 /// a *different* caller's later redeploy of that `service_id` via the
-/// takeover check -- "ID squatting". This is currently **inert**: every
-/// substrate today is unowned (F4), so every verified caller holds node-wide
-/// orchestrator authority and would override the stale row anyway (see
-/// `node_wide_caller_can_redeploy_over_a_foreign_owner`); it only bites an
-/// *ordinary* caller once B7b makes non-node-wide callers real. Pinned here,
-/// not fixed -- a real fix needs either a retryable/idempotent teardown or a
-/// recovery path, both out of this slice's scope.
+/// takeover check -- "ID squatting". This bites an *ordinary*,
+/// non-node-wide caller on any substrate a `ControllerAgreement` has
+/// claimed (M05A Slice P0) or that already has a B7b app-scoped grantee;
+/// a node-wide caller overrides the stale row anyway (see
+/// `node_wide_caller_can_redeploy_over_a_foreign_owner`) and so never hits
+/// it. Pinned here, not fixed -- a real fix needs either a
+/// retryable/idempotent teardown or a recovery path, both out of this
+/// slice's scope.
 #[tokio::test]
 async fn failed_remove_owner_blocks_a_different_callers_later_redeploy() {
     let temp_dir = tempfile::tempdir().unwrap();
