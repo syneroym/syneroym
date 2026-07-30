@@ -56,7 +56,7 @@ pub enum SvcCommands {
         /// `udp` one on the host. Each interface name here must also appear
         /// in `--interfaces`. Only meaningful alongside `--image` (checked
         /// at runtime, not by clap -- see `validate_container_flags`).
-        #[arg(long = "port", requires = "image")]
+        #[arg(long = "port")]
         ports: Vec<String>,
         /// Container volume mapping, repeatable: "host_path:container_path".
         /// Docker-style mount options (e.g. a trailing ":ro") are not
