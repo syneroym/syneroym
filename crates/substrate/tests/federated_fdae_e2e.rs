@@ -91,7 +91,7 @@ struct Node {
 
 impl Node {
     /// `owner` becomes this node's `[iam].admin_ucan_root` and the identity
-    /// its own `substrate_client` presents (M05A Slice P0: an unowned
+    /// its own `substrate_client` presents (an unowned
     /// substrate now fails closed, so `inject_kek` -- a `security` call --
     /// needs an owning identity behind it too, not just a config value).
     /// `None` used to mean "unowned"; that posture is no longer usable for
@@ -149,8 +149,8 @@ impl Node {
         // capability -- `resolve_relation`'s A1/A2 fork (B3-07) treats *any*
         // substrate-scoped capability as "holds a capability scoped to this
         // resource," regardless of its ability, which would force A1 and
-        // defeat `resolvable_without_capability`'s A2 path entirely. Since
-        // M05A Slice P0 this reasoning applies unconditionally -- an
+        // defeat `resolvable_without_capability`'s A2 path entirely. Now
+        // this reasoning applies unconditionally -- an
         // unowned substrate no longer issues that free grant at all, but it
         // also grants nothing else, so every caller here still needs a
         // real owner (or, for a non-owner deployer, an app-scoped grant
@@ -258,8 +258,8 @@ async fn deploy(client: &SyneroymClient, service_id: &str, manifest: DeployManif
 
 /// An app-scoped `orchestrator/{deploy,undeploy,status}` grant, issued by
 /// `node_owner`, letting `grantee_did` deploy (and later undeploy) exactly
-/// one app on `node_did` -- the B7b shape `deploy_grant.rs` already
-/// exercises, made real here now that M05A Slice P0 removed the free
+/// one app on `node_did` -- the same shape `deploy_grant.rs` already
+/// exercises, made real here now that the free
 /// unowned-substrate grant `alice_deployer`/`bad_app_deployer` used to ride
 /// on. All three abilities are granted together, not deploy-only: `deploy`
 /// calls `self.undeploy(.., caller)` on two rollback paths
@@ -356,7 +356,7 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
     let node_a_relay_url = format!("http://localhost:{NODE_A_IROH_PORT}");
 
     // Node B gets its own, *distinct* owner -- deliberately not
-    // `hr_owner_did` and not alice. M05A Slice P0 (§0.4): giving Node B an
+    // `hr_owner_did` and not alice: giving Node B an
     // admin root named after alice would grant her `substrate/admin`,
     // which entails `data-layer/write` everywhere on Node B
     // (`Ability::entails`'s short-circuit) and would make the carefully
@@ -475,8 +475,8 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
     // herself, so her later self-issued root capability on it is trusted
     // per ADR-0015 A6 (`registry.owner_of(svc) == issuer`) with no node-wide
     // admin root and no delegation chain needed -- but *reaching* `deploy`
-    // at all now needs an app-scoped grant from Node B's owner (M05A Slice
-    // P0), since Node B no longer issues a free `orchestrator/deploy` to
+    // at all now needs an app-scoped grant from Node B's owner,
+    // since Node B no longer issues a free `orchestrator/deploy` to
     // every verified caller. ---
     let app_service_identity = Identity::generate().unwrap();
     let app_service_id = substrate::derive_did_key(&app_service_identity.public_key());
@@ -518,8 +518,8 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
     .await;
 
     // Same reasoning as `hr_data_client` above: seed through a client
-    // targeting `app_service_id` itself, not `node_b.did()`. Node B is
-    // unowned (no `admin_ucan_root`), so -- unlike Node A's `hr_data_client`
+    // targeting `app_service_id` itself, not `node_b.did()`. Node B's owner
+    // is `node_b_owner`, not alice, so -- unlike Node A's `hr_data_client`
     // -- alice holds no capability at all without self-issuing one; a
     // *write-only* token, trusted per ADR-0015 A6 (she owns the service she
     // deployed), entitles the "seed" permission below. Deliberately a
@@ -697,7 +697,7 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
         .await
         .expect("seeding second employee failed");
 
-    // A *third* deployer on Node B (M05A Slice P0): needs its own app-scoped
+    // A *third* deployer on Node B: needs its own app-scoped
     // grant, issued to `alice_did_2` specifically -- `bad_seed_token`/
     // `bad_query_client` further down self-issue owner-rooted tokens that
     // only verify because `registry.owner_of(bad_app_service_id) ==

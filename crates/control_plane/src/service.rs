@@ -221,13 +221,13 @@ impl ControlPlaneService {
     /// Whether `caller` holds a specific **node-wide** ability -- the
     /// substrate owner, whose `substrate/admin` entails every ability. Used
     /// both for the `orchestrator/*` abilities below and, with
-    /// `Ability::SUBSTRATE_ADMIN` itself, to gate the `security` interface
-    /// (M05A Slice P0). There is deliberately no "is the substrate owned?"
+    /// `Ability::SUBSTRATE_ADMIN` itself, to gate the `security` interface.
+    /// There is deliberately no "is the substrate owned?"
     /// branch anywhere else, because ownership is expressed as an issued
     /// capability, not as a skipped check (design §6.1.1). An unowned
-    /// substrate holds no node-wide capability at all as of Slice P0: it
+    /// substrate holds no node-wide capability at all: it
     /// fails closed rather than granting every verified caller
-    /// `orchestrator/*` the way M04A Slice B7a's bootstrap posture did.
+    /// `orchestrator/*` the way the old bootstrap posture did.
     ///
     /// **Parameterized by `ability`, not hardcoded to one** (post-review
     /// fix): B7b's design (§3.1 A2) deliberately keeps the three
@@ -474,8 +474,8 @@ mod tests {
     /// M04A Slice B7b: a caller holding node-wide orchestrator authority on
     /// `"did:key:zTestNode"` (every test in this module inits
     /// `ControlPlaneService` with that node DID) -- the shape `build_caller`
-    /// issues for a verified `ControllerAgreement` controller (M05A Slice
-    /// P0; before P0 this was also the unowned-substrate bootstrap grant,
+    /// issues for a verified `ControllerAgreement` controller (before that
+    /// tool existed, this was also the unowned-substrate bootstrap grant,
     /// now removed). `deploy`/`undeploy` now gate on an explicit
     /// `orchestrator/{deploy,undeploy}`
     /// capability (§3.2), so any test that deploys/undeploys a service as

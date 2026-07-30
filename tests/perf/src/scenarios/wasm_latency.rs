@@ -26,6 +26,25 @@ use wasmtime::{
 
 use crate::{orchestrator::TestEnvironment, reporter::print_latency_comparison};
 
+/// Mirrors `SandboxWasmConfig::default_max_instructions`'s production
+/// default (`crates/core/src/config.rs`) -- the real dispatch path always
+/// calls `store.set_fuel` (`engine.rs`'s `prepare_wasm_execution`) before
+/// invoking a guest; this baseline builds its `Store`s by hand and must do
+/// the same, or wasmtime's `consume_fuel(true)` engine option (set
+/// unconditionally by `build_wasm_engine`) traps every call at zero fuel.
+const BASELINE_FUEL: u64 = 10_000_000_000;
+
+/// `build_wasm_engine` also sets `epoch_interruption(true)` unconditionally,
+/// alongside `consume_fuel`, so a `Store` with no deadline set traps on
+/// entry too (`wasm trap: interrupt`) -- the same class of missing
+/// per-store setup `BASELINE_FUEL` exists to fix, for the engine's other
+/// unconditional option. The real path sets this right next to
+/// `set_fuel` (`engine.rs`'s `prepare_wasm_execution`). This baseline's
+/// engine has no epoch ticker running (that ticker is spawned inside
+/// `AppSandboxEngine::init`, which this baseline never calls), so the
+/// epoch never advances and any positive deadline is safe here.
+const BASELINE_EPOCH_DEADLINE_TICKS: u64 = 1;
+
 pub async fn run_scenario() -> Result<()> {
     let mut env = TestEnvironment::new().await?;
     env.start_substrate().await?;
@@ -79,6 +98,9 @@ pub async fn run_scenario() -> Result<()> {
             syneroym_app_orchestration::empty_resolver(),
         );
         let mut store = Store::new(&engine, host_state);
+        store.set_fuel(BASELINE_FUEL)?;
+        store.epoch_deadline_trap();
+        store.set_epoch_deadline(BASELINE_EPOCH_DEADLINE_TICKS);
         let instance = linker.instantiate_async(&mut store, &component).await?;
         let (func, results_len, _item) = AppSandboxEngine::get_wasm_func(
             &mut store,
@@ -117,6 +139,9 @@ pub async fn run_scenario() -> Result<()> {
             syneroym_app_orchestration::empty_resolver(),
         );
         let mut store = Store::new(&engine, host_state);
+        store.set_fuel(BASELINE_FUEL)?;
+        store.epoch_deadline_trap();
+        store.set_epoch_deadline(BASELINE_EPOCH_DEADLINE_TICKS);
         let instance = linker.instantiate_async(&mut store, &component).await?;
 
         let (func, results_len, _item) = AppSandboxEngine::get_wasm_func(
@@ -147,7 +172,7 @@ pub async fn run_scenario() -> Result<()> {
     let app_service_id = substrate::derive_did_key(&app_identity.public_key());
 
     let registry_url = "http://127.0.0.1:7961".to_string();
-    // M05A Slice P0: owner identity, not the ephemeral default -- an
+    // Owner identity, not the ephemeral default -- an
     // unowned substrate now fails closed on `orchestrator/deploy`.
     let mut orchestrator_client = SyneroymClient::new_with_identity(
         env.substrate_did.clone(),

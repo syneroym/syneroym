@@ -55,7 +55,7 @@ pub struct TestEnvironment {
     pub substrate_identity: Identity,
     pub substrate_did: String,
     /// The raw key bytes of the identity that owns this harness's
-    /// substrate (M05A Slice P0: an unowned substrate now fails closed, so
+    /// substrate (an unowned substrate now fails closed, so
     /// every orchestrator client below must present an owning or
     /// app-scoped-granted identity). Exposed as bytes, not `Identity`
     /// (deliberately not `Clone`), so a caller can reconstruct one with
@@ -73,7 +73,7 @@ impl TestEnvironment {
         let key_file = NamedTempFile::new()?;
         substrate_identity.save_to_path(key_file.path())?;
 
-        // M05A Slice P0: mint an owner and a `ControllerAgreement` here so
+        // Mint an owner and a `ControllerAgreement` here so
         // the substrate boots owned and fails open (to its owner) rather
         // than closed. `--agreement` (main.rs) is the alternative to a
         // config-file edit this harness has no config file to make --

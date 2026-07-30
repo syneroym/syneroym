@@ -229,9 +229,9 @@ impl ProxyRouter {
         // node-owned interfaces exactly like a legitimate native caller --
         // a WASM guest was never able to present a verified identity to a
         // native interface at all before that certificate mechanism
-        // existed. Both interfaces are gated as of M05A Slice P0
-        // (`orchestrator` since M04A Slice B7b, `security` on
-        // `substrate/admin` since P0, `control_plane::service`), but this
+        // existed. Both interfaces are gated now
+        // (`orchestrator` since the deploy-grant admission gate, `security` on
+        // `substrate/admin`, `control_plane::service`), but this
         // outright denial stays: a deployed service's own instance identity
         // should never reach node-owner-only interfaces at all, gated or
         // not.
@@ -785,11 +785,11 @@ mod tests {
     /// cannot legitimately happen, but a guest freely chooses
     /// `target_service`) must still be denied. Guards against a guest whose
     /// service holds an installed instance certificate (ADR-0020 §1) walking
-    /// its now-verified identity into `orchestrator` (gated since M04A
-    /// Slice B7b) or `security` (gated on `substrate/admin` since M05A
-    /// Slice P0) -- neither of which a guest could reach at all before that
-    /// certificate mechanism existed, since a guest-origin call always
-    /// presented anonymous.
+    /// its now-verified identity into `orchestrator` (gated since the
+    /// deploy-grant admission gate) or `security` (also gated on
+    /// `substrate/admin` now) -- neither of which a guest could reach at all
+    /// before that certificate mechanism existed, since a guest-origin call
+    /// always presented anonymous.
     #[tokio::test]
     async fn guest_cannot_reach_node_level_orchestrator_or_security_through_the_proxy() {
         let registry = empty_registry();

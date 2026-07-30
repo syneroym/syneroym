@@ -50,7 +50,7 @@ pub async fn run_scenario() -> Result<()> {
     let gateway_url = "http://127.0.0.1:7960/".to_string();
 
     // Connect SDK Client to the orchestrator (which is the substrate itself),
-    // presenting the owner identity (M05A Slice P0: an unowned substrate now
+    // presenting the owner identity (an unowned substrate now
     // fails closed, so the ephemeral identity `SyneroymClient::new` would
     // generate could not reach `orchestrator/deploy`).
     let mut orchestrator_client = SyneroymClient::new_with_identity(

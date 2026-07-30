@@ -368,7 +368,7 @@ async fn setup_connection_router(
     }
     let config = &effective_config;
 
-    // M05A Slice P0: no verified ControllerAgreement controller and no
+    // No verified ControllerAgreement controller and no
     // [iam].admin_ucan_root means the substrate is unowned and fails
     // closed -- no caller holds any node-wide capability at all
     // (`build_caller`, `crates/router/src/route_handler/io.rs`). Logged

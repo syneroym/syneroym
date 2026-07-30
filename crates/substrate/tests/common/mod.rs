@@ -44,7 +44,7 @@ pub struct SubstrateTestContext {
     pub substrate_client: SyneroymClient,
     registry_url: String,
     pub substrate_mechanisms: Vec<EndpointMechanism>,
-    /// The DID that owns this substrate (M05A Slice P0: an unowned
+    /// The DID that owns this substrate (an unowned
     /// substrate now fails closed, so every harness must own its own
     /// node). Exposed for tests that build an extra client of their own.
     #[allow(dead_code)]
@@ -92,7 +92,7 @@ impl SubstrateTestContext {
             Some(IrohParentConfig { url: format!("http://localhost:{iroh_port}") });
         config.roles.client_gateway = Some(ClientGatewayRole { http_port: gateway_port });
 
-        // M05A Slice P0: an unowned substrate now fails closed, so this
+        // An unowned substrate now fails closed, so this
         // harness must own its own node -- mint an owner identity and
         // configure it directly (`admin_ucan_root`), rather than going
         // through the `roymctl substrate claim` file-discovery path this

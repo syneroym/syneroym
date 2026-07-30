@@ -210,7 +210,7 @@ impl SubstrateTestContext {
 
         config.roles.client_gateway = Some(ClientGatewayRole { http_port: gateway_port });
 
-        // M05A Slice P0: an unowned substrate now fails closed, so this
+        // An unowned substrate now fails closed, so this
         // harness must own its own node.
         let owner = Identity::generate().expect("owner identity");
         let owner_did = substrate::derive_did_key(&owner.public_key());

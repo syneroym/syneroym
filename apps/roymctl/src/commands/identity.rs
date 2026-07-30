@@ -86,7 +86,7 @@ pub enum IdentityCommands {
     /// reports it.
     ///
     /// Queries `--substrate` over `orchestrator/resolve-instance-identity`
-    /// (M05A Slice P0: gated on `orchestrator/status`), so it needs an
+    /// (gated on `orchestrator/status`), so it needs an
     /// operator identity the substrate authorizes -- pass `--as <name>` (or
     /// `--ucan <token>` covering this app) once the substrate is claimed.
     /// On an unowned substrate this command is denied outright.

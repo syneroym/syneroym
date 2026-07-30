@@ -148,10 +148,11 @@ fn owning_service_id(res: &ResourceUri) -> Option<&str> {
 /// "May this caller touch this service at all?" is Tier 1 -- a µs-scale
 /// grant-layer capability check, NOT an FDAE/M04B policy question (ADR-0017
 /// Open, design §9.8; this comment previously mis-addressed it to M04B).
-/// B7b implements it for `orchestrator`; M05A Slice P0 gates `security` on
-/// `substrate/admin`. The five data native-capability interfaces remain
+/// The deploy-grant work implements it for `orchestrator`; `security` is
+/// now also gated on `substrate/admin`. The five data native-capability
+/// interfaces remain
 /// open -- today any verified identity reaches any native service there.
-/// M04B/FDAE owns Tier 3 (rows/columns) only.
+/// FDAE owns Tier 3 (rows/columns) only.
 /// The `None` rejection below is correct and settled (design §6.1.2):
 /// native interfaces reject anonymous callers, WASM guests admit them.
 async fn build_caller(
@@ -170,10 +171,10 @@ async fn build_caller(
     };
     let mut auth = AuthLevel::Delegated;
 
-    // The substrate-owner capability is issued from this single site (M04A
-    // Slice B7a's design §6.1.1: no "is this substrate owned?" branch
-    // anywhere downstream). M05A Slice P0 removed the unowned bootstrap
-    // grant that used to sit here: an unowned substrate issued
+    // The substrate-owner capability is issued from this single site (this
+    // design's §6.1.1: no "is this substrate owned?" branch
+    // anywhere downstream). The unowned bootstrap
+    // grant that used to sit here is now removed: an unowned substrate issued
     // `orchestrator/{deploy,undeploy,status}` to every verified caller,
     // which was defensible while one operator hand-deployed to their own
     // node and is not once substrates are unattended networked deploy
@@ -1055,11 +1056,11 @@ mod tests {
         assert_eq!(preamble.service_id, "substrate-123");
     }
 
-    /// **Matrix row 17** (task.md), M05A Slice P0: an unowned substrate
-    /// (`admin_root: None`) grants no node-wide capability at all -- neither
-    /// the `orchestrator/*` abilities M04A Slice B7a's bootstrap posture
-    /// used to issue, nor `substrate/admin`. Fails closed; the only route
-    /// to ownership is `roymctl substrate claim`, run off the wire.
+    /// An unowned substrate (`admin_root: None`) grants no node-wide
+    /// capability at all -- neither the `orchestrator/*` abilities the old
+    /// bootstrap posture used to issue, nor `substrate/admin`.
+    /// Fails closed; the only route to ownership is `roymctl substrate
+    /// claim`, run off the wire.
     #[tokio::test]
     async fn an_unowned_substrate_grants_no_node_wide_capability() {
         let client = Identity::generate().unwrap();
@@ -1087,8 +1088,8 @@ mod tests {
         }
     }
 
-    /// The regression test for the over-grant trap M04A Slice B7a's now-
-    /// removed unowned bootstrap grant carried: an unowned substrate must
+    /// The regression test for the over-grant trap the now-removed unowned
+    /// bootstrap grant carried: an unowned substrate must
     /// NOT grant `data-layer/admin` (or `substrate/admin`, which would
     /// entail it) to a verified caller. Passes trivially post-P0 (no
     /// node-wide capability is granted at all), and is kept as a named
@@ -1286,7 +1287,7 @@ mod tests {
     /// ADR-0015 A6: a service owner is an independent root for their own
     /// service, regardless of whether the substrate has a node-wide admin
     /// root at all (`admin_root: None` here -- the unowned, fail-closed
-    /// posture as of M05A Slice P0).
+    /// posture).
     #[tokio::test]
     async fn owner_rooted_chain_grants_a_capability_on_the_owners_own_service() {
         let owner = Identity::generate().unwrap();

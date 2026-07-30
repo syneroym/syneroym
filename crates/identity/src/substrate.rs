@@ -88,9 +88,20 @@ impl ControllerAgreement {
 
         let now = Utc::now();
         let issued_at = now.to_rfc3339_opts(SecondsFormat::Secs, true);
-        let expires_at = expires_in_secs.map(|secs| {
-            (now + Duration::seconds(secs as i64)).to_rfc3339_opts(SecondsFormat::Secs, true)
-        });
+        let expires_at = match expires_in_secs {
+            Some(secs) => {
+                let delta = Duration::try_seconds(
+                    i64::try_from(secs)
+                        .map_err(|_| anyhow!("expiry of {secs}s is too large to represent"))?,
+                )
+                .ok_or_else(|| anyhow!("expiry of {secs}s is out of range"))?;
+                let expiry = now.checked_add_signed(delta).ok_or_else(|| {
+                    anyhow!("expiry of {secs}s overflows the agreement's issued-at timestamp")
+                })?;
+                Some(expiry.to_rfc3339_opts(SecondsFormat::Secs, true))
+            }
+            None => None,
+        };
 
         let unsigned = Self {
             agreement_type: CONTROLLER_AGREEMENT_TYPE.to_string(),
@@ -479,6 +490,17 @@ mod tests {
 
         let err = ControllerAgreement::issue(&node, &same, None).unwrap_err();
         assert!(err.to_string().contains("cannot be its own controller"));
+    }
+
+    #[test]
+    fn issue_rejects_an_out_of_range_expiry_instead_of_panicking() {
+        let node = Identity::generate().unwrap();
+        let controller = Identity::generate().unwrap();
+
+        // `u64::MAX` seconds does not fit in the `i64` `Duration::try_seconds`
+        // takes -- this used to panic inside `Duration::seconds(secs as i64)`.
+        let err = ControllerAgreement::issue(&node, &controller, Some(u64::MAX)).unwrap_err();
+        assert!(err.to_string().contains("too large"));
     }
 
     #[test]

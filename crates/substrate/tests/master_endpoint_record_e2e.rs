@@ -93,8 +93,8 @@ struct Node {
 }
 
 impl Node {
-    /// `owner`'s DID becomes this node's `[iam].admin_ucan_root` (M05A
-    /// Slice P0: an unowned substrate now fails closed).
+    /// `owner`'s DID becomes this node's `[iam].admin_ucan_root` (an
+    /// unowned substrate now fails closed).
     async fn boot(
         iroh_port: u16,
         registry_port: u16,
@@ -251,7 +251,7 @@ fn orchestrator_client(node: &Node, caller: Identity) -> SyneroymClient {
 async fn a_member_master_did_resolves_to_an_address_and_follows_the_member_across_nodes() {
     let _ = ring::default_provider().install_default();
 
-    // M05A Slice P0: an unowned substrate now fails closed, so both nodes
+    // An unowned substrate now fails closed, so both nodes
     // need an owner. One `operator` identity owns both -- moved ahead of
     // `Node::boot` from where it used to be minted (it is also the caller
     // presented against both nodes below).

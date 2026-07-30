@@ -279,29 +279,14 @@ curl -X POST http://localhost:7960/ \
 ```
 
 #### Deploy a WASM Component
+Only `roymctl` can sign as the claimed substrate's controller (see the note
+above) -- the client gateway has no way to present that identity, so this is
+not a `curl` example:
 ```bash
-# Note: WASM binary bytes are usually sent as a base64-encoded array or via a URL.
-curl -X POST http://localhost:7960/ \
-  -H "Host: <NICKNAME>-p<SUBSTRATE_DID_SHORTHASH>-iorchestrator.localhost" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "method": "deploy",
-    "params": [
-      "did:key:my-app-did",
-      ["my-interface:v1"],
-      {
-        "config": { "env": [], "args": [], "custom_config": null },
-        "service_type": {
-          "wasm": {
-            "source": { "url": "http://example.com/app.wasm" },
-            "hash": "sha256:..."
-          }
-        }
-      }
-    ],
-    "id": 1
-  }'
+roymctl --dir <DIR> --as owner svc deploy \
+  --svc-id did:key:my-app-did \
+  --interfaces my-interface:v1 \
+  --wasm ./app.wasm
 ```
 
 ##### Declaring an FDAE Policy (Row/Column-Level Security)
@@ -332,7 +317,7 @@ That path is resolved on the substrate's side, relative to its working
 directory, under a path-traversal guard. `config.schema` (the JSON Schema
 validating `custom_config`) takes exactly the same two forms.
 
-In the raw `deploy` JSON-RPC `config` above, the two arms are tagged:
+In a raw `deploy` JSON-RPC call's `config`, the two arms are tagged:
 ```json
 "config": { "env": [], "args": [], "custom_config": null,
             "fdae_policy": { "inline": "{\"version\":\"fdae/v1\", ...}" } }
@@ -371,30 +356,17 @@ import to reach *another* service's native capabilities (`data-layer`, `vault`,
 
 #### Deploy a TCP Service (Passthrough)
 ```bash
-curl -X POST http://localhost:7960/ \
-  -H "Host: <NICKNAME>-p<SUBSTRATE_DID_SHORTHASH>-iorchestrator.localhost" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "method": "deploy",
-    "params": [
-      "did:key:my-tcp-service",
-      ["default"],
-      {
-        "config": { "env": [], "args": [], "custom_config": null },
-        "service_type": {
-          "tcp": {
-            "host": "localhost",
-            "port": 8080
-          }
-        }
-      }
-    ],
-    "id": 1
-  }'
+roymctl --dir <DIR> --as owner svc deploy \
+  --svc-id did:key:my-tcp-service \
+  --interfaces default \
+  --tcp localhost:8080
 ```
 
 #### Deploy a Container Service (Podman)
+`roymctl svc deploy` has no `--container`/`--image` form yet (tracked in the
+deferred backlog), so this one genuinely has no `roymctl` equivalent today —
+it is shown as a raw JSON-RPC call for reference, but the same gateway
+caveat above applies: it can only ever be denied on a real substrate.
 ```bash
 curl -X POST http://localhost:7960/ \
   -H "Host: <NICKNAME>-p<SUBSTRATE_DID_SHORTHASH>-iorchestrator.localhost" \

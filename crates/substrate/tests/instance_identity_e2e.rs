@@ -80,8 +80,8 @@ struct Node {
 }
 
 impl Node {
-    /// `owner`'s DID becomes this node's `[iam].admin_ucan_root` (M05A
-    /// Slice P0: an unowned substrate now fails closed, so the fixture must
+    /// `owner`'s DID becomes this node's `[iam].admin_ucan_root` (an
+    /// unowned substrate now fails closed, so the fixture must
     /// own its own nodes) -- both nodes are owned by the same `operator`
     /// identity below, which is also what every `orchestrator_client` call
     /// presents, so no separate grant is needed.
@@ -219,7 +219,7 @@ async fn a_member_master_authorizes_a_distinct_instance_key_on_each_real_node_it
     let _ = ring::default_provider().install_default();
 
     // One operator identity, reused against both nodes as both their owner
-    // (M05A Slice P0: an unowned substrate fails closed) and the caller of
+    // (an unowned substrate fails closed) and the caller of
     // every `orchestrator/*` call below: `instance-identity` derives from
     // (node identity, caller_did, service_id), so holding the caller and
     // service_id fixed isolates the node as the only varying input in the

@@ -239,8 +239,9 @@ async fn list(service: &ControlPlaneService, caller: &CallerContext) -> Vec<Depl
 /// the takeover check (F7) alone would let them through (no existing owner
 /// to conflict with); the new Tier-1 admission gate must reject them
 /// independently. `test_service` builds an unowned `ControlPlaneService`
-/// with no `admin_ucan_root`, so as of M05A Slice P0 this is also
-/// **matrix row 17**'s unit-level proof at the `ControlPlaneService` layer
+/// with no `admin_ucan_root`, so this is also
+/// the unowned-substrate-denies-deploy proof at the `ControlPlaneService`
+/// layer
 /// (`crates/router/src/route_handler/io.rs`'s
 /// `an_unowned_substrate_grants_no_node_wide_capability` is the same claim
 /// one layer down, at `build_caller`) -- an unowned substrate denies

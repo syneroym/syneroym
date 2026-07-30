@@ -198,37 +198,49 @@ test added); 1 new two-real-substrate e2e test,
   milestone's status — real socket/port binds the sandbox denies outright:
   `syneroym-community-registry --lib`, `syneroym-coordinator-iroh`
   (`connection_limit`/`multi_hop_relay`/`tls_rotation`),
-  `syneroym-mqtt-broker --lib`, `syneroym-router --test proxy_dispatch`,
-  `syneroym-sdk --test connect_timeout`, and every `syneroym-substrate` e2e
-  test (`basic_lifecycle`, `federated_fdae_e2e`, `http_passthrough_e2e`,
-  `instance_identity_e2e`, `master_endpoint_record_e2e`,
-  `messaging_client_e2e`, `stream_client_e2e`, and the new
-  `substrate_ownership_e2e`). Every one of the 15 was independently
-  re-verified passing with the sandbox disabled this pass, run individually
-  or in small groups (`instance_identity_e2e`/`master_endpoint_record_e2e`
-  together, 18-25s each; `federated_fdae_e2e` 89s; `community_registry`'s
-  16 tests, `mqtt-broker`'s 11, `sdk`'s `connect_timeout`,
-  `router`'s 8-test `proxy_dispatch`, and `coordinator-iroh`'s three tests
-  all green; the six single-node substrate e2e/basic/podman tests green).
-  No target outside this documented sandbox-bind category was affected.
+  `syneroym-mqtt-broker --lib`, `syneroym-sdk --test connect_timeout`, and
+  every `syneroym-substrate` e2e test (`basic_lifecycle`,
+  `federated_fdae_e2e`, `http_passthrough_e2e`, `instance_identity_e2e`,
+  `master_endpoint_record_e2e`, `messaging_client_e2e`,
+  `stream_client_e2e`, and the new `substrate_ownership_e2e`). Every one of
+  these was independently re-verified passing with the sandbox disabled
+  this pass, run individually or in small groups
+  (`instance_identity_e2e`/`master_endpoint_record_e2e` together, 18-25s
+  each; `federated_fdae_e2e` 89s; `community_registry`'s 16 tests,
+  `mqtt-broker`'s 11, `sdk`'s `connect_timeout`, and `coordinator-iroh`'s
+  three tests all green; the six single-node substrate e2e/basic/podman
+  tests green). `syneroym-router --test proxy_dispatch` does **not**
+  belong in this category — review found it fails intermittently under
+  parallel execution (`--test-threads=1`: 8/8 every time; default
+  threading: fails on alternating runs, on a WASM trap inside
+  `cabi_realloc` surfaced as `-32603`, not a bind error) and it was last
+  touched by A2, not this slice. Tracked as a flake in
+  `deferred-backlog.md` §1, not this sandbox-bind list. No target outside
+  the corrected list above was affected.
 - `mise run test:e2e` (sandbox disabled, required for real port binds):
   12/12 green (8 main + 4 multi-hop) — the real end-to-end operator claim
   flow (`identity create` + `substrate claim` + `--as owner svc deploy`)
   exercised live in both Playwright configs, unchanged pass count from
   before this slice.
 - `mise run bench:latency` (§0.3a's own required gate, sandbox disabled):
-  the harness fix is proven — `orchestrator.deploy` succeeds via the
-  owner identity `TestEnvironment::new` now mints and passes through
+  the ownership-harness fix is proven — `orchestrator.deploy` succeeds via
+  the owner identity `TestEnvironment::new` now mints and passes through
   `run --agreement`, visible live in the log
   (`Orchestrator received dispatch: orchestrator.deploy` /
-  `Deploying TCP service …`). The run then hits `Error: wasm trap: all fuel
-  consumed by WebAssembly` inside a later WASM-call scenario — confirmed via
-  a side-by-side run against an unmodified `main` checkout in a scratch
-  worktree, which fails identically at the identical point, so this is the
-  pre-existing, already-tracked "WASM fuel metering: not yet configured"
-  gap (`deferred-backlog.md` §8), not a P0 regression. `bench:concurrency`/
-  `bench:soak` share the same harness fix and were not run separately
-  (§6's own note: one scenario is enough to prove it).
+  `Deploying TCP service …`). Review found a second, unrelated bug the run
+  then hit: `Error: wasm trap: all fuel consumed by WebAssembly` inside
+  `wasm_latency.rs`'s in-process baseline, which builds its `Store`s by
+  hand and never calls `store.set_fuel` the way the real dispatch path
+  does (`engine.rs`'s `prepare_wasm_execution`) -- wasmtime's
+  `consume_fuel(true)` engine option then traps at zero fuel on the first
+  call. Not the generic, already-tracked "WASM fuel metering: not yet
+  configured" gap (`deferred-backlog.md` §8), which is about production
+  dispatch and was a mis-attribution: that path already sets fuel from
+  `SandboxWasmConfig::default_max_instructions`. Fixed by adding
+  `store.set_fuel(BASELINE_FUEL)` (mirroring that same production default,
+  10 billion instructions) to both baseline loops in `wasm_latency.rs`.
+  `bench:concurrency`/`bench:soak` share the same harness fix and were not
+  run separately (§6's own note: one scenario is enough to prove it).
 - `mise run test:smoke`: passes, unaffected (§5.8's own claim, verified
   rather than assumed) — no `orchestrator`/`security` call in that binary.
 - `wasm32-wasip2`: `greeter`, `data-layer-test`, and `proxy-test` all build
@@ -246,6 +258,156 @@ live hole); ownership transfer/revocation has no mechanism beyond `claim
 manages, will need node-wide `substrate/admin` on each — directly tensioning
 against failure-matrix row 14's blast-radius claim, flagged for evaluation
 before A5 commits to its custody model.
+
+### Post-merge review (2026-07-30), all fifteen findings incorporated
+
+An independent review of the merged commit, re-running every gate rather
+than trusting the evidence above, found fifteen issues the implementation
+pass missed. All were agreed with and fixed in the same pass; none were
+pushed back on.
+
+**Correctness/security (high):**
+- `roymctl substrate init` overwrote an existing `substrate.key` with no
+  guard, silently orphaning everything attributed to the old node DID and
+  invalidating any `agreement.json` already claiming it -- now a hard
+  `--force`-gated bail, mirroring `identity create`'s existing guard.
+- The same command wrote the key with `fs::write` (world-readable, `0644`)
+  instead of `Identity::save_to_path` (`0600`, zeroizing) -- the key that
+  now grants `substrate/admin` via a self-signed `ControllerAgreement`.
+  Fixed to use `save_to_path`.
+- `substrate_ownership_e2e.rs`'s stranger-`inject_kek` assertion passed
+  even with the `security` gate deleted, because the controller's own
+  earlier `inject_kek` call made a second injection fail with
+  `KekAlreadyInjected` (`-32603`) regardless of the gate. Fixed to
+  downcast to `JsonRpcError` and assert `PERMISSION_DENIED_CODE`
+  specifically. The review's suggested fix also proposed asserting the
+  same code on the sibling `deploy` assertion; verified against a live run
+  that `orchestrator/deploy`'s Tier-1 admission denial has no distinct
+  code of its own (`ControlPlaneService::dispatch`'s `"deploy"` arm maps
+  every cause through `.map_err(RpcError::InternalError)`, unlike
+  `security`'s explicit `RpcError::Custom(PERMISSION_DENIED_CODE, ..)`),
+  so that half of the suggested fix was corrected to check the denial
+  message instead of a code that does not exist on that path.
+- `--expires-days` panicked on a large value (`Duration::seconds(secs as
+  i64)` and `now + duration` both overflow-panic in chrono 0.4.45) --
+  reproduced, then fixed with `checked_mul`/`try_seconds`/
+  `checked_add_signed` throughout, returning a descriptive error instead.
+
+**Correctness (medium/low):**
+- `claim` printed "Substrate claimed." without verifying what it actually
+  wrote to disk -- a serde round-trip bug or field rename would have given
+  a success message for a node that boots unowned. Fixed: read the file
+  back, parse it, and run it through `SubstrateIdentityState::init`,
+  bailing unless `Verified`. The CLI test now does the same read-back
+  rather than trusting the in-memory value.
+- Agreement expiry is checked once, at boot, and never again for the
+  process's lifetime -- `--expires-days`'s help text now says so, and a
+  backlog row records the gap.
+- A discovered `agreement.json` can silently outrank a configured
+  `controller_did` with no warning, since the exclusivity check in
+  `main.rs` only sees the *configured* path. Fixed: `warn!` once when this
+  happens.
+
+**Test/gate integrity:**
+- `tests/perf/src/scenarios/wasm_latency.rs`'s in-process baseline built
+  its `Store`s by hand and never called `store.set_fuel`, unlike the real
+  dispatch path -- `mise run bench:latency` traps on "all fuel consumed"
+  every run. `status.md` had mis-attributed this to the generic, already
+  -tracked "WASM fuel metering: not yet configured" backlog row,
+  which is about production dispatch (already correctly fuel-metered) and
+  did not fit. Fixed with `store.set_fuel` on both baseline loops,
+  matching `SandboxWasmConfig::default_max_instructions`'s production
+  default; the mis-attribution above is corrected. (A second, independent
+  cause behind the same gate is fixed in the follow-up pass below.)
+- `syneroym-router --test proxy_dispatch` was listed among the
+  sandbox-port-bind failures in this doc's `cargo test --workspace` gate
+  notes; it is actually a genuine flake under parallel execution (8/8 with
+  `--test-threads=1`, intermittent otherwise, on an unrelated WASM trap),
+  pre-existing and last touched by Slice A2. Moved out of that list here
+  and tracked as a flake in `deferred-backlog.md` §1.
+- A stale comment in `federated_fdae_e2e.rs` still called Node B unowned,
+  one slice after this change gave it an owner; the conclusion (alice
+  needs a grant) survived, but the stated reason was false. Fixed.
+- Matrix row 17 ("deploy to an unowned substrate is rejected") had two
+  unit-level proofs that never met a real unowned substrate over the
+  wire. Added `an_unowned_substrate_rejects_a_deploy` to
+  `substrate_ownership_e2e.rs`, which boots a node with no agreement at
+  all and asserts a real deploy is denied specifically for lack of a
+  grant (see the note above on `deploy` having no distinct denial code).
+
+**Bookkeeping:**
+- 76 planning-doc references (milestone/slice IDs, `D-P0-*` decision
+  IDs) had been added to code comments, doc comments, and a test name,
+  against AGENTS.md's *No Planning-Doc References in Code* rule. Stripped
+  from every line this diff added, keeping the underlying *why* intact;
+  pre-existing violations in code this diff did not touch were left alone.
+- `docs/developer-guide.md`'s WASM and TCP deploy walkthroughs still read
+  as runnable `curl` examples that fail post-P0 (the warning above them
+  was correct, the examples below it were not updated). Replaced with
+  their `roymctl --as owner svc deploy` equivalents; the container-deploy
+  example has no CLI equivalent yet (tracked separately), so it stays a
+  raw JSON-RPC reference with the same caveat noted inline.
+- Two backlog rows added: the deploy-only-grantee rollback-denial gap
+  `ControllerAgreement` makes reachable (`orchestration.rs`'s own comment
+  already documented the mechanism in detail, just not as a backlog row),
+  and the boot-time-only expiry check above. A third existing row
+  (`remove_owner` non-atomicity) gained a sentence noting P0 makes its
+  "ID squatting" consequence bite an ordinary caller on any claimed
+  substrate, not only a hypothetical one.
+
+**Gates, re-run 2026-07-30 after the fixes above:** `cargo +nightly fmt --all
+--check`, `cargo clippy --workspace --all-targets --all-features`, and
+`cargo check --workspace --all-targets` all clean. `cargo test --workspace
+--no-fail-fast` (sandboxed): every failure independently confirmed to carry
+the sandbox's "Operation not permitted (os error 1)" bind-denial signature,
+plus the one pre-existing `proxy_dispatch` flake (now tracked); re-run
+unsandboxed, `substrate_ownership_e2e` (including the new
+`an_unowned_substrate_rejects_a_deploy`), `basic_lifecycle`,
+`syneroym-identity`, and `roymctl` are all green -- this is also where the
+`deploy`-denial-code correction above was actually caught (a live run, not
+a read of the code). `mise run test:e2e` (sandbox disabled): 12/12 green (8
+main + 4 multi-hop), unchanged.
+
+### Follow-up review pass (2026-07-30): two problems introduced by the fixes
+
+A second independent review, re-running the gates above against the
+uncommitted fix set, found two issues the fixes themselves introduced
+(labeled R1/R2 to distinguish from the F-numbered findings above). Both
+fixed and reverified live.
+
+- **R1 -- the new unowned-substrate test's ports collided with the claimed
+  one's, ten ports up.** `UNOWNED_IROH_PORT` was `8610`; the iroh
+  coordinator binds a *second* listener for `/v1/info` at
+  `http_bind_address.port() + 10`
+  (`crates/coordinator_iroh/src/coordinator.rs`), and the claimed test's
+  port is `8600` -- so `8600 + 10 == 8610` collided with the unowned
+  test's own primary port whenever both tests in the binary ran
+  concurrently (the default). Whichever lost the bind race panicked before
+  `node.teardown()` ran, leaking a live substrate holding those ports and
+  its tokio tasks. Every other multi-node harness in this crate spaces its
+  port blocks by 100 for exactly this reason
+  (`8000`/`8100`, `8200`/`8300`, `8400`/`8500`); the new block follows
+  suit at `8700`/`8701`/`8702`. Reverified: both tests in the binary now
+  pass together under default (concurrent) threading.
+- **R2 -- the fuel fix above was necessary but not sufficient for
+  `bench:latency`.** `build_wasm_engine` sets `epoch_interruption(true)`
+  unconditionally, alongside `consume_fuel(true)`
+  (`crates/sandbox_wasm/src/engine.rs`); the real dispatch path sets a
+  deadline for both right next to `set_fuel`
+  (`store.epoch_deadline_trap()` / `store.set_epoch_deadline(..)`), but
+  the perf harness's fuel fix above only mirrored the fuel half. A `Store`
+  with epoch interruption enabled and no deadline set traps immediately
+  (`wasm trap: interrupt`) on the first call after the fuel trap was
+  fixed, so the gate stayed red through a second, independent cause behind
+  the first. Fixed by adding the same two calls next to both
+  `set_fuel` sites; the harness's own engine has no epoch ticker running
+  (that ticker only exists inside `AppSandboxEngine::init`, which this
+  baseline never calls), so any positive deadline is safe and will never
+  trip. Reverified: `mise run bench:latency` exits 0, both the TCP and the
+  WASM Component scenarios print their full comparison tables.
+- Also finished in this pass, not required but cheap: F12's five
+  remaining planning-doc references (found during this review) were
+  stripped too, bringing the added-line count to zero.
 
 ## A0 — Verification evidence (2026-07-28)
 

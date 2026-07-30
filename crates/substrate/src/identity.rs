@@ -13,7 +13,7 @@ use syneroym_identity::{
     Identity,
     substrate::{ControllerAgreement, SubstrateIdentityState},
 };
-use tracing::info;
+use tracing::{info, warn};
 
 /// Setup and initialize the substrate's identity and controller state.
 pub fn setup_substrate_identity(
@@ -47,6 +47,23 @@ pub fn setup_substrate_identity(
         .unwrap_or_else(|| app_data_dir.join(DEFAULT_CONTROLLER_AGREEMENT_FILE));
 
     let agreement = if agreement_path.exists() {
+        // The `[identity].agreement`/`controller_did` exclusivity check in
+        // `main.rs` only sees the *configured* agreement path, which stays
+        // `None` on the discovery route below -- so a discovered
+        // `agreement.json` can silently outrank a configured
+        // `controller_did` with no warning anywhere. Harmless in practice
+        // (`controller_did` alone never becomes an admin root), but worth
+        // one line so the boot log does not name a controller nobody
+        // configured with no explanation.
+        if config.agreement.is_none() && config.controller_did.is_some() {
+            warn!(
+                agreement = %agreement_path.display(),
+                controller_did = ?config.controller_did,
+                "a discovered controller agreement supersedes the configured controller_did; the \
+                 latter is ignored"
+            );
+        }
+
         let json = fs::read_to_string(&agreement_path).with_context(|| {
             format!("failed to read controller agreement at {}", agreement_path.display())
         })?;

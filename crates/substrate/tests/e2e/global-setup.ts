@@ -33,7 +33,7 @@ export default async function globalSetup() {
   console.log('Initializing local node identity...');
   execSync(`"${ROYMCTL_BIN}" node init --dir ${TEST_DIR}`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
 
-  // M05A Slice P0: an unowned substrate now fails closed, so the operator
+  // An unowned substrate now fails closed, so the operator
   // flow claims the node before it ever starts -- the real end-to-end
   // path, not `[iam].admin_ucan_root` shortcutting past it. No `agreement =`
   // line is needed below: the substrate discovers `<TEST_DIR>/agreement.json`

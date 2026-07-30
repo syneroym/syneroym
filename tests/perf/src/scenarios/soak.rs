@@ -83,7 +83,7 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
     let app_service_id = substrate::derive_did_key(&app_identity.public_key());
 
     let registry_url = "http://127.0.0.1:7961".to_string();
-    // M05A Slice P0: owner identity, not the ephemeral default -- an
+    // Owner identity, not the ephemeral default -- an
     // unowned substrate now fails closed on `orchestrator/deploy`.
     let mut orchestrator_client = SyneroymClient::new_with_identity(
         env.substrate_did.clone(),
@@ -258,7 +258,7 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
     let wasm_bytes_clone = wasm_bytes.clone();
     let registry_url_clone = registry_url.clone();
     let substrate_did_clone = env.substrate_did.clone();
-    // M05A Slice P0: the owner's raw key bytes, moved into the spawned
+    // The owner's raw key bytes, moved into the spawned
     // task alongside the other clones -- `owner/substrate/admin` entails
     // `orchestrator/undeploy` too, so the undeploy calls further down need
     // no separate grant.

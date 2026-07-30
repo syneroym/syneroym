@@ -36,7 +36,7 @@ export default async function globalSetup() {
   execSync(`"${ROYMCTL_BIN}" node init --dir ${TEST_DIR}/sz`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
   execSync(`"${ROYMCTL_BIN}" node init --dir ${TEST_DIR}/sx`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
 
-  // M05A Slice P0: an unowned substrate now fails closed. Only `sz` and
+  // An unowned substrate now fails closed. Only `sz` and
   // `sx` ever receive a deploy below, so only they need claiming -- `c`
   // and `cp` are coordinator/relay only and stay unowned, which is fine
   // and cheaper (nothing deploys to them, so nothing needs `orchestrator`

@@ -5,8 +5,8 @@
 //! matching `native_dispatch_identity.rs`'s dispatch-level style) to prove:
 //!
 //! 1. A caller holding node-wide orchestrator authority (a real substrate owner
-//!    -- a verified `ControllerAgreement` controller, M05A Slice P0) sees every
-//!    deployed app regardless of who deployed it.
+//!    -- a verified `ControllerAgreement` controller) sees every deployed app
+//!    regardless of who deployed it.
 //! 2. An ordinary caller with no node-wide capability sees only the apps they
 //!    themselves deployed; an app deployed by someone else -- or deployed
 //!    before B7a and therefore unattributed -- is hidden.
@@ -103,7 +103,7 @@ fn app_grantee(did: &str, service_id: &str) -> CallerContext {
 /// A caller holding node-wide orchestrator authority on `NODE_DID` -- what a
 /// real substrate owner's `substrate/admin` satisfies via `Ability::entails`'s
 /// short-circuit (`build_caller` issues that shape for a verified
-/// `ControllerAgreement` controller, M05A Slice P0). Holds all three
+/// `ControllerAgreement` controller). Holds all three
 /// `orchestrator/*` abilities together, so it passes
 /// `ControlPlaneService::has_node_wide_ability` regardless of which specific
 /// ability a given call site checks. Used here to drive that predicate
@@ -348,7 +348,7 @@ async fn list(service: &ControlPlaneService, caller: &CallerContext) -> Vec<Depl
 
 /// A caller holding node-wide orchestrator authority (a real substrate
 /// owner) sees every deployed app, regardless of who deployed it --
-/// today's pre-B7a behavior, preserved and now asserted directly rather
+/// long-standing behavior, preserved and now asserted directly rather
 /// than assumed.
 #[tokio::test]
 async fn node_wide_authority_lists_every_app() {
@@ -542,7 +542,7 @@ async fn node_wide_caller_can_undeploy_a_foreign_owners_service() {
 /// a *different* caller's later redeploy of that `service_id` via the
 /// takeover check -- "ID squatting". This bites an *ordinary*,
 /// non-node-wide caller on any substrate a `ControllerAgreement` has
-/// claimed (M05A Slice P0) or that already has a B7b app-scoped grantee;
+/// claimed or that already has an app-scoped grantee;
 /// a node-wide caller overrides the stale row anyway (see
 /// `node_wide_caller_can_redeploy_over_a_foreign_owner`) and so never hits
 /// it. Pinned here, not fixed -- a real fix needs either a
