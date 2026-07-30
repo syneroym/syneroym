@@ -519,10 +519,15 @@ What's different from a single-substrate deploy:
   failed and where. Re-running the same command **resumes** — it skips
   whatever already landed and only retries the failures.
 - **Moving a service to a different substrate is refused**, not silently
-  relocated: undeploy it from the old substrate first (the error names
-  both substrates and the service id to remove), then redeploy. Otherwise
-  the old instance would keep running and keep republishing its endpoint
-  record — a live conflict with the new one.
+  relocated: undeploy it from the old substrate first (the error names both
+  substrates and the service id to remove), *then* clear the placement
+  record with `roymctl app forget <instance> --service <name>` — the error
+  names this step too. `svc remove` only stops the instance; it has no
+  concept of an app instance or a journal, so it can't clear the
+  bookkeeping the refusal reads, and skipping `app forget` leaves the next
+  deploy hitting the identical refusal. Once both steps are done, redeploy.
+  Otherwise the old instance would keep running and keep republishing its
+  endpoint record — a live conflict with the new one.
 - **A fully-placed app needs no `--substrate`/`substrate.key`** — the
   default substrate is only touched by a service with no placement.
 - **Every substrate in the fleet must share one registry namespace** (or

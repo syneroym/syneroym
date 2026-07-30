@@ -231,12 +231,15 @@ async fn probe_registry_reachability(
 /// deploy), while the services that did land are still running -- an
 /// `ACTIVE`-only source misses exactly the sequence A3 introduces.
 ///
-/// Looks at the **most recent** row for the logical ref, of either action
-/// type, not the most recent `ADD`: `app forget` (below) closes this refusal
-/// by appending a `REMOVE` row, and a `rfind` scoped to `ADD` alone would
-/// keep finding the stale `ADD` underneath it forever. A most-recent `REMOVE`
-/// means the operator has already cleared the bookkeeping for this service,
-/// so any placement -- the same substrate or a different one -- is fine.
+/// Uses `deploy::current_placement` -- the **most recent** row for the
+/// logical ref, of either action type, not the most recent `ADD`: `app
+/// forget` (below) closes this refusal by appending a `REMOVE` row, and a
+/// lookup scoped to `ADD` alone would keep finding the stale `ADD`
+/// underneath it forever. A most-recent `REMOVE` means the operator has
+/// already cleared the bookkeeping for this service, so any placement --
+/// the same substrate or a different one -- is fine. Shared with
+/// `apply_plan`'s resume-skip so the two cannot read the journal two
+/// different ways again (post-review: they briefly did).
 ///
 /// Pulled out of `handle` so it is unit-testable against a plain journal,
 /// with no live substrate needed.
@@ -247,8 +250,7 @@ fn check_no_placement_change(
 ) -> anyhow::Result<()> {
     for (svc, target) in placed {
         let l_ref = svc.logical_ref.to_string();
-        if let Some(prev) = landed.iter().rev().find(|r| r.logical_ref == l_ref)
-            && prev.action_type == "ADD"
+        if let Some(prev) = deploy::current_placement(landed, &l_ref)
             && prev.substrate_did != target.substrate_did
         {
             let name = member_identity::member_master_name(&svc.logical_ref, 0)?;

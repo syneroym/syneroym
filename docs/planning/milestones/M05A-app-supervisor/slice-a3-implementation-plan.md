@@ -86,6 +86,32 @@ out-of-proportion reasoning §9 already uses for the declined test 6:
   harness asserts a state transition it only sets by hand. Both corrected in
   `status.md`.
 
+**Verification pass on `5f2f55b` (2026-07-30), incorporated.** The reviewer
+re-ran the gates against the fix commit rather than trusting the commit
+message, and found two items the fix itself opened — both incorporated:
+
+- **Medium: the refusal and the resume skip read the journal two different
+  ways.** `check_no_placement_change` was moved to most-recent-row-wins (a
+  `REMOVE` clears it), but `apply_plan`'s resume-skip
+  (`crates/sdk/src/deploy.rs`) was not touched — it still asked "does *any*
+  `COMPLETED ADD` row match this (ref, DID)", which an older `ADD` still
+  answers even after a later `REMOVE`. The exposed sequence: `app forget` a
+  service, then redeploy the *same, unchanged* manifest (placement
+  identical, so the same record resumes) — the stale `ADD` still matches,
+  the service is reported "already applied" and skipped, and the record
+  flips to `Active` while nothing is running there. Fixed by extracting one
+  shared function, `deploy::current_placement` (`crates/sdk/src/deploy.rs`),
+  reading the most-recent row for a logical ref and returning it only when
+  that row is `ADD` — both `apply_plan`'s skip and
+  `check_no_placement_change`'s refusal now call it, so the two sites cannot
+  drift apart again. New test: `apply_plan_redeploys_a_service_whose_most_
+  recent_row_is_remove`.
+- **Low: the developer guide still printed the broken recovery procedure.**
+  `docs/developer-guide.md`'s multi-substrate section described only
+  "undeploy from the old substrate, then redeploy" — missing the `app
+  forget` step the error message and the backlog row both already carry.
+  Fixed: the guide's bullet now names both steps.
+
 **Read §0 first.** Planning found **fifteen** places where `task.md`'s A3
 paragraph describes a tree that does not exist, leaves a decision unmade, or
 understates the work. **Seven** of them change what A3 has to build. §1's

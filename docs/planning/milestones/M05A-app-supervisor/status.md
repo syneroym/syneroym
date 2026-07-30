@@ -1299,6 +1299,20 @@ the new tests this pass added (`resolve_credentials`'s four cases, the
 `apps/roymctl`; one inventory-map-key alias test in
 `crates/app_orchestration`).
 
+**Verification pass on `5f2f55b` (2026-07-30), incorporated.** Re-running
+the gates against the fix rather than the commit message surfaced two items
+the fix itself opened, both now closed: `apply_plan`'s resume-skip
+(`crates/sdk/src/deploy.rs`) still asked "does any `COMPLETED ADD` row
+match", so `app forget`-ting a service and redeploying the same unchanged
+manifest skipped it as "already applied" while nothing ran there — fixed by
+extracting the most-recent-row-wins reading into one shared function,
+`deploy::current_placement`, called from both the refusal and the skip so
+they cannot drift apart again (new test:
+`apply_plan_redeploys_a_service_whose_most_recent_row_is_remove`, one more
+net-new test in `crates/sdk`). And `docs/developer-guide.md`'s
+multi-substrate section still described the pre-fix undeploy-then-redeploy
+procedure with no `app forget` step; corrected to match the error message.
+
 ## Dependencies pulled in
 
 1. **`ControllerAgreement` creation tool + the two items B7 pairs with it**, all

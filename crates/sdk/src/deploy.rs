@@ -18,7 +18,7 @@ use std::{
 use anyhow::{Context, Result};
 use ed25519_dalek::VerifyingKey;
 use syneroym_app_orchestration::{
-    ActionState, DeploymentJournal,
+    ActionRecord, ActionState, DeploymentJournal,
     models::{DeploymentPlan, LogicalServiceRef, PlannedService, ServiceId, SubstrateAlias},
 };
 use syneroym_core::dht_registry::{DEFAULT_ENDPOINT_NOT_AFTER_SECS, EndpointInfo, EndpointType};
@@ -128,12 +128,36 @@ pub fn resolve_targets<'a>(
     }
 }
 
+/// The substrate a logical ref is currently placed on, per the **most
+/// recent** row naming it, or `None` if it has never landed or was most
+/// recently `REMOVE`d. `landed` must be ordered oldest-first, exactly as
+/// `DeploymentJournal::get_completed_actions`/`get_completed_actions_for_
+/// instance` return it.
+///
+/// Shared by `apply_plan`'s resume-skip and `roymctl`'s placement-change
+/// refusal (`check_no_placement_change`) so the two cannot read the journal
+/// two different ways again: post-review, the refusal was fixed to this
+/// most-recent-row-wins reading (a `REMOVE` from `app forget` clears it) but
+/// the resume skip was not, so a service `forget`-ten and redeployed under
+/// an *unchanged* manifest was wrongly reported "already applied" while
+/// running nowhere -- the stale `ADD` row was still present, `.any()` does
+/// not care that a `REMOVE` sits after it.
+pub fn current_placement<'a>(
+    landed: &'a [ActionRecord],
+    logical_ref: &str,
+) -> Option<&'a ActionRecord> {
+    match landed.iter().rev().find(|r| r.logical_ref == logical_ref) {
+        Some(r) if r.action_type == "ADD" => Some(r),
+        _ => None,
+    }
+}
+
 /// Applies one deploy call per (service, substrate), recording a journal
 /// action row for each and continuing past a failure rather than aborting
 /// the whole app (task.md's partial-deploy non-goal / failure-matrix row
-/// 12). A service already `COMPLETED` on the same substrate DID is skipped
-/// -- this is A3's "retry" mechanism: a re-run resumes rather than
-/// redeploying everything.
+/// 12). A service whose most recent row is `COMPLETED ADD` on the same
+/// substrate DID is skipped -- this is A3's "retry" mechanism: a re-run
+/// resumes rather than redeploying everything.
 pub async fn apply_plan(
     req: ApplyRequest<'_>,
     journal: &DeploymentJournal,
@@ -147,12 +171,14 @@ pub async fn apply_plan(
         let l_ref = svc.logical_ref.to_string();
 
         // D-A3-11: keyed on the DID, so an alias re-pointed at a different
-        // node correctly redeploys rather than being skipped as already done.
-        if completed.iter().any(|c| {
-            c.action_type == "ADD"
-                && c.logical_ref == l_ref
-                && c.substrate_did == target.substrate_did
-        }) {
+        // node correctly redeploys rather than being skipped as already
+        // done. `current_placement` reads the most recent row, not just any
+        // ADD -- a `REMOVE` from `app forget` must force a redeploy, not a
+        // skip, even though an older ADD for the same (ref, DID) pair is
+        // still sitting in this record's history.
+        if current_placement(&completed, &l_ref)
+            .is_some_and(|r| r.substrate_did == target.substrate_did)
+        {
             report.skipped.push(svc.logical_ref.clone());
             continue;
         }
@@ -600,6 +626,67 @@ mod tests {
 
         assert_eq!(report.deployed.len(), 1);
         assert!(report.skipped.is_empty());
+        assert_eq!(applier.calls.lock().unwrap().len(), 1);
+    }
+
+    /// Post-review finding A: `app forget` appends a `REMOVE` row for the
+    /// same (logical ref, DID) an earlier `ADD` in this very record already
+    /// completed. A skip check scoped to "does any completed ADD match"
+    /// would still find that ADD and skip -- reporting a service "already
+    /// applied" while nothing is running there, since it was forgotten. The
+    /// most-recent-row-wins reading must see the `REMOVE` and redeploy.
+    #[tokio::test]
+    async fn apply_plan_redeploys_a_service_whose_most_recent_row_is_remove() {
+        let journal = DeploymentJournal::open_in_memory().unwrap();
+        let p = plan(vec![service("a", Some("edge-1"))]);
+        let deployment_id = journal.append(&p, DeploymentState::Degraded).unwrap();
+        let l_ref = p.services[0].logical_ref.to_string();
+        journal
+            .append_action(
+                deployment_id,
+                "ADD",
+                &l_ref,
+                Some("edge-1"),
+                "did:key:zA",
+                ActionState::Completed,
+            )
+            .unwrap();
+        // `app forget`'s own write: a REMOVE row for the same (ref, DID),
+        // appended to the same record.
+        journal
+            .append_action(
+                deployment_id,
+                "REMOVE",
+                &l_ref,
+                Some("edge-1"),
+                "did:key:zA",
+                ActionState::Completed,
+            )
+            .unwrap();
+
+        let applier = Arc::new(FailingApplier::default());
+        let targets = BTreeMap::from([(
+            SubstrateAlias::new("edge-1"),
+            target("did:key:zA", Some("edge-1"), applier.clone()),
+        )]);
+
+        let report = apply_plan(
+            ApplyRequest {
+                plan: &p,
+                targets: &targets,
+                fallback: None,
+                instance_certificates: &BTreeMap::new(),
+                registry_certificates: &BTreeMap::new(),
+                emit_bindings: false,
+            },
+            &journal,
+            deployment_id,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(report.deployed.len(), 1, "{report:?}");
+        assert!(report.skipped.is_empty(), "{report:?}");
         assert_eq!(applier.calls.lock().unwrap().len(), 1);
     }
 
