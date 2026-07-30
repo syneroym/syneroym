@@ -176,6 +176,41 @@ To interact with services, you need your Substrate's **Short Hash**. You can com
 roymctl shorthash "<DID>"
 ```
 
+### Claiming a Substrate
+
+A freshly initialized substrate is **unowned**, and an unowned substrate now
+fails closed: no caller can deploy, undeploy, check status, or reach the
+`security` interface (KEK injection/rotation, vault secrets) until someone
+claims it. Claiming binds the node's own DID to a **controller** identity
+you hold, with a mutually-signed `ControllerAgreement` — from then on, only
+that controller (or a caller it delegates to) holds any node-wide
+capability.
+
+```bash
+# 1. Initialize the node (writes <dir>/substrate.key)
+roymctl substrate init --dir <DIR>
+
+# 2. Create the identity that will become the controller
+roymctl --dir <DIR> identity create --name owner
+
+# 3. Claim the substrate -- must run on the substrate host, since it signs
+#    with the node's own private key, which never leaves that filesystem
+roymctl --dir <DIR> substrate claim --controller owner
+
+# 4. Start (or restart) the substrate -- it reads the agreement once, at
+#    boot. If it uses <DIR> as its app_data_dir (e.g. via a [identity].key
+#    setting in a --config file that points there), <DIR>/agreement.json is
+#    discovered automatically with no further flag. Otherwise, point it at
+#    the files directly:
+syneroym-substrate run --key <DIR>/substrate.key --agreement <DIR>/agreement.json
+```
+
+From then on, control it with `roymctl --dir <DIR> --as owner ...` (or
+`--ucan <token>` for a narrower, delegated grant — see §5.1 below). There is
+no remote claim: the tool needs the node's own key file, so provisioning a
+fleet of substrates means running `claim` on each host (or shipping
+`agreement.json` out of band).
+
 ### Managing Identities
 
 Before registering a service, you need to create a local identity (private key) that will be used to sign the registration.
@@ -216,6 +251,19 @@ curl http://localhost:7961/lookup/did:key:z6MkhaXn...
 
 The Orchestrator is a native service running inside the substrate. You can interact with it via the Client Gateway (Port 7960).
 
+> **The `curl`-via-gateway examples below need a claimed substrate, and even
+> then are denied for anything but `list` today.** The client gateway
+> presents the *node's own* DID as caller, never the controller's (a
+> standing gap, see the deferred backlog's *Gateway caller = substrate-owner
+> DID threading* row) — so `deploy`/`undeploy`/`status` are always denied
+> through the gateway on a claimed substrate, and everything is denied on an
+> unowned one. `curl` also cannot present a signed operator identity at all.
+> For a real deploy, use `roymctl` directly against the substrate instead,
+> e.g. `roymctl --dir <DIR> --as owner svc deploy --svc-id <DID> --interfaces
+> <name> --tcp <host:port>` (see `roymctl svc deploy --help` for the WASM
+> and container forms) — only `roymctl` can sign as the claimed substrate's
+> controller.
+
 #### List Deployed Services
 ```bash
 # Replace <NICKNAME> and <SUBSTRATE_DID_SHORTHASH>
@@ -231,29 +279,14 @@ curl -X POST http://localhost:7960/ \
 ```
 
 #### Deploy a WASM Component
+Only `roymctl` can sign as the claimed substrate's controller (see the note
+above) -- the client gateway has no way to present that identity, so this is
+not a `curl` example:
 ```bash
-# Note: WASM binary bytes are usually sent as a base64-encoded array or via a URL.
-curl -X POST http://localhost:7960/ \
-  -H "Host: <NICKNAME>-p<SUBSTRATE_DID_SHORTHASH>-iorchestrator.localhost" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "method": "deploy",
-    "params": [
-      "did:key:my-app-did",
-      ["my-interface:v1"],
-      {
-        "config": { "env": [], "args": [], "custom_config": null },
-        "service_type": {
-          "wasm": {
-            "source": { "url": "http://example.com/app.wasm" },
-            "hash": "sha256:..."
-          }
-        }
-      }
-    ],
-    "id": 1
-  }'
+roymctl --dir <DIR> --as owner svc deploy \
+  --svc-id did:key:my-app-did \
+  --interfaces my-interface:v1 \
+  --wasm ./app.wasm
 ```
 
 ##### Declaring an FDAE Policy (Row/Column-Level Security)
@@ -284,7 +317,7 @@ That path is resolved on the substrate's side, relative to its working
 directory, under a path-traversal guard. `config.schema` (the JSON Schema
 validating `custom_config`) takes exactly the same two forms.
 
-In the raw `deploy` JSON-RPC `config` above, the two arms are tagged:
+In a raw `deploy` JSON-RPC call's `config`, the two arms are tagged:
 ```json
 "config": { "env": [], "args": [], "custom_config": null,
             "fdae_policy": { "inline": "{\"version\":\"fdae/v1\", ...}" } }
@@ -323,30 +356,17 @@ import to reach *another* service's native capabilities (`data-layer`, `vault`,
 
 #### Deploy a TCP Service (Passthrough)
 ```bash
-curl -X POST http://localhost:7960/ \
-  -H "Host: <NICKNAME>-p<SUBSTRATE_DID_SHORTHASH>-iorchestrator.localhost" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "method": "deploy",
-    "params": [
-      "did:key:my-tcp-service",
-      ["default"],
-      {
-        "config": { "env": [], "args": [], "custom_config": null },
-        "service_type": {
-          "tcp": {
-            "host": "localhost",
-            "port": 8080
-          }
-        }
-      }
-    ],
-    "id": 1
-  }'
+roymctl --dir <DIR> --as owner svc deploy \
+  --svc-id did:key:my-tcp-service \
+  --interfaces default \
+  --tcp localhost:8080
 ```
 
 #### Deploy a Container Service (Podman)
+`roymctl svc deploy` has no `--container`/`--image` form yet (tracked in the
+deferred backlog), so this one genuinely has no `roymctl` equivalent today —
+it is shown as a raw JSON-RPC call for reference, but the same gateway
+caveat above applies: it can only ever be denied on a real substrate.
 ```bash
 curl -X POST http://localhost:7960/ \
   -H "Host: <NICKNAME>-p<SUBSTRATE_DID_SHORTHASH>-iorchestrator.localhost" \
@@ -514,6 +534,14 @@ To generate a Master Identity and delegate access to a Temporary Identity:
      --master master-key \
      --registry-url http://localhost:7961
    ```
+
+> **A member master's instance certificate is a separate flow:**
+> `roymctl identity certify-instance --master <name> --substrate <did>`
+> (ADR-0020 §1) queries the target substrate over
+> `orchestrator/resolve-instance-identity`, which is gated the same as every
+> other `orchestrator/*` method (M05A Slice P0) — pass `--as <controller>`
+> (or a `--ucan <token>` covering this app) once the substrate is claimed.
+> It is denied outright on an unowned substrate.
 
 ### 5.2. TLS Setup & Zero-Downtime Reload
 

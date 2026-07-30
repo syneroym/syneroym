@@ -84,6 +84,12 @@ pub enum IdentityCommands {
     /// `identity delegate` cannot do this job: it requires `--temp-did`,
     /// which is exactly what the operator does not have until the substrate
     /// reports it.
+    ///
+    /// Queries `--substrate` over `orchestrator/resolve-instance-identity`
+    /// (gated on `orchestrator/status`), so it needs an
+    /// operator identity the substrate authorizes -- pass `--as <name>` (or
+    /// `--ucan <token>` covering this app) once the substrate is claimed.
+    /// On an unowned substrate this command is denied outright.
     CertifyInstance {
         /// Name of the local member master identity issuing the
         /// certificate. The certificate always names this identity's own

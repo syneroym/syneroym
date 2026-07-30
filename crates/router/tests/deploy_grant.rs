@@ -238,7 +238,15 @@ async fn list(service: &ControlPlaneService, caller: &CallerContext) -> Vec<Depl
 /// denied `deploy`, even for a brand-new `service_id` nobody owns yet --
 /// the takeover check (F7) alone would let them through (no existing owner
 /// to conflict with); the new Tier-1 admission gate must reject them
-/// independently.
+/// independently. `test_service` builds an unowned `ControlPlaneService`
+/// with no `admin_ucan_root`, so this is also
+/// the unowned-substrate-denies-deploy proof at the `ControlPlaneService`
+/// layer
+/// (`crates/router/src/route_handler/io.rs`'s
+/// `an_unowned_substrate_grants_no_node_wide_capability` is the same claim
+/// one layer down, at `build_caller`) -- an unowned substrate denies
+/// `mallory` for the same reason it would deny anyone else now: no caller
+/// holds any node-wide capability at all.
 #[tokio::test]
 async fn deploy_denied_without_an_orchestrator_grant() {
     let temp_dir = tempfile::tempdir().unwrap();

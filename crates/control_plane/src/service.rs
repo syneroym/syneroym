@@ -24,8 +24,8 @@ use syneroym_identity::Identity;
 use syneroym_mqtt_broker::MqttBroker;
 use syneroym_rpc::{
     Ability, CallerContext, NativeDispatchRegistry, NativeInvocation, NativeResponse,
-    NativeService, ResourceUri, RowAuthorizer, RpcError, RpcResult, ServiceProxy,
-    WeakNativeDispatchRegistry, empty_row_authorizer,
+    NativeService, PERMISSION_DENIED_CODE, ResourceUri, RowAuthorizer, RpcError, RpcResult,
+    ServiceProxy, WeakNativeDispatchRegistry, empty_row_authorizer,
 };
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     DeployManifest, DeploymentPlan,
@@ -218,12 +218,16 @@ impl ControlPlaneService {
         self.row_authorizer.get().cloned().unwrap_or_else(empty_row_authorizer)
     }
 
-    /// Whether `caller` holds a specific **node-wide** orchestrator ability:
-    /// the substrate owner (whose `substrate/admin` entails every ability),
-    /// or -- on an unowned substrate -- any verified caller (M04A Slice B7a,
-    /// F4). There is deliberately no "is the substrate owned?" branch
-    /// anywhere else, because the unowned posture is expressed as an issued
-    /// capability, not as a skipped check (design §6.1.1).
+    /// Whether `caller` holds a specific **node-wide** ability -- the
+    /// substrate owner, whose `substrate/admin` entails every ability. Used
+    /// both for the `orchestrator/*` abilities below and, with
+    /// `Ability::SUBSTRATE_ADMIN` itself, to gate the `security` interface.
+    /// There is deliberately no "is the substrate owned?"
+    /// branch anywhere else, because ownership is expressed as an issued
+    /// capability, not as a skipped check (design §6.1.1). An unowned
+    /// substrate holds no node-wide capability at all: it
+    /// fails closed rather than granting every verified caller
+    /// `orchestrator/*` the way the old bootstrap posture did.
     ///
     /// **Parameterized by `ability`, not hardcoded to one** (post-review
     /// fix): B7b's design (§3.1 A2) deliberately keeps the three
@@ -262,11 +266,26 @@ impl NativeService for ControlPlaneService {
         info!("Orchestrator received dispatch: {}.{}", invocation.interface, invocation.method);
 
         if invocation.interface.as_str() == SECURITY_INTERFACE {
-            // TODO(M04B/FDAE): security ops (KEK/secret) are node-owner
-            // operations; final authorization is FDAE against
-            // caller.session (substrate/admin). B0 threads the caller
-            // (`invocation.caller`, available to every arm below) but does
-            // not yet gate -- roymctl carries only a self-asserted identity.
+            // KEK injection/rotation and vault writes are node-owner
+            // operations: a KEK unlocks every service database on this
+            // node, so there is no meaningful resource narrower than the
+            // node itself to scope this to. The gate is `substrate/admin`
+            // on the bare `substrate:<node_did>` resource -- holdable only
+            // by a verified `ControllerAgreement` controller (or
+            // `[iam].admin_ucan_root`). No exemption for substrate-injected
+            // callers: nothing inside the substrate dispatches to this
+            // interface.
+            if !self.has_node_wide_ability(&invocation.caller, Ability::SUBSTRATE_ADMIN) {
+                return Err(RpcError::Custom(
+                    PERMISSION_DENIED_CODE,
+                    format!(
+                        "caller {} holds no substrate/admin on this substrate; the security \
+                         interface is node-owner only",
+                        invocation.caller.caller_did
+                    ),
+                    None,
+                ));
+            }
             match invocation.method.as_str() {
                 "inject-kek" => {
                     let (kek_hex,): (String,) =
@@ -455,8 +474,10 @@ mod tests {
     /// M04A Slice B7b: a caller holding node-wide orchestrator authority on
     /// `"did:key:zTestNode"` (every test in this module inits
     /// `ControlPlaneService` with that node DID) -- the shape `build_caller`
-    /// issues for the F4 unowned-substrate bootstrap grant. `deploy`/
-    /// `undeploy` now gate on an explicit `orchestrator/{deploy,undeploy}`
+    /// issues for a verified `ControllerAgreement` controller (before that
+    /// tool existed, this was also the unowned-substrate bootstrap grant,
+    /// now removed). `deploy`/`undeploy` now gate on an explicit
+    /// `orchestrator/{deploy,undeploy}`
     /// capability (§3.2), so any test that deploys/undeploys a service as
     /// setup for exercising a *different* interface (data-layer, blob-store,
     /// messaging) needs a caller that holds it --
@@ -485,6 +506,32 @@ mod tests {
                         caveats: None,
                     },
                 ],
+                ..Default::default()
+            },
+            auth: AuthLevel::Delegated,
+            proof: None,
+        }
+    }
+
+    /// A caller holding `substrate/admin` on the test node -- what a
+    /// verified `ControllerAgreement` controller gets from `build_caller`.
+    /// Separate from `node_wide_caller` on purpose: `substrate/admin`
+    /// entails *everything*, so using it as generic deploy-test setup would
+    /// make the orchestrator gate tests prove less than they claim.
+    fn substrate_admin_caller(caller_did: &str) -> CallerContext {
+        use syneroym_rpc::{Ability, AuthLevel, Capability, ResourceUri, SessionContext};
+
+        let resource = ResourceUri::substrate("did:key:zTestNode");
+        CallerContext {
+            caller_did: caller_did.to_string(),
+            app_instance: None,
+            session: SessionContext {
+                subject_did: caller_did.to_string(),
+                capabilities: vec![Capability {
+                    with: resource,
+                    can: Ability(Ability::SUBSTRATE_ADMIN.to_string()),
+                    caveats: None,
+                }],
                 ..Default::default()
             },
             auth: AuthLevel::Delegated,
@@ -621,7 +668,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_security_dispatch_returns_sdk_statuses() {
+    async fn security_is_allowed_for_a_substrate_admin_caller() {
         let temp_dir = tempfile::tempdir().unwrap();
         let config = SubstrateConfig::default();
         let key_store = Arc::new(KeyStore::new());
@@ -671,7 +718,7 @@ mod tests {
         let kek = hex::encode([1u8; 32]);
         let inject_res = service
             .dispatch(NativeInvocation {
-                caller: CallerContext::service_system("test-caller"),
+                caller: substrate_admin_caller("did:key:zTestController"),
                 interface: "security".to_string(),
                 method: "inject-kek".to_string(),
                 params: serde_json::to_value((kek,)).unwrap(),
@@ -683,7 +730,7 @@ mod tests {
         let new_kek = hex::encode([2u8; 32]);
         let rotate_res = service
             .dispatch(NativeInvocation {
-                caller: CallerContext::service_system("test-caller"),
+                caller: substrate_admin_caller("did:key:zTestController"),
                 interface: "security".to_string(),
                 method: "rotate-kek".to_string(),
                 params: serde_json::to_value((new_kek,)).unwrap(),
@@ -694,7 +741,7 @@ mod tests {
 
         let secret_res = service
             .dispatch(NativeInvocation {
-                caller: CallerContext::service_system("test-caller"),
+                caller: substrate_admin_caller("did:key:zTestController"),
                 interface: "security".to_string(),
                 method: "set-secret".to_string(),
                 params: serde_json::to_value((
@@ -708,6 +755,81 @@ mod tests {
             .unwrap();
         assert_eq!(secret_res.payload, serde_json::json!({"status": "secret_set"}));
     }
+
+    /// **Matrix row 16** (task.md): a caller holding no `substrate/admin`
+    /// is denied every `security` method, with `PERMISSION_DENIED_CODE`
+    /// (-32010) so a caller can assert denial without string-matching.
+    #[tokio::test]
+    async fn security_is_denied_without_substrate_admin() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider =
+            Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
+                syneroym_app_orchestration::empty_resolver(),
+            )
+            .await
+            .unwrap(),
+        );
+        let container_engine =
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir.path(), None));
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+
+        let native_dispatch = NativeDispatchRegistry::default();
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
+            app_sandbox,
+            container_engine,
+            registry,
+            temp_dir.path().to_path_buf(),
+            key_store,
+            storage_provider,
+            blob_provider.clone(),
+            messaging_broker.clone(),
+            native_dispatch.clone(),
+            Arc::new(DashMap::new()),
+            Arc::new(syneroym_identity::Identity::generate().unwrap()),
+            syneroym_app_orchestration::empty_resolver(),
+        )
+        .await
+        .unwrap();
+
+        for method in ["inject-kek", "rotate-kek", "set-secret"] {
+            let params = match method {
+                "set-secret" => serde_json::to_value((
+                    "profile-store".to_string(),
+                    "api_key".to_string(),
+                    b"secret".to_vec(),
+                ))
+                .unwrap(),
+                _ => serde_json::to_value((hex::encode([1u8; 32]),)).unwrap(),
+            };
+            let err = service
+                .dispatch(NativeInvocation {
+                    caller: CallerContext::service_system("test-caller"),
+                    interface: "security".to_string(),
+                    method: method.to_string(),
+                    params,
+                })
+                .await
+                .unwrap_err();
+            assert_eq!(err.code(), PERMISSION_DENIED_CODE, "{method} must deny without admin");
+        }
+    }
+
     /// Slice 5: deploy a service (TCP type -- no WASM component needed),
     /// then exercise data-layer and blob-store entirely through
     /// `SynSvcNativeService::dispatch`, with no WASM component involved at

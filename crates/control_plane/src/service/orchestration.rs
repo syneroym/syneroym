@@ -503,9 +503,10 @@ impl OrchestratorInterface for ControlPlaneService {
     /// non-empty `service_id` is a per-service readiness check (task.md item
     /// 1's "status-check") and is gated on `orchestrator/status`, exactly
     /// like `deploy`/`undeploy` gate on their own abilities below --
-    /// node-wide authority (the owner, or on an unowned substrate, anyone --
-    /// F4) passes for free; otherwise the caller needs a grant covering this
-    /// app.
+    /// node-wide authority (the owner, via a verified `ControllerAgreement`)
+    /// passes for free; otherwise the caller needs a grant covering this
+    /// app. An unowned substrate holds no node-wide authority, so this
+    /// always falls through to the per-app grant check there.
     async fn readyz(&self, service_id: String, caller: &CallerContext) -> Result<(), String> {
         if !service_id.is_empty() {
             if !self.has_node_wide_ability(caller, Ability::ORCHESTRATOR_STATUS) {
@@ -655,10 +656,11 @@ impl ControlPlaneService {
         caller: &CallerContext,
     ) -> Result<(), String> {
         // M04A Slice B7a / F7: a service_id already owned by someone else may
-        // not be re-deployed into. On an unowned substrate every caller
-        // holds node-wide orchestrator authority (F4), so this never fires
-        // and today's overwrite-on-redeploy behavior is preserved exactly --
-        // without a mode branch. Checks ORCHESTRATOR_DEPLOY specifically
+        // not be re-deployed into. An unowned substrate holds no node-wide
+        // orchestrator authority, so this always
+        // enforces the takeover check there -- only an owned substrate's
+        // owner can override it, and today's overwrite-on-redeploy behavior
+        // is preserved exactly for that case. Checks ORCHESTRATOR_DEPLOY specifically
         // (post-review fix, not the old single-ability
         // `has_node_wide_orchestrator_authority`): a caller who holds only
         // `orchestrator/status` must not be able to override someone else's
@@ -690,11 +692,15 @@ impl ControlPlaneService {
         // M04A Slice B7b (§3.2): Tier-1 deploy admission. The caller must
         // hold `orchestrator/deploy` covering this app. No owner/unowned
         // branch and no separate substrate-owner bypass here: a bare
-        // `substrate:<node>` capability (the owner's `substrate/admin`, or
-        // the unowned grant of F4) is `is_substrate_scope`, so `grants`
-        // wildcards the resource and only `entails` has to hold -- both
-        // pass here for free. An app-scoped B7b grantee is prefix-covered
-        // instead. One check, three principals, no branch.
+        // `substrate:<node>` capability (the owner's `substrate/admin`) is
+        // `is_substrate_scope`, so `grants` wildcards the resource and only
+        // `entails` has to hold -- that passes here for free. An app-scoped
+        // grantee is prefix-covered instead. One check, two principals,
+        // no branch. (An unowned substrate holds neither shape of
+        // capability, so this denies unconditionally
+        // there unless the caller holds an app-scoped grant -- which
+        // nothing can issue on an unowned substrate either, so deploy is
+        // simply unreachable until ownership is established.)
         let deploy_resource = ResourceUri(format!("substrate:{}/app/{service_id}", self.node_did));
         if !caller
             .has_capability(&deploy_resource, &Ability(Ability::ORCHESTRATOR_DEPLOY.to_string()))
@@ -787,11 +793,11 @@ impl ControlPlaneService {
 
             // An app instance's first successful deploy becomes its owner
             // (first-write-wins, the same shape `service_id` ownership uses
-            // just above -- including that check's own F7 note: on an
-            // unowned substrate every caller holds node-wide orchestrator
-            // authority (F4), so `has_node_wide_ability` short-circuits
-            // this and it never actually fires, same as the `service_id`
-            // check above never firing today. Also the same accepted
+            // just above -- including that check's own F7 note: an unowned
+            // substrate holds no node-wide orchestrator authority, so
+            // `has_node_wide_ability` only short-circuits
+            // this for an *owned* substrate's owner, same as the
+            // `service_id` check above. Also the same accepted
             // TOCTOU gap: this read
             // and the eventual `set_app_instance_owner` write in
             // `install_app_context` are separated by the whole deploy body,
@@ -1254,19 +1260,22 @@ impl ControlPlaneService {
         //
         // Interaction with `deploy`'s own rollback path (§2.3): `deploy`
         // calls `self.undeploy(service_id.clone(), caller)` with the *same*
-        // `caller` on two failure paths. F4's unowned-substrate grant issues
-        // all three `orchestrator/*` abilities together, so this never trips
-        // there; on a real *owned* substrate it could, in principle, reject
-        // a rollback for a caller who legitimately holds `orchestrator/
-        // deploy` on this app but was never separately granted `orchestrator/
-        // undeploy` for it -- abilities are deliberately flat and
-        // independently grantable (§3.1 A2), so "deploy but not undeploy" is
-        // a real, supported shape. That is inert today for the same reason
-        // §6.1 records for the gate as a whole: nothing can create a
-        // `ControllerAgreement` yet, so every substrate is unowned and every
-        // verified caller holds all three abilities together. Revisit if a
-        // deploy-only grantee becomes real before the ownership tooling
-        // lands.
+        // `caller` on two failure paths. Abilities are deliberately flat
+        // and independently grantable (§3.1 A2), so "deploy but not
+        // undeploy" is a real, supported shape -- a deploy-only grantee
+        // (`roymctl identity issue-grant --can orchestrator/deploy`, no
+        // `orchestrator/undeploy`) whose deploy fails partway would be
+        // rejected *again* by this check on the rollback attempt, on a
+        // confusing second error. This was inert before anything could
+        // create a `ControllerAgreement`, when every substrate was unowned
+        // and every verified caller held all three abilities together for
+        // free -- now that `ControllerAgreement`, and so real app-scoped
+        // grants, are live: a grant meant to let its holder
+        // deploy reliably should include `orchestrator/undeploy` alongside
+        // `orchestrator/deploy` so a failed deploy can clean up after
+        // itself. `deploy_grant.rs` documents the partial-grant shapes;
+        // this comment records the specific rollback interaction so a
+        // future grant-issuing tool does not reintroduce it silently.
         let undeploy_resource =
             ResourceUri(format!("substrate:{}/app/{service_id}", self.node_did));
         if !caller.has_capability(
@@ -1444,8 +1453,9 @@ impl ControlPlaneService {
         result.sort_by(|a, b| a.service_id.cmp(&b.service_id));
 
         // M04A Slice B7a: node-wide orchestrator authority sees everything --
-        // the substrate owner, or on an unowned substrate, everyone (F4),
-        // preserving today's behavior with no mode branch. Checks
+        // the substrate owner (a verified `ControllerAgreement` controller;
+        // an unowned substrate holds no node-wide authority
+        // and so sees nothing here). Checks
         // ORCHESTRATOR_STATUS specifically (unlike deploy/undeploy's checks
         // above): a status-only monitoring grantee is meant to see the
         // list -- that is what the ability names -- without thereby gaining
@@ -1494,7 +1504,9 @@ mod tests {
     /// M04A Slice B7b: a caller holding node-wide orchestrator authority on
     /// `"did:key:zTestNode"` (every test in this module inits
     /// `ControlPlaneService` with that node DID) -- the shape `build_caller`
-    /// issues for the F4 unowned-substrate bootstrap grant. Deploy/undeploy
+    /// issues for a verified `ControllerAgreement` controller (before that
+    /// tool existed, this was also the unowned-substrate bootstrap grant,
+    /// now removed). Deploy/undeploy
     /// now gate on an explicit `orchestrator/{deploy,undeploy}` capability
     /// (§3.2), so every test below that exercises `deploy`/`deploy_plan`/
     /// `undeploy` and expects to get *past* that gate (to reach a

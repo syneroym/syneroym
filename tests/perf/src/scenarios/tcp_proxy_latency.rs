@@ -49,9 +49,15 @@ pub async fn run_scenario() -> Result<()> {
     let registry_url = "http://127.0.0.1:7961".to_string();
     let gateway_url = "http://127.0.0.1:7960/".to_string();
 
-    // Connect SDK Client to the orchestrator (which is the substrate itself)
-    let mut orchestrator_client =
-        SyneroymClient::new(env.substrate_did.clone(), registry_url.clone());
+    // Connect SDK Client to the orchestrator (which is the substrate itself),
+    // presenting the owner identity (an unowned substrate now
+    // fails closed, so the ephemeral identity `SyneroymClient::new` would
+    // generate could not reach `orchestrator/deploy`).
+    let mut orchestrator_client = SyneroymClient::new_with_identity(
+        env.substrate_did.clone(),
+        registry_url.clone(),
+        Identity::from_bytes(&env.owner_key),
+    );
     orchestrator_client.wait_for_ready(Duration::from_secs(10)).await?;
 
     // Deploy the TCP service on the substrate

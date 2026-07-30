@@ -83,8 +83,13 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
     let app_service_id = substrate::derive_did_key(&app_identity.public_key());
 
     let registry_url = "http://127.0.0.1:7961".to_string();
-    let mut orchestrator_client =
-        SyneroymClient::new(env.substrate_did.clone(), registry_url.clone());
+    // Owner identity, not the ephemeral default -- an
+    // unowned substrate now fails closed on `orchestrator/deploy`.
+    let mut orchestrator_client = SyneroymClient::new_with_identity(
+        env.substrate_did.clone(),
+        registry_url.clone(),
+        Identity::from_bytes(&env.owner_key),
+    );
     orchestrator_client.wait_for_ready(Duration::from_secs(10)).await?;
 
     // Deploy primary WASM Greeter service
@@ -253,6 +258,11 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
     let wasm_bytes_clone = wasm_bytes.clone();
     let registry_url_clone = registry_url.clone();
     let substrate_did_clone = env.substrate_did.clone();
+    // The owner's raw key bytes, moved into the spawned
+    // task alongside the other clones -- `owner/substrate/admin` entails
+    // `orchestrator/undeploy` too, so the undeploy calls further down need
+    // no separate grant.
+    let owner_key_clone = env.owner_key;
     let mechanisms_clone = mechanisms.clone();
 
     let deploy_interval_secs = if duration_secs < 60 { 5 } else { 30 };
@@ -272,8 +282,11 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
             let unique_service_id = substrate::derive_did_key(&churn_identity.public_key());
             info!("Deploy Churn Cycle {}: Deploying {}", cycle, unique_service_id);
 
-            let mut orchestrator_client =
-                SyneroymClient::new(substrate_did_clone.clone(), registry_url_clone.clone());
+            let mut orchestrator_client = SyneroymClient::new_with_identity(
+                substrate_did_clone.clone(),
+                registry_url_clone.clone(),
+                Identity::from_bytes(&owner_key_clone),
+            );
 
             if let Err(e) = orchestrator_client.connect().await {
                 warn!(

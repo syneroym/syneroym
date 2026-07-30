@@ -36,9 +36,10 @@ impl ResourceUri {
     /// including a `substrate:<other-node>` one. Inert at B1 (the only
     /// issuer of a substrate-scoped capability is this node's own admin
     /// root, naming its own DID -- see `covers`'s tests); at B7b this is
-    /// exactly the shape `build_caller` still issues for the F4 unowned
-    /// posture and a real owner's `substrate/admin`, so it stays inert
-    /// there too. The node-locality check ADR-0015 A6/F6 calls for lives in
+    /// exactly the shape `build_caller` still issues for a verified
+    /// `ControllerAgreement` controller's `substrate/admin`, so it stays
+    /// inert there too. The node-locality check ADR-0015
+    /// A6/F6 calls for lives in
     /// the *chain-rooting* predicate (`ChainVerifyOpts::is_trusted_root`,
     /// `crates/router/src/route_handler/io.rs`'s `resource_is_local`), not
     /// here -- threading `local_node_did` through `Capability::grants`/

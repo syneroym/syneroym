@@ -90,12 +90,18 @@ struct Node {
 }
 
 impl Node {
+    /// `owner` becomes this node's `[iam].admin_ucan_root` and the identity
+    /// its own `substrate_client` presents (an unowned
+    /// substrate now fails closed, so `inject_kek` -- a `security` call --
+    /// needs an owning identity behind it too, not just a config value).
+    /// `None` used to mean "unowned"; that posture is no longer usable for
+    /// anything this fixture drives, so every caller now passes `Some`.
     async fn boot(
         iroh_port: u16,
         registry_port: u16,
         gateway_port: u16,
         shared_registry_url: Option<String>,
-        admin_ucan_root: Option<String>,
+        owner: Option<Identity>,
         shared_relay_url: Option<String>,
     ) -> Self {
         let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
@@ -138,16 +144,19 @@ impl Node {
         config.roles.client_gateway = Some(ClientGatewayRole { http_port: gateway_port });
         // An owned node so an unrelated caller (e.g. Node A's own forwarded
         // `resolve-relation` invocation, proxying for a Node B principal who
-        // never delegated anything on Node A) does not fall back to the
-        // unowned-substrate posture's free `orchestrator/*` capabilities
-        // (`build_caller`, M04A Slice B7a F4) -- those are bare
-        // `substrate:<node_did>`-scoped, and `resolve_relation`'s A1/A2 fork
-        // (B3-07) treats *any* substrate-scoped capability as "holds a
-        // capability scoped to this resource," regardless of its ability.
-        // Unowned would make every caller look like it holds one, always
-        // forcing A1 and defeating `resolvable_without_capability`'s A2
-        // path entirely.
-        config.iam.admin_ucan_root = admin_ucan_root;
+        // never delegated anything on Node A) does not fall back to a
+        // free, bare `substrate:<node_did>`-scoped `orchestrator/*`
+        // capability -- `resolve_relation`'s A1/A2 fork (B3-07) treats *any*
+        // substrate-scoped capability as "holds a capability scoped to this
+        // resource," regardless of its ability, which would force A1 and
+        // defeat `resolvable_without_capability`'s A2 path entirely. Now
+        // this reasoning applies unconditionally -- an
+        // unowned substrate no longer issues that free grant at all, but it
+        // also grants nothing else, so every caller here still needs a
+        // real owner (or, for a non-owner deployer, an app-scoped grant
+        // from one; see the `app_deploy_grant` call sites below).
+        let owner_did = owner.as_ref().map(|id| substrate::derive_did_key(&id.public_key()));
+        config.iam.admin_ucan_root = owner_did;
 
         let substrate_identity_state =
             identity::setup_substrate_identity(&config.identity, &config.app_data_dir)
@@ -167,8 +176,16 @@ impl Node {
             .expect("substrate failed to run");
         });
 
-        let mut substrate_client =
-            SyneroymClient::new(substrate_service_id.clone(), effective_registry_url.clone());
+        let mut substrate_client = match owner {
+            Some(id) => SyneroymClient::new_with_identity(
+                substrate_service_id.clone(),
+                effective_registry_url.clone(),
+                id,
+            ),
+            None => {
+                SyneroymClient::new(substrate_service_id.clone(), effective_registry_url.clone())
+            }
+        };
         substrate_client
             .wait_for_ready(Duration::from_secs(30))
             .await
@@ -239,6 +256,41 @@ async fn deploy(client: &SyneroymClient, service_id: &str, manifest: DeployManif
     assert_eq!(res.result, json!({"status": "deployed"}), "deploy did not succeed: {res:?}");
 }
 
+/// An app-scoped `orchestrator/{deploy,undeploy,status}` grant, issued by
+/// `node_owner`, letting `grantee_did` deploy (and later undeploy) exactly
+/// one app on `node_did` -- the same shape `deploy_grant.rs` already
+/// exercises, made real here now that the free
+/// unowned-substrate grant `alice_deployer`/`bad_app_deployer` used to ride
+/// on. All three abilities are granted together, not deploy-only: `deploy`
+/// calls `self.undeploy(.., caller)` on two rollback paths
+/// (`orchestration.rs`'s `undeploy_impl` doc), so a deploy-only grant would
+/// make a *failed* deploy fail again on a confusing second error --
+/// `deploy_grant.rs` owns the partial-grant cases, not this fixture.
+fn app_deploy_grant(
+    node_owner: &Identity,
+    grantee_did: &str,
+    node_did: &str,
+    service_id: &str,
+) -> CapabilityToken {
+    let resource = ResourceUri(format!("substrate:{node_did}/app/{service_id}"));
+    CapabilityToken::issue(
+        node_owner,
+        grantee_did,
+        [
+            Ability::ORCHESTRATOR_DEPLOY,
+            Ability::ORCHESTRATOR_UNDEPLOY,
+            Ability::ORCHESTRATOR_STATUS,
+        ]
+        .into_iter()
+        .map(|a| Capability { with: resource.clone(), can: Ability(a.to_string()), caveats: None })
+        .collect(),
+        Map::new(),
+        3600,
+        vec![],
+    )
+    .expect("issue app deploy grant")
+}
+
 /// Publishes `service_id`'s own `EndpointInfo` -- reachable at the hosting
 /// node's own Iroh mechanisms -- into `registry_url`, self-signed by
 /// `service_identity`. Mirrors `basic_lifecycle.rs`'s own
@@ -285,11 +337,10 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
     let hr_owner_identity = Identity::generate().unwrap();
     let hr_owner_did = substrate::derive_did_key(&hr_owner_identity.public_key());
 
-    // Node A is owned by `hr_owner_did` -- otherwise every verified caller
+    // Node A is owned by `hr_owner_did` -- otherwise every unrelated caller
     // (including alice's forwarded `resolve-relation` identity, who never
-    // delegated anything on Node A) would fall back to the unowned-substrate
-    // posture's free, bare `substrate:<node_did>`-scoped `orchestrator/*`
-    // capabilities (`build_caller`, M04A Slice B7a F4), which
+    // delegated anything on Node A) would fall back to a free, bare
+    // `substrate:<node_did>`-scoped `orchestrator/*` capability, which
     // `resolve_relation`'s A1/A2 fork (B3-07) treats as "holds a capability
     // scoped to this resource" regardless of ability -- forcing A1 and
     // defeating `resolvable_without_capability`'s A2 path for every caller.
@@ -298,17 +349,29 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
         NODE_A_REGISTRY_PORT,
         NODE_A_GATEWAY_PORT,
         None,
-        Some(hr_owner_did.clone()),
+        Some(Identity::from_bytes(&hr_owner_identity.to_bytes())),
         None,
     )
     .await;
     let node_a_relay_url = format!("http://localhost:{NODE_A_IROH_PORT}");
+
+    // Node B gets its own, *distinct* owner -- deliberately not
+    // `hr_owner_did` and not alice: giving Node B an
+    // admin root named after alice would grant her `substrate/admin`,
+    // which entails `data-layer/write` everywhere on Node B
+    // (`Ability::entails`'s short-circuit) and would make the carefully
+    // separated read-only/write-only tokens below meaningless while every
+    // assertion still passed. `alice_deployer` below instead gets an
+    // app-scoped deploy grant issued by `node_b_owner` -- the property this
+    // file exists to prove is that alice holds no broader capability at
+    // all without one.
+    let node_b_owner = Identity::generate().unwrap();
     let node_b = Node::boot(
         NODE_B_IROH_PORT,
         NODE_B_REGISTRY_PORT,
         NODE_B_GATEWAY_PORT,
         Some(node_a.registry_url.clone()),
-        None,
+        Some(Identity::from_bytes(&node_b_owner.to_bytes())),
         Some(node_a_relay_url),
     )
     .await;
@@ -411,7 +474,10 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
     // --- Node B: alice's own "documents" app. She deploys (and so owns) it
     // herself, so her later self-issued root capability on it is trusted
     // per ADR-0015 A6 (`registry.owner_of(svc) == issuer`) with no node-wide
-    // admin root and no delegation chain needed. ---
+    // admin root and no delegation chain needed -- but *reaching* `deploy`
+    // at all now needs an app-scoped grant from Node B's owner,
+    // since Node B no longer issues a free `orchestrator/deploy` to
+    // every verified caller. ---
     let app_service_identity = Identity::generate().unwrap();
     let app_service_id = substrate::derive_did_key(&app_service_identity.public_key());
 
@@ -419,7 +485,8 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
         node_b.did().to_string(),
         node_b.registry_url.clone(),
         Identity::from_bytes(&alice_identity.to_bytes()),
-    );
+    )
+    .with_ucan(app_deploy_grant(&node_b_owner, &alice_did, node_b.did(), &app_service_id));
     alice_deployer.connect().await.expect("failed to connect to node B for deploy");
 
     let app_policy = format!(
@@ -451,8 +518,8 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
     .await;
 
     // Same reasoning as `hr_data_client` above: seed through a client
-    // targeting `app_service_id` itself, not `node_b.did()`. Node B is
-    // unowned (no `admin_ucan_root`), so -- unlike Node A's `hr_data_client`
+    // targeting `app_service_id` itself, not `node_b.did()`. Node B's owner
+    // is `node_b_owner`, not alice, so -- unlike Node A's `hr_data_client`
     // -- alice holds no capability at all without self-issuing one; a
     // *write-only* token, trusted per ADR-0015 A6 (she owns the service she
     // deployed), entitles the "seed" permission below. Deliberately a
@@ -630,11 +697,24 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
         .await
         .expect("seeding second employee failed");
 
+    // A *third* deployer on Node B: needs its own app-scoped
+    // grant, issued to `alice_did_2` specifically -- `bad_seed_token`/
+    // `bad_query_client` further down self-issue owner-rooted tokens that
+    // only verify because `registry.owner_of(bad_app_service_id) ==
+    // alice_did_2` (ADR-0015 A6, and `deploy` records `caller.caller_did` as
+    // the owner), so deploying as anyone else here would silently break
+    // that root.
     let mut bad_app_deployer = SyneroymClient::new_with_identity(
         node_b.did().to_string(),
         node_b.registry_url.clone(),
         Identity::from_bytes(&alice_identity_2.to_bytes()),
-    );
+    )
+    .with_ucan(app_deploy_grant(
+        &node_b_owner,
+        &alice_did_2,
+        node_b.did(),
+        &bad_app_service_id,
+    ));
     bad_app_deployer.connect().await.expect("failed to connect to node B for the mismatch deploy");
     deploy(&bad_app_deployer, &bad_app_service_id, deploy_manifest(Some(bad_app_policy))).await;
     register_service(

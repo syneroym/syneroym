@@ -93,12 +93,15 @@ struct Node {
 }
 
 impl Node {
+    /// `owner`'s DID becomes this node's `[iam].admin_ucan_root` (an
+    /// unowned substrate now fails closed).
     async fn boot(
         iroh_port: u16,
         registry_port: u16,
         gateway_port: u16,
         shared_registry_url: Option<String>,
         shared_relay_url: Option<String>,
+        owner: &Identity,
     ) -> Self {
         let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
         let base_path = temp_dir.path();
@@ -135,6 +138,7 @@ impl Node {
         let relay_url = shared_relay_url.unwrap_or_else(|| format!("http://localhost:{iroh_port}"));
         config.parent_coordinator.iroh = Some(IrohParentConfig { url: relay_url });
         config.roles.client_gateway = Some(ClientGatewayRole { http_port: gateway_port });
+        config.iam.admin_ucan_root = Some(substrate::derive_did_key(&owner.public_key()));
 
         let substrate_identity_state =
             identity::setup_substrate_identity(&config.identity, &config.app_data_dir)
@@ -154,8 +158,11 @@ impl Node {
             .expect("substrate failed to run");
         });
 
-        let mut substrate_client =
-            SyneroymClient::new(substrate_service_id.clone(), effective_registry_url.clone());
+        let mut substrate_client = SyneroymClient::new_with_identity(
+            substrate_service_id.clone(),
+            effective_registry_url.clone(),
+            Identity::from_bytes(&owner.to_bytes()),
+        );
         substrate_client
             .wait_for_ready(Duration::from_secs(30))
             .await
@@ -244,8 +251,21 @@ fn orchestrator_client(node: &Node, caller: Identity) -> SyneroymClient {
 async fn a_member_master_did_resolves_to_an_address_and_follows_the_member_across_nodes() {
     let _ = ring::default_provider().install_default();
 
-    let node_a =
-        Node::boot(NODE_A_IROH_PORT, NODE_A_REGISTRY_PORT, NODE_A_GATEWAY_PORT, None, None).await;
+    // An unowned substrate now fails closed, so both nodes
+    // need an owner. One `operator` identity owns both -- moved ahead of
+    // `Node::boot` from where it used to be minted (it is also the caller
+    // presented against both nodes below).
+    let operator = Identity::generate().unwrap();
+
+    let node_a = Node::boot(
+        NODE_A_IROH_PORT,
+        NODE_A_REGISTRY_PORT,
+        NODE_A_GATEWAY_PORT,
+        None,
+        None,
+        &operator,
+    )
+    .await;
     let node_a_registry_url = node_a.registry_url.clone();
     let node_a_relay_url = format!("http://localhost:{NODE_A_IROH_PORT}");
     let node_b = Node::boot(
@@ -254,6 +274,7 @@ async fn a_member_master_did_resolves_to_an_address_and_follows_the_member_acros
         NODE_B_GATEWAY_PORT,
         Some(node_a_registry_url.clone()),
         Some(node_a_relay_url),
+        &operator,
     )
     .await;
 
@@ -276,7 +297,6 @@ async fn a_member_master_did_resolves_to_an_address_and_follows_the_member_acros
         .await
         .expect("failed to publish member master anchor");
 
-    let operator = Identity::generate().unwrap();
     let mut operator_b = orchestrator_client(&node_b, Identity::from_bytes(&operator.to_bytes()));
     operator_b.connect().await.expect("failed to connect to node B");
 

@@ -368,20 +368,18 @@ async fn setup_connection_router(
     }
     let config = &effective_config;
 
-    // M04A Slice B7a (F4): no verified ControllerAgreement controller and no
-    // [iam].admin_ucan_root means nobody can root an orchestrator grant, so
-    // every verified caller is issued the orchestrator abilities on this
-    // node instead (`build_caller`, `crates/router/src/route_handler/io.rs`)
-    // -- a bootstrap posture, not a disabled check. Logged loudly since it
-    // is a real, if bounded, security posture.
+    // No verified ControllerAgreement controller and no
+    // [iam].admin_ucan_root means the substrate is unowned and fails
+    // closed -- no caller holds any node-wide capability at all
+    // (`build_caller`, `crates/router/src/route_handler/io.rs`). Logged
+    // loudly because the operator-facing fix is a local, offline step.
     if config.iam.admin_ucan_root.is_none() {
         warn!(
             "substrate has no verified ControllerAgreement controller and no \
-             [iam].admin_ucan_root: running UNOWNED -- every verified caller is granted \
-             orchestrator/{{deploy,undeploy,status}} on this node, and so may deploy, undeploy, \
-             status-check, and see every app. (Data-plane admin -- execute-ddl/query-raw -- is \
-             NOT granted; those stay denied.) Configure a ControllerAgreement to enforce \
-             ownership (M04A Slice B7a, F4)"
+             [iam].admin_ucan_root: running UNOWNED and FAIL-CLOSED -- no caller can deploy, \
+             undeploy, status-check, or reach the security interface (KEK/secrets) on this node. \
+             Establish ownership on this host with: roymctl substrate claim --controller <name>  \
+             (then restart)"
         );
     }
 

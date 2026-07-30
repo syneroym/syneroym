@@ -36,6 +36,17 @@ export default async function globalSetup() {
   execSync(`"${ROYMCTL_BIN}" node init --dir ${TEST_DIR}/sz`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
   execSync(`"${ROYMCTL_BIN}" node init --dir ${TEST_DIR}/sx`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
 
+  // An unowned substrate now fails closed. Only `sz` and
+  // `sx` ever receive a deploy below, so only they need claiming -- `c`
+  // and `cp` are coordinator/relay only and stay unowned, which is fine
+  // and cheaper (nothing deploys to them, so nothing needs `orchestrator`
+  // or `security` access there).
+  console.log('Creating operator identities and claiming sz/sx...');
+  execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR}/sz identity create --name owner`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
+  execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR}/sz substrate claim --controller owner`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
+  execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR}/sx identity create --name owner`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
+  execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR}/sx substrate claim --controller owner`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
+
   // C config
   const configC = `
 config_version = 1
@@ -45,7 +56,7 @@ app_data_dir = "${TEST_DIR}/c"
 profile = "full"
 
 [identity]
-key = "identity.key"
+key = "substrate.key"
 nickname = "c-global"
 
 [roles.community_registry]
@@ -84,7 +95,7 @@ app_data_dir = "${TEST_DIR}/cp"
 profile = "full"
 
 [identity]
-key = "identity.key"
+key = "substrate.key"
 nickname = "cp-private"
 
 [roles.coordinator.iroh]
@@ -124,7 +135,7 @@ app_data_dir = "${TEST_DIR}/sz"
 profile = "full"
 
 [identity]
-key = "identity.key"
+key = "substrate.key"
 nickname = "sz-appnode"
 
 [roles.app_sandbox]
@@ -152,7 +163,7 @@ app_data_dir = "${TEST_DIR}/sx"
 profile = "full"
 
 [identity]
-key = "identity.key"
+key = "substrate.key"
 nickname = "sx-appnode"
 
 [roles.app_sandbox]
@@ -271,7 +282,7 @@ registry_url = "http://127.0.0.1:7661"
   console.log('Demo1 App DID:', did1, 'Alias:', alias1);
 
   execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR}/sz --api-url http://127.0.0.1:7661 registry register --identity demo1 --substrate ${szDid} --nickname demo1`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
-  execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR}/sz --api-url http://127.0.0.1:7661 --substrate ${szDid} svc deploy --svc-id ${did1} --interfaces http --tcp 127.0.0.1:3000`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
+  execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR}/sz --api-url http://127.0.0.1:7661 --substrate ${szDid} --as owner svc deploy --svc-id ${did1} --interfaces http --tcp 127.0.0.1:3000`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
 
   // Initialize and Register demo2 for Sx
   console.log('Creating demo2 identity (Sx)...');
@@ -285,7 +296,7 @@ registry_url = "http://127.0.0.1:7661"
   console.log('Demo2 App DID:', did2, 'Alias:', alias2);
 
   execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR}/sx --api-url http://127.0.0.1:7661 registry register --identity demo2 --substrate ${sxDid} --nickname demo2`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
-  execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR}/sx --api-url http://127.0.0.1:7661 --substrate ${sxDid} svc deploy --svc-id ${did2} --interfaces http --tcp 127.0.0.1:3000`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
+  execSync(`"${ROYMCTL_BIN}" --dir ${TEST_DIR}/sx --api-url http://127.0.0.1:7661 --substrate ${sxDid} --as owner svc deploy --svc-id ${did2} --interfaces http --tcp 127.0.0.1:3000`, { cwd: WORKSPACE_DIR, stdio: 'inherit' });
 
   // Set env vars for Playwright specs
   process.env.SZ_DID = szDid;

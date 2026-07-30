@@ -74,7 +74,7 @@ supervisor.
 
 | Gate | Status | Effect if unmet |
 |---|---|---|
-| `ControllerAgreement` creation tool | **Pulled into this milestone as Slice P0** (was M5 item 5) | Not a *functional* blocker: an unowned substrate grants `orchestrator/deploy` to every verified caller today ([io.rs:185-200](../../../../crates/router/src/route_handler/io.rs#L185)), a deliberate bootstrap posture. It is a *security* blocker — see P0. **Gates Slice A3 onward**; A0–A2 are unaffected. |
+| `ControllerAgreement` creation tool | **Complete (2026-07-30)** — see P0 below | Was not a *functional* blocker: an unowned substrate granted `orchestrator/deploy` to every verified caller ([io.rs:174-182](../../../../crates/router/src/route_handler/io.rs#L174)), a deliberate bootstrap posture, before P0 removed it. Cleared. |
 | M04A/M04B identity + FDAE | Complete | ADR-0020 depends on `subject_did`/`caller_did` already being the master DID. |
 | M5 item 1 async primitives (Outbox, DLQ, cron leases) | Not built | Not a gate for this milestone; gates the post-M5 slice only (see below). |
 | M7 replication | Not built | Gates stateful relocation only. |
@@ -83,7 +83,9 @@ supervisor.
 
 ## Slices
 
-### P0 — `ControllerAgreement` creation tool *(pulled forward from M5 item 5)*
+### P0 — `ControllerAgreement` creation tool *(pulled forward from M5 item 5)* — **Complete (2026-07-30)**
+Implementation plan: [slice-p0-implementation-plan.md](slice-p0-implementation-plan.md).
+Verification evidence: [status.md](status.md)'s P0 section.
 
 A prerequisite pulled in from another milestone rather than part of the A-series
 design, which is why it is numbered separately.
@@ -94,14 +96,14 @@ identities and `DelegationCertificate`s but has no verb to produce one, and
 `admin_root` resolves to `None` on every real deployment, and B7b's ownership
 gate is inert.
 
-**What that actually means — and it is not what an earlier draft of this
-milestone said.** An unowned substrate does *not* fail closed. It issues
-`orchestrator/deploy`, `undeploy`, and `status` to **every verified caller**
-([io.rs:185-200](../../../../crates/router/src/route_handler/io.rs#L185)) — a
-deliberate bootstrap posture, since default-deny would brick a substrate
-permanently: you could not deploy the thing that establishes ownership. So a
-supervisor can already deploy to unowned substrates, and A3 is not functionally
-blocked.
+**What that actually meant, before this slice.** An unowned substrate did
+*not* fail closed. It issued `orchestrator/deploy`, `undeploy`, and `status`
+to **every verified caller**
+([io.rs:174-182](../../../../crates/router/src/route_handler/io.rs#L174),
+before P0 removed the grant) — a deliberate bootstrap posture, since
+default-deny would have bricked a substrate permanently: you could not deploy
+the thing that establishes ownership. So a supervisor could already deploy to
+unowned substrates, and A3 was not functionally blocked by this alone.
 
 The problem is what this milestone does to that posture. Today it is one
 operator hand-deploying to their own substrate with a human in the loop.
@@ -122,14 +124,16 @@ so they ship as one slice:
    ownership becomes establishable but nothing changes behaviourally, because
    neither gate below exists to benefit from it.
 2. **Gate the `security` interface on `substrate/admin`** (B7 F3.1).
-   `inject-kek`, `rotate-kek`, and `set-secret` are dispatched with **no
-   capability check at all** today — see the standing `TODO(M04B/FDAE)` at
-   [service.rs:256-260](../../../../crates/control_plane/src/service.rs#L256),
-   whose named milestone has since closed without it being addressed. Any
-   verified caller can rotate the KEK that encrypts every service database on
-   the node. *Alone:* gating it bricks the interface, since nobody can hold
-   `substrate/admin` while no `ControllerAgreement` can be created — B7 rejected
-   exactly this as "a functional regression, not a tightening."
+   `inject-kek`, `rotate-kek`, and `set-secret` were dispatched with **no
+   capability check at all** before this slice — the standing
+   `TODO(M04B/FDAE)` this replaced, whose named milestone had since closed
+   without it being addressed, is gone; the gate now lives at
+   [service.rs:268](../../../../crates/control_plane/src/service.rs#L268).
+   Any verified caller could rotate the KEK that encrypts every service
+   database on the node. *Alone:* gating it bricks the interface, since
+   nobody can hold `substrate/admin` while no `ControllerAgreement` can be
+   created — B7 rejected exactly this as "a functional regression, not a
+   tightening."
 3. **Reconsider F4's fail-closed default**, so an unowned substrate stops
    issuing `orchestrator/deploy` to every verified caller. *Alone:* bricks the
    substrate permanently — you could not deploy the thing that establishes
@@ -144,6 +148,16 @@ security-posture change to M04A's authorization surface, pulled into a
 supervisor milestone because the supervisor is what makes the current posture
 untenable. Taken deliberately: the alternative is shipping an intermediate state
 that is broken or pointless.
+
+**The tool is local and offline, by construction — constrains A3's
+provisioning story.** Producing an agreement needs both the controller's and
+the node's private keys; the node's key exists only on the node's own
+filesystem, and no RPC returns a signature over caller-supplied bytes. So
+`roymctl substrate claim` runs on the substrate host, and there is no remote
+claim. Provisioning N substrates for A3 means visiting N hosts (or shipping
+`agreement.json` out of band) — acceptable for P0, but A3's substrate-inventory
+design must not assume an operator can claim a substrate they have no shell on.
+Tracked as a backlog row (`deferred-backlog.md` §3), not a redesign.
 
 **Not pulled from M5 item 5's bundle:** multiple substrate owners (F12) — a
 single owner per substrate is sufficient here — and Tier 1 for the five data

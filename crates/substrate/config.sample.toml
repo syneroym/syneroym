@@ -29,10 +29,12 @@ profile = "full"
 key = "substrate.key"
 # Candidate controller DID. Only used if agreement is not provided.
 # Must be treated as UNVERIFIED until an agreement is established. Equivalent to CLI `--controller <did>`
-controller_did = ""
+# controller_did = ""
 # Path to ControllerAgreement JSON binding node DID to controller DID.
-# Equivalent to CLI `--agreement <path>`
-# agreement = "substrate-controller-agreement.json"
+# Discovered automatically at `<app_data_dir>/agreement.json` (roymctl
+# substrate claim's default output) when unset -- only set this to override
+# that default. Equivalent to CLI `--agreement <path>`
+# agreement = "agreement.json"
 # If true, the node MUST NOT start without a valid ControllerAgreement.
 # Equivalent to CLI `--require-agreement`
 require_agreement = false

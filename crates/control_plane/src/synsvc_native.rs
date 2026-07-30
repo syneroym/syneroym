@@ -40,8 +40,8 @@ use syneroym_identity::{DelegationCertificate, Identity};
 use syneroym_mqtt_broker::{MqttBroker, namespace_topic_for_publish};
 use syneroym_rpc::{
     AbacError, Ability, CandidateRow, NativeInvocation, NativeResponse, NativeService,
-    RelationshipProof, ResourceUri, RowAuthorizer, RpcError, RpcResult, ServiceProxy, apply_stage4,
-    union_masked_fields,
+    PERMISSION_DENIED_CODE, RelationshipProof, ResourceUri, RowAuthorizer, RpcError, RpcResult,
+    ServiceProxy, apply_stage4, union_masked_fields,
 };
 use syneroym_wit_interfaces::host::syneroym::{
     app_config::app_config::ConfigError,
@@ -181,7 +181,7 @@ fn blob_error(e: BlobError) -> RpcError {
 fn data_layer_error(e: DataLayerError) -> RpcError {
     match e {
         DataLayerError::PermissionDenied => {
-            RpcError::Custom(-32010, "permission denied".to_string(), None)
+            RpcError::Custom(PERMISSION_DENIED_CODE, "permission denied".to_string(), None)
         }
         DataLayerError::CollectionNotFound => {
             RpcError::Custom(-32011, "collection not found".to_string(), None)
@@ -1424,6 +1424,8 @@ mod tests {
     /// for its own untestable-end-to-end coverage gaps.
     #[test]
     fn data_layer_error_maps_every_variant_to_a_distinguishable_code() {
+        // A `const` cannot appear in a match pattern, so this literal stays
+        // in sync with `syneroym_rpc::PERMISSION_DENIED_CODE` by hand.
         assert!(matches!(
             data_layer_error(DataLayerError::PermissionDenied),
             RpcError::Custom(-32010, _, _)
