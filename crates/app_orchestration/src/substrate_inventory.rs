@@ -202,6 +202,21 @@ mod tests {
         assert!(err.to_string().contains("did:key:"));
     }
 
+    /// D-A3-2 ("never a bare DID") is a `SubstrateAlias` newtype invariant,
+    /// and the inventory parses aliases as `BTreeMap` keys -- a different
+    /// serde path than the manifest's `PlacementSelector` value, which is
+    /// what every other rejection test here exercises. This pins that the
+    /// validator still runs on the map-key path.
+    #[test]
+    fn a_substrate_alias_key_that_looks_like_a_did_is_rejected_at_parse() {
+        let toml_str = r#"
+            [substrates."did:key:z6MkExampleNodeA"]
+            did = "did:key:z6MkExampleNodeB"
+        "#;
+        let err = SubstrateInventory::from_toml(toml_str).unwrap_err();
+        assert!(err.to_string().contains("did:"), "{err}");
+    }
+
     fn dummy_service(
         name: &str,
         service_type: ServiceType,

@@ -126,11 +126,11 @@ impl Node {
     /// `owner`'s DID becomes this node's `[iam].admin_ucan_root` (an unowned
     /// substrate now fails closed).
     ///
-    /// `base_path`/`temp_dir` are split out from `master_endpoint_record_e2e.rs`'s
-    /// own `Node::boot` (which mints a fresh temp dir internally) so the
-    /// unreachable-substrate test can reboot a node under its *same* on-disk
-    /// identity after a simulated outage -- one more parameter than that
-    /// lint's default limit allows.
+    /// `base_path`/`temp_dir` are split out from
+    /// `master_endpoint_record_e2e.rs`'s own `Node::boot` (which mints a
+    /// fresh temp dir internally) so the unreachable-substrate test can
+    /// reboot a node under its *same* on-disk identity after a simulated
+    /// outage -- one more parameter than that lint's default limit allows.
     #[allow(clippy::too_many_arguments)]
     async fn boot(
         base_path: std::path::PathBuf,

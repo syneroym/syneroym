@@ -1167,14 +1167,15 @@ the three `recover_applying` tests proving the filter actually filters and that
 `Degraded` recovers), **8 in `crates/sdk`** (1 in `mapper.rs` pinning the
 topology-mode latent-bug fix; 7 in `deploy.rs`'s new `apply_plan`/
 `resolve_targets`, using a `FailingApplier` fake so partial-failure behavior is
-tested without a live substrate), **8 unit + 4 CLI in `apps/roymctl`** (3
+tested without a live substrate), **8 unit + 3 CLI in `apps/roymctl`** (3
 `check_no_placement_change` tests — naming the deployed service id, the
 `Degraded`-not-only-`Active` sequence D-A3-22 exists for, and the no-op case;
 `resolve_under`'s two path-resolution tests; `deploy_help_lists_inventory`;
-plus 4 `assert_cmd` integration tests in `cli_args.rs` — the `--inventory`
+plus 3 `assert_cmd` integration tests in `cli_args.rs` — the `--inventory`
 flag's help text, an unknown-alias-in-an-empty-inventory refusal naming both
 the path and the alias, and the fully-placed-needs-no-substrate-key case,
-each without a live substrate), and **5 new two-real-substrate e2e tests**
+each without a live substrate; corrected here from an earlier miscount of 4),
+and **5 new two-real-substrate e2e tests**
 in `crates/substrate/tests/multi_substrate_placement_e2e.rs` (own `Node`
 harness copied from `master_endpoint_record_e2e.rs`, port-blocked in five
 non-overlapping 100-wide ranges since every `#[tokio::test]` in the file runs
@@ -1195,8 +1196,13 @@ have exactly one test):
    `frontend` deployed and `backend` failed with one `COMPLETED` and one
    `FAILED` action row; restart node B under the same identity and ports
    (`Node::stop_and_keep_dir` deliberately leaks its temp dir across the gap
-   so the DID survives the restart), apply again, assert `backend` deploys,
-   `frontend` is **skipped**, and the record reaches `Active`.
+   so the DID survives the restart), apply again, assert `backend` deploys and
+   `frontend` is **skipped**; the test then marks the record `Active` itself,
+   since `apply_plan` reports success but the state transition is
+   `handle`'s own (corrected here — this used to read "the record reaches
+   `Active`", which overstated what `apply_plan` does on its own; see the
+   post-review coverage-gap backlog row on `app::handle` being untested
+   end to end).
 5. `a_dependencys_record_resolves_through_the_dependents_own_registry` — the
    direct, cheap proof of §0.12: `backend`'s record looked up through node
    A's own registry names node B as the hosting substrate, with no
@@ -1270,6 +1276,28 @@ registry configuration, a natural A4/A5 item); and the deploy-only-grantee
 rollback-denial gap's target is retargeted from "A3 (when the substrate
 inventory starts issuing grants)" to **A5** — A3's inventory *holds*
 credentials, it does not *issue* them.
+
+**Post-merge review (2026-07-30), incorporated.** An independent review of
+commit 63c1848 (re-running the gates rather than reading them from this file)
+found ten findings; the implementation plan's own preamble now carries the
+full list and reasoning. One High finding — the placement-change refusal had
+no exit once a service had a `COMPLETED` action row, since `svc remove`
+undeploys but never touches the journal — is fixed with a new verb,
+`roymctl app forget <instance> --service <name>`, plus a
+`check_no_placement_change` fix so a `REMOVE` row (of any recency, not just
+the most recent `ADD`) actually clears the refusal. Four Medium and two Low
+findings are also fixed (atomic credential inheritance, the post-apply
+probe scoped to `report.deployed`, the D-A3-22 test rebuilt against a real
+journal, certification moved ahead of the journal write, the DHT-enabled
+probe, an inventory-map-key alias test). Two findings are recorded as
+backlog rows rather than fixed in this pass: `apply_plan`'s `Send`-ness
+(A5's problem, not A3's) and `app::handle`'s own missing end-to-end test
+coverage, which needs `roymctl` split into `lib.rs` + `main.rs` first — a
+structural change sized as its own pass. Test counts above already reflect
+the new tests this pass added (`resolve_credentials`'s four cases, the
+`REMOVE`-clears-a-stale-`ADD` case, and `app forget`'s own two tests in
+`apps/roymctl`; one inventory-map-key alias test in
+`crates/app_orchestration`).
 
 ## Dependencies pulled in
 

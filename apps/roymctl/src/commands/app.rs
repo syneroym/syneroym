@@ -10,13 +10,13 @@ use anyhow::Context;
 use clap::Subcommand;
 use semver::Version;
 use syneroym_app_orchestration::{
-    ActionRecord, AppInstanceId, DeploymentJournal, DeploymentState, LocalFilesystemCatalog,
-    Reconciler, SynAppManifest, compile,
+    ActionRecord, ActionState, AppInstanceId, DeploymentJournal, DeploymentState,
+    LocalFilesystemCatalog, Reconciler, SynAppManifest, compile,
     models::{
-        AppBlueprintId, LogicalServiceName, PlannedService, ServiceConfig, ServiceSpec,
-        ServiceType, SubstrateAlias,
+        AppBlueprintId, LogicalServiceName, LogicalServiceRef, PlannedService, ServiceConfig,
+        ServiceSpec, ServiceType, SubstrateAlias,
     },
-    substrate_inventory::{SubstrateInventory, check_placement, placement_demand},
+    substrate_inventory::{SubstrateEntry, SubstrateInventory, check_placement, placement_demand},
 };
 use syneroym_core::dht_registry::RegistryClient;
 use syneroym_identity::substrate;
@@ -76,6 +76,27 @@ pub enum AppCommands {
         #[arg(long, default_value = "deployments.db")]
         journal_path: PathBuf,
     },
+    /// Clear a service's placement bookkeeping so a redeploy to a different
+    /// substrate is no longer refused (D-A3-12's escape hatch).
+    ///
+    /// `svc remove --svc-id <id>` undeploys the running instance but has no
+    /// concept of an app instance or a journal, so it cannot itself clear
+    /// the `COMPLETED` `ADD` row `check_no_placement_change` refuses on --
+    /// nothing else in the tree can. This appends a `REMOVE` row for the
+    /// service's most recent placement, at whichever substrate it names,
+    /// without contacting any substrate itself. Run `svc remove` against the
+    /// old substrate first; this command only clears roymctl's own record of
+    /// where the service used to be.
+    Forget {
+        /// The AppInstanceId the service belongs to
+        instance_id: String,
+        /// The service's logical name, as written in the manifest
+        #[arg(long)]
+        service: String,
+        /// Path to the SQLite deployment journal
+        #[arg(long, default_value = "deployments.db")]
+        journal_path: PathBuf,
+    },
 }
 
 /// Resolves a possibly-relative path against `dir` (`<roymctl --dir>`),
@@ -83,6 +104,40 @@ pub enum AppCommands {
 /// an inventory entry's `ucan` path should behave the same way.
 fn resolve_under(dir: &Path, path: &Path) -> PathBuf {
     if path.is_absolute() { path.to_path_buf() } else { dir.join(path) }
+}
+
+/// Resolves the `identity`/`ucan` pair an alias's client presents (D-A3-6).
+///
+/// The pair is inherited from **one** source, entry or global, never mixed
+/// field-by-field: an entry that sets `identity` but not `ucan` would
+/// otherwise fall back to the *global* `--ucan`, connecting as the entry's
+/// identity while presenting a token whose `audience_did` is the global
+/// one. `client_for`'s own guard only rejects "ucan without as", not this,
+/// and the mismatch then fails silently server-side (a `warn!`-logged chain
+/// drop), surfacing downstream as a confusing "holds no grant" instead of
+/// the real cause -- the exact failure that guard was written to prevent.
+fn resolve_credentials<'a>(
+    alias: &SubstrateAlias,
+    entry: &'a SubstrateEntry,
+    inv_path: &Path,
+    dir: &Path,
+    run_as: Option<&'a str>,
+    ucan_path: Option<&'a Path>,
+) -> anyhow::Result<(Option<&'a str>, Option<PathBuf>)> {
+    if entry.identity.is_some() != entry.ucan.is_some() {
+        anyhow::bail!(
+            "substrate '{alias}' in {} sets only one of `identity`/`ucan`. A partial override \
+             would pair this entry's value with the *global* --as/--ucan for the other field, \
+             which is almost never the intended credential -- set both in the entry, or neither \
+             to inherit the global pair as-is.",
+            inv_path.display()
+        );
+    }
+    if entry.identity.is_some() {
+        Ok((entry.identity.as_deref(), entry.ucan.as_deref().map(|p| resolve_under(dir, p))))
+    } else {
+        Ok((run_as, ucan_path.map(Path::to_path_buf)))
+    }
 }
 
 /// Retries `f` until it succeeds or `budget` elapses, returning the last
@@ -121,7 +176,11 @@ async fn probe_registry_reachability(
     urls: &BTreeSet<String>,
 ) {
     for url in urls {
-        let reg = RegistryClient::new(false, Some(url.clone()));
+        // DHT enabled (finding 06): the warning below names "enable the DHT"
+        // as one of the two ways to satisfy the shared-namespace precondition,
+        // so the probe must actually be able to see it -- with it disabled, a
+        // fleet that took that advice got a false warning on every deploy.
+        let reg = RegistryClient::new(true, Some(url.clone()));
         for (svc, target) in placed {
             match retry_for(Duration::from_secs(3), || reg.lookup(svc.service_id.as_str(), false))
                 .await
@@ -172,6 +231,13 @@ async fn probe_registry_reachability(
 /// deploy), while the services that did land are still running -- an
 /// `ACTIVE`-only source misses exactly the sequence A3 introduces.
 ///
+/// Looks at the **most recent** row for the logical ref, of either action
+/// type, not the most recent `ADD`: `app forget` (below) closes this refusal
+/// by appending a `REMOVE` row, and a `rfind` scoped to `ADD` alone would
+/// keep finding the stale `ADD` underneath it forever. A most-recent `REMOVE`
+/// means the operator has already cleared the bookkeeping for this service,
+/// so any placement -- the same substrate or a different one -- is fine.
+///
 /// Pulled out of `handle` so it is unit-testable against a plain journal,
 /// with no live substrate needed.
 fn check_no_placement_change(
@@ -181,8 +247,8 @@ fn check_no_placement_change(
 ) -> anyhow::Result<()> {
     for (svc, target) in placed {
         let l_ref = svc.logical_ref.to_string();
-        if let Some(prev) =
-            landed.iter().rfind(|r| r.action_type == "ADD" && r.logical_ref == l_ref)
+        if let Some(prev) = landed.iter().rev().find(|r| r.logical_ref == l_ref)
+            && prev.action_type == "ADD"
             && prev.substrate_did != target.substrate_did
         {
             let name = member_identity::member_master_name(&svc.logical_ref, 0)?;
@@ -194,7 +260,9 @@ fn check_no_placement_change(
                 "service '{}' is already deployed on substrate {} and this run would place it on \
                  {}. A3 does not relocate -- the old instance would keep running and keep \
                  republishing its endpoint record.\nUndeploy it first:\n  roymctl --substrate {} \
-                 --as <that substrate's identity> svc remove --svc-id {real_id}\nthen redeploy.",
+                 --as <that substrate's identity> svc remove --svc-id {real_id}\nthen clear the \
+                 placement record so this refusal does not fire again:\n  roymctl app forget {} \
+                 --service {}\nthen redeploy.",
                 svc.logical_ref,
                 prev.substrate_alias.as_deref().unwrap_or(prev.substrate_did.as_str()),
                 target
@@ -203,6 +271,8 @@ fn check_no_placement_change(
                     .map(SubstrateAlias::as_str)
                     .unwrap_or(target.substrate_did.as_str()),
                 prev.substrate_did,
+                svc.logical_ref.app_instance_id,
+                svc.logical_ref.service_name,
             );
         }
     }
@@ -298,16 +368,13 @@ pub async fn handle(
                 for alias in demand.keys() {
                     let entry = inv.get(alias, &inv_path)?;
                     let entry_api_url = entry.api_url.as_deref().unwrap_or(api_url);
-                    let entry_ucan = entry
-                        .ucan
-                        .as_deref()
-                        .map(|p| resolve_under(dir, p))
-                        .or_else(|| ucan_path.map(Path::to_path_buf));
+                    let (entry_identity, entry_ucan) =
+                        resolve_credentials(alias, entry, &inv_path, dir, run_as, ucan_path)?;
                     let mut c = super::client_for(
                         entry.did.clone(),
                         entry_api_url,
                         dir,
-                        entry.identity.as_deref().or(run_as),
+                        entry_identity,
                         entry_ucan.as_deref(),
                     )?;
                     c.wait_for_ready(PREFLIGHT_TIMEOUT).await.with_context(|| {
@@ -355,28 +422,15 @@ pub async fn handle(
             let landed = journal.get_completed_actions_for_instance(&instance_id)?;
             check_no_placement_change(dir, &placed, &landed)?;
 
-            // ================================================================
-            // Past this point nothing bails before the journal is consistent.
-            // ================================================================
-
-            // --- resume (D-A3-10) -------------------------------------------
-            let record_id = match journal.get_latest(&instance_id)? {
-                Some(rec)
-                    if matches!(
-                        rec.state,
-                        DeploymentState::Applying | DeploymentState::Degraded
-                    ) && &rec.plan == target_plan =>
-                {
-                    rec.id
-                }
-                _ => {
-                    let id = journal.append(target_plan, DeploymentState::Planned)?;
-                    journal.update_state(id, DeploymentState::Applying)?;
-                    id
-                }
-            };
-
-            // --- masters (§6) ------------------------------------------------
+            // --- masters (§6) -------------------------------------------------
+            // Still before the journal record is created (D-A3-19, finding 07):
+            // certification can bail on its own (an unreachable
+            // instance-identity call, a master-DID mismatch, a missing master
+            // file). Running it *after* the record existed used to leave an
+            // `Applying` record with zero action rows on exactly that bail --
+            // the phantom D-A3-19 was written to prevent, which
+            // `recover_applying` would then hand `app reconcile` as a recovery
+            // plan for a deploy that never started.
             let (deploy_plan, instance_certs, registry_certs) = if *mint_masters {
                 member_identity::substitute_and_certify_members(
                     dir,
@@ -399,6 +453,27 @@ pub async fn handle(
                      is redeployed with --mint-masters."
                 );
             }
+
+            // ================================================================
+            // Past this point nothing bails before the journal is consistent.
+            // ================================================================
+
+            // --- resume (D-A3-10) -------------------------------------------
+            let record_id = match journal.get_latest(&instance_id)? {
+                Some(rec)
+                    if matches!(
+                        rec.state,
+                        DeploymentState::Applying | DeploymentState::Degraded
+                    ) && &rec.plan == target_plan =>
+                {
+                    rec.id
+                }
+                _ => {
+                    let id = journal.append(target_plan, DeploymentState::Planned)?;
+                    journal.update_state(id, DeploymentState::Applying)?;
+                    id
+                }
+            };
 
             // --- apply -------------------------------------------------------
             let report = deploy::apply_plan(
@@ -426,7 +501,19 @@ pub async fn handle(
                 if let Ok(deployed_placed) =
                     deploy::resolve_targets(&deploy_plan, &targets, fallback_target.as_ref())
                 {
-                    probe_registry_reachability(&deployed_placed, &urls).await;
+                    // Finding 03: only the members that actually landed this
+                    // run. A failed service was never deployed at all -- the
+                    // registry cannot resolve it for that reason, not a
+                    // topology fault, and probing it anyway spends two full
+                    // retry budgets per failure to report a warning that
+                    // blames the wrong thing.
+                    let deployed: BTreeSet<String> =
+                        report.deployed.iter().map(ToString::to_string).collect();
+                    let succeeded: Vec<_> = deployed_placed
+                        .into_iter()
+                        .filter(|(svc, _)| deployed.contains(&svc.logical_ref.to_string()))
+                        .collect();
+                    probe_registry_reachability(&succeeded, &urls).await;
                 }
             }
 
@@ -519,6 +606,56 @@ pub async fn handle(
                 }
             }
         }
+        AppCommands::Forget { instance_id, service, journal_path } => {
+            let instance_id = AppInstanceId::try_new(instance_id.clone())?;
+            let logical_ref = LogicalServiceRef {
+                app_instance_id: instance_id.clone(),
+                service_name: LogicalServiceName::new(service.as_str()),
+            };
+            let l_ref = logical_ref.to_string();
+
+            let parent_dir = journal_path.parent().unwrap_or(Path::new("."));
+            let db_name = journal_path
+                .file_name()
+                .ok_or_else(|| anyhow::anyhow!("Invalid journal path"))?
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("Invalid journal path characters"))?;
+            let journal = DeploymentJournal::open(parent_dir, db_name)?;
+
+            let landed = journal.get_completed_actions_for_instance(&instance_id)?;
+            match landed.iter().rev().find(|r| r.logical_ref == l_ref) {
+                None => anyhow::bail!(
+                    "no completed deploy is recorded for '{service}' in {instance_id}; nothing to \
+                     forget"
+                ),
+                Some(prev) if prev.action_type == "REMOVE" => {
+                    println!("'{service}' in {instance_id} is already forgotten.");
+                }
+                Some(prev) => {
+                    let record_id = journal
+                        .get_latest(&instance_id)?
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("no deployment record found for {instance_id}")
+                        })?
+                        .id;
+                    journal.append_action(
+                        record_id,
+                        "REMOVE",
+                        &l_ref,
+                        prev.substrate_alias.as_deref(),
+                        &prev.substrate_did,
+                        ActionState::Completed,
+                    )?;
+                    println!(
+                        "Forgot '{service}' (was on {}) for {instance_id}. This only clears \
+                         roymctl's placement bookkeeping -- if the service instance is still \
+                         running there, undeploy it first with `svc remove --svc-id <id>` against \
+                         that substrate.",
+                        prev.substrate_alias.as_deref().unwrap_or(prev.substrate_did.as_str())
+                    );
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -526,7 +663,10 @@ pub async fn handle(
 #[cfg(test)]
 mod tests {
     use clap::{CommandFactory, Parser};
-    use syneroym_app_orchestration::models::{LogicalServiceRef, ServiceId, TopologyMode};
+    use syneroym_app_orchestration::{
+        DeploymentPlan,
+        models::{ServiceId, TopologyMode},
+    };
     use syneroym_sdk::DeploymentPlan as WitDeploymentPlan;
 
     use super::*;
@@ -561,6 +701,29 @@ mod tests {
     }
 
     #[test]
+    fn test_app_forget_command_parsing() {
+        let cli = DummyCli::try_parse_from([
+            "dummy",
+            "forget",
+            "inst-1",
+            "--service",
+            "backend",
+            "--journal-path",
+            "test.db",
+        ])
+        .unwrap();
+
+        match cli.command {
+            AppCommands::Forget { instance_id, service, journal_path } => {
+                assert_eq!(instance_id, "inst-1");
+                assert_eq!(service, "backend");
+                assert_eq!(journal_path, PathBuf::from("test.db"));
+            }
+            _ => panic!("Expected Forget command"),
+        }
+    }
+
+    #[test]
     fn deploy_help_lists_inventory() {
         let mut cmd = DummyCli::command();
         let help = cmd
@@ -584,6 +747,91 @@ mod tests {
         let dir = Path::new("/roymctl/dir");
         let rel = Path::new("grants/edge-1.json");
         assert_eq!(resolve_under(dir, rel), Path::new("/roymctl/dir/grants/edge-1.json"));
+    }
+
+    fn entry(identity: Option<&str>, ucan: Option<&str>) -> SubstrateEntry {
+        SubstrateEntry {
+            did: "did:key:z6MkExampleNodeA".to_string(),
+            api_url: None,
+            identity: identity.map(str::to_string),
+            ucan: ucan.map(PathBuf::from),
+            capabilities: None,
+        }
+    }
+
+    /// D-A3-6, finding 02: an entry overriding neither field inherits the
+    /// global pair as-is -- today's pre-A3 behavior, unaffected.
+    #[test]
+    fn resolve_credentials_falls_back_to_the_global_pair_when_the_entry_sets_neither() {
+        let alias = SubstrateAlias::new("edge-1");
+        let e = entry(None, None);
+        let (id, ucan) = resolve_credentials(
+            &alias,
+            &e,
+            Path::new("substrates.toml"),
+            Path::new("/dir"),
+            Some("global-op"),
+            Some(Path::new("grants/global.json")),
+        )
+        .unwrap();
+        assert_eq!(id, Some("global-op"));
+        assert_eq!(ucan.as_deref(), Some(Path::new("grants/global.json")));
+    }
+
+    /// An entry overriding both fields together is always consistent,
+    /// regardless of what the globals are.
+    #[test]
+    fn resolve_credentials_uses_the_entrys_own_pair_when_it_sets_both() {
+        let alias = SubstrateAlias::new("edge-1");
+        let e = entry(Some("edge1-op"), Some("grants/edge-1.json"));
+        let (id, ucan) = resolve_credentials(
+            &alias,
+            &e,
+            Path::new("substrates.toml"),
+            Path::new("/dir"),
+            Some("global-op"),
+            Some(Path::new("grants/global.json")),
+        )
+        .unwrap();
+        assert_eq!(id, Some("edge1-op"));
+        assert_eq!(ucan.as_deref(), Some(Path::new("/dir/grants/edge-1.json")));
+    }
+
+    /// Finding 02's exact hazard: `identity` overridden, `ucan` left to fall
+    /// back to a *global* `--ucan` whose audience is the global identity,
+    /// not this entry's. Must be rejected, not silently paired.
+    #[test]
+    fn resolve_credentials_rejects_identity_override_with_a_global_ucan_present() {
+        let alias = SubstrateAlias::new("edge-1");
+        let e = entry(Some("edge1-op"), None);
+        let err = resolve_credentials(
+            &alias,
+            &e,
+            Path::new("substrates.toml"),
+            Path::new("/dir"),
+            Some("global-op"),
+            Some(Path::new("grants/global.json")),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("edge-1"), "{err}");
+    }
+
+    /// The symmetric case: `ucan` overridden, `identity` left to fall back to
+    /// a global `--as` the entry's token was never minted for.
+    #[test]
+    fn resolve_credentials_rejects_ucan_override_with_a_global_identity_present() {
+        let alias = SubstrateAlias::new("edge-1");
+        let e = entry(None, Some("grants/edge-1.json"));
+        let err = resolve_credentials(
+            &alias,
+            &e,
+            Path::new("substrates.toml"),
+            Path::new("/dir"),
+            Some("global-op"),
+            None,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("edge-1"), "{err}");
     }
 
     // The placement-change refusal never calls `.apply()` -- it only reads
@@ -669,29 +917,64 @@ mod tests {
         assert!(msg.contains("edge-2"), "{msg}");
     }
 
+    fn dummy_deployment_plan(instance_id: &AppInstanceId, svc: PlannedService) -> DeploymentPlan {
+        DeploymentPlan {
+            app_instance_id: instance_id.clone(),
+            blueprint_id: AppBlueprintId::new("syneroym:test"),
+            version: Version::new(1, 0, 0),
+            services: vec![svc],
+        }
+    }
+
     /// D-A3-22: the exact sequence round 1 was blind to -- a first partial
     /// deploy leaves the record `Degraded` with one `COMPLETED` row and no
     /// `ACTIVE` record at all. An `ACTIVE`-sourced refusal would pass this
     /// run silently and leave the service running on two nodes.
+    ///
+    /// Post-review (finding 04): `landed` used to be a hand-typed literal,
+    /// identical in shape to the previous test's -- which proves nothing
+    /// about D-A3-22's actual claim, that the rows come from `COMPLETED`
+    /// actions across every record rather than the last `ACTIVE` plan.
+    /// `check_no_placement_change` takes `landed` as a plain slice by
+    /// design (so it needs no live substrate), so the only way to pin the
+    /// *source* is to build the state through a real journal, the same way
+    /// `handle` does, and read `landed` back out with the real query.
     #[test]
     fn a_placement_change_is_refused_after_a_degraded_run_not_only_an_active_one() {
         let dir = tempfile::tempdir().unwrap();
+        let instance_id = AppInstanceId::new("inst-1");
         let logical_ref = LogicalServiceRef {
-            app_instance_id: AppInstanceId::new("inst-1"),
+            app_instance_id: instance_id.clone(),
             service_name: LogicalServiceName::new("backend"),
         };
 
-        let svc = planned_service(logical_ref.clone(), "did:key:hFabricated", "edge-2");
+        let journal = DeploymentJournal::open_in_memory().unwrap();
+        let plan = dummy_deployment_plan(
+            &instance_id,
+            planned_service(logical_ref.clone(), "did:key:hFabricated", "edge-1"),
+        );
+        let deployment_id = journal.append(&plan, DeploymentState::Applying).unwrap();
+        journal
+            .append_action(
+                deployment_id,
+                "ADD",
+                &logical_ref.to_string(),
+                Some("edge-1"),
+                "did:key:zOldNode",
+                ActionState::Completed,
+            )
+            .unwrap();
+        journal.update_state(deployment_id, DeploymentState::Degraded).unwrap();
+
+        // No ACTIVE record exists for this instance at all -- an
+        // `ACTIVE`-sourced refusal would find nothing and pass silently.
+        assert!(journal.get_last_state(&instance_id, DeploymentState::Active).unwrap().is_none());
+
+        let landed = journal.get_completed_actions_for_instance(&instance_id).unwrap();
+
+        let svc = planned_service(logical_ref, "did:key:hFabricated", "edge-2");
         let target = deploy_target("did:key:zNewNode", "edge-2");
         let placed = vec![(&svc, &target)];
-        // No ACTIVE record exists at all -- only a COMPLETED action row from
-        // a deployment record left DEGRADED.
-        let landed = vec![ActionRecord {
-            action_type: "ADD".to_string(),
-            logical_ref: logical_ref.to_string(),
-            substrate_alias: Some("edge-1".to_string()),
-            substrate_did: "did:key:zOldNode".to_string(),
-        }];
 
         let err = check_no_placement_change(dir.path(), &placed, &landed).unwrap_err();
         assert!(err.to_string().contains("already deployed"));
@@ -716,5 +999,137 @@ mod tests {
         }];
 
         check_no_placement_change(dir.path(), &placed, &landed).unwrap();
+    }
+
+    /// Finding 01: a most-recent `REMOVE` row (what `app forget` appends)
+    /// must clear the refusal, even though an older `ADD` row for the same
+    /// logical ref still sits underneath it -- a `rfind` scoped to `ADD`
+    /// alone would miss the `REMOVE` and refuse forever.
+    #[test]
+    fn a_remove_row_after_an_add_clears_the_refusal() {
+        let dir = tempfile::tempdir().unwrap();
+        let logical_ref = LogicalServiceRef {
+            app_instance_id: AppInstanceId::new("inst-1"),
+            service_name: LogicalServiceName::new("backend"),
+        };
+
+        let svc = planned_service(logical_ref.clone(), "did:key:hFabricated", "edge-2");
+        let target = deploy_target("did:key:zNewNode", "edge-2");
+        let placed = vec![(&svc, &target)];
+        let landed = vec![
+            ActionRecord {
+                action_type: "ADD".to_string(),
+                logical_ref: logical_ref.to_string(),
+                substrate_alias: Some("edge-1".to_string()),
+                substrate_did: "did:key:zOldNode".to_string(),
+            },
+            ActionRecord {
+                action_type: "REMOVE".to_string(),
+                logical_ref: logical_ref.to_string(),
+                substrate_alias: Some("edge-1".to_string()),
+                substrate_did: "did:key:zOldNode".to_string(),
+            },
+        ];
+
+        check_no_placement_change(dir.path(), &placed, &landed).unwrap();
+    }
+
+    /// `app forget` end to end: a real journal, on disk, exactly as `handle`
+    /// itself opens it -- proving the whole escape from finding 01, not just
+    /// `check_no_placement_change`'s half of it.
+    #[tokio::test]
+    async fn app_forget_appends_a_remove_row_that_clears_a_later_refusal() {
+        let dir = tempfile::tempdir().unwrap();
+        let instance_id = AppInstanceId::new("inst-forget");
+        let logical_ref = LogicalServiceRef {
+            app_instance_id: instance_id.clone(),
+            service_name: LogicalServiceName::new("backend"),
+        };
+        let journal_path = dir.path().join("deployments.db");
+
+        {
+            let journal = DeploymentJournal::open(dir.path(), "deployments.db").unwrap();
+            let plan = dummy_deployment_plan(
+                &instance_id,
+                planned_service(logical_ref.clone(), "did:key:hFabricated", "edge-1"),
+            );
+            let deployment_id = journal.append(&plan, DeploymentState::Active).unwrap();
+            journal
+                .append_action(
+                    deployment_id,
+                    "ADD",
+                    &logical_ref.to_string(),
+                    Some("edge-1"),
+                    "did:key:zOldNode",
+                    ActionState::Completed,
+                )
+                .unwrap();
+        }
+
+        handle(
+            &AppCommands::Forget {
+                instance_id: instance_id.to_string(),
+                service: "backend".to_string(),
+                journal_path: journal_path.clone(),
+            },
+            "http://localhost:1",
+            None,
+            dir.path(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let journal = DeploymentJournal::open(dir.path(), "deployments.db").unwrap();
+        let landed = journal.get_completed_actions_for_instance(&instance_id).unwrap();
+        let last = landed.iter().rev().find(|r| r.logical_ref == logical_ref.to_string()).unwrap();
+        assert_eq!(last.action_type, "REMOVE");
+        assert_eq!(last.substrate_did, "did:key:zOldNode");
+
+        // A redeploy naming a different substrate is no longer refused.
+        let svc = planned_service(logical_ref, "did:key:hFabricated", "edge-2");
+        let target = deploy_target("did:key:zNewNode", "edge-2");
+        let placed = vec![(&svc, &target)];
+        check_no_placement_change(dir.path(), &placed, &landed).unwrap();
+
+        // Forgetting again is a no-op, not a second REMOVE row.
+        handle(
+            &AppCommands::Forget {
+                instance_id: instance_id.to_string(),
+                service: "backend".to_string(),
+                journal_path,
+            },
+            "http://localhost:1",
+            None,
+            dir.path(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let landed_again = journal.get_completed_actions_for_instance(&instance_id).unwrap();
+        assert_eq!(landed_again.len(), landed.len(), "{landed_again:?}");
+    }
+
+    #[tokio::test]
+    async fn app_forget_with_nothing_deployed_names_the_service_and_instance() {
+        let dir = tempfile::tempdir().unwrap();
+        let journal_path = dir.path().join("deployments.db");
+        let err = handle(
+            &AppCommands::Forget {
+                instance_id: "inst-empty".to_string(),
+                service: "backend".to_string(),
+                journal_path,
+            },
+            "http://localhost:1",
+            None,
+            dir.path(),
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("nothing to forget"), "{err}");
     }
 }
