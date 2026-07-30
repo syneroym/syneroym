@@ -9,6 +9,7 @@ use anyhow::Context;
 use clap::Subcommand;
 use syneroym_core::dht_registry::RegistryClient;
 use syneroym_identity::{DelegationCertificate, Identity, substrate};
+use syneroym_sdk::deploy;
 use syneroym_ucan::{Ability, Capability, CapabilityToken, ResourceUri};
 
 use super::member_identity;
@@ -246,13 +247,9 @@ pub async fn handle(
                 super::client_for(substrate_did.clone(), api_url, dir, run_as, ucan_path)?;
             client.wait_for_ready(Duration::from_secs(5)).await?;
 
-            let cert = member_identity::certify_instance(
-                &client,
-                &master_identity,
-                &service_id,
-                *expires_hours,
-            )
-            .await?;
+            let cert =
+                deploy::certify_instance(&client, &master_identity, &service_id, *expires_hours)
+                    .await?;
             member_identity::refresh_anchor_or_warn(registry_url.as_deref(), &master_identity)
                 .await?;
             println!("{}", cert.to_json()?);

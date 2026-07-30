@@ -433,6 +433,110 @@ When developing a Podman container service for Syneroym:
 3. **Reference:** During the orchestrator `deploy` call, reference `localhost/my-app:latest` or `docker.io/library/nginx:alpine` in the `image` field.
 4. **Debug:** Use standard tools (`podman ps`, `podman logs <container-id>`) on your host to inspect the container if it fails to bind or start via the orchestrator.
 
+#### Deploying a Multi-Substrate App (`roymctl app deploy`)
+
+A `SynApp` manifest's services can each declare which substrate they run
+on, so one app can span more than one operator-controlled node (M05A Slice
+A3). A manifest with no `[placement]` at all keeps working exactly as
+before — every service goes to the substrate the deploy was aimed at.
+
+Placement names an **alias**, never a bare DID — the alias is what lets the
+same manifest deploy against different operators' fleets. The alias is
+resolved against a **substrate inventory** file, `<roymctl --dir>/substrates.toml`
+by default (override with `--inventory`):
+
+```toml
+# substrates.toml
+#
+# Precondition: every substrate listed here must publish and resolve
+# endpoint records through the SAME registry namespace -- one shared HTTP
+# registry, or BEP0044 DHT enabled on all of them. A substrate publishes
+# through its own configured registry, not through the api_url below, and
+# nothing on the wire reports which one that is, so roymctl cannot check
+# this before deploying -- it only warns afterward if a member doesn't
+# resolve.
+[substrates.edge-1]
+did = "did:key:z6MkExampleNodeA"
+# How roymctl reaches this substrate; overrides the global --api-url.
+# NOT the registry this substrate publishes into, and unrelated to
+# --registry-url (below), which is where member master anchors go.
+api_url = "http://localhost:7961"
+# Local identity to act as against this substrate; overrides --as.
+identity = "operator"
+# Signed CapabilityToken JSON (see `identity issue-grant`); overrides
+# --ucan. Requires `identity` above. The grant needs orchestrator/deploy,
+# orchestrator/undeploy, AND orchestrator/status together: a failed
+# deploy's own rollback path calls undeploy with the same caller, and
+# --mint-masters calls resolve-instance-identity (status-gated) before
+# every deploy.
+ucan = "grants/edge-1.json"
+# Optional. Service types this substrate can run. Absent = unconstrained
+# (nothing reports this over the wire, so it is operator-declared).
+capabilities = ["wasm", "tcp"]
+
+[substrates.edge-2]
+did = "did:key:z6MkExampleNodeB"
+identity = "operator"
+capabilities = ["wasm", "container"]
+```
+
+A manifest names these aliases with `[placement]`, at the manifest level
+(the default) or per service (the override):
+
+```toml
+id = "syneroym:guild-app"
+version = "0.1.0"
+
+[placement]
+substrate = "edge-1"
+
+[services.frontend]
+service_type = "wasm"
+source = "frontend.wasm"
+
+[services.backend]
+service_type = "wasm"
+source = "backend.wasm"
+
+[services.backend.placement]
+substrate = "edge-2"
+```
+
+Deploying resolves every alias, connects to each substrate (failing clean,
+before any deploy call, if one is unreachable or the inventory doesn't
+define it), and applies one deploy call per (service, substrate):
+
+```bash
+roymctl --dir <DIR> --as owner app deploy guild-instance-1 guild-app.toml \
+  --mint-masters --registry-url http://localhost:7961 \
+  --inventory substrates.toml
+```
+
+What's different from a single-substrate deploy:
+- **Partial failure does not roll back.** If some services deploy and
+  others fail (a substrate goes down mid-run, say), the app is left
+  `DEGRADED` and the command exits non-zero, naming exactly which services
+  failed and where. Re-running the same command **resumes** — it skips
+  whatever already landed and only retries the failures.
+- **Moving a service to a different substrate is refused**, not silently
+  relocated: undeploy it from the old substrate first (the error names
+  both substrates and the service id to remove), then redeploy. Otherwise
+  the old instance would keep running and keep republishing its endpoint
+  record — a live conflict with the new one.
+- **A fully-placed app needs no `--substrate`/`substrate.key`** — the
+  default substrate is only touched by a service with no placement.
+- **Every substrate in the fleet must share one registry namespace** (or
+  all run the BEP0044 DHT). This can't be checked before deploying — a
+  substrate publishes only through its own configured registry, which
+  nothing on the wire reports — so after a multi-substrate deploy,
+  `roymctl` probes every member through every `api_url` it was given and
+  **warns** (does not fail) if one doesn't resolve there. Fix by pointing
+  every substrate's `[substrate] registry_url` at the same registry.
+- **Deleting `deployments.db` may be needed after upgrading**: the journal
+  schema changed in place (pre-release, no migration ladder) — an older
+  database's `deployment_actions` table is missing the columns this slice
+  added.
+
 ### Interacting with Applications
 
 #### Call a JSON-RPC method on a WASM app via HTTP Proxy

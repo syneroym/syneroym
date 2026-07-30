@@ -7,7 +7,8 @@ use crate::{
     catalog::ManifestCatalog,
     models::{
         AppBlueprintId, AppDependencySpec, AppInstanceId, DeploymentPlan, LogicalServiceName,
-        LogicalServiceRef, PlannedService, ServiceId, ServiceSpec, SynAppManifest, TopologyMode,
+        LogicalServiceRef, PlacementSelector, PlannedService, ServiceId, ServiceSpec,
+        SynAppManifest, TopologyMode,
     },
 };
 
@@ -34,6 +35,7 @@ pub async fn compile(
         &root_instance_id,
         root_manifest,
         catalog,
+        None,
         &mut blueprint_stack,
         &mut compilation_stack,
         &mut plans,
@@ -47,6 +49,7 @@ fn compile_recursive<'a>(
     instance_id: &'a AppInstanceId,
     manifest: &'a SynAppManifest,
     catalog: &'a dyn ManifestCatalog,
+    inherited_placement: Option<&'a PlacementSelector>,
     blueprint_stack: &'a mut Vec<AppBlueprintId>,
     compilation_stack: &'a mut Vec<AppInstanceId>,
     plans: &'a mut Vec<DeploymentPlan>,
@@ -70,6 +73,9 @@ fn compile_recursive<'a>(
         blueprint_stack.push(manifest.id.clone());
         compilation_stack.push(instance_id.clone());
 
+        // D-A3-3: this manifest's own default wins; otherwise the root's cascades in.
+        let default_placement = manifest.placement.as_ref().or(inherited_placement);
+
         // Recursively compile spawned dependencies first
         for (dep_name, dep_spec) in &manifest.dependencies {
             match dep_spec {
@@ -82,6 +88,7 @@ fn compile_recursive<'a>(
                         &child_instance_id,
                         &child_manifest,
                         catalog,
+                        default_placement,
                         blueprint_stack,
                         compilation_stack,
                         plans,
@@ -138,6 +145,7 @@ fn compile_recursive<'a>(
             services.push(PlannedService {
                 service_id,
                 logical_ref,
+                substrate: spec.placement.as_ref().or(default_placement).map(|p| p.alias().clone()),
                 config: spec.config.clone(),
                 resolved_dependencies,
                 topology_mode: TopologyMode::default(),
@@ -227,7 +235,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::catalog::LocalFilesystemCatalog;
+    use crate::{catalog::LocalFilesystemCatalog, models::SubstrateAlias};
 
     #[tokio::test]
     async fn test_compile_single_app() {
@@ -477,5 +485,148 @@ mod tests {
 
         assert_eq!(compiled.plans[0].services.len(), 50);
         assert!(duration < Duration::from_millis(50), "Compilation took {:?}", duration);
+    }
+
+    #[tokio::test]
+    async fn a_per_service_placement_overrides_the_manifest_default() {
+        let manifest_toml = r#"
+            id = "syneroym:placed-app"
+            version = "1.0.0"
+
+            [placement]
+            substrate = "edge-1"
+
+            [services.frontend]
+            service_type = "wasm"
+            source = "frontend.wasm"
+
+            [services.backend]
+            service_type = "wasm"
+            source = "backend.wasm"
+
+            [services.backend.placement]
+            substrate = "edge-2"
+        "#;
+        let manifest = SynAppManifest::from_toml(manifest_toml).unwrap();
+        let catalog = LocalFilesystemCatalog::new(PathBuf::from("."));
+
+        let compiled = compile(AppInstanceId::new("inst"), &manifest, &catalog).await.unwrap();
+        let plan = &compiled.plans[0];
+
+        let frontend = plan
+            .services
+            .iter()
+            .find(|s| s.logical_ref.service_name.as_str() == "frontend")
+            .unwrap();
+        assert_eq!(frontend.substrate, Some(SubstrateAlias::new("edge-1")));
+
+        let backend = plan
+            .services
+            .iter()
+            .find(|s| s.logical_ref.service_name.as_str() == "backend")
+            .unwrap();
+        assert_eq!(backend.substrate, Some(SubstrateAlias::new("edge-2")));
+    }
+
+    #[tokio::test]
+    async fn a_manifest_without_placement_leaves_every_service_unplaced() {
+        let manifest_toml = r#"
+            id = "syneroym:unplaced-app"
+            version = "1.0.0"
+
+            [services.svc]
+            service_type = "wasm"
+            source = "svc.wasm"
+        "#;
+        let manifest = SynAppManifest::from_toml(manifest_toml).unwrap();
+        let catalog = LocalFilesystemCatalog::new(PathBuf::from("."));
+
+        let compiled = compile(AppInstanceId::new("inst"), &manifest, &catalog).await.unwrap();
+        assert_eq!(compiled.plans[0].services[0].substrate, None);
+    }
+
+    #[tokio::test]
+    async fn the_root_manifests_placement_cascades_into_a_spawned_child() {
+        let root_toml = r#"
+            id = "syneroym:root-app"
+            version = "1.0.0"
+
+            [placement]
+            substrate = "edge-1"
+
+            [services.web]
+            service_type = "wasm"
+            source = "web.wasm"
+
+            [dependencies.db]
+            mode = "spawn"
+            blueprint = "syneroym:db-app"
+        "#;
+
+        let db_toml = r#"
+            id = "syneroym:db-app"
+            version = "2.0.0"
+
+            [services.postgres]
+            service_type = "container"
+            source = "postgres:latest"
+        "#;
+
+        let root_manifest = SynAppManifest::from_toml(root_toml).unwrap();
+        let db_manifest = SynAppManifest::from_toml(db_toml).unwrap();
+
+        let mut catalog = LocalFilesystemCatalog::new(PathBuf::from("."));
+        catalog.register(AppBlueprintId::new("syneroym:db-app"), db_manifest);
+
+        let compiled =
+            compile(AppInstanceId::new("root-inst"), &root_manifest, &catalog).await.unwrap();
+
+        let db_plan = &compiled.plans[0];
+        assert_eq!(db_plan.services[0].substrate, Some(SubstrateAlias::new("edge-1")));
+        let root_plan = &compiled.plans[1];
+        assert_eq!(root_plan.services[0].substrate, Some(SubstrateAlias::new("edge-1")));
+    }
+
+    #[tokio::test]
+    async fn a_spawned_childs_own_placement_wins_over_the_inherited_default() {
+        let root_toml = r#"
+            id = "syneroym:root-app"
+            version = "1.0.0"
+
+            [placement]
+            substrate = "edge-1"
+
+            [services.web]
+            service_type = "wasm"
+            source = "web.wasm"
+
+            [dependencies.db]
+            mode = "spawn"
+            blueprint = "syneroym:db-app"
+        "#;
+
+        let db_toml = r#"
+            id = "syneroym:db-app"
+            version = "2.0.0"
+
+            [placement]
+            substrate = "edge-2"
+
+            [services.postgres]
+            service_type = "container"
+            source = "postgres:latest"
+        "#;
+
+        let root_manifest = SynAppManifest::from_toml(root_toml).unwrap();
+        let db_manifest = SynAppManifest::from_toml(db_toml).unwrap();
+
+        let mut catalog = LocalFilesystemCatalog::new(PathBuf::from("."));
+        catalog.register(AppBlueprintId::new("syneroym:db-app"), db_manifest);
+
+        let compiled =
+            compile(AppInstanceId::new("root-inst"), &root_manifest, &catalog).await.unwrap();
+
+        let db_plan = &compiled.plans[0];
+        assert_eq!(db_plan.services[0].substrate, Some(SubstrateAlias::new("edge-2")));
     }
 }

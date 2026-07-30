@@ -4,8 +4,8 @@
 [ADR-0020](../../../decisions/0020-stable-logical-service-identity.md),
 [ADR-0021](../../../decisions/0021-binding-propagation-and-app-supervisor.md)
 
-**Overall:** Design accepted 2026-07-27. Slices P0, A0-A2 complete
-(2026-07-30); A3-A6 not started.
+**Overall:** Design accepted 2026-07-27. Slices P0, A0-A3 complete
+(2026-07-30); A4-A6 not started.
 
 ## Slice status
 
@@ -15,8 +15,8 @@
 | A0 | Stable member identity (master DID per member + delegated instance keys + ingress `scope` enforcement) | **Complete (2026-07-28)** — [implementation plan](slice-a0-implementation-plan.md), evidence below | None — independently mergeable |
 | A1 | Endpoint records published under the member master DID | **Complete (2026-07-28, design revised 2026-07-29 before merge)** — [implementation plan](slice-a1-implementation-plan.md), evidence below | A0 |
 | A2 | Host-side dependency resolution; bindings carry `expected_asserter_did` | **Complete (2026-07-29)** — [implementation plan](slice-a2-implementation-plan.md), evidence below | A1 |
-| A3 | Multi-substrate placement + substrate inventory | Not started | P0 (Complete) |
-| A4 | Health declaration + read-only monitoring | Not started | A3 |
+| A3 | Multi-substrate placement + substrate inventory | **Complete (2026-07-30)** — [implementation plan](slice-a3-implementation-plan.md), evidence below | P0 (Complete) |
+| A4 | Health declaration + read-only monitoring | Not started | A3 (Complete) |
 | A5 | Supervisor loop, best-effort delivery, operator read surface | Not started | A0–A4 |
 | A6 | Durable delivery via outbox/DLQ | **Deferred, post-M5** | M5 item 1 Complete |
 
@@ -1053,6 +1053,223 @@ level (the real-WASM-guest test above).
 - `wasm32-wasip2`: `greeter`, `data-layer-test`, and `proxy-test` all build
   clean; `proxy-test` is the one fixture whose WIT import changed
   (`call-peer` gained a `target-kind` argument), rebuilt and confirmed.
+
+## A3 — Verification evidence (2026-07-30)
+
+Planning found fifteen places where `task.md`'s one-sentence A3 paragraph
+described a tree that does not exist, left a decision unmade, or understated
+the work (two review rounds; [slice-a3-implementation-plan.md](slice-a3-implementation-plan.md)
+§0's fifteen numbered findings, §1's twenty-two decisions, D-A3-1 … D-A3-22).
+The largest: `--mint-masters` is single-substrate by construction (the
+instance certificate and endpoint record are both derived from the *hosting
+node plus the calling DID*), so multi-substrate placement breaks it silently
+unless certification moves to a per-(member, substrate) loop; the deployment
+journal had never had a writer (`append_action`/`get_completed_actions` had
+zero production callers); one credential cannot address N independently-owned
+substrates; and cross-substrate resolution silently requires one shared
+registry namespace across the whole inventory, which nothing on the wire can
+confirm before deploying.
+
+**What shipped**, by phase:
+
+- **Phase 1 (`crates/app_orchestration`, pure, independently mergeable):**
+  `PlacementSelector` (an externally-tagged enum from day one, per D-A3-1 —
+  verified by probing that it round-trips through both TOML and JSON
+  `#[serde(flatten)]`), `SubstrateAlias` (rejects empty, `/`, and anything
+  starting with `did:` — `task.md`'s "never a bare DID" made enforceable at
+  parse time), and `[placement]` on both `SynAppManifest` (the default) and
+  `ServiceSpec` (the per-service override). `compiler.rs`'s `compile_recursive`
+  gained one parameter, `inherited_placement`, cascading the root's default
+  into spawned children that declare none (D-A3-3) — currently unobservable
+  since `app deploy` only ever deploys `compiled.plans.last()` (§0.13, a
+  pre-existing gap, not A3's to fix), but right by construction for whenever
+  that is fixed. `PlannedService.substrate: Option<SubstrateAlias>` records
+  the **alias** (D-A3-4), not the DID — the DID is the journal action row's
+  job.
+- **Phase 2 (`crates/app_orchestration/src/substrate_inventory.rs`, new
+  module):** `SubstrateInventory`/`SubstrateEntry` (`did`, `api_url`,
+  `identity`, `ucan`, `capabilities` — every optional field overriding a
+  global CLI flag), `placement_demand` (every alias a plan places a service
+  on, with the service types placed there), and `check_placement` (reports
+  *every* problem in one pass, not just the first). Named `substrate_inventory`,
+  not `inventory` (D-A3-21): this crate already has `StaticInventory`, the
+  logical-name → member-set registry.
+- **Phase 3 (journal, `Degraded` + action records):** `DeploymentState::Degraded`
+  (the resting state of a partial deploy — no rollback, per `task.md`'s own
+  non-goal); the schema ladder replaced with unconditional
+  `CREATE TABLE IF NOT EXISTS` (D-A3-15, matching `registry_store.rs`'s
+  precedent — an existing `deployments.db` must be deleted, documented rather
+  than migrated); `deployment_actions` gained `substrate_alias`/`substrate_did`
+  columns; `append_action`/`get_completed_actions` given real bodies for the
+  first time; the new `get_completed_actions_for_instance` (oldest-first,
+  spanning **every** journal record for an instance, not just one run — what
+  the placement-change refusal needs, D-A3-22). `reconcile.rs`'s
+  `recover_applying` now also recovers a `Degraded` deployment (D-A3-18, not
+  only `Applying`) and its filter compares on `(action_type, logical_ref,
+  substrate_alias)` instead of a no-op tuple comparison that never actually
+  filtered anything (§0.2).
+- **Phase 4 (`crates/sdk`, mapper subset + apply loop):**
+  `map_deployment_plan_to_wit` takes `plan: &DeploymentPlan` plus a new
+  `services: &[&PlannedService]` subset to emit, while still resolving every
+  dependency's topology mode from the **whole** plan — pinned by
+  `mapping_one_service_resolves_a_dependencys_mode_from_the_whole_plan`, which
+  fails under the naive "filter the plan, then map" shape this fixes a latent
+  bug in (§5.1). `PlannedService.substrate` is not mapped onto the wire.
+  `crates/sdk/src/deploy.rs` (new): `PlanApplier` (ADR-0021 §5's narrow "apply
+  this action to that substrate" trait, arriving one slice early per D-A3-14),
+  `DeployTarget`, `ApplyRequest`/`ApplyReport`/`ServiceFailure`,
+  `resolve_targets` (fails closed on every unknown alias before any deploy
+  call), and `apply_plan` (one `deploy-plan` call per (service, substrate),
+  D-A3-9 — no WIT change; skips a service already `COMPLETED` on the same
+  substrate DID, D-A3-11, so a re-run resumes rather than redeploying
+  everything).
+- **Phase 5 (per-substrate identity, §0.1's fix):** `certify_instance` moved
+  from `roymctl` into `crates/sdk/src/deploy.rs` (an import-path change for
+  its callers in `identity.rs`/`svc.rs`); the new `certify_placed_members`
+  mints, per placed member, the instance certificate its *own* hosting
+  substrate will accept and the endpoint record pointing at that substrate —
+  asserting (not silently allowing) that one member master is never placed
+  twice, since today's compiler cannot produce that case and two records
+  under one `service_id` would be a permanent compare-and-swap fight.
+  `apps/roymctl/src/commands/member_identity.rs`'s
+  `substitute_and_certify_members` is now a thin composition: resolve/mint +
+  substitute (unchanged), call `certify_placed_members` (new), publish anchors
+  once per master (unchanged intent, moved after certification).
+- **Phase 6 (`roymctl app deploy` wiring):** `--inventory` flag; the
+  preflight (`wait_for_ready` per alias-resolved client, before any deploy
+  call — D-A3-8); the fallback target built **lazily**, only when some
+  service has no placement (D-A3-20 — `Commands::App`'s arm in `commands.rs`
+  now passes `substrate_opt` straight through instead of calling
+  `get_substrate_did` eagerly, so a fully-placed app needs no
+  `--substrate`/`substrate.key`); the placement-change refusal
+  (`check_no_placement_change`, factored out as its own function so it is
+  unit-testable against a plain journal with no live substrate — D-A3-12,
+  sourced from `COMPLETED` action rows across every record for the instance
+  per D-A3-22, not the last `ACTIVE` plan, which round 1 found blind to
+  exactly the `Degraded`-then-replan sequence A3 itself introduces); the
+  resume logic (D-A3-10 — same plan + `Applying`/`Degraded` record reuses the
+  id, a different plan starts a new one); the post-apply registry probe
+  (`probe_registry_reachability`, D-A3-17 — a heuristic that **warns**, never
+  fails the deploy, over every distinct `api_url` in play, run only when the
+  plan places services on more than one distinct substrate DID).
+  `app reconcile`'s "no state found" message now says
+  "No ACTIVE, APPLYING or DEGRADED state found".
+
+**Tests added: 19 in `crates/app_orchestration`** (5 in `models.rs` — manifest/
+service placement round trips through TOML and JSON, three `SubstrateAlias`
+rejections, a `PlannedService` substrate round trip; 4 in `compiler.rs` — the
+override, the unplaced default, the cascade into a spawned child, a child's own
+placement winning over the inherited default; 5 in `substrate_inventory.rs`;
+5 in `journal.rs`/`reconcile.rs` — action-row round trips including a null
+alias, the `Degraded` `Display`/`FromStr` round trip, completed actions
+spanning every record oldest-first and ignoring another instance's rows, plus
+the three `recover_applying` tests proving the filter actually filters and that
+`Degraded` recovers), **8 in `crates/sdk`** (1 in `mapper.rs` pinning the
+topology-mode latent-bug fix; 7 in `deploy.rs`'s new `apply_plan`/
+`resolve_targets`, using a `FailingApplier` fake so partial-failure behavior is
+tested without a live substrate), **8 unit + 4 CLI in `apps/roymctl`** (3
+`check_no_placement_change` tests — naming the deployed service id, the
+`Degraded`-not-only-`Active` sequence D-A3-22 exists for, and the no-op case;
+`resolve_under`'s two path-resolution tests; `deploy_help_lists_inventory`;
+plus 4 `assert_cmd` integration tests in `cli_args.rs` — the `--inventory`
+flag's help text, an unknown-alias-in-an-empty-inventory refusal naming both
+the path and the alias, and the fully-placed-needs-no-substrate-key case,
+each without a live substrate), and **5 new two-real-substrate e2e tests**
+in `crates/substrate/tests/multi_substrate_placement_e2e.rs` (own `Node`
+harness copied from `master_endpoint_record_e2e.rs`, port-blocked in five
+non-overlapping 100-wide ranges since every `#[tokio::test]` in the file runs
+concurrently by default — unlike this crate's other e2e files, which each
+have exactly one test):
+
+1. `a_two_substrate_app_deploys_each_service_to_its_placed_node` — after
+   apply, node A's `list` contains only `frontend`'s master DID and node B's
+   only `backend`'s.
+2. `a_placed_members_endpoint_record_resolves_to_its_own_substrate` —
+   `resolve_iroh_addr` on `backend`'s master DID reaches node B, not node A;
+   this is what §0.1's `substrate_id` bug would have broken silently.
+3. `a_certificate_minted_against_one_substrate_is_rejected_by_another` — mint
+   against node A, deploy to node B, assert the live
+   `"not the key this substrate would derive"` rejection.
+4. `an_unreachable_substrate_leaves_the_deployment_degraded_and_retryable`
+   (matrix row 12, the slice's centrepiece) — stop node B, apply, assert
+   `frontend` deployed and `backend` failed with one `COMPLETED` and one
+   `FAILED` action row; restart node B under the same identity and ports
+   (`Node::stop_and_keep_dir` deliberately leaks its temp dir across the gap
+   so the DID survives the restart), apply again, assert `backend` deploys,
+   `frontend` is **skipped**, and the record reaches `Active`.
+5. `a_dependencys_record_resolves_through_the_dependents_own_registry` — the
+   direct, cheap proof of §0.12: `backend`'s record looked up through node
+   A's own registry names node B as the hosting substrate, with no
+   cross-registry hop needed since the fixture shares one registry
+   (the D-A3-17 precondition, proven rather than merely stated).
+
+A caught-in-review harness bug worth recording: the first pass conflated the
+node **owner** identity with the deploying **operator** identity in
+`boot_pair`, which made `has_node_wide_ability` return true for the operator's
+own app-scoped grant (since it matched `admin_ucan_root` directly) — `list`
+then returned every registered endpoint, including the substrate's own native
+`orchestrator`/`security` registration, not only the deployed app. Fixed by
+generating two distinct identities per test (`owner` boots and owns each node
+and injects its KEK; `operator` receives an app-scoped
+`orchestrator/{deploy,undeploy,status}` grant from `owner` and is the one that
+actually deploys/lists) — the same separation `federated_fdae_e2e.rs`'s own
+`app_deploy_grant` comment already documents the reasoning for.
+
+**Test 6 declined** (§9/§12 question 8 in the implementation plan): a
+WASM-guest two-substrate dependency-call harness, proving placement + A2's
+host-side resolution + A1's endpoint records compose over a real cross-node
+hop, and simultaneously discharging two outstanding coverage rows
+(`deferred-backlog.md`'s A2 two-substrate-coverage row and A0's
+`CallOrigin::Guest`-over-a-real-hop row). Sized in the plan as the largest
+single item in the slice; declined in this pass for the same reason A2 and A0
+each declined their own half of it — judged out of proportion to add in the
+same pass as the rest of A3's five two-substrate e2e tests. Both backlog rows
+updated below to say A3 declined it too, rather than left reading as A0's/A2's
+residue.
+
+**Gates, run 2026-07-30:**
+
+- `cargo +nightly fmt --all -- --check`: clean.
+- `cargo clippy --workspace --all-targets --all-features`: clean, zero
+  warnings.
+- `cargo test --workspace --no-fail-fast` (sandboxed): `syneroym-app-orchestration
+  --lib` (78 tests), `syneroym-sdk --lib` (19 tests), and `roymctl --bins` (45
+  tests) all green outright — none of A3's own new tests need a live
+  substrate. 18 other targets fail, all in the same pre-existing environmental
+  category documented throughout this milestone's status: `syneroym-community-
+  registry --lib`, `syneroym-coordinator-iroh` (`connection_limit`/
+  `multi_hop_relay`/`tls_rotation`), `syneroym-fdae --lib` (a one-off; passed
+  99/99 re-run in isolation), `syneroym-mqtt-broker --lib`, `syneroym-router
+  --test native_dispatch_identity`, `syneroym-sdk --test connect_timeout`, and
+  every `syneroym-substrate` e2e test including the new
+  `multi_substrate_placement_e2e` — all real socket/port binds the sandbox
+  denies outright ("Operation not permitted (os error 1)"), independently
+  re-verified passing with the sandbox disabled this pass. The remaining
+  target, `syneroym-router --test proxy_dispatch`, is the pre-existing,
+  already-tracked parallel-execution flake (`deferred-backlog.md` §1, a WASM
+  trap inside `cabi_realloc`, not a bind error) — reconfirmed 8/8 with
+  `--test-threads=1` and unrelated to this slice (A3 touches no router code).
+- `roymctl --test cli_args` (sandbox disabled — the fully-placed and
+  unknown-alias CLI tests attempt real connections that must fail cleanly
+  rather than being denied by the sandbox for an unrelated reason): 11/11
+  green.
+- `crates/substrate --test multi_substrate_placement_e2e` (sandbox disabled,
+  required for real port binds): 5/5 green, ~56s total.
+- `mise run test:e2e` (sandbox disabled): 12/12 green (8 main + 4 multi-hop),
+  unchanged from before this slice.
+- `wasm32-wasip2`: `greeter`, `data-layer-test`, and `proxy-test` all build
+  clean — A3 touches no WIT interface and no WASM-facing code.
+
+**Not covered — recorded as a backlog row, not silently dropped** (see
+`deferred-backlog.md` §3/§8): test 6 above; row 10 (lost-response dedup);
+`Degraded` has no automatic exit until A5's loop exists; a placement change is
+refused rather than relocated (A5's to implement); `ActionState::Pending`
+still has no writer; the split-registry precondition is checked only after
+the fact, not refused before deploying (needs a substrate to report its own
+registry configuration, a natural A4/A5 item); and the deploy-only-grantee
+rollback-denial gap's target is retargeted from "A3 (when the substrate
+inventory starts issuing grants)" to **A5** — A3's inventory *holds*
+credentials, it does not *issue* them.
 
 ## Dependencies pulled in
 

@@ -121,6 +121,49 @@ define_string_wrapper!(
 define_string_wrapper!(InterfaceName, "Name of the interface a service implements.");
 define_string_wrapper!(DependencyName, "Name of a dependency within an application.");
 
+define_string_wrapper!(
+    SubstrateAlias,
+    "Operator-chosen name for a substrate in the deploy inventory.",
+    |s: &str| {
+        if s.is_empty() {
+            return Err(anyhow!("SubstrateAlias cannot be empty"));
+        }
+        if s.contains('/') {
+            return Err(anyhow!("SubstrateAlias cannot contain '/'"));
+        }
+        // Placement names an inventory alias, never a bare DID: an alias is
+        // the indirection that lets one manifest deploy against different
+        // operators' topologies, and a DID written here would defeat it.
+        if s.starts_with("did:") {
+            return Err(anyhow!(
+                "SubstrateAlias '{s}' looks like a DID; placement names an inventory alias"
+            ));
+        }
+        Ok(())
+    }
+);
+
+/// How a service's hosting substrate is chosen.
+///
+/// One variant today. It is an enum rather than a bare alias so a later
+/// pool- or constraint-based selector is an added variant instead of a
+/// schema change.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PlacementSelector {
+    /// Place on the substrate registered in the deploy inventory under this
+    /// alias.
+    Substrate(SubstrateAlias),
+}
+
+impl PlacementSelector {
+    pub fn alias(&self) -> &SubstrateAlias {
+        match self {
+            Self::Substrate(alias) => alias,
+        }
+    }
+}
+
 /// Logical reference to a service, fully identifying it within a specific
 /// application instance.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -267,6 +310,9 @@ pub struct ServiceSpec {
     pub config: ServiceConfig,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<LogicalServiceName>,
+    /// Overrides the manifest-level default for this service only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<PlacementSelector>,
 }
 
 /// Defines a dependency on another application.
@@ -284,6 +330,10 @@ pub struct SynAppManifest {
     pub version: Version,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Default for every service this manifest declares, and for every
+    /// spawned child manifest that declares none of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<PlacementSelector>,
     #[serde(default)]
     pub services: BTreeMap<LogicalServiceName, ServiceSpec>,
     #[serde(default)]
@@ -379,6 +429,12 @@ impl SynAppManifest {
 pub struct PlannedService {
     pub service_id: ServiceId,
     pub logical_ref: LogicalServiceRef,
+    /// The substrate this service is placed on, after the manifest default
+    /// and any per-service override have been folded together. `None` means
+    /// the substrate the deploy was aimed at, which is what every manifest
+    /// written before placement existed still means.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub substrate: Option<SubstrateAlias>,
     #[serde(flatten)]
     pub config: ServiceConfig,
     /// Declared dependency name -> the member master DIDs currently serving
@@ -601,6 +657,7 @@ mod tests {
                     app_instance_id: AppInstanceId::new("guild-instance-1"),
                     service_name: LogicalServiceName::new("identity"),
                 },
+                substrate: None,
                 config: ServiceConfig {
                     service_type: ServiceType::Wasm,
                     source: "crates/sandbox_wasm/benches/identity.wasm".to_string(),
@@ -715,6 +772,7 @@ mod tests {
                     app_instance_id: AppInstanceId::new("guild-instance-1"),
                     service_name: LogicalServiceName::new("identity"),
                 },
+                substrate: None,
                 config: ServiceConfig {
                     service_type: ServiceType::Wasm,
                     source: "crates/sandbox_wasm/benches/identity.wasm".to_string(),
@@ -736,5 +794,126 @@ mod tests {
         let toml_str = plan.to_toml().unwrap();
         assert!(toml_str.contains("DATABASE_URL"));
         assert!(toml_str.contains("PORT"));
+    }
+
+    #[test]
+    fn a_manifest_default_placement_round_trips_through_toml_and_json() {
+        let toml_str = r#"
+            id = "syneroym:guild-app"
+            version = "0.1.0"
+
+            [placement]
+            substrate = "edge-1"
+
+            [services.identity]
+            service_type = "wasm"
+            source = "identity.wasm"
+        "#;
+
+        let manifest = SynAppManifest::from_toml(toml_str).unwrap();
+        assert_eq!(
+            manifest.placement,
+            Some(PlacementSelector::Substrate(SubstrateAlias::new("edge-1")))
+        );
+
+        let toml_round = manifest.to_toml().unwrap();
+        assert_eq!(SynAppManifest::from_toml(&toml_round).unwrap(), manifest);
+
+        let json_round = manifest.to_json().unwrap();
+        assert_eq!(SynAppManifest::from_json(&json_round).unwrap(), manifest);
+
+        // Absent placement stays absent -- pre-placement manifests are unaffected.
+        let no_placement = r#"
+            id = "syneroym:guild-app"
+            version = "0.1.0"
+        "#;
+        assert_eq!(SynAppManifest::from_toml(no_placement).unwrap().placement, None);
+    }
+
+    #[test]
+    fn a_per_service_placement_override_round_trips_through_toml_and_json() {
+        let toml_str = r#"
+            id = "syneroym:guild-app"
+            version = "0.1.0"
+
+            [placement]
+            substrate = "edge-1"
+
+            [services.identity]
+            service_type = "wasm"
+            source = "identity.wasm"
+
+            [services.identity.placement]
+            substrate = "edge-2"
+        "#;
+
+        let manifest = SynAppManifest::from_toml(toml_str).unwrap();
+        let identity = manifest.services.get(&LogicalServiceName::new("identity")).unwrap();
+        assert_eq!(
+            identity.placement,
+            Some(PlacementSelector::Substrate(SubstrateAlias::new("edge-2")))
+        );
+
+        // This is the round trip that would catch a #[serde(flatten)] regression:
+        // an externally-tagged enum nested inside a struct also using `flatten`.
+        let toml_round = manifest.to_toml().unwrap();
+        assert_eq!(SynAppManifest::from_toml(&toml_round).unwrap(), manifest);
+
+        let json_round = manifest.to_json().unwrap();
+        assert_eq!(SynAppManifest::from_json(&json_round).unwrap(), manifest);
+    }
+
+    #[test]
+    fn a_substrate_alias_rejects_a_bare_did() {
+        let err = SubstrateAlias::try_new("did:key:z6MkExample").unwrap_err();
+        assert!(err.to_string().contains("looks like a DID"));
+    }
+
+    #[test]
+    fn a_substrate_alias_rejects_an_empty_name() {
+        assert!(SubstrateAlias::try_new("").is_err());
+    }
+
+    #[test]
+    fn a_substrate_alias_rejects_a_path_separator() {
+        assert!(SubstrateAlias::try_new("edge/1").is_err());
+    }
+
+    #[test]
+    fn a_planned_service_round_trips_its_substrate() {
+        let mut svc = PlannedService {
+            service_id: ServiceId::new("did:key:h123"),
+            logical_ref: LogicalServiceRef {
+                app_instance_id: AppInstanceId::new("guild-instance-1"),
+                service_name: LogicalServiceName::new("identity"),
+            },
+            substrate: Some(SubstrateAlias::new("edge-1")),
+            config: ServiceConfig {
+                service_type: ServiceType::Wasm,
+                source: "identity.wasm".to_string(),
+                hash: None,
+                interfaces: vec![],
+                env: BTreeMap::new(),
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema: None,
+                rotation_policy: RotationPolicy::RestartOnRotation,
+                fdae: None,
+            },
+            resolved_dependencies: BTreeMap::new(),
+            topology_mode: TopologyMode::Singleton,
+        };
+
+        let toml_round = toml::to_string(&svc).unwrap();
+        assert!(toml_round.contains("edge-1"));
+        let parsed: PlannedService = toml::from_str(&toml_round).unwrap();
+        assert_eq!(parsed, svc);
+
+        // `None` serializes with no `substrate` key at all, matching
+        // every manifest written before placement existed.
+        svc.substrate = None;
+        let toml_round = toml::to_string(&svc).unwrap();
+        assert!(!toml_round.contains("substrate"));
     }
 }

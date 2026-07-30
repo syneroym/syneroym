@@ -13,7 +13,7 @@ use chrono::DateTime;
 use clap::Subcommand;
 use syneroym_core::dht_registry::{DEFAULT_ENDPOINT_NOT_AFTER_SECS, EndpointInfo, EndpointType};
 use syneroym_identity::{DelegationCertificate, Identity, substrate};
-use syneroym_sdk::{ContainerPortMapping, ContainerVolumeMapping, NetworkEndpoint};
+use syneroym_sdk::{ContainerPortMapping, ContainerVolumeMapping, NetworkEndpoint, deploy};
 
 use super::member_identity;
 
@@ -227,7 +227,7 @@ pub async fn handle(
                             master.as_deref().unwrap_or("?")
                         );
                     }
-                    let cert = member_identity::certify_instance(
+                    let cert = deploy::certify_instance(
                         &client,
                         resolved_master,
                         svc_id,
