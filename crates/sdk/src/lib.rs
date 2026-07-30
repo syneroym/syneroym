@@ -590,11 +590,16 @@ impl SyneroymClient {
         ports: Vec<ContainerPortMapping>,
         volumes: Vec<ContainerVolumeMapping>,
         registry_certificate: Option<SignedEndpointInfo>,
+        instance_certificate: Option<DelegationCertificate>,
     ) -> Result<()> {
         let registry_certificate = registry_certificate
             .map(|c| serde_json::to_string(&c))
             .transpose()
             .map_err(|e| anyhow::anyhow!("Failed to serialize registry certificate: {e}"))?;
+        let instance_certificate = instance_certificate
+            .map(|c| c.to_json())
+            .transpose()
+            .map_err(|e| anyhow::anyhow!("Failed to serialize instance certificate: {e}"))?;
         let manifest = DeployManifest {
             config: ServiceConfig {
                 env: vec![],
@@ -613,7 +618,7 @@ impl SyneroymClient {
                 volumes,
             }),
             registry_certificate,
-            instance_certificate: None,
+            instance_certificate,
         };
         let params = serde_json::to_value((service_id, manifest))?;
         let res = self.request("orchestrator", "deploy", params).await?;
