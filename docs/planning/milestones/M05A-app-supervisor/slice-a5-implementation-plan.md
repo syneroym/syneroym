@@ -760,9 +760,11 @@ it renews in A5d, and it mints member 1 with no operator present in A5e's
 scale-out. Having the operator mint at submit and the supervisor mint at
 scale-out would have put one lifecycle under two principals.
 
-It also still closes the backlog row *"`app deploy` without
-`--mint-masters` binds nothing"*: there is no unmastered submit path,
-because the supervisor cannot store desired state it has no masters for.
+It also closes the **supervisor half** of the backlog row *"`app deploy`
+without `--mint-masters` binds nothing"*: there is no unmastered submit
+path, because the supervisor cannot store desired state it has no masters
+for. The row was filed against `roymctl app deploy` though, which this does
+not touch — §4.5 closes that half, and the row needs both.
 
 The cost, stated: **the operator does not hold the master unless they export
 it**, and ADR-0020 §4 calls it backup-critical. So `submit` prints the
@@ -876,7 +878,7 @@ with no autonomy**, testable by RPC; **A5c is the autonomy**.
 
 | Sub-slice | Contents | Closes | Depends on |
 |---|---|---|---|
-| **A5a** — substrate write primitives | `write-bindings` + four-case guard (per-dependent, §0.20); `restart`; `app-instance-management-of` + `claim-app-instance` + `release-app-instance`; `app_instance_management` + generation gate on deploy/write-bindings/restart/undeploy; `generation` on `app-context`; deploy content-hash dedup; binding state on `service-status`; `SubstrateActor` trait; `roymctl` lib split; `svc restart` | rows **5, 6, 7, 8, 9** (substrate half), **10** | A4 |
+| **A5a** — substrate write primitives | `write-bindings` + four-case guard (per-dependent, §0.20); `restart`; `app-instance-management-of` + `claim-app-instance` + `release-app-instance`; `app_instance_management` + generation gate on deploy/write-bindings/restart/undeploy; `generation` on `app-context`; deploy content-hash dedup; binding state on `service-status`; `SubstrateActor` trait; `roymctl` lib split; `svc restart`; `app deploy` refuses an unmastered manifest that declares dependencies (§4.5) | rows **5, 6, 7, 8, 9** (substrate half), **10** | A4 |
 | **A5b** — the role, the store, the interface, custody | New crate; `[roles.supervisor]`; `supervisor.db`; `supervisor` WIT (submit / adopt / release / pause / resume / retire / force-reconcile / status / alerts); on-demand sweep in `status` (D-A5-21); mint-in-place master custody in the supervisor's vault, with local offline import/export (D-A5-27); `roymctl supervisor …`; `Arc<Mutex<Connection>>` fix | row **9** (supervisor half); the exit criterion "an operator can read health, alerts, and per-dependent binding convergence" | A5a |
 | **A5c** — the loop and remediation | Resident reconcile loop; bounded restart with backoff + max attempts + terminal `Degraded`; binding push on membership change; MQTT publication; **health-poll-cost budget measured** | rows **11, 12, 13** | A5b |
 | **A5d** — unattended renewal | Renewal on the loop; `RotationPolicy` load-bearing; `SynSvcNativeService` refresh on out-of-band install; certificate maximum lifetime; master-anchor refresh on a schedule; revocation surface | rows **1/3** (automation half), **14** (second half) | A5c |
@@ -1342,6 +1344,42 @@ Then delete `SvcCommands::Start` and `SvcCommands::Stop`
 `roymctl svc restart --svc-id <id>`, wired to `SyneroymClient::restart` with
 generation 0.
 
+### 4.5 `app deploy` refuses an unmastered manifest that declares dependencies
+
+The standing backlog row *"`app deploy` without `--mint-masters` binds
+nothing"* names its own fix: "a manifest declaring `depends_on` should have
+no unmastered deploy path at all". A5b closes it for the *supervisor* path
+(§12's `submit` always resolves masters, so no unmastered submit exists),
+but the **operator** path is where the row was actually filed, and A5b does
+not touch it.
+
+Today the deploy prints a warning and continues
+([app.rs:568-576](../../../../apps/roymctl/src/commands/app.rs#L568)),
+emitting an empty binding list because `emit_bindings` is tied to
+`--mint-masters` ([app.rs:607](../../../../apps/roymctl/src/commands/app.rs#L607)).
+The app then deploys "successfully" and a guest's first `dependency(...)`
+call fails at runtime with `dependency-not-bound`. A warning at deploy time
+and a failure at call time is the worst split available: the operator sees
+the consequence far from the cause.
+
+Replace the warning with a refusal:
+
+```text
+# Before the journal is written, beside the other pre-flight bails
+# (D-A3-19: everything that can fail runs before a record exists).
+if !mint_masters
+   && target_plan.services.iter().any(|s| !s.resolved_dependencies.is_empty()):
+    bail!("this manifest declares dependencies ({names}), and without
+           --mint-masters they cannot be bound: the plan carries the
+           compiler's fabricated ids, not real member masters, so a guest
+           calling one by name gets `dependency-not-bound` at runtime.
+           Re-run with --mint-masters.")
+```
+
+A manifest with **no** `depends_on` is unaffected — an unmastered deploy of
+an independent service stays valid, which is what `svc deploy` and every
+pre-A0 manifest rely on.
+
 ## §4A — Phase 2b: deploy idempotency (failure-matrix row 10)
 
 Per **D-A5-18** / §0.21. Distinct from the epoch guard (which dedups binding
@@ -1699,10 +1737,15 @@ Unit, `crates/control_plane/src/service/orchestration.rs`:
 32. `claim_and_release_are_rejected_without_node_wide_orchestrator_deploy` (§0.28)
 33. `status_reports_not_found_for_a_named_id_the_caller_may_not_see` — A4-10's rule, re-pinned because §6 adds a field to the same record (renumbered into the slot D-A5-25's withdrawn encryption test vacated, rather than leaving a gap that reads like a dropped test)
 
+Unit, `apps/roymctl/src/commands/app.rs` (reachable now that §4.4 has split
+the binary into `main.rs` + `lib.rs`):
+34. `a_manifest_declaring_depends_on_is_refused_without_mint_masters` (§4.5), asserting the error names the dependencies
+35. `a_manifest_with_no_dependencies_still_deploys_without_mint_masters` — the boundary: an unmastered deploy of an independent service stays valid, which `svc deploy` and every pre-A0 manifest rely on
+
 e2e, **new** `crates/substrate/tests/binding_push_e2e.rs` (two nodes, the
 `multi_substrate_placement_e2e.rs` `Node`/`boot_pair` pattern):
-34. `a_membership_change_pushed_to_a_dependent_takes_effect_without_a_redeploy` — deploy frontend on A, backend on B, push a changed member list to frontend, assert the guest's next dependency call resolves to the new member and the frontend's wasm component was never recompiled
-35. `a_stale_epoch_push_does_not_regress_the_mapping` (matrix row 5, live)
+36. `a_membership_change_pushed_to_a_dependent_takes_effect_without_a_redeploy` — deploy frontend on A, backend on B, push a changed member list to frontend, assert the guest's next dependency call resolves to the new member and the frontend's wasm component was never recompiled
+37. `a_stale_epoch_push_does_not_regress_the_mapping` (matrix row 5, live)
 
 ## §9 — A5a merge order
 
@@ -1716,9 +1759,11 @@ e2e, **new** `crates/substrate/tests/binding_push_e2e.rs` (two nodes, the
 4. §4A content-hash dedup + tests 19-22. **Must follow (2)**, since §0.27's
    fix is the persist point (2) establishes.
 5. §4 `restart`, `undeploy`'s generation, the `roymctl` lib split, `svc
-   restart` + tests 23-26.
+   restart`, and §4.5's `app deploy` refusal + tests 23-26, 34-35. The
+   refusal rides with the lib split because that is what makes `app::handle`
+   linkable, and so what makes 34-35 the first real tests of it.
 6. §6 binding state + tests 27, 33.
-7. e2e 34-35.
+7. e2e 36-37.
 
 ---
 
@@ -2135,9 +2180,9 @@ which is the supervisor's own apply path.
 There is no `--upload-masters` flag and no upload: the no-upload branch
 would have submitted a plan naming masters the supervisor does not hold, and
 the upload branch needs an encrypted transport no client can produce
-(§0.29). Either way there is no unmastered submit path, which is the clean
-close for the backlog row *"`app deploy` without `--mint-masters` binds
-nothing"*.
+(§0.29). Either way there is no unmastered submit path — the **supervisor**
+half of the backlog row *"`app deploy` without `--mint-masters` binds
+nothing"*, whose operator half §4.5 closes.
 
 `submit`'s response returns each minted DID, and `roymctl` prints them with
 the `export-master` command beside each one. ADR-0020 §4 calls a member
@@ -2412,11 +2457,16 @@ that do not exist"; "A4: `status` reports no binding state"; "A3:
 failure-matrix row 10 is unmet" (§4A's content hash — a real mechanism, not
 the generation gate); "`app_instance_owners` rows never get forgotten"
 (§5.6); "A3: `app::handle` has no test coverage" (§4.4's lib split makes it
-linkable; A5b adds the e2e that uses it).
+linkable; A5b adds the e2e that uses it); **"`app deploy` without
+`--mint-masters` binds nothing"** — §4.5 turns the warning into a refusal
+for a manifest that declares `depends_on`, which is the fix the row itself
+names ("no unmastered deploy path at all"). Recorded against **A5a**, not
+A5b: A5b's `submit` only removes the unmastered *supervisor* path, and the
+row was filed against `roymctl app deploy`, which A5b does not touch. Both
+halves are needed to close it.
 
 *A5b:* "A3: `apply_plan`'s future is not `Send`"; "A4: the alert store is a
-local file A5 cannot read"; "`app deploy` without `--mint-masters` binds
-nothing" (§12's `submit` always resolves masters); "A supervisor needing
+local file A5 cannot read"; "A supervisor needing
 vault writes must hold `substrate/admin` on every managed substrate" —
 **resolved by the custody design, not by building the per-service gate**:
 §11.4's vault is the supervisor's *own* node's service database, written
