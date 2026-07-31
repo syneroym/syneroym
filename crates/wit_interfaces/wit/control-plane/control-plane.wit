@@ -184,8 +184,28 @@ interface orchestrator {
     /// Deploy a new service using a deployment manifest
     deploy: func(service-id: string, manifest: deploy-manifest) -> result<_, string>;
 
-    /// Undeploy a service, stopping it and cleaning up resources
-    undeploy: func(service-id: string) -> result<_, string>;
+    /// Undeploy a service, stopping it and cleaning up resources.
+    /// `generation` is checked against the app instance's recorded
+    /// management stamp when the service has one (ADR-0021 §4's
+    /// "lifecycle actions"): a superseded supervisor must not be able to
+    /// undeploy services it no longer manages. A standalone service with
+    /// no app context is ungated; send 0.
+    undeploy: func(service-id: string, generation: u64) -> result<_, string>;
+
+    /// Restart a deployed service in place, without reinstalling it
+    /// (M05A A5's bounded remediation). Type-dispatched off the service
+    /// type recorded at deploy: a wasm component is evicted and
+    /// recompiled from the artifact the substrate already holds; a
+    /// container is stopped and started; a `tcp` service is **refused**,
+    /// because its process runs outside this substrate and there is
+    /// nothing here to restart -- an error the supervisor must see rather
+    /// than a silent success it would count as a remediation attempt.
+    ///
+    /// `generation` is checked against the app instance's recorded
+    /// management stamp when the service has one, the same rule
+    /// `undeploy` follows. A standalone service with no app context is
+    /// ungated; send 0.
+    restart: func(service-id: string, generation: u64) -> result<_, string>;
 
     /// An app instance's management stamp, or `none` if no deploy has
     /// ever named it here. `adopt`'s read half (M05A A5): a supervisor

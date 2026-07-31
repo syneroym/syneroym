@@ -6,6 +6,10 @@ edition.workspace = true
 [lints]
 workspace = true
 
+[lib]
+name = "roymctl"
+path = "src/lib.rs"
+
 [dependencies]
 clap.workspace = true
 anyhow.workspace = true

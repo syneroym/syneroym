@@ -463,15 +463,36 @@ impl NativeService for ControlPlaneService {
                 Ok(NativeResponse { payload: serde_json::json!({"status": "deployed_plan"}) })
             }
             "undeploy" => {
-                let (service_id,): (String,) = serde_json::from_value(invocation.params.clone())
-                    .or_else(|_| serde_json::from_value::<String>(invocation.params).map(|s| (s,)))
-                    .map_err(|e| {
-                        RpcError::InvalidParams(format!("Failed to parse undeploy params: {e}"))
-                    })?;
-                self.undeploy(service_id, &invocation.caller)
+                // Tolerates a bare `service_id` or a `(service_id,)`
+                // 1-tuple from a pre-A5a caller, defaulting `generation`
+                // to 0 -- the "unmanaged" value an ungated (or
+                // not-yet-adopted) undeploy already presents.
+                let (service_id, generation): (String, u64) =
+                    serde_json::from_value(invocation.params.clone())
+                        .or_else(|_| {
+                            serde_json::from_value::<(String,)>(invocation.params.clone())
+                                .map(|(s,)| (s, 0))
+                        })
+                        .or_else(|_| {
+                            serde_json::from_value::<String>(invocation.params).map(|s| (s, 0))
+                        })
+                        .map_err(|e| {
+                            RpcError::InvalidParams(format!("Failed to parse undeploy params: {e}"))
+                        })?;
+                self.undeploy(service_id, generation, &invocation.caller)
                     .await
                     .map_err(RpcError::InternalError)?;
                 Ok(NativeResponse { payload: serde_json::json!({"status": "undeployed"}) })
+            }
+            "restart" => {
+                let (service_id, generation): (String, u64) =
+                    serde_json::from_value(invocation.params).map_err(|e| {
+                        RpcError::InvalidParams(format!("Failed to parse restart params: {e}"))
+                    })?;
+                self.restart(service_id, generation, &invocation.caller)
+                    .await
+                    .map_err(RpcError::InternalError)?;
+                Ok(NativeResponse { payload: serde_json::json!({"status": "restarted"}) })
             }
             "app-instance-management-of" => {
                 let (app_instance_id,): (String,) = serde_json::from_value(invocation.params)
@@ -1204,7 +1225,7 @@ mod tests {
         assert_eq!(delivered_payload, b"order-1");
 
         // undeploy removes the native dispatch registration
-        service.undeploy(service_id.clone(), &test_caller).await.unwrap();
+        service.undeploy(service_id.clone(), 0, &test_caller).await.unwrap();
         assert!(
             service
                 .native_dispatch
@@ -1535,7 +1556,7 @@ mod tests {
         let persisted = storage_provider.list_all_messaging_subscriptions().await.unwrap();
         assert_eq!(persisted, vec![(service_id.clone(), namespaced_topic.clone())]);
 
-        service.undeploy(service_id.clone(), &test_caller).await.unwrap();
+        service.undeploy(service_id.clone(), 0, &test_caller).await.unwrap();
 
         let after_undeploy = storage_provider.list_all_messaging_subscriptions().await.unwrap();
         assert!(after_undeploy.is_empty(), "subscription row must be gone after undeploy");
@@ -1870,7 +1891,7 @@ mod tests {
              registry after deploy"
         );
 
-        service.undeploy(service_id.clone(), &test_caller).await.unwrap();
+        service.undeploy(service_id.clone(), 0, &test_caller).await.unwrap();
 
         assert!(
             registry.lookup(&service_id, STREAM_PROTOCOL).is_none(),

@@ -73,7 +73,24 @@ pub trait OrchestratorInterface {
         write: BindingWrite,
         caller: &CallerContext,
     ) -> Result<Vec<BindingWriteOutcomeWire>, String>;
-    async fn undeploy(&self, service_id: String, caller: &CallerContext) -> Result<(), String>;
+    /// `generation` is checked against the app instance's recorded
+    /// management stamp when the service has one (ADR-0021 §4's
+    /// "lifecycle actions"); a standalone service with no app context is
+    /// ungated.
+    async fn undeploy(
+        &self,
+        service_id: String,
+        generation: u64,
+        caller: &CallerContext,
+    ) -> Result<(), String>;
+    /// Restart a deployed service in place, without reinstalling it (M05A
+    /// A5's bounded remediation). `generation` follows `undeploy`'s rule.
+    async fn restart(
+        &self,
+        service_id: String,
+        generation: u64,
+        caller: &CallerContext,
+    ) -> Result<(), String>;
     /// `adopt`'s read half (M05A A5a, §0.26): the management stamp an app
     /// instance carries, or `None` if no deploy has ever named it here.
     /// `Ok(None)` (not an error) for a caller with no visibility into the
@@ -828,8 +845,22 @@ impl OrchestratorInterface for ControlPlaneService {
         self.write_bindings_impl(write, caller).await
     }
 
-    async fn undeploy(&self, service_id: String, caller: &CallerContext) -> Result<(), String> {
-        self.undeploy_impl(service_id, caller).await
+    async fn undeploy(
+        &self,
+        service_id: String,
+        generation: u64,
+        caller: &CallerContext,
+    ) -> Result<(), String> {
+        self.undeploy_impl(service_id, generation, caller).await
+    }
+
+    async fn restart(
+        &self,
+        service_id: String,
+        generation: u64,
+        caller: &CallerContext,
+    ) -> Result<(), String> {
+        self.restart_impl(service_id, generation, caller).await
     }
 
     async fn app_instance_management_of(
@@ -1130,6 +1161,11 @@ impl ControlPlaneService {
         // not a change to the deployed service, and hashing it would make
         // an `adopt` force a pointless reinstall of every service.
         let service_type = app_service_type(&manifest.service_type);
+        // M05A A5a §0.23: every rollback below re-enters through
+        // `self.undeploy`, now generation-gated -- send the same
+        // generation this deploy itself presented, so a rollback of the
+        // supervisor's own deploy is never rejected by its own gate.
+        let generation = app_context.as_ref().map_or(0, |c| c.generation);
         let context_for_hash =
             app_context.as_ref().map(|c| (&c.app_instance_id, &c.service_name, &c.bindings));
         let incoming_hash = {
@@ -1387,7 +1423,9 @@ impl ControlPlaneService {
                 )
                 .await
             {
-                if let Err(undeploy_err) = self.undeploy(service_id.clone(), caller).await {
+                if let Err(undeploy_err) =
+                    self.undeploy(service_id.clone(), generation, caller).await
+                {
                     tracing::error!(
                         "Failed to roll back partially deployed service {} after native \
                          capability registration error: {}",
@@ -1458,7 +1496,7 @@ impl ControlPlaneService {
         // larger change than this slice's scope -- not attempted here.
         if let Err(e) = self.registry.set_owner(service_id.clone(), caller.caller_did.clone()).await
         {
-            if let Err(undeploy_err) = self.undeploy(service_id.clone(), caller).await {
+            if let Err(undeploy_err) = self.undeploy(service_id.clone(), generation, caller).await {
                 tracing::error!(
                     "rollback after owner-attribution failure also failed: {undeploy_err}"
                 );
@@ -1481,7 +1519,7 @@ impl ControlPlaneService {
             None => self.registry.remove_instance_cert(&service_id).await,
         };
         if let Err(e) = cert_result {
-            if let Err(undeploy_err) = self.undeploy(service_id.clone(), caller).await {
+            if let Err(undeploy_err) = self.undeploy(service_id.clone(), generation, caller).await {
                 tracing::error!(
                     "rollback after instance-certificate installation failure also failed: \
                      {undeploy_err}"
@@ -1518,7 +1556,7 @@ impl ControlPlaneService {
             )
             .await
         {
-            if let Err(undeploy_err) = self.undeploy(service_id.clone(), caller).await {
+            if let Err(undeploy_err) = self.undeploy(service_id.clone(), generation, caller).await {
                 tracing::error!(
                     "rollback after deploy-facts installation failure also failed: {undeploy_err}"
                 );
@@ -1539,7 +1577,7 @@ impl ControlPlaneService {
         if let Some(prepared) = &prepared_app_context
             && let Err(e) = self.install_app_context(&service_id, prepared).await
         {
-            if let Err(undeploy_err) = self.undeploy(service_id.clone(), caller).await {
+            if let Err(undeploy_err) = self.undeploy(service_id.clone(), generation, caller).await {
                 tracing::error!(
                     "rollback after app-context/binding installation failure also failed: \
                      {undeploy_err}"
@@ -1690,6 +1728,7 @@ impl ControlPlaneService {
     async fn undeploy_impl(
         &self,
         service_id: String,
+        generation: u64,
         caller: &CallerContext,
     ) -> Result<(), String> {
         if let Some(owner) = self.registry.owner_of(&service_id)
@@ -1735,6 +1774,18 @@ impl ControlPlaneService {
                  substrate",
                 caller.caller_did
             ));
+        }
+
+        // M05A A5a §0.23: `undeploy` is a lifecycle action, gated the same
+        // as `deploy`/`restart` -- a superseded supervisor must not be
+        // able to tear down services it no longer manages. Ungated for a
+        // standalone service with no app context, same as `restart`.
+        if let Some((instance, _)) = self.registry.app_context_of(&service_id) {
+            let management = self.check_generation(&instance, caller, generation)?;
+            self.registry
+                .set_app_instance_management(instance, management)
+                .await
+                .map_err(|e| e.to_string())?;
         }
 
         info!("Undeploying service: {}", service_id);
@@ -1881,6 +1932,62 @@ impl ControlPlaneService {
         }
 
         Ok(())
+    }
+
+    /// Restart a deployed service in place (M05A A5a §4, ADR-0021 §4's
+    /// "lifecycle actions"). Type-dispatched off `service_deploy_facts`
+    /// (A4) recorded at deploy -- a `tcp` service's process runs outside
+    /// this substrate and there is nothing here to restart, so it is
+    /// refused rather than silently succeeding, which a supervisor's
+    /// remediation budget would otherwise count as a real attempt.
+    async fn restart_impl(
+        &self,
+        service_id: String,
+        generation: u64,
+        caller: &CallerContext,
+    ) -> Result<(), String> {
+        // Same gate as `deploy`: a restart is a lifecycle write.
+        let deploy_resource = ResourceUri(format!("substrate:{}/app/{service_id}", self.node_did));
+        if !caller
+            .has_capability(&deploy_resource, &Ability(Ability::ORCHESTRATOR_DEPLOY.to_string()))
+        {
+            return Err(format!(
+                "caller {} holds no orchestrator/deploy grant for '{service_id}' on this substrate",
+                caller.caller_did
+            ));
+        }
+
+        // Generation gate, only where an app instance exists (§0.23) --
+        // ungated for a standalone service, same as `undeploy`.
+        if let Some((instance, _)) = self.registry.app_context_of(&service_id) {
+            let management = self.check_generation(&instance, caller, generation)?;
+            self.registry
+                .set_app_instance_management(instance, management)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+
+        let Some((recorded_type, ..)) = self.registry.deploy_facts(&service_id) else {
+            return Err(format!(
+                "no service type recorded for '{service_id}'; redeploy to record it"
+            ));
+        };
+        match parse_service_type(&recorded_type) {
+            Some(AppServiceType::Wasm) => {
+                self.app_sandbox_engine.reload_wasm(&service_id).await.map_err(|e| e.to_string())
+            }
+            Some(AppServiceType::Container) => {
+                self.podman_sandbox_engine.stop(&service_id).await.map_err(|e| e.to_string())?;
+                self.podman_sandbox_engine.start(&service_id).await.map_err(|e| e.to_string())
+            }
+            Some(AppServiceType::Tcp) => Err(format!(
+                "'{service_id}' is a tcp service; its process runs outside this substrate and \
+                 cannot be restarted here"
+            )),
+            Some(AppServiceType::NativeHost) | None => {
+                Err(format!("'{service_id}' is a native-host service and has no restart path"))
+            }
+        }
     }
 
     /// M05A A5a §0.26/§5.7: `adopt`'s read half. `Ok(None)` (not an error)
@@ -3403,7 +3510,7 @@ mod tests {
             .unwrap();
         assert!(service.registry.app_instance_management_of("app-1").is_some());
 
-        service.undeploy("frontend-svc".to_string(), &caller).await.unwrap();
+        service.undeploy("frontend-svc".to_string(), 0, &caller).await.unwrap();
 
         assert!(
             service.registry.app_instance_management_of("app-1").is_none(),
@@ -4004,6 +4111,116 @@ mod tests {
         assert_eq!(management.generation, 3);
     }
 
+    // ── M05A A5a: restart ─────────────────────────────────────────────────
+
+    /// A5's remediation half of restart-in-place: evicting and recompiling
+    /// a wasm component from the artifact the substrate already holds,
+    /// with no redeploy and no identity work.
+    #[tokio::test]
+    async fn restart_reloads_a_wasm_component_from_disk() {
+        let wasm_bytes = std::fs::read(greeter_wasm_path())
+            .expect("greeter fixture must be built (see test-components/greeter's own build step)");
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let owner = node_wide_caller("owner");
+
+        let manifest = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema: None,
+                rotation_policy: None,
+                fdae_policy: None,
+                health_check: None,
+            },
+            service_type: WitServiceType::Wasm(WasmManifest {
+                source: ArtifactSource::Binary(wasm_bytes),
+                hash: None,
+                interfaces: vec![GREETER_INTERFACE_NAME.to_string()],
+            }),
+            registry_certificate: None,
+            instance_certificate: None,
+        };
+        service.deploy("greeter-restart-svc".to_string(), manifest, &owner).await.unwrap();
+        assert!(service.app_sandbox_engine.is_deployed("greeter-restart-svc"));
+
+        service.app_sandbox_engine.stop_wasm("greeter-restart-svc").await.unwrap();
+        assert!(!service.app_sandbox_engine.is_deployed("greeter-restart-svc"));
+
+        service.restart("greeter-restart-svc".to_string(), 0, &owner).await.unwrap();
+        assert!(
+            service.app_sandbox_engine.is_deployed("greeter-restart-svc"),
+            "restart must recompile the component from the artifact on disk"
+        );
+    }
+
+    /// A `tcp` service's process runs outside this substrate -- restart
+    /// must refuse it and say why, rather than silently succeeding, which
+    /// a supervisor's remediation budget would count as a real attempt.
+    #[tokio::test]
+    async fn restart_refuses_a_tcp_service_naming_why() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let owner = node_wide_caller("owner");
+
+        service
+            .deploy("tcp-restart-svc".to_string(), inline_manifest(None, None, None), &owner)
+            .await
+            .unwrap();
+
+        let err = service.restart("tcp-restart-svc".to_string(), 0, &owner).await.unwrap_err();
+        assert!(err.contains("tcp") && err.contains("outside this substrate"), "{err}");
+    }
+
+    /// §0.23: `restart` is a lifecycle action and must be generation-gated
+    /// exactly like `deploy`/`write-bindings` -- a superseded supervisor
+    /// must not be able to restart a service it no longer manages.
+    #[tokio::test]
+    async fn restart_is_rejected_at_a_lower_generation() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let caller = node_wide_caller("did:key:zAlice");
+
+        service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(AppContext { generation: 5, ..app_context("app-1", "frontend", vec![]) }),
+                &caller,
+            )
+            .await
+            .unwrap();
+
+        let err = service.restart("frontend-svc".to_string(), 3, &caller).await.unwrap_err();
+        assert!(err.contains("at generation 5"), "{err}");
+    }
+
+    /// §0.23 / matrix row 14's blast-radius half at the substrate level: a
+    /// superseded supervisor must not be able to undeploy -- the most
+    /// destructive lifecycle action there is -- a service it no longer
+    /// manages.
+    #[tokio::test]
+    async fn undeploy_is_rejected_at_a_lower_generation() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let caller = node_wide_caller("did:key:zAlice");
+
+        service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(AppContext { generation: 5, ..app_context("app-1", "frontend", vec![]) }),
+                &caller,
+            )
+            .await
+            .unwrap();
+
+        let err = service.undeploy("frontend-svc".to_string(), 3, &caller).await.unwrap_err();
+        assert!(err.contains("at generation 5"), "{err}");
+    }
+
     /// Finding 04 (post-review fix): the app-context/binding write is
     /// deferred until every fallible step earlier in the deploy has
     /// succeeded (`install_app_context`, called near owner attribution),
@@ -4097,7 +4314,7 @@ mod tests {
             .await
             .unwrap();
 
-        service.undeploy("frontend-svc".to_string(), &caller).await.unwrap();
+        service.undeploy("frontend-svc".to_string(), 0, &caller).await.unwrap();
 
         assert_eq!(service.registry.app_context_of("frontend-svc"), None);
         assert!(service.registry.all_bindings().await.unwrap().is_empty());
@@ -4611,7 +4828,7 @@ mod tests {
         let _ = fs::remove_file(&policy_filename);
         assert!(storage_provider.load_fdae_policy("undeploy_fdae_svc").await.unwrap().is_some());
 
-        service.undeploy("undeploy_fdae_svc".to_string(), &caller).await.unwrap();
+        service.undeploy("undeploy_fdae_svc".to_string(), 0, &caller).await.unwrap();
         assert_eq!(
             storage_provider.load_fdae_policy("undeploy_fdae_svc").await.unwrap(),
             None,
@@ -5950,7 +6167,7 @@ mod tests {
         assert_eq!(routes[0].collection.as_deref(), Some("orders"));
         drop(routes);
 
-        service.undeploy(service_id.clone(), &caller).await.unwrap();
+        service.undeploy(service_id.clone(), 0, &caller).await.unwrap();
         assert!(
             http_routes.get(&service_id).is_none(),
             "http_routes entry must be removed on undeploy"
@@ -6121,7 +6338,7 @@ mod tests {
 
         assert_eq!(registry.owner_of(&service_id), Some(caller.caller_did.clone()));
 
-        service.undeploy(service_id.clone(), &caller).await.unwrap();
+        service.undeploy(service_id.clone(), 0, &caller).await.unwrap();
         assert_eq!(registry.owner_of(&service_id), None);
     }
 
@@ -6397,7 +6614,7 @@ mod tests {
         service.deploy(service_id.clone(), manifest, &caller).await.unwrap();
         assert!(registry.instance_cert(&service_id).is_some());
 
-        service.undeploy(service_id.clone(), &caller).await.unwrap();
+        service.undeploy(service_id.clone(), 0, &caller).await.unwrap();
         assert_eq!(registry.instance_cert(&service_id), None);
     }
 
@@ -6724,7 +6941,7 @@ mod tests {
         let stored: WitHealthCheck = serde_json::from_str(&check_json.unwrap()).unwrap();
         assert!(matches!(stored, WitHealthCheck::TcpConnect(_)), "{stored:?}");
 
-        service.undeploy("facts-svc".to_string(), &node_wide_caller("owner")).await.unwrap();
+        service.undeploy("facts-svc".to_string(), 0, &node_wide_caller("owner")).await.unwrap();
         assert!(service.registry.deploy_facts("facts-svc").is_none());
     }
 

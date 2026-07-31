@@ -401,7 +401,7 @@ async fn a_member_master_did_resolves_to_an_address_and_follows_the_member_acros
     // deliberate: leaving both deployed creates D-A1-11's two-publisher
     // flap, and a test that passes only because the heartbeat is hourly
     // passes for the wrong reason.
-    operator_b.undeploy(member_master_did.clone()).await.expect("undeploy from node B failed");
+    operator_b.undeploy(member_master_did.clone(), 0).await.expect("undeploy from node B failed");
 
     let mut operator_a = orchestrator_client(&node_a, Identity::from_bytes(&operator.to_bytes()));
     operator_a.connect().await.expect("failed to connect to node A");

@@ -272,7 +272,7 @@ async fn test_podman_lifecycle() {
     // Undeploy
     debug!(">>> Undeploying nginx container");
     ctx.substrate_client
-        .undeploy(app_service_id.clone())
+        .undeploy(app_service_id.clone(), 0)
         .await
         .expect("SDK Undeploy container failed");
 

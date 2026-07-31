@@ -5,13 +5,8 @@
 use std::{path::PathBuf, process};
 
 use clap::Parser;
-use commands::Commands;
+use roymctl::{DEFAULT_API_URL, commands, commands::Commands};
 use rustls::crypto::ring;
-
-mod commands;
-
-/// Default API endpoint for the Community Registry
-const DEFAULT_API_URL: &str = "http://localhost:7961";
 
 #[derive(Parser)]
 #[command(name = "roymctl")]

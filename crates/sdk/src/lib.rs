@@ -731,8 +731,11 @@ impl SyneroymClient {
         }
     }
 
-    pub async fn undeploy(&self, service_id: String) -> Result<()> {
-        let params = serde_json::to_value((service_id,))?;
+    /// `generation` is checked against the app instance's recorded
+    /// management stamp when the service has one (M05A A5a, ADR-0021 §4);
+    /// send 0 for a standalone service.
+    pub async fn undeploy(&self, service_id: String, generation: u64) -> Result<()> {
+        let params = serde_json::to_value((service_id, generation))?;
         let res = self.request("orchestrator", "undeploy", params).await?;
         if res.result == serde_json::json!({"status": "undeployed"}) {
             Ok(())
