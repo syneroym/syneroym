@@ -769,7 +769,7 @@ impl OrchestratorInterface for ControlPlaneService {
             // service with no recorded facts (deployed by a pre-A4 binary)
             // is no longer podman-inspected, matching `status`'s `unknown`,
             // so the two surfaces cannot disagree.
-            if let Some((t, _)) = self.registry.deploy_facts(&service_id)
+            if let Some((t, _, _)) = self.registry.deploy_facts(&service_id)
                 && parse_service_type(&t) == Some(AppServiceType::Container)
             {
                 self.podman_sandbox_engine
@@ -1121,6 +1121,36 @@ impl ControlPlaneService {
             None
         };
 
+        // M05A A5a §4A / D-A5-18: deploy idempotency (failure-matrix row
+        // 10), distinct from the epoch guard (dedups binding writes) and
+        // the generation gate (picks between writers) -- ADR-0021 §3 says
+        // explicitly that neither covers the other. Canonical hash over
+        // (manifest, app_context-minus-generation); the generation is
+        // excluded deliberately, since bumping it is a change of *writer*,
+        // not a change to the deployed service, and hashing it would make
+        // an `adopt` force a pointless reinstall of every service.
+        let service_type = app_service_type(&manifest.service_type);
+        let context_for_hash =
+            app_context.as_ref().map(|c| (&c.app_instance_id, &c.service_name, &c.bindings));
+        let incoming_hash = {
+            let canonical = serde_json::to_string(&(&manifest, &context_for_hash))
+                .map_err(|e| format!("Failed to canonicalize deploy manifest for dedup: {e}"))?;
+            blake3::hash(canonical.as_bytes()).to_hex().to_string()
+        };
+        if self.registry.deploy_facts(&service_id).and_then(|(_, _, hash)| hash).as_deref()
+            == Some(incoming_hash.as_str())
+            && !matches!(
+                self.instance_phase(&service_id, Some(service_type_str(service_type))).await,
+                InstancePhase::NotRunning(_) | InstancePhase::NotFound
+            )
+        {
+            // A retry after a lost response: nothing changed and the
+            // instance is up, so this is a no-op that reports success --
+            // not a reinstall that restarts a healthy service.
+            info!("deploy for '{service_id}' is identical to what is installed and running; no-op");
+            return Ok(());
+        }
+
         if let Some(cert) = &manifest.registry_certificate {
             let cert_path = self.hosted_apps_dir.join(format!("{service_id}.json"));
             if let Err(e) = fs::write(&cert_path, cert) {
@@ -1179,7 +1209,8 @@ impl ControlPlaneService {
         // manifest error, checked before any engine work runs. Accepting it
         // would produce a permanently `failing` probe that is
         // indistinguishable, at the supervisor, from a real outage.
-        let service_type = app_service_type(&manifest.service_type);
+        // (`service_type` was already computed above, for the row-10 dedup
+        // check.)
         if let Some(check) = &manifest.config.health_check {
             let model = model_health_check(check)?;
             if !model.valid_for().contains(&service_type) {
@@ -1483,6 +1514,7 @@ impl ControlPlaneService {
                 service_id.clone(),
                 service_type_str(service_type).to_string(),
                 health_check_json,
+                Some(incoming_hash.clone()),
             )
             .await
         {
@@ -2119,7 +2151,7 @@ impl ControlPlaneService {
         now: u64,
     ) -> ServiceStatus {
         let facts = self.registry.deploy_facts(service_id);
-        let service_type = facts.as_ref().map(|(t, _)| t.clone());
+        let service_type = facts.as_ref().map(|(t, _, _)| t.clone());
         let phase = self.instance_phase(service_id, service_type.as_deref()).await;
 
         // D-A4-7: phase does NOT gate the probe. A `tcp` service is always
@@ -2217,7 +2249,7 @@ impl ControlPlaneService {
 
     /// Runs the declared probe, if any, against the endpoint it names.
     async fn run_probe(&self, service_id: &str) -> ProbeStatus {
-        let Some((_, Some(check_json))) = self.registry.deploy_facts(service_id) else {
+        let Some((_, Some(check_json), _)) = self.registry.deploy_facts(service_id) else {
             return ProbeStatus::NotDeclared;
         };
         let check: WitHealthCheck = match serde_json::from_str(&check_json) {
@@ -3778,6 +3810,200 @@ mod tests {
         );
     }
 
+    // ── M05A A5a: deploy idempotency (matrix row 10) ─────────────────────
+
+    /// Matrix row 10: a retry after a lost response -- the same manifest,
+    /// the same app context minus generation, against a still-running
+    /// service -- is a no-op. §0.27's regression guard: the management
+    /// stamp must still advance to the new generation even though the
+    /// deploy itself is deduplicated, because it is persisted at the
+    /// generation gate, before the dedup check ever runs.
+    #[tokio::test]
+    async fn an_identical_redeploy_of_a_running_service_is_a_no_op() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let caller = node_wide_caller("did:key:zAlice");
+        let manifest = inline_manifest(None, None, None);
+        let ctx = app_context(
+            "app-1",
+            "frontend",
+            vec![dependency_binding("backend", vec!["did:key:zBackendMember"])],
+        );
+
+        service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                manifest.clone(),
+                Some(AppContext { generation: 1, ..ctx.clone() }),
+                &caller,
+            )
+            .await
+            .unwrap();
+        let gen_before =
+            service.storage_provider.get_latest_config_generation("frontend-svc").await.unwrap();
+
+        // A later write at a higher generation (the supervisor's own
+        // reconcile after an `adopt`) with an identical manifest and
+        // context.
+        service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                manifest,
+                Some(AppContext { generation: 2, ..ctx }),
+                &caller,
+            )
+            .await
+            .unwrap();
+        let gen_after =
+            service.storage_provider.get_latest_config_generation("frontend-svc").await.unwrap();
+        assert_eq!(
+            gen_before, gen_after,
+            "an identical redeploy of a running service must be a no-op"
+        );
+
+        let management = service
+            .registry
+            .app_instance_management_of("app-1")
+            .expect("the generation gate's persist must not be skipped by the dedup no-op");
+        assert_eq!(
+            management.generation, 2,
+            "the redeploy's generation must be recorded even though the deploy itself was a no-op \
+             -- without this assertion this test passes against the bug §0.27 fixes"
+        );
+    }
+
+    /// Row 10's boundary: an identical redeploy of a service the substrate
+    /// no longer considers running must still reinstall it -- `restart` is
+    /// the cheap path, `deploy` is the repair path.
+    #[tokio::test]
+    async fn an_identical_redeploy_of_a_stopped_service_still_reinstalls_it() {
+        let wasm_bytes = std::fs::read(greeter_wasm_path())
+            .expect("greeter fixture must be built (see test-components/greeter's own build step)");
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let owner = node_wide_caller("owner");
+
+        let manifest = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema: None,
+                rotation_policy: None,
+                fdae_policy: None,
+                health_check: None,
+            },
+            service_type: WitServiceType::Wasm(WasmManifest {
+                source: ArtifactSource::Binary(wasm_bytes),
+                hash: None,
+                interfaces: vec![GREETER_INTERFACE_NAME.to_string()],
+            }),
+            registry_certificate: None,
+            instance_certificate: None,
+        };
+        service.deploy("greeter-svc".to_string(), manifest.clone(), &owner).await.unwrap();
+        let gen_after_first =
+            service.storage_provider.get_latest_config_generation("greeter-svc").await.unwrap();
+
+        // Simulate the instance stopping without an `undeploy` -- the
+        // substrate still holds the deploy facts (and their
+        // manifest_hash), but nothing is loaded any more.
+        service.app_sandbox_engine.stop_wasm("greeter-svc").await.unwrap();
+
+        service.deploy("greeter-svc".to_string(), manifest, &owner).await.unwrap();
+        let gen_after_second =
+            service.storage_provider.get_latest_config_generation("greeter-svc").await.unwrap();
+        assert_ne!(
+            gen_after_first, gen_after_second,
+            "a redeploy of a stopped service must reinstall, not no-op"
+        );
+    }
+
+    /// The hash is written only on full deploy success -- a half-failed
+    /// deploy must not be deduplicated on the next attempt.
+    #[tokio::test]
+    async fn a_half_failed_deploy_does_not_record_a_manifest_hash() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let owner = node_wide_caller("owner");
+
+        let manifest = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema: None,
+                rotation_policy: None,
+                fdae_policy: None,
+                health_check: None,
+            },
+            service_type: WitServiceType::Wasm(WasmManifest {
+                source: ArtifactSource::Url("/does_not_exist.wasm".to_string()),
+                hash: None,
+                interfaces: vec![],
+            }),
+            registry_certificate: None,
+            instance_certificate: None,
+        };
+        let result = service.deploy("half-failed-svc".to_string(), manifest, &owner).await;
+        assert!(result.is_err());
+
+        assert!(
+            service.registry.deploy_facts("half-failed-svc").is_none(),
+            "a deploy that fails before set_deploy_facts must not have recorded any deploy facts, \
+             manifest_hash included"
+        );
+    }
+
+    /// §0.27's other half: the management stamp records *who is writing*,
+    /// not what was installed, so it must survive a deploy that fails
+    /// after the generation gate -- unlike the bindings, it is not behind
+    /// A2's defer-until-everything-succeeds rule.
+    #[tokio::test]
+    async fn a_deploy_that_fails_after_the_gate_still_recorded_its_writer() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let owner = node_wide_caller("owner");
+
+        let manifest = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema: None,
+                rotation_policy: None,
+                fdae_policy: None,
+                health_check: None,
+            },
+            service_type: WitServiceType::Wasm(WasmManifest {
+                source: ArtifactSource::Url("/does_not_exist.wasm".to_string()),
+                hash: None,
+                interfaces: vec![],
+            }),
+            registry_certificate: None,
+            instance_certificate: None,
+        };
+        let ctx = app_context("app-1", "frontend", vec![]);
+        let result = service
+            .deploy_with_context(
+                "half-failed-svc".to_string(),
+                manifest,
+                Some(AppContext { generation: 3, ..ctx }),
+                &owner,
+            )
+            .await;
+        assert!(result.is_err());
+
+        let management = service
+            .registry
+            .app_instance_management_of("app-1")
+            .expect("the generation gate's persist must survive a later deploy failure");
+        assert_eq!(management.generation, 3);
+    }
+
     /// Finding 04 (post-review fix): the app-context/binding write is
     /// deferred until every fallible step earlier in the deploy has
     /// succeeded (`install_app_context`, called near owner attribution),
@@ -4766,7 +4992,9 @@ mod tests {
         async fn remove_cert(&self, service_id: &str) -> Result<()> {
             self.inner.remove_cert(service_id).await
         }
-        async fn load_all_deploy_facts(&self) -> Result<Vec<(String, String, Option<String>)>> {
+        async fn load_all_deploy_facts(
+            &self,
+        ) -> Result<Vec<(String, String, Option<String>, Option<String>)>> {
             self.inner.load_all_deploy_facts().await
         }
         async fn save_deploy_facts(
@@ -4774,8 +5002,11 @@ mod tests {
             service_id: &str,
             service_type: &str,
             health_check_json: Option<&str>,
+            manifest_hash: Option<&str>,
         ) -> Result<()> {
-            self.inner.save_deploy_facts(service_id, service_type, health_check_json).await
+            self.inner
+                .save_deploy_facts(service_id, service_type, health_check_json, manifest_hash)
+                .await
         }
         async fn remove_deploy_facts(&self, service_id: &str) -> Result<()> {
             self.inner.remove_deploy_facts(service_id).await
@@ -6485,7 +6716,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (service_type, check_json) = service.registry.deploy_facts("facts-svc").unwrap();
+        let (service_type, check_json, _) = service.registry.deploy_facts("facts-svc").unwrap();
         assert_eq!(service_type, "tcp");
         // Stored as the wire variant's own JSON, not the app model's
         // kebab-case one -- `run_probe` deserializes back into the same
@@ -6520,7 +6751,7 @@ mod tests {
             .deploy("redeploy-svc".to_string(), without_check, &node_wide_caller("owner"))
             .await
             .unwrap();
-        let (service_type, check_json) = service.registry.deploy_facts("redeploy-svc").unwrap();
+        let (service_type, check_json, _) = service.registry.deploy_facts("redeploy-svc").unwrap();
         assert_eq!(service_type, "tcp");
         assert!(check_json.is_none());
     }
@@ -6544,7 +6775,7 @@ mod tests {
             .unwrap();
         service
             .registry
-            .set_deploy_facts("container-svc".to_string(), "container".to_string(), None)
+            .set_deploy_facts("container-svc".to_string(), "container".to_string(), None, None)
             .await
             .unwrap();
         service
@@ -6558,7 +6789,7 @@ mod tests {
             .unwrap();
         service
             .registry
-            .set_deploy_facts("tcp-svc".to_string(), "tcp".to_string(), None)
+            .set_deploy_facts("tcp-svc".to_string(), "tcp".to_string(), None, None)
             .await
             .unwrap();
 
@@ -6591,7 +6822,7 @@ mod tests {
             .unwrap();
         service
             .registry
-            .set_deploy_facts("tcp-readyz-svc".to_string(), "tcp".to_string(), None)
+            .set_deploy_facts("tcp-readyz-svc".to_string(), "tcp".to_string(), None, None)
             .await
             .unwrap();
 
@@ -6987,6 +7218,7 @@ mod tests {
                 "bad-check-svc".to_string(),
                 "tcp".to_string(),
                 Some("not valid json".to_string()),
+                None,
             )
             .await
             .unwrap();
@@ -7027,6 +7259,7 @@ mod tests {
                     }))
                     .unwrap(),
                 ),
+                None,
             )
             .await
             .unwrap();
@@ -7074,6 +7307,7 @@ mod tests {
                     }))
                     .unwrap(),
                 ),
+                None,
             )
             .await
             .unwrap();
@@ -7118,6 +7352,7 @@ mod tests {
                     }))
                     .unwrap(),
                 ),
+                None,
             )
             .await
             .unwrap();
@@ -7163,6 +7398,7 @@ mod tests {
                     }))
                     .unwrap(),
                 ),
+                None,
             )
             .await
             .unwrap();
@@ -7327,6 +7563,7 @@ mod tests {
                     }))
                     .unwrap(),
                 ),
+                None,
             )
             .await
             .unwrap();

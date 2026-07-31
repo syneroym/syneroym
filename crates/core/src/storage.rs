@@ -66,16 +66,23 @@ pub trait EndpointStorage: Send + Sync {
     async fn remove_cert(&self, service_id: &str) -> Result<()>;
 
     /// Every stored deploy fact, as (`service_id`, `service_type`,
-    /// `health_check_json`) (M05A A4).
-    async fn load_all_deploy_facts(&self) -> Result<Vec<(String, String, Option<String>)>>;
-    /// Record what a deploy said `service_id` is, and its declared health
-    /// check if any (upsert -- a redeploy that drops the check writes
-    /// `None`, clearing it by construction).
+    /// `health_check_json`, `manifest_hash`) (M05A A4, `manifest_hash`
+    /// added A5a for deploy idempotency, failure-matrix row 10).
+    async fn load_all_deploy_facts(
+        &self,
+    ) -> Result<Vec<(String, String, Option<String>, Option<String>)>>;
+    /// Record what a deploy said `service_id` is, its declared health
+    /// check if any, and the canonical content hash of what was actually
+    /// installed (upsert -- a redeploy that drops the check writes
+    /// `None`, clearing it by construction; `manifest_hash` is written
+    /// only on full deploy success, so a half-failed deploy is never
+    /// deduplicated on the next attempt).
     async fn save_deploy_facts(
         &self,
         service_id: &str,
         service_type: &str,
         health_check_json: Option<&str>,
+        manifest_hash: Option<&str>,
     ) -> Result<()>;
     /// Forget `service_id`'s deploy facts. Idempotent.
     async fn remove_deploy_facts(&self, service_id: &str) -> Result<()>;
@@ -148,7 +155,7 @@ pub struct MockStorage {
     data: Arc<DashMap<(String, String), SubstrateEndpoint>>,
     owners: Arc<DashMap<String, String>>,
     certs: Arc<DashMap<String, String>>,
-    deploy_facts: Arc<DashMap<String, (String, Option<String>)>>,
+    deploy_facts: Arc<DashMap<String, (String, Option<String>, Option<String>)>>,
     app_contexts: Arc<DashMap<String, (String, String)>>,
     bindings: Arc<DashMap<(String, String), (String, String)>>,
     app_instance_management: Arc<DashMap<String, AppInstanceManagement>>,
@@ -214,11 +221,15 @@ impl EndpointStorage for MockStorage {
         self.certs.remove(service_id);
         Ok(())
     }
-    async fn load_all_deploy_facts(&self) -> Result<Vec<(String, String, Option<String>)>> {
+    async fn load_all_deploy_facts(
+        &self,
+    ) -> Result<Vec<(String, String, Option<String>, Option<String>)>> {
         Ok(self
             .deploy_facts
             .iter()
-            .map(|e| (e.key().clone(), e.value().0.clone(), e.value().1.clone()))
+            .map(|e| {
+                (e.key().clone(), e.value().0.clone(), e.value().1.clone(), e.value().2.clone())
+            })
             .collect())
     }
     async fn save_deploy_facts(
@@ -226,10 +237,15 @@ impl EndpointStorage for MockStorage {
         service_id: &str,
         service_type: &str,
         health_check_json: Option<&str>,
+        manifest_hash: Option<&str>,
     ) -> Result<()> {
         self.deploy_facts.insert(
             service_id.to_string(),
-            (service_type.to_string(), health_check_json.map(str::to_string)),
+            (
+                service_type.to_string(),
+                health_check_json.map(str::to_string),
+                manifest_hash.map(str::to_string),
+            ),
         );
         Ok(())
     }
