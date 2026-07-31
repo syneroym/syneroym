@@ -1360,9 +1360,11 @@ declared probe on a TCP service never run.
   library function behind a `StatusQuery` trait (D-A4-1), not a resident loop
   (D-A4-2) — A5 is the slice that owns a real supervisor process and calls the
   same function from its reconcile loop.
-- **Phase 7 (`roymctl` wiring):** `app health <instance>` (`--watch <secs>`,
-  `--strict` exits non-zero on any fault) and `app alerts <instance>`
-  (`--active`), plus `member_identity::deployed_service_id` extracted from
+- **Phase 7 (`roymctl` wiring):** `app health <instance>` (`--watch <secs>`;
+  faults are always fatal, `--strict` additionally makes an undetermined
+  service fatal too, D-A4-19) and `app alerts <instance>` (active by default,
+  `--all` for the cleared history too), plus
+  `member_identity::deployed_service_id` extracted from
   `check_no_placement_change`'s existing DID-resolution workaround (D-A4-11) so
   both the placement-change refusal and the sweep read the DID to poll the
   same way.
@@ -1488,6 +1490,159 @@ declare a health check (TBD, §2.7); a wasm `rpc` probe still costs a component
 instantiation per poll, bounded but not eliminated by the cache (A5, D-A4-8);
 and `status` reports no per-dependent binding convergence state, left out to
 keep the wire record small (A5, §11).
+
+**Post-review findings incorporated (2026-07-31).** An independent review of
+`b5aedd0` (re-running every gate rather than reading them from this file)
+found sixteen defects and gaps inside the shipped work, not missing scope —
+four correctness, five poll-cost/concurrency, three security, three test-
+coverage, one documentation. Fifteen are fixed in this pass; one is recorded
+as a backlog row instead (`deferred-backlog.md` §3).
+
+- **Correctness:** `app health`'s exit code came from a second, unrecorded
+  `poll_once` call after the loop rather than the sweep it just printed —
+  hoisted so both read the same report. `poll_once` raised
+  `SubstrateUnreachable` for a substrate the caller simply built no
+  `HealthTarget` for (a config gap, not an outage) — `SubstrateHealth` now
+  carries a `SubstrateFault` reason (`Unreachable` vs. `NoTargetBuilt`) so
+  `record_report` only alerts on the former. A service or substrate that left
+  the sweep entirely (removed from the manifest, `app forget`) kept its last
+  alert active forever, since neither loop in `record_report` ever revisits
+  what the current report doesn't mention — now cleared explicitly against
+  the live set. `is_near_expiry_parts` saturates to "always near" once a
+  certificate is actually expired, reporting a current outage
+  (failure-matrix rows 1/3) with a renewal reminder's wording — a new
+  `CertificateExpired` kind, checked first, closes this.
+- **Poll cost & concurrency:** `status_impl`'s per-service phase-check-and-
+  probe loop and `poll_once`'s per-substrate loop both awaited sequentially —
+  both now use `futures::future::join_all`, so a slow node or service no
+  longer serializes behind every other one (a real risk: enough serialized
+  probes inside one RPC could exceed the caller's own deadline and read an
+  otherwise-healthy node as unreachable). `app deploy`'s preflight called
+  `status(vec![])` to read four node facts, which for the node-wide owner
+  credential meant deriving a phase and running a probe for every service
+  the node hosts first — split into a standalone `node_facts` native method
+  (and `SyneroymClient::node_facts()`) that touches none of that. The
+  `http-get` probe built a fresh `reqwest::Client` per call — now built once
+  in `ControlPlaneService::init`. `probe_cached` has no single-flight
+  (deferred, see the backlog row above).
+- **Security:** `status` answered `Unauthorized` for a named id that exists
+  but the caller may not see, and `NotFound` otherwise — a comment claimed
+  this was "already inferable from `readyz`", which is false (`readyz`
+  returns the identical rejection text either way, checked before any
+  existence lookup); any verified caller could probe for an arbitrary DID's
+  existence on the node with no grant at all. Both cases now answer
+  `NotFound` uniformly. `service_ids` had no size cap, and every named id
+  that turned out not to exist cost a full scan of every registered
+  endpoint (`lookup_by_service`) — the existence check is gone with the fix
+  above, and a 500-id cap now rejects an oversized request outright. The
+  `http-get` probe's client followed redirects by default (up to ten hops),
+  letting a hostile or compromised container steer the substrate's own
+  outbound requests — redirects are now disabled; a 3xx reads as "not
+  ready", which is correct for a readiness check.
+- **Test coverage:** `http-get` and `rpc` were declared in health-check types
+  but never actually executed by any test (only deploy-time rejection and a
+  probe-skipped-on-a-stopped-instance case touched them) — a real local HTTP
+  responder (pass/unexpected-status/redirect-not-followed) and a real
+  `greeter` wasm deploy now drive both end to end. `run_probe`'s four error
+  branches (unreadable stored check, no endpoint for the interface, a
+  non-TCP endpoint under `tcp-connect` or `http-get`) were all unreachable
+  from the suite — each now has its own test. `service_deploy_facts` was
+  only ever exercised through `MockStorage` or a live single-process deploy
+  — a new test saves through a real `SqliteEndpointStorage` file, reopens a
+  fresh connection to it, and asserts the facts come back, closing the gap
+  a rebooted-node regression would otherwise have slipped through silently.
+- **Documentation:** this file claimed `poll_once` queries substrates
+  concurrently before the concurrency fix above actually landed (true now),
+  that `app alerts` takes `--active` (the flag is `--all`; active is the
+  default), and that `--strict` makes any fault exit non-zero (faults always
+  do; `--strict` additionally makes an *undetermined* service fatal,
+  D-A4-19) — corrected above.
+
+**Tests added: 17** — 11 in `crates/control_plane` (2 `node_facts`
+correctness/gating, 1 real `rpc` probe execution against `greeter`, 3 real
+`http-get` probe execution including the redirect regression, 4 `run_probe`
+error branches, 1 `service_ids` cap rejection; one existing test renamed and
+corrected rather than added: `status_omits_a_service_the_caller_may_not_see_and_reports_not_found_when_named`),
+3 in `crates/sdk` (the untargeted-substrate, stale-alert-clears, and
+certificate-expired-vs-near-expiry cases), 2 in `crates/identity` (expired
+vs. not, mirroring the existing near-expiry pair), and 1 in `crates/data_db`
+(the real-file deploy-facts round trip).
+
+**Gates, re-run 2026-07-31 (post-review):** `cargo +nightly fmt --all`
+clean; `cargo clippy --workspace --all-targets --all-features` clean, zero
+warnings; `cargo test -p syneroym-control-plane` 97/97, `-p syneroym-sdk`
+33/33, `-p syneroym-identity` 49/49, `-p syneroym-data-db` 178/178, all
+unsandboxed and outright green (no environmental skips needed for any of
+these). `cargo test --workspace --no-fail-fast` (sandboxed): the new
+`http-get`/`tcp-connect`-probe tests above join the same real-socket-bind
+category every other environmental failure in this file already is, plus one
+new-looking failure, `syneroym-router --test native_dispatch_identity` (4 of
+39, a `mainline::dht` "actor thread unexpectedly shutdown" panic) — re-run in
+isolation immediately after, 39/39 clean, and this pass touches no code in
+`crates/router` or the mainline DHT client, so this is the same class of
+parallel-execution-under-full-workspace-load flake `deferred-backlog.md` §1
+already documents for `proxy_dispatch.rs`, on a different test file with a
+different symptom, not a regression from this pass.
+
+**Second verification pass, incorporated.** Re-running the review against
+the post-review fixes above (not yet committed at the time) found three
+things the fixes themselves introduced, all now closed:
+
+- **The new `rpc`-probe test proved the wrong thing.** `an_rpc_probe_actually_invokes_the_declared_guest_method`
+  asserted only `!matches!(NotDeclared)` — satisfied by a *failing* probe
+  just as much as a passing one. The actual result was
+  `Failing("rpc probe failed: missing required parameter 'name'")`:
+  `run_probe`'s `Rpc` arm always sends `params: Value::Array(vec![])`, and
+  `greeter`'s only export, `greet(name: string)`, takes a required argument
+  `json_to_wasm_params`'s `default_for_missing` therefore rejects. This is a
+  real, permanent-failure design gap (any `rpc`-probed method with a
+  required parameter can never report `Passing`, indistinguishable from a
+  genuine outage), not a test bug alone — recorded in `deferred-backlog.md`
+  §3 rather than fixed, since the real fix (a `params` field on `rpc-probe`,
+  or deploy-time introspection of the guest's export signature) is a
+  schema decision of its own. The misleading test is now split in two:
+  `an_rpc_probe_permanently_fails_for_a_method_that_takes_a_required_argument`
+  pins the documented limitation explicitly, and the new
+  `an_rpc_probe_passes_for_a_method_that_takes_no_arguments` (against
+  `stream-test`'s zero-argument `get-uploaded-content`) proves the actual
+  happy path, which nothing had before.
+- **`node-facts-only` (A4-06's fix) was a live dispatch method with no WIT
+  declaration.** `test_wit_adherence` only walks WIT → dispatch, so a
+  dispatch arm with no WIT counterpart passes it silently. Declared now as
+  `node-facts-only: func() -> option<node-facts>;` beside `status` (renamed
+  from `node-facts` at declaration time — WIT does not allow a function and
+  a record to share a name — with the dispatch string and
+  `SyneroymClient::node_facts()`'s RPC call both updated to match).
+- **The WIT still documented the `unauthorized` behaviour A4-10 removed.**
+  `InstancePhase::Unauthorized` had no producer left anywhere, but survived
+  as a doc'd contract in `control-plane.wit` ("comes back `unauthorized`
+  ... so a poller can tell 'not permitted' from 'not running'" — the exact
+  property A4-10 deliberately removed), a dead match arm in
+  `sdk::health::poll_once`, and an unused variant in `sdk`'s own
+  `InstancePhase` mirror. Removed outright (pre-release, no wire
+  compatibility to preserve) rather than kept-and-relabeled: the WIT
+  variant, the mirror variant, and the dead arm are all gone; `status`'s
+  WIT doc and `instance-phase`'s own doc comment both now state the
+  corrected contract instead.
+
+Not re-addressed in this pass (unchanged from the first review, still
+tracked as backlog rows or accepted as this slice's own scope): A4-09's
+probe-cache single-flight (`deferred-backlog.md` §3) — though note the
+review's own observation that A4-05's `join_all` conversion means a single
+`status` call naming the same id twice (which `MAX_STATUS_SERVICE_IDS`
+does not deduplicate against) now races itself inside one request where it
+previously wouldn't have; worth folding into that same backlog row rather
+than opening a second one, since the fix (dedup `targets`, or the
+single-flight itself) is the same shape either way.
+
+**Tests added (this pass): 3 net** (2 `rpc`-probe tests replacing the one
+misleading one). **Gates, re-run after this pass:** `cargo +nightly fmt
+--all` clean; `cargo clippy --workspace --all-targets --all-features`
+clean, zero warnings; `cargo test -p syneroym-control-plane` 98/98, `-p
+syneroym-sdk` 33/33, both unsandboxed; `cargo check --workspace
+--all-targets --all-features` clean (confirms the `InstancePhase::Unauthorized`
+removal left no other reference anywhere in the workspace); `crates/substrate
+--test health_monitoring_e2e` 4/4; `mise run test:e2e` 12/12.
 
 ## Dependencies pulled in
 

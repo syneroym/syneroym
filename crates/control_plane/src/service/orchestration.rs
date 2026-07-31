@@ -72,6 +72,11 @@ pub trait OrchestratorInterface {
         service_ids: Vec<String>,
         caller: &CallerContext,
     ) -> Result<SubstrateStatus, String>;
+    /// Node facts only (A4-06) -- what `status`'s `node` field alone would
+    /// answer, with none of `status`'s per-service work. `None` for a caller
+    /// without node-wide `orchestrator/status` (D-A4-18), the same as
+    /// `status`'s own `node` field.
+    async fn node_facts(&self, caller: &CallerContext) -> Option<NodeFacts>;
 }
 
 /// Maps the wire `topology-mode` variant to the app model's `TopologyMode`
@@ -719,6 +724,10 @@ impl OrchestratorInterface for ControlPlaneService {
         caller: &CallerContext,
     ) -> Result<SubstrateStatus, String> {
         self.status_impl(service_ids, caller).await
+    }
+
+    async fn node_facts(&self, caller: &CallerContext) -> Option<NodeFacts> {
+        self.node_facts_for(caller)
     }
 }
 
@@ -1622,37 +1631,55 @@ impl ControlPlaneService {
     /// `list_impl`'s own visibility filter -- reused verbatim rather than
     /// re-derived, since two independently-maintained visibility rules is
     /// how a disclosure bug gets introduced.
+    /// Node facts (D-A4-18): gated on node-wide authority, not on seeing any
+    /// one service -- what this node can run and where it publishes is a
+    /// property of the node, not of a service grant. Split out of
+    /// `status_impl` (A4-06) so a caller that only wants these four fields
+    /// (`app deploy`'s preflight, D-A4-15) never pays `status_impl`'s
+    /// per-service phase-check-and-probe cost, which for the node-wide owner
+    /// credential means every deployed service on the node.
+    fn node_facts_for(&self, caller: &CallerContext) -> Option<NodeFacts> {
+        if !self.has_node_wide_ability(caller, Ability::ORCHESTRATOR_STATUS) {
+            return None;
+        }
+        let (registry_url, dht_enabled) = match self.endpoint_publisher.get() {
+            Some(publisher) => {
+                let client = publisher.registry_client();
+                (client.registry_url().map(str::to_string), client.dht_enabled())
+            }
+            // A substrate with no publisher wired (a test harness, or a node
+            // with no registry role) reports "unknown", not "none" -- a
+            // caller must not read an unwired publisher as a split-registry
+            // fleet.
+            None => (None, false),
+        };
+        Some(NodeFacts {
+            node_did: self.node_did.clone(),
+            service_types: compiled_service_types(),
+            registry_url,
+            dht_enabled,
+        })
+    }
+
     async fn status_impl(
         &self,
         service_ids: Vec<String>,
         caller: &CallerContext,
     ) -> Result<SubstrateStatus, String> {
-        let now = unix_seconds();
+        // A4-11: `parse_status_params` deliberately accepts anything on the
+        // way in (an empty list already means "everything visible", so there
+        // is no separate "give me nothing" case to protect), which leaves no
+        // size gate on a caller-supplied id list otherwise. Checked before
+        // any work happens on the list.
+        if service_ids.len() > MAX_STATUS_SERVICE_IDS {
+            return Err(format!(
+                "status request names {} service ids, over the {MAX_STATUS_SERVICE_IDS} limit",
+                service_ids.len()
+            ));
+        }
 
-        // Node facts (D-A4-18): gated on node-wide authority, not on seeing
-        // any one service -- what this node can run and where it publishes
-        // is a property of the node, not of a service grant.
-        let node = if self.has_node_wide_ability(caller, Ability::ORCHESTRATOR_STATUS) {
-            let (registry_url, dht_enabled) = match self.endpoint_publisher.get() {
-                Some(publisher) => {
-                    let client = publisher.registry_client();
-                    (client.registry_url().map(str::to_string), client.dht_enabled())
-                }
-                // A substrate with no publisher wired (a test harness, or a
-                // node with no registry role) reports "unknown", not "none"
-                // -- a caller must not read an unwired publisher as a
-                // split-registry fleet.
-                None => (None, false),
-            };
-            Some(NodeFacts {
-                node_did: self.node_did.clone(),
-                service_types: compiled_service_types(),
-                registry_url,
-                dht_enabled,
-            })
-        } else {
-            None
-        };
+        let now = unix_seconds();
+        let node = self.node_facts_for(caller);
 
         let visible = self.list_impl(caller).await?;
         let visible_by_id: HashMap<&str, &DeployedService> =
@@ -1664,57 +1691,37 @@ impl ControlPlaneService {
             service_ids.into_iter().partition(|id| visible_by_id.contains_key(id.as_str()))
         };
 
-        let mut services = Vec::with_capacity(targets.len() + named_missing.len());
-        for service_id in &targets {
-            let dep = visible_by_id[service_id.as_str()];
-            let facts = self.registry.deploy_facts(service_id);
-            let service_type = facts.as_ref().map(|(t, _)| t.clone());
-            let phase = self.instance_phase(service_id, service_type.as_deref()).await;
+        // A4-05: every target's phase check and probe run concurrently, not
+        // one after another -- a node with several probed services would
+        // otherwise serialize their timeouts inside this single RPC, and
+        // enough of them could exceed the caller's own deadline, which reads
+        // as `SubstrateUnreachable` for every service on an otherwise-healthy
+        // node.
+        let mut services: Vec<ServiceStatus> =
+            futures::future::join_all(targets.iter().map(|service_id| {
+                self.service_status_for(service_id, visible_by_id[service_id.as_str()], now)
+            }))
+            .await;
 
-            // D-A4-7: phase does NOT gate the probe. A `tcp` service is
-            // always `Unknown` -- probing only `Running` would mean a
-            // declared probe never runs for exactly the type that has no
-            // other signal. It is skipped only where the instance is
-            // already known to be down, where it would report a second
-            // symptom of one fault.
-            let (probe, probe_checked_at) = match &phase {
-                InstancePhase::Running | InstancePhase::Unknown(_) => {
-                    self.probe_cached(service_id, now).await
-                }
-                _ => (ProbeStatus::NotDeclared, None),
-            };
-
-            let cert = self.registry.instance_cert(service_id);
-            let app_ctx = self.registry.app_context_of(service_id);
-
-            services.push(ServiceStatus {
-                service_id: service_id.clone(),
-                service_type,
-                endpoint_type: dep.endpoint_type.clone(),
-                app_instance_id: app_ctx.as_ref().map(|(id, _)| id.clone()),
-                service_name: app_ctx.as_ref().map(|(_, name)| name.clone()),
-                phase,
-                probe,
-                instance_certificate_issued_at: cert.as_ref().map(|c| c.issued_at_secs),
-                instance_certificate_expires_at: cert.as_ref().map(|c| c.expires_at_secs),
-                probe_checked_at,
-            });
-        }
-
-        // A named id that is not visible: `unauthorized` if it exists on
-        // this node but the caller may not see it, `not-found` otherwise.
-        // Both are already inferable from `readyz`'s existing error text, so
-        // this leaks nothing new -- and the distinction is what lets a
-        // poller tell a credential problem from a deploy that never landed.
+        // A4-10: a named id that is not visible is always reported
+        // `not-found`, never `unauthorized` -- a caller without node-wide
+        // `orchestrator/status` must not be able to tell "exists, but I
+        // can't see it" from "never deployed" for an id it holds no grant
+        // on at all. `readyz`'s rejection text was cited as already leaking
+        // this, but it does not: `readyz` returns the identical "holds no
+        // orchestrator/status grant" message whether or not the service
+        // exists, checked before any existence lookup at all. A caller that
+        // *does* hold node-wide status never reaches this branch for an id
+        // that actually exists, since `list_impl` already returned it to
+        // them above -- so no legitimate caller loses information here.
         for service_id in named_missing {
-            let exists = !self.registry.lookup_by_service(&service_id).is_empty();
             services.push(ServiceStatus {
                 service_id,
                 service_type: None,
                 endpoint_type: String::new(),
                 app_instance_id: None,
                 service_name: None,
-                phase: if exists { InstancePhase::Unauthorized } else { InstancePhase::NotFound },
+                phase: InstancePhase::NotFound,
                 probe: ProbeStatus::NotDeclared,
                 instance_certificate_issued_at: None,
                 instance_certificate_expires_at: None,
@@ -1724,6 +1731,49 @@ impl ControlPlaneService {
 
         services.sort_by(|a, b| a.service_id.cmp(&b.service_id));
         Ok(SubstrateStatus { node, checked_at: now, services })
+    }
+
+    /// Builds one service's status entry -- phase, probe (D-A4-7's
+    /// probe-not-gated-by-phase rule), and certificate metadata. Split out of
+    /// `status_impl` so every target can be computed concurrently (A4-05)
+    /// via `join_all` instead of one after another.
+    async fn service_status_for(
+        &self,
+        service_id: &str,
+        dep: &DeployedService,
+        now: u64,
+    ) -> ServiceStatus {
+        let facts = self.registry.deploy_facts(service_id);
+        let service_type = facts.as_ref().map(|(t, _)| t.clone());
+        let phase = self.instance_phase(service_id, service_type.as_deref()).await;
+
+        // D-A4-7: phase does NOT gate the probe. A `tcp` service is always
+        // `Unknown` -- probing only `Running` would mean a declared probe
+        // never runs for exactly the type that has no other signal. It is
+        // skipped only where the instance is already known to be down,
+        // where it would report a second symptom of one fault.
+        let (probe, probe_checked_at) = match &phase {
+            InstancePhase::Running | InstancePhase::Unknown(_) => {
+                self.probe_cached(service_id, now).await
+            }
+            _ => (ProbeStatus::NotDeclared, None),
+        };
+
+        let cert = self.registry.instance_cert(service_id);
+        let app_ctx = self.registry.app_context_of(service_id);
+
+        ServiceStatus {
+            service_id: service_id.to_string(),
+            service_type,
+            endpoint_type: dep.endpoint_type.clone(),
+            app_instance_id: app_ctx.as_ref().map(|(id, _)| id.clone()),
+            service_name: app_ctx.as_ref().map(|(_, name)| name.clone()),
+            phase,
+            probe,
+            instance_certificate_issued_at: cert.as_ref().map(|c| c.issued_at_secs),
+            instance_certificate_expires_at: cert.as_ref().map(|c| c.expires_at_secs),
+            probe_checked_at,
+        }
     }
 
     /// Derives an [`InstancePhase`] for `service_id` from its recorded
@@ -1840,23 +1890,25 @@ impl ControlPlaneService {
                     ));
                 };
                 let url = format!("http://{host}:{port}{}", p.path);
-                let client = match reqwest::Client::builder()
-                    .timeout(Duration::from_millis(u64::from(p.timeout_ms)))
-                    .build()
+                match tokio::time::timeout(
+                    Duration::from_millis(u64::from(p.timeout_ms)),
+                    self.http_probe_client.get(&url).send(),
+                )
+                .await
                 {
-                    Ok(c) => c,
-                    Err(e) => {
-                        return ProbeStatus::Failing(format!("http client build failed: {e}"));
+                    Ok(Ok(resp)) if resp.status().as_u16() == p.expect_status => {
+                        ProbeStatus::Passing
                     }
-                };
-                match client.get(&url).send().await {
-                    Ok(resp) if resp.status().as_u16() == p.expect_status => ProbeStatus::Passing,
-                    Ok(resp) => ProbeStatus::Failing(format!(
+                    Ok(Ok(resp)) => ProbeStatus::Failing(format!(
                         "expected status {}, got {}",
                         p.expect_status,
                         resp.status().as_u16()
                     )),
-                    Err(e) => ProbeStatus::Failing(format!("http probe failed: {e}")),
+                    Ok(Err(e)) => ProbeStatus::Failing(format!("http probe failed: {e}")),
+                    Err(_) => ProbeStatus::Failing(format!(
+                        "http probe timed out after {}ms",
+                        p.timeout_ms
+                    )),
                 }
             }
             WitHealthCheck::Rpc(p) => {
@@ -1917,6 +1969,12 @@ fn unix_seconds() -> u64 {
 /// wasm `rpc` probe costs a component instantiation (D-A4-8).
 const PROBE_MIN_INTERVAL_SECS: u64 = 5;
 
+/// The most `service_ids` a single `status` call answers (A4-11). Well above
+/// any real fleet a `HealthTarget`/inventory names today; exists only to cap
+/// an unbounded, caller-supplied list from any verified caller, not to
+/// constrain normal use.
+const MAX_STATUS_SERVICE_IDS: usize = 500;
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
@@ -1928,6 +1986,10 @@ mod tests {
         http_routes::HttpRouteRegistry,
         local_registry::EndpointRegistry,
         storage::{EndpointStorage, MockStorage},
+        test_constants::{
+            GREETER_INTERFACE_NAME, STREAM_TEST_DRIVER_INTERFACE, greeter_wasm_path,
+            stream_test_wasm_path,
+        },
     };
     use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
     use syneroym_data_db::{SqliteStorageProvider, traits::StorageProvider};
@@ -5588,7 +5650,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn status_omits_a_service_the_caller_may_not_see_and_reports_unauthorized_when_named() {
+    async fn status_omits_a_service_the_caller_may_not_see_and_reports_not_found_when_named() {
         let temp_dir = tempfile::tempdir().unwrap();
         let service = service_for_inline_tests(temp_dir.path()).await;
 
@@ -5608,9 +5670,28 @@ mod tests {
             "bob must not see alice's service in an unnamed sweep"
         );
 
+        // A4-10: named explicitly, it must read identically to an id that
+        // was never deployed at all -- `not-found`, not `unauthorized`. Bob
+        // holds no grant on "owned-by-alice" whatsoever; distinguishing the
+        // two would let any verified caller probe for the existence of an
+        // arbitrary DID on this node with no grant at all.
         let named = service.status(vec!["owned-by-alice".to_string()], &bob).await.unwrap();
         assert_eq!(named.services.len(), 1);
-        assert!(matches!(named.services[0].phase, InstancePhase::Unauthorized));
+        assert!(matches!(named.services[0].phase, InstancePhase::NotFound));
+    }
+
+    /// A4-11: an unbounded `service_ids` list from any verified caller must
+    /// not be free to accept -- each named id that turns out not to exist
+    /// used to cost a full scan of every registered endpoint.
+    #[tokio::test]
+    async fn status_rejects_a_service_ids_list_over_the_cap() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+
+        let too_many: Vec<String> =
+            (0..=MAX_STATUS_SERVICE_IDS).map(|i| format!("svc-{i}")).collect();
+        let err = service.status(too_many, &status_capable_caller("owner")).await.unwrap_err();
+        assert!(err.contains("over the"), "{err}");
     }
 
     #[tokio::test]
@@ -5645,6 +5726,45 @@ mod tests {
         let node = status.node.unwrap();
         // Default features enable both sandboxes; `tcp` needs no engine.
         assert_eq!(node.service_types, vec!["container", "tcp", "wasm"]);
+    }
+
+    /// A4-06: the same gate `status`'s own `node` field applies, on the
+    /// standalone path -- a caller without node-wide `orchestrator/status`
+    /// must not read node facts through this narrower method either.
+    #[tokio::test]
+    async fn node_facts_is_none_without_node_wide_status() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let bob = scoped_deploy_caller("bob", "bobs-service");
+        assert!(service.node_facts(&bob).await.is_none());
+    }
+
+    /// A4-06: `node_facts` must answer identically to `status(vec![])`'s
+    /// `node` field -- the whole point of splitting it out is a cheaper path
+    /// to the *same* facts, not a different set of them.
+    #[tokio::test]
+    async fn node_facts_answers_the_same_as_status_with_no_service_ids() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let owner = status_capable_caller("owner");
+
+        let registry_client = Arc::new(syneroym_core::dht_registry::RegistryClient::new(
+            true,
+            Some("http://registry.example".to_string()),
+        ));
+        service.set_endpoint_publisher(Arc::new(
+            syneroym_core::endpoint_publisher::EndpointPublisher::new(
+                registry_client,
+                temp_dir.path().to_path_buf(),
+            ),
+        ));
+
+        let via_status = service.status(vec![], &owner).await.unwrap().node.unwrap();
+        let via_node_facts = service.node_facts(&owner).await.unwrap();
+        assert_eq!(via_status.registry_url, via_node_facts.registry_url);
+        assert_eq!(via_status.dht_enabled, via_node_facts.dht_enabled);
+        assert_eq!(via_status.node_did, via_node_facts.node_did);
+        assert_eq!(via_status.service_types, via_node_facts.service_types);
     }
 
     #[tokio::test]
@@ -5706,6 +5826,304 @@ mod tests {
         );
     }
 
+    /// A bare TCP listener that answers every connection with a fixed,
+    /// hand-written HTTP response -- avoids pulling in a full HTTP server
+    /// framework as a test-only dependency just to drive an `http-get`
+    /// probe (A4-13).
+    async fn serve_http_responses(response: &'static str) -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else { break };
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut buf = [0u8; 1024];
+                    let _ = stream.read(&mut buf).await;
+                    let _ = stream.write_all(response.as_bytes()).await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+        port
+    }
+
+    /// A4-13: nothing before this pinned that `run_probe`'s `HttpGet` arm
+    /// ever actually reaches a listener -- the only other `HttpGet` tests in
+    /// this file check deploy-time rejection.
+    #[tokio::test]
+    async fn an_http_probe_passes_on_the_expected_status() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let port = serve_http_responses(
+            "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+
+        let manifest = tcp_manifest_with(
+            port,
+            Some(WitHealthCheck::HttpGet(WitHttpProbe {
+                interface_name: "main".to_string(),
+                path: "/healthz".to_string(),
+                expect_status: 200,
+                timeout_ms: 2000,
+            })),
+        );
+        service
+            .deploy("http-ok-svc".to_string(), manifest, &node_wide_caller("owner"))
+            .await
+            .unwrap();
+        let status = service
+            .status(vec!["http-ok-svc".to_string()], &node_wide_caller("owner"))
+            .await
+            .unwrap();
+        assert!(
+            matches!(status.services[0].probe, ProbeStatus::Passing),
+            "{:?}",
+            status.services[0].probe
+        );
+    }
+
+    #[tokio::test]
+    async fn an_http_probe_fails_on_an_unexpected_status() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let port = serve_http_responses(
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+
+        let manifest = tcp_manifest_with(
+            port,
+            Some(WitHealthCheck::HttpGet(WitHttpProbe {
+                interface_name: "main".to_string(),
+                path: "/healthz".to_string(),
+                expect_status: 200,
+                timeout_ms: 2000,
+            })),
+        );
+        service
+            .deploy("http-503-svc".to_string(), manifest, &node_wide_caller("owner"))
+            .await
+            .unwrap();
+        let status = service
+            .status(vec!["http-503-svc".to_string()], &node_wide_caller("owner"))
+            .await
+            .unwrap();
+        assert!(
+            matches!(&status.services[0].probe, ProbeStatus::Failing(d) if d.contains("got 503")),
+            "{:?}",
+            status.services[0].probe
+        );
+    }
+
+    /// A4-12: a hostile or compromised container answering a probe with a
+    /// redirect must not make the substrate follow it -- a readiness check
+    /// has no reason to, and `reqwest`'s default policy (up to ten hops)
+    /// would otherwise let the probed service steer this substrate's own
+    /// requests (SSRF).
+    #[tokio::test]
+    async fn an_http_probe_does_not_follow_a_redirect() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let port = serve_http_responses(
+            "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/elsewhere\r\nContent-Length: \
+             0\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+
+        let manifest = tcp_manifest_with(
+            port,
+            Some(WitHealthCheck::HttpGet(WitHttpProbe {
+                interface_name: "main".to_string(),
+                path: "/healthz".to_string(),
+                expect_status: 200,
+                timeout_ms: 2000,
+            })),
+        );
+        service
+            .deploy("http-redirect-svc".to_string(), manifest, &node_wide_caller("owner"))
+            .await
+            .unwrap();
+        let status = service
+            .status(vec!["http-redirect-svc".to_string()], &node_wide_caller("owner"))
+            .await
+            .unwrap();
+        assert!(
+            matches!(&status.services[0].probe, ProbeStatus::Failing(d) if d.contains("got 302")),
+            "the probe must report the redirect itself, not follow it: {:?}",
+            status.services[0].probe
+        );
+    }
+
+    /// A4-14: `run_probe`'s four error branches, each worded distinctly and
+    /// read straight off `app health` by an operator -- none were reachable
+    /// from the suite before this.
+    #[tokio::test]
+    async fn run_probe_reports_an_unreadable_stored_health_check() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        service
+            .registry
+            .set_deploy_facts(
+                "bad-check-svc".to_string(),
+                "tcp".to_string(),
+                Some("not valid json".to_string()),
+            )
+            .await
+            .unwrap();
+        service
+            .registry
+            .register(
+                "bad-check-svc".to_string(),
+                "main".to_string(),
+                SubstrateEndpoint::TcpHostPort { host: "127.0.0.1".to_string(), port: 9 },
+            )
+            .await
+            .unwrap();
+
+        let status = service
+            .status(vec!["bad-check-svc".to_string()], &status_capable_caller("owner"))
+            .await
+            .unwrap();
+        assert!(
+            matches!(&status.services[0].probe, ProbeStatus::Failing(d) if d.contains("stored health check is unreadable")),
+            "{:?}",
+            status.services[0].probe
+        );
+    }
+
+    #[tokio::test]
+    async fn run_probe_reports_no_endpoint_for_the_declared_interface() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        service
+            .registry
+            .set_deploy_facts(
+                "no-endpoint-svc".to_string(),
+                "tcp".to_string(),
+                Some(
+                    serde_json::to_string(&WitHealthCheck::TcpConnect(WitTcpProbe {
+                        interface_name: "main".to_string(),
+                        timeout_ms: 1000,
+                    }))
+                    .unwrap(),
+                ),
+            )
+            .await
+            .unwrap();
+        // Registered under a different interface, so the service is visible
+        // at all -- but deliberately no `registry.register(...)` call for
+        // "main", the interface the health check actually names.
+        service
+            .registry
+            .register(
+                "no-endpoint-svc".to_string(),
+                "other".to_string(),
+                SubstrateEndpoint::TcpHostPort { host: "127.0.0.1".to_string(), port: 9 },
+            )
+            .await
+            .unwrap();
+
+        let status = service
+            .status(vec!["no-endpoint-svc".to_string()], &status_capable_caller("owner"))
+            .await
+            .unwrap();
+        assert!(
+            matches!(&status.services[0].probe, ProbeStatus::Failing(d) if d.contains("no endpoint registered for interface 'main'")),
+            "{:?}",
+            status.services[0].probe
+        );
+    }
+
+    #[tokio::test]
+    async fn run_probe_reports_a_non_tcp_endpoint_under_tcp_connect() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        service
+            .registry
+            .set_deploy_facts(
+                "non-tcp-endpoint-svc".to_string(),
+                // "nativehost" so `instance_phase` reports `Unknown` (the
+                // probe runs) without this test also having to fake a real
+                // running instance -- "wasm" would report `NotRunning` and
+                // skip the probe entirely, before ever reaching `run_probe`.
+                "nativehost".to_string(),
+                Some(
+                    serde_json::to_string(&WitHealthCheck::TcpConnect(WitTcpProbe {
+                        interface_name: "main".to_string(),
+                        timeout_ms: 1000,
+                    }))
+                    .unwrap(),
+                ),
+            )
+            .await
+            .unwrap();
+        service
+            .registry
+            .register(
+                "non-tcp-endpoint-svc".to_string(),
+                "main".to_string(),
+                SubstrateEndpoint::WasmChannel { service_id: "non-tcp-endpoint-svc".to_string() },
+            )
+            .await
+            .unwrap();
+
+        let status = service
+            .status(vec!["non-tcp-endpoint-svc".to_string()], &status_capable_caller("owner"))
+            .await
+            .unwrap();
+        assert!(
+            matches!(&status.services[0].probe, ProbeStatus::Failing(d) if d.contains("is not a TCP endpoint")),
+            "{:?}",
+            status.services[0].probe
+        );
+    }
+
+    #[tokio::test]
+    async fn run_probe_reports_a_non_tcp_endpoint_under_http_get() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        service
+            .registry
+            .set_deploy_facts(
+                "non-tcp-http-svc".to_string(),
+                // See the identical note in the tcp-connect version of this
+                // test just above.
+                "nativehost".to_string(),
+                Some(
+                    serde_json::to_string(&WitHealthCheck::HttpGet(WitHttpProbe {
+                        interface_name: "main".to_string(),
+                        path: "/healthz".to_string(),
+                        expect_status: 200,
+                        timeout_ms: 1000,
+                    }))
+                    .unwrap(),
+                ),
+            )
+            .await
+            .unwrap();
+        service
+            .registry
+            .register(
+                "non-tcp-http-svc".to_string(),
+                "main".to_string(),
+                SubstrateEndpoint::WasmChannel { service_id: "non-tcp-http-svc".to_string() },
+            )
+            .await
+            .unwrap();
+
+        let status = service
+            .status(vec!["non-tcp-http-svc".to_string()], &status_capable_caller("owner"))
+            .await
+            .unwrap();
+        assert!(
+            matches!(&status.services[0].probe, ProbeStatus::Failing(d) if d.contains("is not a TCP endpoint")),
+            "{:?}",
+            status.services[0].probe
+        );
+    }
+
     #[tokio::test]
     async fn a_probe_is_not_run_for_an_instance_that_is_not_running() {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -5747,6 +6165,115 @@ mod tests {
         assert_eq!(status.services.len(), 1);
         assert!(matches!(status.services[0].phase, InstancePhase::NotRunning(_)));
         assert!(matches!(status.services[0].probe, ProbeStatus::NotDeclared));
+    }
+
+    /// A4-13: nothing before this pinned that `run_probe`'s `Rpc` arm ever
+    /// actually reaches a running guest -- every other `Rpc` test in this
+    /// file deploys `Binary(vec![])` (deliberately fake, for deploy-time
+    /// rejection only) or skips deploy entirely via `set_deploy_facts`. This
+    /// one deploys the real `greeter` fixture and lets the probe genuinely
+    /// invoke it.
+    ///
+    /// Post-review (N-1): `run_probe`'s `Rpc` arm always sends
+    /// `params: Value::Array(vec![])`, so a probe method that takes a
+    /// required argument -- `greeter`'s own `greet(name: string)` -- can
+    /// never pass; `json_to_wasm_params`'s `default_for_missing`
+    /// (`sandbox_wasm/src/conversions.rs`) errors for any non-`Option`
+    /// parameter the array doesn't supply. That is a real, permanent
+    /// `ProbeFailing` an operator would read as a live outage, not a
+    /// declaration mistake -- recorded in `deferred-backlog.md` rather than
+    /// fixed here, since the real fix (a `params` field on `rpc-probe`, or
+    /// deploy-time introspection of the guest's exported signature) is a
+    /// WIT/schema decision of its own, not a drive-by change. Pinned
+    /// explicitly here rather than left as an accidentally-green test.
+    #[tokio::test]
+    async fn an_rpc_probe_permanently_fails_for_a_method_that_takes_a_required_argument() {
+        let wasm_bytes = std::fs::read(greeter_wasm_path())
+            .expect("greeter fixture must be built (see test-components/greeter's own build step)");
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let owner = node_wide_caller("owner");
+
+        let manifest = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema: None,
+                rotation_policy: None,
+                fdae_policy: None,
+                health_check: Some(WitHealthCheck::Rpc(WitRpcProbe {
+                    interface_name: GREETER_INTERFACE_NAME.to_string(),
+                    method: "greet".to_string(),
+                    timeout_ms: 2000,
+                })),
+            },
+            service_type: WitServiceType::Wasm(WasmManifest {
+                source: ArtifactSource::Binary(wasm_bytes),
+                hash: None,
+                interfaces: vec![GREETER_INTERFACE_NAME.to_string()],
+            }),
+            registry_certificate: None,
+            instance_certificate: None,
+        };
+        service.deploy("greeter-svc".to_string(), manifest, &owner).await.unwrap();
+
+        let status = service.status(vec!["greeter-svc".to_string()], &owner).await.unwrap();
+        assert_eq!(status.services.len(), 1);
+        assert!(
+            matches!(&status.services[0].probe, ProbeStatus::Failing(d) if d.contains("missing required parameter")),
+            "{:?}",
+            status.services[0].probe
+        );
+    }
+
+    /// The genuine happy path N-1 found missing: a real `rpc` probe against
+    /// a method that takes no arguments must report `Passing`.
+    /// `stream-test`'s `get-uploaded-content` (its own `test-driver`
+    /// interface) takes none and is side-effect-free against an empty
+    /// store.
+    #[tokio::test]
+    async fn an_rpc_probe_passes_for_a_method_that_takes_no_arguments() {
+        let wasm_bytes = std::fs::read(stream_test_wasm_path()).expect(
+            "stream-test fixture must be built (see test-components/stream-test's own build step)",
+        );
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let owner = node_wide_caller("owner");
+
+        let manifest = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema: None,
+                rotation_policy: None,
+                fdae_policy: None,
+                health_check: Some(WitHealthCheck::Rpc(WitRpcProbe {
+                    interface_name: STREAM_TEST_DRIVER_INTERFACE.to_string(),
+                    method: "get-uploaded-content".to_string(),
+                    timeout_ms: 2000,
+                })),
+            },
+            service_type: WitServiceType::Wasm(WasmManifest {
+                source: ArtifactSource::Binary(wasm_bytes),
+                hash: None,
+                interfaces: vec![STREAM_TEST_DRIVER_INTERFACE.to_string()],
+            }),
+            registry_certificate: None,
+            instance_certificate: None,
+        };
+        service.deploy("stream-test-svc".to_string(), manifest, &owner).await.unwrap();
+
+        let status = service.status(vec!["stream-test-svc".to_string()], &owner).await.unwrap();
+        assert_eq!(status.services.len(), 1);
+        assert!(
+            matches!(status.services[0].probe, ProbeStatus::Passing),
+            "{:?}",
+            status.services[0].probe
+        );
     }
 
     #[tokio::test]

@@ -33,6 +33,10 @@ pub enum AlertKind {
     /// The installed instance certificate is within 25% of its lifetime of
     /// expiring.
     CertificateNearExpiry,
+    /// The installed instance certificate's validity window has already
+    /// ended -- a current outage (failure-matrix rows 1/3 under the
+    /// attended posture), not a renewal reminder (A4-04).
+    CertificateExpired,
 }
 
 impl fmt::Display for AlertKind {
@@ -42,6 +46,7 @@ impl fmt::Display for AlertKind {
             Self::InstanceNotRunning => "INSTANCE_NOT_RUNNING",
             Self::ProbeFailing => "PROBE_FAILING",
             Self::CertificateNearExpiry => "CERTIFICATE_NEAR_EXPIRY",
+            Self::CertificateExpired => "CERTIFICATE_EXPIRED",
         };
         write!(f, "{}", s)
     }
@@ -56,6 +61,7 @@ impl FromStr for AlertKind {
             "INSTANCE_NOT_RUNNING" => Ok(Self::InstanceNotRunning),
             "PROBE_FAILING" => Ok(Self::ProbeFailing),
             "CERTIFICATE_NEAR_EXPIRY" => Ok(Self::CertificateNearExpiry),
+            "CERTIFICATE_EXPIRED" => Ok(Self::CertificateExpired),
             _ => Err(anyhow!("Unknown alert kind: {}", s)),
         }
     }

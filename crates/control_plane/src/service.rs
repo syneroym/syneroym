@@ -11,8 +11,9 @@ use std::{
     sync::{Arc, OnceLock, Weak},
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use dashmap::DashMap;
+use reqwest::{Client, redirect::Policy};
 use serde_json::Value;
 use syneroym_core::{
     endpoint_publisher::EndpointPublisher, http_routes::HttpRouteRegistry,
@@ -117,6 +118,14 @@ pub struct ControlPlaneService {
     /// wasm `rpc` probe costs a component instantiation. Entries are dropped
     /// on undeploy.
     probe_cache: DashMap<String, (u64, ProbeStatus)>,
+    /// The declared readiness probe's own `http-get` client (A4-08/A4-12):
+    /// built once here rather than per probe, and with redirects disabled --
+    /// a readiness check has no reason to follow one, and a hostile or
+    /// compromised container answering with a 3xx must not make this
+    /// substrate issue a request to a target of its own choosing. The
+    /// per-probe deadline is applied per call with `tokio::time::timeout`,
+    /// matching the other two probe kinds, rather than on the client itself.
+    http_probe_client: Client,
 }
 
 impl Debug for ControlPlaneService {
@@ -170,6 +179,10 @@ impl ControlPlaneService {
             native_dispatch: Arc::downgrade(&native_dispatch),
             http_routes,
             probe_cache: DashMap::new(),
+            http_probe_client: Client::builder()
+                .redirect(Policy::none())
+                .build()
+                .context("failed to build the HTTP probe client")?,
         })
     }
 
@@ -459,6 +472,14 @@ impl NativeService for ControlPlaneService {
                     .await
                     .map_err(RpcError::InternalError)?;
                 Ok(NativeResponse { payload: serde_json::to_value(status).unwrap_or(Value::Null) })
+            }
+            "node-facts-only" => {
+                // A4-06: `status`'s `node` field alone, with none of
+                // `status`'s per-service phase-check-and-probe cost -- for a
+                // caller (e.g. `app deploy`'s preflight) that wants only
+                // these four fields.
+                let facts = self.node_facts(&invocation.caller).await;
+                Ok(NativeResponse { payload: serde_json::to_value(facts).unwrap_or(Value::Null) })
             }
             method => Err(RpcError::MethodNotFound(method.to_string())),
         }

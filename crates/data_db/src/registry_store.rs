@@ -576,6 +576,41 @@ mod tests {
         (store, dir)
     }
 
+    /// A4-15: every other deploy-facts test writes through `MockStorage` or
+    /// a live single-process deploy -- nothing proves the round trip through
+    /// a real `SqliteEndpointStorage` file and back out, which is the fact
+    /// D-A4-7/D-A4-17 rest on (`instance_phase`'s recorded-type lookup and
+    /// `readyz`'s repaired guess). If this path regressed, every service on
+    /// a rebooted node would silently fall to `Unknown("no service type
+    /// recorded")` and `readyz` would quietly stop inspecting containers --
+    /// a healthy-looking failure the suite would otherwise never catch.
+    #[tokio::test]
+    async fn deploy_facts_survive_a_real_reopen_of_the_same_database_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("registry.db");
+
+        {
+            let store = SqliteEndpointStorage::new(&path).await.unwrap();
+            store
+                .save_deploy_facts(
+                    "svc-1",
+                    "tcp",
+                    Some(r#"{"tcp-connect":{"interface-name":"main","timeout-ms":2000}}"#),
+                )
+                .await
+                .unwrap();
+        }
+
+        // A genuinely fresh connection to the same file, not the same
+        // `SqliteEndpointStorage` instance.
+        let reopened = SqliteEndpointStorage::new(&path).await.unwrap();
+        let facts = reopened.load_all_deploy_facts().await.unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].0, "svc-1");
+        assert_eq!(facts[0].1, "tcp");
+        assert!(facts[0].2.as_deref().unwrap().contains("tcp-connect"));
+    }
+
     #[tokio::test]
     async fn test_save_and_load_wasm() {
         let (store, _dir) = make_store().await;

@@ -430,7 +430,13 @@ pub async fn handle(
                         format!("substrate '{alias}' ({}) is not reachable", entry.did)
                     })?;
 
-                    match c.status(vec![]).await.ok().and_then(|s| s.node) {
+                    // A4-06: `node_facts()` alone, not `status(vec![])` --
+                    // an empty `service_ids` means "every service this
+                    // caller may see", so for the node-wide owner credential
+                    // that call would derive a phase and run a probe for
+                    // every service the node hosts, just to read these four
+                    // fields.
+                    match c.node_facts().await.ok().flatten() {
                         None => {
                             // D-A4-18: node facts need node-wide
                             // orchestrator/status. A deploy-only or
@@ -885,8 +891,9 @@ pub async fn handle(
                 );
             }
 
+            let mut report;
             loop {
-                let report = health::poll_once(&targets, &expected).await;
+                report = health::poll_once(&targets, &expected).await;
                 print_health_table(&report);
                 for u in report.unknowns() {
                     eprintln!(
@@ -911,11 +918,12 @@ pub async fn handle(
                 }
             }
 
-            let report = health::poll_once(&targets, &expected).await;
             // D-A4-19: faults are fatal; "cannot tell" is not, unless
             // --strict. A `tcp` service that declared no probe is
             // permanently undetermined, and must not make every routine
-            // sweep exit non-zero.
+            // sweep exit non-zero. Reuses the loop's own last sweep rather
+            // than polling again, so the exit code always agrees with what
+            // was just printed and recorded.
             if !report.faults().is_empty() || (*strict && !report.unknowns().is_empty()) {
                 anyhow::bail!("{} service(s) unhealthy for {instance_id}", report.faults().len());
             }

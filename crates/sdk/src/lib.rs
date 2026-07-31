@@ -64,8 +64,11 @@ pub enum InstancePhase {
     Running,
     NotRunning(String),
     Unknown(String),
+    /// Also what a caller without a grant on an explicitly named id gets
+    /// back -- identical to an id never deployed at all, deliberately
+    /// (A4-10), so a caller with no grant cannot use this to probe for an
+    /// id's existence.
     NotFound,
-    Unauthorized,
 }
 
 /// **No `rename_all`** -- see [`InstancePhase`]'s doc comment.
@@ -739,6 +742,16 @@ impl SyneroymClient {
         let res = self
             .request("orchestrator", "status", serde_json::json!({ "service_ids": service_ids }))
             .await?;
+        Ok(serde_json::from_value(res.result)?)
+    }
+
+    /// `status`'s `node` field alone (A4-06), with none of `status`'s
+    /// per-service work -- for a caller that wants only what this node is,
+    /// not what is running on it (e.g. `app deploy`'s preflight, D-A4-15).
+    /// `None` for a caller without node-wide `orchestrator/status`
+    /// (D-A4-18), the same as `status`'s own `node` field.
+    pub async fn node_facts(&self) -> Result<Option<NodeFacts>> {
+        let res = self.request("orchestrator", "node-facts-only", serde_json::json!({})).await?;
         Ok(serde_json::from_value(res.result)?)
     }
 

@@ -268,11 +268,12 @@ interface orchestrator {
         unknown(string),
         /// This substrate has no endpoints registered for the id at all.
         /// Distinct from `not-running`: a deploy that never landed, versus a
-        /// deploy that landed and stopped.
+        /// deploy that landed and stopped. Also what a caller without a
+        /// grant on the id gets back for an explicitly named id it may not
+        /// see (A4-10): indistinguishable from an id that was never
+        /// deployed at all, deliberately, so a caller with no grant on an
+        /// id cannot use this to probe for its existence.
         not-found,
-        /// The caller may not see this service. Only ever returned for an
-        /// explicitly named id, never for an unnamed sweep.
-        unauthorized,
     }
 
     variant probe-status {
@@ -330,9 +331,16 @@ interface orchestrator {
     /// Per-instance status for a supervisor's poll loop. An empty
     /// `service-ids` means "every service this caller may see", using the
     /// same visibility rule as `list`. A named id the caller may not see
-    /// comes back `unauthorized` rather than being omitted, so a poller can
-    /// tell "not permitted" from "not running".
+    /// comes back `not-found` (A4-10) -- identical to an id never deployed
+    /// at all, deliberately, so a caller with no grant on an id cannot use
+    /// this to probe for its existence.
     status: func(service-ids: list<string>) -> result<substrate-status, string>;
+    /// `status`'s `node` field alone (A4-06), with none of `status`'s
+    /// per-service work -- for a caller that wants only what this node is,
+    /// not what is running on it (e.g. `app deploy`'s preflight). `none` for
+    /// a caller without node-wide `orchestrator/status`, the same as
+    /// `status`'s own `node` field.
+    node-facts-only: func() -> option<node-facts>;
 }
 
 interface health {

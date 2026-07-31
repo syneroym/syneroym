@@ -36,6 +36,17 @@ pub const fn is_near_expiry_parts(
     expires_at_secs.saturating_sub(now_secs).saturating_mul(4) <= lifetime
 }
 
+/// Whether a certificate's validity window has already ended -- distinct
+/// from [`is_near_expiry_parts`] (A4-04), which computes remaining time as
+/// `expires_at.saturating_sub(now)` and so saturates to 0, and therefore
+/// "always near", once `now >= expires_at`: an already-expired certificate
+/// would otherwise read identically to one at 74% elapsed, reporting a
+/// current outage as a renewal reminder.
+#[must_use]
+pub const fn is_expired_parts(expires_at_secs: u64, now_secs: u64) -> bool {
+    now_secs >= expires_at_secs
+}
+
 /// A cryptographic certificate that binds a temporary identity key to a master
 /// DID for a specific duration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -288,6 +299,21 @@ mod tests {
         assert!(cert.is_near_expiry(1_760));
         // 74% elapsed: remaining (260) > 25% of lifetime (250).
         assert!(!cert.is_near_expiry(1_740));
+    }
+
+    #[test]
+    fn a_certificate_still_inside_its_window_is_not_expired() {
+        assert!(!is_expired_parts(2_000, 1_999));
+        assert!(!is_expired_parts(2_000, 1_000));
+    }
+
+    #[test]
+    fn a_certificate_past_its_window_is_expired_not_merely_near_expiry() {
+        // A4-04: `is_near_expiry_parts` alone would also report this window
+        // as near-expiry (saturating remaining time to 0), but it must be
+        // distinguishable as a current outage, not a reminder.
+        assert!(is_expired_parts(2_000, 2_000));
+        assert!(is_expired_parts(2_000, 2_001));
     }
 
     #[test]

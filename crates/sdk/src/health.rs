@@ -7,14 +7,18 @@
 //! linked from a test), and A5's reconcile loop calls this same function
 //! rather than growing a second poller beside it.
 
-use std::{collections::BTreeMap, fmt, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashSet},
+    fmt,
+    sync::Arc,
+};
 
 use anyhow::Result;
 use syneroym_app_orchestration::{
     AlertKind, AlertStore,
     models::{AppInstanceId, LogicalServiceRef, SubstrateAlias},
 };
-use syneroym_identity::delegation::is_near_expiry_parts;
+use syneroym_identity::delegation::{is_expired_parts, is_near_expiry_parts};
 
 use crate::{InstancePhase, NodeFacts, ProbeStatus, SubstrateStatus, SyneroymClient};
 
@@ -91,15 +95,27 @@ pub struct ServiceHealth {
     pub instance_certificate_expires_at: Option<u64>,
 }
 
+/// Why a substrate produced no facts and no per-service answer -- distinct
+/// from a real connectivity failure (A4-02) so `record_report` never raises
+/// `SubstrateUnreachable` for a caller-side configuration gap (an inventory
+/// entry with no corresponding `HealthTarget`) instead of a down node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SubstrateFault {
+    /// The substrate was asked and did not answer (D-A4-13).
+    Unreachable(String),
+    /// The caller built no `HealthTarget` for this substrate at all.
+    NoTargetBuilt(String),
+}
+
 #[derive(Debug, Clone)]
 pub struct SubstrateHealth {
     pub alias: Option<SubstrateAlias>,
     pub substrate_did: String,
     /// `None` when the substrate did not answer, or when this caller holds
-    /// no node-wide `orchestrator/status` (D-A4-18) -- `error` distinguishes
+    /// no node-wide `orchestrator/status` (D-A4-18) -- `fault` distinguishes
     /// the two.
     pub node: Option<NodeFacts>,
-    pub error: Option<String>,
+    pub fault: Option<SubstrateFault>,
 }
 
 #[derive(Debug, Default)]
@@ -149,6 +165,9 @@ pub async fn poll_once(
         by_substrate.entry(svc.substrate_did.as_str()).or_default().push(svc);
     }
 
+    // Substrates with no target built at all need no network call, so they
+    // are resolved up front; everything else is queried below (A4-07).
+    let mut targeted = Vec::new();
     for (did, services) in by_substrate {
         let Some(target) = targets.get(did) else {
             // A placement whose substrate the caller built no target for --
@@ -160,7 +179,7 @@ pub async fn poll_once(
                 alias: None,
                 substrate_did: did.to_string(),
                 node: None,
-                error: Some(msg.clone()),
+                fault: Some(SubstrateFault::NoTargetBuilt(msg.clone())),
             });
             for s in services {
                 report.services.push(ServiceHealth {
@@ -175,16 +194,28 @@ pub async fn poll_once(
             }
             continue;
         };
+        targeted.push((did, target, services));
+    }
 
+    // A4-07: every targeted substrate is queried concurrently, not one
+    // after another -- a sweep over n substrates otherwise costs the sum of
+    // their latencies, and one node sitting at its connect timeout would
+    // delay every node behind it in `by_substrate`'s (`BTreeMap`) order.
+    let results = futures::future::join_all(targeted.iter().map(|(_, target, services)| {
         let ids: Vec<String> = services.iter().map(|s| s.service_id.clone()).collect();
-        match target.query.status(ids).await {
+        target.query.status(ids)
+    }))
+    .await;
+
+    for ((did, target, services), result) in targeted.into_iter().zip(results) {
+        match result {
             Err(e) => {
                 // D-A4-13: one substrate-level fault, no per-service alerts.
                 report.substrates.push(SubstrateHealth {
                     alias: target.alias.clone(),
                     substrate_did: did.to_string(),
                     node: None,
-                    error: Some(e.clone()),
+                    fault: Some(SubstrateFault::Unreachable(e.clone())),
                 });
                 for s in services {
                     report.services.push(ServiceHealth {
@@ -203,7 +234,7 @@ pub async fn poll_once(
                     alias: target.alias.clone(),
                     substrate_did: did.to_string(),
                     node: status.node,
-                    error: None,
+                    fault: None,
                 });
                 let by_id: BTreeMap<&str, _> =
                     status.services.iter().map(|s| (s.service_id.as_str(), s)).collect();
@@ -226,10 +257,6 @@ pub async fn poll_once(
                         (InstancePhase::NotRunning(r), _) => Signal::InstanceNotRunning(r.clone()),
                         (InstancePhase::NotFound, _) => Signal::InstanceNotRunning(
                             "this substrate has no endpoints for the id".to_string(),
-                        ),
-                        (InstancePhase::Unauthorized, _) => Signal::Unknown(
-                            "caller holds no orchestrator/status grant for this service"
-                                .to_string(),
                         ),
                         // A failing probe is a fault whether or not the
                         // substrate could determine a phase -- for a `tcp`
@@ -286,8 +313,14 @@ pub fn record_report(
     let mut opened = Vec::new();
 
     for sub in &report.substrates {
-        match &sub.error {
-            Some(e) => {
+        // A4-02: `NoTargetBuilt` is a caller-side configuration gap (an
+        // inventory entry with no corresponding `HealthTarget`), not a live
+        // outage -- raising `SubstrateUnreachable` for it would make
+        // `app health`'s exit code and `app alerts`' active rows disagree
+        // with what the printed table (correctly `Unknown`, not a fault)
+        // already says.
+        match &sub.fault {
+            Some(SubstrateFault::Unreachable(e)) => {
                 if alerts.raise(
                     instance_id,
                     None,
@@ -299,7 +332,7 @@ pub fn record_report(
                     opened.push((AlertKind::SubstrateUnreachable, sub.substrate_did.clone()));
                 }
             }
-            None => {
+            Some(SubstrateFault::NoTargetBuilt(_)) | None => {
                 alerts.clear(
                     instance_id,
                     None,
@@ -342,35 +375,76 @@ pub fn record_report(
             }
         }
 
-        // D-A4-16: the same relative rule the substrate's own heartbeat
-        // sweep uses.
-        let near = match (svc.instance_certificate_issued_at, svc.instance_certificate_expires_at) {
-            (Some(issued), Some(expires)) => is_near_expiry_parts(issued, expires, now),
-            _ => false,
-        };
-        if near {
-            let detail = format!(
-                "instance certificate expires at {}; renew with `roymctl identity \
-                 certify-instance`",
-                svc.instance_certificate_expires_at.unwrap_or(0)
-            );
-            if alerts.raise(
-                instance_id,
-                Some(&l_ref),
-                svc.alias.as_ref().map(SubstrateAlias::as_str),
-                &svc.substrate_did,
-                AlertKind::CertificateNearExpiry,
-                &detail,
-            )? {
-                opened.push((AlertKind::CertificateNearExpiry, l_ref.clone()));
+        // D-A4-16/A4-04: expired is checked before near-expiry and the two
+        // are mutually exclusive, the same shape as the fault pair above --
+        // `is_near_expiry_parts` alone saturates to "always near" once a
+        // certificate has actually expired, which would report a current
+        // outage (failure-matrix rows 1/3) with the wording of a renewal
+        // reminder.
+        let cert_state =
+            match (svc.instance_certificate_issued_at, svc.instance_certificate_expires_at) {
+                (Some(_), Some(expires)) if is_expired_parts(expires, now) => {
+                    Some((AlertKind::CertificateExpired, expires))
+                }
+                (Some(issued), Some(expires)) if is_near_expiry_parts(issued, expires, now) => {
+                    Some((AlertKind::CertificateNearExpiry, expires))
+                }
+                _ => None,
+            };
+        for kind in [AlertKind::CertificateExpired, AlertKind::CertificateNearExpiry] {
+            match cert_state {
+                Some((k, expires)) if k == kind => {
+                    let detail = match kind {
+                        AlertKind::CertificateExpired => format!(
+                            "instance certificate expired at {expires}; this instance cannot \
+                             handshake until it is renewed with `roymctl identity \
+                             certify-instance`"
+                        ),
+                        _ => format!(
+                            "instance certificate expires at {expires}; renew with `roymctl \
+                             identity certify-instance`"
+                        ),
+                    };
+                    if alerts.raise(
+                        instance_id,
+                        Some(&l_ref),
+                        svc.alias.as_ref().map(SubstrateAlias::as_str),
+                        &svc.substrate_did,
+                        kind,
+                        &detail,
+                    )? {
+                        opened.push((kind, l_ref.clone()));
+                    }
+                }
+                _ => {
+                    alerts.clear(instance_id, Some(&l_ref), &svc.substrate_did, kind)?;
+                }
             }
-        } else {
-            alerts.clear(
-                instance_id,
-                Some(&l_ref),
-                &svc.substrate_did,
-                AlertKind::CertificateNearExpiry,
-            )?;
+        }
+    }
+
+    // A4-03: a service or substrate that has left the sweep entirely --
+    // removed from the manifest, or `app forget`'s placement -- is never
+    // revisited by either loop above, since both only ever walk what the
+    // *current* report names. Left alone, its last-raised row would stay
+    // active forever with no sweep able to reach it again. Anything active
+    // that this report does not mention as a live (logical_ref,
+    // substrate_did) pair (or, for a substrate-level row, a live substrate)
+    // is cleared here instead.
+    let live_services: HashSet<(String, String)> = report
+        .services
+        .iter()
+        .map(|s| (s.logical_ref.to_string(), s.substrate_did.clone()))
+        .collect();
+    let live_substrates: HashSet<&str> =
+        report.substrates.iter().map(|s| s.substrate_did.as_str()).collect();
+    for row in alerts.active(instance_id)? {
+        let still_live = match &row.logical_ref {
+            Some(l_ref) => live_services.contains(&(l_ref.clone(), row.substrate_did.clone())),
+            None => live_substrates.contains(row.substrate_did.as_str()),
+        };
+        if !still_live {
+            alerts.clear(instance_id, row.logical_ref.as_deref(), &row.substrate_did, row.kind)?;
         }
     }
 
@@ -586,7 +660,7 @@ mod tests {
                 alias: None,
                 substrate_did: "did:key:b".to_string(),
                 node: None,
-                error: Some("unreachable".to_string()),
+                fault: Some(SubstrateFault::Unreachable("unreachable".to_string())),
             }],
             services: vec![
                 ServiceHealth {
@@ -614,6 +688,71 @@ mod tests {
         assert_eq!(alerts.active(&instance_id).unwrap().len(), 1);
     }
 
+    /// A4-02: an untargeted substrate (the caller built no `HealthTarget` for
+    /// it -- e.g. an inventory entry the caller's own config dropped) is a
+    /// configuration gap, not a live outage, and must not raise the same
+    /// alert a genuinely unreachable substrate does.
+    #[tokio::test]
+    async fn record_report_does_not_raise_substrate_unreachable_for_an_untargeted_substrate() {
+        let alerts = AlertStore::open_in_memory().unwrap();
+        let instance_id = AppInstanceId::new("inst-1");
+
+        let report = HealthReport {
+            substrates: vec![SubstrateHealth {
+                alias: None,
+                substrate_did: "did:key:b".to_string(),
+                node: None,
+                fault: Some(SubstrateFault::NoTargetBuilt(
+                    "no health target built for this substrate".to_string(),
+                )),
+            }],
+            services: vec![ServiceHealth {
+                logical_ref: l_ref("backend"),
+                service_id: "did:key:svc1".to_string(),
+                alias: None,
+                substrate_did: "did:key:b".to_string(),
+                signal: Signal::Unknown("no health target built for this substrate".to_string()),
+                instance_certificate_issued_at: None,
+                instance_certificate_expires_at: None,
+            }],
+        };
+        let opened = record_report(&alerts, &instance_id, &report, 1000).unwrap();
+        assert!(opened.is_empty(), "{opened:?}");
+        assert!(alerts.active(&instance_id).unwrap().is_empty());
+    }
+
+    /// A4-03: once a service leaves the sweep entirely (removed from the
+    /// manifest, or `app forget`), no later report ever mentions it again --
+    /// so its last-raised row must be cleared the moment it disappears, not
+    /// left active forever.
+    #[tokio::test]
+    async fn record_report_clears_an_alert_for_a_service_no_longer_in_the_report() {
+        let alerts = AlertStore::open_in_memory().unwrap();
+        let instance_id = AppInstanceId::new("inst-1");
+
+        let failing = HealthReport {
+            substrates: vec![],
+            services: vec![ServiceHealth {
+                logical_ref: l_ref("backend"),
+                service_id: "did:key:svc".to_string(),
+                alias: None,
+                substrate_did: "did:key:b".to_string(),
+                signal: Signal::ProbeFailing("bad".to_string()),
+                instance_certificate_issued_at: None,
+                instance_certificate_expires_at: None,
+            }],
+        };
+        record_report(&alerts, &instance_id, &failing, 1000).unwrap();
+        assert_eq!(alerts.active(&instance_id).unwrap().len(), 1);
+
+        // The next sweep no longer names "backend" at all -- removed from
+        // the manifest, or forgotten.
+        let empty = HealthReport { substrates: vec![], services: vec![] };
+        record_report(&alerts, &instance_id, &empty, 1001).unwrap();
+        assert!(alerts.active(&instance_id).unwrap().is_empty());
+        assert_eq!(alerts.all(&instance_id).unwrap().len(), 1, "the row must still be readable");
+    }
+
     #[tokio::test]
     async fn record_report_does_not_raise_near_expiry_for_a_freshly_issued_certificate() {
         let alerts = AlertStore::open_in_memory().unwrap();
@@ -634,5 +773,34 @@ mod tests {
         };
         record_report(&alerts, &instance_id, &report, now).unwrap();
         assert!(alerts.active(&instance_id).unwrap().is_empty());
+    }
+
+    /// A4-04: an already-expired certificate must not read as a near-expiry
+    /// reminder -- it is a current outage under the attended posture
+    /// (failure-matrix rows 1/3), and the two alert kinds must never both be
+    /// active for the same service at once.
+    #[tokio::test]
+    async fn record_report_raises_certificate_expired_not_near_expiry_once_past_the_window() {
+        let alerts = AlertStore::open_in_memory().unwrap();
+        let instance_id = AppInstanceId::new("inst-1");
+        let now = 1_700_000_000u64;
+
+        let report = HealthReport {
+            substrates: vec![],
+            services: vec![ServiceHealth {
+                logical_ref: l_ref("backend"),
+                service_id: "did:key:svc".to_string(),
+                alias: None,
+                substrate_did: "did:key:b".to_string(),
+                signal: Signal::Healthy,
+                instance_certificate_issued_at: Some(now - 25 * 3600),
+                instance_certificate_expires_at: Some(now - 3600),
+            }],
+        };
+        let opened = record_report(&alerts, &instance_id, &report, now).unwrap();
+        assert_eq!(opened, vec![(AlertKind::CertificateExpired, l_ref("backend").to_string())]);
+        let active = alerts.active(&instance_id).unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].kind, AlertKind::CertificateExpired);
     }
 }

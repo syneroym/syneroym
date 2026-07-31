@@ -454,7 +454,7 @@ async fn a_stopped_substrate_is_reported_unreachable_while_the_other_stays_healt
     assert!(matches!(backend.signal, health::Signal::SubstrateUnreachable(_)), "{backend:?}");
     // D-A4-13: exactly one substrate-level fault, not a per-service one.
     assert_eq!(
-        report.substrates.iter().filter(|s| s.error.is_some()).count(),
+        report.substrates.iter().filter(|s| s.fault.is_some()).count(),
         1,
         "{:?}",
         report.substrates
