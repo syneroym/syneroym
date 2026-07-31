@@ -46,6 +46,21 @@ pub trait EndpointStorage: Send + Sync {
     /// Forget `service_id`'s instance certificate. Idempotent.
     async fn remove_cert(&self, service_id: &str) -> Result<()>;
 
+    /// Every stored deploy fact, as (`service_id`, `service_type`,
+    /// `health_check_json`) (M05A A4).
+    async fn load_all_deploy_facts(&self) -> Result<Vec<(String, String, Option<String>)>>;
+    /// Record what a deploy said `service_id` is, and its declared health
+    /// check if any (upsert -- a redeploy that drops the check writes
+    /// `None`, clearing it by construction).
+    async fn save_deploy_facts(
+        &self,
+        service_id: &str,
+        service_type: &str,
+        health_check_json: Option<&str>,
+    ) -> Result<()>;
+    /// Forget `service_id`'s deploy facts. Idempotent.
+    async fn remove_deploy_facts(&self, service_id: &str) -> Result<()>;
+
     /// Load every recorded app context as (`service_id`, `app_instance_id`,
     /// `service_name`) (A2).
     async fn load_all_app_contexts(&self) -> Result<Vec<(String, String, String)>>;
@@ -95,6 +110,7 @@ pub struct MockStorage {
     data: Arc<DashMap<(String, String), SubstrateEndpoint>>,
     owners: Arc<DashMap<String, String>>,
     certs: Arc<DashMap<String, String>>,
+    deploy_facts: Arc<DashMap<String, (String, Option<String>)>>,
     app_contexts: Arc<DashMap<String, (String, String)>>,
     bindings: Arc<DashMap<(String, String), (String, String)>>,
     app_instance_owners: Arc<DashMap<String, String>>,
@@ -113,6 +129,7 @@ impl MockStorage {
             data: Arc::new(DashMap::new()),
             owners: Arc::new(DashMap::new()),
             certs: Arc::new(DashMap::new()),
+            deploy_facts: Arc::new(DashMap::new()),
             app_contexts: Arc::new(DashMap::new()),
             bindings: Arc::new(DashMap::new()),
             app_instance_owners: Arc::new(DashMap::new()),
@@ -157,6 +174,29 @@ impl EndpointStorage for MockStorage {
     }
     async fn remove_cert(&self, service_id: &str) -> Result<()> {
         self.certs.remove(service_id);
+        Ok(())
+    }
+    async fn load_all_deploy_facts(&self) -> Result<Vec<(String, String, Option<String>)>> {
+        Ok(self
+            .deploy_facts
+            .iter()
+            .map(|e| (e.key().clone(), e.value().0.clone(), e.value().1.clone()))
+            .collect())
+    }
+    async fn save_deploy_facts(
+        &self,
+        service_id: &str,
+        service_type: &str,
+        health_check_json: Option<&str>,
+    ) -> Result<()> {
+        self.deploy_facts.insert(
+            service_id.to_string(),
+            (service_type.to_string(), health_check_json.map(str::to_string)),
+        );
+        Ok(())
+    }
+    async fn remove_deploy_facts(&self, service_id: &str) -> Result<()> {
+        self.deploy_facts.remove(service_id);
         Ok(())
     }
     async fn load_all_app_contexts(&self) -> Result<Vec<(String, String, String)>> {

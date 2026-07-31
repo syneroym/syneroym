@@ -19,7 +19,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use syneroym_app_orchestration::models::{
-    DeploymentPlan, LogicalServiceRef, ServiceId, SubstrateAlias,
+    DeploymentPlan, LogicalServiceRef, PlannedService, ServiceId, SubstrateAlias,
 };
 use syneroym_core::dht_registry::RegistryClient;
 use syneroym_identity::{Identity, substrate};
@@ -66,6 +66,30 @@ pub fn resolve_member_master(dir: &Path, name: &str) -> Result<Identity> {
     }
     Identity::load_from_path(&path)
         .with_context(|| format!("failed to load member master at {}", path.display()))
+}
+
+/// The DID a service actually landed under: the local member-master identity
+/// if one exists, else the plan's own (possibly fabricated) `service_id`
+/// (M05A A4, D-A4-11).
+///
+/// Extracted from `check_no_placement_change`'s pre-existing workaround for
+/// the same gap: `app deploy` writes the journal from the **pre-substitution**
+/// plan (`--mint-masters` only substitutes a *copy*, after the journal
+/// already recorded the fabricated ids), so the journal's `service_id` is
+/// never the deployed DID for a minted deploy. Two call sites reading this
+/// two different ways is exactly the bug A3 already fixed once for
+/// `current_placement` -- this is the same fix for the same shape of gap.
+///
+/// Inherits that site's **member-index-0** assumption, correct today because
+/// nothing in a manifest can express more than one member; it becomes wrong
+/// the moment a supervisor scales a service (A5's own reference-scenario
+/// step 5).
+pub fn deployed_service_id(dir: &Path, svc: &PlannedService) -> Result<String> {
+    let name = member_master_name(&svc.logical_ref, 0)?;
+    Ok(match resolve_member_master(dir, &name) {
+        Ok(id) => substrate::derive_did_key(&id.public_key()),
+        Err(_) => svc.service_id.to_string(),
+    })
 }
 
 /// Loads the named member master, minting and persisting a new one if it
@@ -243,5 +267,51 @@ mod tests {
         let first = resolve_or_mint_member_master(dir.path(), "member-inst-1-backend-0").unwrap();
         let second = resolve_or_mint_member_master(dir.path(), "member-inst-1-backend-0").unwrap();
         assert_eq!(first.public_key(), second.public_key());
+    }
+
+    fn planned_service(logical_ref: LogicalServiceRef, fabricated_id: &str) -> PlannedService {
+        use std::collections::BTreeMap;
+
+        use syneroym_app_orchestration::models::{
+            RotationPolicy, ServiceConfig, ServiceId, ServiceType, TopologyMode,
+        };
+
+        PlannedService {
+            service_id: ServiceId::new(fabricated_id),
+            logical_ref,
+            substrate: None,
+            config: ServiceConfig {
+                service_type: ServiceType::Tcp,
+                source: "127.0.0.1:9000".to_string(),
+                hash: None,
+                interfaces: vec![],
+                env: BTreeMap::new(),
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema: None,
+                rotation_policy: RotationPolicy::default(),
+                fdae: None,
+                health_check: None,
+            },
+            resolved_dependencies: BTreeMap::new(),
+            topology_mode: TopologyMode::Singleton,
+        }
+    }
+
+    #[test]
+    fn deployed_service_id_prefers_the_local_member_master_and_falls_back_to_the_plan_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let l_ref = logical_ref("inst-1", "backend");
+        let svc = planned_service(l_ref.clone(), "did:key:hFabricated");
+
+        // No local master identity yet: falls back to the plan's own id.
+        assert_eq!(deployed_service_id(dir.path(), &svc).unwrap(), "did:key:hFabricated");
+
+        // A local member master exists: its derived DID wins.
+        let name = member_master_name(&l_ref, 0).unwrap();
+        let master = resolve_or_mint_member_master(dir.path(), &name).unwrap();
+        let real_did = substrate::derive_did_key(&master.public_key());
+        assert_eq!(deployed_service_id(dir.path(), &svc).unwrap(), real_did);
     }
 }

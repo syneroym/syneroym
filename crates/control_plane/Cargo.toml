@@ -15,6 +15,7 @@ podman_sandbox = ["dep:syneroym-sandbox-podman"]
 anyhow.workspace = true
 async-trait.workspace = true
 dashmap.workspace = true
+futures.workspace = true
 syneroym-core.workspace = true
 syneroym-rpc.workspace = true
 syneroym-sandbox-wasm = { workspace = true, optional = true }
@@ -33,6 +34,7 @@ syneroym-identity.workspace = true
 syneroym-mqtt-broker.workspace = true
 hex.workspace = true
 jsonschema.workspace = true
+reqwest.workspace = true
 uuid.workspace = true
 zeroize.workspace = true
 

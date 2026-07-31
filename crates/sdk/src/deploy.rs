@@ -390,6 +390,7 @@ mod tests {
             schema: None,
             rotation_policy: Default::default(),
             fdae: None,
+            health_check: None,
         }
     }
 

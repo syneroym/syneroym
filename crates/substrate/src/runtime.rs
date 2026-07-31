@@ -783,13 +783,8 @@ fn warn_on_near_expiry_instance_certs(registry: &EndpointRegistry) -> Vec<String
 
     let mut near_expiry = Vec::new();
     for (service_id, cert) in registry.all_instance_certs() {
-        let lifetime_secs = cert.expires_at_secs.saturating_sub(cert.issued_at_secs);
-        if lifetime_secs == 0 {
-            continue;
-        }
-        let remaining_secs = cert.expires_at_secs.saturating_sub(now_secs);
-        // remaining <= 25% of lifetime, computed without floating point.
-        if remaining_secs.saturating_mul(4) <= lifetime_secs {
+        if cert.is_near_expiry(now_secs) {
+            let remaining_secs = cert.expires_at_secs.saturating_sub(now_secs);
             warn!(
                 service_id = %service_id,
                 expires_at_secs = cert.expires_at_secs,

@@ -10,7 +10,7 @@ use anyhow::Context;
 use clap::Subcommand;
 use semver::Version;
 use syneroym_app_orchestration::{
-    ActionRecord, ActionState, AppInstanceId, DeploymentJournal, DeploymentState,
+    ActionRecord, ActionState, AlertStore, AppInstanceId, DeploymentJournal, DeploymentState,
     LocalFilesystemCatalog, Reconciler, SynAppManifest, compile,
     models::{
         AppBlueprintId, LogicalServiceName, LogicalServiceRef, PlannedService, ServiceConfig,
@@ -19,10 +19,10 @@ use syneroym_app_orchestration::{
     substrate_inventory::{SubstrateEntry, SubstrateInventory, check_placement, placement_demand},
 };
 use syneroym_core::dht_registry::RegistryClient;
-use syneroym_identity::substrate;
 use syneroym_sdk::{
-    SyneroymClient,
+    SubstrateStatus, SyneroymClient,
     deploy::{self, ApplyRequest, DeployTarget, PlanApplier},
+    health,
 };
 
 use super::member_identity;
@@ -97,6 +97,45 @@ pub enum AppCommands {
         #[arg(long, default_value = "deployments.db")]
         journal_path: PathBuf,
     },
+    /// Poll every substrate this app instance's services are placed on and
+    /// report per-service health (M05A A4). Read-only: nothing is restarted,
+    /// retried, or redeployed. Alerts are recorded unless `--no-record` is
+    /// passed. Exits non-zero when any service reports a fault; a service
+    /// the substrate could not decide about is reported but not fatal
+    /// unless `--strict`.
+    Health {
+        /// The AppInstanceId to poll
+        instance_id: String,
+        /// Path to the SQLite deployment journal
+        #[arg(long, default_value = "deployments.db")]
+        journal_path: PathBuf,
+        /// Alert store. Defaults to `alerts.db` beside the journal.
+        #[arg(long)]
+        alerts_path: Option<PathBuf>,
+        #[arg(long)]
+        inventory: Option<PathBuf>,
+        /// Repeat every N seconds instead of polling once and exiting.
+        #[arg(long, value_name = "SECS")]
+        watch: Option<u64>,
+        /// Poll and print without writing alert rows.
+        #[arg(long)]
+        no_record: bool,
+        /// Treat an undetermined service as a failure too.
+        #[arg(long)]
+        strict: bool,
+    },
+    /// Show alerts recorded for an app instance by `app health`.
+    Alerts {
+        /// The AppInstanceId to read alerts for
+        instance_id: String,
+        #[arg(long)]
+        alerts_path: Option<PathBuf>,
+        #[arg(long, default_value = "deployments.db")]
+        journal_path: PathBuf,
+        /// Include alerts that have since cleared.
+        #[arg(long)]
+        all: bool,
+    },
 }
 
 /// Resolves a possibly-relative path against `dir` (`<roymctl --dir>`),
@@ -163,14 +202,19 @@ where
     }
 }
 
-/// The one failure this slice cannot catch any earlier (D-A3-17, §0.12): a
-/// substrate publishes through its **own** configured registry, which
-/// nothing on the wire reports, so a split-registry fleet deploys cleanly
-/// and then cannot resolve. This is a heuristic over the URLs `roymctl` was
-/// given -- it proves "the registry at this URL cannot resolve member M",
-/// never "substrate X cannot" -- and it only warns, never fails the deploy:
-/// the services genuinely landed, and marking the deployment `Degraded`
-/// would send the next run redeploying them for nothing.
+/// A3's own post-apply fallback, now that A4's `status` call answers the
+/// registry-namespace question at preflight (D-A4-15) whenever the
+/// credential can read node facts (D-A4-18) -- the deploy loop above bails
+/// before any artifact work when it can see a split namespace outright. This
+/// probe stays as the propagation check and the fallback for a credential
+/// that cannot: a substrate publishes through its **own** configured
+/// registry, which nothing on the wire reports to a caller who cannot read
+/// node facts, so a split-registry fleet can still deploy cleanly and then
+/// fail to resolve. This is a heuristic over the URLs `roymctl` was given --
+/// it proves "the registry at this URL cannot resolve member M", never
+/// "substrate X cannot" -- and it only warns, never fails the deploy: the
+/// services genuinely landed, and marking the deployment `Degraded` would
+/// send the next run redeploying them for nothing.
 async fn probe_registry_reachability(
     placed: &[(&PlannedService, &DeployTarget)],
     urls: &BTreeSet<String>,
@@ -253,11 +297,7 @@ fn check_no_placement_change(
         if let Some(prev) = deploy::current_placement(landed, &l_ref)
             && prev.substrate_did != target.substrate_did
         {
-            let name = member_identity::member_master_name(&svc.logical_ref, 0)?;
-            let real_id = match member_identity::resolve_member_master(dir, &name) {
-                Ok(id) => substrate::derive_did_key(&id.public_key()),
-                Err(_) => svc.service_id.to_string(),
-            };
+            let real_id = member_identity::deployed_service_id(dir, svc)?;
             anyhow::bail!(
                 "service '{}' is already deployed on substrate {} and this run would place it on \
                  {}. A3 does not relocate -- the old instance would keep running and keep \
@@ -317,6 +357,7 @@ pub async fn handle(
                             schema: None,
                             rotation_policy: Default::default(),
                             fdae: None,
+                            health_check: None,
                         },
                         depends_on: vec![],
                         placement: None,
@@ -363,6 +404,12 @@ pub async fn handle(
             let demand = placement_demand(target_plan);
             let mut clients: BTreeMap<SubstrateAlias, Arc<SyneroymClient>> = BTreeMap::new();
             let mut client_urls: BTreeMap<SubstrateAlias, String> = BTreeMap::new();
+            // D-A4-15: closes two A3 backlog rows once `status` exists.
+            // `(registry_url, dht_enabled)` per alias whose credential could
+            // read node facts; the registry-namespace check below fires only
+            // when every placed alias is covered.
+            let mut registry_facts: BTreeMap<SubstrateAlias, (Option<String>, bool)> =
+                BTreeMap::new();
             if !demand.is_empty() {
                 let inv_path = inventory.clone().unwrap_or_else(|| dir.join("substrates.toml"));
                 let inv = SubstrateInventory::load(&inv_path)?;
@@ -382,8 +429,80 @@ pub async fn handle(
                     c.wait_for_ready(PREFLIGHT_TIMEOUT).await.with_context(|| {
                         format!("substrate '{alias}' ({}) is not reachable", entry.did)
                     })?;
+
+                    // A4-06: `node_facts()` alone, not `status(vec![])` --
+                    // an empty `service_ids` means "every service this
+                    // caller may see", so for the node-wide owner credential
+                    // that call would derive a phase and run a probe for
+                    // every service the node hosts, just to read these four
+                    // fields.
+                    match c.node_facts().await.ok().flatten() {
+                        None => {
+                            // D-A4-18: node facts need node-wide
+                            // orchestrator/status. A deploy-only or
+                            // app-scoped credential legitimately cannot
+                            // read them, and this must say so rather than
+                            // pass silently.
+                            eprintln!(
+                                "note: cannot verify substrate '{alias}''s capabilities or \
+                                 registry configuration with this credential (needs node-wide \
+                                 orchestrator/status); falling back to the post-apply probe."
+                            );
+                        }
+                        Some(facts) => {
+                            if let Some(declared) = &entry.capabilities {
+                                let reported: BTreeSet<String> =
+                                    facts.service_types.iter().cloned().collect();
+                                for t in declared {
+                                    let name = match t {
+                                        ServiceType::Wasm => "wasm",
+                                        ServiceType::Container => "container",
+                                        ServiceType::Tcp => "tcp",
+                                        ServiceType::NativeHost => "nativehost",
+                                    };
+                                    if !reported.contains(name) {
+                                        eprintln!(
+                                            "warning: substrate '{alias}' declares '{t:?}' in {} \
+                                             but reports it cannot run it",
+                                            inv_path.display()
+                                        );
+                                    }
+                                }
+                            }
+                            registry_facts
+                                .insert(alias.clone(), (facts.registry_url, facts.dht_enabled));
+                        }
+                    }
+
                     client_urls.insert(alias.clone(), entry_api_url.to_string());
                     clients.insert(alias.clone(), Arc::new(c));
+                }
+            }
+
+            if target_plan
+                .services
+                .iter()
+                .filter_map(|s| s.substrate.as_ref())
+                .collect::<BTreeSet<_>>()
+                .len()
+                > 1
+                && demand.keys().all(|a| registry_facts.contains_key(a))
+            {
+                let urls: BTreeSet<Option<String>> =
+                    registry_facts.values().map(|(url, _)| url.clone()).collect();
+                let all_dht = registry_facts.values().all(|(_, dht)| *dht);
+                if urls.len() > 1 && !all_dht {
+                    let described: Vec<String> = registry_facts
+                        .iter()
+                        .map(|(a, (url, _))| format!("{a}: {}", url.as_deref().unwrap_or("(none)")))
+                        .collect();
+                    anyhow::bail!(
+                        "substrates publish endpoint records into different registries ({}) and \
+                         not every substrate has the DHT enabled. Cross-substrate dependency \
+                         calls cannot resolve. Point them at one registry, or enable BEP0044 on \
+                         all of them.",
+                        described.join(", ")
+                    );
                 }
             }
 
@@ -658,8 +777,228 @@ pub async fn handle(
                 }
             }
         }
+        AppCommands::Health {
+            instance_id,
+            journal_path,
+            alerts_path,
+            inventory,
+            watch,
+            no_record,
+            strict,
+        } => {
+            let instance_id = AppInstanceId::try_new(instance_id.clone())?;
+
+            let parent_dir = journal_path.parent().unwrap_or(Path::new("."));
+            let db_name = journal_path
+                .file_name()
+                .ok_or_else(|| anyhow::anyhow!("Invalid journal path"))?
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("Invalid journal path characters"))?;
+            let journal = DeploymentJournal::open(parent_dir, db_name)?;
+
+            let (alerts_dir, alerts_name) = match alerts_path {
+                Some(p) => (
+                    p.parent().unwrap_or(Path::new(".")).to_path_buf(),
+                    p.file_name()
+                        .ok_or_else(|| anyhow::anyhow!("Invalid alerts path"))?
+                        .to_str()
+                        .ok_or_else(|| anyhow::anyhow!("Invalid alerts path characters"))?
+                        .to_string(),
+                ),
+                None => (parent_dir.to_path_buf(), "alerts.db".to_string()),
+            };
+            let alerts = AlertStore::open(&alerts_dir, &alerts_name)?;
+
+            let record = journal
+                .get_latest(&instance_id)?
+                .ok_or_else(|| anyhow::anyhow!("no deployment record for {instance_id}"))?;
+            let landed = journal.get_completed_actions_for_instance(&instance_id)?;
+
+            let mut expected = Vec::new();
+            let mut aliases: BTreeMap<String, Option<SubstrateAlias>> = BTreeMap::new();
+            for svc in &record.plan.services {
+                match deploy::current_placement(&landed, &svc.logical_ref.to_string()) {
+                    None => expected.push(health::ExpectedService {
+                        logical_ref: svc.logical_ref.clone(),
+                        service_id: String::new(),
+                        substrate_did: String::new(),
+                    }),
+                    Some(row) => {
+                        // The plan's `service_id` is the compiler's
+                        // fabricated id whenever the deploy minted masters
+                        // (§0.3), so re-derive.
+                        let id = member_identity::deployed_service_id(dir, svc)?;
+                        expected.push(health::ExpectedService {
+                            logical_ref: svc.logical_ref.clone(),
+                            service_id: id,
+                            substrate_did: row.substrate_did.clone(),
+                        });
+                        aliases.insert(
+                            row.substrate_did.clone(),
+                            row.substrate_alias.as_deref().map(SubstrateAlias::new),
+                        );
+                    }
+                }
+            }
+
+            // Aliased substrates resolve through the inventory exactly as
+            // `app deploy` does, including `resolve_credentials`' both-or-
+            // neither rule.
+            let inv_path = inventory.clone().unwrap_or_else(|| dir.join("substrates.toml"));
+            let inv = if aliases.values().any(Option::is_some) {
+                Some(SubstrateInventory::load(&inv_path)?)
+            } else {
+                None
+            };
+
+            let mut targets: BTreeMap<String, health::HealthTarget> = BTreeMap::new();
+            for (did, alias) in &aliases {
+                let (entry_api_url, entry_identity, entry_ucan) = match (alias, &inv) {
+                    (Some(a), Some(inv)) => {
+                        let entry = inv.get(a, &inv_path)?;
+                        let (id, ucan) =
+                            resolve_credentials(a, entry, &inv_path, dir, run_as, ucan_path)?;
+                        (entry.api_url.clone().unwrap_or_else(|| api_url.to_string()), id, ucan)
+                    }
+                    _ => (api_url.to_string(), run_as, ucan_path.map(Path::to_path_buf)),
+                };
+                let client_result = super::client_for(
+                    did.clone(),
+                    &entry_api_url,
+                    dir,
+                    entry_identity,
+                    entry_ucan.as_deref(),
+                );
+                let query: Arc<dyn health::StatusQuery> = match client_result {
+                    Ok(mut c) => {
+                        // NOT fatal, unlike `app deploy`'s preflight: an
+                        // unreachable substrate is the exact thing this
+                        // command exists to report.
+                        match c.wait_for_ready(PREFLIGHT_TIMEOUT).await {
+                            Ok(()) => Arc::new(c),
+                            Err(e) => Arc::new(UnreachableTarget(e.to_string())),
+                        }
+                    }
+                    Err(e) => Arc::new(UnreachableTarget(e.to_string())),
+                };
+                targets.insert(
+                    did.clone(),
+                    health::HealthTarget {
+                        alias: alias.clone(),
+                        substrate_did: did.clone(),
+                        query,
+                    },
+                );
+            }
+
+            let mut report;
+            loop {
+                report = health::poll_once(&targets, &expected).await;
+                print_health_table(&report);
+                for u in report.unknowns() {
+                    eprintln!(
+                        "undetermined: {} on {}: {:?}",
+                        u.logical_ref, u.substrate_did, u.signal
+                    );
+                }
+                if !*no_record {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    for (kind, subject) in
+                        health::record_report(&alerts, &instance_id, &report, now)?
+                    {
+                        eprintln!("ALERT {kind:?}: {subject}");
+                    }
+                }
+                match watch {
+                    None => break,
+                    Some(secs) => tokio::time::sleep(Duration::from_secs(*secs)).await,
+                }
+            }
+
+            // D-A4-19: faults are fatal; "cannot tell" is not, unless
+            // --strict. A `tcp` service that declared no probe is
+            // permanently undetermined, and must not make every routine
+            // sweep exit non-zero. Reuses the loop's own last sweep rather
+            // than polling again, so the exit code always agrees with what
+            // was just printed and recorded.
+            if !report.faults().is_empty() || (*strict && !report.unknowns().is_empty()) {
+                anyhow::bail!("{} service(s) unhealthy for {instance_id}", report.faults().len());
+            }
+        }
+        AppCommands::Alerts { instance_id, alerts_path, journal_path, all } => {
+            let instance_id = AppInstanceId::try_new(instance_id.clone())?;
+            let parent_dir = journal_path.parent().unwrap_or(Path::new("."));
+            let (alerts_dir, alerts_name) = match alerts_path {
+                Some(p) => (
+                    p.parent().unwrap_or(Path::new(".")).to_path_buf(),
+                    p.file_name()
+                        .ok_or_else(|| anyhow::anyhow!("Invalid alerts path"))?
+                        .to_str()
+                        .ok_or_else(|| anyhow::anyhow!("Invalid alerts path characters"))?
+                        .to_string(),
+                ),
+                None => (parent_dir.to_path_buf(), "alerts.db".to_string()),
+            };
+            let alerts = AlertStore::open(&alerts_dir, &alerts_name)?;
+            let rows =
+                if *all { alerts.all(&instance_id)? } else { alerts.active(&instance_id)? };
+            if rows.is_empty() {
+                println!("no {}alerts for {instance_id}", if *all { "" } else { "active " });
+            }
+            for row in rows {
+                println!(
+                    "{:<24} {:<20} {:<28} {}{}",
+                    row.logical_ref.as_deref().unwrap_or("(substrate)"),
+                    row.substrate_alias.as_deref().unwrap_or(row.substrate_did.as_str()),
+                    format!("{:?}", row.kind),
+                    row.detail,
+                    if row.cleared_at.is_some() { " [cleared]" } else { "" }
+                );
+            }
+        }
     }
     Ok(())
+}
+
+/// A substrate that never came up: "the connection never came up" and "the
+/// status call failed" take **one** path into `poll_once` instead of two, so
+/// `SubstrateUnreachable` has a single producer.
+#[derive(Debug)]
+struct UnreachableTarget(String);
+
+#[async_trait::async_trait]
+impl health::StatusQuery for UnreachableTarget {
+    async fn status(&self, _service_ids: Vec<String>) -> anyhow::Result<SubstrateStatus, String> {
+        Err(self.0.clone())
+    }
+}
+
+fn print_health_table(report: &health::HealthReport) {
+    println!("{:<24} {:<12} {:<20} DETAIL", "SERVICE", "SUBSTRATE", "STATUS");
+    for s in &report.services {
+        let (status, detail) = match &s.signal {
+            health::Signal::Healthy => ("HEALTHY".to_string(), "-".to_string()),
+            health::Signal::SubstrateUnreachable(d) => {
+                ("SUBSTRATE_UNREACHABLE".to_string(), d.clone())
+            }
+            health::Signal::InstanceNotRunning(d) => {
+                ("INSTANCE_NOT_RUNNING".to_string(), d.clone())
+            }
+            health::Signal::ProbeFailing(d) => ("PROBE_FAILING".to_string(), d.clone()),
+            health::Signal::Unknown(d) => ("UNDETERMINED".to_string(), d.clone()),
+            health::Signal::NotDeployed => ("NOT_DEPLOYED".to_string(), "-".to_string()),
+        };
+        println!(
+            "{:<24} {:<12} {:<20} {}",
+            s.logical_ref,
+            s.alias.as_ref().map(SubstrateAlias::as_str).unwrap_or(s.substrate_did.as_str()),
+            status,
+            detail
+        );
+    }
 }
 
 #[cfg(test)]
@@ -669,6 +1008,7 @@ mod tests {
         DeploymentPlan,
         models::{ServiceId, TopologyMode},
     };
+    use syneroym_identity::substrate;
     use syneroym_sdk::DeploymentPlan as WitDeploymentPlan;
 
     use super::*;
@@ -723,6 +1063,59 @@ mod tests {
             }
             _ => panic!("Expected Forget command"),
         }
+    }
+
+    #[test]
+    fn test_app_health_command_parsing() {
+        let cli = DummyCli::try_parse_from([
+            "dummy",
+            "health",
+            "inst-1",
+            "--journal-path",
+            "test.db",
+            "--watch",
+            "5",
+            "--strict",
+        ])
+        .unwrap();
+
+        match cli.command {
+            AppCommands::Health { instance_id, journal_path, watch, strict, no_record, .. } => {
+                assert_eq!(instance_id, "inst-1");
+                assert_eq!(journal_path, PathBuf::from("test.db"));
+                assert_eq!(watch, Some(5));
+                assert!(strict);
+                assert!(!no_record);
+            }
+            _ => panic!("Expected Health command"),
+        }
+    }
+
+    #[test]
+    fn test_app_alerts_command_parsing() {
+        let cli = DummyCli::try_parse_from(["dummy", "alerts", "inst-1", "--all"]).unwrap();
+
+        match cli.command {
+            AppCommands::Alerts { instance_id, all, .. } => {
+                assert_eq!(instance_id, "inst-1");
+                assert!(all);
+            }
+            _ => panic!("Expected Alerts command"),
+        }
+    }
+
+    #[test]
+    fn health_help_lists_no_record_watch_and_strict() {
+        let mut cmd = DummyCli::command();
+        let help = cmd
+            .get_subcommands_mut()
+            .find(|c| c.get_name() == "health")
+            .expect("health subcommand")
+            .render_help()
+            .to_string();
+        assert!(help.contains("--no-record"), "{help}");
+        assert!(help.contains("--watch"), "{help}");
+        assert!(help.contains("--strict"), "{help}");
     }
 
     #[test]
@@ -862,6 +1255,7 @@ mod tests {
             schema: None,
             rotation_policy: Default::default(),
             fdae: None,
+            health_check: None,
         }
     }
 

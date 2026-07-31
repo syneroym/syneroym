@@ -2,6 +2,7 @@
 //! Domain models, catalog, compiler, and logical resolver for local app model
 //! and lifecycle.
 
+pub mod alerts;
 pub mod catalog;
 pub mod compiler;
 pub mod journal;
@@ -10,16 +11,17 @@ pub mod reconcile;
 pub mod resolver;
 pub mod substrate_inventory;
 
+pub use alerts::{AlertKind, AlertRecord, AlertStore};
 pub use catalog::{LocalFilesystemCatalog, ManifestCatalog};
 pub use compiler::{CompiledDeployment, compile};
 pub use journal::{
     ActionRecord, ActionState, DeploymentJournal, DeploymentRecord, DeploymentState,
 };
 pub use models::{
-    AppBlueprintId, AppDependencySpec, AppInstanceId, DependencyName, DeploymentPlan,
-    InterfaceName, LogicalServiceName, LogicalServiceRef, ParseError, PlacementSelector,
-    PlannedService, ServiceConfig, ServiceId, ServiceSpec, ServiceType, SubstrateAlias,
-    SynAppManifest, TopologyMode,
+    AppBlueprintId, AppDependencySpec, AppInstanceId, DependencyName, DeploymentPlan, HealthCheck,
+    HttpProbe, InterfaceName, LogicalServiceName, LogicalServiceRef, ParseError, PlacementSelector,
+    PlannedService, RpcProbe, ServiceConfig, ServiceId, ServiceSpec, ServiceType, SubstrateAlias,
+    SynAppManifest, TcpProbe, TopologyMode,
 };
 pub use reconcile::{ReconcileAction, ReconcilePlan, Reconciler};
 pub use resolver::{

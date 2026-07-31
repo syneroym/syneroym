@@ -15,6 +15,7 @@ use iroh::{
     endpoint::{Connection, RecvStream, SendStream},
 };
 pub mod deploy;
+pub mod health;
 pub mod mapper;
 pub use deploy::{
     ApplyReport, ApplyRequest, DeployTarget, PlanApplier, ServiceFailure, apply_plan,
@@ -30,8 +31,8 @@ use syneroym_rpc::{
 };
 pub use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, ContainerManifest, ContainerPortMapping, ContainerVolumeMapping,
-    DeployManifest, DeploymentPlan, InstanceIdentity, NetworkEndpoint, PlannedService,
-    ServiceConfig, ServiceType, TcpManifest, WasmManifest,
+    DeployManifest, DeploymentPlan, HealthCheck, HttpProbe, InstanceIdentity, NetworkEndpoint,
+    PlannedService, RpcProbe, ServiceConfig, ServiceType, TcpManifest, TcpProbe, WasmManifest,
 };
 use tokio::{io, net::TcpStream, sync::mpsc, time};
 use tracing::debug;
@@ -46,6 +47,67 @@ pub struct DeployedService {
     /// still deserializes.
     #[serde(default)]
     pub instance_certificate_expires_at: Option<u64>,
+}
+
+/// Whether the substrate believes a service's instance is running (M05A A4).
+/// Deliberately not a bool: a supervisor's remediation differs per variant,
+/// and `Unknown` must never be silently read as healthy.
+///
+/// **No `rename_all`**: this mirrors the wire type
+/// (`syneroym_wit_interfaces::control_plane::exports::…::InstancePhase`),
+/// which `wit_bindgen`'s `additional_derives` gives a plain, unrenamed
+/// `Serialize`/`Deserialize` -- its JSON tags are the literal Rust variant
+/// names (`"Running"`, not `"running"`). A `kebab-case` rename here would
+/// silently stop parsing the server's actual response.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum InstancePhase {
+    Running,
+    NotRunning(String),
+    Unknown(String),
+    /// Also what a caller without a grant on an explicitly named id gets
+    /// back -- identical to an id never deployed at all, deliberately
+    /// (A4-10), so a caller with no grant cannot use this to probe for an
+    /// id's existence.
+    NotFound,
+}
+
+/// **No `rename_all`** -- see [`InstancePhase`]'s doc comment.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ProbeStatus {
+    NotDeclared,
+    Passing,
+    Failing(String),
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ServiceStatus {
+    pub service_id: String,
+    pub service_type: Option<String>,
+    pub endpoint_type: String,
+    pub app_instance_id: Option<String>,
+    pub service_name: Option<String>,
+    pub phase: InstancePhase,
+    pub probe: ProbeStatus,
+    pub instance_certificate_issued_at: Option<u64>,
+    pub instance_certificate_expires_at: Option<u64>,
+    pub probe_checked_at: Option<u64>,
+}
+
+/// What this node is, as opposed to what is running on it (M05A A4). Present
+/// only for a caller holding node-wide `orchestrator/status`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct NodeFacts {
+    pub node_did: String,
+    pub service_types: Vec<String>,
+    pub registry_url: Option<String>,
+    pub dht_enabled: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SubstrateStatus {
+    pub node: Option<NodeFacts>,
+    pub checked_at: u64,
+    pub services: Vec<ServiceStatus>,
 }
 
 /// Default ceiling for establishing a connection to a single mechanism.
@@ -532,6 +594,7 @@ impl SyneroymClient {
                 schema: None,
                 rotation_policy: None,
                 fdae_policy: None,
+                health_check: None,
             },
             service_type: ServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(wasm_bytes),
@@ -574,6 +637,7 @@ impl SyneroymClient {
                 schema: None,
                 rotation_policy: None,
                 fdae_policy: None,
+                health_check: None,
             },
             service_type: ServiceType::Tcp(TcpManifest { endpoints }),
             registry_certificate,
@@ -614,6 +678,7 @@ impl SyneroymClient {
                 schema: None,
                 rotation_policy: None,
                 fdae_policy: None,
+                health_check: None,
             },
             service_type: ServiceType::Container(ContainerManifest {
                 source: ArtifactSource::Binary(vec![]),
@@ -669,6 +734,25 @@ impl SyneroymClient {
         let res = self.request("orchestrator", "list", serde_json::json!({})).await?;
         let services: Vec<DeployedService> = serde_json::from_value(res.result)?;
         Ok(services)
+    }
+
+    /// A supervisor's poll: per-instance status for `service_ids`, or for
+    /// every service this client may see when the list is empty (M05A A4).
+    pub async fn status(&self, service_ids: Vec<String>) -> Result<SubstrateStatus> {
+        let res = self
+            .request("orchestrator", "status", serde_json::json!({ "service_ids": service_ids }))
+            .await?;
+        Ok(serde_json::from_value(res.result)?)
+    }
+
+    /// `status`'s `node` field alone (A4-06), with none of `status`'s
+    /// per-service work -- for a caller that wants only what this node is,
+    /// not what is running on it (e.g. `app deploy`'s preflight, D-A4-15).
+    /// `None` for a caller without node-wide `orchestrator/status`
+    /// (D-A4-18), the same as `status`'s own `node` field.
+    pub async fn node_facts(&self) -> Result<Option<NodeFacts>> {
+        let res = self.request("orchestrator", "node-facts-only", serde_json::json!({})).await?;
+        Ok(serde_json::from_value(res.result)?)
     }
 
     pub async fn passthrough(

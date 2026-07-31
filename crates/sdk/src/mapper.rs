@@ -6,18 +6,19 @@ use std::{
 use syneroym_app_orchestration::{
     DEFAULT_BINDING_CACHE_TTL_MS,
     models::{
-        DeploymentPlan, DocumentRef, LogicalServiceName, PlannedService, RotationPolicy, ServiceId,
-        ServiceType, TopologyMode,
+        DeploymentPlan, DocumentRef, HealthCheck, LogicalServiceName, PlannedService,
+        RotationPolicy, ServiceId, ServiceType, TopologyMode,
     },
 };
 use syneroym_core::{deploy_docs, util};
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     AppContext as WitAppContext, ArtifactSource, ContainerManifest, ContainerPortMapping,
     ContainerVolumeFile, ContainerVolumeMapping, DependencyBinding as WitDependencyBinding,
-    DeployManifest, DeploymentPlan as WitDeploymentPlan, DocumentSource, NetworkEndpoint,
+    DeployManifest, DeploymentPlan as WitDeploymentPlan, DocumentSource,
+    HealthCheck as WitHealthCheck, HttpProbe as WitHttpProbe, NetworkEndpoint,
     PlannedService as WitPlannedService, ResourceQuota, RotationPolicy as WitRotationPolicy,
-    ServiceConfig as WitServiceConfig, ServiceType as WitServiceType, TcpManifest,
-    TopologyMode as WitTopologyMode, WasmManifest,
+    RpcProbe as WitRpcProbe, ServiceConfig as WitServiceConfig, ServiceType as WitServiceType,
+    TcpManifest, TcpProbe as WitTcpProbe, TopologyMode as WitTopologyMode, WasmManifest,
 };
 
 /// Author-side container volume, mirroring the wire record but with `files`
@@ -70,6 +71,30 @@ fn map_mode(mode: TopologyMode) -> WitTopologyMode {
         TopologyMode::Singleton => WitTopologyMode::Singleton,
         TopologyMode::Redundant => WitTopologyMode::Redundant,
         TopologyMode::Sharded => WitTopologyMode::Sharded,
+    }
+}
+
+/// Maps the app model's `HealthCheck` to the wire variant. Pure translation:
+/// no defaulting, no validation -- serde already applied the field defaults
+/// at parse time, and kind/type compatibility is the substrate's deploy-time
+/// check (D-A4-6), so a client cannot smuggle a bad pairing past it.
+fn map_health_check(check: &HealthCheck) -> WitHealthCheck {
+    match check {
+        HealthCheck::TcpConnect(p) => WitHealthCheck::TcpConnect(WitTcpProbe {
+            interface_name: p.interface.to_string(),
+            timeout_ms: p.timeout_ms,
+        }),
+        HealthCheck::HttpGet(p) => WitHealthCheck::HttpGet(WitHttpProbe {
+            interface_name: p.interface.to_string(),
+            path: p.path.clone(),
+            expect_status: p.expect_status,
+            timeout_ms: p.timeout_ms,
+        }),
+        HealthCheck::Rpc(p) => WitHealthCheck::Rpc(WitRpcProbe {
+            interface_name: p.interface.to_string(),
+            method: p.method.clone(),
+            timeout_ms: p.timeout_ms,
+        }),
     }
 }
 
@@ -137,6 +162,7 @@ pub fn map_deployment_plan_to_wit(
                 .as_ref()
                 .map(|f| map_document_ref(&f.policy, "fdae policy"))
                 .transpose()?,
+            health_check: svc.config.health_check.as_ref().map(map_health_check),
         };
 
         let service_type = match svc.config.service_type {
@@ -298,8 +324,9 @@ mod tests {
 
     use semver::Version;
     use syneroym_app_orchestration::models::{
-        AppBlueprintId, AppInstanceId, FdaeManifest, LogicalServiceName, LogicalServiceRef,
-        PlannedService, ServiceConfig, ServiceId, ServiceType, TopologyMode,
+        AppBlueprintId, AppInstanceId, FdaeManifest, HttpProbe, InterfaceName, LogicalServiceName,
+        LogicalServiceRef, PlannedService, RpcProbe, ServiceConfig, ServiceId, ServiceType,
+        TcpProbe, TopologyMode,
     };
 
     use super::*;
@@ -317,6 +344,7 @@ mod tests {
             schema: None,
             rotation_policy: Default::default(),
             fdae: None,
+            health_check: None,
         }
     }
 
@@ -412,6 +440,71 @@ mod tests {
             map_all(&plan_with_config(base_config()), &BTreeMap::new(), &BTreeMap::new(), true)
                 .unwrap();
         assert!(wit_plan.services[0].manifest.config.fdae_policy.is_none());
+    }
+
+    #[test]
+    fn no_health_check_maps_to_none() {
+        let wit_plan =
+            map_all(&plan_with_config(base_config()), &BTreeMap::new(), &BTreeMap::new(), true)
+                .unwrap();
+        assert!(wit_plan.services[0].manifest.config.health_check.is_none());
+    }
+
+    #[test]
+    fn a_health_check_maps_onto_the_wire() {
+        let mut tcp_config = base_config();
+        tcp_config.health_check = Some(HealthCheck::TcpConnect(TcpProbe {
+            interface: InterfaceName::new("main"),
+            timeout_ms: 1234,
+        }));
+        let wit_plan =
+            map_all(&plan_with_config(tcp_config), &BTreeMap::new(), &BTreeMap::new(), true)
+                .unwrap();
+        match wit_plan.services[0].manifest.config.health_check.as_ref().unwrap() {
+            WitHealthCheck::TcpConnect(p) => {
+                assert_eq!(p.interface_name, "main");
+                assert_eq!(p.timeout_ms, 1234);
+            }
+            other => panic!("expected TcpConnect, got {other:?}"),
+        }
+
+        let mut http_config = base_config();
+        http_config.health_check = Some(HealthCheck::HttpGet(HttpProbe {
+            interface: InterfaceName::new("http"),
+            path: "/healthz".to_string(),
+            expect_status: 204,
+            timeout_ms: 1500,
+        }));
+        let wit_plan =
+            map_all(&plan_with_config(http_config), &BTreeMap::new(), &BTreeMap::new(), true)
+                .unwrap();
+        match wit_plan.services[0].manifest.config.health_check.as_ref().unwrap() {
+            WitHealthCheck::HttpGet(p) => {
+                assert_eq!(p.interface_name, "http");
+                assert_eq!(p.path, "/healthz");
+                assert_eq!(p.expect_status, 204);
+                assert_eq!(p.timeout_ms, 1500);
+            }
+            other => panic!("expected HttpGet, got {other:?}"),
+        }
+
+        let mut rpc_config = base_config();
+        rpc_config.health_check = Some(HealthCheck::Rpc(RpcProbe {
+            interface: InterfaceName::new("rpc"),
+            method: "ping".to_string(),
+            timeout_ms: 2000,
+        }));
+        let wit_plan =
+            map_all(&plan_with_config(rpc_config), &BTreeMap::new(), &BTreeMap::new(), true)
+                .unwrap();
+        match wit_plan.services[0].manifest.config.health_check.as_ref().unwrap() {
+            WitHealthCheck::Rpc(p) => {
+                assert_eq!(p.interface_name, "rpc");
+                assert_eq!(p.method, "ping");
+                assert_eq!(p.timeout_ms, 2000);
+            }
+            other => panic!("expected Rpc, got {other:?}"),
+        }
     }
 
     fn container_config(custom: &str) -> ServiceConfig {
