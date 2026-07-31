@@ -102,6 +102,11 @@ pub struct ServiceStatus {
     pub instance_certificate_issued_at: Option<u64>,
     pub instance_certificate_expires_at: Option<u64>,
     pub probe_checked_at: Option<u64>,
+    /// Per declared dependency of this service, the epoch this substrate
+    /// currently serves it (M05A A5a). `status`'s per-dependent binding
+    /// convergence report.
+    #[serde(default)]
+    pub binding_epochs: Vec<(String, u64)>,
 }
 
 /// What this node is, as opposed to what is running on it (M05A A4). Present

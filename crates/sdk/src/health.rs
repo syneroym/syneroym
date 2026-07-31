@@ -508,6 +508,7 @@ mod tests {
             instance_certificate_issued_at: None,
             instance_certificate_expires_at: None,
             probe_checked_at: None,
+            binding_epochs: Vec::new(),
         }
     }
 

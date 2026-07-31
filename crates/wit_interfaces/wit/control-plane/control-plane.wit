@@ -401,6 +401,13 @@ interface orchestrator {
         /// Unix seconds the probe result was produced. Earlier than
         /// `checked-at` when a cached result was served.
         probe-checked-at: option<u64>,
+        /// Per declared dependency of **this** service, the epoch this
+        /// substrate currently serves it (M05A A5a). Read from the
+        /// per-dependent binding row, not the shared resolver entry: the
+        /// resolver is keyed `(app-instance-id, service-name)` and is one
+        /// value per node, so reading it would give every dependent the
+        /// same answer and make "per-dependent convergence" unreadable.
+        binding-epochs: list<tuple<string, u64>>,
     }
 
     /// What this node is, as opposed to what is running on it. Answers two

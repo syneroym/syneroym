@@ -2240,6 +2240,7 @@ impl ControlPlaneService {
                 instance_certificate_issued_at: None,
                 instance_certificate_expires_at: None,
                 probe_checked_at: None,
+                binding_epochs: Vec::new(),
             });
         }
 
@@ -2276,6 +2277,32 @@ impl ControlPlaneService {
         let cert = self.registry.instance_cert(service_id);
         let app_ctx = self.registry.app_context_of(service_id);
 
+        // M05A A5a §6: read from the per-dependent persisted row, not the
+        // shared resolver entry -- the resolver is keyed
+        // `(app-instance-id, service-name)` and is one value per node, so
+        // reading it would give every dependent the same answer.
+        let binding_epochs = match self.registry.bindings_of(service_id).await {
+            Ok(bindings) => bindings
+                .into_iter()
+                .filter_map(|(name, entry_json)| {
+                    match serde_json::from_str::<TopologyEntry>(&entry_json) {
+                        Ok(entry) => Some((name, entry.epoch.0)),
+                        Err(e) => {
+                            tracing::warn!(
+                                "stored binding for '{service_id}' dependency '{name}' is \
+                                 corrupt: {e}"
+                            );
+                            None
+                        }
+                    }
+                })
+                .collect(),
+            Err(e) => {
+                tracing::warn!("failed to load bindings for '{service_id}': {e}");
+                Vec::new()
+            }
+        };
+
         ServiceStatus {
             service_id: service_id.to_string(),
             service_type,
@@ -2287,6 +2314,7 @@ impl ControlPlaneService {
             instance_certificate_issued_at: cert.as_ref().map(|c| c.issued_at_secs),
             instance_certificate_expires_at: cert.as_ref().map(|c| c.expires_at_secs),
             probe_checked_at,
+            binding_epochs,
         }
     }
 
@@ -7115,6 +7143,92 @@ mod tests {
         let named = service.status(vec!["owned-by-alice".to_string()], &bob).await.unwrap();
         assert_eq!(named.services.len(), 1);
         assert!(matches!(named.services[0].phase, InstancePhase::NotFound));
+    }
+
+    /// M05A A5a §6: `status` reports the epoch this substrate currently
+    /// serves for each of a service's own declared dependencies, read
+    /// from the per-dependent persisted binding row -- the exit
+    /// criterion's per-dependent binding convergence data.
+    #[tokio::test]
+    async fn status_reports_the_epoch_it_currently_serves_per_dependency() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let caller = node_wide_caller("did:key:zAlice");
+
+        service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                tcp_manifest_with(9, None),
+                Some(app_context(
+                    "app-1",
+                    "frontend",
+                    vec![dependency_binding("backend", vec!["did:key:zBackendMember"])],
+                )),
+                &caller,
+            )
+            .await
+            .unwrap();
+        service
+            .write_bindings(
+                BindingWrite {
+                    service_id: "frontend-svc".to_string(),
+                    app_instance_id: "app-1".to_string(),
+                    bindings: vec![DependencyBinding {
+                        dependency_name: "backend".to_string(),
+                        app_instance_id: "app-1".to_string(),
+                        mode: WitTopologyMode::Singleton,
+                        members: vec!["did:key:zNewBackendMember".to_string()],
+                        epoch: 3,
+                        cache_ttl_ms: 60_000,
+                    }],
+                    generation: 0,
+                },
+                &caller,
+            )
+            .await
+            .unwrap();
+
+        let status = service.status(vec!["frontend-svc".to_string()], &caller).await.unwrap();
+        assert_eq!(status.services.len(), 1);
+        assert_eq!(
+            status.services[0].binding_epochs,
+            vec![("backend".to_string(), 3)],
+            "{:?}",
+            status.services[0].binding_epochs
+        );
+    }
+
+    /// A4-10's rule, re-pinned (M05A A5a §6 adds `binding-epochs` to the
+    /// same record): a caller with no grant on a named id must not learn
+    /// anything about it, including what it depends on -- `not-found`
+    /// carries an empty `binding_epochs`, same as every other field.
+    #[tokio::test]
+    async fn status_reports_not_found_for_a_named_id_the_caller_may_not_see() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+
+        service
+            .deploy_with_context(
+                "owned-by-alice".to_string(),
+                tcp_manifest_with(9, None),
+                Some(app_context(
+                    "app-1",
+                    "frontend",
+                    vec![dependency_binding("backend", vec!["did:key:zBackendMember"])],
+                )),
+                &node_wide_caller("alice"),
+            )
+            .await
+            .unwrap();
+
+        let bob = scoped_deploy_caller("bob", "some-other-service");
+        let named = service.status(vec!["owned-by-alice".to_string()], &bob).await.unwrap();
+        assert_eq!(named.services.len(), 1);
+        assert!(matches!(named.services[0].phase, InstancePhase::NotFound));
+        assert!(
+            named.services[0].binding_epochs.is_empty(),
+            "a caller with no grant must not learn what a service it cannot see depends on"
+        );
     }
 
     /// A4-11: an unbounded `service_ids` list from any verified caller must
