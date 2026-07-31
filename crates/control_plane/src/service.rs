@@ -30,7 +30,7 @@ use syneroym_rpc::{
     ServiceProxy, WeakNativeDispatchRegistry, empty_row_authorizer,
 };
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
-    DeployManifest, DeploymentPlan, ProbeStatus,
+    BindingWrite, DeployManifest, DeploymentPlan, ProbeStatus,
 };
 use tracing::info;
 
@@ -433,6 +433,21 @@ impl NativeService for ControlPlaneService {
                     .await
                     .map_err(RpcError::InternalError)?;
                 Ok(NativeResponse { payload: serde_json::json!({"status": "deployed"}) })
+            }
+            "write-bindings" => {
+                let (write,): (BindingWrite,) =
+                    serde_json::from_value(invocation.params).map_err(|e| {
+                        RpcError::InvalidParams(format!(
+                            "Failed to parse write-bindings params: {e}"
+                        ))
+                    })?;
+                let outcomes = self
+                    .write_bindings(write, &invocation.caller)
+                    .await
+                    .map_err(RpcError::InternalError)?;
+                Ok(NativeResponse {
+                    payload: serde_json::to_value(outcomes).unwrap_or(Value::Null),
+                })
             }
             "deploy-plan" => {
                 let (plan,): (DeploymentPlan,) = serde_json::from_value(invocation.params.clone())

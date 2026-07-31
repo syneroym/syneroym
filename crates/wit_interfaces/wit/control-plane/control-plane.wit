@@ -252,6 +252,44 @@ interface orchestrator {
         cache-ttl-ms: u64,
     }
 
+    /// Outcome of one epoch-guarded binding write (ADR-0021 §3). Four
+    /// cases kept distinct because the supervisor's next action differs
+    /// per case: `applied`/`no-op` are both success, `stale` means this
+    /// writer is behind and must re-read, `conflict` means a second
+    /// writer exists and is the signal the generation stamp exists for.
+    /// The u64 payload is the epoch this substrate holds.
+    variant binding-write-outcome {
+        applied,
+        no-op,
+        stale(u64),
+        conflict(u64),
+    }
+
+    record binding-write {
+        /// The deployed service whose binding table this targets.
+        service-id: string,
+        app-instance-id: string,
+        bindings: list<dependency-binding>,
+        /// The writing supervisor's generation for this app instance
+        /// (ADR-0021 §4). A generation lower than the recorded one is
+        /// rejected outright, before any binding is examined.
+        generation: u64,
+    }
+
+    /// Push current bindings into a deployed service's configuration
+    /// without reinstalling it (ADR-0021 §1/§3). Deliberately not
+    /// `deploy`: `deploy` is a full reinstall and would restart every
+    /// dependent, which the milestone's reference scenario step 5
+    /// forbids. One outcome per binding, in the order sent.
+    ///
+    /// May only **update** a dependency the service already declared at
+    /// deploy: a name with no existing binding row is refused, because a
+    /// guest's declared dependency set is a deploy-time contract and a
+    /// push must not be able to inject a logical name the service never
+    /// asked for.
+    write-bindings: func(write: binding-write)
+        -> result<list<binding-write-outcome>, string>;
+
     /// Which app instance this service is being deployed as part of, and
     /// what its declared dependencies currently resolve to. Absent for a
     /// standalone deploy that participates in no app.

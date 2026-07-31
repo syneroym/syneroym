@@ -1,7 +1,7 @@
 //! Polling the health of an app instance's services across the substrates
 //! they are placed on (M05A Slice A4), read-only.
 //!
-//! `StatusQuery` is the read-side twin of `deploy::PlanApplier`, and lives
+//! `StatusQuery` is the read-side twin of `deploy::SubstrateActor`, and lives
 //! here for the same two reasons: the two-node e2e can drive it (`sdk` is a
 //! dev-dependency of `crates/substrate`, `roymctl` is a binary that cannot be
 //! linked from a test), and A5's reconcile loop calls this same function

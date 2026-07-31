@@ -110,6 +110,16 @@ pub trait EndpointStorage: Send + Sync {
         dependency_name: &str,
         topology_entry_json: &str,
     ) -> Result<()>;
+    /// One persisted binding's `entry_json` (M05A A5a). The epoch guard
+    /// compares against exactly one row, so `load_all_bindings`' full
+    /// scan (which exists for the startup replay) is the wrong shape for
+    /// it.
+    async fn load_binding(&self, service_id: &str, dependency_name: &str)
+    -> Result<Option<String>>;
+    /// Every persisted binding for one service, as (`dependency_name`,
+    /// `entry_json`), for `status`'s per-dependent convergence report
+    /// (M05A A5a).
+    async fn load_bindings_for(&self, service_id: &str) -> Result<Vec<(String, String)>>;
 
     /// Load every recorded app-instance management stamp as
     /// (`app_instance_id`, `AppInstanceManagement`) (M05A A5a, replacing
@@ -272,6 +282,24 @@ impl EndpointStorage for MockStorage {
             (app_instance_id.to_string(), topology_entry_json.to_string()),
         );
         Ok(())
+    }
+    async fn load_binding(
+        &self,
+        service_id: &str,
+        dependency_name: &str,
+    ) -> Result<Option<String>> {
+        Ok(self
+            .bindings
+            .get(&(service_id.to_string(), dependency_name.to_string()))
+            .map(|e| e.value().1.clone()))
+    }
+    async fn load_bindings_for(&self, service_id: &str) -> Result<Vec<(String, String)>> {
+        Ok(self
+            .bindings
+            .iter()
+            .filter(|e| e.key().0 == service_id)
+            .map(|e| (e.key().1.clone(), e.value().1.clone()))
+            .collect())
     }
     async fn load_all_app_instance_management(
         &self,

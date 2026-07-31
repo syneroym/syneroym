@@ -224,6 +224,16 @@ impl EndpointStorage for RemoveOwnerFailingStorage {
             .save_binding(service_id, app_instance_id, dependency_name, topology_entry_json)
             .await
     }
+    async fn load_binding(
+        &self,
+        service_id: &str,
+        dependency_name: &str,
+    ) -> anyhow::Result<Option<String>> {
+        self.inner.load_binding(service_id, dependency_name).await
+    }
+    async fn load_bindings_for(&self, service_id: &str) -> anyhow::Result<Vec<(String, String)>> {
+        self.inner.load_bindings_for(service_id).await
+    }
     async fn load_all_app_instance_management(
         &self,
     ) -> anyhow::Result<Vec<(String, AppInstanceManagement)>> {

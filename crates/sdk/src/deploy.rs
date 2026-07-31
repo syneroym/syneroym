@@ -27,33 +27,79 @@ use syneroym_identity::{
 };
 
 use crate::{
-    DeploymentPlan as WitDeploymentPlan, SyneroymClient, mapper::map_deployment_plan_to_wit,
+    BindingWrite, BindingWriteOutcome, DeploymentPlan as WitDeploymentPlan, SyneroymClient,
+    mapper::map_deployment_plan_to_wit,
 };
 
 /// The attended posture's default certificate lifetime for a plan-deploy-time
 /// certification.
 pub const DEFAULT_INSTANCE_CERT_EXPIRES_HOURS: u64 = 24;
 
+/// ADR-0021 §5's narrow "apply this action to that substrate" boundary.
+/// Three actions, not one: A3 introduced this trait (as `PlanApplier`) when
+/// applying a plan was the only action, and A5 adds the two the
+/// supervisor's own loop issues. A6 replaces the implementation with an
+/// outbox/DLQ-backed one and nothing above this trait changes -- which only
+/// holds if every action it must make durable is *on* it.
 #[async_trait::async_trait]
-pub trait PlanApplier: fmt::Debug + Send + Sync {
-    async fn apply(&self, plan: WitDeploymentPlan) -> Result<(), String>;
+pub trait SubstrateActor: fmt::Debug + Send + Sync {
+    async fn apply_plan(&self, plan: WitDeploymentPlan) -> Result<(), String>;
+    async fn write_bindings(&self, write: BindingWrite)
+    -> Result<Vec<BindingWriteOutcome>, String>;
+    /// Included for the same reason `stop` sits beside `start` on an
+    /// engine: a fake in a test must be able to answer every action the
+    /// supervisor takes. A6 may keep this synchronous -- a restart queued
+    /// for later delivery is usually wrong -- and that is a decision for
+    /// A6's implementation, not a reason to leave it outside the trait.
+    async fn restart(&self, service_id: String, generation: u64) -> Result<(), String>;
 }
 
 #[async_trait::async_trait]
-impl PlanApplier for SyneroymClient {
-    async fn apply(&self, plan: WitDeploymentPlan) -> Result<(), String> {
+impl SubstrateActor for SyneroymClient {
+    async fn apply_plan(&self, plan: WitDeploymentPlan) -> Result<(), String> {
         self.deploy_plan(plan).await.map_err(|e| e.to_string())
+    }
+
+    // `write_bindings`/`restart` deliberately do not delegate to the
+    // same-named inherent `SyneroymClient` methods below: inherent
+    // methods shadow trait methods of the same name for every dot-call
+    // site on this type, including from inside this very impl block, so
+    // `self.write_bindings(write)` here would silently call the inherent
+    // one anyway -- correct, but confusing to read as "does this
+    // recurse?" at a glance. Calling `request` directly keeps this impl
+    // legible on its own.
+    async fn write_bindings(
+        &self,
+        write: BindingWrite,
+    ) -> Result<Vec<BindingWriteOutcome>, String> {
+        let params = serde_json::to_value((write,)).map_err(|e| e.to_string())?;
+        let res = self
+            .request("orchestrator", "write-bindings", params)
+            .await
+            .map_err(|e| e.to_string())?;
+        serde_json::from_value(res.result).map_err(|e| e.to_string())
+    }
+
+    async fn restart(&self, service_id: String, generation: u64) -> Result<(), String> {
+        let params = serde_json::to_value((service_id, generation)).map_err(|e| e.to_string())?;
+        let res =
+            self.request("orchestrator", "restart", params).await.map_err(|e| e.to_string())?;
+        if res.result == serde_json::json!({"status": "restarted"}) {
+            Ok(())
+        } else {
+            Err(format!("Restart failed: {:?}", res.result))
+        }
     }
 }
 
 /// A connected deploy target: the alias it was named by (`None` for the
 /// invocation's own default substrate), the substrate's DID, and the
-/// applier.
+/// actor.
 #[derive(Debug, Clone)]
 pub struct DeployTarget {
     pub alias: Option<SubstrateAlias>,
     pub substrate_did: String,
-    pub applier: Arc<dyn PlanApplier>,
+    pub actor: Arc<dyn SubstrateActor>,
 }
 
 #[derive(Debug)]
@@ -209,7 +255,7 @@ pub async fn apply_plan(
             req.generation,
         ) {
             Err(e) => Err(e.to_string()),
-            Ok(wit_plan) => target.applier.apply(wit_plan).await,
+            Ok(wit_plan) => target.actor.apply_plan(wit_plan).await,
         };
 
         match outcome {
@@ -375,10 +421,21 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl PlanApplier for FailingApplier {
-        async fn apply(&self, plan: WitDeploymentPlan) -> Result<(), String> {
+    impl SubstrateActor for FailingApplier {
+        async fn apply_plan(&self, plan: WitDeploymentPlan) -> Result<(), String> {
             self.calls.lock().unwrap().push(plan);
             if self.should_fail { Err("simulated failure".to_string()) } else { Ok(()) }
+        }
+
+        async fn write_bindings(
+            &self,
+            _write: BindingWrite,
+        ) -> Result<Vec<BindingWriteOutcome>, String> {
+            unimplemented!("not exercised by apply_plan's own tests")
+        }
+
+        async fn restart(&self, _service_id: String, _generation: u64) -> Result<(), String> {
+            unimplemented!("not exercised by apply_plan's own tests")
         }
     }
 
@@ -422,11 +479,11 @@ mod tests {
         }
     }
 
-    fn target(did: &str, alias: Option<&str>, applier: Arc<dyn PlanApplier>) -> DeployTarget {
+    fn target(did: &str, alias: Option<&str>, actor: Arc<dyn SubstrateActor>) -> DeployTarget {
         DeployTarget {
             alias: alias.map(SubstrateAlias::new),
             substrate_did: did.to_string(),
-            applier,
+            actor,
         }
     }
 

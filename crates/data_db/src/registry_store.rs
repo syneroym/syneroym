@@ -8,7 +8,7 @@ use std::{
 
 use anyhow::Result;
 use async_trait::async_trait;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use syneroym_core::{
     config::SubstrateConfig,
     local_registry::SubstrateEndpoint,
@@ -521,6 +521,49 @@ impl EndpointStorage for SqliteEndpointStorage {
                 params![sid, instance, name, entry, created_at],
             )?;
             Ok(())
+        })
+        .await?
+    }
+
+    async fn load_binding(
+        &self,
+        service_id: &str,
+        dependency_name: &str,
+    ) -> Result<Option<String>> {
+        let conn_arc = self.conn.clone();
+        let sid = service_id.to_string();
+        let name = dependency_name.to_string();
+
+        task::spawn_blocking(move || -> Result<Option<String>> {
+            let conn = lock_db(&conn_arc)?;
+            conn.query_row(
+                "SELECT entry_json FROM service_bindings WHERE service_id = ?1 AND \
+                 dependency_name = ?2",
+                params![sid, name],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(anyhow::Error::from)
+        })
+        .await?
+    }
+
+    async fn load_bindings_for(&self, service_id: &str) -> Result<Vec<(String, String)>> {
+        let conn_arc = self.conn.clone();
+        let sid = service_id.to_string();
+
+        task::spawn_blocking(move || -> Result<Vec<(String, String)>> {
+            let conn = lock_db(&conn_arc)?;
+            let mut stmt = conn.prepare(
+                "SELECT dependency_name, entry_json FROM service_bindings WHERE service_id = ?1 \
+                 ORDER BY dependency_name",
+            )?;
+            let mut bindings = Vec::new();
+            let mut rows = stmt.query(params![sid])?;
+            while let Some(row) = rows.next()? {
+                bindings.push((row.get(0)?, row.get(1)?));
+            }
+            Ok(bindings)
         })
         .await?
     }

@@ -19,9 +19,9 @@ use std::{
 use anyhow::Result;
 use serde_json::Value;
 use syneroym_app_orchestration::{
-    AppInstanceId, HealthCheck, HttpProbe, InterfaceName, LogicalServiceName, RpcProbe,
-    ServiceId as AppServiceId, ServiceType as AppServiceType, TcpProbe, TopologyEntry,
-    TopologyEpoch, TopologyMode as AppTopologyMode,
+    AppInstanceId, BindingWriteOutcome, HealthCheck, HttpProbe, InterfaceName, LogicalServiceName,
+    RpcProbe, ServiceId as AppServiceId, ServiceType as AppServiceType, TcpProbe, TopologyEntry,
+    TopologyEpoch, TopologyMode as AppTopologyMode, classify_binding_write,
 };
 use syneroym_core::{
     deploy_docs,
@@ -35,11 +35,12 @@ use syneroym_identity::{
 };
 use syneroym_rpc::{Ability, CallerContext, JsonRpcRequest, NativeService, ResourceUri};
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
-    AppContext, AppInstanceManagement as AppInstanceManagementWire, ArtifactSource,
-    ContainerManifest, DeployManifest, DeployedService, DeploymentPlan, DocumentSource,
-    HealthCheck as WitHealthCheck, InstanceIdentity, InstancePhase, NodeFacts, ProbeStatus,
-    ServiceStatus, ServiceType as WitServiceType, SubstrateStatus, TcpManifest,
-    TopologyMode as WitTopologyMode, WasmManifest,
+    AppContext, AppInstanceManagement as AppInstanceManagementWire, ArtifactSource, BindingWrite,
+    BindingWriteOutcome as BindingWriteOutcomeWire, ContainerManifest, DependencyBinding,
+    DeployManifest, DeployedService, DeploymentPlan, DocumentSource, HealthCheck as WitHealthCheck,
+    InstanceIdentity, InstancePhase, NodeFacts, ProbeStatus, ServiceStatus,
+    ServiceType as WitServiceType, SubstrateStatus, TcpManifest, TopologyMode as WitTopologyMode,
+    WasmManifest,
 };
 use tokio::task;
 use tracing::info;
@@ -65,6 +66,13 @@ pub trait OrchestratorInterface {
         manifest: DeployManifest,
         caller: &CallerContext,
     ) -> Result<(), String>;
+    /// Epoch-guarded binding write (M05A A5, ADR-0021 §3). The only path
+    /// that changes a dependent's resolution without redeploying it.
+    async fn write_bindings(
+        &self,
+        write: BindingWrite,
+        caller: &CallerContext,
+    ) -> Result<Vec<BindingWriteOutcomeWire>, String>;
     async fn undeploy(&self, service_id: String, caller: &CallerContext) -> Result<(), String>;
     /// `adopt`'s read half (M05A A5a, §0.26): the management stamp an app
     /// instance carries, or `None` if no deploy has ever named it here.
@@ -145,6 +153,50 @@ const fn service_type_str(t: AppServiceType) -> &'static str {
     }
 }
 
+/// Validates one wire `dependency-binding` into `(LogicalServiceName,
+/// TopologyEntry)`. Shared by the deploy path and `write_bindings` (M05A
+/// A5a) so the two cannot validate differently -- every field is
+/// caller-supplied (D-A2-15), and `LogicalServiceName::new` *panics* on an
+/// empty name or one containing '/'.
+fn prepare_binding(
+    binding: &DependencyBinding,
+    app_instance_id: &str,
+) -> Result<(LogicalServiceName, TopologyEntry), String> {
+    // D-A2-2 / ADR-0021 §2: A2 resolves intra-app dependencies only -- a
+    // deploy (or a binding push) may bind dependencies for its own
+    // declared app instance, never a different one. `DependencyBinding.
+    // app_instance_id` is deliberately caller-supplied, ahead of the
+    // cross-app `Bind` surface the WIT comment reserves it for ("equal to
+    // the dependent's own app-instance-id today"); without this
+    // comparison it goes unenforced, and one authorized writer could
+    // silently overwrite the binding a *different* app instance's
+    // services resolve.
+    if binding.app_instance_id != app_instance_id {
+        return Err(format!(
+            "binding '{}' names app instance '{}', but this deploy's app context is '{}' -- a \
+             deploy may only bind dependencies for its own app instance",
+            binding.dependency_name, binding.app_instance_id, app_instance_id
+        ));
+    }
+    let dependency_name = LogicalServiceName::try_new(&binding.dependency_name)
+        .map_err(|e| format!("binding names an invalid dependency name: {e}"))?;
+    let entry = TopologyEntry {
+        mode: map_topology_mode(binding.mode),
+        members: binding
+            .members
+            .iter()
+            .map(AppServiceId::try_new)
+            .collect::<result::Result<Vec<_>, _>>()
+            .map_err(|e| {
+                format!("binding '{}' names an invalid member DID: {e}", binding.dependency_name)
+            })?,
+        sharding_strategy: None, // D-A2-4
+        epoch: TopologyEpoch(binding.epoch),
+        cache_ttl: Duration::from_millis(binding.cache_ttl_ms),
+    };
+    Ok((dependency_name, entry))
+}
+
 /// `AppInstanceManagement` (the internal, storage-facing type) -> its wire
 /// record. Kept as a free function rather than a `From` impl since the wire
 /// type lives in a generated module neither type owns.
@@ -153,6 +205,18 @@ fn management_to_wire(m: &AppInstanceManagement) -> AppInstanceManagementWire {
         owner_did: m.owner_did.clone(),
         supervisor_did: m.supervisor_did.clone(),
         generation: m.generation,
+    }
+}
+
+/// `BindingWriteOutcome` (the pure, `app_orchestration`-owned rule's
+/// result) -> its wire variant. Same free-function shape as
+/// `management_to_wire`, for the same reason.
+const fn wire_binding_outcome(outcome: &BindingWriteOutcome) -> BindingWriteOutcomeWire {
+    match outcome {
+        BindingWriteOutcome::Applied => BindingWriteOutcomeWire::Applied,
+        BindingWriteOutcome::NoOp => BindingWriteOutcomeWire::NoOp,
+        BindingWriteOutcome::Stale(epoch) => BindingWriteOutcomeWire::Stale(epoch.0),
+        BindingWriteOutcome::Conflict(epoch) => BindingWriteOutcomeWire::Conflict(epoch.0),
     }
 }
 
@@ -756,6 +820,14 @@ impl OrchestratorInterface for ControlPlaneService {
         self.deploy_with_context(service_id, manifest, None, caller).await
     }
 
+    async fn write_bindings(
+        &self,
+        write: BindingWrite,
+        caller: &CallerContext,
+    ) -> Result<Vec<BindingWriteOutcomeWire>, String> {
+        self.write_bindings_impl(write, caller).await
+    }
+
     async fn undeploy(&self, service_id: String, caller: &CallerContext) -> Result<(), String> {
         self.undeploy_impl(service_id, caller).await
     }
@@ -988,25 +1060,6 @@ impl ControlPlaneService {
             LogicalServiceName::try_new(&ctx.service_name)
                 .map_err(|e| format!("app context names an invalid service name: {e}"))?;
 
-            // D-A2-2 / ADR-0021 §2: A2 resolves intra-app dependencies only
-            // -- a deploy may bind dependencies for its own declared app
-            // instance, never a different one. `DependencyBinding.
-            // app_instance_id` is deliberately caller-supplied, ahead of
-            // the cross-app `Bind` surface the WIT comment reserves it for
-            // ("equal to the dependent's own app-instance-id today"); without
-            // this comparison it goes unenforced, and one authorized deploy
-            // could silently overwrite the binding a *different* app
-            // instance's services resolve.
-            for binding in &ctx.bindings {
-                if binding.app_instance_id != ctx.app_instance_id {
-                    return Err(format!(
-                        "binding '{}' names app instance '{}', but this deploy's app context is \
-                         '{}' -- a deploy may only bind dependencies for its own app instance",
-                        binding.dependency_name, binding.app_instance_id, ctx.app_instance_id
-                    ));
-                }
-            }
-
             // An app instance's first successful deploy becomes its owner
             // (first-write-wins, the same shape `service_id` ownership uses
             // just above -- including that check's own F7 note: an unowned
@@ -1054,30 +1107,7 @@ impl ControlPlaneService {
 
             let mut bindings = Vec::with_capacity(ctx.bindings.len());
             for binding in &ctx.bindings {
-                // D-A2-15: all three of these are caller-supplied strings,
-                // so all three are fallible. `LogicalServiceName::new`
-                // *panics* on an empty name or one containing '/', which
-                // would let an authorized-but-buggy deploy caller kill the
-                // control-plane task.
-                let dependency_name = LogicalServiceName::try_new(&binding.dependency_name)
-                    .map_err(|e| format!("binding names an invalid dependency name: {e}"))?;
-                let entry = TopologyEntry {
-                    mode: map_topology_mode(binding.mode),
-                    members: binding
-                        .members
-                        .iter()
-                        .map(AppServiceId::try_new)
-                        .collect::<result::Result<Vec<_>, _>>()
-                        .map_err(|e| {
-                            format!(
-                                "binding '{}' names an invalid member DID: {e}",
-                                binding.dependency_name
-                            )
-                        })?,
-                    sharding_strategy: None, // D-A2-4
-                    epoch: TopologyEpoch(binding.epoch),
-                    cache_ttl: std::time::Duration::from_millis(binding.cache_ttl_ms),
-                };
+                let (dependency_name, entry) = prepare_binding(binding, &ctx.app_instance_id)?;
                 bindings.push((binding.dependency_name.clone(), dependency_name, entry));
             }
 
@@ -1509,6 +1539,108 @@ impl ControlPlaneService {
     /// `has_node_wide_ability`'s doc comment): a status-only grantee must
     /// not be able to undeploy someone else's app.
     ///
+    /// Epoch-guarded binding write (M05A A5a, ADR-0021 §3): the only path
+    /// that changes a dependent's resolution without redeploying it.
+    /// Touches the binding tables and the resolver and nothing else -- no
+    /// artifact work, no restart, no lifecycle hook.
+    async fn write_bindings_impl(
+        &self,
+        write: BindingWrite,
+        caller: &CallerContext,
+    ) -> Result<Vec<BindingWriteOutcomeWire>, String> {
+        // Same gate `deploy_with_context` applies, for the same reason: a
+        // binding write changes what a service calls, which is a
+        // deploy-class change to that service, not a read.
+        let deploy_resource =
+            ResourceUri(format!("substrate:{}/app/{}", self.node_did, write.service_id));
+        if !caller
+            .has_capability(&deploy_resource, &Ability(Ability::ORCHESTRATOR_DEPLOY.to_string()))
+        {
+            return Err(format!(
+                "caller {} holds no orchestrator/deploy grant for '{}' on this substrate",
+                caller.caller_did, write.service_id
+            ));
+        }
+
+        // The service must be deployed here and its recorded app context
+        // must match -- without this an authorized caller could write
+        // bindings into an app instance its service does not belong to,
+        // the same hole `deploy`'s `binding.app_instance_id != ctx.
+        // app_instance_id` check closes at deploy time.
+        match self.registry.app_context_of(&write.service_id) {
+            None => {
+                return Err(format!("'{}' has no app context on this substrate", write.service_id));
+            }
+            Some((instance, _)) if instance != write.app_instance_id => {
+                return Err(format!(
+                    "'{}' belongs to app instance '{instance}', not '{}'",
+                    write.service_id, write.app_instance_id
+                ));
+            }
+            Some(_) => {}
+        }
+
+        let management = self.check_generation(&write.app_instance_id, caller, write.generation)?;
+
+        let mut outcomes = Vec::with_capacity(write.bindings.len());
+        for binding in &write.bindings {
+            let (dependency_name, entry) = prepare_binding(binding, &write.app_instance_id)?;
+
+            // Update-only: a push may not introduce a dependency the
+            // guest never declared at deploy -- a new dependency changes
+            // the guest's contract and needs a redeploy, not a push.
+            let held_json = self
+                .registry
+                .binding_of(&write.service_id, &binding.dependency_name)
+                .await
+                .map_err(|e| e.to_string())?;
+            let Some(held_json) = held_json else {
+                return Err(format!(
+                    "'{}' declares no dependency '{}'; a new dependency needs a redeploy, not a \
+                     binding push",
+                    write.service_id, binding.dependency_name
+                ));
+            };
+            let held: TopologyEntry = serde_json::from_str(&held_json).map_err(|e| {
+                format!(
+                    "stored binding for '{}' dependency '{}' is corrupt: {e}",
+                    write.service_id, binding.dependency_name
+                )
+            })?;
+
+            let outcome = classify_binding_write(Some(&held), &entry);
+            if outcome == BindingWriteOutcome::Applied {
+                let entry_json = serde_json::to_string(&entry).map_err(|e| e.to_string())?;
+                self.registry
+                    .save_binding(
+                        &write.service_id,
+                        &write.app_instance_id,
+                        &binding.dependency_name,
+                        &entry_json,
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+                // `NoOp`/`Stale`/`Conflict` write nothing. `NoOp` in
+                // particular must not re-register: re-registering evicts
+                // the resolver cache for an unchanged entry, turning the
+                // ordinary retry into cache churn on the hot path.
+                self.logical_resolver.register(
+                    AppInstanceId::new(&write.app_instance_id),
+                    dependency_name,
+                    entry,
+                );
+            }
+            outcomes.push(wire_binding_outcome(&outcome));
+        }
+
+        self.registry
+            .set_app_instance_management(write.app_instance_id.clone(), management)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(outcomes)
+    }
+
     /// Safe to call from `deploy`'s own rollback path (§2.3): at that point
     /// `owner_of` is one of (a) `None` (the native-capability-registration
     /// failure path, reached before `set_owner` ever ran), (b) already
@@ -2746,8 +2878,6 @@ mod tests {
 
     // ── A2: app context and dependency bindings ─────────────────────────
 
-    use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::DependencyBinding;
-
     fn app_context(
         app_instance_id: &str,
         service_name: &str,
@@ -3366,6 +3496,286 @@ mod tests {
         let release_err =
             service.release_app_instance("app-1".to_string(), 1, &scoped).await.unwrap_err();
         assert!(release_err.contains("node-wide"), "{release_err}");
+    }
+
+    // ── M05A A5a: write-bindings ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn write_bindings_is_rejected_without_an_orchestrator_deploy_grant() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let caller = node_wide_caller("did:key:zAlice");
+
+        service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(app_context(
+                    "app-1",
+                    "frontend",
+                    vec![dependency_binding("backend", vec!["did:key:zBackendMember"])],
+                )),
+                &caller,
+            )
+            .await
+            .unwrap();
+
+        let no_grant = CallerContext::service_system("nobody");
+        let err = service
+            .write_bindings(
+                BindingWrite {
+                    service_id: "frontend-svc".to_string(),
+                    app_instance_id: "app-1".to_string(),
+                    bindings: vec![dependency_binding("backend", vec!["did:key:zNewMember"])],
+                    generation: 0,
+                },
+                &no_grant,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("orchestrator/deploy"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn write_bindings_refuses_a_service_whose_app_context_names_another_instance() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let caller = node_wide_caller("did:key:zAlice");
+
+        service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(app_context(
+                    "app-1",
+                    "frontend",
+                    vec![dependency_binding("backend", vec!["did:key:zBackendMember"])],
+                )),
+                &caller,
+            )
+            .await
+            .unwrap();
+
+        let err = service
+            .write_bindings(
+                BindingWrite {
+                    service_id: "frontend-svc".to_string(),
+                    app_instance_id: "app-2".to_string(),
+                    bindings: vec![dependency_binding("backend", vec!["did:key:zNewMember"])],
+                    generation: 0,
+                },
+                &caller,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("app-1") && err.contains("app-2"), "{err}");
+    }
+
+    /// A push may only update a dependency the service already declared
+    /// at deploy -- a new logical name changes the guest's contract and
+    /// needs a redeploy, not a push.
+    #[tokio::test]
+    async fn write_bindings_refuses_a_dependency_the_service_never_declared() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let caller = node_wide_caller("did:key:zAlice");
+
+        service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(app_context(
+                    "app-1",
+                    "frontend",
+                    vec![dependency_binding("backend", vec!["did:key:zBackendMember"])],
+                )),
+                &caller,
+            )
+            .await
+            .unwrap();
+
+        let err = service
+            .write_bindings(
+                BindingWrite {
+                    service_id: "frontend-svc".to_string(),
+                    app_instance_id: "app-1".to_string(),
+                    bindings: vec![dependency_binding("cache", vec!["did:key:zCacheMember"])],
+                    generation: 0,
+                },
+                &caller,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("cache") && err.contains("redeploy"), "{err}");
+    }
+
+    /// Matrix row 6: an ordinary retry -- the same epoch, the same content
+    /// -- is a success that writes nothing.
+    #[tokio::test]
+    async fn a_binding_write_at_the_current_epoch_with_identical_content_writes_nothing() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let caller = node_wide_caller("did:key:zAlice");
+
+        service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(app_context(
+                    "app-1",
+                    "frontend",
+                    vec![dependency_binding("backend", vec!["did:key:zBackendMember"])],
+                )),
+                &caller,
+            )
+            .await
+            .unwrap();
+
+        let outcomes = service
+            .write_bindings(
+                BindingWrite {
+                    service_id: "frontend-svc".to_string(),
+                    app_instance_id: "app-1".to_string(),
+                    bindings: vec![dependency_binding("backend", vec!["did:key:zBackendMember"])],
+                    generation: 0,
+                },
+                &caller,
+            )
+            .await
+            .unwrap();
+        assert_eq!(outcomes.len(), 1);
+        assert!(
+            matches!(outcomes[0], BindingWriteOutcomeWire::NoOp),
+            "expected NoOp, got a differently-shaped outcome"
+        );
+    }
+
+    /// The property reference-scenario step 5 turns on: a binding push
+    /// must never go through the deploy path. Uses the config-generation
+    /// counter `deploy_with_context` always bumps as the proxy, since
+    /// nothing else in this test harness tracks sandbox-engine calls.
+    #[tokio::test]
+    async fn a_binding_write_does_not_restart_the_service() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let caller = node_wide_caller("did:key:zAlice");
+
+        service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(app_context(
+                    "app-1",
+                    "frontend",
+                    vec![dependency_binding("backend", vec!["did:key:zBackendMember"])],
+                )),
+                &caller,
+            )
+            .await
+            .unwrap();
+        let generation_before =
+            service.storage_provider.get_latest_config_generation("frontend-svc").await.unwrap();
+
+        service
+            .write_bindings(
+                BindingWrite {
+                    service_id: "frontend-svc".to_string(),
+                    app_instance_id: "app-1".to_string(),
+                    bindings: vec![dependency_binding(
+                        "backend",
+                        vec!["did:key:zNewBackendMember"],
+                    )],
+                    generation: 0,
+                },
+                &caller,
+            )
+            .await
+            .unwrap();
+
+        let generation_after =
+            service.storage_provider.get_latest_config_generation("frontend-svc").await.unwrap();
+        assert_eq!(
+            generation_before, generation_after,
+            "a binding push must not go through the deploy path"
+        );
+    }
+
+    /// §0.20: the epoch guard and the convergence read both classify
+    /// against the **persisted per-dependent row**, not the shared
+    /// resolver entry -- a push targeted at one dependent must not affect
+    /// what a different dependent of the same instance has recorded.
+    #[tokio::test]
+    async fn two_dependents_of_one_instance_report_their_own_binding_epochs() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let caller = node_wide_caller("did:key:zAlice");
+
+        service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(app_context(
+                    "app-1",
+                    "frontend",
+                    vec![dependency_binding("backend", vec!["did:key:zBackendMember"])],
+                )),
+                &caller,
+            )
+            .await
+            .unwrap();
+        service
+            .deploy_with_context(
+                "worker-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(app_context(
+                    "app-1",
+                    "worker",
+                    vec![dependency_binding("backend", vec!["did:key:zBackendMember"])],
+                )),
+                &caller,
+            )
+            .await
+            .unwrap();
+
+        service
+            .write_bindings(
+                BindingWrite {
+                    service_id: "frontend-svc".to_string(),
+                    app_instance_id: "app-1".to_string(),
+                    bindings: vec![DependencyBinding {
+                        dependency_name: "backend".to_string(),
+                        app_instance_id: "app-1".to_string(),
+                        mode: WitTopologyMode::Singleton,
+                        members: vec!["did:key:zNewBackendMember".to_string()],
+                        epoch: 1,
+                        cache_ttl_ms: 60_000,
+                    }],
+                    generation: 0,
+                },
+                &caller,
+            )
+            .await
+            .unwrap();
+
+        let frontend_entry: TopologyEntry = serde_json::from_str(
+            &service.registry.binding_of("frontend-svc", "backend").await.unwrap().unwrap(),
+        )
+        .unwrap();
+        let worker_entry: TopologyEntry = serde_json::from_str(
+            &service.registry.binding_of("worker-svc", "backend").await.unwrap().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            frontend_entry.epoch,
+            TopologyEpoch(1),
+            "frontend must report the epoch pushed to it"
+        );
+        assert_eq!(
+            worker_entry.epoch,
+            TopologyEpoch(0),
+            "worker's own persisted row must be unaffected by a push targeted at frontend -- the \
+             epoch guard classifies against the per-dependent row, not the shared resolver entry"
+        );
     }
 
     /// Finding 04 (post-review fix): the app-context/binding write is
@@ -4397,6 +4807,16 @@ mod tests {
             self.inner
                 .save_binding(service_id, app_instance_id, dependency_name, topology_entry_json)
                 .await
+        }
+        async fn load_binding(
+            &self,
+            service_id: &str,
+            dependency_name: &str,
+        ) -> Result<Option<String>> {
+            self.inner.load_binding(service_id, dependency_name).await
+        }
+        async fn load_bindings_for(&self, service_id: &str) -> Result<Vec<(String, String)>> {
+            self.inner.load_bindings_for(service_id).await
         }
         async fn load_all_app_instance_management(
             &self,

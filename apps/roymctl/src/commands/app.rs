@@ -21,7 +21,7 @@ use syneroym_app_orchestration::{
 use syneroym_core::dht_registry::RegistryClient;
 use syneroym_sdk::{
     SubstrateStatus, SyneroymClient,
-    deploy::{self, ApplyRequest, DeployTarget, PlanApplier},
+    deploy::{self, ApplyRequest, DeployTarget, SubstrateActor},
     health,
 };
 
@@ -521,7 +521,7 @@ pub async fn handle(
             let fallback_target = fallback_client.as_ref().map(|fb| DeployTarget {
                 alias: None,
                 substrate_did: fb.service_id().to_string(),
-                applier: fb.clone() as Arc<dyn PlanApplier>,
+                actor: fb.clone() as Arc<dyn SubstrateActor>,
             });
 
             let targets: BTreeMap<SubstrateAlias, DeployTarget> = clients
@@ -532,7 +532,7 @@ pub async fn handle(
                         DeployTarget {
                             alias: Some(alias.clone()),
                             substrate_did: c.service_id().to_string(),
-                            applier: c.clone() as Arc<dyn PlanApplier>,
+                            actor: c.clone() as Arc<dyn SubstrateActor>,
                         },
                     )
                 })
@@ -1014,7 +1014,7 @@ mod tests {
         models::{ServiceId, TopologyMode},
     };
     use syneroym_identity::substrate;
-    use syneroym_sdk::DeploymentPlan as WitDeploymentPlan;
+    use syneroym_sdk::{BindingWrite, BindingWriteOutcome, DeploymentPlan as WitDeploymentPlan};
 
     use super::*;
 
@@ -1234,16 +1234,27 @@ mod tests {
         assert!(err.to_string().contains("edge-1"), "{err}");
     }
 
-    // The placement-change refusal never calls `.apply()` -- it only reads
+    // The placement-change refusal never calls the actor -- it only reads
     // `DeployTarget`'s own fields -- so a fake that panics if ever invoked is
     // enough to keep these tests free of any live substrate.
     #[derive(Debug)]
     struct NoopApplier;
 
     #[async_trait::async_trait]
-    impl PlanApplier for NoopApplier {
-        async fn apply(&self, _plan: WitDeploymentPlan) -> Result<(), String> {
-            unimplemented!("check_no_placement_change must never call apply()")
+    impl SubstrateActor for NoopApplier {
+        async fn apply_plan(&self, _plan: WitDeploymentPlan) -> Result<(), String> {
+            unimplemented!("check_no_placement_change must never call apply_plan()")
+        }
+
+        async fn write_bindings(
+            &self,
+            _write: BindingWrite,
+        ) -> Result<Vec<BindingWriteOutcome>, String> {
+            unimplemented!("check_no_placement_change must never call write_bindings()")
+        }
+
+        async fn restart(&self, _service_id: String, _generation: u64) -> Result<(), String> {
+            unimplemented!("check_no_placement_change must never call restart()")
         }
     }
 
@@ -1283,7 +1294,7 @@ mod tests {
         DeployTarget {
             alias: Some(SubstrateAlias::new(alias)),
             substrate_did: did.to_string(),
-            applier: Arc::new(NoopApplier),
+            actor: Arc::new(NoopApplier),
         }
     }
 

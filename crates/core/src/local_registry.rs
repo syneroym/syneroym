@@ -401,6 +401,23 @@ impl EndpointRegistry {
         self.storage.load_all_bindings().await
     }
 
+    /// One persisted binding's `entry_json`, or `None` if `service_id`
+    /// declares no such dependency (M05A A5a). The epoch guard's read.
+    pub async fn binding_of(
+        &self,
+        service_id: &str,
+        dependency_name: &str,
+    ) -> Result<Option<String>> {
+        self.storage.load_binding(service_id, dependency_name).await
+    }
+
+    /// Every persisted binding for one service, as (`dependency_name`,
+    /// `entry_json`) (M05A A5a). `status`'s per-dependent convergence
+    /// report.
+    pub async fn bindings_of(&self, service_id: &str) -> Result<Vec<(String, String)>> {
+        self.storage.load_bindings_for(service_id).await
+    }
+
     /// `app_instance_id`'s management stamp, or `None` if no deploy has
     /// ever named it here (M05A A5a, replacing A2's `app_instance_owner_
     /// of`). Mirrors `owner_of`.
