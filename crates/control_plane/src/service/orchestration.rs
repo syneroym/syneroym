@@ -1173,8 +1173,16 @@ impl ControlPlaneService {
                 .map_err(|e| format!("Failed to canonicalize deploy manifest for dedup: {e}"))?;
             blake3::hash(canonical.as_bytes()).to_hex().to_string()
         };
+        // The owner check: row 10 is "a retry after a lost response" --
+        // the *same* caller re-sending a request whose response never
+        // arrived. A *different* caller presenting byte-identical content
+        // is a takeover, not a retry, and `set_owner` below must still run
+        // unconditionally for it (M04A B7a: "authorized or not") -- a
+        // dedup that skipped straight to `Ok(())` here would silently
+        // leave the service owned by whoever deployed it first.
         if self.registry.deploy_facts(&service_id).and_then(|(_, _, hash)| hash).as_deref()
             == Some(incoming_hash.as_str())
+            && self.registry.owner_of(&service_id).as_deref().is_none_or(|o| o == caller.caller_did)
             && !matches!(
                 self.instance_phase(&service_id, Some(service_type_str(service_type))).await,
                 InstancePhase::NotRunning(_) | InstancePhase::NotFound
@@ -4052,6 +4060,37 @@ mod tests {
         assert_ne!(
             gen_after_first, gen_after_second,
             "a redeploy of a stopped service must reinstall, not no-op"
+        );
+    }
+
+    /// The dedup check's own regression guard: row 10 is "the same caller
+    /// retrying a lost response", not "any caller sending identical
+    /// bytes". A *different*, authorized caller presenting byte-identical
+    /// content must still take ownership -- `set_owner` runs
+    /// unconditionally on every successful deploy (M04A B7a) -- rather
+    /// than being silently skipped by the dedup no-op.
+    #[tokio::test]
+    async fn an_identical_redeploy_by_a_different_caller_still_transfers_ownership() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let alice = node_wide_caller("did:key:zAlice");
+        let bob = node_wide_caller("did:key:zBob");
+
+        service
+            .deploy("shared-svc".to_string(), inline_manifest(None, None, None), &alice)
+            .await
+            .unwrap();
+        assert_eq!(service.registry.owner_of("shared-svc"), Some("did:key:zAlice".to_string()));
+
+        service
+            .deploy("shared-svc".to_string(), inline_manifest(None, None, None), &bob)
+            .await
+            .unwrap();
+        assert_eq!(
+            service.registry.owner_of("shared-svc"),
+            Some("did:key:zBob".to_string()),
+            "a different caller's byte-identical redeploy must still transfer ownership, not be \
+             deduplicated as a no-op retry"
         );
     }
 
