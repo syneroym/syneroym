@@ -12,6 +12,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::local_registry::SubstrateEndpoint;
 
+/// (`service_type`, `health_check_json`, `manifest_hash`) -- what a deploy
+/// recorded about a service (M05A A4/A5a). Named so the in-memory caches
+/// below stay readable now that A5a's `manifest_hash` widened it to three
+/// fields.
+pub type DeployFacts = (String, Option<String>, Option<String>);
+
 /// Who manages an app instance on this substrate (ADR-0021 §4). The
 /// generation is a **tiebreaker among already-authorized writers**, not
 /// an authorization mechanism: a party without `orchestrator/deploy` is
@@ -155,7 +161,7 @@ pub struct MockStorage {
     data: Arc<DashMap<(String, String), SubstrateEndpoint>>,
     owners: Arc<DashMap<String, String>>,
     certs: Arc<DashMap<String, String>>,
-    deploy_facts: Arc<DashMap<String, (String, Option<String>, Option<String>)>>,
+    deploy_facts: Arc<DashMap<String, DeployFacts>>,
     app_contexts: Arc<DashMap<String, (String, String)>>,
     bindings: Arc<DashMap<(String, String), (String, String)>>,
     app_instance_management: Arc<DashMap<String, AppInstanceManagement>>,

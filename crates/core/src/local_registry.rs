@@ -14,7 +14,7 @@ use dashmap::DashMap;
 use syneroym_identity::DelegationCertificate;
 
 use crate::{
-    storage::{AppInstanceManagement, EndpointStorage, MockStorage},
+    storage::{AppInstanceManagement, DeployFacts, EndpointStorage, MockStorage},
     util,
 };
 
@@ -83,7 +83,7 @@ pub struct EndpointRegistry {
     /// deploy (M05A A4). Absent for a service deployed by a pre-A4 binary,
     /// which is why every reader treats a missing entry as "unknown" rather
     /// than guessing.
-    service_deploy_facts: Arc<DashMap<String, (String, Option<String>, Option<String>)>>,
+    service_deploy_facts: Arc<DashMap<String, DeployFacts>>,
     /// `service_id` -> (`app_instance_id`, `service_name`) for a service
     /// deployed as part of an app instance (A2). Absent for a standalone
     /// `svc deploy`, which resolves no declared dependencies.
@@ -354,10 +354,7 @@ impl EndpointRegistry {
     /// The recorded `(service_type, health_check_json, manifest_hash)`, or
     /// `None` for a service deployed by a pre-A4 binary.
     #[must_use]
-    pub fn deploy_facts(
-        &self,
-        service_id: &str,
-    ) -> Option<(String, Option<String>, Option<String>)> {
+    pub fn deploy_facts(&self, service_id: &str) -> Option<DeployFacts> {
         self.service_deploy_facts.get(service_id).map(|e| e.value().clone())
     }
 
