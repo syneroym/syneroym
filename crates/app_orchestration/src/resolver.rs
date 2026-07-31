@@ -173,6 +173,58 @@ pub enum ShardingStrategy {
     RangeSharding(RangeRoutingTable),
 }
 
+/// The four outcomes ADR-0021 §3 requires a binding write to be
+/// distinguishable between. Kept as data rather than a `Result` because
+/// three of the four are successes: only the caller decides whether
+/// `Stale` or `Conflict` is worth an alert.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BindingWriteOutcome {
+    /// No entry held, or a strictly higher epoch. The caller applies.
+    Applied,
+    /// Same epoch, same membership. Success with no write -- the ordinary
+    /// retry ADR-0021 §5 says to expect.
+    NoOp,
+    /// Same epoch, different membership. Two writers produced different
+    /// answers at one epoch, which is the signal ADR-0021 §4 exists to
+    /// catch.
+    Conflict(TopologyEpoch),
+    /// A lower epoch: a late-arriving retry. The mapping does not regress.
+    Stale(TopologyEpoch),
+}
+
+/// Applies ADR-0021 §3's four-case rule. Pure: no storage, no resolver, so
+/// the rule itself is unit-testable with no substrate.
+///
+/// `held` must come from the **per-dependent** persisted binding row, not
+/// from the shared `StaticInventory` entry: that entry is keyed
+/// `(app_instance_id, service_name)` and is one value per substrate, so
+/// classifying against it would give every dependent on a node the same
+/// answer and produce false conflicts the moment two dependents
+/// legitimately differ.
+///
+/// "Content" is `(mode, members, sharding_strategy)` and deliberately
+/// **not** `cache_ttl`: a TTL difference at one epoch is a policy
+/// difference between two writers, not a disagreement about who is
+/// serving the service, and reporting it as a two-writer conflict would
+/// make the signal noisy exactly where it must be trustworthy.
+#[must_use]
+pub fn classify_binding_write(
+    held: Option<&TopologyEntry>,
+    incoming: &TopologyEntry,
+) -> BindingWriteOutcome {
+    let Some(held) = held else { return BindingWriteOutcome::Applied };
+    match incoming.epoch.cmp(&held.epoch) {
+        std::cmp::Ordering::Greater => BindingWriteOutcome::Applied,
+        std::cmp::Ordering::Less => BindingWriteOutcome::Stale(held.epoch),
+        std::cmp::Ordering::Equal => {
+            let same = held.mode == incoming.mode
+                && held.members == incoming.members
+                && held.sharding_strategy == incoming.sharding_strategy;
+            if same { BindingWriteOutcome::NoOp } else { BindingWriteOutcome::Conflict(held.epoch) }
+        }
+    }
+}
+
 /// Full topology descriptor stored per logical service in the registry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TopologyEntry {
@@ -1373,6 +1425,70 @@ mod tests {
             ],
         };
         assert!(bad_order.validate().is_err());
+    }
+
+    // ── classify_binding_write (M05A A5a) ────────────────────
+
+    #[test]
+    fn a_higher_epoch_applies() {
+        let held = make_entry(TopologyMode::Singleton, vec![svc_id("v1")], None);
+        let incoming = TopologyEntry {
+            epoch: TopologyEpoch(1),
+            ..make_entry(TopologyMode::Singleton, vec![svc_id("v2")], None)
+        };
+        assert_eq!(classify_binding_write(Some(&held), &incoming), BindingWriteOutcome::Applied);
+    }
+
+    #[test]
+    fn an_equal_epoch_with_identical_members_is_a_no_op() {
+        let held = make_entry(TopologyMode::Singleton, vec![svc_id("v1")], None);
+        let incoming = make_entry(TopologyMode::Singleton, vec![svc_id("v1")], None);
+        assert_eq!(classify_binding_write(Some(&held), &incoming), BindingWriteOutcome::NoOp);
+    }
+
+    #[test]
+    fn an_equal_epoch_with_different_members_is_a_conflict() {
+        let held = make_entry(TopologyMode::Singleton, vec![svc_id("v1")], None);
+        let incoming = make_entry(TopologyMode::Singleton, vec![svc_id("v2")], None);
+        assert_eq!(
+            classify_binding_write(Some(&held), &incoming),
+            BindingWriteOutcome::Conflict(TopologyEpoch::default())
+        );
+    }
+
+    #[test]
+    fn a_lower_epoch_is_stale() {
+        let held = TopologyEntry {
+            epoch: TopologyEpoch(2),
+            ..make_entry(TopologyMode::Singleton, vec![svc_id("v2")], None)
+        };
+        let incoming = TopologyEntry {
+            epoch: TopologyEpoch(1),
+            ..make_entry(TopologyMode::Singleton, vec![svc_id("v1")], None)
+        };
+        assert_eq!(
+            classify_binding_write(Some(&held), &incoming),
+            BindingWriteOutcome::Stale(TopologyEpoch(2))
+        );
+    }
+
+    #[test]
+    fn an_absent_entry_applies() {
+        let incoming = make_entry(TopologyMode::Singleton, vec![svc_id("v1")], None);
+        assert_eq!(classify_binding_write(None, &incoming), BindingWriteOutcome::Applied);
+    }
+
+    #[test]
+    fn a_cache_ttl_difference_at_one_epoch_is_not_a_conflict() {
+        let held = TopologyEntry {
+            cache_ttl: Duration::from_secs(60),
+            ..make_entry(TopologyMode::Singleton, vec![svc_id("v1")], None)
+        };
+        let incoming = TopologyEntry {
+            cache_ttl: Duration::from_secs(120),
+            ..make_entry(TopologyMode::Singleton, vec![svc_id("v1")], None)
+        };
+        assert_eq!(classify_binding_write(Some(&held), &incoming), BindingWriteOutcome::NoOp);
     }
 
     #[test]

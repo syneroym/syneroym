@@ -25,9 +25,9 @@ pub use models::{
 };
 pub use reconcile::{ReconcileAction, ReconcilePlan, Reconciler};
 pub use resolver::{
-    AllMembers, AppRegistry, DEFAULT_BINDING_CACHE_TTL_MS, LogicalResolver, ResolvedTopology,
-    ShardingStrategy, StaticInventory, TopologyEntry, TopologyEpoch, empty_resolver,
-    rendezvous_select,
+    AllMembers, AppRegistry, BindingWriteOutcome, DEFAULT_BINDING_CACHE_TTL_MS, LogicalResolver,
+    ResolvedTopology, ShardingStrategy, StaticInventory, TopologyEntry, TopologyEpoch,
+    classify_binding_write, empty_resolver, rendezvous_select,
 };
 pub use substrate_inventory::{
     SubstrateEntry, SubstrateInventory, check_placement, placement_demand,
