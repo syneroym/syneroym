@@ -12,6 +12,7 @@ use std::{
 };
 
 use anyhow::Result;
+use dashmap::DashMap;
 use serde_json::Value;
 use syneroym_core::{
     endpoint_publisher::EndpointPublisher, http_routes::HttpRouteRegistry,
@@ -28,7 +29,7 @@ use syneroym_rpc::{
     ServiceProxy, WeakNativeDispatchRegistry, empty_row_authorizer,
 };
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
-    DeployManifest, DeploymentPlan,
+    DeployManifest, DeploymentPlan, ProbeStatus,
 };
 use tracing::info;
 
@@ -110,6 +111,12 @@ pub struct ControlPlaneService {
     // `syneroym_core::http_routes`) for lookup from
     // `crates/router/src/route_handler/http.rs`.
     http_routes: HttpRouteRegistry,
+    /// Last probe result per service, `(checked_at_secs, ProbeStatus)` (M05A
+    /// A4). A supervisor polling every few seconds must not turn into probe
+    /// load on the target (the milestone's "health poll cost" budget), and a
+    /// wasm `rpc` probe costs a component instantiation. Entries are dropped
+    /// on undeploy.
+    probe_cache: DashMap<String, (u64, ProbeStatus)>,
 }
 
 impl Debug for ControlPlaneService {
@@ -162,6 +169,7 @@ impl ControlPlaneService {
             endpoint_publisher: OnceLock::new(),
             native_dispatch: Arc::downgrade(&native_dispatch),
             http_routes,
+            probe_cache: DashMap::new(),
         })
     }
 
@@ -444,6 +452,14 @@ impl NativeService for ControlPlaneService {
                     payload: serde_json::to_value(services).unwrap_or(Value::Null),
                 })
             }
+            "status" => {
+                let service_ids = parse_status_params(invocation.params);
+                let status = self
+                    .status(service_ids, &invocation.caller)
+                    .await
+                    .map_err(RpcError::InternalError)?;
+                Ok(NativeResponse { payload: serde_json::to_value(status).unwrap_or(Value::Null) })
+            }
             method => Err(RpcError::MethodNotFound(method.to_string())),
         }
     }
@@ -451,6 +467,27 @@ impl NativeService for ControlPlaneService {
 
 fn ready_response() -> NativeResponse {
     NativeResponse { payload: serde_json::json!({"status": "ok"}) }
+}
+
+/// Accepts `[[ids]]`, `[ids]`, `{"service_ids": [...]}`, and no params at all
+/// -- the same tolerance `readyz`'s params parsing already gives JSON-RPC
+/// callers in this tree, which are not consistent about positional-versus-
+/// named params. Anything unparseable is treated as an empty list ("every
+/// service this caller may see") rather than a hard error, matching
+/// `readyz`'s own `unwrap_or_default()`.
+fn parse_status_params(params: Value) -> Vec<String> {
+    serde_json::from_value::<(Vec<String>,)>(params.clone())
+        .map(|(ids,)| ids)
+        .or_else(|_| serde_json::from_value::<Vec<String>>(params.clone()))
+        .or_else(|_| {
+            #[derive(serde::Deserialize)]
+            struct StatusPayload {
+                #[serde(default, alias = "service-ids")]
+                service_ids: Vec<String>,
+            }
+            serde_json::from_value::<StatusPayload>(params).map(|p| p.service_ids)
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -552,6 +589,7 @@ mod tests {
                 schema: None,
                 rotation_policy: None,
                 fdae_policy: None,
+                health_check: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(bytes),
@@ -892,6 +930,7 @@ mod tests {
                 schema: None,
                 rotation_policy: None,
                 fdae_policy: None,
+                health_check: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -1159,6 +1198,7 @@ mod tests {
                 schema: None,
                 rotation_policy: None,
                 fdae_policy: None,
+                health_check: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -1299,6 +1339,7 @@ mod tests {
                 schema: None,
                 rotation_policy: None,
                 fdae_policy: None,
+                health_check: None,
             },
             service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
             registry_certificate: None,
@@ -1664,6 +1705,7 @@ mod tests {
                 schema: None,
                 rotation_policy: None,
                 fdae_policy: None,
+                health_check: None,
             },
             service_type: WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(bytes),

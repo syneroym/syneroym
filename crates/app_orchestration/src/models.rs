@@ -240,6 +240,104 @@ pub enum RotationPolicy {
     None,
 }
 
+/// Default readiness-probe timeout, in milliseconds. Short on purpose: a
+/// probe is a liveness question, and a slow answer is already a bad one.
+pub const DEFAULT_PROBE_TIMEOUT_MS: u32 = 2_000;
+
+const fn default_probe_timeout_ms() -> u32 {
+    DEFAULT_PROBE_TIMEOUT_MS
+}
+
+const fn default_expect_status() -> u16 {
+    200
+}
+
+/// Author-declared readiness probe (ADR-0021 §7's active signal, applied to a
+/// service the supervisor manages rather than a bound external one).
+///
+/// Absent means **liveness only**: the substrate reports whether the instance
+/// is running and nothing more. Present means the substrate additionally runs
+/// this probe and reports its outcome as a distinct signal, because
+/// remediation differs between "not running" and "running but not ready".
+/// For a `tcp` service, where the process runs outside the substrate
+/// entirely, this is the *only* evidence of liveness there is.
+///
+/// Externally tagged, one struct per variant -- the shape `PlacementSelector`
+/// already proved round-trips through TOML and JSON while nested inside a
+/// `#[serde(flatten)]`ed `ServiceConfig`. An internally tagged (`tag = "kind"`)
+/// enum reads better in TOML but has no such proof under `flatten`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HealthCheck {
+    /// Open a TCP connection to the host:port `interface` is registered on.
+    /// Valid for `tcp` and `container` services.
+    TcpConnect(TcpProbe),
+    /// HTTP GET `path` against the host:port `interface` is registered on.
+    /// Valid for `tcp` and `container` services.
+    HttpGet(HttpProbe),
+    /// Invoke `method` on `interface` in the deployed component. Valid for
+    /// `wasm` services. Any non-error return is a pass -- the probe asks
+    /// whether the guest can run, not what it answers.
+    Rpc(RpcProbe),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TcpProbe {
+    pub interface: InterfaceName,
+    #[serde(default = "default_probe_timeout_ms")]
+    pub timeout_ms: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HttpProbe {
+    pub interface: InterfaceName,
+    pub path: String,
+    #[serde(default = "default_expect_status")]
+    pub expect_status: u16,
+    #[serde(default = "default_probe_timeout_ms")]
+    pub timeout_ms: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RpcProbe {
+    pub interface: InterfaceName,
+    pub method: String,
+    #[serde(default = "default_probe_timeout_ms")]
+    pub timeout_ms: u32,
+}
+
+impl HealthCheck {
+    /// The service types this probe kind can address (D-A4-6). Read by the
+    /// deploy-time validation, so a manifest error surfaces at deploy rather
+    /// than as a permanently `failing` probe.
+    #[must_use]
+    pub const fn valid_for(&self) -> &'static [ServiceType] {
+        match self {
+            Self::TcpConnect(_) | Self::HttpGet(_) => &[ServiceType::Tcp, ServiceType::Container],
+            Self::Rpc(_) => &[ServiceType::Wasm],
+        }
+    }
+
+    #[must_use]
+    pub fn interface(&self) -> &InterfaceName {
+        match self {
+            Self::TcpConnect(p) => &p.interface,
+            Self::HttpGet(p) => &p.interface,
+            Self::Rpc(p) => &p.interface,
+        }
+    }
+
+    /// Kebab-case name of the variant, for error messages.
+    #[must_use]
+    pub const fn kind_name(&self) -> &'static str {
+        match self {
+            Self::TcpConnect(_) => "tcp-connect",
+            Self::HttpGet(_) => "http-get",
+            Self::Rpc(_) => "rpc",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ResourceQuota {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -271,6 +369,9 @@ pub struct ServiceConfig {
     pub rotation_policy: RotationPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fdae: Option<FdaeManifest>,
+    /// Author-declared readiness probe (M05A A4). Absent = liveness only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health_check: Option<HealthCheck>,
 }
 
 /// Author-side declaration of a deploy-time document.
@@ -670,6 +771,7 @@ mod tests {
                     schema: None,
                     rotation_policy: RotationPolicy::RestartOnRotation,
                     fdae: None,
+                    health_check: None,
                 },
                 resolved_dependencies: BTreeMap::new(),
                 topology_mode: TopologyMode::Singleton,
@@ -785,6 +887,7 @@ mod tests {
                     schema: None,
                     rotation_policy: RotationPolicy::RestartOnRotation,
                     fdae: None,
+                    health_check: None,
                 },
                 resolved_dependencies: BTreeMap::new(),
                 topology_mode: TopologyMode::Singleton,
@@ -900,6 +1003,7 @@ mod tests {
                 schema: None,
                 rotation_policy: RotationPolicy::RestartOnRotation,
                 fdae: None,
+                health_check: None,
             },
             resolved_dependencies: BTreeMap::new(),
             topology_mode: TopologyMode::Singleton,
@@ -915,5 +1019,127 @@ mod tests {
         svc.substrate = None;
         let toml_round = toml::to_string(&svc).unwrap();
         assert!(!toml_round.contains("substrate"));
+    }
+
+    #[test]
+    fn a_health_check_round_trips_through_toml_and_json() {
+        let toml_str = r#"
+            id = "syneroym:guild-app"
+            version = "0.1.0"
+
+            [services.backend]
+            service_type = "container"
+            source = "unused"
+            interfaces = ["http"]
+
+            [services.backend.health_check.http-get]
+            interface = "http"
+            path = "/healthz"
+            expect_status = 200
+            timeout_ms = 1500
+
+            [services.tcpsvc]
+            service_type = "tcp"
+            source = "unused"
+            interfaces = ["main"]
+
+            [services.tcpsvc.health_check.tcp-connect]
+            interface = "main"
+
+            [services.wasmsvc]
+            service_type = "wasm"
+            source = "unused"
+            interfaces = ["rpc"]
+
+            [services.wasmsvc.health_check.rpc]
+            interface = "rpc"
+            method = "ping"
+        "#;
+
+        let manifest = SynAppManifest::from_toml(toml_str).unwrap();
+        let backend = manifest.services.get(&LogicalServiceName::new("backend")).unwrap();
+        assert_eq!(
+            backend.config.health_check,
+            Some(HealthCheck::HttpGet(HttpProbe {
+                interface: InterfaceName::new("http"),
+                path: "/healthz".to_string(),
+                expect_status: 200,
+                timeout_ms: 1500,
+            }))
+        );
+
+        // This is the round trip that would catch a #[serde(flatten)] regression:
+        // an externally-tagged enum nested inside a struct also using `flatten`.
+        let toml_round = manifest.to_toml().unwrap();
+        assert_eq!(SynAppManifest::from_toml(&toml_round).unwrap(), manifest);
+
+        let json_round = manifest.to_json().unwrap();
+        assert_eq!(SynAppManifest::from_json(&json_round).unwrap(), manifest);
+    }
+
+    #[test]
+    fn an_absent_health_check_emits_no_key() {
+        let toml_str = r#"
+            id = "syneroym:guild-app"
+            version = "0.1.0"
+
+            [services.identity]
+            service_type = "wasm"
+            source = "unused"
+        "#;
+        let manifest = SynAppManifest::from_toml(toml_str).unwrap();
+        let identity = manifest.services.get(&LogicalServiceName::new("identity")).unwrap();
+        assert_eq!(identity.config.health_check, None);
+        let serialized = manifest.to_toml().unwrap();
+        assert!(!serialized.contains("health_check"));
+    }
+
+    #[test]
+    fn probe_defaults_apply_when_omitted() {
+        let toml_str = r#"
+            id = "syneroym:guild-app"
+            version = "0.1.0"
+
+            [services.backend]
+            service_type = "container"
+            source = "unused"
+
+            [services.backend.health_check.http-get]
+            interface = "http"
+            path = "/healthz"
+        "#;
+        let manifest = SynAppManifest::from_toml(toml_str).unwrap();
+        let backend = manifest.services.get(&LogicalServiceName::new("backend")).unwrap();
+        match backend.config.health_check.as_ref().unwrap() {
+            HealthCheck::HttpGet(p) => {
+                assert_eq!(p.expect_status, 200);
+                assert_eq!(p.timeout_ms, DEFAULT_PROBE_TIMEOUT_MS);
+            }
+            other => panic!("expected HttpGet, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn valid_for_pairs_each_kind_with_its_service_types() {
+        let tcp = HealthCheck::TcpConnect(TcpProbe {
+            interface: InterfaceName::new("main"),
+            timeout_ms: DEFAULT_PROBE_TIMEOUT_MS,
+        });
+        assert_eq!(tcp.valid_for(), &[ServiceType::Tcp, ServiceType::Container]);
+
+        let http = HealthCheck::HttpGet(HttpProbe {
+            interface: InterfaceName::new("main"),
+            path: "/healthz".to_string(),
+            expect_status: 200,
+            timeout_ms: DEFAULT_PROBE_TIMEOUT_MS,
+        });
+        assert_eq!(http.valid_for(), &[ServiceType::Tcp, ServiceType::Container]);
+
+        let rpc = HealthCheck::Rpc(RpcProbe {
+            interface: InterfaceName::new("main"),
+            method: "ping".to_string(),
+            timeout_ms: DEFAULT_PROBE_TIMEOUT_MS,
+        });
+        assert_eq!(rpc.valid_for(), &[ServiceType::Wasm]);
     }
 }

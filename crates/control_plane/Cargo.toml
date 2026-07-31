@@ -33,6 +33,7 @@ syneroym-identity.workspace = true
 syneroym-mqtt-broker.workspace = true
 hex.workspace = true
 jsonschema.workspace = true
+reqwest.workspace = true
 uuid.workspace = true
 zeroize.workspace = true
 

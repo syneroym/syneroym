@@ -31,6 +31,36 @@ interface orchestrator {
         none,
     }
 
+    record tcp-probe {
+        interface-name: string,
+        timeout-ms: u32,
+    }
+
+    record http-probe {
+        interface-name: string,
+        path: string,
+        expect-status: u16,
+        timeout-ms: u32,
+    }
+
+    record rpc-probe {
+        interface-name: string,
+        method: string,
+        timeout-ms: u32,
+    }
+
+    /// Author-declared readiness probe, run by the *substrate* on behalf of a
+    /// supervisor: a container's port is host-local and a wasm probe needs
+    /// the sandbox engine, so neither is reachable from a remote poller.
+    /// Absent leaves the service liveness-only -- and for a `tcp` service,
+    /// which runs outside the substrate, absent leaves it with no liveness
+    /// signal at all.
+    variant health-check {
+        tcp-connect(tcp-probe),
+        http-get(http-probe),
+        rpc(rpc-probe),
+    }
+
     /// General configuration provided to the deployed service.
     record service-config {
         /// Environment variables represented as key-value pairs.
@@ -47,6 +77,8 @@ interface orchestrator {
         /// §1), read and validated at deploy. Absent = no row/column
         /// filtering for this service.
         fdae-policy: option<document-source>,
+        /// Author-declared readiness probe (M05A A4). Absent = liveness only.
+        health-check: option<health-check>,
     }
 
     /// Manifest details for a Wasm component deployment.
@@ -221,6 +253,86 @@ interface orchestrator {
 
     /// Deploy an entire compiled deployment plan
     deploy-plan: func(plan: deployment-plan) -> result<_, string>;
+
+    /// Whether the substrate believes this service's instance is running.
+    /// Deliberately not a bool: the supervisor's remediation differs per
+    /// variant, and `unknown` must never be silently read as healthy.
+    variant instance-phase {
+        /// A wasm component is loaded, or the container reports Running.
+        running,
+        /// Deployed here, but the instance is down. Carries the reason.
+        not-running(string),
+        /// The substrate cannot know -- a `tcp` service runs outside it, or
+        /// no service type was recorded (deployed by a pre-A4 binary).
+        /// Carries which. A declared probe still runs in this state.
+        unknown(string),
+        /// This substrate has no endpoints registered for the id at all.
+        /// Distinct from `not-running`: a deploy that never landed, versus a
+        /// deploy that landed and stopped.
+        not-found,
+        /// The caller may not see this service. Only ever returned for an
+        /// explicitly named id, never for an unnamed sweep.
+        unauthorized,
+    }
+
+    variant probe-status {
+        /// The service declared none; liveness only.
+        not-declared,
+        passing,
+        failing(string),
+    }
+
+    record service-status {
+        service-id: string,
+        /// What the deploy said this service is: "wasm" / "container" /
+        /// "tcp". Absent for a service deployed before this was recorded.
+        /// Distinct from `endpoint-type`, which reports the *endpoint*
+        /// variant and cannot tell a container from a TCP service.
+        service-type: option<string>,
+        endpoint-type: string,
+        /// From the deploy's `app-context`, when it had one (A2).
+        app-instance-id: option<string>,
+        service-name: option<string>,
+        phase: instance-phase,
+        probe: probe-status,
+        /// Both halves of the installed instance certificate's lifetime, so
+        /// a reader can apply the same relative near-expiry rule the
+        /// substrate's own heartbeat sweep uses (ADR-0020 §3) rather than
+        /// inventing an absolute window.
+        instance-certificate-issued-at: option<u64>,
+        instance-certificate-expires-at: option<u64>,
+        /// Unix seconds the probe result was produced. Earlier than
+        /// `checked-at` when a cached result was served.
+        probe-checked-at: option<u64>,
+    }
+
+    /// What this node is, as opposed to what is running on it. Answers two
+    /// questions a deploying client could previously only guess at: what
+    /// service types it can actually run, and which registry namespace it
+    /// publishes endpoint records into.
+    record node-facts {
+        node-did: string,
+        /// "wasm" / "container" / "tcp", per compiled-in sandbox features.
+        service-types: list<string>,
+        registry-url: option<string>,
+        dht-enabled: bool,
+    }
+
+    record substrate-status {
+        /// Present only for a caller holding node-wide `orchestrator/status`.
+        /// An app-scoped caller still gets `services` for its own services;
+        /// what a node can run and where it publishes is not theirs to read.
+        node: option<node-facts>,
+        checked-at: u64,
+        services: list<service-status>,
+    }
+
+    /// Per-instance status for a supervisor's poll loop. An empty
+    /// `service-ids` means "every service this caller may see", using the
+    /// same visibility rule as `list`. A named id the caller may not see
+    /// comes back `unauthorized` rather than being omitted, so a poller can
+    /// tell "not permitted" from "not running".
+    status: func(service-ids: list<string>) -> result<substrate-status, string>;
 }
 
 interface health {

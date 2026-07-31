@@ -20,6 +20,22 @@ pub const SCOPE_SERVICE_INSTANCE: &str = "service-instance";
 /// target which one legitimately belongs.
 pub const TRANSPORT_SCOPES: [&str; 2] = [SCOPE_ROUTING, SCOPE_SERVICE_INSTANCE];
 
+/// The free-function form of [`DelegationCertificate::is_near_expiry`], for a
+/// caller that only has the `issued_at`/`expires_at` pair (e.g. off a wire
+/// record) rather than a whole certificate.
+#[must_use]
+pub const fn is_near_expiry_parts(
+    issued_at_secs: u64,
+    expires_at_secs: u64,
+    now_secs: u64,
+) -> bool {
+    let lifetime = expires_at_secs.saturating_sub(issued_at_secs);
+    if lifetime == 0 {
+        return false;
+    }
+    expires_at_secs.saturating_sub(now_secs).saturating_mul(4) <= lifetime
+}
+
 /// A cryptographic certificate that binds a temporary identity key to a master
 /// DID for a specific duration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -109,6 +125,18 @@ impl DelegationCertificate {
         let now_secs =
             SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         now_secs >= self.expires_at_secs
+    }
+
+    /// Whether this certificate is within 25% of its lifetime of expiring --
+    /// the renewal signal under the attended posture (ADR-0020 §3), where a
+    /// missed cadence is an outage rather than a degradation.
+    ///
+    /// Relative, not an absolute window: `DEFAULT_INSTANCE_CERT_EXPIRES_HOURS`
+    /// is 24 hours, so any absolute threshold at or above that fires on every
+    /// certificate from the moment it is issued.
+    #[must_use]
+    pub fn is_near_expiry(&self, now_secs: u64) -> bool {
+        is_near_expiry_parts(self.issued_at_secs, self.expires_at_secs, now_secs)
     }
 
     /// The master match, the scope, the signature, and every structural
@@ -233,6 +261,34 @@ impl DelegationCertificate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_certificate_is_not_near_expiry_when_freshly_issued() {
+        let master = Identity::generate().unwrap();
+        let temp = Identity::generate().unwrap();
+        let cert =
+            DelegationCertificate::issue(&master, temp.public_key(), 3600, "routing".to_string())
+                .unwrap();
+        // The exact bug an absolute 24h constant would have shipped: this
+        // certificate's own default lifetime (24h in production) must not
+        // read as near-expiry the moment it is issued.
+        assert!(!cert.is_near_expiry(cert.issued_at_secs));
+    }
+
+    #[test]
+    fn a_certificate_is_near_expiry_inside_the_last_quarter_of_its_lifetime() {
+        let master = Identity::generate().unwrap();
+        let temp = Identity::generate().unwrap();
+        let mut cert =
+            DelegationCertificate::issue(&master, temp.public_key(), 3600, "routing".to_string())
+                .unwrap();
+        cert.issued_at_secs = 1_000;
+        cert.expires_at_secs = 1_000 + 1_000; // 1000s lifetime
+        // 76% elapsed: remaining (240) <= 25% of lifetime (250).
+        assert!(cert.is_near_expiry(1_760));
+        // 74% elapsed: remaining (260) > 25% of lifetime (250).
+        assert!(!cert.is_near_expiry(1_740));
+    }
 
     #[test]
     fn test_delegation_cert_valid() {
