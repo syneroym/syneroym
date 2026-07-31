@@ -33,7 +33,7 @@ pub use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane
     ArtifactSource, BindingWrite, ContainerManifest, ContainerPortMapping, ContainerVolumeMapping,
     DependencyBinding, DeployManifest, DeploymentPlan, HealthCheck, HttpProbe, InstanceIdentity,
     NetworkEndpoint, PlannedService, RpcProbe, ServiceConfig, ServiceType, TcpManifest, TcpProbe,
-    WasmManifest,
+    TopologyMode, WasmManifest,
 };
 use tokio::{io, net::TcpStream, sync::mpsc, time};
 use tracing::debug;
