@@ -124,6 +124,7 @@ pub fn map_deployment_plan_to_wit(
     instance_certificates: &BTreeMap<ServiceId, String>,
     registry_certificates: &BTreeMap<ServiceId, String>,
     emit_bindings: bool,
+    generation: u64,
 ) -> anyhow::Result<WitDeploymentPlan> {
     let plan_instance_id = plan.app_instance_id.to_string();
     // `mode` belongs to the *target* of a dependency, not the dependent --
@@ -296,6 +297,10 @@ pub fn map_deployment_plan_to_wit(
             } else {
                 Vec::new()
             },
+            // ADR-0021 §4 (M05A A5a): 0 for every caller through A5a --
+            // the supervisor that presents a real, `adopt`-minted
+            // generation does not exist yet.
+            generation,
         });
         wit_services.push(WitPlannedService {
             service_id: svc.service_id.to_string(),
@@ -375,12 +380,16 @@ mod tests {
         emit_bindings: bool,
     ) -> anyhow::Result<WitDeploymentPlan> {
         let all: Vec<&PlannedService> = plan.services.iter().collect();
+        // Unmanaged (M05A A5a): none of these tests exercise the
+        // generation gate, which is `map_deployment_plan_to_wit`'s own
+        // concern to unit-test.
         map_deployment_plan_to_wit(
             plan,
             &all,
             instance_certificates,
             registry_certificates,
             emit_bindings,
+            0,
         )
     }
 
@@ -715,6 +724,7 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             true,
+            0,
         )
         .unwrap();
 

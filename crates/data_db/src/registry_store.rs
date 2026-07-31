@@ -10,7 +10,9 @@ use anyhow::Result;
 use async_trait::async_trait;
 use rusqlite::{Connection, params};
 use syneroym_core::{
-    config::SubstrateConfig, local_registry::SubstrateEndpoint, storage::EndpointStorage,
+    config::SubstrateConfig,
+    local_registry::SubstrateEndpoint,
+    storage::{AppInstanceManagement, EndpointStorage},
 };
 use tokio::task;
 
@@ -134,20 +136,20 @@ impl SqliteEndpointStorage {
                 );",
                 [],
             )?;
-            // A2 (post-review fix): which caller first declared an app
-            // instance in a deploy's `app_context`. `deploy` uses this as a
-            // first-write-wins takeover guard -- the same shape as
-            // `service_owners`, but keyed by `app_instance_id` instead of
-            // `service_id`, since a binding write targets an app instance
-            // that can span several services. Without it, any caller
-            // authorized to deploy *some* service could name a different,
-            // already-running app instance in its own `app_context` and
-            // overwrite the bindings that instance's other services
-            // resolve.
+            // M05A A5a: who manages an app instance on this substrate
+            // (ADR-0021 §4). Replaces A2's `app_instance_owners` outright --
+            // pre-release, so no `ALTER TABLE`/version ladder (see AGENTS.md);
+            // the old table simply stops being created. `owner_did` keeps
+            // A2's first-write-wins takeover guard; `supervisor_did`/
+            // `generation` are new: `None`/`0` means "unmanaged", which is
+            // what every operator-driven `roymctl app deploy` sends and what
+            // an un-adopted instance accepts.
             conn.execute(
-                "CREATE TABLE IF NOT EXISTS app_instance_owners (
+                "CREATE TABLE IF NOT EXISTS app_instance_management (
                     app_instance_id TEXT PRIMARY KEY,
                     owner_did       TEXT NOT NULL,
+                    supervisor_did  TEXT,
+                    generation      INTEGER NOT NULL DEFAULT 0,
                     created_at      INTEGER NOT NULL
                 );",
                 [],
@@ -523,38 +525,77 @@ impl EndpointStorage for SqliteEndpointStorage {
         .await?
     }
 
-    async fn load_all_app_instance_owners(&self) -> Result<Vec<(String, String)>> {
+    async fn load_all_app_instance_management(
+        &self,
+    ) -> Result<Vec<(String, AppInstanceManagement)>> {
         let conn_arc = self.conn.clone();
-        task::spawn_blocking(move || -> Result<Vec<(String, String)>> {
+        task::spawn_blocking(move || -> Result<Vec<(String, AppInstanceManagement)>> {
             let conn = lock_db(&conn_arc)?;
-            let mut stmt =
-                conn.prepare("SELECT app_instance_id, owner_did FROM app_instance_owners")?;
-            let mut owners = Vec::new();
+            let mut stmt = conn.prepare(
+                "SELECT app_instance_id, owner_did, supervisor_did, generation FROM \
+                 app_instance_management",
+            )?;
+            let mut rows_out = Vec::new();
             let mut rows = stmt.query([])?;
             while let Some(row) = rows.next()? {
-                owners.push((row.get(0)?, row.get(1)?));
+                let app_instance_id: String = row.get(0)?;
+                let owner_did: String = row.get(1)?;
+                let supervisor_did: Option<String> = row.get(2)?;
+                let generation: i64 = row.get(3)?;
+                rows_out.push((
+                    app_instance_id,
+                    AppInstanceManagement {
+                        owner_did,
+                        supervisor_did,
+                        generation: generation as u64,
+                    },
+                ));
             }
-            Ok(owners)
+            Ok(rows_out)
         })
         .await?
     }
 
-    async fn save_app_instance_owner(&self, app_instance_id: &str, owner_did: &str) -> Result<()> {
+    async fn save_app_instance_management(
+        &self,
+        app_instance_id: &str,
+        management: &AppInstanceManagement,
+    ) -> Result<()> {
         let conn_arc = self.conn.clone();
         let instance = app_instance_id.to_string();
-        let owner = owner_did.to_string();
+        let owner = management.owner_did.clone();
+        let supervisor = management.supervisor_did.clone();
+        let generation = management.generation as i64;
         let created_at: i64 =
             SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
 
         task::spawn_blocking(move || -> Result<()> {
             let conn = lock_db(&conn_arc)?;
             conn.execute(
-                "INSERT INTO app_instance_owners (app_instance_id, owner_did, created_at)
-                 VALUES (?1, ?2, ?3)
+                "INSERT INTO app_instance_management (app_instance_id, owner_did, supervisor_did, \
+                 generation, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
                  ON CONFLICT(app_instance_id) DO UPDATE SET
                     owner_did = excluded.owner_did,
+                    supervisor_did = excluded.supervisor_did,
+                    generation = excluded.generation,
                     created_at = excluded.created_at",
-                params![instance, owner, created_at],
+                params![instance, owner, supervisor, generation, created_at],
+            )?;
+            Ok(())
+        })
+        .await?
+    }
+
+    async fn remove_app_instance_management(&self, app_instance_id: &str) -> Result<()> {
+        let conn_arc = self.conn.clone();
+        let instance = app_instance_id.to_string();
+
+        task::spawn_blocking(move || -> Result<()> {
+            let conn = lock_db(&conn_arc)?;
+            conn.execute(
+                "DELETE FROM app_instance_management WHERE app_instance_id = ?1",
+                params![instance],
             )?;
             Ok(())
         })

@@ -187,6 +187,36 @@ interface orchestrator {
     /// Undeploy a service, stopping it and cleaning up resources
     undeploy: func(service-id: string) -> result<_, string>;
 
+    /// An app instance's management stamp, or `none` if no deploy has
+    /// ever named it here. `adopt`'s read half (M05A A5): a supervisor
+    /// must be able to learn the held generation before it can mint the
+    /// next one, and no service-level record carries it.
+    record app-instance-management {
+        owner-did: string,
+        supervisor-did: option<string>,
+        generation: u64,
+    }
+    app-instance-management-of: func(app-instance-id: string)
+        -> result<option<app-instance-management>, string>;
+
+    /// Claim management of an app instance at `generation` -- ADR-0021
+    /// §4's operator-minted adopt, made durable at the moment of the
+    /// claim rather than on whatever write happens next. Subject to the
+    /// same four-case rule as every other write, so two supervisors
+    /// racing an adopt lose deterministically here instead of both
+    /// believing they won until one issues a deploy.
+    claim-app-instance: func(app-instance-id: string, generation: u64)
+        -> result<_, string>;
+
+    /// Clear an app instance's management stamp: `supervisor-did` back to
+    /// none and `generation` back to 0, keeping the owner. Called by the
+    /// supervisor on retire/release. Without it, an adopted instance can
+    /// never be hand-deployed again -- a plain `app deploy` presents 0
+    /// against a held generation and is refused forever, with no verb
+    /// able to undo it.
+    release-app-instance: func(app-instance-id: string, generation: u64)
+        -> result<_, string>;
+
     /// List currently deployed services
     %list: func() -> result<list<deployed-service>, string>;
 
@@ -229,6 +259,14 @@ interface orchestrator {
         app-instance-id: string,
         service-name: string,
         bindings: list<dependency-binding>,
+        /// The generation the writer manages this app instance at
+        /// (ADR-0021 §4). `0` means "unmanaged", which is what every
+        /// operator-driven `roymctl app deploy` sends and what an
+        /// un-adopted instance accepts. A supervisor sends the
+        /// generation its `adopt` minted -- without this field it would
+        /// present 0 and be locked out of its own app on the first
+        /// reconcile after an adopt.
+        generation: u64,
     }
 
     /// A planned service in a deployment plan.

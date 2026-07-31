@@ -14,7 +14,7 @@ use dashmap::DashMap;
 use syneroym_identity::DelegationCertificate;
 
 use crate::{
-    storage::{EndpointStorage, MockStorage},
+    storage::{AppInstanceManagement, EndpointStorage, MockStorage},
     util,
 };
 
@@ -88,12 +88,11 @@ pub struct EndpointRegistry {
     /// deployed as part of an app instance (A2). Absent for a standalone
     /// `svc deploy`, which resolves no declared dependencies.
     service_app_contexts: Arc<DashMap<String, (String, String)>>,
-    /// `app_instance_id` -> the `caller_did` whose deploy first declared it
-    /// (A2 post-review fix). First-write-wins takeover guard for the
-    /// binding write, the same shape as `service_owners` but keyed by app
-    /// instance instead of service, since a binding write targets an app
-    /// instance that can span several services.
-    app_instance_owners: Arc<DashMap<String, String>>,
+    /// `app_instance_id` -> its management stamp (M05A A5a, replacing A2's
+    /// `app_instance_owners`): who first declared it (first-write-wins,
+    /// unchanged from A2) plus which supervisor, if any, manages it at
+    /// which generation (ADR-0021 §4).
+    app_instance_management: Arc<DashMap<String, AppInstanceManagement>>,
     /// Stable storage connection for persistence
     storage: Arc<dyn EndpointStorage>,
 }
@@ -118,7 +117,7 @@ impl EndpointRegistry {
             service_certs: Arc::new(DashMap::new()),
             service_deploy_facts: Arc::new(DashMap::new()),
             service_app_contexts: Arc::new(DashMap::new()),
-            app_instance_owners: Arc::new(DashMap::new()),
+            app_instance_management: Arc::new(DashMap::new()),
             storage,
         };
 
@@ -165,8 +164,9 @@ impl EndpointRegistry {
             self.service_app_contexts.insert(service_id, (app_instance_id, service_name));
         }
 
-        for (app_instance_id, owner_did) in self.storage.load_all_app_instance_owners().await? {
-            self.app_instance_owners.insert(app_instance_id, owner_did);
+        for (app_instance_id, management) in self.storage.load_all_app_instance_management().await?
+        {
+            self.app_instance_management.insert(app_instance_id, management);
         }
         Ok(())
     }
@@ -261,7 +261,7 @@ impl EndpointRegistry {
             service_certs: Arc::new(DashMap::new()),
             service_deploy_facts: Arc::new(DashMap::new()),
             service_app_contexts: Arc::new(DashMap::new()),
-            app_instance_owners: Arc::new(DashMap::new()),
+            app_instance_management: Arc::new(DashMap::new()),
             storage,
         }
     }
@@ -401,26 +401,51 @@ impl EndpointRegistry {
         self.storage.load_all_bindings().await
     }
 
-    /// The `caller_did` that first declared `app_instance_id` in a deploy's
-    /// `app_context`, or `None` if no deploy has ever named it (A2 post-
-    /// review fix). Mirrors `owner_of`.
+    /// `app_instance_id`'s management stamp, or `None` if no deploy has
+    /// ever named it here (M05A A5a, replacing A2's `app_instance_owner_
+    /// of`). Mirrors `owner_of`.
     #[must_use]
-    pub fn app_instance_owner_of(&self, app_instance_id: &str) -> Option<String> {
-        self.app_instance_owners.get(app_instance_id).map(|e| e.value().clone())
+    pub fn app_instance_management_of(
+        &self,
+        app_instance_id: &str,
+    ) -> Option<AppInstanceManagement> {
+        self.app_instance_management.get(app_instance_id).map(|e| e.value().clone())
     }
 
-    /// Record `owner_did` as `app_instance_id`'s owner (upsert). Overwrites
-    /// any existing entry -- the takeover check is the caller's
-    /// responsibility (`ControlPlaneService::deploy_with_context`), not
-    /// this store's, mirroring `set_owner`.
-    pub async fn set_app_instance_owner(
+    /// Record `management` for `app_instance_id` (upsert). The takeover /
+    /// generation-tiebreak logic is the caller's responsibility
+    /// (`ControlPlaneService::check_generation`), not this store's,
+    /// mirroring `set_owner`.
+    pub async fn set_app_instance_management(
         &self,
         app_instance_id: String,
-        owner_did: String,
+        management: AppInstanceManagement,
     ) -> Result<()> {
-        self.storage.save_app_instance_owner(&app_instance_id, &owner_did).await?;
-        self.app_instance_owners.insert(app_instance_id, owner_did);
+        self.storage.save_app_instance_management(&app_instance_id, &management).await?;
+        self.app_instance_management.insert(app_instance_id, management);
         Ok(())
+    }
+
+    /// Forget `app_instance_id`'s management stamp. Idempotent. Called
+    /// when the last service of an instance is undeployed (M05A A5a) --
+    /// the standing backlog row `app_instance_owners` rows never get
+    /// forgotten.
+    pub async fn remove_app_instance_management(&self, app_instance_id: &str) -> Result<()> {
+        self.storage.remove_app_instance_management(app_instance_id).await?;
+        self.app_instance_management.remove(app_instance_id);
+        Ok(())
+    }
+
+    /// The `service_id` of a service that still records `app_instance_id`
+    /// as its app context, if any (M05A A5a) -- used to decide when an app
+    /// instance's management row can be forgotten. Unlike a per-service
+    /// context lookup, this has to scan: the map is keyed by `service_id`.
+    #[must_use]
+    pub fn app_context_of_any(&self, app_instance_id: &str) -> Option<String> {
+        self.service_app_contexts
+            .iter()
+            .find(|e| e.value().0 == app_instance_id)
+            .map(|e| e.key().clone())
     }
 }
 

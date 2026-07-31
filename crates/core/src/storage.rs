@@ -8,8 +8,27 @@ use std::{fmt::Debug, sync::Arc};
 use anyhow::Result;
 use async_trait::async_trait;
 use dashmap::DashMap;
+use serde::{Deserialize, Serialize};
 
 use crate::local_registry::SubstrateEndpoint;
+
+/// Who manages an app instance on this substrate (ADR-0021 §4). The
+/// generation is a **tiebreaker among already-authorized writers**, not
+/// an authorization mechanism: a party without `orchestrator/deploy` is
+/// refused regardless of what generation it presents.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppInstanceManagement {
+    /// First-write-wins, unchanged from A2's `app_instance_owners`.
+    pub owner_did: String,
+    /// The supervisor that most recently wrote at `generation`. `None`
+    /// until an operator's `adopt` names one -- an unadopted instance is
+    /// writable by any authorized caller, which is what keeps A0-A4's
+    /// hand-deploy path working after this lands, and what
+    /// `release-app-instance` returns it to.
+    pub supervisor_did: Option<String>,
+    /// Minted by the operator's `adopt`, never self-incremented.
+    pub generation: u64,
+}
 
 /// A trait abstracting stable storage for the `EndpointRegistry`.
 #[async_trait]
@@ -92,16 +111,25 @@ pub trait EndpointStorage: Send + Sync {
         topology_entry_json: &str,
     ) -> Result<()>;
 
-    /// Load every recorded app-instance owner as (`app_instance_id`,
-    /// `owner_did`) (A2 post-review fix, first-write-wins deploy takeover
-    /// guard -- see `save_app_instance_owner`).
-    async fn load_all_app_instance_owners(&self) -> Result<Vec<(String, String)>>;
-    /// Record `owner_did` as the first caller to declare `app_instance_id`
-    /// in a deploy's `app_context` (upsert). Overwrites any existing entry
-    /// -- the takeover check is the caller's responsibility
-    /// (`ControlPlaneService::deploy_with_context`), not this store's, the
+    /// Load every recorded app-instance management stamp as
+    /// (`app_instance_id`, `AppInstanceManagement`) (M05A A5a, replacing
+    /// A2's `app_instance_owners`).
+    async fn load_all_app_instance_management(
+        &self,
+    ) -> Result<Vec<(String, AppInstanceManagement)>>;
+    /// Record `management` for `app_instance_id` (upsert). The takeover /
+    /// generation-tiebreak logic is the caller's responsibility
+    /// (`ControlPlaneService::check_generation`), not this store's, the
     /// same split `save_owner` already uses for `service_id` ownership.
-    async fn save_app_instance_owner(&self, app_instance_id: &str, owner_did: &str) -> Result<()>;
+    async fn save_app_instance_management(
+        &self,
+        app_instance_id: &str,
+        management: &AppInstanceManagement,
+    ) -> Result<()>;
+    /// Forget `app_instance_id`'s management stamp. Idempotent. Called
+    /// when the last service of an instance is undeployed -- the standing
+    /// backlog row `app_instance_owners` rows never get forgotten.
+    async fn remove_app_instance_management(&self, app_instance_id: &str) -> Result<()>;
 }
 
 /// A thread-safe in-memory storage for testing.
@@ -113,7 +141,7 @@ pub struct MockStorage {
     deploy_facts: Arc<DashMap<String, (String, Option<String>)>>,
     app_contexts: Arc<DashMap<String, (String, String)>>,
     bindings: Arc<DashMap<(String, String), (String, String)>>,
-    app_instance_owners: Arc<DashMap<String, String>>,
+    app_instance_management: Arc<DashMap<String, AppInstanceManagement>>,
 }
 
 impl Default for MockStorage {
@@ -132,7 +160,7 @@ impl MockStorage {
             deploy_facts: Arc::new(DashMap::new()),
             app_contexts: Arc::new(DashMap::new()),
             bindings: Arc::new(DashMap::new()),
-            app_instance_owners: Arc::new(DashMap::new()),
+            app_instance_management: Arc::new(DashMap::new()),
         }
     }
 }
@@ -245,11 +273,25 @@ impl EndpointStorage for MockStorage {
         );
         Ok(())
     }
-    async fn load_all_app_instance_owners(&self) -> Result<Vec<(String, String)>> {
-        Ok(self.app_instance_owners.iter().map(|e| (e.key().clone(), e.value().clone())).collect())
+    async fn load_all_app_instance_management(
+        &self,
+    ) -> Result<Vec<(String, AppInstanceManagement)>> {
+        Ok(self
+            .app_instance_management
+            .iter()
+            .map(|e| (e.key().clone(), e.value().clone()))
+            .collect())
     }
-    async fn save_app_instance_owner(&self, app_instance_id: &str, owner_did: &str) -> Result<()> {
-        self.app_instance_owners.insert(app_instance_id.to_string(), owner_did.to_string());
+    async fn save_app_instance_management(
+        &self,
+        app_instance_id: &str,
+        management: &AppInstanceManagement,
+    ) -> Result<()> {
+        self.app_instance_management.insert(app_instance_id.to_string(), management.clone());
+        Ok(())
+    }
+    async fn remove_app_instance_management(&self, app_instance_id: &str) -> Result<()> {
+        self.app_instance_management.remove(app_instance_id);
         Ok(())
     }
 }

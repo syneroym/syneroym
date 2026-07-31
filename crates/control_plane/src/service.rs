@@ -458,6 +458,45 @@ impl NativeService for ControlPlaneService {
                     .map_err(RpcError::InternalError)?;
                 Ok(NativeResponse { payload: serde_json::json!({"status": "undeployed"}) })
             }
+            "app-instance-management-of" => {
+                let (app_instance_id,): (String,) = serde_json::from_value(invocation.params)
+                    .map_err(|e| {
+                        RpcError::InvalidParams(format!(
+                            "Failed to parse app-instance-management-of params: {e}"
+                        ))
+                    })?;
+                let management = self
+                    .app_instance_management_of(app_instance_id, &invocation.caller)
+                    .await
+                    .map_err(RpcError::InternalError)?;
+                Ok(NativeResponse {
+                    payload: serde_json::to_value(management).unwrap_or(Value::Null),
+                })
+            }
+            "claim-app-instance" => {
+                let (app_instance_id, generation): (String, u64) =
+                    serde_json::from_value(invocation.params).map_err(|e| {
+                        RpcError::InvalidParams(format!(
+                            "Failed to parse claim-app-instance params: {e}"
+                        ))
+                    })?;
+                self.claim_app_instance(app_instance_id, generation, &invocation.caller)
+                    .await
+                    .map_err(RpcError::InternalError)?;
+                Ok(NativeResponse { payload: serde_json::json!({"status": "claimed"}) })
+            }
+            "release-app-instance" => {
+                let (app_instance_id, generation): (String, u64) =
+                    serde_json::from_value(invocation.params).map_err(|e| {
+                        RpcError::InvalidParams(format!(
+                            "Failed to parse release-app-instance params: {e}"
+                        ))
+                    })?;
+                self.release_app_instance(app_instance_id, generation, &invocation.caller)
+                    .await
+                    .map_err(RpcError::InternalError)?;
+                Ok(NativeResponse { payload: serde_json::json!({"status": "released"}) })
+            }
             "list" => {
                 let services =
                     self.list(&invocation.caller).await.map_err(RpcError::InternalError)?;

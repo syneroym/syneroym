@@ -7,6 +7,7 @@
 //! routing table and the KEK/secret management calls it handles directly).
 
 use std::{
+    cmp::Ordering,
     collections::{BTreeMap, BTreeSet, HashMap},
     fs,
     path::{Component, PathBuf},
@@ -25,6 +26,7 @@ use syneroym_app_orchestration::{
 use syneroym_core::{
     deploy_docs,
     local_registry::{NATIVE_CAPABILITY_INTERFACES, SubstrateEndpoint},
+    storage::AppInstanceManagement,
     util,
 };
 use syneroym_fdae::Policy;
@@ -33,9 +35,10 @@ use syneroym_identity::{
 };
 use syneroym_rpc::{Ability, CallerContext, JsonRpcRequest, NativeService, ResourceUri};
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
-    AppContext, ArtifactSource, ContainerManifest, DeployManifest, DeployedService, DeploymentPlan,
-    DocumentSource, HealthCheck as WitHealthCheck, InstanceIdentity, InstancePhase, NodeFacts,
-    ProbeStatus, ServiceStatus, ServiceType as WitServiceType, SubstrateStatus, TcpManifest,
+    AppContext, AppInstanceManagement as AppInstanceManagementWire, ArtifactSource,
+    ContainerManifest, DeployManifest, DeployedService, DeploymentPlan, DocumentSource,
+    HealthCheck as WitHealthCheck, InstanceIdentity, InstancePhase, NodeFacts, ProbeStatus,
+    ServiceStatus, ServiceType as WitServiceType, SubstrateStatus, TcpManifest,
     TopologyMode as WitTopologyMode, WasmManifest,
 };
 use tokio::task;
@@ -63,6 +66,36 @@ pub trait OrchestratorInterface {
         caller: &CallerContext,
     ) -> Result<(), String>;
     async fn undeploy(&self, service_id: String, caller: &CallerContext) -> Result<(), String>;
+    /// `adopt`'s read half (M05A A5a, §0.26): the management stamp an app
+    /// instance carries, or `None` if no deploy has ever named it here.
+    /// `Ok(None)` (not an error) for a caller with no visibility into the
+    /// instance, so a caller with no grant cannot use this to probe for its
+    /// existence (A4-10's rule, applied here too).
+    async fn app_instance_management_of(
+        &self,
+        app_instance_id: String,
+        caller: &CallerContext,
+    ) -> Result<Option<AppInstanceManagementWire>, String>;
+    /// Claim management of an app instance at `generation` (M05A A5a,
+    /// §0.26) -- ADR-0021 §4's operator-minted adopt, made durable at the
+    /// moment of the claim. Subject to the same four-case rule as every
+    /// other write.
+    async fn claim_app_instance(
+        &self,
+        app_instance_id: String,
+        generation: u64,
+        caller: &CallerContext,
+    ) -> Result<(), String>;
+    /// Clear an app instance's management stamp (M05A A5a, §0.24):
+    /// `supervisor_did` back to `None` and `generation` back to 0, keeping
+    /// `owner_did`. Without this, an adopted instance can never be
+    /// hand-deployed again.
+    async fn release_app_instance(
+        &self,
+        app_instance_id: String,
+        generation: u64,
+        caller: &CallerContext,
+    ) -> Result<(), String>;
     async fn list(&self, caller: &CallerContext) -> Result<Vec<DeployedService>, String>;
     async fn deploy_plan(&self, plan: DeploymentPlan, caller: &CallerContext)
     -> Result<(), String>;
@@ -109,6 +142,17 @@ const fn service_type_str(t: AppServiceType) -> &'static str {
         AppServiceType::Container => "container",
         AppServiceType::Tcp => "tcp",
         AppServiceType::NativeHost => "nativehost",
+    }
+}
+
+/// `AppInstanceManagement` (the internal, storage-facing type) -> its wire
+/// record. Kept as a free function rather than a `From` impl since the wire
+/// type lives in a generated module neither type owns.
+fn management_to_wire(m: &AppInstanceManagement) -> AppInstanceManagementWire {
+    AppInstanceManagementWire {
+        owner_did: m.owner_did.clone(),
+        supervisor_did: m.supervisor_did.clone(),
+        generation: m.generation,
     }
 }
 
@@ -305,17 +349,18 @@ impl ControlPlaneService {
         Ok(())
     }
 
-    /// Writes `prepared`'s app-context and binding rows plus its
-    /// first-write-wins app-instance ownership record (A2, post-review
+    /// Writes `prepared`'s app-context and binding rows (A2, post-review
     /// fix). Called only once every earlier fallible step in `deploy_
     /// with_context` has already succeeded -- see the call site's own
     /// comment -- so a storage error here is the *only* way this can fail,
     /// never a validation problem (`prepared`'s fields already passed
-    /// `try_new`).
+    /// `try_new`). The app-instance management stamp is *not* written
+    /// here (M05A A5a §0.27) -- `deploy_with_context` persists it right
+    /// after `check_generation` succeeds, before this method ever runs,
+    /// since it records who is writing rather than what was installed.
     async fn install_app_context(
         &self,
         service_id: &str,
-        caller_did: &str,
         prepared: &PreparedAppContext,
     ) -> Result<(), String> {
         // A redeploy fully declares this service's app context, so its
@@ -359,10 +404,66 @@ impl ControlPlaneService {
             );
         }
 
-        self.registry
-            .set_app_instance_owner(prepared.raw_instance_id.clone(), caller_did.to_string())
-            .await
-            .map_err(|e| e.to_string())
+        Ok(())
+    }
+
+    /// ADR-0021 §4's single-writer rule, applied to every write that
+    /// changes an app instance: `deploy_with_context`, `write_bindings`,
+    /// `restart`, `undeploy`, `release_app_instance`.
+    ///
+    /// The generation is a tiebreaker, so an *unadopted* instance
+    /// (`supervisor_did: None`) accepts any authorized writer -- that is
+    /// what keeps A0-A4's operator-driven `app deploy` working unchanged
+    /// after this lands, and what `release-app-instance` restores. The
+    /// returned value is what the caller must persist immediately
+    /// (`set_app_instance_management`), before anything else it does
+    /// (M05A A5a §0.27) -- it records *who is writing*, not what was
+    /// installed, so it is not behind A2's defer-until-everything-
+    /// succeeds rule that governs bindings.
+    fn check_generation(
+        &self,
+        app_instance_id: &str,
+        caller: &CallerContext,
+        presented: u64,
+    ) -> Result<AppInstanceManagement, String> {
+        let held = self.registry.app_instance_management_of(app_instance_id);
+        match held {
+            None => Ok(AppInstanceManagement {
+                owner_did: caller.caller_did.clone(),
+                supervisor_did: Some(caller.caller_did.clone()),
+                generation: presented,
+            }),
+            Some(m) if m.supervisor_did.is_none() => Ok(AppInstanceManagement {
+                supervisor_did: Some(caller.caller_did.clone()),
+                generation: presented,
+                ..m
+            }),
+            Some(m) => match presented.cmp(&m.generation) {
+                Ordering::Greater => Ok(AppInstanceManagement {
+                    supervisor_did: Some(caller.caller_did.clone()),
+                    generation: presented,
+                    ..m
+                }),
+                Ordering::Equal
+                    if m.supervisor_did.as_deref() == Some(caller.caller_did.as_str()) =>
+                {
+                    Ok(m)
+                }
+                Ordering::Equal => Err(format!(
+                    "app instance '{app_instance_id}' is managed at generation {} by {}; a second \
+                     writer at the same generation is rejected (ADR-0021 §4)",
+                    m.generation,
+                    m.supervisor_did.as_deref().unwrap_or("<unknown>"),
+                )),
+                Ordering::Less => Err(format!(
+                    "app instance '{app_instance_id}' is managed at generation {} by {}; this \
+                     write presented generation {presented}. Stop managing this instance and \
+                     alert -- never self-increment (ADR-0021 §4).",
+                    m.generation,
+                    m.supervisor_did.as_deref().unwrap_or("<unknown>"),
+                )),
+            },
+        }
     }
 
     /// Logs (but does not propagate) a failure to roll back a config
@@ -659,6 +760,32 @@ impl OrchestratorInterface for ControlPlaneService {
         self.undeploy_impl(service_id, caller).await
     }
 
+    async fn app_instance_management_of(
+        &self,
+        app_instance_id: String,
+        caller: &CallerContext,
+    ) -> Result<Option<AppInstanceManagementWire>, String> {
+        self.app_instance_management_of_impl(app_instance_id, caller).await
+    }
+
+    async fn claim_app_instance(
+        &self,
+        app_instance_id: String,
+        generation: u64,
+        caller: &CallerContext,
+    ) -> Result<(), String> {
+        self.claim_app_instance_impl(app_instance_id, generation, caller).await
+    }
+
+    async fn release_app_instance(
+        &self,
+        app_instance_id: String,
+        generation: u64,
+        caller: &CallerContext,
+    ) -> Result<(), String> {
+        self.release_app_instance_impl(app_instance_id, generation, caller).await
+    }
+
     async fn list(&self, caller: &CallerContext) -> Result<Vec<DeployedService>, String> {
         self.list_impl(caller).await
     }
@@ -888,21 +1015,22 @@ impl ControlPlaneService {
             // this for an *owned* substrate's owner, same as the
             // `service_id` check above. Also the same accepted
             // TOCTOU gap: this read
-            // and the eventual `set_app_instance_owner` write in
-            // `install_app_context` are separated by the whole deploy body,
-            // so two concurrent *first* deploys claiming the same brand-new
-            // app instance id can both observe `app_instance_owner_of ==
-            // None` and race -- whichever write lands last wins. Same
-            // reasoning as the `service_id` note: this cannot defeat an
-            // *existing* owner's protection, only decide attribution on an
-            // app instance nobody owns yet). Without the check itself, the
-            // equality check above is not enough on its own: any caller
-            // authorized to deploy *some* service could still name an
-            // existing, unrelated app instance in its own `app_context` and
-            // overwrite the bindings that instance's other services
-            // resolve -- it would just have to also lie about which app
-            // instance its own service belongs to, which costs it nothing.
-            if let Some(existing) = self.registry.app_instance_owner_of(&ctx.app_instance_id)
+            // and the generation-gate persist just below are separated by
+            // the whole deploy body, so two concurrent *first* deploys
+            // claiming the same brand-new app instance id can both observe
+            // `app_instance_management_of == None` and race -- whichever
+            // write lands last wins. Same reasoning as the `service_id`
+            // note: this cannot defeat an *existing* owner's protection,
+            // only decide attribution on an app instance nobody owns yet).
+            // Without the check itself, the equality check above is not
+            // enough on its own: any caller authorized to deploy *some*
+            // service could still name an existing, unrelated app instance
+            // in its own `app_context` and overwrite the bindings that
+            // instance's other services resolve -- it would just have to
+            // also lie about which app instance its own service belongs
+            // to, which costs it nothing.
+            if let Some(existing) =
+                self.registry.app_instance_management_of(&ctx.app_instance_id).map(|m| m.owner_did)
                 && existing != caller.caller_did
                 && !self.has_node_wide_ability(caller, Ability::ORCHESTRATOR_DEPLOY)
             {
@@ -912,6 +1040,17 @@ impl ControlPlaneService {
                     ctx.app_instance_id
                 ));
             }
+
+            // ADR-0021 §4's generation gate (M05A A5a §0.18): persisted
+            // immediately, before binding validation or any artifact work,
+            // so a manager is recorded even if a later step in this deploy
+            // fails (§0.27) -- this write records *who is writing*, not
+            // what was installed.
+            let management = self.check_generation(&ctx.app_instance_id, caller, ctx.generation)?;
+            self.registry
+                .set_app_instance_management(ctx.app_instance_id.clone(), management)
+                .await
+                .map_err(|e| e.to_string())?;
 
             let mut bindings = Vec::with_capacity(ctx.bindings.len());
             for binding in &ctx.bindings {
@@ -1336,8 +1475,7 @@ impl ControlPlaneService {
         // that is about to fail, so nothing here can leave a binding
         // installed for a service that never actually started.
         if let Some(prepared) = &prepared_app_context
-            && let Err(e) =
-                self.install_app_context(&service_id, &caller.caller_did, prepared).await
+            && let Err(e) = self.install_app_context(&service_id, prepared).await
         {
             if let Err(undeploy_err) = self.undeploy(service_id.clone(), caller).await {
                 tracing::error!(
@@ -1561,11 +1699,105 @@ impl ControlPlaneService {
         // restart even though it kept resolving right up to that point.
         // That is `StaticInventory`'s memory-vs-storage split working as
         // designed (deferred-backlog.md), not a new gap this call opens.
+        let app_instance_id =
+            self.registry.app_context_of(&service_id).map(|(instance, _)| instance);
         if let Err(e) = self.registry.remove_app_context(&service_id).await {
             tracing::warn!("Failed to remove app context for service {}: {}", service_id, e);
         }
 
+        // M05A A5a §5.6: the standing backlog row `app_instance_owners`
+        // rows never get forgotten. Once no service on this node names the
+        // instance any more, its management row is dead weight and its id
+        // can never be reclaimed by another caller without this.
+        if let Some(instance_id) = app_instance_id
+            && self.registry.app_context_of_any(&instance_id).is_none()
+            && let Err(e) = self.registry.remove_app_instance_management(&instance_id).await
+        {
+            tracing::warn!("Failed to remove app instance management for {}: {}", instance_id, e);
+        }
+
         Ok(())
+    }
+
+    /// M05A A5a §0.26/§5.7: `adopt`'s read half. `Ok(None)` (not an error)
+    /// for a caller with no visibility into the instance -- indistinguish-
+    /// able from "no deploy has ever named this instance here", so a
+    /// caller with no grant cannot use this to probe for an instance's
+    /// existence (the same rule `status`'s `not-found` already follows,
+    /// A4-10).
+    async fn app_instance_management_of_impl(
+        &self,
+        app_instance_id: String,
+        caller: &CallerContext,
+    ) -> Result<Option<AppInstanceManagementWire>, String> {
+        let held = self.registry.app_instance_management_of(&app_instance_id);
+        if !self.has_node_wide_ability(caller, Ability::ORCHESTRATOR_STATUS)
+            && held.as_ref().is_none_or(|m| {
+                m.owner_did != caller.caller_did
+                    && m.supervisor_did.as_deref() != Some(caller.caller_did.as_str())
+            })
+        {
+            return Ok(None);
+        }
+        Ok(held.as_ref().map(management_to_wire))
+    }
+
+    /// M05A A5a §0.26/§5.7: `adopt`'s write half. Subject to the same
+    /// four-case rule as every other write, so a racing adopt loses here
+    /// rather than at whichever supervisor issues a deploy first. A claim
+    /// against an instance with no row at all creates one with
+    /// `owner_did = caller`, the same first-write-wins rule `deploy`
+    /// uses -- letting a supervisor adopt an instance before its first
+    /// deploy lands.
+    async fn claim_app_instance_impl(
+        &self,
+        app_instance_id: String,
+        generation: u64,
+        caller: &CallerContext,
+    ) -> Result<(), String> {
+        if !self.has_node_wide_ability(caller, Ability::ORCHESTRATOR_DEPLOY) {
+            return Err(format!(
+                "caller {} holds no node-wide orchestrator/deploy on this substrate; claiming an \
+                 app instance is node-scoped because the instance spans services",
+                caller.caller_did
+            ));
+        }
+        let management = self.check_generation(&app_instance_id, caller, generation)?;
+        self.registry
+            .set_app_instance_management(app_instance_id, management)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    /// M05A A5a §0.24/§5.6: clears an app instance's management stamp --
+    /// `supervisor_did` back to `None`, `generation` back to 0, keeping
+    /// `owner_did`. Gated node-wide (§0.28), not on an invented
+    /// `app-instance/<id>` selector: `covers_resource` matches over a
+    /// documented selector set with no such segment, and reusing
+    /// `app/<app_instance_id>` would put app-instance ids and service ids
+    /// in one namespace. The releasing writer must be the current manager
+    /// (or ahead of it), so a superseded supervisor cannot release the
+    /// instance out from under the live one.
+    async fn release_app_instance_impl(
+        &self,
+        app_instance_id: String,
+        generation: u64,
+        caller: &CallerContext,
+    ) -> Result<(), String> {
+        if !self.has_node_wide_ability(caller, Ability::ORCHESTRATOR_DEPLOY) {
+            return Err(format!(
+                "caller {} holds no node-wide orchestrator/deploy on this substrate; releasing an \
+                 app instance is node-scoped because the instance spans services",
+                caller.caller_did
+            ));
+        }
+        let mut management = self.check_generation(&app_instance_id, caller, generation)?;
+        management.supervisor_did = None;
+        management.generation = 0;
+        self.registry
+            .set_app_instance_management(app_instance_id, management)
+            .await
+            .map_err(|e| e.to_string())
     }
 
     async fn list_impl(&self, caller: &CallerContext) -> Result<Vec<DeployedService>, String> {
@@ -2525,6 +2757,11 @@ mod tests {
             app_instance_id: app_instance_id.to_string(),
             service_name: service_name.to_string(),
             bindings,
+            // Unmanaged (M05A A5a): every existing test here is an
+            // ordinary operator-style deploy, unaffected by the
+            // generation gate. Tests that need a specific generation
+            // override it with `AppContext { generation: N, ..app_context(...) }`.
+            generation: 0,
         }
     }
 
@@ -2813,6 +3050,322 @@ mod tests {
             )
             .await;
         assert!(result.is_ok(), "the app instance's own owner must be able to join it: {result:?}");
+    }
+
+    // ── M05A A5a: the generation stamp ───────────────────────────────────
+
+    /// Matrix row 9's substrate half: a write presenting a generation
+    /// below the held one is rejected, and the error names the held
+    /// generation -- the text A5b's supervisor parses to know it has been
+    /// superseded (ADR-0021 §4).
+    #[tokio::test]
+    async fn a_lower_generation_write_is_rejected_and_the_error_names_the_held_generation() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let alice = scoped_deploy_caller("did:key:zAlice", "frontend-svc");
+
+        service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(AppContext { generation: 5, ..app_context("app-1", "frontend", vec![]) }),
+                &alice,
+            )
+            .await
+            .unwrap();
+
+        let err = service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(app_context("app-1", "frontend", vec![])),
+                &alice,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("at generation 5"), "{err}");
+        assert!(err.contains("ADR-0021"), "{err}");
+    }
+
+    /// Matrix row 8: two writers both authorized on this substrate (both
+    /// node-wide here, so the pre-existing app-instance ownership check
+    /// does not itself reject the second one) presenting the *same*
+    /// generation is a two-writer conflict, not a tie.
+    #[tokio::test]
+    async fn a_second_writer_at_the_same_generation_is_rejected() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let alice = node_wide_caller("did:key:zAlice");
+        let bob = node_wide_caller("did:key:zBob");
+
+        service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(AppContext { generation: 3, ..app_context("app-1", "frontend", vec![]) }),
+                &alice,
+            )
+            .await
+            .unwrap();
+
+        let err = service
+            .deploy_with_context(
+                "worker-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(AppContext { generation: 3, ..app_context("app-1", "worker", vec![]) }),
+                &bob,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("second writer"), "{err}");
+    }
+
+    /// §0.18's regression guard: the bug that would have locked a
+    /// supervisor out of its own app on its first post-adopt reconcile.
+    /// The same caller, presenting the *same* generation it already holds
+    /// (not 0), must keep succeeding -- this is the supervisor's steady
+    /// state.
+    #[tokio::test]
+    async fn the_recorded_supervisor_may_write_repeatedly_at_its_own_generation() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let supervisor = node_wide_caller("did:key:zSupervisor");
+
+        service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(AppContext { generation: 7, ..app_context("app-1", "frontend", vec![]) }),
+                &supervisor,
+            )
+            .await
+            .unwrap();
+
+        let result = service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(AppContext { generation: 7, ..app_context("app-1", "frontend", vec![]) }),
+                &supervisor,
+            )
+            .await;
+        assert!(
+            result.is_ok(),
+            "the recorded supervisor must be able to redeploy at its own generation: {result:?}"
+        );
+    }
+
+    /// The A0-A4 compatibility property: an app instance nobody has ever
+    /// `adopt`ed keeps accepting its authorized writer's ordinary,
+    /// unmanaged (`generation: 0`) deploys, unaffected by the new gate.
+    #[tokio::test]
+    async fn an_unadopted_app_instance_accepts_any_authorized_writer() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let alice = scoped_deploy_caller("did:key:zAlice", "frontend-svc");
+
+        service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(app_context("app-1", "frontend", vec![])),
+                &alice,
+            )
+            .await
+            .unwrap();
+
+        // No `adopt`/`claim` ever ran -- every deploy still presents
+        // generation 0, the A0-A4 convention, and must keep succeeding.
+        let result = service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(app_context("app-1", "frontend", vec![])),
+                &alice,
+            )
+            .await;
+        assert!(
+            result.is_ok(),
+            "an unadopted instance must keep accepting its authorized writer: {result:?}"
+        );
+    }
+
+    /// §0.24: releasing an app instance clears its management stamp
+    /// (`supervisor_did`/`generation`, not `owner_did` -- release restores
+    /// manual operation, it does not transfer ownership), so a plain
+    /// operator deploy (presenting generation 0, since nothing manages the
+    /// instance any more) can touch it again. Without this an
+    /// adopted-then-released instance would be locked out forever. Uses a
+    /// node-wide caller for the post-release deploy since `owner_did`
+    /// still names the supervisor, not this operator -- the same bypass
+    /// the pre-existing ownership check already grants a substrate owner.
+    #[tokio::test]
+    async fn releasing_an_app_instance_lets_a_plain_deploy_touch_it_again() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let supervisor = node_wide_caller("did:key:zSupervisor");
+
+        service.claim_app_instance("app-1".to_string(), 1, &supervisor).await.unwrap();
+        service.release_app_instance("app-1".to_string(), 1, &supervisor).await.unwrap();
+
+        let operator = node_wide_caller("did:key:zOperator");
+        let result = service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(app_context("app-1", "frontend", vec![])),
+                &operator,
+            )
+            .await;
+        assert!(result.is_ok(), "a released instance must accept a plain deploy again: {result:?}");
+    }
+
+    /// The other half of the backlog row `release-app-instance` was built
+    /// to close: undeploying the last service naming an app instance must
+    /// forget its management row, or the instance id can never be
+    /// reclaimed by another caller.
+    #[tokio::test]
+    async fn undeploying_the_last_service_of_an_instance_forgets_its_management_row() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let caller = node_wide_caller("did:key:zAlice");
+
+        service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(app_context("app-1", "frontend", vec![])),
+                &caller,
+            )
+            .await
+            .unwrap();
+        assert!(service.registry.app_instance_management_of("app-1").is_some());
+
+        service.undeploy("frontend-svc".to_string(), &caller).await.unwrap();
+
+        assert!(
+            service.registry.app_instance_management_of("app-1").is_none(),
+            "the last service's undeploy must forget the app instance's management row"
+        );
+    }
+
+    /// §0.26: `adopt`'s read half must report the held generation to the
+    /// instance's own owner -- otherwise a supervisor cannot compute
+    /// `held + 1`.
+    #[tokio::test]
+    async fn app_instance_management_of_reports_the_held_generation_to_the_owner() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let alice = scoped_deploy_caller("did:key:zAlice", "frontend-svc");
+
+        service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(AppContext { generation: 4, ..app_context("app-1", "frontend", vec![]) }),
+                &alice,
+            )
+            .await
+            .unwrap();
+
+        let management = service
+            .app_instance_management_of("app-1".to_string(), &alice)
+            .await
+            .unwrap()
+            .expect("the owner must see its own instance's management stamp");
+        assert_eq!(management.generation, 4);
+        assert_eq!(management.owner_did, "did:key:zAlice");
+        assert_eq!(management.supervisor_did.as_deref(), Some("did:key:zAlice"));
+    }
+
+    /// A4-10's rule, applied here too (§0.26): a caller with no visibility
+    /// into the instance gets `Ok(None)`, indistinguishable from "never
+    /// deployed here", not an error -- so it cannot be used to probe for
+    /// the instance's existence.
+    #[tokio::test]
+    async fn app_instance_management_of_returns_none_to_a_caller_with_no_grant() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let alice = scoped_deploy_caller("did:key:zAlice", "frontend-svc");
+
+        service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(app_context("app-1", "frontend", vec![])),
+                &alice,
+            )
+            .await
+            .unwrap();
+
+        let mallory = scoped_deploy_caller("did:key:zMallory", "some-other-svc");
+        let result =
+            service.app_instance_management_of("app-1".to_string(), &mallory).await.unwrap();
+        assert!(
+            result.is_none(),
+            "a caller with no visibility into the instance must not learn it exists, not even as \
+             an error"
+        );
+    }
+
+    /// §0.26: the property that makes `adopt` durable at the moment of the
+    /// claim, not on whatever write happens next -- a bare claim, with no
+    /// deploy at all, must be readable back and must not have installed
+    /// anything else.
+    #[tokio::test]
+    async fn claim_app_instance_records_the_generation_without_any_other_write() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let supervisor = node_wide_caller("did:key:zSupervisor");
+
+        service.claim_app_instance("app-1".to_string(), 1, &supervisor).await.unwrap();
+
+        let management = service
+            .app_instance_management_of("app-1".to_string(), &supervisor)
+            .await
+            .unwrap()
+            .expect("the claim must have created a management row");
+        assert_eq!(management.generation, 1);
+        assert_eq!(management.supervisor_did.as_deref(), Some("did:key:zSupervisor"));
+        assert!(
+            service.registry.app_context_of_any("app-1").is_none(),
+            "a bare claim must not install a service or an app context"
+        );
+    }
+
+    /// Two supervisors racing an `adopt` must lose deterministically at
+    /// the substrate, at the moment of the claim -- not discover it only
+    /// once one of them happens to issue a deploy.
+    #[tokio::test]
+    async fn a_second_claim_at_the_same_generation_is_rejected() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let supervisor_a = node_wide_caller("did:key:zSupervisorA");
+        let supervisor_b = node_wide_caller("did:key:zSupervisorB");
+
+        service.claim_app_instance("app-1".to_string(), 1, &supervisor_a).await.unwrap();
+
+        let err =
+            service.claim_app_instance("app-1".to_string(), 1, &supervisor_b).await.unwrap_err();
+        assert!(err.contains("second writer"), "{err}");
+    }
+
+    /// §0.28: `claim`/`release` are node-scoped acts (an app instance
+    /// spans services), so an app-scoped `orchestrator/deploy` grant --
+    /// enough to deploy one service -- must not be enough for either.
+    #[tokio::test]
+    async fn claim_and_release_are_rejected_without_node_wide_orchestrator_deploy() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let scoped = scoped_deploy_caller("did:key:zAlice", "frontend-svc");
+
+        let claim_err =
+            service.claim_app_instance("app-1".to_string(), 1, &scoped).await.unwrap_err();
+        assert!(claim_err.contains("node-wide"), "{claim_err}");
+
+        let release_err =
+            service.release_app_instance("app-1".to_string(), 1, &scoped).await.unwrap_err();
+        assert!(release_err.contains("node-wide"), "{release_err}");
     }
 
     /// Finding 04 (post-review fix): the app-context/binding write is
@@ -3845,15 +4398,20 @@ mod tests {
                 .save_binding(service_id, app_instance_id, dependency_name, topology_entry_json)
                 .await
         }
-        async fn load_all_app_instance_owners(&self) -> Result<Vec<(String, String)>> {
-            self.inner.load_all_app_instance_owners().await
+        async fn load_all_app_instance_management(
+            &self,
+        ) -> Result<Vec<(String, AppInstanceManagement)>> {
+            self.inner.load_all_app_instance_management().await
         }
-        async fn save_app_instance_owner(
+        async fn save_app_instance_management(
             &self,
             app_instance_id: &str,
-            owner_did: &str,
+            management: &AppInstanceManagement,
         ) -> Result<()> {
-            self.inner.save_app_instance_owner(app_instance_id, owner_did).await
+            self.inner.save_app_instance_management(app_instance_id, management).await
+        }
+        async fn remove_app_instance_management(&self, app_instance_id: &str) -> Result<()> {
+            self.inner.remove_app_instance_management(app_instance_id).await
         }
     }
 

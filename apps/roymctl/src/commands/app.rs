@@ -605,6 +605,11 @@ pub async fn handle(
                     instance_certificates: &instance_certs,
                     registry_certificates: &registry_certs,
                     emit_bindings: *mint_masters,
+                    // Unmanaged (M05A A5a): `roymctl app deploy` is the
+                    // operator path; a supervisor's own `submit` presents
+                    // whatever `adopt` minted, and does not go through
+                    // this command.
+                    generation: 0,
                 },
                 &journal,
                 record_id,

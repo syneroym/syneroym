@@ -68,6 +68,10 @@ pub struct ApplyRequest<'a> {
     pub instance_certificates: &'a BTreeMap<ServiceId, String>,
     pub registry_certificates: &'a BTreeMap<ServiceId, String>,
     pub emit_bindings: bool,
+    /// The generation this apply writes at (ADR-0021 §4, M05A A5a). `0`
+    /// for every caller through A5a -- the supervisor that presents a
+    /// real, `adopt`-minted generation does not exist yet.
+    pub generation: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -202,6 +206,7 @@ pub async fn apply_plan(
             req.instance_certificates,
             req.registry_certificates,
             req.emit_bindings,
+            req.generation,
         ) {
             Err(e) => Err(e.to_string()),
             Ok(wit_plan) => target.applier.apply(wit_plan).await,
@@ -462,6 +467,7 @@ mod tests {
                 instance_certificates: &BTreeMap::new(),
                 registry_certificates: &BTreeMap::new(),
                 emit_bindings: false,
+                generation: 0,
             },
             &journal,
             deployment_id,
@@ -495,6 +501,7 @@ mod tests {
                 instance_certificates: &BTreeMap::new(),
                 registry_certificates: &BTreeMap::new(),
                 emit_bindings: false,
+                generation: 0,
             },
             &journal,
             deployment_id,
@@ -529,6 +536,7 @@ mod tests {
                 instance_certificates: &BTreeMap::new(),
                 registry_certificates: &BTreeMap::new(),
                 emit_bindings: false,
+                generation: 0,
             },
             &journal,
             deployment_id,
@@ -572,6 +580,7 @@ mod tests {
                 instance_certificates: &BTreeMap::new(),
                 registry_certificates: &BTreeMap::new(),
                 emit_bindings: false,
+                generation: 0,
             },
             &journal,
             deployment_id,
@@ -618,6 +627,7 @@ mod tests {
                 instance_certificates: &BTreeMap::new(),
                 registry_certificates: &BTreeMap::new(),
                 emit_bindings: false,
+                generation: 0,
             },
             &journal,
             deployment_id,
@@ -679,6 +689,7 @@ mod tests {
                 instance_certificates: &BTreeMap::new(),
                 registry_certificates: &BTreeMap::new(),
                 emit_bindings: false,
+                generation: 0,
             },
             &journal,
             deployment_id,
@@ -721,6 +732,7 @@ mod tests {
                 instance_certificates: &BTreeMap::new(),
                 registry_certificates: &BTreeMap::new(),
                 emit_bindings: false,
+                generation: 0,
             },
             &journal,
             deployment_id,
