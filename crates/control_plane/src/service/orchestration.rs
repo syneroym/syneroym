@@ -1685,6 +1685,17 @@ impl ControlPlaneService {
         let visible_by_id: HashMap<&str, &DeployedService> =
             visible.iter().map(|d| (d.service_id.as_str(), d)).collect();
 
+        // A4-09 (post-review): a duplicate id in a caller-supplied list is
+        // otherwise a target twice over -- A4-05's `join_all` runs both
+        // concurrently, so they race the same cache-miss window `probe_cached`
+        // has no single-flight for, bypassing the cache entirely rather than
+        // the second occurrence reading the first's fresh entry. Deduped
+        // here, before the partition, so the raw (pre-dedup) length is still
+        // what `MAX_STATUS_SERVICE_IDS` bounds above.
+        let mut seen_ids = BTreeSet::new();
+        let service_ids: Vec<String> =
+            service_ids.into_iter().filter(|id| seen_ids.insert(id.clone())).collect();
+
         let (targets, named_missing): (Vec<String>, Vec<String>) = if service_ids.is_empty() {
             (visible.iter().map(|d| d.service_id.clone()).collect(), Vec::new())
         } else {
@@ -5692,6 +5703,35 @@ mod tests {
             (0..=MAX_STATUS_SERVICE_IDS).map(|i| format!("svc-{i}")).collect();
         let err = service.status(too_many, &status_capable_caller("owner")).await.unwrap_err();
         assert!(err.contains("over the"), "{err}");
+    }
+
+    /// A4-09 (post-review): a duplicate id in one `service_ids` list used to
+    /// be a target twice over, racing itself inside the same `join_all`
+    /// (A4-05) and bypassing `probe_cached`'s cache entirely -- confirmed
+    /// empirically before this fix (8 copies of one id produced 8 concurrent
+    /// probes). One entry per distinct id now, regardless of how many times
+    /// the caller names it.
+    #[tokio::test]
+    async fn status_deduplicates_repeated_service_ids_before_probing() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let owner = status_capable_caller("owner");
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let manifest = tcp_manifest_with(
+            port,
+            Some(WitHealthCheck::TcpConnect(WitTcpProbe {
+                interface_name: "main".to_string(),
+                timeout_ms: 2000,
+            })),
+        );
+        service.deploy("dup-svc".to_string(), manifest, &owner).await.unwrap();
+
+        let repeated = vec!["dup-svc".to_string(); 8];
+        let status = service.status(repeated, &owner).await.unwrap();
+        assert_eq!(status.services.len(), 1, "{:?}", status.services);
+        assert!(matches!(status.services[0].probe, ProbeStatus::Passing));
     }
 
     #[tokio::test]
