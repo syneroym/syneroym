@@ -110,14 +110,10 @@ pub enum SvcCommands {
     },
     /// List installed `SynSvcs` via API
     List,
-    /// Start an installed `SynSvc` via API (warm up)
-    Start {
-        #[arg(long)]
-        svc_id: String,
-    },
-
-    /// Stop a running `SynSvc` via API (evict from cache)
-    Stop {
+    /// Restart a deployed `SynSvc` in place, without reinstalling it (M05A
+    /// A5a). Replaces the pre-A5a `start`/`stop` pair, which called
+    /// orchestrator methods that never existed.
+    Restart {
         #[arg(long)]
         svc_id: String,
     },
@@ -302,7 +298,9 @@ pub async fn handle(
             }
         }
         SvcCommands::Remove { svc_id } => {
-            client.undeploy(svc_id.clone()).await?;
+            // Unmanaged (M05A A5a): an operator-driven `svc remove` always
+            // presents generation 0, the same convention `svc deploy` uses.
+            client.undeploy(svc_id.clone(), 0).await?;
             println!("Successfully removed svc {svc_id}");
         }
         SvcCommands::List => {
@@ -323,17 +321,12 @@ pub async fn handle(
                 );
             }
         }
-        SvcCommands::Start { svc_id } => {
-            client
-                .request("orchestrator", "start", serde_json::json!({ "service_id": svc_id }))
-                .await?;
-            println!("Successfully started svc {svc_id}");
-        }
-        SvcCommands::Stop { svc_id } => {
-            client
-                .request("orchestrator", "stop", serde_json::json!({ "service_id": svc_id }))
-                .await?;
-            println!("Successfully stopped svc {svc_id}");
+        SvcCommands::Restart { svc_id } => {
+            // Unmanaged (M05A A5a): an operator-driven `svc restart`
+            // always presents generation 0, the same convention `svc
+            // deploy`/`svc remove` use.
+            client.restart(svc_id.clone(), 0).await?;
+            println!("Successfully restarted svc {svc_id}");
         }
     }
     Ok(())

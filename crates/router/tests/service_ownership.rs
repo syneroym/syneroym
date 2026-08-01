@@ -32,7 +32,7 @@ use syneroym_core::{
     config::SubstrateConfig,
     http_routes::HttpRouteRegistry,
     local_registry::{EndpointRegistry, SubstrateEndpoint},
-    storage::{EndpointStorage, MockStorage},
+    storage::{AppInstanceManagement, EndpointStorage, MockStorage},
 };
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
 use syneroym_data_db::SqliteStorageProvider;
@@ -182,7 +182,9 @@ impl EndpointStorage for RemoveOwnerFailingStorage {
     async fn remove_cert(&self, service_id: &str) -> anyhow::Result<()> {
         self.inner.remove_cert(service_id).await
     }
-    async fn load_all_deploy_facts(&self) -> anyhow::Result<Vec<(String, String, Option<String>)>> {
+    async fn load_all_deploy_facts(
+        &self,
+    ) -> anyhow::Result<Vec<(String, String, Option<String>, Option<String>)>> {
         self.inner.load_all_deploy_facts().await
     }
     async fn save_deploy_facts(
@@ -190,8 +192,11 @@ impl EndpointStorage for RemoveOwnerFailingStorage {
         service_id: &str,
         service_type: &str,
         health_check_json: Option<&str>,
+        manifest_hash: Option<&str>,
     ) -> anyhow::Result<()> {
-        self.inner.save_deploy_facts(service_id, service_type, health_check_json).await
+        self.inner
+            .save_deploy_facts(service_id, service_type, health_check_json, manifest_hash)
+            .await
     }
     async fn remove_deploy_facts(&self, service_id: &str) -> anyhow::Result<()> {
         self.inner.remove_deploy_facts(service_id).await
@@ -224,15 +229,30 @@ impl EndpointStorage for RemoveOwnerFailingStorage {
             .save_binding(service_id, app_instance_id, dependency_name, topology_entry_json)
             .await
     }
-    async fn load_all_app_instance_owners(&self) -> anyhow::Result<Vec<(String, String)>> {
-        self.inner.load_all_app_instance_owners().await
+    async fn load_binding(
+        &self,
+        service_id: &str,
+        dependency_name: &str,
+    ) -> anyhow::Result<Option<String>> {
+        self.inner.load_binding(service_id, dependency_name).await
     }
-    async fn save_app_instance_owner(
+    async fn load_bindings_for(&self, service_id: &str) -> anyhow::Result<Vec<(String, String)>> {
+        self.inner.load_bindings_for(service_id).await
+    }
+    async fn load_all_app_instance_management(
+        &self,
+    ) -> anyhow::Result<Vec<(String, AppInstanceManagement)>> {
+        self.inner.load_all_app_instance_management().await
+    }
+    async fn save_app_instance_management(
         &self,
         app_instance_id: &str,
-        owner_did: &str,
+        management: &AppInstanceManagement,
     ) -> anyhow::Result<()> {
-        self.inner.save_app_instance_owner(app_instance_id, owner_did).await
+        self.inner.save_app_instance_management(app_instance_id, management).await
+    }
+    async fn remove_app_instance_management(&self, app_instance_id: &str) -> anyhow::Result<()> {
+        self.inner.remove_app_instance_management(app_instance_id).await
     }
 }
 
@@ -344,7 +364,7 @@ async fn undeploy_result(
     let invocation = NativeInvocation {
         interface: "orchestrator".to_string(),
         method: "undeploy".to_string(),
-        params: json!((service_id,)),
+        params: json!((service_id, 0u64)),
         caller: caller.clone(),
     };
     service.dispatch(invocation).await

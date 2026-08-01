@@ -1053,7 +1053,9 @@ Trait method on `OrchestratorInterface` (after `status`):
     ) -> Result<Vec<BindingWriteOutcome>, String>;
 ```
 
-Implementation, `write_bindings_impl`:
+Implementation, `write_bindings_impl` (**corrected post-review** against a
+first draft that had the persist at the end of the function and no
+app-instance owner check — see the notes after the block):
 
 ```text
 # ---- authorization ------------------------------------------------------
@@ -1074,13 +1076,31 @@ match registry.app_context_of(&write.service_id):
         Err("'<id>' belongs to app instance '<instance>', not '<sent>'")
     Some(_)   -> ()
 
-# ---- generation gate (§5.4) --------------------------------------------
-management = check_generation(&write.app_instance_id, caller, write.generation)?
+# The same app-instance-owner gate `deploy_with_context` applies (its own
+# `existing != caller.caller_did` check). The app-context match above
+# proves `write.service_id` belongs to `write.app_instance_id`; it does
+# not prove the caller may manage that instance as a whole -- an
+# app-scoped grant on one service is not authority over every service the
+# instance's shared resolver entry affects.
+if let Some(existing) = registry.app_instance_management_of(&write.app_instance_id).map(owner_did)
+   && existing != caller.caller_did
+   && !has_node_wide_ability(caller, ORCHESTRATOR_DEPLOY):
+    return Err("app instance '<id>' is owned by <existing>; a binding write
+                into it must come from its owner or a substrate owner")
 
-# ---- per-binding, in order ---------------------------------------------
-outcomes = []
+# ---- generation gate (§5.4), persisted immediately -----------------------
+# D-A5-23: before any binding is examined, not after the loop -- the same
+# rule every other gate site follows. A validation refusal below must not
+# leave the accepting generation unrecorded.
+management = check_generation(&write.app_instance_id, caller, write.generation)?
+registry.set_app_instance_management(write.app_instance_id, management).await?
+
+# ---- validate every binding before applying any of it --------------------
+# `prepare_binding` and the `binding_of` existence check are both pure
+# reads, so the whole list is checked up front -- a refusal partway
+# through must not leave earlier bindings in the same call applied.
+prepared = []
 for b in write.bindings:
-    # Shared with the deploy path so the two cannot validate differently.
     (dependency_name, entry) = prepare_binding(b, &write.app_instance_id)?
 
     # Update-only: a push may not introduce a dependency the guest never
@@ -1093,8 +1113,14 @@ for b in write.bindings:
 
     held = parse::<TopologyEntry>(held_json)
     outcome = classify_binding_write(Some(&held), &entry)
+    prepared.push((b, dependency_name, entry, outcome))
 
+# ---- apply, in order ------------------------------------------------------
+outcomes = []
+any_applied = false
+for (b, dependency_name, entry, outcome) in prepared:
     if outcome == Applied:
+        any_applied = true
         registry.save_binding(&write.service_id, &write.app_instance_id,
                               &b.dependency_name, &to_json(&entry)).await?
         logical_resolver.register(instance_id, dependency_name, entry)
@@ -1105,9 +1131,25 @@ for b in write.bindings:
     # hot path.
     outcomes.push(outcome)
 
-registry.set_app_instance_management(write.app_instance_id, management).await?
+# §4A's dedup key hashes what a deploy *sends*, not what is currently
+# installed, so it cannot see a push that happened since the last deploy.
+# Clear it so a repair redeploy of identical content takes the full
+# reinstall path instead of matching the stale hash.
+if any_applied:
+    if let Some((service_type, health_check_json, _)) = registry.deploy_facts(&write.service_id):
+        registry.set_deploy_facts(write.service_id, service_type, health_check_json, None).await?
+
 return Ok(outcomes)
 ```
+
+Corrected after A5a's own post-implementation review, against this
+document's first draft: the persist used to sit after the per-binding
+loop (contradicting §5.4/D-A5-23, which the shipped code follows), the
+loop applied each binding as it validated it rather than validating the
+whole list first, there was no app-instance owner check at all, and there
+was no dedup-hash invalidation. The block above is what shipped, not what
+was originally drafted here — keep it that way if this section is edited
+again.
 
 **Extract `prepare_binding`** from `deploy_with_context`'s inline loop
 ([orchestration.rs:916-943](../../../../crates/control_plane/src/service/orchestration.rs#L916)):
@@ -1539,16 +1581,38 @@ Replace `app_instance_owner_of` / `set_app_instance_owner` with
     ) -> Result<AppInstanceManagement, String>;
 ```
 
-Rule table — the returned value is what the caller then persists:
+Rule table — the returned value is what the caller then persists.
+**Corrected post-review**: the first two rows below originally read `no
+row | any` and `supervisor_did: None | any`, both unconditionally
+claiming supervision. That literal reading is what A5a first shipped, and
+it broke the doc comment's own "unadopted instance accepts any authorized
+writer" property the moment an app instance had *any* prior write — an
+app instance's first-ever deploy (presenting `generation: 0`, the A0-A4
+convention) stamped itself in as supervisor, locking out every later
+un-adopted writer, including a node-wide caller redeploying over a
+different owner. Split on `presented == 0` below to fix it: 0 means
+unmanaged (the WIT `app-context.generation` doc), so it must never claim
+supervision, regardless of what row is held.
 
 | Held | Presented | Result |
 |---|---|---|
-| no row | any | `Ok` — record `(owner=caller, supervisor=caller, generation=presented)` |
-| `supervisor_did: None` | any | `Ok` — record `supervisor=caller, generation=presented` |
+| no row | `0` | `Ok` — record `(owner=caller, supervisor=None, generation=0)` |
+| no row | `> 0` | `Ok` — record `(owner=caller, supervisor=caller, generation=presented)` |
+| `supervisor_did: None` | `0` | `Ok` — no change (the row is returned as held) |
+| `supervisor_did: None` | `> 0` | `Ok` — record `supervisor=caller, generation=presented` |
 | `generation = g` | `> g` | `Ok` — record `supervisor=caller, generation=presented`. **This is what makes `adopt` land.** |
 | `generation = g`, `supervisor = caller` | `== g` | `Ok` — no change. **This is the supervisor's steady state** (§0.18) |
 | `generation = g`, `supervisor ≠ caller` | `== g` | `Err` — two supervisors at one generation (matrix row 8) |
 | `generation = g` | `< g` | `Err`, **and the message names `g`** (matrix row 9) |
+
+One consequence worth stating explicitly rather than leaving implicit:
+`write_bindings_impl` gained its own app-instance owner check in the same
+review round (§3.3), because the pre-correction table's bug had been
+accidentally standing in for one — a non-owner used to be rejected here
+as "a second writer at the same generation" before ever reaching a real
+authorization gate. Fixing this table without that addition would have
+left `write_bindings` reachable by any authorized writer of any service
+in an app instance it does not own.
 
 The last row's error text is load-bearing, not cosmetic — A5b parses it:
 
@@ -1642,23 +1706,47 @@ if !self.has_node_wide_ability(caller, ORCHESTRATOR_STATUS)
 return Ok(held)
 ```
 
-The write:
+The write (**corrected post-review**: the explicit `supervisor_did`/
+`generation` assignment below this document originally specified is gone
+— see the note after the block):
 
 ```text
 if !self.has_node_wide_ability(caller, Ability::ORCHESTRATOR_DEPLOY):
     return Err(...)                                    # §0.28's gate
 
+# Generation 0 means unmanaged (the WIT `app-context.generation` doc);
+# claiming *at* 0 is a contradiction, not a request the gate below can
+# make sense of, so it is refused outright rather than persisting a row
+# with no supervisor recorded while still reporting success.
+if generation == 0:
+    return Err("app instance '<id>' cannot be claimed at generation 0; 0
+                means unmanaged, so a claim must present a generation of
+                1 or higher")
+
 # Same four-case rule as every other write, so a racing adopt loses here
 # rather than at whichever supervisor issues a deploy first.
 management = check_generation(&app_instance_id, caller, generation)?
-management.supervisor_did = Some(caller.caller_did.clone())
-management.generation = generation
 registry.set_app_instance_management(app_instance_id, management).await
 ```
 
 A `claim` against an instance with **no row at all** creates one with
 `owner_did = caller`, the same first-write-wins rule `deploy` uses. That is
 what lets a supervisor adopt an instance before its first deploy lands.
+
+Corrected after A5a's own post-implementation review: this document
+originally had the write set `management.supervisor_did = Some(caller.
+caller_did.clone())` and `management.generation = generation` explicitly
+after `check_generation`, mirroring `release_app_instance_impl`'s own
+explicit override. That was superseded when `check_generation` was fixed
+to never claim supervision at `presented == 0` (§5.4's rule table said
+"no row → any → record supervisor=caller", which is what this document's
+draft literally implemented, and which contradicted the WIT `app-context.
+generation` doc's "0 means unmanaged" on the instance's very first write).
+Restoring the explicit override here would have let `claim(id, 0)`
+"work" by writing a supervisor at the generation that means unmanaged --
+so the write now refuses `generation == 0` and otherwise persists
+whatever `check_generation` returns, unmodified, the same way every other
+gate site does.
 
 ## §6 — Phase 4: binding state on `service-status`
 

@@ -10,8 +10,8 @@ use anyhow::Context;
 use clap::Subcommand;
 use semver::Version;
 use syneroym_app_orchestration::{
-    ActionRecord, ActionState, AlertStore, AppInstanceId, DeploymentJournal, DeploymentState,
-    LocalFilesystemCatalog, Reconciler, SynAppManifest, compile,
+    ActionRecord, ActionState, AlertStore, AppInstanceId, DeploymentJournal, DeploymentPlan,
+    DeploymentState, LocalFilesystemCatalog, Reconciler, SynAppManifest, compile,
     models::{
         AppBlueprintId, LogicalServiceName, LogicalServiceRef, PlannedService, ServiceConfig,
         ServiceSpec, ServiceType, SubstrateAlias,
@@ -21,7 +21,7 @@ use syneroym_app_orchestration::{
 use syneroym_core::dht_registry::RegistryClient;
 use syneroym_sdk::{
     SubstrateStatus, SyneroymClient,
-    deploy::{self, ApplyRequest, DeployTarget, PlanApplier},
+    deploy::{self, ApplyRequest, DeployTarget, SubstrateActor},
     health,
 };
 
@@ -321,6 +321,36 @@ fn check_no_placement_change(
     Ok(())
 }
 
+/// M05A A5a §4.5: the standing backlog row "`app deploy` without
+/// --mint-masters binds nothing" names its own fix -- a manifest declaring
+/// dependencies should have no unmastered deploy path at all. A warning at
+/// deploy time and a runtime failure at the guest's first `dependency(...)`
+/// call was the worst split available: the operator sees the consequence
+/// far from the cause. A manifest with no dependencies is unaffected -- an
+/// unmastered deploy of an independent service stays valid, which `svc
+/// deploy` and every pre-A0 manifest rely on.
+///
+/// Pulled out of `handle` so it is unit-testable with no live substrate,
+/// the same reason `check_no_placement_change` is its own function.
+fn refuse_unmastered_dependencies(plan: &DeploymentPlan, mint_masters: bool) -> anyhow::Result<()> {
+    if mint_masters || !plan.services.iter().any(|s| !s.resolved_dependencies.is_empty()) {
+        return Ok(());
+    }
+    let names: BTreeSet<&str> = plan
+        .services
+        .iter()
+        .flat_map(|s| s.resolved_dependencies.keys())
+        .map(LogicalServiceName::as_str)
+        .collect();
+    let names = names.into_iter().collect::<Vec<_>>().join(", ");
+    anyhow::bail!(
+        "this manifest declares dependencies ({names}), and without --mint-masters they cannot be \
+         bound: the plan carries the compiler's fabricated ids, not real member masters, so a \
+         guest calling one by name gets `dependency-not-bound` at runtime. Re-run with \
+         --mint-masters."
+    );
+}
+
 pub async fn handle(
     command: &AppCommands,
     api_url: &str,
@@ -521,7 +551,7 @@ pub async fn handle(
             let fallback_target = fallback_client.as_ref().map(|fb| DeployTarget {
                 alias: None,
                 substrate_did: fb.service_id().to_string(),
-                applier: fb.clone() as Arc<dyn PlanApplier>,
+                actor: fb.clone() as Arc<dyn SubstrateActor>,
             });
 
             let targets: BTreeMap<SubstrateAlias, DeployTarget> = clients
@@ -532,7 +562,7 @@ pub async fn handle(
                         DeployTarget {
                             alias: Some(alias.clone()),
                             substrate_did: c.service_id().to_string(),
-                            applier: c.clone() as Arc<dyn PlanApplier>,
+                            actor: c.clone() as Arc<dyn SubstrateActor>,
                         },
                     )
                 })
@@ -565,15 +595,7 @@ pub async fn handle(
                 (target_plan.clone(), BTreeMap::new(), BTreeMap::new())
             };
 
-            if !*mint_masters
-                && deploy_plan.services.iter().any(|s| !s.resolved_dependencies.is_empty())
-            {
-                eprintln!(
-                    "warning: deploying without --mint-masters, so declared dependencies are not \
-                     bound. A guest calling one by name gets `dependency-not-bound` until the app \
-                     is redeployed with --mint-masters."
-                );
-            }
+            refuse_unmastered_dependencies(&deploy_plan, *mint_masters)?;
 
             // ================================================================
             // Past this point nothing bails before the journal is consistent.
@@ -605,6 +627,11 @@ pub async fn handle(
                     instance_certificates: &instance_certs,
                     registry_certificates: &registry_certs,
                     emit_bindings: *mint_masters,
+                    // Unmanaged (M05A A5a): `roymctl app deploy` is the
+                    // operator path; a supervisor's own `submit` presents
+                    // whatever `adopt` minted, and does not go through
+                    // this command.
+                    generation: 0,
                 },
                 &journal,
                 record_id,
@@ -1004,12 +1031,9 @@ fn print_health_table(report: &health::HealthReport) {
 #[cfg(test)]
 mod tests {
     use clap::{CommandFactory, Parser};
-    use syneroym_app_orchestration::{
-        DeploymentPlan,
-        models::{ServiceId, TopologyMode},
-    };
+    use syneroym_app_orchestration::models::{ServiceId, TopologyMode};
     use syneroym_identity::substrate;
-    use syneroym_sdk::DeploymentPlan as WitDeploymentPlan;
+    use syneroym_sdk::{BindingWrite, BindingWriteOutcome, DeploymentPlan as WitDeploymentPlan};
 
     use super::*;
 
@@ -1229,16 +1253,27 @@ mod tests {
         assert!(err.to_string().contains("edge-1"), "{err}");
     }
 
-    // The placement-change refusal never calls `.apply()` -- it only reads
+    // The placement-change refusal never calls the actor -- it only reads
     // `DeployTarget`'s own fields -- so a fake that panics if ever invoked is
     // enough to keep these tests free of any live substrate.
     #[derive(Debug)]
     struct NoopApplier;
 
     #[async_trait::async_trait]
-    impl PlanApplier for NoopApplier {
-        async fn apply(&self, _plan: WitDeploymentPlan) -> Result<(), String> {
-            unimplemented!("check_no_placement_change must never call apply()")
+    impl SubstrateActor for NoopApplier {
+        async fn apply_plan(&self, _plan: WitDeploymentPlan) -> Result<(), String> {
+            unimplemented!("check_no_placement_change must never call apply_plan()")
+        }
+
+        async fn write_bindings(
+            &self,
+            _write: BindingWrite,
+        ) -> Result<Vec<BindingWriteOutcome>, String> {
+            unimplemented!("check_no_placement_change must never call write_bindings()")
+        }
+
+        async fn restart(&self, _service_id: String, _generation: u64) -> Result<(), String> {
+            unimplemented!("check_no_placement_change must never call restart()")
         }
     }
 
@@ -1278,7 +1313,7 @@ mod tests {
         DeployTarget {
             alias: Some(SubstrateAlias::new(alias)),
             substrate_did: did.to_string(),
-            applier: Arc::new(NoopApplier),
+            actor: Arc::new(NoopApplier),
         }
     }
 
@@ -1527,5 +1562,47 @@ mod tests {
         .await
         .unwrap_err();
         assert!(err.to_string().contains("nothing to forget"), "{err}");
+    }
+
+    // ── M05A A5a §4.5: unmastered deploy refused when deps are declared ──
+
+    /// A manifest declaring a dependency has no unmastered deploy path --
+    /// the plan carries the compiler's fabricated ids, which resolve to no
+    /// real key, so binding it would only push the failure from deploy
+    /// time to the guest's first `dependency(...)` call.
+    #[test]
+    fn a_manifest_declaring_depends_on_is_refused_without_mint_masters() {
+        let instance_id = AppInstanceId::new("inst-1");
+        let logical_ref = LogicalServiceRef {
+            app_instance_id: instance_id.clone(),
+            service_name: LogicalServiceName::new("frontend"),
+        };
+        let mut svc = planned_service(logical_ref, "did:key:hFabricated", "edge-1");
+        svc.resolved_dependencies.insert(
+            LogicalServiceName::new("backend"),
+            vec![ServiceId::new("did:key:hBackendFabricated")],
+        );
+        let plan = dummy_deployment_plan(&instance_id, svc);
+
+        let err = refuse_unmastered_dependencies(&plan, false).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("backend"), "{msg}");
+        assert!(msg.contains("--mint-masters"), "{msg}");
+    }
+
+    /// The boundary: an unmastered deploy of an independent service (no
+    /// declared dependencies) stays valid -- `svc deploy` and every
+    /// pre-A0 manifest rely on this.
+    #[test]
+    fn a_manifest_with_no_dependencies_still_deploys_without_mint_masters() {
+        let instance_id = AppInstanceId::new("inst-1");
+        let logical_ref = LogicalServiceRef {
+            app_instance_id: instance_id.clone(),
+            service_name: LogicalServiceName::new("frontend"),
+        };
+        let svc = planned_service(logical_ref, "did:key:hFabricated", "edge-1");
+        let plan = dummy_deployment_plan(&instance_id, svc);
+
+        assert!(refuse_unmastered_dependencies(&plan, false).is_ok());
     }
 }

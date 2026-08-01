@@ -30,7 +30,7 @@ use syneroym_rpc::{
     ServiceProxy, WeakNativeDispatchRegistry, empty_row_authorizer,
 };
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
-    DeployManifest, DeploymentPlan, ProbeStatus,
+    BindingWrite, DeployManifest, DeploymentPlan, ProbeStatus,
 };
 use tracing::info;
 
@@ -434,6 +434,21 @@ impl NativeService for ControlPlaneService {
                     .map_err(RpcError::InternalError)?;
                 Ok(NativeResponse { payload: serde_json::json!({"status": "deployed"}) })
             }
+            "write-bindings" => {
+                let (write,): (BindingWrite,) =
+                    serde_json::from_value(invocation.params).map_err(|e| {
+                        RpcError::InvalidParams(format!(
+                            "Failed to parse write-bindings params: {e}"
+                        ))
+                    })?;
+                let outcomes = self
+                    .write_bindings(write, &invocation.caller)
+                    .await
+                    .map_err(RpcError::InternalError)?;
+                Ok(NativeResponse {
+                    payload: serde_json::to_value(outcomes).unwrap_or(Value::Null),
+                })
+            }
             "deploy-plan" => {
                 let (plan,): (DeploymentPlan,) = serde_json::from_value(invocation.params.clone())
                     .or_else(|_| {
@@ -448,15 +463,63 @@ impl NativeService for ControlPlaneService {
                 Ok(NativeResponse { payload: serde_json::json!({"status": "deployed_plan"}) })
             }
             "undeploy" => {
-                let (service_id,): (String,) = serde_json::from_value(invocation.params.clone())
-                    .or_else(|_| serde_json::from_value::<String>(invocation.params).map(|s| (s,)))
-                    .map_err(|e| {
+                let (service_id, generation): (String, u64) =
+                    serde_json::from_value(invocation.params).map_err(|e| {
                         RpcError::InvalidParams(format!("Failed to parse undeploy params: {e}"))
                     })?;
-                self.undeploy(service_id, &invocation.caller)
+                self.undeploy(service_id, generation, &invocation.caller)
                     .await
                     .map_err(RpcError::InternalError)?;
                 Ok(NativeResponse { payload: serde_json::json!({"status": "undeployed"}) })
+            }
+            "restart" => {
+                let (service_id, generation): (String, u64) =
+                    serde_json::from_value(invocation.params).map_err(|e| {
+                        RpcError::InvalidParams(format!("Failed to parse restart params: {e}"))
+                    })?;
+                self.restart(service_id, generation, &invocation.caller)
+                    .await
+                    .map_err(RpcError::InternalError)?;
+                Ok(NativeResponse { payload: serde_json::json!({"status": "restarted"}) })
+            }
+            "app-instance-management-of" => {
+                let (app_instance_id,): (String,) = serde_json::from_value(invocation.params)
+                    .map_err(|e| {
+                        RpcError::InvalidParams(format!(
+                            "Failed to parse app-instance-management-of params: {e}"
+                        ))
+                    })?;
+                let management = self
+                    .app_instance_management_of(app_instance_id, &invocation.caller)
+                    .await
+                    .map_err(RpcError::InternalError)?;
+                Ok(NativeResponse {
+                    payload: serde_json::to_value(management).unwrap_or(Value::Null),
+                })
+            }
+            "claim-app-instance" => {
+                let (app_instance_id, generation): (String, u64) =
+                    serde_json::from_value(invocation.params).map_err(|e| {
+                        RpcError::InvalidParams(format!(
+                            "Failed to parse claim-app-instance params: {e}"
+                        ))
+                    })?;
+                self.claim_app_instance(app_instance_id, generation, &invocation.caller)
+                    .await
+                    .map_err(RpcError::InternalError)?;
+                Ok(NativeResponse { payload: serde_json::json!({"status": "claimed"}) })
+            }
+            "release-app-instance" => {
+                let (app_instance_id, generation): (String, u64) =
+                    serde_json::from_value(invocation.params).map_err(|e| {
+                        RpcError::InvalidParams(format!(
+                            "Failed to parse release-app-instance params: {e}"
+                        ))
+                    })?;
+                self.release_app_instance(app_instance_id, generation, &invocation.caller)
+                    .await
+                    .map_err(RpcError::InternalError)?;
+                Ok(NativeResponse { payload: serde_json::json!({"status": "released"}) })
             }
             "list" => {
                 let services =
@@ -1150,7 +1213,7 @@ mod tests {
         assert_eq!(delivered_payload, b"order-1");
 
         // undeploy removes the native dispatch registration
-        service.undeploy(service_id.clone(), &test_caller).await.unwrap();
+        service.undeploy(service_id.clone(), 0, &test_caller).await.unwrap();
         assert!(
             service
                 .native_dispatch
@@ -1481,7 +1544,7 @@ mod tests {
         let persisted = storage_provider.list_all_messaging_subscriptions().await.unwrap();
         assert_eq!(persisted, vec![(service_id.clone(), namespaced_topic.clone())]);
 
-        service.undeploy(service_id.clone(), &test_caller).await.unwrap();
+        service.undeploy(service_id.clone(), 0, &test_caller).await.unwrap();
 
         let after_undeploy = storage_provider.list_all_messaging_subscriptions().await.unwrap();
         assert!(after_undeploy.is_empty(), "subscription row must be gone after undeploy");
@@ -1816,7 +1879,7 @@ mod tests {
              registry after deploy"
         );
 
-        service.undeploy(service_id.clone(), &test_caller).await.unwrap();
+        service.undeploy(service_id.clone(), 0, &test_caller).await.unwrap();
 
         assert!(
             registry.lookup(&service_id, STREAM_PROTOCOL).is_none(),
