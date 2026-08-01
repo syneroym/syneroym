@@ -1,4 +1,9 @@
-use std::{fmt, path::Path, str::FromStr};
+use std::{
+    fmt,
+    path::Path,
+    str::FromStr,
+    sync::{Arc, Mutex},
+};
 
 use anyhow::{Result, anyhow};
 use chrono::Utc;
@@ -106,11 +111,23 @@ impl FromStr for ActionState {
     }
 }
 
-#[derive(Debug)]
+/// `conn: Arc<Mutex<Connection>>`, not a bare `Connection` (M05A A5b,
+/// D-A5-8): `rusqlite::Connection` is `Send` but not `Sync`, so a reference
+/// held across an `.await` point makes the enclosing future non-`Send` --
+/// harmless while every caller blocks on it, fatal for a `tokio::spawn`ed
+/// supervisor loop. `std::sync::Mutex`, not a tokio one: every statement is
+/// a short synchronous call, and a tokio mutex would make `open_in_memory`
+/// async for no benefit. The `Arc` also lets `SupervisorStore` back its
+/// desired-state table, this journal, and `AlertStore` with one connection.
+#[derive(Debug, Clone)]
 pub struct DeploymentJournal {
-    conn: Connection,
+    conn: Arc<Mutex<Connection>>,
 }
 
+// Lock-poisoning from a panicking holder is a programming error (bug) that
+// leaves the data in an inconsistent state; there is no safe recovery path.
+// `expect` is therefore the correct idiom here, matching `StaticInventory`'s.
+#[allow(clippy::expect_used)]
 impl DeploymentJournal {
     pub fn open<P: AsRef<Path>>(dir: P, db_name: &str) -> Result<Self> {
         if db_name.contains('/') || db_name.contains('\\') || db_name.contains("..") {
@@ -120,12 +137,21 @@ impl DeploymentJournal {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode=WAL;")?;
         Self::init_schema(&conn)?;
-        Ok(Self { conn })
+        Ok(Self { conn: Arc::new(Mutex::new(conn)) })
     }
 
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
         Self::init_schema(&conn)?;
+        Ok(Self { conn: Arc::new(Mutex::new(conn)) })
+    }
+
+    /// Wraps an already-open connection -- `SupervisorStore`'s constructor,
+    /// so it can back this journal, `AlertStore`, and its own desired-state
+    /// table with one shared `Arc<Mutex<Connection>>` rather than three
+    /// separate database files.
+    pub fn from_connection(conn: Arc<Mutex<Connection>>) -> Result<Self> {
+        Self::init_schema(&conn.lock().expect("journal connection lock poisoned"))?;
         Ok(Self { conn })
     }
 
@@ -165,17 +191,19 @@ impl DeploymentJournal {
     pub fn append(&self, plan: &DeploymentPlan, state: DeploymentState) -> Result<i64> {
         let now = Utc::now().timestamp();
         let plan_json = plan.to_json()?;
-        self.conn.execute(
+        let conn = self.conn.lock().expect("journal connection lock poisoned");
+        conn.execute(
             "INSERT INTO deployments (instance_id, plan_json, state, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             params![plan.app_instance_id.as_str(), plan_json, state.to_string(), now, now],
         )?;
-        Ok(self.conn.last_insert_rowid())
+        Ok(conn.last_insert_rowid())
     }
 
     pub fn update_state(&self, id: i64, state: DeploymentState) -> Result<()> {
         let now = Utc::now().timestamp();
-        self.conn.execute(
+        let conn = self.conn.lock().expect("journal connection lock poisoned");
+        conn.execute(
             "UPDATE deployments SET state = ?1, updated_at = ?2 WHERE id = ?3",
             params![state.to_string(), now, id],
         )?;
@@ -192,7 +220,8 @@ impl DeploymentJournal {
         state: ActionState,
     ) -> Result<i64> {
         let now = Utc::now().timestamp();
-        self.conn.execute(
+        let conn = self.conn.lock().expect("journal connection lock poisoned");
+        conn.execute(
             "INSERT INTO deployment_actions (deployment_id, action_type, logical_ref, \
              substrate_alias, substrate_did, state, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -207,12 +236,13 @@ impl DeploymentJournal {
                 now
             ],
         )?;
-        Ok(self.conn.last_insert_rowid())
+        Ok(conn.last_insert_rowid())
     }
 
     pub fn update_action_state(&self, action_id: i64, state: ActionState) -> Result<()> {
         let now = Utc::now().timestamp();
-        self.conn.execute(
+        let conn = self.conn.lock().expect("journal connection lock poisoned");
+        conn.execute(
             "UPDATE deployment_actions SET state = ?1, updated_at = ?2 WHERE id = ?3",
             params![state.to_string(), now, action_id],
         )?;
@@ -220,7 +250,8 @@ impl DeploymentJournal {
     }
 
     pub fn get_completed_actions(&self, deployment_id: i64) -> Result<Vec<ActionRecord>> {
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn.lock().expect("journal connection lock poisoned");
+        let mut stmt = conn.prepare(
             "SELECT action_type, logical_ref, substrate_alias, substrate_did
              FROM deployment_actions
              WHERE deployment_id = ?1 AND state = 'COMPLETED'
@@ -252,7 +283,8 @@ impl DeploymentJournal {
         &self,
         instance_id: &AppInstanceId,
     ) -> Result<Vec<ActionRecord>> {
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn.lock().expect("journal connection lock poisoned");
+        let mut stmt = conn.prepare(
             "SELECT a.action_type, a.logical_ref, a.substrate_alias, a.substrate_did
                FROM deployment_actions a
                JOIN deployments d ON d.id = a.deployment_id
@@ -274,7 +306,8 @@ impl DeploymentJournal {
     }
 
     pub fn get_latest(&self, instance_id: &AppInstanceId) -> Result<Option<DeploymentRecord>> {
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn.lock().expect("journal connection lock poisoned");
+        let mut stmt = conn.prepare(
             "SELECT id, instance_id, plan_json, state, created_at, updated_at 
              FROM deployments 
              WHERE instance_id = ?1 
@@ -312,7 +345,8 @@ impl DeploymentJournal {
         instance_id: &AppInstanceId,
         target_state: DeploymentState,
     ) -> Result<Option<DeploymentRecord>> {
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn.lock().expect("journal connection lock poisoned");
+        let mut stmt = conn.prepare(
             "SELECT id, instance_id, plan_json, state, created_at, updated_at 
              FROM deployments 
              WHERE instance_id = ?1 AND state = ?2
@@ -537,5 +571,31 @@ mod tests {
             journal.get_completed_actions_for_instance(&AppInstanceId::new("inst-1")).unwrap();
         assert_eq!(completed.len(), 1);
         assert_eq!(completed[0].logical_ref, "inst-1/echo");
+    }
+
+    /// D-A5-8: both stores must be `Send + Sync` as a whole, not merely
+    /// individually lockable -- a supervisor holds them as fields of a type
+    /// that itself must be `Send + Sync` (`NativeService`'s bound).
+    #[test]
+    fn journal_and_alert_store_are_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<DeploymentJournal>();
+        assert_send_sync::<crate::AlertStore>();
+    }
+
+    /// The whole point of the `Arc<Mutex<Connection>>` conversion: a journal
+    /// held across an `.await` inside a spawned task must produce a `Send`
+    /// future, or `tokio::spawn` cannot take it. Mirrors
+    /// `apply_plan_returns_a_send_future` in `crates/sdk/src/deploy.rs`.
+    #[test]
+    fn a_journal_reference_held_across_an_await_is_send() {
+        fn assert_send<T: Send>(_: T) {}
+        let journal = DeploymentJournal::open_in_memory().unwrap();
+        let fut = async {
+            let _ = &journal;
+            tokio::task::yield_now().await;
+            journal.get_latest(&AppInstanceId::new("inst-1")).unwrap()
+        };
+        assert_send(fut);
     }
 }

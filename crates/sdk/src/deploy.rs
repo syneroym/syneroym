@@ -805,4 +805,39 @@ mod tests {
         );
         assert_eq!(applier_b.calls.lock().unwrap().len(), 1);
     }
+
+    /// D-A5-8: `apply_plan` holds `&DeploymentJournal` across every `.await`,
+    /// so its future is `Send` only because the journal itself now is
+    /// (`Arc<Mutex<Connection>>`, not a bare `Connection`) -- required for
+    /// a supervisor's reconcile loop to `tokio::spawn` a call to this
+    /// function.
+    #[test]
+    fn apply_plan_returns_a_send_future() {
+        fn assert_send<T: Send>(_: T) {}
+
+        let journal = DeploymentJournal::open_in_memory().unwrap();
+        let p = plan(vec![service("a", Some("edge-1"))]);
+        let deployment_id = journal.append(&p, DeploymentState::Applying).unwrap();
+        let applier = Arc::new(FailingApplier::default());
+        let targets = BTreeMap::from([(
+            SubstrateAlias::new("edge-1"),
+            target("did:key:zA", Some("edge-1"), applier),
+        )]);
+
+        let no_certs = BTreeMap::new();
+        let fut = apply_plan(
+            ApplyRequest {
+                plan: &p,
+                targets: &targets,
+                fallback: None,
+                instance_certificates: &no_certs,
+                registry_certificates: &no_certs,
+                emit_bindings: false,
+                generation: 0,
+            },
+            &journal,
+            deployment_id,
+        );
+        assert_send(fut);
+    }
 }

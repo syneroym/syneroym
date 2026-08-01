@@ -384,6 +384,9 @@ pub struct RolesConfig {
     pub coordinator: Option<CoordinatorRole>,
     pub client_gateway: Option<ClientGatewayRole>,
     pub observability: Option<ObservabilityRole>,
+    /// The App Supervisor (ADR-0021 §8). Absent = this node runs no
+    /// supervisor, which is every deployment through A4.
+    pub supervisor: Option<SupervisorRole>,
 }
 
 fn default_podman_path() -> String {
@@ -536,6 +539,59 @@ pub enum AccessControl {
 impl Default for AccessControl {
     fn default() -> Self {
         Self::String("everyone".to_string())
+    }
+}
+
+fn default_supervisor_poll_interval_secs() -> u64 {
+    30
+}
+fn default_supervisor_db_name() -> String {
+    "supervisor.db".to_string()
+}
+const fn default_supervisor_max_restart_attempts() -> u32 {
+    3
+}
+const fn default_supervisor_restart_backoff_secs() -> u64 {
+    30
+}
+fn default_supervisor_alert_topic() -> String {
+    "supervisor/alerts".to_string()
+}
+fn default_supervisor_master_backup_dir() -> String {
+    "master-backups".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SupervisorRole {
+    /// Reconcile + health sweep interval. Used by the resident loop; this
+    /// role serves RPC only and sweeps on demand inside `status`.
+    pub poll_interval_secs: u64,
+    /// Desired state, journal, and alerts, under `app_data_dir`.
+    pub db_name: String,
+    /// Bounded remediation ceiling for the resident loop's restart policy.
+    pub max_restart_attempts: u32,
+    pub restart_backoff_secs: u64,
+    /// MQTT topic prefix for published alerts.
+    pub alert_topic: String,
+    /// Where `export-master` writes and `import-master` reads. Operator-
+    /// declared, never caller-supplied: the verbs take a master *name*, not
+    /// a path, so no caller can steer a private key to a location of its
+    /// choosing or read one from outside this directory. Relative to
+    /// `app_data_dir`.
+    pub master_backup_dir: String,
+}
+
+impl Default for SupervisorRole {
+    fn default() -> Self {
+        Self {
+            poll_interval_secs: default_supervisor_poll_interval_secs(),
+            db_name: default_supervisor_db_name(),
+            max_restart_attempts: default_supervisor_max_restart_attempts(),
+            restart_backoff_secs: default_supervisor_restart_backoff_secs(),
+            alert_topic: default_supervisor_alert_topic(),
+            master_backup_dir: default_supervisor_master_backup_dir(),
+        }
     }
 }
 

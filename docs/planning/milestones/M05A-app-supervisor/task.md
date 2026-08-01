@@ -371,6 +371,58 @@ assumption, correct today but broken the moment A5 scales a service (D-A4-11,
 backlog row).
 
 ### A5 — The supervisor loop
+
+**Dated correction (2026-08-01), against the
+[A5 implementation plan](slice-a5-implementation-plan.md) §0.1/D-A5-1.** A5's
+original one-paragraph text (below, kept for the exit criteria and matrix
+rows it still describes accurately) undercounted the work by an order of
+magnitude — twelve workstreams, not one. It ships as **five sub-slices**,
+each independently mergeable and each closing a named set of failure-matrix
+rows:
+
+- **A5a — substrate write primitives.** ✅ Complete. The binding-only write
+  path (`write-bindings`, epoch-guarded on the four-case rule), `restart`,
+  the `app_instance_management` table and generation gate, `generation` on
+  `app-context`, deploy content-hash dedup, `claim-app-instance`/
+  `release-app-instance`/`app-instance-management-of`, the `SubstrateActor`
+  trait, and the `roymctl` lib split. No supervisor exists yet; every write
+  is exercised directly against one substrate. Closes matrix rows 5, 6, 7, 8
+  (substrate half), 10.
+- **A5b — the role, the store, the interface, custody.** ✅ Complete. The
+  `syneroym-app-supervisor` crate; `[roles.supervisor]`; `supervisor.db`; the
+  `supervisor` WIT interface (submit/adopt/release/pause/resume/retire/
+  force-reconcile/status/alerts/export-master/import-master); mint-in-place
+  master custody in the supervisor's own vault (moved here from where this
+  paragraph originally placed it, because an operator-minted certificate is
+  rejected the moment the supervisor itself deploys — see ADR-0020's
+  2026-08-01 amendment); `roymctl supervisor …`. `status` sweeps on demand
+  (D-A5-21) — there is no resident loop in this slice, so "the supervisor
+  loop" this section is titled for does not exist until A5c. Closes matrix
+  row 9 (supervisor half); the exit criterion "an operator can read health,
+  alerts, and per-dependent binding convergence" (binding convergence itself
+  is not yet populated — A5b writes no bindings on its own, so there is
+  nothing to compare a substrate's observed epoch against until A5c's push
+  exists).
+- **A5c — the loop and remediation.** Not started. The resident reconcile
+  loop, bounded restart with backoff/max-attempts/terminal `Degraded`,
+  binding push on membership change, MQTT alert publication, the
+  health-poll-cost budget measured. Closes matrix rows 11, 12, 13.
+- **A5d — unattended renewal.** Not started. Renewal on the loop,
+  `RotationPolicy` load-bearing, `SynSvcNativeService` refresh, certificate
+  maximum lifetime, master-anchor refresh on a schedule, revocation surface.
+  Closes matrix rows 1/3 (automation half), 14 (second half).
+- **A5e — scale-out, cross-app, budgets.** Not started. `ServiceSpec.
+  replicas` + multi-member compiler, the cross-app `Bind` manifest surface,
+  the ADR-0021 §7 probe, the convergence budget and §6 trigger evaluated in
+  writing, the no-network-hop Criterion bench. Closes matrix rows 15, 18;
+  reference-scenario steps 5-6.
+
+**Milestone closes at the end of A5e.**
+
+---
+
+**Original text**, describing the whole of A5 rather than any one sub-slice:
+
 Substrate role; the `supervisor` interface, carrying both the write path (submit
 desired state, retire, pause, force reconcile, **adopt**) and the operator-facing
 read surface (status, alerts, per-dependent binding convergence) that the exit
@@ -400,17 +452,19 @@ three things A0 deliberately left out:
 - **Custody**: member master keys held in the supervisor's own substrate vault
   rather than on disk beside a config (ADR-0020 §4). A0 leaves them as ordinary
   `roymctl` identities under a computable name, so adoption is a read, not a
-  scan.
+  scan. **✅ A5b**: mint-in-place, not the "adoption is a read" shape this
+  paragraph describes — see the sub-slice list above and ADR-0020's
+  2026-08-01 amendment for why.
 - **Unattended issue and renewal**, so relocation and renewal both just work
   (ADR-0020 §3's online-key posture) — and with it the operator's choice between
-  the two postures becomes real rather than nominal.
+  the two postures becomes real rather than nominal. **A5d**.
 - **`RotationPolicy`** (`models.rs`) finally becomes load-bearing: with renewal
   automated, whether a service tolerates in-place certificate replacement or
   needs a restart is a decision something actually makes. A0 does not use it
-  because operator-initiated replacement is always in-place.
+  because operator-initiated replacement is always in-place. **A5d**.
 
-Until A5 lands, **a missed renewal cadence is an outage** (matrix row 3), and
-that is the milestone's standing operating cost through A0–A4.
+Until A5d lands, **a missed renewal cadence is an outage** (matrix row 3), and
+that is the milestone's standing operating cost through A0–A5c.
 
 ### A6 — Durable delivery *(post-M5 item 1 — do not start before it lands)*
 Replace the A5 trait's implementation with an outbox/DLQ-backed one: durable push
@@ -501,20 +555,20 @@ fail.
 | 2 | **Certificate presented with the wrong `scope`** | Rejected. **✅ A0, at two granularities**: the ingress (`handshake.rs`) admits either transport scope and rejects anything outside that set (`a_certificate_scoped_outside_transport_is_rejected_at_the_handshake`); the narrow single-value check — "this record/install may only be admitted by a `service-instance` certificate" — lives at the deploy-time install verification (`a_deploy_is_rejected_when_the_certificate_carries_the_routing_scope`, `crates/control_plane/src/service/orchestration.rs`) and, for A1, at endpoint-record admission. Proven live over two real substrates in `crates/substrate/tests/instance_identity_e2e.rs` (a `routing`-scoped certificate rejected at deploy) |
 | 3 | **Attended posture, renewal cadence missed** | Instance fails closed; this is an outage, not a degradation, and the docs say so (ADR-0020 §3). **✅ A0** proves the handshake half: not a distinct code behavior there — the failure mode *is* row 1 — so the evidence is row 1's test plus the near-expiry heartbeat warning (`a_certificate_near_expiry_is_warned_about_on_the_heartbeat_sweep`, `crates/substrate/src/runtime.rs`) and the `svc list` expiry column. **The instance certificate's own expiry is now unrelated to name resolution** (the endpoint record carries no certificate at all), so resolution has its own, independent freshness bound instead: `EndpointInfo.not_after`, checked uniformly whether admitting or reading a record — deliberately generous (30 days) so it is a backstop for a signer that stops renewing entirely, not a routine failure mode. **✅ A1**: `an_expired_record_is_rejected` (`crates/core/src/dht_registry.rs`) and `an_expired_stored_record_is_not_replayed` (`crates/core/src/endpoint_publisher.rs`) |
 | 4 | **Endpoint record keyed by a master DID, signed by an unrelated key** | Rejected; a record must be self-signed by the key its own `service_id` resolves to. **✅ A1**: `a_record_is_rejected_when_signed_by_a_key_other_than_its_own_service_id` (`crates/core/src/dht_registry.rs`), proven live over two real substrates by the negative half of `a_member_master_did_resolves_to_an_address_and_follows_the_member_across_nodes` (`crates/substrate/tests/master_endpoint_record_e2e.rs`) — a hand-built record posted to the registry is rejected with `401` |
-| 5 | Out-of-order binding write (stale epoch) | Rejected by the substrate; mapping does not regress |
-| 6 | **Binding write re-sent at the current epoch, identical content** | Idempotent no-op, reported as success — distinct from the stale rejection above |
-| 7 | **Binding write at the current epoch, *different* content** | Rejected as a conflict, reported distinctly; this is the two-writer signal |
-| 8 | Second supervisor adopts a managed instance | Lower generation rejected; no flapping |
-| 9 | **Supervisor finds a *higher* generation than its own** | Stops managing that instance and alerts; never self-increments (ADR-0021 §4) |
-| 10 | Deploy retried after a lost response | Idempotent no-op for identical (instance, service, content hash) |
+| 5 | Out-of-order binding write (stale epoch) | Rejected by the substrate; mapping does not regress. **✅ A5a**: `classify_binding_write`'s stale case (`crates/app_orchestration/src/resolver.rs`) |
+| 6 | **Binding write re-sent at the current epoch, identical content** | Idempotent no-op, reported as success — distinct from the stale rejection above. **✅ A5a**: `classify_binding_write`'s no-op case |
+| 7 | **Binding write at the current epoch, *different* content** | Rejected as a conflict, reported distinctly; this is the two-writer signal. **✅ A5a**: `classify_binding_write`'s conflict case |
+| 8 | **A second supervisor that has not adopted the instance issues a write** | Its presented generation is lower than the one an adopting supervisor holds; rejected, no flapping. (Corrected wording, §0.10: the original "second supervisor adopts" describes a supervisor that *did* adopt, which correctly wins with a *higher* generation — this row is about one that never did.) **✅ A5a substrate mechanism** (`check_generation`'s `Ordering::Less` case, `crates/control_plane/src/service/orchestration.rs`); **✅ A5b live proof**: `a_second_supervisor_that_has_not_adopted_loses_every_write` (`crates/substrate/tests/supervisor_interface_e2e.rs`) |
+| 9 | **Supervisor finds a *higher* generation than its own** | Stops managing that instance and alerts; never self-increments (ADR-0021 §4). **✅ A5b substrate mechanism**: `SupervisorService::handle_status` reads the max held generation across every substrate the *plan* places a service on (not only ones this supervisor's own journal already shows landed) on every sweep and raises `AlertKind::SupervisorSuperseded` when it exceeds the supervisor's own stored generation (`crates/app_supervisor/src/service.rs`); **✅ A5b live proof**: `a_supervisor_that_reads_a_higher_generation_marks_the_instance_superseded_and_alerts` (`crates/substrate/tests/supervisor_interface_e2e.rs`) |
+| 10 | Deploy retried after a lost response | Idempotent no-op for identical (instance, service, content hash). **✅ A5a**: `deploy_with_context` hashes `(manifest, app_context-minus-generation)` with blake3 and short-circuits to `Ok(())` on an identical redeploy, distinct from the epoch guard and the generation gate (ADR-0021 §3) |
 | 11 | Dependent unreachable during a push | Instance marked `Degraded`; retried; state visible on the operator read surface |
 | 12 | Partial app deploy (3 of 5 services) | No rollback; `Degraded`; failed services retried |
 | 13 | Remediation exceeds max attempts | Terminal `Degraded`; alerting only; no restart loop |
 | 14 | Supervisor holds master keys and is compromised | Blast radius bounded to the members it manages; instance certificates short-lived and revocable (ADR-0020 §3). **Split.** **✅ A0** proves the testable bound: an instance certificate is revocable without touching the member master, and a fresh instance key from the same master still verifies (`a_revoked_instance_key_is_rejected_while_the_member_master_still_certifies_a_new_one`, `crates/router/src/handshake.rs`). The other half — blast radius actually bounded to what a supervisor manages — needs a supervisor and is A5's |
-| 15 | Bound cross-app dependency replaced, **online-key posture** | Active probe fails on a call the supervisor makes *as the depending member*; A's owner alerted (ADR-0021 §7) |
-| 16 | **`security` call (`inject-kek`/`rotate-kek`/`set-secret`) without `substrate/admin`** | Rejected. Ungated entirely today (P0 item 2); the gate only becomes holdable once P0 item 1 ships |
-| 17 | **Deploy to an unowned substrate once F4 flips** | Rejected; the bootstrap path becomes establishing ownership with the P0 tool, not an open deploy grant |
-| 18 | Bound cross-app dependency replaced, **attended posture** | No master key, so no active probe: detection is passive, on the first real call that fails. Weaker by design, and the operator chose it |
+| 15 | Bound cross-app dependency replaced, **online-key posture** | Active probe fails on a call the supervisor makes *as the depending member*; A's owner alerted (ADR-0021 §7). **Carries an unstated prerequisite** (§0.9): `AppDependencySpec::Bind { instance }` names a bound app *instance*, not a service inside it, so there is no manifest surface yet for "which service of app B does app A depend on" — the compiler cannot resolve a cross-app `Bind` at all until one exists. Scoped to **A5e** along with the manifest surface itself |
+| 16 | **`security` call (`inject-kek`/`rotate-kek`/`set-secret`) without `substrate/admin`** | Rejected. **✅ P0**: `security_is_denied_without_substrate_admin` (`crates/control_plane/src/service.rs`) |
+| 17 | **Deploy to an unowned substrate once F4 flips** | Rejected; the bootstrap path becomes establishing ownership with the P0 tool, not an open deploy grant. **✅ P0**: `an_unowned_substrate_grants_no_node_wide_capability` (`crates/control_plane/src/service.rs`) |
+| 18 | Bound cross-app dependency replaced, **attended posture** | No master key, so no active probe: detection is passive, on the first real call that fails. Weaker by design, and the operator chose it. Same prerequisite as row 15 — scoped to **A5e** |
 | 19 | **Member reinstantiated under a policy declaring `expected_asserter_did`** | Its cross-service `RelationshipProof` still verifies. **✅ A2**: `RelationshipProof` carries an optional `delegation`; `sign`/`verify` assert and check under the certificate's master when one is installed (`a_proof_signed_by_an_instance_key_with_a_certificate_verifies_against_the_master`, `crates/rpc/src/relationship_proof.rs`). The transport half (`ProxyRouter::invoke_remote_at`'s `(None, Native)` arm) proven in `crates/router/src/proxy.rs` |
 | 20 | **A substrate a member has relocated away from keeps replaying its old endpoint record on its heartbeat** | Rejected, at both the DHT and the HTTP registry: a record's pkarr/BEP44 timestamp must be strictly newer than what is stored to be admitted, or equal and byte-identical (the routine heartbeat replay, admitted as a refresh, not a conflict). Since a substrate that cannot re-sign a member's record can only ever replay the same frozen bytes at the same timestamp, once the master has signed one newer record for the new placement, the old substrate's replay is permanently stale and rejected everywhere. **✅ A1**: `verify_returns_the_packets_own_timestamp` (`crates/core/src/dht_registry.rs`) and the registry-side compare-and-swap proven live in `publish_all_services_survives_a_record_rejected_by_admission` (`crates/community_registry/src/registry.rs`) |
 

@@ -907,3 +907,23 @@ impl SyneroymClient {
         }
     }
 }
+
+/// A safety net, not the primary close path: `Drop` cannot `.await`, so it
+/// cannot run `shutdown`'s graceful QUIC handshake directly. This backstops
+/// a caller that forgets to call `shutdown` explicitly -- exactly what
+/// `SupervisorService::handle_adopt` did before it was fixed to call
+/// `shutdown_clients` (N2, M05A Slice A5b review round 2) -- by closing the
+/// endpoint in the background instead of leaving iroh to abort it
+/// ungracefully. Callers that need to *know* the close finished (a test, or
+/// an RPC handler that should not return until its outbound connections are
+/// torn down) should still call `shutdown` explicitly; this only covers the
+/// case nothing does.
+impl Drop for SyneroymClient {
+    fn drop(&mut self) {
+        if let Some(TransportConnection::Iroh { endpoint, .. }) = self.connection.take()
+            && tokio::runtime::Handle::try_current().is_ok()
+        {
+            close_in_background(endpoint);
+        }
+    }
+}

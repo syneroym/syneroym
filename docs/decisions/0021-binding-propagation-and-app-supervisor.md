@@ -5,6 +5,8 @@
 Supersedes the "Dynamic Pull (Server SynApp Mode)" design recorded in
 [system-architecture.md](../system-architecture.md) §LFC-MGT and
 [system-requirements-spec.md](../system-requirements-spec.md) §LFC-MGT.
+Amended 2026-08-01 -- see the dated amendment note at the end of this
+document.
 
 **Context**:
 
@@ -302,3 +304,51 @@ contradicted the milestone's own exit criteria. Recorded in
   §6.1), which is unchanged by this ADR but becomes load-bearing for it: the
   supervisor cannot hold a deploy capability on a substrate it does not own until
   ownership is establishable.
+
+**Amendment (2026-08-01, after Slice A5a implementation).** Two places
+where planning and building A5 found this ADR left a real decision
+unmade, not merely under-specified. Recorded here rather than edited
+silently into §4/§5 above, for the same reason as ADR-0020's own
+amendments: the gap between what this ADR said and what the tree needed
+should stay legible.
+
+1. **§4 does not say where the generation is durable, and that decision
+   decides whether a rebuilt supervisor can be fooled.** "Each app
+   instance record on a substrate carries the managing supervisor's DID
+   and a monotonic generation" names what the record holds, not which
+   party's copy is authoritative. Three candidates exist -- the
+   operator's `roymctl`, the supervisor's own store, the substrate's own
+   app-instance row -- and only one of them cannot simply believe
+   itself: two supervisors racing an adopt, or one supervisor rebuilt
+   from nothing, must resolve their disagreement at a party neither of
+   them controls. **The substrate is the durable arbiter.** Its
+   `app_instance_management` row (`(app_instance_id) -> (owner_did,
+   supervisor_did, generation)`, `crates/data_db/src/registry_store.rs`)
+   is what `adopt` reads before minting `held + 1`
+   (`orchestrator.app-instance-management-of`), what `claim-app-instance`
+   writes under the same four-case rule every other write uses
+   (`check_generation`,
+   `crates/control_plane/src/service/orchestration.rs`), and what every
+   generation-gated verb (`deploy-plan`, `write-bindings`, `restart`,
+   `undeploy`) checks a presented generation against. The supervisor's
+   own copy (A5b's `desired_state.generation`) and the operator's `--
+   generation` flag are both caches of this row, not sources of truth --
+   a supervisor that reads a **higher** generation than the one it holds
+   has been superseded and stops managing the instance (failure-matrix
+   row 9), rather than trusting its own cache over the substrate's.
+2. **§5's "narrow 'apply this action to that substrate' trait" names one
+   action; A5 needs three.** Delivery is sticky for every action a
+   supervisor issues without a human present, not only the initial
+   deploy: a binding push that never reaches an unreachable dependent is
+   exactly as wrong-until-retried as a deploy that never lands, and A5's
+   bounded restart is a third such action. The trait -- `SubstrateActor`
+   in `crates/sdk/src/deploy.rs`, which A3 introduced as `PlanApplier`
+   when `apply_plan` was its only method -- widens to `apply_plan`,
+   `write_bindings`, `restart`. A6's durable outbox/DLQ implementation
+   swaps all three at once, which is the property this section's
+   "nothing above the trait changes" promise depends on: it only holds
+   if every action that must become durable is *on* the trait it swaps.
+
+Full reasoning for both is in
+[slice-a5-implementation-plan.md](../planning/milestones/M05A-app-supervisor/slice-a5-implementation-plan.md)
+§0.10 and §0.22; only the corrections themselves are repeated here.

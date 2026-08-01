@@ -7,7 +7,12 @@
 //! schema, these types, and `sdk::health::record_report`'s folding logic --
 //! A5 changes only the `Connection` handed to `AlertStore::open`.
 
-use std::{fmt, path::Path, str::FromStr};
+use std::{
+    fmt,
+    path::Path,
+    str::FromStr,
+    sync::{Arc, Mutex},
+};
 
 use anyhow::{Result, anyhow};
 use chrono::Utc;
@@ -37,6 +42,11 @@ pub enum AlertKind {
     /// ended -- a current outage (failure-matrix rows 1/3 under the
     /// attended posture), not a renewal reminder (A4-04).
     CertificateExpired,
+    /// A managed substrate reports a held generation higher than this
+    /// supervisor's own (ADR-0021 §4, failure-matrix row 9): another
+    /// supervisor has adopted the instance. This supervisor stops managing
+    /// it rather than bumping its own generation to match.
+    SupervisorSuperseded,
 }
 
 impl fmt::Display for AlertKind {
@@ -47,6 +57,7 @@ impl fmt::Display for AlertKind {
             Self::ProbeFailing => "PROBE_FAILING",
             Self::CertificateNearExpiry => "CERTIFICATE_NEAR_EXPIRY",
             Self::CertificateExpired => "CERTIFICATE_EXPIRED",
+            Self::SupervisorSuperseded => "SUPERVISOR_SUPERSEDED",
         };
         write!(f, "{}", s)
     }
@@ -62,6 +73,7 @@ impl FromStr for AlertKind {
             "PROBE_FAILING" => Ok(Self::ProbeFailing),
             "CERTIFICATE_NEAR_EXPIRY" => Ok(Self::CertificateNearExpiry),
             "CERTIFICATE_EXPIRED" => Ok(Self::CertificateExpired),
+            "SUPERVISOR_SUPERSEDED" => Ok(Self::SupervisorSuperseded),
             _ => Err(anyhow!("Unknown alert kind: {}", s)),
         }
     }
@@ -83,11 +95,17 @@ pub struct AlertRecord {
     pub cleared_at: Option<i64>,
 }
 
-#[derive(Debug)]
+/// `conn: Arc<Mutex<Connection>>` (M05A A5b, D-A5-8) -- see
+/// `DeploymentJournal`'s identical field doc for why.
+#[derive(Debug, Clone)]
 pub struct AlertStore {
-    conn: Connection,
+    conn: Arc<Mutex<Connection>>,
 }
 
+// Lock-poisoning from a panicking holder is a programming error (bug) that
+// leaves the data in an inconsistent state; there is no safe recovery path.
+// `expect` is therefore the correct idiom here, matching `StaticInventory`'s.
+#[allow(clippy::expect_used)]
 impl AlertStore {
     pub fn open<P: AsRef<Path>>(dir: P, db_name: &str) -> Result<Self> {
         if db_name.contains('/') || db_name.contains('\\') || db_name.contains("..") {
@@ -97,12 +115,19 @@ impl AlertStore {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode=WAL;")?;
         Self::init_schema(&conn)?;
-        Ok(Self { conn })
+        Ok(Self { conn: Arc::new(Mutex::new(conn)) })
     }
 
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
         Self::init_schema(&conn)?;
+        Ok(Self { conn: Arc::new(Mutex::new(conn)) })
+    }
+
+    /// Wraps an already-open connection -- see
+    /// `DeploymentJournal::from_connection`.
+    pub fn from_connection(conn: Arc<Mutex<Connection>>) -> Result<Self> {
+        Self::init_schema(&conn.lock().expect("alert store connection lock poisoned"))?;
         Ok(Self { conn })
     }
 
@@ -151,7 +176,8 @@ impl AlertStore {
         detail: &str,
     ) -> Result<bool> {
         let now = Utc::now().timestamp();
-        let updated = self.conn.execute(
+        let conn = self.conn.lock().expect("alert store connection lock poisoned");
+        let updated = conn.execute(
             "UPDATE alerts SET last_seen_at = ?1, detail = ?2
              WHERE instance_id = ?3 AND IFNULL(logical_ref,'') = IFNULL(?4,'')
                AND substrate_did = ?5 AND kind = ?6 AND cleared_at IS NULL",
@@ -167,7 +193,7 @@ impl AlertStore {
         if updated > 0 {
             return Ok(false);
         }
-        self.conn.execute(
+        conn.execute(
             "INSERT INTO alerts (instance_id, logical_ref, substrate_alias, substrate_did, kind, \
              detail, first_seen_at, last_seen_at, cleared_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, NULL)",
@@ -195,7 +221,8 @@ impl AlertStore {
         kind: AlertKind,
     ) -> Result<bool> {
         let now = Utc::now().timestamp();
-        let updated = self.conn.execute(
+        let conn = self.conn.lock().expect("alert store connection lock poisoned");
+        let updated = conn.execute(
             "UPDATE alerts SET cleared_at = ?1
              WHERE instance_id = ?2 AND IFNULL(logical_ref,'') = IFNULL(?3,'')
                AND substrate_did = ?4 AND kind = ?5 AND cleared_at IS NULL",
@@ -225,7 +252,8 @@ impl AlertStore {
     }
 
     fn query(&self, sql: &str, instance_id: &AppInstanceId) -> Result<Vec<AlertRecord>> {
-        let mut stmt = self.conn.prepare(sql)?;
+        let conn = self.conn.lock().expect("alert store connection lock poisoned");
+        let mut stmt = conn.prepare(sql)?;
         let mut rows = stmt.query(params![instance_id.as_str()])?;
         let mut out = Vec::new();
         while let Some(row) = rows.next()? {

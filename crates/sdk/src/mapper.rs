@@ -21,6 +21,14 @@ use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::or
     TcpManifest, TcpProbe as WitTcpProbe, TopologyMode as WitTopologyMode, WasmManifest,
 };
 
+/// Marks a `ServiceConfig.source` value as hex-encoded artifact bytes
+/// rather than a URL or a local path (M05A A5b): a plan applied by the App
+/// Supervisor runs on a remote substrate with no access to the operator's
+/// filesystem, so `roymctl supervisor submit` inlines each Wasm artifact
+/// into `source` itself before the plan is ever sent -- `hex`, not
+/// base64, to avoid a new dependency for a one-shot RPC payload.
+pub const INLINE_ARTIFACT_PREFIX: &str = "data:hex,";
+
 /// Author-side container volume, mirroring the wire record but with `files`
 /// optional (so a volume that only needs an empty directory stays as terse as
 /// it was) and file contents still unresolved.
@@ -172,6 +180,23 @@ pub fn map_deployment_plan_to_wit(
                     || svc.config.source.starts_with("https://")
                 {
                     ArtifactSource::Url(svc.config.source.clone())
+                } else if let Some(hex_bytes) =
+                    svc.config.source.strip_prefix(INLINE_ARTIFACT_PREFIX)
+                {
+                    // A supervisor's `submit` runs on a remote substrate
+                    // with no access to the operator's local filesystem
+                    // (D-A5-7), so `roymctl supervisor submit` inlines the
+                    // artifact into `source` itself before sending the
+                    // plan -- this branch is what a *substrate-side*
+                    // mapping call (the supervisor's own apply path) then
+                    // decodes, never reading a local path at all.
+                    let bytes = hex::decode(hex_bytes).map_err(|e| {
+                        anyhow::anyhow!(
+                            "invalid inline artifact encoding for {}: {e}",
+                            svc.service_id
+                        )
+                    })?;
+                    ArtifactSource::Binary(bytes)
                 } else {
                     let path = PathBuf::from(&svc.config.source);
                     let bytes = util::read_local_artifact(&path)?;

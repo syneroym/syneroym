@@ -1,10 +1,11 @@
 # ADR-0020: Stable Logical-Service Identity
 
-**Status**: Accepted (2026-07-27, amended 2026-07-28 and 2026-07-29 — see the
-dated amendment notes under §8's Consequences below). Surfaced while designing
-the App Supervisor (multi-substrate deployment plus unattended monitoring and
-remediation), where "move a service to another substrate" turned out to be
-unimplementable under the current identity model. Paired with
+**Status**: Accepted (2026-07-27, amended 2026-07-28, 2026-07-29, and
+2026-08-01 — see the dated amendment notes under §8's Consequences below).
+Surfaced while designing the App Supervisor (multi-substrate deployment plus
+unattended monitoring and remediation), where "move a service to another
+substrate" turned out to be unimplementable under the current identity
+model. Paired with
 [ADR-0021](0021-binding-propagation-and-app-supervisor.md), which depends on
 this one.
 
@@ -584,3 +585,57 @@ shipped; these items are what changed and why.
     publish and does not learn it has lost: detecting and stopping that
     losing publisher still needs the placement view item 12 already deferred
     to a later slice.
+
+**Amendment (2026-08-01, after Slice A5b implementation).** Two more gaps,
+found building the App Supervisor's own master custody -- the online-key
+posture §3 and §4 describe in the abstract, now that something actually
+holds the keys. Recorded here for the same reason as the amendments above.
+
+20. **§4 says a supervisor "holds them in its own substrate's vault" but
+    never says how a key gets there.** For an *operator's* local identity
+    that question does not arise -- `roymctl identity create` writes
+    directly to `<dir>/identities/`. A supervisor is a substrate role with
+    no filesystem an operator's `roymctl` shares, so "holds them in its own
+    vault" was silent on the one step that makes the online-key posture
+    exist at all: arrival. Two shapes were considered and one was rejected
+    outright. Shipping the key over the wire (an RPC `import-master`
+    carrying key bytes) needs an end-to-end encrypted transport a caller can
+    actually produce, and no client in this tree can send `?enc=` -- the
+    router terminates it, nothing constructs it (`crates/router/src/
+    route_handler/encryption.rs` is the only `enc = Some` in the workspace).
+    Building that transport to carry a backup-critical private key once,
+    at mint time, is exactly the wrong place to first pay for it.
+    **Decision: mint-in-place.** The supervisor generates each member
+    master directly inside its own vault (`syneroym-app-supervisor`'s
+    `MasterVault`, over `StorageProvider::open_service_db` -- the same
+    per-service encrypted-database mechanism `security.set-secret` already
+    uses, scoped to the supervisor's own service id); no master is ever
+    transmitted to reach it. Adoption of a master an operator already
+    holds, and backup of one the supervisor just minted, are `export-
+    master`/`import-master` verbs that move a *file* through an
+    operator-declared directory on the supervisor's own host -- the
+    verb's argument is a name, its result (for export) a path, and neither
+    carries a key byte. The property this section describes -- the target
+    substrate never receives a master private key -- holds for the
+    supervisor's vault by the identical construction: nothing outside the
+    process that generated the key ever sees it.
+21. **§1's "bound to this client, not just this master" is a load-bearing
+    constraint on *when* custody must exist, which neither this ADR nor
+    ADR-0021 stated.** The instance key a target substrate derives depends
+    on both the node's own identity and the calling DID
+    (`crates/sdk/src/deploy.rs`'s `certify_instance` doc comment), so a
+    certificate minted through one client -- say, an operator's `roymctl`
+    at initial deploy -- is rejected at every subsequent deploy issued by a
+    *different* client, including the supervisor that is meant to manage
+    the same instance afterward. A supervisor cannot defer master custody
+    to a later slice and rely on operator-minted certificates in the
+    meantime: it cannot deploy a bound app **at all** until it holds the
+    master and can certify with it itself. This is why custody is a
+    prerequisite of the supervisor's first deploy, not an enhancement layered
+    on top of one -- the milestone plan originally sequenced it after the
+    reconcile loop and had to move it earlier for exactly this reason.
+
+Full reasoning for both is in
+[slice-a5-implementation-plan.md](../planning/milestones/M05A-app-supervisor/slice-a5-implementation-plan.md)
+§0.8, §0.19, §0.29, and §0.31; only the corrections themselves are repeated
+here.
