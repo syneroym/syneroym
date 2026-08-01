@@ -6,6 +6,7 @@ pub mod app_config;
 pub mod blob_store;
 pub mod control_plane;
 pub mod data_layer;
+pub mod supervisor;
 pub mod vault;
 
 #[cfg(not(target_arch = "wasm32"))]

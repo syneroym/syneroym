@@ -1,0 +1,118 @@
+package syneroym:supervisor;
+
+interface supervisor {
+    /// Submit or replace desired state for an app instance. The plan is
+    /// already compiled, with artifacts inlined and member masters
+    /// substituted -- the supervisor holds no catalog and never reads a
+    /// manifest.
+    record submission {
+        app-instance-id: string,
+        /// JSON `DeploymentPlan`.
+        plan-json: string,
+        /// JSON alias -> {did, api-url, ucan}.
+        inventory-json: string,
+        /// The generation this submission writes at. Minted by `adopt`;
+        /// 0 for a first submission of an unmanaged instance.
+        generation: u64,
+    }
+
+    /// One minted member master, returned by `submit` so an operator can
+    /// record the DID and back it up -- mint-in-place means the operator
+    /// holds nothing until they ask (`export-master`).
+    record minted-master {
+        service-name: string,
+        master-did: string,
+    }
+
+    record submit-result {
+        masters: list<minted-master>,
+    }
+
+    variant managed-state { applying, active, degraded, paused, retired, superseded }
+
+    record managed-service {
+        logical-ref: string,
+        service-id: string,
+        substrate-alias: string,
+        substrate-did: string,
+        /// Mirrors `sdk::health::Signal`'s discriminant as a string:
+        /// "healthy" / "substrate-unreachable" / "instance-not-running" /
+        /// "probe-failing" / "unknown" / "not-deployed".
+        signal: string,
+        detail: string,
+        restart-attempts: u32,
+    }
+
+    /// Per dependent, per declared dependency: what the supervisor last
+    /// wrote versus what the hosting substrate reports serving *for that
+    /// dependent*. Equal epochs mean converged.
+    record binding-convergence {
+        dependent-logical-ref: string,
+        dependency-name: string,
+        written-epoch: u64,
+        observed-epoch: option<u64>,
+        converged: bool,
+    }
+
+    record instance-status {
+        app-instance-id: string,
+        state: managed-state,
+        generation: u64,
+        supervisor-did: string,
+        last-reconciled-at: option<u64>,
+        services: list<managed-service>,
+        bindings: list<binding-convergence>,
+        /// Delivery is best-effort synchronous. Said here rather than
+        /// implied, so an operator reading a converged status is not
+        /// reading a guarantee this build cannot make.
+        delivery-note: string,
+    }
+
+    record alert {
+        logical-ref: option<string>,
+        substrate-did: string,
+        kind: string,
+        detail: string,
+        first-seen-at: s64,
+        last-seen-at: s64,
+        cleared-at: option<s64>,
+    }
+
+    submit:          func(s: submission)          -> result<submit-result, string>;
+    /// Mints the next generation: reads what the substrates report
+    /// holding and writes `held + 1`. The only minter.
+    adopt:           func(app-instance-id: string) -> result<u64, string>;
+    /// Hand the instance back to manual operation: clears the stamp on
+    /// every substrate it is placed on. Does **not** undeploy.
+    release:         func(app-instance-id: string) -> result<_, string>;
+    pause:           func(app-instance-id: string) -> result<_, string>;
+    %resume:         func(app-instance-id: string) -> result<_, string>;
+    /// Stop managing and release. Deliberately not a teardown: retiring a
+    /// running app must not destroy it.
+    retire:          func(app-instance-id: string) -> result<_, string>;
+    force-reconcile: func(app-instance-id: string) -> result<_, string>;
+    /// Write `name`'s master out of the vault into the operator-declared
+    /// `master_backup_dir`, and return **only the path written**. Backup
+    /// is mandatory, and mint-in-place means the operator holds nothing
+    /// until they ask.
+    ///
+    /// No key bytes in the response, and no caller-supplied path: the
+    /// argument is a *name*, so a caller cannot steer a private key
+    /// anywhere. The operator collects the file from the host by whatever
+    /// means they already use -- which an offline `roymctl` cannot
+    /// replace, because the vault is encrypted and its KEK lives only in
+    /// this process's memory.
+    export-master: func(name: string) -> result<string, string>;
+    /// Adopt a master an operator already created (an A0-A4 deployment's
+    /// `<dir>/identities/member-*.key`, placed into `master_backup_dir`)
+    /// into the vault. Reads by name from that same directory; takes no
+    /// key material and no path.
+    import-master: func(name: string) -> result<_, string>;
+
+    status:  func(app-instance-id: string)            -> result<instance-status, string>;
+    alerts:  func(app-instance-id: string, all: bool) -> result<list<alert>, string>;
+}
+
+world supervisor-service {
+    export supervisor;
+}
