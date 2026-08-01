@@ -40,7 +40,7 @@ use syneroym_identity::{Identity, substrate::SubstrateIdentityStatus};
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
 use syneroym_observability::{MemoryRecorder, MetricsSnapshot, ObservabilityEngine};
 use syneroym_router::{ConnectionRouter, RouteHandlerDeps};
-use syneroym_rpc::NativeDispatchRegistry;
+use syneroym_rpc::{NativeDispatchRegistry, NativeService};
 use syneroym_sandbox_podman::ContainerEngine;
 use syneroym_sandbox_wasm::AppSandboxEngine;
 use tokio::{net::TcpListener, signal, time};
@@ -133,8 +133,23 @@ pub async fn init(config: SubstrateConfig) -> anyhow::Result<InitializedRuntime>
     info!(profile = %config.profile, "initializing substrate");
 
     let observability = ObservabilityEngine::init(&config)?;
-    let services = RuntimeServices::init(&config).await?;
-    let (connection_router, endpoint_registry) = setup_connection_router(&config).await?;
+    // `community_registry`/`coordinator`/`client_gateway` construct first,
+    // exactly as before this role existed -- swapping this order (tried
+    // first, reverted) measurably slowed every substrate's startup, ~6s
+    // to 15-30s against the same config, even with `[roles.supervisor]`
+    // absent. `RuntimeServices::init` and `setup_connection_router` both
+    // do real network setup (iroh endpoint bring-up, DHT bootstrap), and
+    // apparently benefit from *this* relative order in ways not worth
+    // taking on faith a second time. The supervisor role, constructed
+    // inside `setup_connection_router` because it needs handles
+    // (`KeyStore`, `StorageProvider`, `native_dispatch`, the node's own
+    // identity) that only exist once the connection router's own
+    // composition root has built them, is injected into `RuntimeServices`
+    // afterward instead of changing when either call runs.
+    let mut services = RuntimeServices::init(&config).await?;
+    let (connection_router, endpoint_registry, supervisor) =
+        setup_connection_router(&config).await?;
+    services.set_supervisor(supervisor);
 
     Ok(InitializedRuntime { observability, services, connection_router, endpoint_registry })
 }
@@ -146,6 +161,7 @@ pub struct RuntimeServices {
     coordinator: Option<EcosystemCoordinator>,
     #[cfg(feature = "client_gateway")]
     client_gateway: Option<ClientGateway>,
+    supervisor: Option<Arc<SupervisorHandle>>,
 }
 
 impl Debug for RuntimeServices {
@@ -163,6 +179,8 @@ impl Debug for RuntimeServices {
 
         #[cfg(feature = "client_gateway")]
         debug_struct.field("client_gateway", &self.client_gateway);
+
+        debug_struct.field("supervisor", &self.supervisor.as_ref().map(|_| "SupervisorService"));
 
         debug_struct.finish()
     }
@@ -189,7 +207,15 @@ impl RuntimeServices {
             } else {
                 None
             },
+            supervisor: None,
         })
+    }
+
+    /// Injects the supervisor role, already constructed by
+    /// `setup_connection_router` (see `init`'s own doc comment for why
+    /// this is a setter rather than an `init` parameter).
+    fn set_supervisor(&mut self, supervisor: Option<Arc<SupervisorHandle>>) {
+        self.supervisor = supervisor;
     }
 
     async fn run_until_shutdown<F>(
@@ -295,6 +321,7 @@ impl RuntimeServices {
 
         let mut connection_router_fut = pin::pin!(connection_router.run());
         let mut expiry_sweep_fut = pin::pin!(instance_cert_expiry_sweep_loop(endpoint_registry));
+        let mut supervisor_fut = pin::pin!(run_supervisor_role(&self.supervisor));
         let mut shutdown_signal = pin::pin!(shutdown_signal);
 
         info!(profile = %config.profile, "starting substrate components");
@@ -305,12 +332,15 @@ impl RuntimeServices {
             res = &mut client_gateway_fut => log_component_exit("http proxy", res),
             res = &mut health_fut => log_component_exit("health server", res),
             res = &mut metrics_fut => log_component_exit("metrics server", res),
+            res = &mut supervisor_fut => log_component_exit("supervisor", res),
             () = &mut expiry_sweep_fut => {},
             () = &mut shutdown_signal => warn!("received shutdown signal"),
         }
     }
 
     async fn shutdown(&mut self) {
+        shutdown_supervisor_role(&self.supervisor).await;
+
         #[cfg(feature = "client_gateway")]
         if let Some(service) = self.client_gateway.as_mut()
             && let Err(error) = service.shutdown().await
@@ -338,6 +368,37 @@ async fn pending_component() -> anyhow::Result<()> {
     future::pending().await
 }
 
+/// Not `#[cfg(feature = "supervisor")]` itself -- `supervisor` is always
+/// `None` when the cargo feature is off (`init_supervisor` refuses to
+/// build one), so this only needs its *body* gated, keeping `RuntimeServices`
+/// free of per-call `cfg` splits the way `community_registry`/`coordinator`/
+/// `client_gateway` already are on their own fields.
+async fn run_supervisor_role(supervisor: &Option<Arc<SupervisorHandle>>) -> anyhow::Result<()> {
+    #[cfg(feature = "supervisor")]
+    match supervisor {
+        Some(service) => service.run().await,
+        None => pending_component().await,
+    }
+    #[cfg(not(feature = "supervisor"))]
+    {
+        let _ = supervisor;
+        pending_component().await
+    }
+}
+
+async fn shutdown_supervisor_role(supervisor: &Option<Arc<SupervisorHandle>>) {
+    #[cfg(feature = "supervisor")]
+    if let Some(service) = supervisor
+        && let Err(error) = service.shutdown().await
+    {
+        error!(error = %error, "error shutting down supervisor");
+    }
+    #[cfg(not(feature = "supervisor"))]
+    {
+        let _ = supervisor;
+    }
+}
+
 fn log_component_exit(component: &str, result: anyhow::Result<()>) {
     match result {
         Ok(()) => info!(component = component, "component finished"),
@@ -352,7 +413,7 @@ fn log_component_exit(component: &str, result: anyhow::Result<()>) {
 /// native service.
 async fn setup_connection_router(
     config: &SubstrateConfig,
-) -> anyhow::Result<(ConnectionRouter, EndpointRegistry)> {
+) -> anyhow::Result<(ConnectionRouter, EndpointRegistry, Option<Arc<SupervisorHandle>>)> {
     let (service_id, secret_key, verified_controller) = setup_identity_and_storage(config).await?;
 
     // A verified `ControllerAgreement` (mutually signed by the substrate and
@@ -383,7 +444,7 @@ async fn setup_connection_router(
         );
     }
 
-    let (router, endpoint_registry, publisher) =
+    let (router, endpoint_registry, publisher, supervisor) =
         setup_router(config, &service_id, secret_key).await?;
 
     if let Some(publisher) = publisher
@@ -400,7 +461,7 @@ async fn setup_connection_router(
         );
     }
 
-    Ok((router, endpoint_registry))
+    Ok((router, endpoint_registry, supervisor))
 }
 
 async fn setup_identity_and_storage(
@@ -422,7 +483,12 @@ async fn setup_router(
     config: &SubstrateConfig,
     service_id: &str,
     secret_key: [u8; 32],
-) -> anyhow::Result<(ConnectionRouter, EndpointRegistry, Option<Arc<EndpointPublisher>>)> {
+) -> anyhow::Result<(
+    ConnectionRouter,
+    EndpointRegistry,
+    Option<Arc<EndpointPublisher>>,
+    Option<Arc<SupervisorHandle>>,
+)> {
     let data_store = registry_store::init_store(config).await?;
     let endpoint_registry = EndpointRegistry::new(data_store).await?;
 
@@ -437,9 +503,20 @@ async fn setup_router(
         .register(service_id.to_string(), "security".to_string(), security_endpoint)
         .await?;
 
-    let route_handler_deps =
+    let (route_handler_deps, shared) =
         build_route_handler_deps(config, service_id, &endpoint_registry, secret_key).await?;
     let control_plane = route_handler_deps.control_plane.clone();
+
+    let supervisor = if config.roles.supervisor.is_some() {
+        let supervisor_endpoint =
+            SubstrateEndpoint::NativeHostChannel { service_id: SUPERVISOR_DISPATCH_ID.to_string() };
+        endpoint_registry
+            .register(service_id.to_string(), "supervisor".to_string(), supervisor_endpoint)
+            .await?;
+        Some(init_supervisor(config, service_id, &shared).await?)
+    } else {
+        None
+    };
 
     let router = ConnectionRouter::init(
         endpoint_registry.clone(),
@@ -478,7 +555,94 @@ async fn setup_router(
         control_plane.set_endpoint_publisher(publisher.clone());
     }
 
-    Ok((router, endpoint_registry, publisher))
+    Ok((router, endpoint_registry, publisher, supervisor))
+}
+
+/// Handles the supervisor role (and any future post-router role that must
+/// act as a first-class dispatch target on this same node) needs, but
+/// which are otherwise fully consumed by `build_route_handler_deps`'s
+/// return value before this function's caller gets to see them again.
+/// Built once, in `build_route_handler_deps`, since only it has all of
+/// these in scope before they move into `RouteHandlerDeps`/
+/// `ControlPlaneService`.
+struct SharedNodeHandles {
+    key_store: Arc<KeyStore>,
+    storage_provider: Arc<dyn StorageProvider>,
+    native_dispatch: NativeDispatchRegistry,
+    /// The identity a post-router role presents when it connects, as a
+    /// client, to other substrates (ADR-0021 §8) -- a second handle to the
+    /// node's own key material, not a distinct identity.
+    client_identity: Arc<Identity>,
+}
+
+/// The literal `native_dispatch` key the supervisor's `NativeService`
+/// registers under, independent of this node's own DID: unlike
+/// `orchestrator`/`security`, which are the node addressing *itself*,
+/// `supervisor` is dispatched to for the *same* connection preamble
+/// (`<scheme>://supervisor.<node-did>`) but must not share `native_dispatch`'s
+/// entry with `ControlPlaneService`, which is already registered under the
+/// node's own DID by `RouteHandler::init`.
+const SUPERVISOR_DISPATCH_ID: &str = "supervisor";
+
+#[cfg(feature = "supervisor")]
+type SupervisorHandle = syneroym_app_supervisor::SupervisorService;
+#[cfg(not(feature = "supervisor"))]
+type SupervisorHandle = ();
+
+#[cfg(feature = "supervisor")]
+async fn init_supervisor(
+    config: &SubstrateConfig,
+    service_id: &str,
+    shared: &SharedNodeHandles,
+) -> anyhow::Result<Arc<SupervisorHandle>> {
+    use syneroym_app_supervisor::{MasterVault, SupervisorService, store::SupervisorStore};
+
+    let role = config
+        .roles
+        .supervisor
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("init_supervisor called with no [roles.supervisor]"))?;
+
+    std::fs::create_dir_all(&config.app_data_dir)?;
+    let store = SupervisorStore::open(&config.app_data_dir, &role.db_name)?;
+    let backup_dir = config.app_data_dir.join(&role.master_backup_dir);
+    let vault = MasterVault::new(
+        shared.storage_provider.clone(),
+        shared.key_store.clone(),
+        SUPERVISOR_DISPATCH_ID.to_string(),
+        backup_dir,
+    );
+    let supervisor = Arc::new(SupervisorService::new(
+        service_id.to_string(),
+        store,
+        vault,
+        &shared.client_identity,
+    ));
+    shared
+        .native_dispatch
+        .insert(SUPERVISOR_DISPATCH_ID.to_string(), supervisor.clone() as Arc<dyn NativeService>);
+
+    if !shared.key_store.kek_is_loaded() {
+        warn!(
+            "supervisor role is enabled but its vault is LOCKED: no KEK has been injected, so it \
+             cannot mint, certify, or renew member masters. Inject one with: roymctl --substrate \
+             {service_id} security inject-kek --kek-hex <...>"
+        );
+    }
+
+    Ok(supervisor)
+}
+
+#[cfg(not(feature = "supervisor"))]
+async fn init_supervisor(
+    _config: &SubstrateConfig,
+    _service_id: &str,
+    _shared: &SharedNodeHandles,
+) -> anyhow::Result<Arc<SupervisorHandle>> {
+    Err(anyhow::anyhow!(
+        "[roles.supervisor] is configured but this binary was built without the `supervisor` \
+         feature"
+    ))
 }
 
 /// Rebuilds the in-memory `StaticInventory` from every dependency binding
@@ -524,7 +688,7 @@ async fn build_route_handler_deps(
     service_id: &str,
     registry: &EndpointRegistry,
     secret_key: [u8; 32],
-) -> anyhow::Result<RouteHandlerDeps> {
+) -> anyhow::Result<(RouteHandlerDeps, SharedNodeHandles)> {
     // Shared with `ControlPlaneService`'s native `data-layer` dispatch
     // (`SynSvcNativeService`), which signs Slice B3's relationship-proof
     // records as this node's own asserter identity -- the same key material
@@ -587,6 +751,13 @@ async fn build_route_handler_deps(
     let native_dispatch: NativeDispatchRegistry = Arc::new(DashMap::new());
     let http_routes: HttpRouteRegistry = Arc::new(DashMap::new());
 
+    // Cloning the `Arc`, not `node_identity` itself -- `Identity`
+    // deliberately does not implement `Clone`, but a second handle to the
+    // same key material is exactly what's needed here. The supervisor role
+    // (when configured) uses this as the identity it presents when it
+    // connects, as a client, to the substrates it manages (ADR-0021 §8).
+    let supervisor_client_identity = node_identity.clone();
+
     let control_plane_service = ControlPlaneService::init(
         service_id.to_string(),
         service_id.to_string(),
@@ -606,16 +777,26 @@ async fn build_route_handler_deps(
     .await?;
     let control_plane_service = Arc::new(control_plane_service);
 
-    Ok(RouteHandlerDeps {
-        key_store,
-        storage_provider,
-        app_sandbox_engine,
-        messaging_broker,
-        native_dispatch,
-        http_routes,
-        control_plane_service: control_plane_service.clone(),
-        control_plane: Some(control_plane_service),
-    })
+    let shared = SharedNodeHandles {
+        key_store: key_store.clone(),
+        storage_provider: storage_provider.clone(),
+        native_dispatch: native_dispatch.clone(),
+        client_identity: supervisor_client_identity,
+    };
+
+    Ok((
+        RouteHandlerDeps {
+            key_store,
+            storage_provider,
+            app_sandbox_engine,
+            messaging_broker,
+            native_dispatch,
+            http_routes,
+            control_plane_service: control_plane_service.clone(),
+            control_plane: Some(control_plane_service),
+        },
+        shared,
+    ))
 }
 
 /// Guest subscriptions survive a restart (ADR-0010 Finding A1): replay
