@@ -403,10 +403,55 @@ rows:
   is not yet populated — A5b writes no bindings on its own, so there is
   nothing to compare a substrate's observed epoch against until A5c's push
   exists).
-- **A5c — the loop and remediation.** Not started. The resident reconcile
-  loop, bounded restart with backoff/max-attempts/terminal `Degraded`,
-  binding push on membership change, MQTT alert publication, the
-  health-poll-cost budget measured. Closes matrix rows 11, 12, 13.
+- **A5c — the loop and remediation.** Not started, `§0` pass complete
+  (2026-08-01, plan Part IV). The resident reconcile loop, bounded restart
+  with backoff/max-attempts/terminal `Degraded`, binding push on membership
+  change, MQTT alert publication, the health-poll-cost budget measured.
+  Closes matrix rows 11, 12, 13.
+
+  **Dated correction (2026-08-01), against the A5 implementation plan's
+  Part IV.** The `§0` pass found **eighteen** items this bullet and the
+  plan's own §14 leave open, understate, or state wrongly; **nine** change
+  what A5c has to build. Four matter most.
+
+  1. **The supervisor has no placement-change refusal, and §14 said it
+     did.** `check_no_placement_change` is private to `roymctl` and reads
+     the operator's `--dir/identities/`; the supervisor never calls it.
+     So a re-`submit` that moves a service is **silently applied today**,
+     leaving two live copies of one member master — the milestone doing
+     the thing its own non-goals forbid. An A5b defect, fixed in A5c
+     (D-A5c-1); matrix row 20 does not cover it, since it settles name
+     resolution only and the old copy keeps running.
+  2. **A partially-deployed app reports `Active`, not `Degraded`** —
+     `Signal::NotDeployed` is deliberately not a fault (D-A4-19, correct
+     for a poll), and the supervisor's `status` derives its state from
+     faults alone. So **matrix row 12's read-surface half is unmet
+     today**. The supervisor has the plan and the poll does not; A5c adds
+     that knowledge rather than changing what a fault means (D-A5c-10).
+  3. **A5c has no reachable membership change of its own**, so the binding
+     push in this bullet has no in-slice trigger: one member per service
+     until A5e's `replicas`, `get_or_mint` returns the same master on
+     re-submit, and `write-bindings` refuses an undeclared dependency by
+     design. A5c builds the push, its epoch bookkeeping, and the
+     convergence read; the trigger is exercised by a fixture, and the real
+     one arrives in A5e (D-A5c-16).
+  4. **The binding epoch has no owner**, and the supervisor's first push
+     would be classified a `Conflict` against its own deploy: bindings are
+     emitted at a hardcoded epoch 0 and the initial deploy writes the
+     per-dependent row unguarded, so an equal-epoch push with changed
+     members is a conflict by the four-case rule. The supervisor takes
+     ownership of the epoch, holding one counter **per dependent service**
+     that always advances before a write; `0` comes to mean "no supervisor
+     has written here", which the operator's own `roymctl app deploy` keeps
+     (D-A5c-4).
+
+  Also decided rather than deferred: `ProbeFailing` is **alert only**
+  (§18 q8 — `HealthCheck` has no initial delay and no failure threshold,
+  so a slow-starting service would be restarted until it hit the attempt
+  ceiling; and `restart` is meaningful for `container` only among the four
+  service types); and a changed-placement re-submit is a **permanent
+  refusal the loop never retries** (§18 q9 — the reviewer's answer
+  confirmed, with item 1 above as the correction to what it costs).
 - **A5d — unattended renewal.** Not started. Renewal on the loop,
   `RotationPolicy` load-bearing, `SynSvcNativeService` refresh, certificate
   maximum lifetime, master-anchor refresh on a schedule, revocation surface.
@@ -561,9 +606,9 @@ fail.
 | 8 | **A second supervisor that has not adopted the instance issues a write** | Its presented generation is lower than the one an adopting supervisor holds; rejected, no flapping. (Corrected wording, §0.10: the original "second supervisor adopts" describes a supervisor that *did* adopt, which correctly wins with a *higher* generation — this row is about one that never did.) **✅ A5a substrate mechanism** (`check_generation`'s `Ordering::Less` case, `crates/control_plane/src/service/orchestration.rs`); **✅ A5b live proof**: `a_second_supervisor_that_has_not_adopted_loses_every_write` (`crates/substrate/tests/supervisor_interface_e2e.rs`) |
 | 9 | **Supervisor finds a *higher* generation than its own** | Stops managing that instance and alerts; never self-increments (ADR-0021 §4). **✅ A5b substrate mechanism**: `SupervisorService::handle_status` reads the max held generation across every substrate the *plan* places a service on (not only ones this supervisor's own journal already shows landed) on every sweep and raises `AlertKind::SupervisorSuperseded` when it exceeds the supervisor's own stored generation (`crates/app_supervisor/src/service.rs`); **✅ A5b live proof**: `a_supervisor_that_reads_a_higher_generation_marks_the_instance_superseded_and_alerts` (`crates/substrate/tests/supervisor_interface_e2e.rs`) |
 | 10 | Deploy retried after a lost response | Idempotent no-op for identical (instance, service, content hash). **✅ A5a**: `deploy_with_context` hashes `(manifest, app_context-minus-generation)` with blake3 and short-circuits to `Ok(())` on an identical redeploy, distinct from the epoch guard and the generation gate (ADR-0021 §3) |
-| 11 | Dependent unreachable during a push | Instance marked `Degraded`; retried; state visible on the operator read surface |
-| 12 | Partial app deploy (3 of 5 services) | No rollback; `Degraded`; failed services retried |
-| 13 | Remediation exceeds max attempts | Terminal `Degraded`; alerting only; no restart loop |
+| 11 | Dependent unreachable during a push | Instance marked `Degraded`; retried; state visible on the operator read surface. **A5c**, test **47 (unit)** — a fake `SubstrateActor` whose `write_bindings` fails on one pass and succeeds on the next. Deliberately not an e2e (A5c §0 pass §23, review F8): §19.18 shows A5c has no reachable membership change, so any two-node trigger would be a fixture reaching into `supervisor.db` on a running node, while the substrate-side wire path is already proven live by A5a's `binding_push_e2e.rs`. What this row tests — push fails, instance goes `Degraded`, next pass retries — is entirely supervisor-side control flow. Nothing retries anything before A5c's loop exists |
+| 12 | Partial app deploy (3 of 5 services) | No rollback; `Degraded`; failed services retried. **A5c**, tests 10, 11 (unit) and **48 (e2e)** — two real nodes, one stopped at submit time. **Note (2026-08-01, A5c §0 pass §19.11): the read-surface half is unmet today** — a planned service that never deployed reports `Signal::NotDeployed`, which is deliberately not a fault (D-A4-19), so `status` reports the whole instance `Active`. The supervisor holds the plan and the poll does not; A5c derives `Degraded` from "planned but never landed" rather than widening what a fault means |
+| 13 | Remediation exceeds max attempts | Terminal `Degraded`; alerting only; no restart loop. **A5c**, tests **37, 38** (unit). Reached only from `InstanceNotRunning`: `ProbeFailing` is alert-only and never consumes an attempt (D-A5c-17), and `SubstrateUnreachable` never did (D-A4-13). The terminal flag is escapable — `force-reconcile` and `adopt` clear it (D-A5c-20), since a service nothing will restart cannot clear it by becoming healthy |
 | 14 | Supervisor holds master keys and is compromised | Blast radius bounded to the members it manages; instance certificates short-lived and revocable (ADR-0020 §3). **Split.** **✅ A0** proves the testable bound: an instance certificate is revocable without touching the member master, and a fresh instance key from the same master still verifies (`a_revoked_instance_key_is_rejected_while_the_member_master_still_certifies_a_new_one`, `crates/router/src/handshake.rs`). The other half — blast radius actually bounded to what a supervisor manages — needs a supervisor and is A5's |
 | 15 | Bound cross-app dependency replaced, **online-key posture** | Active probe fails on a call the supervisor makes *as the depending member*; A's owner alerted (ADR-0021 §7). **Carries an unstated prerequisite** (§0.9): `AppDependencySpec::Bind { instance }` names a bound app *instance*, not a service inside it, so there is no manifest surface yet for "which service of app B does app A depend on" — the compiler cannot resolve a cross-app `Bind` at all until one exists. Scoped to **A5e** along with the manifest surface itself |
 | 16 | **`security` call (`inject-kek`/`rotate-kek`/`set-secret`) without `substrate/admin`** | Rejected. **✅ P0**: `security_is_denied_without_substrate_admin` (`crates/control_plane/src/service.rs`) |
@@ -586,6 +631,17 @@ fail.
   is the trigger to build the pull path.
 - **Health poll cost:** the supervisor's steady-state poll must not be a
   meaningful load on a target substrate at the intended inventory size.
+  **Made a number, a priori, at the A5c `§0` pass (D-A5c-12)**, for the same
+  reason the convergence budget above is a guess on purpose — a budget
+  derived from the first measurement can never fail. One pass over a
+  **20-service instance completes in under 2 s** and issues **at most 2 RPCs
+  to that substrate** (one batched `status`, one
+  `app-instance-management-of`); serving it costs the target **under 5% of
+  one core averaged over the poll interval**. The number at risk is wasm:
+  `probe_cached`'s 5 s minimum against a 30 s default poll interval means
+  every sweep misses the cache and pays one component instantiation per
+  `rpc`-probed wasm service. Measured **before** A5c's loop is written, so
+  `poll_interval_secs`' default is chosen from the result.
 - **Resolution adds no network hop.** A2 moves dependency resolution host-side;
   the name → master-DID step must stay an in-process cache lookup. The
   master-DID → endpoint step is the registry lookup that already happens today

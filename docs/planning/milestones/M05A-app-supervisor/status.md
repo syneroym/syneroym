@@ -2030,6 +2030,37 @@ test rewritten in place, not added, per the note above.
 test --workspace` 1236+/1236+, exit 0, unsandboxed; `mise run test:e2e`
 12/12; `crates/substrate --test supervisor_interface_e2e` 6/6.
 
+**Two behaviour changes round 2 made that its own notes above state only
+in passing** (recorded 2026-08-01 while planning A5c, because both are
+things a later slice must not rediscover):
+
+- **`retire` is no longer terminal.** N3's fix (`SupervisorStore::
+  un_retire`, called by `handle_adopt` on a successful claim) changes what
+  the flag *means*, not just what error message names the way out.
+  Before: `retired` was a one-way door and every refusal pointed at a
+  recovery path that did not exist. After: `retired` is "this supervisor
+  has stopped managing the instance until an operator re-adopts it",
+  and `adopt` clears it. `release` deliberately does **not** — it clears
+  the substrate-side stamp only and says nothing about whether *this*
+  supervisor should resume. Consequences for A5c: the resident loop's
+  work list (`all_active`) excludes retired instances, and an instance can
+  re-enter that list without a restart, so the loop must read the flag per
+  pass rather than snapshotting it at boot. The §13 test name was updated
+  with the behaviour (`retire_refuses_a_later_submit_until_un_retired`).
+- **`impl Drop for SyneroymClient` changes a type this milestone does not
+  own.** The fix landed in `crates/sdk/src/lib.rs`, not in the supervisor,
+  so it affects every holder of a `SyneroymClient` in the tree: `roymctl`
+  (a short-lived process — the spawned `close_in_background` task can lose
+  the race with process exit, which is no worse than the previous abort
+  but is also no better), `syneroym-client-gateway` (which caches clients
+  in a `DashMap`, so `Drop` fires on eviction or shutdown, when the runtime
+  may already be winding down), and all thirteen `crates/substrate/tests/*`
+  e2e files. It is a backstop, not a close path: it cannot `.await` the
+  graceful QUIC handshake, so any caller that must *know* the close
+  finished still calls `shutdown` explicitly. A5c inherits that rule — its
+  loop connects on a timer, so every pass must close its clients rather
+  than lean on `Drop`.
+
 ## Dependencies pulled in
 
 1. **`ControllerAgreement` creation tool + the two items B7 pairs with it**, all
