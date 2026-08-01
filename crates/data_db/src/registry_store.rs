@@ -116,20 +116,35 @@ impl SqliteEndpointStorage {
             // all, so the endpoint variant cannot tell them apart -- which is
             // why `readyz` had to guess. One row per service, upserted on
             // redeploy, deleted on undeploy, mirroring service_instance_certs.
-            // `manifest_hash` (M05A A5a): the canonical content hash of what
-            // was actually installed, written only on full deploy success --
-            // the dedup key for failure-matrix row 10, distinct from the
-            // epoch guard and the generation gate (ADR-0021 §3).
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS service_deploy_facts (
                     service_id        TEXT PRIMARY KEY,
                     service_type      TEXT NOT NULL,
                     health_check_json TEXT,
-                    manifest_hash     TEXT,
                     created_at        INTEGER NOT NULL
                 );",
                 [],
             )?;
+            // `manifest_hash` (M05A A5a): the canonical content hash of what
+            // was actually installed, written only on full deploy success --
+            // the dedup key for failure-matrix row 10, distinct from the
+            // epoch guard and the generation gate (ADR-0021 §3).
+            //
+            // Unlike every table above, `service_deploy_facts` predates this
+            // column (A4), so `CREATE TABLE IF NOT EXISTS` is a no-op here --
+            // it never adds a column to a table that already exists. This
+            // `ALTER TABLE` is the one idempotent way to get the column onto
+            // a database that opened before it existed; it is not the
+            // version-ladder AGENTS.md rules out, since there is no schema
+            // version to track and nothing else in this method depends on
+            // it. "duplicate column name" is the expected outcome once this
+            // has already run once, on every open after the first.
+            if let Err(err) =
+                conn.execute("ALTER TABLE service_deploy_facts ADD COLUMN manifest_hash TEXT", [])
+                && !err.to_string().contains("duplicate column name")
+            {
+                return Err(err.into());
+            }
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS service_bindings (
                     service_id      TEXT NOT NULL,
@@ -708,6 +723,74 @@ mod tests {
         assert_eq!(facts[0].1, "tcp");
         assert!(facts[0].2.as_deref().unwrap().contains("tcp-connect"));
         assert_eq!(facts[0].3.as_deref(), Some("deadbeef"));
+    }
+
+    /// `service_deploy_facts` predates `manifest_hash` (A4 created the
+    /// table, A5a added the column) -- unlike every other table in this
+    /// file, `CREATE TABLE IF NOT EXISTS` is a no-op against it, so the
+    /// column needs its own idempotent `ALTER TABLE`. Built with a raw
+    /// `Connection` for the same reason as
+    /// `an_existing_database_gains_the_certificate_table_on_open`: it has to
+    /// reproduce the pre-A5a, `manifest_hash`-less table directly, not go
+    /// through `SqliteEndpointStorage::new`, which already creates the
+    /// column unconditionally regardless of whether the `ALTER TABLE` still
+    /// runs.
+    #[tokio::test]
+    async fn an_existing_database_gains_the_manifest_hash_column_on_open() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute(
+                "CREATE TABLE service_deploy_facts (
+                    service_id        TEXT PRIMARY KEY,
+                    service_type      TEXT NOT NULL,
+                    health_check_json TEXT,
+                    created_at        INTEGER NOT NULL
+                );",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO service_deploy_facts (service_id, service_type, created_at) VALUES \
+                 ('svc-old', 'tcp', 0)",
+                [],
+            )
+            .unwrap();
+            conn.execute("PRAGMA user_version = 1", []).unwrap();
+        }
+
+        // Reopen through the real constructor -- the pre-existing row must
+        // survive, and `manifest_hash` must both read (as `None` for the
+        // untouched row) and write.
+        let store = SqliteEndpointStorage::new(&path).await.unwrap();
+        let facts = store.load_all_deploy_facts().await.unwrap();
+        assert_eq!(facts, vec![("svc-old".to_string(), "tcp".to_string(), None, None)]);
+
+        store.save_deploy_facts("svc-old", "tcp", None, Some("deadbeef")).await.unwrap();
+        let facts = store.load_all_deploy_facts().await.unwrap();
+        assert_eq!(facts[0].3.as_deref(), Some("deadbeef"));
+    }
+
+    /// The `app_instance_management`-shaped sibling of the deploy-facts
+    /// round-trip test above -- every other table in this file has this
+    /// coverage; this table did not.
+    #[tokio::test]
+    async fn app_instance_management_saves_loads_and_removes() {
+        let (store, _dir) = make_store().await;
+        let management = AppInstanceManagement {
+            owner_did: "did:key:owner".to_string(),
+            supervisor_did: Some("did:key:supervisor".to_string()),
+            generation: 3,
+        };
+        store.save_app_instance_management("app-1", &management).await.unwrap();
+
+        let loaded = store.load_all_app_instance_management().await.unwrap();
+        assert_eq!(loaded, vec![("app-1".to_string(), management)]);
+
+        store.remove_app_instance_management("app-1").await.unwrap();
+        assert!(store.load_all_app_instance_management().await.unwrap().is_empty());
     }
 
     #[tokio::test]
