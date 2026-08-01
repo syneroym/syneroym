@@ -542,6 +542,130 @@ What's different from a single-substrate deploy:
   database's `deployment_actions` table is missing the columns this slice
   added.
 
+#### Operating an App with a Supervisor (`roymctl supervisor`)
+
+The **App Supervisor** (M05A Slice A5b, [ADR-0021](decisions/0021-binding-propagation-and-app-supervisor.md)
+§8) is a substrate role that holds desired state for the app instances it
+manages and applies it on request over its own `supervisor` interface. This
+slice has **no autonomy** — nothing runs on a timer yet, and every action
+below is a direct response to an RPC call. Two postures exist for who
+deploys and renews certificates: manual (`roymctl app deploy`, described
+above) or supervised (`roymctl supervisor …`, below). Pick one per app
+instance; a supervisor's `submit` and a plain `app deploy` are not meant to
+alternate against the same instance.
+
+##### Enabling the role
+
+```toml
+# substrate.toml
+[roles.supervisor]
+poll_interval_secs = 30       # unused until the resident loop (a later slice)
+db_name = "supervisor.db"     # desired state, journal, and alerts -- one file
+max_restart_attempts = 3      # unused until the resident loop
+restart_backoff_secs = 30     # unused until the resident loop
+alert_topic = "supervisor/alerts"  # unused until MQTT publication (a later slice)
+master_backup_dir = "master-backups"  # relative to app_data_dir; see below
+```
+
+##### Custody: the supervisor mints its own member masters
+
+Unlike `roymctl app deploy --mint-masters`, which mints into files under the
+*operator's* `--dir`, the supervisor mints each member master **directly
+into its own encrypted vault** and never receives one over the wire — there
+is no `--upload-masters` flag and no unmastered submit path. This is why:
+no client in this tree can produce the end-to-end encrypted transport
+(`?enc=`) a key would need to cross the wire safely, so the design keeps the
+key off the wire entirely rather than sending it plaintext. See
+[ADR-0020](decisions/0020-stable-logical-service-identity.md)'s 2026-08-01
+amendment for the full reasoning.
+
+**The vault is locked until you inject a KEK, and the KEK does not survive a
+restart.** Boot order matters:
+
+```bash
+# 1. Boot the substrate (the supervisor role starts, but its vault is locked --
+#    a startup warning names the fix).
+# 2. Inject the KEK -- required before the FIRST submit, and again after
+#    every restart:
+roymctl --substrate <supervisor-node-did> security inject-kek --kek-hex <64-hex-chars>
+# 3. Now `supervisor submit` can mint.
+```
+
+A member master minted this way is **not backed up automatically**. The
+moment `submit` mints one, it prints the DID and the export command:
+
+```bash
+roymctl --substrate <supervisor-node-did> supervisor export-master member-guild-instance-1-frontend-0
+# -> Wrote master 'member-guild-instance-1-frontend-0' to <supervisor's app_data_dir>/master-backups/member-guild-instance-1-frontend-0.key
+```
+
+That path is on the **supervisor's own host** — collecting the file from
+there (a mounted volume, a backup agent, `scp`) is the operator's own
+arrangement, the same "operator duty this milestone documents rather than
+automates" `app deploy`'s masters already are. `import-master` is the
+reverse: place an A0-A4 deployment's `<dir>/identities/member-*.key` into
+that same `master_backup_dir`, then ask the supervisor to adopt it by name.
+Neither verb ever carries key bytes in its request or response — only a
+name (in) or a path (out).
+
+##### The grant a supervisor needs on every substrate it manages
+
+The supervisor's own credential against each managed substrate travels
+inside `submit`'s `inventory-json` (an alias's resolved `CapabilityToken`,
+not a local file path — meaningless once it crosses the wire). Nothing
+issues this grant automatically; an operator mints it once per managed
+substrate, audienced to the **supervisor node's own DID** (the identity it
+presents when it connects out, per ADR-0021 §8 — it is a client of
+substrates, not a server to services):
+
+```bash
+roymctl --dir <DIR> --as <managed-substrate-owner> identity issue-grant \
+  --to did:key:<supervisor-node-did> \
+  --resource "substrate:did:key:<managed-substrate-did>" \
+  --can orchestrator/deploy --can orchestrator/status \
+  --out grants/supervisor-on-edge-1.json
+```
+
+**Both abilities, node-wide, not app-scoped.** `claim-app-instance`/
+`release-app-instance` need `orchestrator/deploy`; `resolve-instance-identity`
+(certification, on the path of every deploy the supervisor performs) and
+`app-instance-management-of` (`adopt`'s read half, before any claim exists
+to match ownership against) need `orchestrator/status` instead — the two
+abilities are deliberately flat, so holding one does not cover the other.
+An app-scoped selector is not enough either: claiming or releasing an app
+instance is a node-scoped act, because the instance spans services.
+
+##### Submitting, adopting, and reading status
+
+```bash
+# Compile a manifest and hand it to the supervisor as desired state. The
+# supervisor resolves-or-mints its own masters and substitutes them; the
+# plan this sends still carries the compiler's fabricated ids.
+roymctl --substrate <supervisor-node-did> supervisor submit \
+  guild-instance-1 guild-app.toml --inventory substrates.toml
+
+# Claim management: reads the held generation from every substrate the
+# instance is placed on and writes held + 1 (ADR-0021 §4). The only minter
+# -- a supervisor never self-increments.
+roymctl --substrate <supervisor-node-did> supervisor adopt guild-instance-1
+
+# Health, per-service signals, and a delivery note (best-effort synchronous
+# push, not a durability guarantee):
+roymctl --substrate <supervisor-node-did> supervisor status guild-instance-1
+
+# Active alerts (add --all for the full history including cleared ones):
+roymctl --substrate <supervisor-node-did> supervisor alerts guild-instance-1
+```
+
+`pause`/`resume` mark an instance in the supervisor's own store without
+touching anything on the substrates it manages. `release` hands an instance
+back to manual operation by clearing the management stamp on every placed
+substrate (does **not** undeploy); `retire` does the same and additionally
+makes the supervisor's own desired-state row terminal, refusing a later
+`submit` until the instance is adopted again. `force-reconcile` re-runs the
+mint/certify/apply pipeline against whatever is currently stored, without
+waiting for a resident loop (which does not exist in this slice).
+
 ### Interacting with Applications
 
 #### Call a JSON-RPC method on a WASM app via HTTP Proxy
