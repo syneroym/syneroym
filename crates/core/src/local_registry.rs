@@ -79,6 +79,11 @@ pub struct EndpointRegistry {
     /// `service_id` names. Absent for a service deployed without a master
     /// (the pre-existing "service is its own master" fallback).
     service_certs: Arc<DashMap<String, DelegationCertificate>>,
+    /// `service_id` -> (`service_type`, `health_check_json`) recorded at
+    /// deploy (M05A A4). Absent for a service deployed by a pre-A4 binary,
+    /// which is why every reader treats a missing entry as "unknown" rather
+    /// than guessing.
+    service_deploy_facts: Arc<DashMap<String, (String, Option<String>)>>,
     /// `service_id` -> (`app_instance_id`, `service_name`) for a service
     /// deployed as part of an app instance (A2). Absent for a standalone
     /// `svc deploy`, which resolves no declared dependencies.
@@ -111,6 +116,7 @@ impl EndpointRegistry {
             interface_hashes: Arc::new(DashMap::new()),
             service_owners: Arc::new(DashMap::new()),
             service_certs: Arc::new(DashMap::new()),
+            service_deploy_facts: Arc::new(DashMap::new()),
             service_app_contexts: Arc::new(DashMap::new()),
             app_instance_owners: Arc::new(DashMap::new()),
             storage,
@@ -147,6 +153,10 @@ impl EndpointRegistry {
                     );
                 }
             }
+        }
+
+        for (service_id, service_type, check) in self.storage.load_all_deploy_facts().await? {
+            self.service_deploy_facts.insert(service_id, (service_type, check));
         }
 
         for (service_id, app_instance_id, service_name) in
@@ -249,6 +259,7 @@ impl EndpointRegistry {
             interface_hashes: Arc::new(DashMap::new()),
             service_owners: Arc::new(DashMap::new()),
             service_certs: Arc::new(DashMap::new()),
+            service_deploy_facts: Arc::new(DashMap::new()),
             service_app_contexts: Arc::new(DashMap::new()),
             app_instance_owners: Arc::new(DashMap::new()),
             storage,
@@ -311,6 +322,36 @@ impl EndpointRegistry {
     #[must_use]
     pub fn all_instance_certs(&self) -> Vec<(String, DelegationCertificate)> {
         self.service_certs.iter().map(|e| (e.key().clone(), e.value().clone())).collect()
+    }
+
+    /// Record what a deploy said `service_id` is, and its declared health
+    /// check if any (M05A A4, upsert -- a redeploy that drops the check
+    /// writes `None`, clearing it by construction).
+    pub async fn set_deploy_facts(
+        &self,
+        service_id: String,
+        service_type: String,
+        health_check_json: Option<String>,
+    ) -> Result<()> {
+        self.storage
+            .save_deploy_facts(&service_id, &service_type, health_check_json.as_deref())
+            .await?;
+        self.service_deploy_facts.insert(service_id, (service_type, health_check_json));
+        Ok(())
+    }
+
+    /// The recorded `(service_type, health_check_json)`, or `None` for a
+    /// service deployed by a pre-A4 binary.
+    #[must_use]
+    pub fn deploy_facts(&self, service_id: &str) -> Option<(String, Option<String>)> {
+        self.service_deploy_facts.get(service_id).map(|e| e.value().clone())
+    }
+
+    /// Forget `service_id`'s deploy facts. Idempotent.
+    pub async fn remove_deploy_facts(&self, service_id: &str) -> Result<()> {
+        self.storage.remove_deploy_facts(service_id).await?;
+        self.service_deploy_facts.remove(service_id);
+        Ok(())
     }
 
     /// Record which app instance and logical name `service_id` was deployed

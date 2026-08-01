@@ -182,6 +182,20 @@ impl EndpointStorage for RemoveOwnerFailingStorage {
     async fn remove_cert(&self, service_id: &str) -> anyhow::Result<()> {
         self.inner.remove_cert(service_id).await
     }
+    async fn load_all_deploy_facts(&self) -> anyhow::Result<Vec<(String, String, Option<String>)>> {
+        self.inner.load_all_deploy_facts().await
+    }
+    async fn save_deploy_facts(
+        &self,
+        service_id: &str,
+        service_type: &str,
+        health_check_json: Option<&str>,
+    ) -> anyhow::Result<()> {
+        self.inner.save_deploy_facts(service_id, service_type, health_check_json).await
+    }
+    async fn remove_deploy_facts(&self, service_id: &str) -> anyhow::Result<()> {
+        self.inner.remove_deploy_facts(service_id).await
+    }
     async fn load_all_app_contexts(&self) -> anyhow::Result<Vec<(String, String, String)>> {
         self.inner.load_all_app_contexts().await
     }
@@ -237,6 +251,7 @@ fn tcp_manifest(port: u16) -> DeployManifest {
             schema: None,
             rotation_policy: None,
             fdae_policy: None,
+            health_check: None,
         },
         service_type: ServiceType::Tcp(TcpManifest {
             endpoints: vec![NetworkEndpoint {

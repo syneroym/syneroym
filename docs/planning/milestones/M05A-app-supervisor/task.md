@@ -309,7 +309,13 @@ Also here: `ProxyRouter::invoke_remote_at`'s `CallOrigin::Native` arm still
 presents the *node's* key on the wire (A0 changes only the guest-origin arm),
 which is the transport half of the same gap.
 
-### A3 — Multi-substrate placement and the substrate inventory
+### A3 — Multi-substrate placement and the substrate inventory — **Complete (2026-07-30)**
+Design of record: [ADR-0021](../../../decisions/0021-binding-propagation-and-app-supervisor.md)
+§1/§5, [ADR-0020](../../../decisions/0020-stable-logical-service-identity.md)
+§1/§3/§6. Implementation plan:
+[slice-a3-implementation-plan.md](slice-a3-implementation-plan.md). Verification
+evidence: [status.md](status.md)'s A3 section.
+
 Placement selector in the manifest (v1: a global default plus per-service
 override, by **alias**, never a bare DID); a substrate inventory holding
 alias → DID, reachability, capabilities, and the deploy capability held on each;
@@ -317,12 +323,52 @@ resolved `substrate` recorded on `PlannedService`; per-(service, substrate)
 journal action records; partial-failure semantics (no auto-rollback, mark
 `Degraded`, keep retrying).
 
-### A4 — Health, read-only
+**Dated correction (2026-07-30):** the implementation plan's §0 found fifteen
+places this paragraph understated or left open (multi-substrate identity
+minting, the journal never having a writer, the credential-per-substrate gap,
+the two-publisher relocation hazard, the split-registry-namespace precondition,
+among others) — see the plan's §0/§1 for the fourteen numbered decisions taken.
+"Keep retrying" means **a manual re-run** through A4 (§0.14): nothing retries on
+its own until A5's loop exists. Failure-matrix row 10 (lost-response dedup) is
+**not** met by A3 — recorded as A5's in `deferred-backlog.md`. §9's test 6 (a
+WASM-guest two-substrate dependency call, which would also discharge two
+outstanding coverage rows from A0 and A2) was **declined**, not built — sized
+correctly in the plan as the largest single item in the slice, and judged out
+of proportion to add in the same pass as the rest of A3's five two-substrate
+e2e tests. Both backlog rows it would have discharged are updated to say A3
+declined it too, with the same reasoning.
+
+### A4 — Health, read-only — **Complete (2026-07-31)**
+Design of record: [ADR-0021](../../../decisions/0021-binding-propagation-and-app-supervisor.md)
+§7/§8. Implementation plan:
+[slice-a4-implementation-plan.md](slice-a4-implementation-plan.md). Verification
+evidence: [status.md](status.md)'s A4 section.
+
 Health-check declaration in `ServiceConfig` (absent today); a substrate-side
 per-instance status query; the supervisor's poll loop; three signals kept
 distinct because remediation differs per signal — substrate unreachable, instance
 not running, author-declared readiness probe failing. Alert events emitted and
 queryable. **No remediation yet**: watch the signal before acting on it.
+
+**Dated correction (2026-07-31):** the implementation plan's §0 found thirteen
+places this paragraph left a decision unmade, described a component that does
+not exist yet, or understated the work (six of them scope-changing) — see the
+plan's §0/§1 for the full numbered list. Two matter most. **"The supervisor's
+poll loop" does not exist**: A5 is the slice that introduces the substrate
+role and the `supervisor` interface, so A4's sweep is a library function
+(`crates/sdk::health::poll_once`/`record_report`), driven one-shot by `roymctl
+app health`/`app alerts`, the same shape A3 took for `apply_plan` (D-A4-1,
+D-A4-2). And **"alert events … queryable" has no read surface in A4 either**:
+`roymctl app alerts` reading a local `AlertStore` stands in for it; MQTT
+publication moves to A5, since only a substrate role holds an in-process
+broker (D-A4-10). Also: `task.md`'s single "instance not running" signal is
+actually three distinct substrate-side truths (container, wasm, and
+TCP/native-host, the last two having no deploy-time liveness signal at all)
+that the substrate could not previously distinguish — fixed by an
+`AppServiceType` recorded at deploy time (§0.5); and `deployed_service_id` (the
+DID a sweep polls) inherits `check_no_placement_change`'s member-index-0
+assumption, correct today but broken the moment A5 scales a service (D-A4-11,
+backlog row).
 
 ### A5 — The supervisor loop
 Substrate role; the `supervisor` interface, carrying both the write path (submit

@@ -587,6 +587,14 @@ impl AppSandboxEngine {
         interface.get_export(&self.engine, "authorize-rows").is_some()
     }
 
+    /// Whether a compiled component is loaded for `service_id` -- the only
+    /// liveness a wasm service has, since nothing runs between calls (M05A
+    /// A4).
+    #[must_use]
+    pub fn is_deployed(&self, service_id: &str) -> bool {
+        self.components.contains_key(service_id)
+    }
+
     /// Deploy and compile a WASM component for a given service
     pub async fn deploy_wasm(&self, service_id: &str, manifest: &DeployManifest) -> Result<()> {
         Self::validate_service_id(service_id)?;

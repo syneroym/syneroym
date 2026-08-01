@@ -36,6 +36,13 @@ impl AppSandboxEngine {
     pub fn exports_authorize_rows(&self, _service_id: &str) -> bool {
         false
     }
+
+    /// A sandbox-less build never has a loaded component, mirroring
+    /// `exports_authorize_rows`'s own reasoning above (M05A A4).
+    #[must_use]
+    pub fn is_deployed(&self, _service_id: &str) -> bool {
+        false
+    }
 }
 
 #[cfg(feature = "podman_sandbox")]
@@ -44,3 +51,12 @@ pub use syneroym_sandbox_podman::ContainerEngine;
 #[cfg(not(feature = "podman_sandbox"))]
 #[derive(Debug, Clone)]
 pub struct ContainerEngine;
+
+#[cfg(not(feature = "podman_sandbox"))]
+impl ContainerEngine {
+    /// A build with no container engine cannot answer a readiness question
+    /// about a container it could never have started (M05A A4).
+    pub async fn readyz(&self, service_id: &str) -> anyhow::Result<()> {
+        anyhow::bail!("container support is not compiled into this substrate ({service_id})")
+    }
+}

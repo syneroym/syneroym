@@ -166,3 +166,110 @@ fn test_app_deploy_mint_masters_flag_parses() -> Result<(), Box<dyn Error>> {
         .stdout(contains("--mint-masters"));
     Ok(())
 }
+
+/// M05A Slice A3: `app deploy --help` lists the new `--inventory` flag.
+#[test]
+fn app_deploy_help_lists_inventory() -> Result<(), Box<dyn Error>> {
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.arg("app").arg("deploy").arg("--help").assert().success().stdout(contains("--inventory"));
+    Ok(())
+}
+
+/// A manifest with `[placement]` naming an alias the inventory does not
+/// define fails naming both the inventory file and the missing alias --
+/// before any deploy call, since `check_placement` runs ahead of the
+/// per-substrate preflight. An empty-but-present inventory file exercises
+/// this with no live substrate needed.
+#[test]
+fn app_deploy_with_placement_and_no_matching_inventory_entry_names_the_path_and_alias()
+-> Result<(), Box<dyn Error>> {
+    let temp_dir = tempfile::tempdir()?;
+    let manifest_path = temp_dir.path().join("app.toml");
+    std::fs::write(
+        &manifest_path,
+        r#"
+            id = "syneroym:a3-test-app"
+            version = "0.1.0"
+
+            [services.backend]
+            service_type = "tcp"
+            source = "127.0.0.1:9000"
+
+            [services.backend.placement]
+            substrate = "edge-1"
+        "#,
+    )?;
+    // Present, but defines no substrates -- `check_placement` fails with no
+    // network access at all.
+    let inventory_path = temp_dir.path().join("substrates.toml");
+    std::fs::write(&inventory_path, "")?;
+
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.arg("--dir")
+        .arg(temp_dir.path())
+        .arg("app")
+        .arg("deploy")
+        .arg("a3-test-inst")
+        .arg(&manifest_path)
+        .arg("--journal-path")
+        .arg(temp_dir.path().join("deployments.db"))
+        .assert()
+        .failure()
+        .stderr(contains("edge-1"))
+        .stderr(contains(inventory_path.to_string_lossy().to_string()));
+    Ok(())
+}
+
+/// D-A3-20: a fully-placed app (every service named by alias) must not
+/// require `--substrate`/`substrate.key`, since it never touches the
+/// fallback target. The inventory entry names an address nothing listens
+/// on, so the run still fails -- but on unreachability, never on the
+/// `substrate.key not found` message `get_substrate_did` would raise if it
+/// were called eagerly.
+#[test]
+fn app_deploy_fully_placed_does_not_require_a_substrate_key() -> Result<(), Box<dyn Error>> {
+    let temp_dir = tempfile::tempdir()?;
+    let manifest_path = temp_dir.path().join("app.toml");
+    std::fs::write(
+        &manifest_path,
+        r#"
+            id = "syneroym:a3-test-app"
+            version = "0.1.0"
+
+            [services.backend]
+            service_type = "tcp"
+            source = "127.0.0.1:9000"
+
+            [services.backend.placement]
+            substrate = "edge-1"
+        "#,
+    )?;
+    let inventory_path = temp_dir.path().join("substrates.toml");
+    std::fs::write(
+        &inventory_path,
+        r#"
+            [substrates.edge-1]
+            did = "did:key:z6MkExampleNodeA"
+            api_url = "http://127.0.0.1:1"
+        "#,
+    )?;
+
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    let output = cmd
+        .arg("--dir")
+        .arg(temp_dir.path())
+        .arg("app")
+        .arg("deploy")
+        .arg("a3-test-inst")
+        .arg(&manifest_path)
+        .arg("--journal-path")
+        .arg(temp_dir.path().join("deployments.db"))
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    let stderr = String::from_utf8_lossy(&output);
+    assert!(!stderr.contains("substrate.key not found"), "{stderr}");
+    Ok(())
+}

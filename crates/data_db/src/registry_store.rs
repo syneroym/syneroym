@@ -106,6 +106,23 @@ impl SqliteEndpointStorage {
                 );",
                 [],
             )?;
+            // A4: what a deploy said this service *is*, and how to probe it.
+            //
+            // The type is not derivable after the fact: a container and a
+            // TCP service both register `SubstrateEndpoint::TcpHostPort`
+            // (orchestration.rs) and `PodmanSocket` is never registered at
+            // all, so the endpoint variant cannot tell them apart -- which is
+            // why `readyz` had to guess. One row per service, upserted on
+            // redeploy, deleted on undeploy, mirroring service_instance_certs.
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS service_deploy_facts (
+                    service_id        TEXT PRIMARY KEY,
+                    service_type      TEXT NOT NULL,
+                    health_check_json TEXT,
+                    created_at        INTEGER NOT NULL
+                );",
+                [],
+            )?;
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS service_bindings (
                     service_id      TEXT NOT NULL,
@@ -333,6 +350,65 @@ impl EndpointStorage for SqliteEndpointStorage {
         .await?
     }
 
+    async fn load_all_deploy_facts(&self) -> Result<Vec<(String, String, Option<String>)>> {
+        let conn_arc = self.conn.clone();
+        task::spawn_blocking(move || -> Result<Vec<(String, String, Option<String>)>> {
+            let conn = lock_db(&conn_arc)?;
+            let mut stmt = conn.prepare(
+                "SELECT service_id, service_type, health_check_json FROM service_deploy_facts",
+            )?;
+            let mut facts = Vec::new();
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                facts.push((row.get(0)?, row.get(1)?, row.get(2)?));
+            }
+            Ok(facts)
+        })
+        .await?
+    }
+
+    async fn save_deploy_facts(
+        &self,
+        service_id: &str,
+        service_type: &str,
+        health_check_json: Option<&str>,
+    ) -> Result<()> {
+        let conn_arc = self.conn.clone();
+        let sid = service_id.to_string();
+        let stype = service_type.to_string();
+        let check = health_check_json.map(str::to_string);
+        let created_at: i64 =
+            SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+
+        task::spawn_blocking(move || -> Result<()> {
+            let conn = lock_db(&conn_arc)?;
+            conn.execute(
+                "INSERT INTO service_deploy_facts (service_id, service_type, health_check_json, \
+                 created_at)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(service_id) DO UPDATE SET
+                    service_type = excluded.service_type,
+                    health_check_json = excluded.health_check_json,
+                    created_at = excluded.created_at",
+                params![sid, stype, check, created_at],
+            )?;
+            Ok(())
+        })
+        .await?
+    }
+
+    async fn remove_deploy_facts(&self, service_id: &str) -> Result<()> {
+        let conn_arc = self.conn.clone();
+        let sid = service_id.to_string();
+
+        task::spawn_blocking(move || -> Result<()> {
+            let conn = lock_db(&conn_arc)?;
+            conn.execute("DELETE FROM service_deploy_facts WHERE service_id = ?1", params![sid])?;
+            Ok(())
+        })
+        .await?
+    }
+
     async fn load_all_app_contexts(&self) -> Result<Vec<(String, String, String)>> {
         let conn_arc = self.conn.clone();
         task::spawn_blocking(move || -> Result<Vec<(String, String, String)>> {
@@ -498,6 +574,41 @@ mod tests {
         let path = dir.path().join("test.db");
         let store = SqliteEndpointStorage::new(path).await.unwrap();
         (store, dir)
+    }
+
+    /// A4-15: every other deploy-facts test writes through `MockStorage` or
+    /// a live single-process deploy -- nothing proves the round trip through
+    /// a real `SqliteEndpointStorage` file and back out, which is the fact
+    /// D-A4-7/D-A4-17 rest on (`instance_phase`'s recorded-type lookup and
+    /// `readyz`'s repaired guess). If this path regressed, every service on
+    /// a rebooted node would silently fall to `Unknown("no service type
+    /// recorded")` and `readyz` would quietly stop inspecting containers --
+    /// a healthy-looking failure the suite would otherwise never catch.
+    #[tokio::test]
+    async fn deploy_facts_survive_a_real_reopen_of_the_same_database_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("registry.db");
+
+        {
+            let store = SqliteEndpointStorage::new(&path).await.unwrap();
+            store
+                .save_deploy_facts(
+                    "svc-1",
+                    "tcp",
+                    Some(r#"{"tcp-connect":{"interface-name":"main","timeout-ms":2000}}"#),
+                )
+                .await
+                .unwrap();
+        }
+
+        // A genuinely fresh connection to the same file, not the same
+        // `SqliteEndpointStorage` instance.
+        let reopened = SqliteEndpointStorage::new(&path).await.unwrap();
+        let facts = reopened.load_all_deploy_facts().await.unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].0, "svc-1");
+        assert_eq!(facts[0].1, "tcp");
+        assert!(facts[0].2.as_deref().unwrap().contains("tcp-connect"));
     }
 
     #[tokio::test]

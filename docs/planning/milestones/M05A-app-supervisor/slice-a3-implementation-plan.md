@@ -15,6 +15,103 @@ resolves the two, deploys each service to *its own* substrate one call at a
 time, records a journal action row per (service, substrate), and leaves the
 deployment `Degraded` — not rolled back — when some of those calls fail.
 
+**Post-merge review (2026-07-30), incorporated.** An independent review of
+commit 63c1848 against this plan and `task.md`'s acceptance criteria found ten
+findings, re-running the gates independently rather than reading them from
+`status.md`. Nine incorporated as code/doc fixes; one (test coverage) recorded
+as a backlog row instead of built in this pass, for the same
+out-of-proportion reasoning §9 already uses for the declined test 6:
+
+- **High: the placement-change refusal (D-A3-12) had no exit.** `svc remove`
+  undeploys the running instance but has no concept of an app instance or a
+  journal, so the `COMPLETED` action row D-A3-12 refuses on survived every
+  undeploy, and every later `app deploy` hit the identical refusal forever —
+  the only escape was deleting `deployments.db` by hand. Fixed two ways
+  together: `check_no_placement_change` now looks at the **most recent**
+  action row for a logical ref, of either type, not the most recent `ADD`
+  alone; and a new verb, `roymctl app forget <instance> --service <name>`,
+  appends a `REMOVE` row for the service's last known placement without
+  contacting any substrate. The refusal's own error message now names both
+  steps (`svc remove`, then `app forget`).
+- **Medium: inventory credentials inherited field-by-field, not atomically.**
+  An entry setting `identity` but not `ucan` (or vice versa) fell back to the
+  corresponding *global* flag independently, pairing one substrate's identity
+  with a token minted for a different one — `client_for`'s own "ucan requires
+  as" guard does not catch this, since both fields are individually present.
+  Fixed: a new `resolve_credentials` requires an entry that customizes either
+  field to customize both, and bails naming the alias otherwise.
+- **Medium: the post-apply registry probe covered services that never
+  deployed.** It resolved every service in the plan before the report was
+  examined, so a partial failure produced two misattributed "registry cannot
+  resolve" warnings per failed service, each paying a full retry budget.
+  Fixed: probes only `report.deployed`.
+- **Medium: the D-A3-22 regression test didn't test D-A3-22.** It passed
+  `landed` in as a hand-typed literal identical in shape to the previous
+  test's, which cannot distinguish "sourced from every `COMPLETED` row" from
+  "sourced from the last `ACTIVE` plan" — the actual claim D-A3-22 makes.
+  Fixed: rebuilt against a real in-memory journal (a record written, one
+  `COMPLETED` action appended, the record left `Degraded`, no `ACTIVE`
+  record at all), with `landed` read back through the real
+  `get_completed_actions_for_instance` query.
+- **Medium: `apply_plan`'s own CLI-level orchestration is untested.** The
+  two-substrate e2e calls `deploy::apply_plan` directly, bypassing
+  `app::handle`'s inventory load, preflight, fallback-target construction,
+  placement refusal, and resume decision entirely — which is also why the
+  permanent-refusal bug above went uncaught. **Not fixed this pass, recorded
+  as a backlog row instead** (`deferred-backlog.md`): closing it properly
+  needs `roymctl` split into a `lib.rs` + thin `main.rs` so a test can link
+  `commands::app::handle`, since `roymctl` today is bin-only and `crates/
+  substrate`'s own e2e file says so in its module doc — a structural change
+  worth its own pass, not bundled into a tenth finding.
+- **Low: the registry probe built its client with the DHT it recommends
+  enabling turned off.** `RegistryClient::new(false, ...)` while its own
+  warning said "or enable the DHT" as a fix. Fixed: `true`, matching
+  `refresh_anchor_or_warn`'s and `identity publish-anchor`'s own precedent.
+- **Low: D-A3-19 ("nothing bails after the journal is written") was broken
+  by the certification step.** `substitute_and_certify_members` ran *after*
+  the journal record was created and set `Applying`, and it can itself bail
+  — leaving exactly the phantom `Applying`-with-zero-actions record D-A3-19
+  exists to prevent. Fixed: certification moved above the resume/record-write
+  block; nothing it needs (`target_plan`, `clients`, `fallback_client`)
+  depends on the record existing.
+- **Low: `apply_plan`'s future is not `Send`** (`DeploymentJournal` holds a
+  bare `rusqlite::Connection`, `Sync` but not enough for `tokio::spawn` once
+  A5 owns this path). Harmless today; recorded as a backlog row against A5,
+  per the finding's own suggested handling.
+- **Low: no test that a bare-DID `SubstrateAlias` is rejected as an
+  inventory map *key***, only as a manifest *value* — a different serde path.
+  Fixed: one test alongside `a_non_did_key_substrate_id_is_rejected_at_parse`.
+- **Low: `status.md` overstated the CLI test count** ("4 `assert_cmd`
+  integration tests", three listed) and test 4's own description claimed the
+  harness asserts a state transition it only sets by hand. Both corrected in
+  `status.md`.
+
+**Verification pass on `5f2f55b` (2026-07-30), incorporated.** The reviewer
+re-ran the gates against the fix commit rather than trusting the commit
+message, and found two items the fix itself opened — both incorporated:
+
+- **Medium: the refusal and the resume skip read the journal two different
+  ways.** `check_no_placement_change` was moved to most-recent-row-wins (a
+  `REMOVE` clears it), but `apply_plan`'s resume-skip
+  (`crates/sdk/src/deploy.rs`) was not touched — it still asked "does *any*
+  `COMPLETED ADD` row match this (ref, DID)", which an older `ADD` still
+  answers even after a later `REMOVE`. The exposed sequence: `app forget` a
+  service, then redeploy the *same, unchanged* manifest (placement
+  identical, so the same record resumes) — the stale `ADD` still matches,
+  the service is reported "already applied" and skipped, and the record
+  flips to `Active` while nothing is running there. Fixed by extracting one
+  shared function, `deploy::current_placement` (`crates/sdk/src/deploy.rs`),
+  reading the most-recent row for a logical ref and returning it only when
+  that row is `ADD` — both `apply_plan`'s skip and
+  `check_no_placement_change`'s refusal now call it, so the two sites cannot
+  drift apart again. New test: `apply_plan_redeploys_a_service_whose_most_
+  recent_row_is_remove`.
+- **Low: the developer guide still printed the broken recovery procedure.**
+  `docs/developer-guide.md`'s multi-substrate section described only
+  "undeploy from the old substrate, then redeploy" — missing the `app
+  forget` step the error message and the backlog row both already carry.
+  Fixed: the guide's bullet now names both steps.
+
 **Read §0 first.** Planning found **fifteen** places where `task.md`'s A3
 paragraph describes a tree that does not exist, leaves a decision unmade, or
 understates the work. **Seven** of them change what A3 has to build. §1's
@@ -1297,10 +1394,13 @@ placed = resolve_targets(target_plan, &targets, fallback_target)?
 landed = journal.get_completed_actions_for_instance(&instance_id)?   # §4.3
 for (svc, target) in &placed:
     l_ref = svc.logical_ref.to_string()
-    # Most recent COMPLETED row for this service, whichever record it came from.
-    if let Some(prev) = landed.iter().rfind(|r| r.action_type == "ADD"
-                                             && r.logical_ref == l_ref):
-        if prev.substrate_did != target.substrate_did:
+    # Most recent row for this service, of EITHER action type, whichever
+    # record it came from -- not the most recent ADD alone (post-review,
+    # finding 01): `app forget` clears the refusal by appending a REMOVE
+    # row, and an ADD-only rfind would keep finding the stale ADD underneath
+    # it forever.
+    if let Some(prev) = landed.iter().rev().find(|r| r.logical_ref == l_ref):
+        if prev.action_type == "ADD" && prev.substrate_did != target.substrate_did:
             # The deployed service_id is the member MASTER DID under
             # --mint-masters, and the journal's plan JSON stores the compiler's
             # fabricated id instead -- so the message has to resolve the real
@@ -1318,7 +1418,26 @@ for (svc, target) in &placed:
                   Undeploy it first:
                     roymctl --substrate <prev.substrate_did> --as <that substrate's
                       identity> svc remove --svc-id <svc_id>
+                  then clear the placement record so this refusal does not fire
+                  again:
+                    roymctl app forget <instance_id> --service <name>
                   then redeploy."
+
+# --- masters (§6) -------------------------------------------------------
+# Post-review (finding 07): still *before* the journal record is written.
+# Certification can itself bail (an unreachable instance-identity call, a
+# master-DID mismatch, a missing master file); the record must not exist yet
+# when that happens, or it becomes a phantom `Applying` record with zero
+# action rows -- exactly what D-A3-19 exists to prevent. Nothing here needs
+# the record: only `target_plan`, `clients`, and `fallback_client`, all
+# already resolved above.
+(deploy_plan, instance_certs, registry_certs) = if mint_masters {
+    member_identity::substitute_and_certify_members(
+        dir, target_plan, &clients, fallback_client, registry_url).await?
+} else {
+    (target_plan.clone(), {}, {})
+}
+if !mint_masters && any resolved_dependencies non-empty: eprintln warning   # unchanged
 
 # ======================================================================
 # Past this point nothing bails before the journal is consistent.
@@ -1336,15 +1455,6 @@ record_id = match journal.get_latest(&instance_id)? {
 }
 # A stored plan that *differs* deliberately starts a new record: the completed
 # actions of a superseded plan say nothing about this one.
-
-# --- masters (§6) ------------------------------------------------------
-(deploy_plan, instance_certs, registry_certs) = if mint_masters {
-    member_identity::substitute_and_certify_members(
-        dir, target_plan, &clients, fallback_client, registry_url).await?
-} else {
-    (target_plan.clone(), {}, {})
-}
-if !mint_masters && any resolved_dependencies non-empty: eprintln warning   # unchanged
 
 # --- apply -------------------------------------------------------------
 report = deploy::apply_plan(
@@ -1386,9 +1496,16 @@ else:
 # HEURISTIC (D-A3-17): these are the URLs `roymctl` dials, which need not be the
 # registries the substrates themselves use. Every message below therefore names
 # the URL probed, and none of them claims to speak for a substrate.
+#
+# Post-review: iterates `report.deployed` (finding 03), not every service in
+# the plan -- a failed service was never deployed, so probing it blames a
+# registry-topology fault for a service that simply never landed, and pays a
+# full retry budget twice to do it. DHT enabled (finding 06): the message
+# below recommends enabling the DHT as a fix, so the probe must be able to
+# see one when it is.
 for url in distinct api_urls(targets + fallback):
-    reg = RegistryClient::new(false, Some(url))
-    for svc in &plan.services:
+    reg = RegistryClient::new(true, Some(url))
+    for svc in report.deployed's own services:
         # bounded retry: deploy publishes immediately (runtime.rs's publisher
         # is handed to the control plane for exactly this), but allow a couple
         # of seconds so a slow write is not reported as a topology fault.

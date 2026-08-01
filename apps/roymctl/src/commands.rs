@@ -183,11 +183,14 @@ pub async fn run(
             .await?;
         }
         Commands::App { command } => {
-            let substrate_did = get_substrate_did(substrate_opt, &dir)?;
+            // Resolved on demand, not eagerly (D-A3-20): a fully-placed
+            // deploy and `app reconcile` need no default substrate at all,
+            // and `get_substrate_did` hard-fails when neither `--substrate`
+            // nor `substrate.key` exists.
             app::handle(
                 &command,
                 &api_url,
-                substrate_did,
+                substrate_opt,
                 &dir,
                 run_as.as_deref(),
                 ucan_path.as_deref(),
