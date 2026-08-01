@@ -59,6 +59,7 @@ syneroym-ucan = { path = "crates/ucan" }
 syneroym-fdae = { path = "crates/fdae" }
 syneroym-mqtt-broker = { path = "crates/mqtt_broker" }
 syneroym-chunk-transfer = { path = "crates/chunk_transfer" }
+syneroym-app-supervisor = { path = "crates/app_supervisor" }
 miniapp-demo1-web = { path = "test-components/miniapp-demo1-web" }
 
 # Networking & Async
