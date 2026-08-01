@@ -1662,6 +1662,32 @@ impl ControlPlaneService {
             Some(_) => {}
         }
 
+        // The same app-instance-owner gate `deploy_with_context` applies
+        // (orchestration.rs's deploy ownership check), for the same reason:
+        // `write.service_id` genuinely belonging to `write.app_instance_id`
+        // (just checked above) proves the write targets its own service's
+        // app, not that the caller may manage that app instance as a
+        // whole. Without this, an app-scoped `orchestrator/deploy` grant on
+        // one service of an instance -- not its owner, not node-wide --
+        // could push a binding change that, through the shared resolver
+        // entry `write-bindings` writes into, affects every other service
+        // of that instance too. `check_generation` below is not a
+        // substitute: it is a tiebreaker among already-authorized writers,
+        // not an authorization check, and an unmanaged instance's
+        // generation-0 gate now correctly accepts any authorized writer --
+        // "authorized" has to be decided here, same as `deploy`.
+        if let Some(existing) =
+            self.registry.app_instance_management_of(&write.app_instance_id).map(|m| m.owner_did)
+            && existing != caller.caller_did
+            && !self.has_node_wide_ability(caller, Ability::ORCHESTRATOR_DEPLOY)
+        {
+            return Err(format!(
+                "app instance '{}' is owned by {existing}; a binding write into it must come from \
+                 its owner or a substrate owner",
+                write.app_instance_id
+            ));
+        }
+
         // D-A5-23: persisted immediately, before any binding is examined
         // -- the same rule every other gate site follows (deploy, restart,
         // undeploy, claim). A mid-validation refusal below must not leave
@@ -2094,6 +2120,19 @@ impl ControlPlaneService {
                 "caller {} holds no node-wide orchestrator/deploy on this substrate; claiming an \
                  app instance is node-scoped because the instance spans services",
                 caller.caller_did
+            ));
+        }
+        // Generation 0 means unmanaged (the WIT `app-context.generation`
+        // doc, and `check_generation`'s own rule): a claim presenting it
+        // would persist a row with no supervisor recorded, reporting
+        // success while claiming nothing. Refused outright rather than
+        // silently accepted -- a real `adopt` always presents `held + 1`
+        // (D-A5-10, at least 1), so this only rejects a caller invoking the
+        // raw verb with a generation that cannot mean what `claim` means.
+        if generation == 0 {
+            return Err(format!(
+                "app instance '{app_instance_id}' cannot be claimed at generation 0; 0 means \
+                 unmanaged, so a claim must present a generation of 1 or higher"
             ));
         }
         let management = self.check_generation(&app_instance_id, caller, generation)?;
@@ -3805,6 +3844,26 @@ mod tests {
         assert!(release_err.contains("node-wide"), "{release_err}");
     }
 
+    /// Generation 0 means unmanaged, so a claim presenting it cannot mean
+    /// "claim supervision" -- without this refusal it would silently
+    /// record no supervisor at all and still report success, and on a
+    /// fresh instance still create the owner row, making the no-op harder
+    /// to notice.
+    #[tokio::test]
+    async fn claiming_an_app_instance_at_generation_0_is_refused() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let supervisor = node_wide_caller("did:key:zSupervisor");
+
+        let err =
+            service.claim_app_instance("app-1".to_string(), 0, &supervisor).await.unwrap_err();
+        assert!(err.contains("generation 0"), "{err}");
+        assert!(
+            service.registry.app_instance_management_of("app-1").is_none(),
+            "a refused claim must not create a management row"
+        );
+    }
+
     // ── M05A A5a: write-bindings ─────────────────────────────────────────
 
     #[tokio::test]
@@ -3841,6 +3900,61 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("orchestrator/deploy"), "{err}");
+    }
+
+    /// A grant scoped to one service of an app instance is not the same as
+    /// authority over the instance as a whole: `bob` holds
+    /// `orchestrator/deploy` on `worker-svc` specifically -- enough to pass
+    /// the capability check and the app-context match, since `worker-svc`
+    /// genuinely belongs to `app-1` -- but `app-1` is `alice`'s, and `bob`
+    /// holds no node-wide authority either. `deploy_with_context` refuses
+    /// exactly this shape of caller for the same app instance; `write-
+    /// bindings` must too, since a push lands in the shared resolver entry
+    /// every service of the instance resolves through, not only `bob`'s
+    /// own.
+    #[tokio::test]
+    async fn write_bindings_is_rejected_for_a_non_owner_with_only_a_service_scoped_grant() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let alice = node_wide_caller("did:key:zAlice");
+
+        service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(app_context("app-1", "frontend", vec![])),
+                &alice,
+            )
+            .await
+            .unwrap();
+        service
+            .deploy_with_context(
+                "worker-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(app_context(
+                    "app-1",
+                    "worker",
+                    vec![dependency_binding("backend", vec!["did:key:zBackendMember"])],
+                )),
+                &alice,
+            )
+            .await
+            .unwrap();
+
+        let bob = scoped_deploy_caller("did:key:zBob", "worker-svc");
+        let err = service
+            .write_bindings(
+                BindingWrite {
+                    service_id: "worker-svc".to_string(),
+                    app_instance_id: "app-1".to_string(),
+                    bindings: vec![dependency_binding("backend", vec!["did:key:zNewMember"])],
+                    generation: 0,
+                },
+                &bob,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("app-1") && err.contains("zAlice"), "{err}");
     }
 
     #[tokio::test]
