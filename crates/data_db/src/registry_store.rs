@@ -6,7 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::Result;
+use anyhow::{Error, Result};
 use async_trait::async_trait;
 use rusqlite::{Connection, OptionalExtension, params};
 use syneroym_core::{
@@ -556,7 +556,7 @@ impl EndpointStorage for SqliteEndpointStorage {
                 |row| row.get(0),
             )
             .optional()
-            .map_err(anyhow::Error::from)
+            .map_err(Error::from)
         })
         .await?
     }

@@ -2527,7 +2527,10 @@ const MAX_STATUS_SERVICE_IDS: usize = 500;
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use std::{
+        fs,
+        sync::{Arc, Mutex},
+    };
 
     use dashmap::DashMap;
     use syneroym_app_orchestration::LogicalServiceRef;
@@ -4020,7 +4023,7 @@ mod tests {
     /// the cheap path, `deploy` is the repair path.
     #[tokio::test]
     async fn an_identical_redeploy_of_a_stopped_service_still_reinstalls_it() {
-        let wasm_bytes = std::fs::read(greeter_wasm_path())
+        let wasm_bytes = fs::read(greeter_wasm_path())
             .expect("greeter fixture must be built (see test-components/greeter's own build step)");
         let temp_dir = tempfile::tempdir().unwrap();
         let service = service_for_inline_tests(temp_dir.path()).await;
@@ -4185,7 +4188,7 @@ mod tests {
     /// with no redeploy and no identity work.
     #[tokio::test]
     async fn restart_reloads_a_wasm_component_from_disk() {
-        let wasm_bytes = std::fs::read(greeter_wasm_path())
+        let wasm_bytes = fs::read(greeter_wasm_path())
             .expect("greeter fixture must be built (see test-components/greeter's own build step)");
         let temp_dir = tempfile::tempdir().unwrap();
         let service = service_for_inline_tests(temp_dir.path()).await;
@@ -7812,7 +7815,7 @@ mod tests {
     /// explicitly here rather than left as an accidentally-green test.
     #[tokio::test]
     async fn an_rpc_probe_permanently_fails_for_a_method_that_takes_a_required_argument() {
-        let wasm_bytes = std::fs::read(greeter_wasm_path())
+        let wasm_bytes = fs::read(greeter_wasm_path())
             .expect("greeter fixture must be built (see test-components/greeter's own build step)");
         let temp_dir = tempfile::tempdir().unwrap();
         let service = service_for_inline_tests(temp_dir.path()).await;
@@ -7859,7 +7862,7 @@ mod tests {
     /// store.
     #[tokio::test]
     async fn an_rpc_probe_passes_for_a_method_that_takes_no_arguments() {
-        let wasm_bytes = std::fs::read(stream_test_wasm_path()).expect(
+        let wasm_bytes = fs::read(stream_test_wasm_path()).expect(
             "stream-test fixture must be built (see test-components/stream-test's own build step)",
         );
         let temp_dir = tempfile::tempdir().unwrap();

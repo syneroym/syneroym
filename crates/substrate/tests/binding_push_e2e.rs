@@ -11,6 +11,7 @@
 
 use std::{
     collections::BTreeMap,
+    path::PathBuf,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -416,7 +417,7 @@ fn deploy_targets(
 
 async fn compiled_plan() -> DeploymentPlan {
     let manifest = two_service_manifest();
-    let catalog = LocalFilesystemCatalog::new(std::path::PathBuf::from("."));
+    let catalog = LocalFilesystemCatalog::new(PathBuf::from("."));
     let compiled =
         compile(AppInstanceId::new("a5a-binding-push-inst"), &manifest, &catalog).await.unwrap();
     compiled.plans.last().unwrap().clone()

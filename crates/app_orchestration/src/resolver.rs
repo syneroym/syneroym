@@ -43,6 +43,7 @@
 //! [`LogicalResolver::register`], never write the registry directly.
 
 use std::{
+    cmp,
     collections::BTreeMap,
     fmt,
     sync::{
@@ -214,9 +215,9 @@ pub fn classify_binding_write(
 ) -> BindingWriteOutcome {
     let Some(held) = held else { return BindingWriteOutcome::Applied };
     match incoming.epoch.cmp(&held.epoch) {
-        std::cmp::Ordering::Greater => BindingWriteOutcome::Applied,
-        std::cmp::Ordering::Less => BindingWriteOutcome::Stale(held.epoch),
-        std::cmp::Ordering::Equal => {
+        cmp::Ordering::Greater => BindingWriteOutcome::Applied,
+        cmp::Ordering::Less => BindingWriteOutcome::Stale(held.epoch),
+        cmp::Ordering::Equal => {
             let same = held.mode == incoming.mode
                 && held.members == incoming.members
                 && held.sharding_strategy == incoming.sharding_strategy;
