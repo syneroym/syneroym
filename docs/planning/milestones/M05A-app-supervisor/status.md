@@ -1847,6 +1847,189 @@ slice by running that crate's tests unsandboxed, 16/16); `mise run
 test:e2e` 12/12; `crates/substrate --test supervisor_interface_e2e` 5/5,
 unsandboxed (real port binds).
 
+**Dated correction (2026-08-01, code-review response).** An independent
+review of this slice found five blocking problems, seven should-fix
+defects, and seven hygiene items. All were incorporated except two, pushed
+back on with reasoning below. This corrects three claims made above that
+did not fully hold:
+
+- **"`cargo test --workspace` clean" was not accurate.**
+  `supervisor_interface_e2e.rs`'s five port blocks (10\_000-10\_900)
+  exactly duplicated blocks `health_monitoring_e2e.rs` and
+  `binding_push_e2e.rs` already used -- cargo runs integration-test
+  binaries concurrently, so this was a race, not a deterministic pass, and
+  the near-certain cause of the same-day CI failure in
+  `binding_push_e2e.rs` ("no viable network path exists: last path
+  abandoned by peer" at `inject_kek`, alongside repeated "Endpoint dropped
+  without calling `Endpoint::close`" errors -- consistent with two
+  unrelated `iroh` endpoints sharing one UDP port). Renumbered to
+  11\_000-11\_900; re-confirmed by running all three files' test binaries
+  concurrently.
+- **Matrix row 9 ("supervisor half") was credited with no test.** Added
+  `a_supervisor_that_reads_a_higher_generation_marks_the_instance_
+  superseded_and_alerts` (e2e): a second writer claims a higher generation
+  directly against the managed substrate, and the first supervisor's next
+  `status` reads it back, reports `Superseded`, and raises the alert.
+  `max_held_generation` had two real holes underneath the missing test:
+  it derived which substrates to check from this supervisor's own
+  journal (empty until its first successful deploy, so supersession was
+  undetectable before then) rather than from the plan's own declared
+  placement, and it folded every RPC failure into the same "0" a
+  genuinely empty management row also produces -- so a supervisor that
+  had lost its own `orchestrator/status` grant would report "not
+  superseded" indefinitely instead of "cannot tell". Both fixed:
+  substrates to check now come from `Self::placed_aliases`, and
+  `max_held_generation` returns `Option<u64>`, `None` meaning "could not
+  reach any of them", which leaves the alert state untouched rather than
+  guessing.
+- **Row 8's own live proof asserted a tautology.**
+  `a_second_supervisor_that_has_not_adopted_loses_every_write`'s final
+  assertion was `err.contains(x) || !err.is_empty()`, true of any error at
+  all. Now asserts on `check_generation`'s own message
+  ("never self-increment").
+
+**Two more blocking fixes, both correctness bugs rather than test gaps:**
+`handle_submit` ran the whole mint/certify/apply pipeline before
+`store.submit`'s `retired` guard, so submitting against a retired instance
+redeployed every service and only then reported the rejection -- the guard
+is now checked first, and `force-reconcile` (which never called
+`store.submit` at all, so nothing on it checked `retired`) gained the same
+check. And `init_supervisor` opened the vault under the literal service id
+`"supervisor"` with nothing reserving that name from an ordinary deploy --
+a caller holding only an app-scoped `orchestrator/deploy` grant (weaker
+than the `substrate/admin` every supervisor verb demands) could deploy a
+guest under that id, read every member master key back out through
+`vault.reveal`, and take over the supervisor's own dispatch entry.
+`deploy_with_context` now refuses `"supervisor"` **and the node's own
+DID** as a `service_id` -- the latter closes an equivalent, more severe
+takeover of `ControlPlaneService`'s own dispatch entry the review did not
+name but the same root cause produces.
+
+**Should-fix, incorporated:** the printed `export-master` hint used the
+bare logical service name instead of the vault's actual key
+(`minted-master` gained a `vault-name` field so `roymctl` no longer
+re-derives it); `--generation`'s "omit to reuse the last adopted one" is
+now real (`roymctl supervisor submit` reads it back from `status` when
+omitted, instead of always sending 0); `MasterVault::get_or_mint` is now
+serialized by an internal lock, closing a race where two concurrent
+submits for the same instance could mint two masters and silently orphan
+one; `handle_submit` now refuses a submission whose outer
+`app_instance_id` disagrees with its own plan's; `member_master_name` now
+validates the name it builds before minting under it, so a bad
+`app_instance_id` fails at submit time rather than only at a later
+`export-master`; every RPC path that connects to a managed substrate now
+closes the client explicitly afterward instead of leaving `iroh` to abort
+it ungracefully on drop; and `release`/`retire` now act on every placed
+substrate they can reach rather than failing the whole call -- and, for
+`retire`, leaving the store un-retired -- the moment one is down.
+
+**Hygiene, incorporated:** `last_reconciled_at` is `None` until something
+actually reconciles, not `Some(now)` on every call; `all_active`'s SQL now
+matches its own doc comment and excludes paused instances too; `submit`
+now refuses a generation that does not match the one on record for an
+existing instance, closing the gap where `adopt` was not really the only
+minter; `deploy_submission` returns the substituted plan directly instead
+of `handle_submit` re-running `mint_and_substitute` a second time to get
+it; and two `deferred-backlog.md` issues (a blank line breaking the
+"Recently resolved" table; a backlog row's target date pointing at this
+slice for a remediation loop this slice does not build) are fixed.
+
+**Pushed back on, with reasoning:** gating `submit`/`force-reconcile` on
+`paused` -- the review noted `paused` is not consulted by either,
+alongside the `retired` ordering bug. Not applied: `paused` is not yet
+spec'd to mean "refuse explicit writes", only "the resident loop should
+not touch this automatically" (A5c, which does not exist yet), and both
+an operator's `submit` while paused and an explicit `force-reconcile` are
+directed actions `paused` was never described as blocking. Recorded as a
+decision, not a silent omission. **The resume/skip fix** (`submit` and
+`force-reconcile` resend every artifact on every call, since
+`deploy_submission` starts a fresh journal `deployment_id` each time and
+`apply_plan`'s skip check is scoped to that one id) was diagnosed but not
+fixed here: `apply_plan` is shared with `roymctl app deploy` and A3's own
+e2e tests, and re-scoping its skip check needs auditing every existing
+caller first -- recorded in `deferred-backlog.md` §8, targeted at A5c.
+
+**Test count: 22 unit + 5 e2e → 27 unit + 6 e2e.**
+
+**Gates, re-run after the above:** `cargo +nightly fmt --all` clean;
+`cargo clippy --workspace --all-targets --all-features` clean; `cargo test
+--workspace` clean, unsandboxed (sandboxed, the same 6 `community_registry`
+tests plus a wider set of network/port-bind-dependent tests across the
+workspace fail only under this environment's build sandbox -- confirmed
+unrelated to this slice by re-running unsandboxed, and by the one genuinely
+unrelated flake found, `syneroym-fdae`'s `compile_read_emits_its_own_
+deny_trace_when_a_remote_fetch_is_needed`, which passes in isolation);
+`mise run test:e2e` 12/12; `crates/substrate --test
+supervisor_interface_e2e` 6/6, unsandboxed, including a run concurrently
+alongside `health_monitoring_e2e` and `binding_push_e2e` to confirm the
+port renumbering actually closes the collision.
+
+**Dated correction (2026-08-01, round 2), against a fresh review of the
+above.** Re-verified 17 of 19 round-1 findings against the code (not the
+summary); all held. Three new items, all fixed:
+
+- **N1 (blocking): H3's generation guard sat behind the deploy, not in
+  front of it.** `store.submit`'s check (H3) is the *write-time* guard,
+  and `handle_submit`'s `retired` pre-flight (B3) never got a generation
+  twin. Downward that's harmless -- the substrate's own `check_generation`
+  refuses a low generation first. Upward it is not: `deploy_submission`
+  already presents `s.generation` to `check_generation` on the way to the
+  substrate, whose `Ordering::Greater` arm *accepts* a higher generation
+  and advances the substrate's own stamp -- so a wrong `--generation 5`
+  against a store on record at 3 would leave the substrate at 5 the
+  instant `store.submit` then refused to record 5 locally, making the
+  supervisor immediately superseded by its own write, with `adopt` as the
+  only way out and nothing telling the operator why. Fixed: `handle_submit`
+  now reads `store.get` once and checks both `retired` and `generation`
+  before `deploy_submission` runs, mirroring B3's own shape exactly.
+- **N2 (should-fix): S6's client-close fix did not reach `adopt`.**
+  `handle_adopt` built clients through `build_clients` and never called
+  `shutdown_clients` -- the one remaining path that produced "Endpoint
+  dropped without calling `Endpoint::close`". It also propagated errors
+  with `?` from inside both of its loops, so a failure partway leaked
+  every other client too. Fixed by extracting `claim_next_generation` (the
+  read-then-claim body) so `handle_adopt` can call `shutdown_clients`
+  however that returns, success or failure -- the same shape
+  `deploy_submission` already uses.
+- **N3 (should-fix): the retired-instance error message named a recovery
+  path that did not exist.** `retired` had no clear path: `retire()` set
+  it, `resume()` only ever touched `paused`, and `release` cleared only
+  the substrate-side stamp. Yet both refusal messages said "run
+  `supervisor release` or re-adopt" -- an operator who ran either got no
+  error and no progress. `retire()`'s own doc comment already said "until
+  the instance is re-adopted", so the fix makes that literally true:
+  `SupervisorStore::un_retire` (the counterpart to `retire`), called by
+  `handle_adopt` on a successful claim. Both messages now name only
+  `adopt`.
+
+Also added, prompted by a direct question about the shape of the fix
+rather than a finding: `impl Drop for SyneroymClient`
+(`crates/sdk/src/lib.rs`), a best-effort background close via the
+existing `close_in_background` helper. Not a replacement for
+`shutdown_clients` -- `Drop` cannot `.await` the graceful QUIC handshake,
+so it only backstops a caller that forgets to close explicitly (exactly
+what N2 was); a caller that needs to *know* the close finished still
+calls `shutdown` itself.
+
+Row 8's own e2e test (`a_second_supervisor_that_has_not_adopted_loses_
+every_write`) needed rework as a consequence of N1: reusing the *same*
+supervisor's own `submit` to simulate a second writer no longer reaches
+the substrate at all once N1's local pre-flight disagrees with it, so the
+test now uses a raw second client against the managed node's `orchestrator
+/restart` directly (the same shape the row-9 test uses), reaching
+`check_generation`'s `Ordering::Less` case for real.
+
+**Test delta:** one new unit test
+(`submit_at_the_wrong_generation_is_refused_before_any_deploy_work_runs`,
+N1); the existing retire test extended to also cover `un_retire`
+(renamed `retire_refuses_a_later_submit_until_un_retired`); row 8's e2e
+test rewritten in place, not added, per the note above.
+
+**Gates, re-run after the above:** `cargo +nightly fmt --all` clean;
+`cargo clippy --workspace --all-targets --all-features` clean; `cargo
+test --workspace` 1236+/1236+, exit 0, unsandboxed; `mise run test:e2e`
+12/12; `crates/substrate --test supervisor_interface_e2e` 6/6.
+
 ## Dependencies pulled in
 
 1. **`ControllerAgreement` creation tool + the two items B7 pairs with it**, all

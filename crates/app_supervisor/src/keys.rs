@@ -107,6 +107,11 @@ fn ensure_backup_dir(dir: &Path) -> Result<(), VaultError> {
 pub struct MintedMaster {
     pub service_name: String,
     pub master_did: String,
+    /// The name `export_master`/`import_master` actually key on
+    /// (`member_master_name`'s output) -- distinct from `service_name`,
+    /// the bare logical name, which is not a valid vault key (S1, Slice
+    /// A5b review).
+    pub vault_name: String,
 }
 
 pub struct MasterVault {
@@ -119,6 +124,15 @@ pub struct MasterVault {
     /// operator-declared via `SupervisorRole::master_backup_dir`, never
     /// caller-supplied.
     backup_dir: PathBuf,
+    /// Serializes `get_or_mint`'s read-then-write across concurrent
+    /// callers. `SupervisorService::dispatch` takes `&self`, so two
+    /// `submit`s for the same instance can otherwise interleave: both see
+    /// no existing master, both mint one, and the later `write_secret`
+    /// wins -- the earlier call has already certified and deployed a
+    /// member under a master no longer in the vault, which ADR-0020 §4
+    /// calls unrecoverable (S3, Slice A5b review). One process-wide lock
+    /// is enough: minting is rare and never on a hot path.
+    mint_lock: tokio::sync::Mutex<()>,
 }
 
 impl fmt::Debug for MasterVault {
@@ -137,7 +151,13 @@ impl MasterVault {
         service_id: String,
         backup_dir: PathBuf,
     ) -> Self {
-        Self { storage_provider, key_store, service_id, backup_dir }
+        Self {
+            storage_provider,
+            key_store,
+            service_id,
+            backup_dir,
+            mint_lock: tokio::sync::Mutex::new(()),
+        }
     }
 
     async fn open(&self) -> Result<Box<dyn syneroym_data_db::traits::ServiceStore>, VaultError> {
@@ -169,6 +189,10 @@ impl MasterVault {
     /// Mints and stores if absent -- the ordinary path. Reuses an existing
     /// master rather than minting a second one for the same name.
     pub async fn get_or_mint(&self, name: &str) -> Result<Identity, VaultError> {
+        // Held across the whole read-then-write below (`mint_lock`'s own
+        // doc): without it, two concurrent callers for the same `name`
+        // both pass the `get` check and both mint.
+        let _guard = self.mint_lock.lock().await;
         if let Some(existing) = self.get(name).await? {
             return Ok(existing);
         }
@@ -221,8 +245,22 @@ impl MasterVault {
 /// name A0's `member_master_name` uses, so an operator adopting an
 /// existing deployment's masters finds the same file stem under
 /// `import_master`.
-fn member_master_name(app_instance_id: &str, service_name: &str, index: u32) -> String {
-    format!("member-{app_instance_id}-{service_name}-{index}")
+///
+/// Validated against the same rule `export_master`/`import_master` enforce
+/// on the name they are handed, so a name they will later refuse is
+/// refused here instead, at mint time, rather than minting a key that is
+/// permanently un-backup-able and only discovered when the operator tries
+/// (S5, Slice A5b review). `AppInstanceId` itself only checks non-empty --
+/// `apps/roymctl/src/commands/member_identity.rs`'s own
+/// `member_master_name` checks the same gap on its side.
+fn member_master_name(
+    app_instance_id: &str,
+    service_name: &str,
+    index: u32,
+) -> Result<String, VaultError> {
+    let name = format!("member-{app_instance_id}-{service_name}-{index}");
+    validate_backup_name(&name)?;
+    Ok(name)
 }
 
 /// The `submit` path's own custody step (§0.30/D-A5-26): resolve-or-mint one
@@ -241,7 +279,7 @@ pub async fn mint_and_substitute(
     let mut minted = Vec::new();
     for svc in &plan.services {
         let name =
-            member_master_name(&plan.app_instance_id, svc.logical_ref.service_name.as_str(), 0);
+            member_master_name(&plan.app_instance_id, svc.logical_ref.service_name.as_str(), 0)?;
         let master = vault.get_or_mint(&name).await?;
         let master_did = substrate::derive_did_key(&master.public_key());
         let master_id = ServiceId::try_new(master_did.clone()).map_err(VaultError::Storage)?;
@@ -249,6 +287,7 @@ pub async fn mint_and_substitute(
         minted.push(MintedMaster {
             service_name: svc.logical_ref.service_name.to_string(),
             master_did,
+            vault_name: name,
         });
         masters.insert(master_id, master);
     }
@@ -307,6 +346,27 @@ mod tests {
         let minted = v.get_or_mint("member-inst-1-backend-0").await.unwrap();
         let read_back = v.get("member-inst-1-backend-0").await.unwrap().unwrap();
         assert_eq!(minted.public_key(), read_back.public_key());
+    }
+
+    /// S3 (Slice A5b review): before `mint_lock`, two concurrent calls for
+    /// the same name both saw `get` return `None` and both minted --
+    /// whichever `write_secret` landed last silently orphaned the other's
+    /// master. Runs the two calls truly concurrently (both `tokio::spawn`ed
+    /// before either is awaited) rather than sequentially, so a regression
+    /// that drops the lock has a real chance to interleave and fail this.
+    #[tokio::test]
+    async fn concurrent_get_or_mint_for_the_same_name_never_mints_twice() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = Arc::new(vault(dir.path()));
+
+        let v1 = v.clone();
+        let a = tokio::spawn(async move { v1.get_or_mint("member-inst-1-backend-0").await });
+        let v2 = v.clone();
+        let b = tokio::spawn(async move { v2.get_or_mint("member-inst-1-backend-0").await });
+
+        let first = a.await.unwrap().unwrap();
+        let second = b.await.unwrap().unwrap();
+        assert_eq!(first.public_key(), second.public_key());
     }
 
     #[tokio::test]
@@ -383,6 +443,26 @@ mod tests {
         mint_and_substitute(&mut p2, &v).await.unwrap();
         assert_eq!(p.services[0].service_id, p2.services[0].service_id);
         assert_eq!(p.services[1].service_id, p2.services[1].service_id);
+    }
+
+    /// S5 (Slice A5b review): `AppInstanceId` only checks non-empty, so an
+    /// id containing a path separator used to mint fine and only fail
+    /// later, at `export_master`, once the operator tried to back it up.
+    /// The name must instead be refused at mint time, before anything is
+    /// stored under it.
+    #[tokio::test]
+    async fn a_plan_whose_instance_id_contains_a_path_separator_is_refused_before_minting() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = vault(dir.path());
+        let mut p = plan(vec![planned_service("frontend", "did:key:hFabricatedFrontend")]);
+        p.app_instance_id = AppInstanceId::new("evil/../instance");
+
+        let err = mint_and_substitute(&mut p, &v).await.unwrap_err();
+        assert!(matches!(err, VaultError::Storage(_)), "{err:?}");
+        assert!(
+            v.get("member-evil/../instance-frontend-0").await.unwrap().is_none(),
+            "the rejected name must never have been written to the vault"
+        );
     }
 
     #[tokio::test]

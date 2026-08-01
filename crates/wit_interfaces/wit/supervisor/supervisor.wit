@@ -22,6 +22,12 @@ interface supervisor {
     record minted-master {
         service-name: string,
         master-did: string,
+        /// The name `export-master`/`import-master` take -- not
+        /// `service-name`: the vault keys on `member-<app-instance-id>-
+        /// <service-name>-<index>`, so an operator who backs up under the
+        /// bare logical name gets "no master named '<service-name>' in
+        /// this vault" (S1, Slice A5b review).
+        vault-name: string,
     }
 
     record submit-result {

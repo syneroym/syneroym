@@ -90,7 +90,22 @@ impl SupervisorStore {
     /// additional version. Refused once the instance is retired: retiring
     /// is meant to hand an instance back to manual operation, and a submit
     /// that landed anyway would silently resume supervision behind the
-    /// operator's back. `supervisor retire` is the only way back in.
+    /// operator's back. `adopt` is the only way back in -- it clears the
+    /// flag on a successful claim (`un_retire`, below); plain `release`
+    /// does not, since it only clears the substrate-side stamp and says
+    /// nothing about whether *this* supervisor should resume managing the
+    /// instance (N3, Slice A5b review round 2 -- the message here used to
+    /// name `release` as an alternative, which changed nothing relevant
+    /// and left the caller stuck with no error to explain why).
+    ///
+    /// Also refused when `generation` does not match the generation
+    /// already on record for an existing instance: ADR-0021 §4 says the
+    /// generation is minted by `adopt` and never otherwise, but nothing
+    /// stopped a caller from presenting any value here, upward or
+    /// downward, with no relation to the current one -- `adopt` was not
+    /// really the only minter (H3, Slice A5b review). A brand-new
+    /// instance (no existing row) is unaffected: it has no generation to
+    /// contradict yet.
     pub fn submit(
         &self,
         app_instance_id: &str,
@@ -100,18 +115,28 @@ impl SupervisorStore {
         generation: u64,
     ) -> Result<()> {
         let conn = self.conn.lock().expect("supervisor store connection lock poisoned");
-        let retired: Option<i64> = conn
+        let existing: Option<(i64, i64)> = conn
             .query_row(
-                "SELECT retired FROM desired_state WHERE app_instance_id = ?1",
+                "SELECT retired, generation FROM desired_state WHERE app_instance_id = ?1",
                 params![app_instance_id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
-        if retired == Some(1) {
-            return Err(anyhow!(
-                "app instance '{app_instance_id}' is retired; run `supervisor release` or \
-                 re-adopt before submitting new desired state"
-            ));
+        if let Some((retired, existing_generation)) = existing {
+            if retired == 1 {
+                return Err(anyhow!(
+                    "app instance '{app_instance_id}' is retired; run `supervisor adopt` to \
+                     resume managing it before submitting new desired state"
+                ));
+            }
+            if generation != existing_generation as u64 {
+                return Err(anyhow!(
+                    "submit presented generation {generation}, but app instance \
+                     '{app_instance_id}' is on record at generation {existing_generation}; only \
+                     `adopt` mints a new one -- run `supervisor adopt`, or omit --generation to \
+                     resubmit at the current one"
+                ));
+            }
         }
         let now = chrono::Utc::now().timestamp();
         conn.execute(
@@ -162,7 +187,7 @@ impl SupervisorStore {
         let mut stmt = conn.prepare(
             "SELECT app_instance_id, plan_json, inventory_json, owner_did, generation, paused, \
              retired, submitted_at, updated_at
-             FROM desired_state WHERE retired = 0 ORDER BY app_instance_id ASC",
+             FROM desired_state WHERE retired = 0 AND paused = 0 ORDER BY app_instance_id ASC",
         )?;
         let mut rows = stmt.query([])?;
         let mut out = Vec::new();
@@ -203,11 +228,22 @@ impl SupervisorStore {
         self.set_flag(app_instance_id, "paused", false)
     }
 
-    /// Terminal: a later `submit` is refused until the instance is
-    /// re-adopted (D-A5-20's substrate-side release is the caller's
-    /// counterpart -- clearing the substrate's own stamp, not this row).
+    /// A later `submit` is refused until the instance is re-adopted
+    /// (D-A5-20's substrate-side release is the caller's counterpart --
+    /// clearing the substrate's own stamp, not this row). Not terminal:
+    /// `handle_adopt` calls `un_retire` on a successful claim, which is
+    /// the "re-adopted" this doc comment and every refusal message
+    /// promise (N3, Slice A5b review round 2).
     pub fn retire(&self, app_instance_id: &str) -> Result<()> {
         self.set_flag(app_instance_id, "retired", true)
+    }
+
+    /// `adopt`'s own counterpart to `retire`: an instance that has been
+    /// handed back to manual operation and then explicitly re-adopted is
+    /// no longer retired, so `submit` stops refusing it. Idempotent --
+    /// harmless to call on an instance that was never retired.
+    pub fn un_retire(&self, app_instance_id: &str) -> Result<()> {
+        self.set_flag(app_instance_id, "retired", false)
     }
 
     /// Updates the held generation in place, without touching the rest of
@@ -250,6 +286,28 @@ mod tests {
         assert_eq!(count, 1);
     }
 
+    /// H3 (Slice A5b review): before the generation check, `submit` wrote
+    /// whatever generation it was given straight over the stored one, so
+    /// a caller could take an instance by submitting a large number
+    /// rather than adopting -- `adopt` was not really the only minter
+    /// (ADR-0021 §4). A resubmit at the *current* generation must still
+    /// work (`submitting_twice_replaces_desired_state_and_keeps_one_row`
+    /// above pins that at generation 0).
+    #[test]
+    fn submit_refuses_a_generation_that_does_not_match_the_one_on_record() {
+        let store = SupervisorStore::open_in_memory().unwrap();
+        store.submit("inst-1", "{}", "{}", "did:key:owner", 0).unwrap();
+        store.set_generation("inst-1", 3).unwrap();
+
+        let err = store.submit("inst-1", "{}", "{}", "did:key:owner", 4).unwrap_err();
+        assert!(err.to_string().contains("generation"), "{err}");
+        let err = store.submit("inst-1", "{}", "{}", "did:key:owner", 0).unwrap_err();
+        assert!(err.to_string().contains("generation"), "{err}");
+
+        store.submit("inst-1", "{\"v\":2}", "{}", "did:key:owner", 3).unwrap();
+        assert_eq!(store.get("inst-1").unwrap().unwrap().plan_json, "{\"v\":2}");
+    }
+
     #[test]
     fn pause_and_resume_round_trip() {
         let store = SupervisorStore::open_in_memory().unwrap();
@@ -263,8 +321,26 @@ mod tests {
         assert!(!store.get("inst-1").unwrap().unwrap().paused);
     }
 
+    /// H2 (Slice A5b review): the doc comment on `all_active` promises
+    /// "every non-retired, non-paused instance", but the query used to
+    /// filter `retired` only -- free to fix before anything calls it, and
+    /// a live bug the moment A5c's loop uses this as its work list.
     #[test]
-    fn retire_is_terminal_and_a_later_submit_is_refused() {
+    fn all_active_excludes_both_retired_and_paused_instances() {
+        let store = SupervisorStore::open_in_memory().unwrap();
+        store.submit("running", "{}", "{}", "did:key:owner", 0).unwrap();
+        store.submit("paused", "{}", "{}", "did:key:owner", 0).unwrap();
+        store.pause("paused").unwrap();
+        store.submit("retired", "{}", "{}", "did:key:owner", 0).unwrap();
+        store.retire("retired").unwrap();
+
+        let active: Vec<String> =
+            store.all_active().unwrap().into_iter().map(|s| s.app_instance_id).collect();
+        assert_eq!(active, vec!["running".to_string()]);
+    }
+
+    #[test]
+    fn retire_refuses_a_later_submit_until_un_retired() {
         let store = SupervisorStore::open_in_memory().unwrap();
         store.submit("inst-1", "{}", "{}", "did:key:owner", 0).unwrap();
         store.retire("inst-1").unwrap();
@@ -272,5 +348,13 @@ mod tests {
 
         let err = store.submit("inst-1", "{}", "{}", "did:key:owner", 1).unwrap_err();
         assert!(err.to_string().contains("retired"), "{err}");
+
+        // N3 (Slice A5b review round 2): `retire` is not a dead end --
+        // `un_retire` (called by `handle_adopt` on a successful claim) is
+        // the "run `supervisor adopt`" the refusal above names.
+        store.un_retire("inst-1").unwrap();
+        assert!(!store.get("inst-1").unwrap().unwrap().retired);
+        store.submit("inst-1", "{\"v\":2}", "{}", "did:key:owner", 0).unwrap();
+        assert_eq!(store.get("inst-1").unwrap().unwrap().plan_json, "{\"v\":2}");
     }
 }

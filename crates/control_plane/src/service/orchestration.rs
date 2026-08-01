@@ -45,7 +45,7 @@ use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::or
 use tokio::task;
 use tracing::info;
 
-use super::ControlPlaneService;
+use super::{ControlPlaneService, SUPERVISOR_RESERVED_SERVICE_ID};
 use crate::{config_utils, http_routes, synsvc_native::SynSvcNativeService};
 
 #[async_trait::async_trait]
@@ -985,6 +985,23 @@ impl ControlPlaneService {
         app_context: Option<AppContext>,
         caller: &CallerContext,
     ) -> Result<(), String> {
+        // A deploy may not claim a `service_id` this substrate already uses
+        // as a fixed `native_dispatch` key: the node's own DID (`RouteHandler
+        // ::init` registers `ControlPlaneService` itself there, so claiming
+        // it hijacks every `orchestrator`/`security` call this node ever
+        // receives) or the literal `"supervisor"` (the supervisor role's own
+        // dispatch id, whose vault a deploy under that name would also open
+        // via `open_service_db`). Neither `SERVICE_ID_REGEX` nor
+        // `validate_service_id` reserves either string -- both are ordinary,
+        // deployable-looking ids otherwise. Checked before ownership/
+        // capability below so the rejection reason is unambiguous.
+        if service_id == self.node_did || service_id == SUPERVISOR_RESERVED_SERVICE_ID {
+            return Err(format!(
+                "service_id '{service_id}' is reserved for this substrate's own dispatch and \
+                 cannot be deployed to"
+            ));
+        }
+
         // M04A Slice B7a / F7: a service_id already owned by someone else may
         // not be re-deployed into. An unowned substrate holds no node-wide
         // orchestrator authority, so this always
@@ -3369,6 +3386,40 @@ mod tests {
     /// own `app_context.app_instance_id` (finding 02's check alone does
     /// not close this: it only forces the attacker to also lie about which
     /// app instance its own service belongs to).
+    /// B1 (Slice A5b review): `open_service_db` and `native_dispatch` both
+    /// key on a bare `service_id` with no reservation of their own, so
+    /// before this check a deploy under the node's own DID overwrote
+    /// `ControlPlaneService`'s own dispatch entry (full node takeover), and
+    /// a deploy under `"supervisor"` opened the supervisor's vault and
+    /// overwrote its dispatch entry. Each caller below holds a capability
+    /// scoped exactly to the `service_id` it targets, so the rejection is
+    /// the reserved-name check firing, not the ordinary authorization gate.
+    #[tokio::test]
+    async fn a_deploy_cannot_claim_the_nodes_own_did_or_the_supervisor_dispatch_id() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+
+        let err = service
+            .deploy(
+                "did:key:zTestNode".to_string(),
+                inline_manifest(None, None, None),
+                &scoped_deploy_caller("did:key:zMallory", "did:key:zTestNode"),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("reserved"), "{err}");
+
+        let err = service
+            .deploy(
+                SUPERVISOR_RESERVED_SERVICE_ID.to_string(),
+                inline_manifest(None, None, None),
+                &scoped_deploy_caller("did:key:zMallory", SUPERVISOR_RESERVED_SERVICE_ID),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("reserved"), "{err}");
+    }
+
     #[tokio::test]
     async fn a_deploy_cannot_claim_an_app_instance_owned_by_a_different_caller() {
         let temp_dir = tempfile::tempdir().unwrap();

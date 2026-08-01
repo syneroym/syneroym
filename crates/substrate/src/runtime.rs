@@ -581,8 +581,10 @@ struct SharedNodeHandles {
 /// `supervisor` is dispatched to for the *same* connection preamble
 /// (`<scheme>://supervisor.<node-did>`) but must not share `native_dispatch`'s
 /// entry with `ControlPlaneService`, which is already registered under the
-/// node's own DID by `RouteHandler::init`.
-const SUPERVISOR_DISPATCH_ID: &str = "supervisor";
+/// node's own DID by `RouteHandler::init`. Sourced from
+/// `syneroym_control_plane`, which is also the crate that refuses a deploy
+/// under this name, so the reserved word cannot drift between the two.
+const SUPERVISOR_DISPATCH_ID: &str = syneroym_control_plane::SUPERVISOR_RESERVED_SERVICE_ID;
 
 #[cfg(feature = "supervisor")]
 type SupervisorHandle = syneroym_app_supervisor::SupervisorService;

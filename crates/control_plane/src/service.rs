@@ -43,6 +43,17 @@ use orchestration::OrchestratorInterface;
 const ORCHESTRATOR_INTERFACE: &str = "orchestrator";
 const SECURITY_INTERFACE: &str = "security";
 
+/// The `native_dispatch` key the supervisor role's own `NativeService`
+/// registers under (`syneroym_substrate::runtime::init_supervisor`), fixed
+/// and independent of any node's own DID. `deploy_with_context` refuses a
+/// caller-supplied `service_id` equal to this: `open_service_db` and
+/// `native_dispatch` both key on a bare `service_id` with no reservation of
+/// their own, so an unreserved deploy under this name would open the
+/// supervisor's vault (leaking every member master key it holds) and
+/// overwrite the dispatch entry `init_supervisor` registered, taking over
+/// every later `supervisor://` call.
+pub const SUPERVISOR_RESERVED_SERVICE_ID: &str = "supervisor";
+
 /// The Substrate Service (The Control Plane Orchestrator)
 /// This service handles the deployment and lifecycle of applications
 /// (`SynApps`) within the substrate. It interacts with sandbox environments

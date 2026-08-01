@@ -19,7 +19,7 @@ use std::{
 use serde_json::Value;
 use syneroym_app_orchestration::{
     DeploymentState,
-    models::{AppInstanceId, DeploymentPlan, SubstrateAlias},
+    models::{AppInstanceId, DeploymentPlan, ServiceId, SubstrateAlias},
 };
 use syneroym_identity::Identity;
 use syneroym_rpc::{
@@ -205,31 +205,71 @@ impl SupervisorService {
     /// The highest generation any placed, reachable substrate reports
     /// holding for this instance -- best-effort, so one unreachable
     /// substrate cannot hide a real supersession another one reports.
+    ///
+    /// `aliases` comes from the plan's own declared placement
+    /// (`Self::placed_aliases`), not from this supervisor's journal: a
+    /// journal-derived set is empty until *this* supervisor has itself
+    /// landed a placement, which would make a competing supervisor's
+    /// `adopt` on an instance that never finished its first deploy here
+    /// undetectable (B4, Slice A5b review).
+    ///
+    /// Returns `None`, not `Some(0)`, when not one placed substrate could
+    /// be reached and queried -- every failure (no inventory entry,
+    /// connect failure, RPC error) previously folded into the same "0" a
+    /// substrate with a genuinely empty management row also produces, so
+    /// a supervisor that had lost its own `orchestrator/status` grant
+    /// reported "not superseded" indefinitely instead of "cannot tell".
     async fn max_held_generation(
         &self,
         app_instance_id: &str,
-        aliases: &BTreeMap<String, String>,
+        aliases: &BTreeSet<String>,
         inventory: &SupervisorInventory,
-    ) -> u64 {
+    ) -> Option<u64> {
         let mut held_max = 0u64;
-        for alias in aliases.values() {
+        let mut reached_any = false;
+        for alias in aliases {
             let Some(entry) = inventory.get(alias) else { continue };
-            let Ok(client) = self.connected_client(entry).await else { continue };
-            if let Ok(Some(g)) = Self::read_held_generation(&client, app_instance_id).await {
-                held_max = held_max.max(g);
+            let Ok(mut client) = self.connected_client(entry).await else { continue };
+            let read = Self::read_held_generation(&client, app_instance_id).await;
+            // Closed explicitly rather than dropped (S6): this client is
+            // never reused past this one read.
+            let _ = client.shutdown().await;
+            let Ok(generation) = read else { continue };
+            reached_any = true;
+            held_max = held_max.max(generation.unwrap_or(0));
+        }
+        reached_any.then_some(held_max)
+    }
+
+    /// Closes each client's iroh endpoint explicitly, rather than letting
+    /// it drop -- a dropped-not-closed `SyneroymClient` is exactly what
+    /// iroh logs as "Endpoint dropped without calling `Endpoint::close`.
+    /// Aborting ungracefully", and every RPC verb that connects to a
+    /// managed substrate used to leave every client it opened for iroh to
+    /// clean up on drop (S6, Slice A5b review). Only closes a client this
+    /// call holds the sole `Arc` to -- if something else still references
+    /// it, leaving it open is correct, not a leak.
+    async fn shutdown_clients(clients: impl IntoIterator<Item = Arc<SyneroymClient>>) {
+        for mut client in clients {
+            if let Some(c) = Arc::get_mut(&mut client) {
+                let _ = c.shutdown().await;
             }
         }
-        held_max
     }
 
     /// The mint/substitute/certify/apply pipeline shared by `submit` and
-    /// `force-reconcile`.
+    /// `force-reconcile`. Returns the plan with masters substituted in,
+    /// not just the minted list -- `handle_submit` used to re-run
+    /// `mint_and_substitute` a second time on its own copy to get this
+    /// same plan for storing as desired state (H5, Slice A5b review): one
+    /// vault open and one `reveal_secret` per service for a value this
+    /// call had already computed.
     async fn deploy_submission(
         &self,
         mut plan: DeploymentPlan,
         inventory: &SupervisorInventory,
         generation: u64,
-    ) -> Result<Vec<MintedMaster>, String> {
+    ) -> Result<(Vec<MintedMaster>, DeploymentPlan), String> {
         let aliases = Self::placed_aliases(&plan)?;
 
         // Mint before connecting anywhere: a locked vault or a bad plan
@@ -240,10 +280,26 @@ impl SupervisorService {
 
         let clients = self.build_clients(&aliases, inventory).await?;
 
+        // However `apply_with_clients` below returns, every client this
+        // call opened must be closed -- not just on the success path
+        // (S6).
+        let result = self.apply_with_clients(&plan, &masters, &clients, generation, minted).await;
+        Self::shutdown_clients(clients.into_values()).await;
+        result.map(|minted| (minted, plan))
+    }
+
+    async fn apply_with_clients(
+        &self,
+        plan: &DeploymentPlan,
+        masters: &BTreeMap<ServiceId, Identity>,
+        clients: &BTreeMap<SubstrateAlias, Arc<SyneroymClient>>,
+        generation: u64,
+        minted: Vec<MintedMaster>,
+    ) -> Result<Vec<MintedMaster>, String> {
         let (instance_certs, registry_certs) = deploy::certify_placed_members(
-            &plan,
-            &masters,
-            &clients,
+            plan,
+            masters,
+            clients,
             None,
             INSTANCE_CERT_EXPIRES_HOURS,
         )
@@ -253,7 +309,7 @@ impl SupervisorService {
         let deployment_id = self
             .store
             .journal
-            .append(&plan, DeploymentState::Applying)
+            .append(plan, DeploymentState::Applying)
             .map_err(|e| e.to_string())?;
         let targets: BTreeMap<SubstrateAlias, DeployTarget> = clients
             .iter()
@@ -271,7 +327,7 @@ impl SupervisorService {
 
         let report = deploy::apply_plan(
             ApplyRequest {
-                plan: &plan,
+                plan,
                 targets: &targets,
                 fallback: None,
                 instance_certificates: &instance_certs,
@@ -324,23 +380,66 @@ impl SupervisorService {
         let inventory: SupervisorInventory = serde_json::from_str(&s.inventory_json)
             .map_err(|e| RpcError::InvalidParams(format!("invalid inventory-json: {e}")))?;
 
-        let minted = self
-            .deploy_submission(plan.clone(), &inventory, s.generation)
+        // `deploy_submission`, the journal, and the vault key all derive
+        // from `plan.app_instance_id`; the desired-state row and every
+        // later `adopt`/`status`/`retire` key on `s.app_instance_id`
+        // instead. A mismatch (both fields are caller-supplied) would
+        // split the instance in two -- `status` querying the journal under
+        // a key nothing wrote, `adopt` stamping a generation the substrate
+        // never associates with the deployed services (S4, Slice A5b
+        // review).
+        if plan.app_instance_id.as_str() != s.app_instance_id {
+            return Err(RpcError::InvalidParams(format!(
+                "submission names app instance '{}' but its plan-json is compiled for '{}'",
+                s.app_instance_id, plan.app_instance_id
+            )));
+        }
+
+        // Checked before any deploy work runs, not only after (B3, Slice
+        // A5b review): `store.submit`'s own guards, below, live past the
+        // whole mint/certify/apply pipeline. For `retired` that used to
+        // mean only a late rejection. For `generation` it is worse (N1,
+        // Slice A5b review round 2): `deploy_submission` already presents
+        // `s.generation` to the substrate's own `check_generation` on the
+        // way there, and an `Ordering::Greater` presentation is *accepted*
+        // there and advances the substrate's own stamp -- so a wrong
+        // upward `--generation` would leave the substrate ahead of this
+        // supervisor's own store the instant `store.submit`'s check then
+        // refused to record it, making the supervisor immediately
+        // superseded by its own write. One read covers both, so both are
+        // checked before either has a chance to run.
+        if let Some(existing) = self
+            .store
+            .get(&s.app_instance_id)
+            .map_err(|e| RpcError::InternalError(e.to_string()))?
+        {
+            if existing.retired {
+                return Err(RpcError::InternalError(format!(
+                    "app instance '{}' is retired; run `supervisor adopt` to resume managing it \
+                     before submitting new desired state",
+                    s.app_instance_id
+                )));
+            }
+            if s.generation != existing.generation {
+                return Err(RpcError::InternalError(format!(
+                    "submit presented generation {}, but app instance '{}' is on record at \
+                     generation {}; only `adopt` mints a new one -- run `supervisor adopt`, or \
+                     omit --generation to resubmit at the current one",
+                    s.generation, s.app_instance_id, existing.generation
+                )));
+            }
+        }
+
+        // `deploy_submission` hands back the plan with masters already
+        // substituted in, so the stored desired state carries the real
+        // master DIDs, not the compiler's fabricated ones, with no second
+        // mint/substitute pass needed to get it (H5, Slice A5b review).
+        let (minted, substituted_plan) = self
+            .deploy_submission(plan, &inventory, s.generation)
             .await
             .map_err(RpcError::InternalError)?;
-
-        let plan_json_substituted = {
-            // Re-run the substitution the deploy pipeline already performed
-            // so the stored desired state carries the real master DIDs,
-            // not the compiler's fabricated ones -- `mint_and_substitute`
-            // resolves the same masters it already minted, so this is a
-            // read, not a second mint.
-            let mut p = plan;
-            keys::mint_and_substitute(&mut p, &self.vault)
-                .await
-                .map_err(|e| RpcError::InternalError(e.to_string()))?;
-            p.to_json().map_err(|e| RpcError::InternalError(e.to_string()))?
-        };
+        let plan_json_substituted =
+            substituted_plan.to_json().map_err(|e| RpcError::InternalError(e.to_string()))?;
 
         self.store
             .submit(
@@ -355,10 +454,49 @@ impl SupervisorService {
         let result = SubmitResult {
             masters: minted
                 .into_iter()
-                .map(|m| WitMintedMaster { service_name: m.service_name, master_did: m.master_did })
+                .map(|m| WitMintedMaster {
+                    service_name: m.service_name,
+                    master_did: m.master_did,
+                    vault_name: m.vault_name,
+                })
                 .collect(),
         };
         Ok(NativeResponse { payload: serde_json::to_value(result).unwrap_or(Value::Null) })
+    }
+
+    /// Reads the held generation across every given client and claims
+    /// `held + 1` on each. Split out of `handle_adopt` so that function
+    /// can close every client it opened however this returns, success or
+    /// failure (N2, Slice A5b review round 2) -- `?` inside either loop
+    /// here used to return straight out of `handle_adopt` itself, leaking
+    /// every client already connected and every one still left to try.
+    async fn claim_next_generation(
+        app_instance_id: &str,
+        clients: &BTreeMap<SubstrateAlias, Arc<SyneroymClient>>,
+    ) -> RpcResult<u64> {
+        let mut held_max = 0u64;
+        for client in clients.values() {
+            if let Some(g) = Self::read_held_generation(client, app_instance_id)
+                .await
+                .map_err(|e| RpcError::InternalError(e.to_string()))?
+            {
+                held_max = held_max.max(g);
+            }
+        }
+        let next_generation = held_max + 1;
+
+        for client in clients.values() {
+            client
+                .request(
+                    "orchestrator",
+                    "claim-app-instance",
+                    serde_json::to_value((app_instance_id.to_string(), next_generation))
+                        .map_err(|e| RpcError::InternalError(e.to_string()))?,
+                )
+                .await
+                .map_err(|e| RpcError::InternalError(e.to_string()))?;
+        }
+        Ok(next_generation)
     }
 
     async fn handle_adopt(
@@ -389,39 +527,70 @@ impl SupervisorService {
         let clients =
             self.build_clients(&aliases, &inventory).await.map_err(RpcError::InternalError)?;
 
-        let mut held_max = 0u64;
-        for client in clients.values() {
-            if let Some(g) = Self::read_held_generation(client, &app_instance_id)
-                .await
-                .map_err(|e| RpcError::InternalError(e.to_string()))?
-            {
-                held_max = held_max.max(g);
-            }
-        }
-        let next_generation = held_max + 1;
-
-        for client in clients.values() {
-            client
-                .request(
-                    "orchestrator",
-                    "claim-app-instance",
-                    serde_json::to_value((app_instance_id.clone(), next_generation))
-                        .map_err(|e| RpcError::InternalError(e.to_string()))?,
-                )
-                .await
-                .map_err(|e| RpcError::InternalError(e.to_string()))?;
-        }
+        let result = Self::claim_next_generation(&app_instance_id, &clients).await;
+        Self::shutdown_clients(clients.into_values()).await;
+        let next_generation = result?;
 
         self.store
             .set_generation(&app_instance_id, next_generation)
+            .map_err(|e| RpcError::InternalError(e.to_string()))?;
+        // `adopt` is the way back in from `retired` -- the message every
+        // refusal on a retired instance points to (N3, Slice A5b review
+        // round 2). Idempotent when the instance was never retired.
+        self.store
+            .un_retire(&app_instance_id)
             .map_err(|e| RpcError::InternalError(e.to_string()))?;
 
         Ok(NativeResponse { payload: serde_json::to_value(next_generation).unwrap_or(Value::Null) })
     }
 
+    /// `build_clients`' own contract is all-or-nothing (a deploy correctly
+    /// wants that), which is wrong for release: an unreachable substrate
+    /// must not stop this call from releasing every *other* substrate the
+    /// instance is placed on (S7, Slice A5b review). Connects what it can
+    /// and reports the rest as `(alias, reason)` instead of failing the
+    /// whole batch on the first one that cannot be reached.
+    async fn connect_best_effort(
+        &self,
+        aliases: &[String],
+        inventory: &SupervisorInventory,
+    ) -> (BTreeMap<SubstrateAlias, Arc<SyneroymClient>>, Vec<(String, String)>) {
+        let mut clients = BTreeMap::new();
+        let mut failed = Vec::new();
+        for alias in aliases {
+            let Some(entry) = inventory.get(alias) else {
+                failed.push((
+                    alias.clone(),
+                    "no inventory entry for this substrate alias".to_string(),
+                ));
+                continue;
+            };
+            if entry.ucan.is_none() {
+                failed.push((
+                    alias.clone(),
+                    "substrate carries no credential (ucan) in the submitted inventory".to_string(),
+                ));
+                continue;
+            }
+            match self.connected_client(entry).await {
+                Ok(client) => {
+                    clients.insert(SubstrateAlias::new(alias.clone()), Arc::new(client));
+                }
+                Err(e) => failed.push((alias.clone(), e.to_string())),
+            }
+        }
+        (clients, failed)
+    }
+
     /// Shared by `release` and `retire`: clears the management stamp on
-    /// every substrate the instance is placed on.
-    async fn release_on_every_substrate(&self, app_instance_id: &str) -> RpcResult<()> {
+    /// every substrate the instance is placed on that can actually be
+    /// reached, and returns the `(alias, reason)` of every one that
+    /// could not be -- reachable or not, `release`/`retire` still act on
+    /// what they can (S7, Slice A5b review).
+    async fn release_on_every_substrate(
+        &self,
+        app_instance_id: &str,
+    ) -> RpcResult<Vec<(String, String)>> {
         let state = self
             .store
             .get(app_instance_id)
@@ -436,21 +605,39 @@ impl SupervisorService {
         let inventory: SupervisorInventory = serde_json::from_str(&state.inventory_json)
             .map_err(|e| RpcError::InternalError(e.to_string()))?;
         let aliases = Self::placed_aliases(&plan).map_err(RpcError::InternalError)?;
-        let clients =
-            self.build_clients(&aliases, &inventory).await.map_err(RpcError::InternalError)?;
+        let (clients, mut failed) = self.connect_best_effort(&aliases, &inventory).await;
 
-        for client in clients.values() {
-            client
-                .request(
-                    "orchestrator",
-                    "release-app-instance",
-                    serde_json::to_value((app_instance_id.to_string(), state.generation))
-                        .map_err(|e| RpcError::InternalError(e.to_string()))?,
-                )
-                .await
-                .map_err(|e| RpcError::InternalError(e.to_string()))?;
+        let params = serde_json::to_value((app_instance_id.to_string(), state.generation))
+            .map_err(|e| RpcError::InternalError(e.to_string()))?;
+        for (alias, client) in &clients {
+            if let Err(e) =
+                client.request("orchestrator", "release-app-instance", params.clone()).await
+            {
+                failed.push((alias.to_string(), e.to_string()));
+            }
         }
-        Ok(())
+        Self::shutdown_clients(clients.into_values()).await;
+        Ok(failed)
+    }
+
+    /// A JSON payload reporting which, if any, placed substrates could not
+    /// be released -- `unreleased_substrates` is present and non-empty
+    /// only then, so an operator (and `roymctl`'s own printout) can tell a
+    /// clean release from a partial one without parsing prose.
+    fn release_payload(status: &str, failed: Vec<(String, String)>) -> Value {
+        if failed.is_empty() {
+            return serde_json::json!({"status": status});
+        }
+        serde_json::json!({
+            "status": status,
+            "warning": "one or more placed substrates could not be reached; their generation \
+                        stamp was not cleared and must be released once they are reachable \
+                        again",
+            "unreleased_substrates": failed
+                .into_iter()
+                .map(|(alias, reason)| serde_json::json!({"alias": alias, "reason": reason}))
+                .collect::<Vec<_>>(),
+        })
     }
 
     async fn handle_release(
@@ -461,8 +648,8 @@ impl SupervisorService {
         self.require_admin(caller)?;
         let (app_instance_id,): (String,) = serde_json::from_value(params)
             .map_err(|e| RpcError::InvalidParams(format!("failed to parse release params: {e}")))?;
-        self.release_on_every_substrate(&app_instance_id).await?;
-        Ok(NativeResponse { payload: serde_json::json!({"status": "released"}) })
+        let failed = self.release_on_every_substrate(&app_instance_id).await?;
+        Ok(NativeResponse { payload: Self::release_payload("released", failed) })
     }
 
     async fn handle_retire(
@@ -473,9 +660,15 @@ impl SupervisorService {
         self.require_admin(caller)?;
         let (app_instance_id,): (String,) = serde_json::from_value(params)
             .map_err(|e| RpcError::InvalidParams(format!("failed to parse retire params: {e}")))?;
-        self.release_on_every_substrate(&app_instance_id).await?;
+        let failed = self.release_on_every_substrate(&app_instance_id).await?;
+        // Retiring must not be blocked by a substrate that happens to be
+        // down right now -- exactly the state an operator is most likely
+        // to be retiring around (S7). The supervisor's own store always
+        // stops managing the instance; an unreachable substrate keeps its
+        // stale stamp, reported above, until it comes back and is
+        // released.
         self.store.retire(&app_instance_id).map_err(|e| RpcError::InternalError(e.to_string()))?;
-        Ok(NativeResponse { payload: serde_json::json!({"status": "retired"}) })
+        Ok(NativeResponse { payload: Self::release_payload("retired", failed) })
     }
 
     async fn handle_pause(
@@ -520,6 +713,15 @@ impl SupervisorService {
                     "no desired state submitted for app instance '{app_instance_id}'"
                 ))
             })?;
+        // Unlike `submit`, this path never calls `store.submit`, so nothing
+        // else on it would ever refuse a retired instance -- it would just
+        // redeploy every service indefinitely (B3, Slice A5b review).
+        if state.retired {
+            return Err(RpcError::InternalError(format!(
+                "app instance '{app_instance_id}' is retired; run `supervisor adopt` to resume \
+                 managing it before reconciling"
+            )));
+        }
         let plan = DeploymentPlan::from_json(&state.plan_json)
             .map_err(|e| RpcError::InternalError(e.to_string()))?;
         let inventory: SupervisorInventory = serde_json::from_str(&state.inventory_json)
@@ -644,10 +846,19 @@ impl SupervisorService {
         }
 
         let mut targets: BTreeMap<String, HealthTarget> = BTreeMap::new();
+        // Kept alongside `targets`' type-erased `Arc<dyn StatusQuery>`
+        // clones so the concrete client can be closed after `poll_once`
+        // (S6) -- a trait object gives no way to reach `SyneroymClient::
+        // shutdown` through it.
+        let mut connected: Vec<Arc<SyneroymClient>> = Vec::new();
         for (did, alias) in &aliases {
             let Some(entry) = inventory.get(alias) else { continue };
             let query: Arc<dyn StatusQuery> = match self.connected_client(entry).await {
-                Ok(c) => Arc::new(c),
+                Ok(c) => {
+                    let c = Arc::new(c);
+                    connected.push(c.clone());
+                    c
+                }
                 Err(e) => Arc::new(UnreachableQuery(e.to_string())),
             };
             targets.insert(
@@ -661,44 +872,75 @@ impl SupervisorService {
         }
 
         let report = health::poll_once(&targets, &expected).await;
+        // Drops `targets`' `Arc<dyn StatusQuery>` clones so `connected`
+        // holds the sole remaining `Arc` to each client, which is what
+        // lets `shutdown_clients` reach `Arc::get_mut` below.
+        drop(targets);
+        Self::shutdown_clients(connected).await;
         let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         health::record_report(&self.store.alerts, &instance_id, &report, now)
             .map_err(|e| RpcError::InternalError(e.to_string()))?;
 
         // ADR-0021 §4 / matrix row 9: a substrate reporting a higher
         // generation than this supervisor holds means a second supervisor
-        // has adopted the instance. Best-effort across every reachable
-        // placed substrate -- one unreachable node must not hide a real
-        // supersession visible through another.
-        let held_max = self.max_held_generation(&app_instance_id, &aliases, &inventory).await;
-        let superseded = held_max > state.generation;
-        if superseded {
-            self.store
-                .alerts
-                .raise(
-                    &instance_id,
-                    None,
-                    None,
-                    &self.node_did,
-                    syneroym_app_orchestration::AlertKind::SupervisorSuperseded,
-                    &format!(
-                        "a managed substrate now holds generation {held_max}, higher than this \
-                         supervisor's {}; another supervisor has adopted this instance",
-                        state.generation
-                    ),
-                )
-                .map_err(|e| RpcError::InternalError(e.to_string()))?;
-        } else {
-            self.store
-                .alerts
-                .clear(
-                    &instance_id,
-                    None,
-                    &self.node_did,
-                    syneroym_app_orchestration::AlertKind::SupervisorSuperseded,
-                )
-                .map_err(|e| RpcError::InternalError(e.to_string()))?;
-        }
+        // has adopted the instance. Checked against every substrate the
+        // *plan* places a service on, not `aliases` above (which only
+        // covers substrates this supervisor's own journal already shows a
+        // landed placement on, and is empty until the first one lands) --
+        // see `max_held_generation`'s own doc.
+        let generation_check_aliases: BTreeSet<String> =
+            Self::placed_aliases(&plan).unwrap_or_default().into_iter().collect();
+        let held_max =
+            self.max_held_generation(&app_instance_id, &generation_check_aliases, &inventory).await;
+        let superseded = match held_max {
+            Some(held_max) => {
+                let superseded = held_max > state.generation;
+                if superseded {
+                    self.store
+                        .alerts
+                        .raise(
+                            &instance_id,
+                            None,
+                            None,
+                            &self.node_did,
+                            syneroym_app_orchestration::AlertKind::SupervisorSuperseded,
+                            &format!(
+                                "a managed substrate now holds generation {held_max}, higher than \
+                                 this supervisor's {}; another supervisor has adopted this \
+                                 instance",
+                                state.generation
+                            ),
+                        )
+                        .map_err(|e| RpcError::InternalError(e.to_string()))?;
+                } else {
+                    self.store
+                        .alerts
+                        .clear(
+                            &instance_id,
+                            None,
+                            &self.node_did,
+                            syneroym_app_orchestration::AlertKind::SupervisorSuperseded,
+                        )
+                        .map_err(|e| RpcError::InternalError(e.to_string()))?;
+                }
+                superseded
+            }
+            None => {
+                // Not one placed substrate could be reached and queried:
+                // leave whatever alert state already exists untouched
+                // rather than guessing. Clearing here would silently
+                // un-alert a real supersession just because the network is
+                // flaky right now; raising would false-alarm on a
+                // transient outage. Neither is honest, so this is
+                // reported through the log rather than the alert store.
+                tracing::warn!(
+                    app_instance_id = %app_instance_id,
+                    "could not reach any placed substrate to check for supersession (matrix \
+                     row 9); status cannot confirm this supervisor is still the sole writer"
+                );
+                false
+            }
+        };
 
         let services: Vec<ManagedService> = report
             .services
@@ -735,7 +977,13 @@ impl SupervisorService {
             state: overall_state,
             generation: state.generation,
             supervisor_did: self.node_did.clone(),
-            last_reconciled_at: Some(now),
+            // A5b runs no reconcile loop -- `status` polls health on
+            // demand, which is not the same thing (D-A5-21). `Some(now)`
+            // here reported every instance as having just reconciled,
+            // even one that never has, the one fabricated number in an
+            // otherwise careful response (H1, Slice A5b review). `None`
+            // until A5c's loop actually reconciles something.
+            last_reconciled_at: None,
             services,
             // A5b writes no bindings itself (`write-bindings` is the
             // resident loop's verb, A5c) -- there is nothing yet to
@@ -944,6 +1192,35 @@ mod tests {
         }
     }
 
+    /// S4 (Slice A5b review): the plan's own `app_instance_id` and the
+    /// submission's outer `app_instance_id` are both caller-supplied and,
+    /// before this check, never compared. A mismatch would key the journal
+    /// and vault under one instance while `status`/`adopt`/`retire` key on
+    /// the other, splitting the instance in two.
+    #[tokio::test]
+    async fn submit_is_refused_when_the_outer_instance_id_does_not_match_the_plans_own() {
+        let s = service();
+        let plan_json = plan_json_no_services("plan-says-inst-1");
+
+        let err = dispatch(
+            &s,
+            admin_caller("did:key:zSupervisorNode"),
+            "submit",
+            serde_json::json!([{
+                "app_instance_id": "outer-says-inst-2",
+                "plan_json": plan_json,
+                "inventory_json": "{}",
+                "generation": 0,
+            }]),
+        )
+        .await
+        .unwrap_err();
+        let err = err.to_string();
+        assert!(err.contains("plan-says-inst-1") && err.contains("outer-says-inst-2"), "{err}");
+        assert!(s.store.get("outer-says-inst-2").unwrap().is_none());
+        assert!(s.store.get("plan-says-inst-1").unwrap().is_none());
+    }
+
     #[tokio::test]
     async fn submit_is_refused_when_a_placed_alias_carries_no_credential() {
         let s = service();
@@ -966,6 +1243,145 @@ mod tests {
         .await
         .unwrap_err();
         assert!(err.to_string().contains("no credential"), "{err}");
+    }
+
+    /// B3 (Slice A5b review): `deploy_submission` used to run the whole
+    /// mint/certify/apply pipeline *before* `store.submit`'s retired guard
+    /// ever ran, so a submit against a retired instance redeployed every
+    /// service and only then reported the rejection. The inventory here
+    /// carries no credential for the placed alias -- exactly
+    /// `submit_is_refused_when_a_placed_alias_carries_no_credential`'s
+    /// fixture -- so if the retired check did not run first, this would
+    /// fail with "no credential" instead, proving the ordering rather than
+    /// merely the outcome.
+    #[tokio::test]
+    async fn submit_against_a_retired_instance_is_refused_before_any_deploy_work_runs() {
+        let s = service();
+        let plan_json = plan_json_one_service("inst-1", "backend", Some("edge-1"));
+        let inventory_json =
+            serde_json::json!({"edge-1": {"did": "did:key:zEdge1", "api_url": "http://127.0.0.1:1"}})
+                .to_string();
+        s.store.submit("inst-1", &plan_json, &inventory_json, "did:key:zAdmin", 0).unwrap();
+        s.store.retire("inst-1").unwrap();
+
+        let err = dispatch(
+            &s,
+            admin_caller("did:key:zSupervisorNode"),
+            "submit",
+            serde_json::json!([{
+                "app_instance_id": "inst-1",
+                "plan_json": plan_json,
+                "inventory_json": inventory_json,
+                "generation": 1,
+            }]),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("retired"), "{err}");
+        assert!(!err.to_string().contains("credential"), "{err}");
+    }
+
+    /// N1 (Slice A5b review round 2): H3's generation check lived only at
+    /// `store.submit`, which still ran *after* `deploy_submission` --
+    /// including after that pipeline presented `s.generation` to the
+    /// substrate's own `check_generation`, which *accepts* a higher
+    /// generation and advances its stamp. So a wrong upward
+    /// `--generation` would have left the substrate ahead of this
+    /// supervisor's own store the moment the store then refused to
+    /// record it. The inventory here carries no credential, exactly
+    /// `submit_against_a_retired_instance_is_refused_before_any_deploy_
+    /// work_runs`'s fixture: a "generation" failure rather than a
+    /// "credential" one proves the check ran before any deploy work, not
+    /// merely that the submit failed for some other reason.
+    #[tokio::test]
+    async fn submit_at_the_wrong_generation_is_refused_before_any_deploy_work_runs() {
+        let s = service();
+        let plan_json = plan_json_one_service("inst-1", "backend", Some("edge-1"));
+        let inventory_json =
+            serde_json::json!({"edge-1": {"did": "did:key:zEdge1", "api_url": "http://127.0.0.1:1"}})
+                .to_string();
+        s.store.submit("inst-1", &plan_json, &inventory_json, "did:key:zAdmin", 0).unwrap();
+        s.store.set_generation("inst-1", 3).unwrap();
+
+        let err = dispatch(
+            &s,
+            admin_caller("did:key:zSupervisorNode"),
+            "submit",
+            serde_json::json!([{
+                "app_instance_id": "inst-1",
+                "plan_json": plan_json,
+                "inventory_json": inventory_json,
+                "generation": 5,
+            }]),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("generation"), "{err}");
+        assert!(!err.to_string().contains("credential"), "{err}");
+        // Store state must be untouched by the rejected attempt.
+        assert_eq!(s.store.get("inst-1").unwrap().unwrap().generation, 3);
+    }
+
+    /// Same defect, `force-reconcile`'s side: it never calls `store.submit`
+    /// at all, so nothing on it refused a retired instance -- it would
+    /// just redeploy indefinitely.
+    #[tokio::test]
+    async fn force_reconcile_against_a_retired_instance_is_refused() {
+        let s = service();
+        let plan_json = plan_json_one_service("inst-1", "backend", Some("edge-1"));
+        let inventory_json =
+            serde_json::json!({"edge-1": {"did": "did:key:zEdge1", "api_url": "http://127.0.0.1:1"}})
+                .to_string();
+        s.store.submit("inst-1", &plan_json, &inventory_json, "did:key:zAdmin", 0).unwrap();
+        s.store.retire("inst-1").unwrap();
+
+        let err = dispatch(
+            &s,
+            admin_caller("did:key:zSupervisorNode"),
+            "force-reconcile",
+            serde_json::json!(["inst-1"]),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("retired"), "{err}");
+        assert!(!err.to_string().contains("credential"), "{err}");
+    }
+
+    /// S7 (Slice A5b review): before `connect_best_effort`,
+    /// `release_on_every_substrate` used `build_clients`, whose contract
+    /// fails the whole call the moment one placed alias cannot be
+    /// reached -- so retiring an instance placed on even one unreachable
+    /// substrate was permanently impossible. `ucan: null` fails fast at
+    /// the credential check rather than waiting out a real connect
+    /// timeout; either way is "cannot reach it" for this purpose.
+    #[tokio::test]
+    async fn retire_succeeds_and_marks_the_store_retired_even_when_a_placed_substrate_is_unreachable()
+     {
+        let s = service();
+        let plan_json = plan_json_one_service("inst-1", "backend", Some("edge-1"));
+        let inventory_json = serde_json::json!({
+            "edge-1": {"did": "did:key:zEdge1", "api_url": "http://127.0.0.1:1", "ucan": null}
+        })
+        .to_string();
+        s.store.submit("inst-1", &plan_json, &inventory_json, "did:key:zAdmin", 0).unwrap();
+
+        let res = dispatch(
+            &s,
+            admin_caller("did:key:zSupervisorNode"),
+            "retire",
+            serde_json::json!(["inst-1"]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(res.payload.get("status").and_then(|v| v.as_str()), Some("retired"));
+        let unreleased =
+            res.payload.get("unreleased_substrates").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(unreleased.len(), 1, "{unreleased:?}");
+
+        assert!(
+            s.store.get("inst-1").unwrap().unwrap().retired,
+            "the local store must still mark the instance retired"
+        );
     }
 
     #[tokio::test]

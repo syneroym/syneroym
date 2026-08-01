@@ -91,6 +91,25 @@ fn resolve_under(dir: &Path, path: &Path) -> PathBuf {
     if path.is_absolute() { path.to_path_buf() } else { dir.join(path) }
 }
 
+/// `release`/`retire` now act on every placed substrate they *can* reach
+/// rather than failing the whole call the moment one is down (S7, Slice
+/// A5b review) -- this surfaces which ones, if any, still hold a stale
+/// generation stamp and need a manual re-release once reachable again.
+fn print_unreleased_substrates(result: &serde_json::Value) {
+    let Some(unreleased) = result.get("unreleased_substrates").and_then(|v| v.as_array()) else {
+        return;
+    };
+    if unreleased.is_empty() {
+        return;
+    }
+    println!("  warning: could not release the generation stamp on:");
+    for entry in unreleased {
+        let alias = entry.get("alias").and_then(|v| v.as_str()).unwrap_or("?");
+        let reason = entry.get("reason").and_then(|v| v.as_str()).unwrap_or("?");
+        println!("    {alias}: {reason}");
+    }
+}
+
 /// Builds the `alias -> {did, api-url, ucan}` inventory a submitted plan's
 /// placed aliases need, resolving each alias's local `ucan` file (a path
 /// meaningless once it crosses the wire) into the token itself.
@@ -191,6 +210,25 @@ pub async fn handle(
             let plan_json = target_plan.to_json()?;
             let inventory_json = serde_json::to_string(&supervisor_inventory)?;
 
+            // "Omit to reuse the one `adopt` last minted for this
+            // instance" is this flag's own help text, but the generation
+            // this supervisor already holds is server state `roymctl`
+            // does not otherwise track -- reading it back from `status`
+            // is what makes the documented default true rather than
+            // silently presenting 0 against an adopted instance (S2,
+            // Slice A5b review). A lookup failure just means "no prior
+            // desired state", i.e. a genuine first submission at 0, not
+            // an error worth surfacing here.
+            let effective_generation = match generation {
+                Some(g) => *g,
+                None => client
+                    .request("supervisor", "status", serde_json::to_value([instance_id.clone()])?)
+                    .await
+                    .ok()
+                    .and_then(|res| res.result.get("generation").and_then(|v| v.as_u64()))
+                    .unwrap_or(0),
+            };
+
             let res = client
                 .request(
                     "supervisor",
@@ -199,7 +237,7 @@ pub async fn handle(
                         "app_instance_id": instance_id,
                         "plan_json": plan_json,
                         "inventory_json": inventory_json,
-                        "generation": generation.unwrap_or(0),
+                        "generation": effective_generation,
                     })])?,
                 )
                 .await?;
@@ -210,9 +248,16 @@ pub async fn handle(
                     let service_name =
                         m.get("service_name").and_then(|v| v.as_str()).unwrap_or("?");
                     let master_did = m.get("master_did").and_then(|v| v.as_str()).unwrap_or("?");
+                    // The vault key `export-master` actually takes, not the
+                    // bare logical name above -- printing `service_name`
+                    // here produced a command that always failed with "no
+                    // master named '<service_name>' in this vault" (S1,
+                    // Slice A5b review).
+                    let vault_name =
+                        m.get("vault_name").and_then(|v| v.as_str()).unwrap_or(service_name);
                     println!(
                         "  {service_name}: {master_did} -- back it up with `roymctl supervisor \
-                         export-master {service_name}`"
+                         export-master {vault_name}`"
                     );
                 }
             }
@@ -224,10 +269,11 @@ pub async fn handle(
             println!("Adopted '{instance_id}' at generation {}", res.result);
         }
         SupervisorCommands::Release { instance_id } => {
-            client
+            let res = client
                 .request("supervisor", "release", serde_json::to_value([instance_id.clone()])?)
                 .await?;
             println!("Released '{instance_id}' back to manual operation.");
+            print_unreleased_substrates(&res.result);
         }
         SupervisorCommands::Pause { instance_id } => {
             client
@@ -242,10 +288,11 @@ pub async fn handle(
             println!("Resumed '{instance_id}'.");
         }
         SupervisorCommands::Retire { instance_id } => {
-            client
+            let res = client
                 .request("supervisor", "retire", serde_json::to_value([instance_id.clone()])?)
                 .await?;
             println!("Retired '{instance_id}'.");
+            print_unreleased_substrates(&res.result);
         }
         SupervisorCommands::Reconcile { instance_id } => {
             client

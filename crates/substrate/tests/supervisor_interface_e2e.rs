@@ -47,45 +47,60 @@ struct PortBlock {
     managed_gateway: u16,
 }
 
+// Ports 8800-10900 are already claimed, in that same six-per-block shape,
+// by `multi_substrate_placement_e2e.rs` (8800-9700),
+// `health_monitoring_e2e.rs` (9800-10500), and `binding_push_e2e.rs`
+// (10600-10900) -- cargo runs integration-test binaries concurrently, so
+// reusing any of those crashes whichever binary binds second with "Address
+// already in use" (B2, Slice A5b review). This file continues the same
+// global sequence from 11_000.
 const PORTS_SUBMIT_AND_STATUS: PortBlock = PortBlock {
-    supervisor_iroh: 10_000,
-    supervisor_registry: 10_001,
-    supervisor_gateway: 10_002,
-    managed_iroh: 10_100,
-    managed_registry: 10_101,
-    managed_gateway: 10_102,
+    supervisor_iroh: 11_000,
+    supervisor_registry: 11_001,
+    supervisor_gateway: 11_002,
+    managed_iroh: 11_100,
+    managed_registry: 11_101,
+    managed_gateway: 11_102,
 };
 const PORTS_SECOND_SUPERVISOR_LOSES: PortBlock = PortBlock {
-    supervisor_iroh: 10_200,
-    supervisor_registry: 10_201,
-    supervisor_gateway: 10_202,
-    managed_iroh: 10_300,
-    managed_registry: 10_301,
-    managed_gateway: 10_302,
+    supervisor_iroh: 11_200,
+    supervisor_registry: 11_201,
+    supervisor_gateway: 11_202,
+    managed_iroh: 11_300,
+    managed_registry: 11_301,
+    managed_gateway: 11_302,
 };
 const PORTS_DEPLOYS_A_BOUND_APP: PortBlock = PortBlock {
-    supervisor_iroh: 10_400,
-    supervisor_registry: 10_401,
-    supervisor_gateway: 10_402,
-    managed_iroh: 10_500,
-    managed_registry: 10_501,
-    managed_gateway: 10_502,
+    supervisor_iroh: 11_400,
+    supervisor_registry: 11_401,
+    supervisor_gateway: 11_402,
+    managed_iroh: 11_500,
+    managed_registry: 11_501,
+    managed_gateway: 11_502,
 };
 const PORTS_ADOPT_CLAIMS_THE_NEXT: PortBlock = PortBlock {
-    supervisor_iroh: 10_600,
-    supervisor_registry: 10_601,
-    supervisor_gateway: 10_602,
-    managed_iroh: 10_700,
-    managed_registry: 10_701,
-    managed_gateway: 10_702,
+    supervisor_iroh: 11_600,
+    supervisor_registry: 11_601,
+    supervisor_gateway: 11_602,
+    managed_iroh: 11_700,
+    managed_registry: 11_701,
+    managed_gateway: 11_702,
 };
 const PORTS_PUSHED_BINDING: PortBlock = PortBlock {
-    supervisor_iroh: 10_800,
-    supervisor_registry: 10_801,
-    supervisor_gateway: 10_802,
-    managed_iroh: 10_900,
-    managed_registry: 10_901,
-    managed_gateway: 10_902,
+    supervisor_iroh: 11_800,
+    supervisor_registry: 11_801,
+    supervisor_gateway: 11_802,
+    managed_iroh: 11_900,
+    managed_registry: 11_901,
+    managed_gateway: 11_902,
+};
+const PORTS_SUPERSEDED: PortBlock = PortBlock {
+    supervisor_iroh: 12_000,
+    supervisor_registry: 12_001,
+    supervisor_gateway: 12_002,
+    managed_iroh: 12_100,
+    managed_registry: 12_101,
+    managed_gateway: 12_102,
 };
 
 const MANAGED_ALIAS: &str = "managed";
@@ -454,7 +469,7 @@ async fn a_second_supervisor_that_has_not_adopted_loses_every_write() {
         .request(
             "supervisor",
             "submit",
-            submission("a5b-second-inst", plan_json.clone(), inventory_json.clone(), 0),
+            submission("a5b-second-inst", plan_json, inventory_json, 0),
         )
         .await
         .expect("first submit failed");
@@ -465,20 +480,52 @@ async fn a_second_supervisor_that_has_not_adopted_loses_every_write() {
         .expect("adopt failed");
     assert_eq!(adopted.result.as_u64(), Some(1));
 
-    // A rogue second submit at generation 0 (never adopted) must be
-    // rejected by the managed node's own generation gate.
-    let err = supervisor_node
+    let status = supervisor_node
         .substrate_client
-        .request(
-            "supervisor",
-            "submit",
-            submission("a5b-second-inst", plan_json, inventory_json, 0),
-        )
+        .request("supervisor", "status", json!(["a5b-second-inst"]))
         .await
-        .expect_err("a stale-generation submit must fail");
-    assert!(
-        err.to_string().contains("deploy applied with failures") || !err.to_string().is_empty()
+        .expect("status failed");
+    let service_id = status
+        .result
+        .get("services")
+        .and_then(|s| s.as_array())
+        .and_then(|s| s.first())
+        .and_then(|s| s.get("service_id"))
+        .and_then(|v| v.as_str())
+        .expect("deployed service_id in status")
+        .to_string();
+
+    // A rogue second writer -- one that never adopted -- presents
+    // generation 0 directly against the managed substrate. N1 (Slice A5b
+    // review round 2) added a local pre-flight check to `handle_submit`,
+    // so reusing the *same* supervisor's own `submit` no longer reaches
+    // the substrate at all once its own store disagrees -- it would now
+    // prove H3's local guard, not row 8's substrate-side one. A raw
+    // second client, the same shape B4's row-9 test uses to simulate a
+    // second writer, reaches the managed node's own generation gate
+    // directly instead.
+    let mut second_writer = SyneroymClient::new_with_identity(
+        managed_node.did().to_string(),
+        managed_node.registry_url.clone(),
+        Identity::from_bytes(&managed_owner.to_bytes()),
     );
+    second_writer
+        .wait_for_ready(Duration::from_secs(30))
+        .await
+        .expect("second writer could not reach the managed node");
+    let err = second_writer
+        .request("orchestrator", "restart", json!([service_id, 0]))
+        .await
+        .expect_err("a stale-generation write must fail");
+    // `check_generation`'s own `Ordering::Less` message (ADR-0021 §4) --
+    // asserting on it, rather than on any non-empty error (B5, Slice A5b
+    // review), proves this failed on the generation gate specifically and
+    // not on a connection timeout, a parse failure, or the unrelated
+    // "tcp service cannot be restarted" refusal the same call would hit
+    // next if the generation gate did not fire first.
+    let err = err.to_string();
+    assert!(err.contains("never self-increment"), "{err}");
+    let _ = second_writer.shutdown().await;
 
     supervisor_node.teardown().await;
     managed_node.teardown().await;
@@ -611,6 +658,90 @@ async fn a_pushed_binding_reaches_a_dependent_the_supervisor_deployed() {
         frontend_status.binding_epochs.iter().any(|(name, _)| name == "backend"),
         "{:?}",
         frontend_status.binding_epochs
+    );
+
+    supervisor_node.teardown().await;
+    managed_node.teardown().await;
+}
+
+/// Matrix row 9 (§13 test 9,
+/// `a_supervisor_that_reads_a_higher_generation_marks_the_instance_
+/// superseded_and_alerts`) -- planned as a unit test but, like test 7's own
+/// disclosed substitution, undeliverable as one: there is no injectable
+/// trait over the management verbs, so "a substrate reports a higher
+/// generation than this supervisor holds" can only be produced by a real
+/// second write against a real substrate. Absent entirely from A5b as
+/// shipped (B4, Slice A5b review) -- this is the missing live proof.
+///
+/// The managed node's own owner, who already holds `substrate/admin` there,
+/// claims a higher generation directly against the managed substrate's
+/// `orchestrator` interface -- standing in for a second supervisor's
+/// `adopt`, the same way `a_second_supervisor_that_has_not_adopted_loses_
+/// every_write` stands in for one with a stale-generation `submit`.
+#[tokio::test]
+async fn a_supervisor_that_reads_a_higher_generation_marks_the_instance_superseded_and_alerts() {
+    let supervisor_owner = Identity::generate().unwrap();
+    let managed_owner = Identity::generate().unwrap();
+    let (supervisor_node, managed_node, inventory_json) =
+        boot_pair(&supervisor_owner, &managed_owner, PORTS_SUPERSEDED).await;
+
+    let manifest = one_service_manifest();
+    let plan_json = compiled_plan_json(&manifest, "a5b-superseded-inst").await;
+    supervisor_node
+        .substrate_client
+        .request(
+            "supervisor",
+            "submit",
+            submission("a5b-superseded-inst", plan_json, inventory_json, 0),
+        )
+        .await
+        .expect("submit failed");
+    let adopted = supervisor_node
+        .substrate_client
+        .request("supervisor", "adopt", json!(["a5b-superseded-inst"]))
+        .await
+        .expect("adopt failed");
+    assert_eq!(adopted.result.as_u64(), Some(1));
+
+    // A second writer claims generation 2 directly against the managed
+    // substrate. The first supervisor's own store still holds generation 1.
+    let mut second_writer = SyneroymClient::new_with_identity(
+        managed_node.did().to_string(),
+        managed_node.registry_url.clone(),
+        Identity::from_bytes(&managed_owner.to_bytes()),
+    );
+    second_writer
+        .wait_for_ready(Duration::from_secs(30))
+        .await
+        .expect("second writer could not reach the managed node");
+    second_writer
+        .request("orchestrator", "claim-app-instance", json!(["a5b-superseded-inst", 2]))
+        .await
+        .expect("second writer's claim failed");
+    let _ = second_writer.shutdown().await;
+
+    // The first supervisor's next status sweep must read the substrate's
+    // now-higher generation, report itself superseded, and raise the alert
+    // -- not bump its own stamp to match (ADR-0021 §4).
+    let status = supervisor_node
+        .substrate_client
+        .request("supervisor", "status", json!(["a5b-superseded-inst"]))
+        .await
+        .expect("status failed");
+    assert_eq!(status.result.get("state").and_then(|v| v.as_str()), Some("Superseded"));
+    assert_eq!(status.result.get("generation").and_then(serde_json::Value::as_u64), Some(1));
+
+    let alerts = supervisor_node
+        .substrate_client
+        .request("supervisor", "alerts", json!(["a5b-superseded-inst", false]))
+        .await
+        .expect("alerts failed");
+    let alerts = alerts.result.as_array().expect("alerts array");
+    assert!(
+        alerts
+            .iter()
+            .any(|a| a.get("kind").and_then(|v| v.as_str()) == Some("SUPERVISOR_SUPERSEDED")),
+        "{alerts:?}"
     );
 
     supervisor_node.teardown().await;
