@@ -6,11 +6,13 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::Result;
+use anyhow::{Error, Result};
 use async_trait::async_trait;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use syneroym_core::{
-    config::SubstrateConfig, local_registry::SubstrateEndpoint, storage::EndpointStorage,
+    config::SubstrateConfig,
+    local_registry::SubstrateEndpoint,
+    storage::{AppInstanceManagement, EndpointStorage},
 };
 use tokio::task;
 
@@ -123,6 +125,26 @@ impl SqliteEndpointStorage {
                 );",
                 [],
             )?;
+            // `manifest_hash` (M05A A5a): the canonical content hash of what
+            // was actually installed, written only on full deploy success --
+            // the dedup key for failure-matrix row 10, distinct from the
+            // epoch guard and the generation gate (ADR-0021 §3).
+            //
+            // Unlike every table above, `service_deploy_facts` predates this
+            // column (A4), so `CREATE TABLE IF NOT EXISTS` is a no-op here --
+            // it never adds a column to a table that already exists. This
+            // `ALTER TABLE` is the one idempotent way to get the column onto
+            // a database that opened before it existed; it is not the
+            // version-ladder AGENTS.md rules out, since there is no schema
+            // version to track and nothing else in this method depends on
+            // it. "duplicate column name" is the expected outcome once this
+            // has already run once, on every open after the first.
+            if let Err(err) =
+                conn.execute("ALTER TABLE service_deploy_facts ADD COLUMN manifest_hash TEXT", [])
+                && !err.to_string().contains("duplicate column name")
+            {
+                return Err(err.into());
+            }
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS service_bindings (
                     service_id      TEXT NOT NULL,
@@ -134,20 +156,20 @@ impl SqliteEndpointStorage {
                 );",
                 [],
             )?;
-            // A2 (post-review fix): which caller first declared an app
-            // instance in a deploy's `app_context`. `deploy` uses this as a
-            // first-write-wins takeover guard -- the same shape as
-            // `service_owners`, but keyed by `app_instance_id` instead of
-            // `service_id`, since a binding write targets an app instance
-            // that can span several services. Without it, any caller
-            // authorized to deploy *some* service could name a different,
-            // already-running app instance in its own `app_context` and
-            // overwrite the bindings that instance's other services
-            // resolve.
+            // M05A A5a: who manages an app instance on this substrate
+            // (ADR-0021 §4). Replaces A2's `app_instance_owners` outright --
+            // pre-release, so no `ALTER TABLE`/version ladder (see AGENTS.md);
+            // the old table simply stops being created. `owner_did` keeps
+            // A2's first-write-wins takeover guard; `supervisor_did`/
+            // `generation` are new: `None`/`0` means "unmanaged", which is
+            // what every operator-driven `roymctl app deploy` sends and what
+            // an un-adopted instance accepts.
             conn.execute(
-                "CREATE TABLE IF NOT EXISTS app_instance_owners (
+                "CREATE TABLE IF NOT EXISTS app_instance_management (
                     app_instance_id TEXT PRIMARY KEY,
                     owner_did       TEXT NOT NULL,
+                    supervisor_did  TEXT,
+                    generation      INTEGER NOT NULL DEFAULT 0,
                     created_at      INTEGER NOT NULL
                 );",
                 [],
@@ -350,20 +372,25 @@ impl EndpointStorage for SqliteEndpointStorage {
         .await?
     }
 
-    async fn load_all_deploy_facts(&self) -> Result<Vec<(String, String, Option<String>)>> {
+    async fn load_all_deploy_facts(
+        &self,
+    ) -> Result<Vec<(String, String, Option<String>, Option<String>)>> {
         let conn_arc = self.conn.clone();
-        task::spawn_blocking(move || -> Result<Vec<(String, String, Option<String>)>> {
-            let conn = lock_db(&conn_arc)?;
-            let mut stmt = conn.prepare(
-                "SELECT service_id, service_type, health_check_json FROM service_deploy_facts",
-            )?;
-            let mut facts = Vec::new();
-            let mut rows = stmt.query([])?;
-            while let Some(row) = rows.next()? {
-                facts.push((row.get(0)?, row.get(1)?, row.get(2)?));
-            }
-            Ok(facts)
-        })
+        task::spawn_blocking(
+            move || -> Result<Vec<(String, String, Option<String>, Option<String>)>> {
+                let conn = lock_db(&conn_arc)?;
+                let mut stmt = conn.prepare(
+                    "SELECT service_id, service_type, health_check_json, manifest_hash FROM \
+                     service_deploy_facts",
+                )?;
+                let mut facts = Vec::new();
+                let mut rows = stmt.query([])?;
+                while let Some(row) = rows.next()? {
+                    facts.push((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?));
+                }
+                Ok(facts)
+            },
+        )
         .await?
     }
 
@@ -372,11 +399,13 @@ impl EndpointStorage for SqliteEndpointStorage {
         service_id: &str,
         service_type: &str,
         health_check_json: Option<&str>,
+        manifest_hash: Option<&str>,
     ) -> Result<()> {
         let conn_arc = self.conn.clone();
         let sid = service_id.to_string();
         let stype = service_type.to_string();
         let check = health_check_json.map(str::to_string);
+        let hash = manifest_hash.map(str::to_string);
         let created_at: i64 =
             SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
 
@@ -384,13 +413,14 @@ impl EndpointStorage for SqliteEndpointStorage {
             let conn = lock_db(&conn_arc)?;
             conn.execute(
                 "INSERT INTO service_deploy_facts (service_id, service_type, health_check_json, \
-                 created_at)
-                 VALUES (?1, ?2, ?3, ?4)
+                 manifest_hash, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
                  ON CONFLICT(service_id) DO UPDATE SET
                     service_type = excluded.service_type,
                     health_check_json = excluded.health_check_json,
+                    manifest_hash = excluded.manifest_hash,
                     created_at = excluded.created_at",
-                params![sid, stype, check, created_at],
+                params![sid, stype, check, hash, created_at],
             )?;
             Ok(())
         })
@@ -523,38 +553,120 @@ impl EndpointStorage for SqliteEndpointStorage {
         .await?
     }
 
-    async fn load_all_app_instance_owners(&self) -> Result<Vec<(String, String)>> {
+    async fn load_binding(
+        &self,
+        service_id: &str,
+        dependency_name: &str,
+    ) -> Result<Option<String>> {
         let conn_arc = self.conn.clone();
-        task::spawn_blocking(move || -> Result<Vec<(String, String)>> {
+        let sid = service_id.to_string();
+        let name = dependency_name.to_string();
+
+        task::spawn_blocking(move || -> Result<Option<String>> {
             let conn = lock_db(&conn_arc)?;
-            let mut stmt =
-                conn.prepare("SELECT app_instance_id, owner_did FROM app_instance_owners")?;
-            let mut owners = Vec::new();
-            let mut rows = stmt.query([])?;
-            while let Some(row) = rows.next()? {
-                owners.push((row.get(0)?, row.get(1)?));
-            }
-            Ok(owners)
+            conn.query_row(
+                "SELECT entry_json FROM service_bindings WHERE service_id = ?1 AND \
+                 dependency_name = ?2",
+                params![sid, name],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(Error::from)
         })
         .await?
     }
 
-    async fn save_app_instance_owner(&self, app_instance_id: &str, owner_did: &str) -> Result<()> {
+    async fn load_bindings_for(&self, service_id: &str) -> Result<Vec<(String, String)>> {
+        let conn_arc = self.conn.clone();
+        let sid = service_id.to_string();
+
+        task::spawn_blocking(move || -> Result<Vec<(String, String)>> {
+            let conn = lock_db(&conn_arc)?;
+            let mut stmt = conn.prepare(
+                "SELECT dependency_name, entry_json FROM service_bindings WHERE service_id = ?1 \
+                 ORDER BY dependency_name",
+            )?;
+            let mut bindings = Vec::new();
+            let mut rows = stmt.query(params![sid])?;
+            while let Some(row) = rows.next()? {
+                bindings.push((row.get(0)?, row.get(1)?));
+            }
+            Ok(bindings)
+        })
+        .await?
+    }
+
+    async fn load_all_app_instance_management(
+        &self,
+    ) -> Result<Vec<(String, AppInstanceManagement)>> {
+        let conn_arc = self.conn.clone();
+        task::spawn_blocking(move || -> Result<Vec<(String, AppInstanceManagement)>> {
+            let conn = lock_db(&conn_arc)?;
+            let mut stmt = conn.prepare(
+                "SELECT app_instance_id, owner_did, supervisor_did, generation FROM \
+                 app_instance_management",
+            )?;
+            let mut rows_out = Vec::new();
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                let app_instance_id: String = row.get(0)?;
+                let owner_did: String = row.get(1)?;
+                let supervisor_did: Option<String> = row.get(2)?;
+                let generation: i64 = row.get(3)?;
+                rows_out.push((
+                    app_instance_id,
+                    AppInstanceManagement {
+                        owner_did,
+                        supervisor_did,
+                        generation: generation as u64,
+                    },
+                ));
+            }
+            Ok(rows_out)
+        })
+        .await?
+    }
+
+    async fn save_app_instance_management(
+        &self,
+        app_instance_id: &str,
+        management: &AppInstanceManagement,
+    ) -> Result<()> {
         let conn_arc = self.conn.clone();
         let instance = app_instance_id.to_string();
-        let owner = owner_did.to_string();
+        let owner = management.owner_did.clone();
+        let supervisor = management.supervisor_did.clone();
+        let generation = management.generation as i64;
         let created_at: i64 =
             SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
 
         task::spawn_blocking(move || -> Result<()> {
             let conn = lock_db(&conn_arc)?;
             conn.execute(
-                "INSERT INTO app_instance_owners (app_instance_id, owner_did, created_at)
-                 VALUES (?1, ?2, ?3)
+                "INSERT INTO app_instance_management (app_instance_id, owner_did, supervisor_did, \
+                 generation, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
                  ON CONFLICT(app_instance_id) DO UPDATE SET
                     owner_did = excluded.owner_did,
+                    supervisor_did = excluded.supervisor_did,
+                    generation = excluded.generation,
                     created_at = excluded.created_at",
-                params![instance, owner, created_at],
+                params![instance, owner, supervisor, generation, created_at],
+            )?;
+            Ok(())
+        })
+        .await?
+    }
+
+    async fn remove_app_instance_management(&self, app_instance_id: &str) -> Result<()> {
+        let conn_arc = self.conn.clone();
+        let instance = app_instance_id.to_string();
+
+        task::spawn_blocking(move || -> Result<()> {
+            let conn = lock_db(&conn_arc)?;
+            conn.execute(
+                "DELETE FROM app_instance_management WHERE app_instance_id = ?1",
+                params![instance],
             )?;
             Ok(())
         })
@@ -596,6 +708,7 @@ mod tests {
                     "svc-1",
                     "tcp",
                     Some(r#"{"tcp-connect":{"interface-name":"main","timeout-ms":2000}}"#),
+                    Some("deadbeef"),
                 )
                 .await
                 .unwrap();
@@ -609,6 +722,75 @@ mod tests {
         assert_eq!(facts[0].0, "svc-1");
         assert_eq!(facts[0].1, "tcp");
         assert!(facts[0].2.as_deref().unwrap().contains("tcp-connect"));
+        assert_eq!(facts[0].3.as_deref(), Some("deadbeef"));
+    }
+
+    /// `service_deploy_facts` predates `manifest_hash` (A4 created the
+    /// table, A5a added the column) -- unlike every other table in this
+    /// file, `CREATE TABLE IF NOT EXISTS` is a no-op against it, so the
+    /// column needs its own idempotent `ALTER TABLE`. Built with a raw
+    /// `Connection` for the same reason as
+    /// `an_existing_database_gains_the_certificate_table_on_open`: it has to
+    /// reproduce the pre-A5a, `manifest_hash`-less table directly, not go
+    /// through `SqliteEndpointStorage::new`, which already creates the
+    /// column unconditionally regardless of whether the `ALTER TABLE` still
+    /// runs.
+    #[tokio::test]
+    async fn an_existing_database_gains_the_manifest_hash_column_on_open() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute(
+                "CREATE TABLE service_deploy_facts (
+                    service_id        TEXT PRIMARY KEY,
+                    service_type      TEXT NOT NULL,
+                    health_check_json TEXT,
+                    created_at        INTEGER NOT NULL
+                );",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO service_deploy_facts (service_id, service_type, created_at) VALUES \
+                 ('svc-old', 'tcp', 0)",
+                [],
+            )
+            .unwrap();
+            conn.execute("PRAGMA user_version = 1", []).unwrap();
+        }
+
+        // Reopen through the real constructor -- the pre-existing row must
+        // survive, and `manifest_hash` must both read (as `None` for the
+        // untouched row) and write.
+        let store = SqliteEndpointStorage::new(&path).await.unwrap();
+        let facts = store.load_all_deploy_facts().await.unwrap();
+        assert_eq!(facts, vec![("svc-old".to_string(), "tcp".to_string(), None, None)]);
+
+        store.save_deploy_facts("svc-old", "tcp", None, Some("deadbeef")).await.unwrap();
+        let facts = store.load_all_deploy_facts().await.unwrap();
+        assert_eq!(facts[0].3.as_deref(), Some("deadbeef"));
+    }
+
+    /// The `app_instance_management`-shaped sibling of the deploy-facts
+    /// round-trip test above -- every other table in this file has this
+    /// coverage; this table did not.
+    #[tokio::test]
+    async fn app_instance_management_saves_loads_and_removes() {
+        let (store, _dir) = make_store().await;
+        let management = AppInstanceManagement {
+            owner_did: "did:key:owner".to_string(),
+            supervisor_did: Some("did:key:supervisor".to_string()),
+            generation: 3,
+        };
+        store.save_app_instance_management("app-1", &management).await.unwrap();
+
+        let loaded = store.load_all_app_instance_management().await.unwrap();
+        assert_eq!(loaded, vec![("app-1".to_string(), management)]);
+
+        store.remove_app_instance_management("app-1").await.unwrap();
+        assert!(store.load_all_app_instance_management().await.unwrap().is_empty());
     }
 
     #[tokio::test]

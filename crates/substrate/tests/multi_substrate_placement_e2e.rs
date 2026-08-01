@@ -41,7 +41,7 @@ use syneroym_rpc::{Ability, Capability, CapabilityToken, ResourceUri};
 use syneroym_sdk::{
     DeployManifest, NetworkEndpoint, ServiceConfig as WitServiceConfig,
     ServiceType as WitServiceType, SyneroymClient, TcpManifest,
-    deploy::{ApplyRequest, DeployTarget, PlanApplier, apply_plan, certify_instance},
+    deploy::{ApplyRequest, DeployTarget, SubstrateActor, apply_plan, certify_instance},
 };
 use syneroym_substrate::identity;
 use tempfile::TempDir;
@@ -506,7 +506,7 @@ fn deploy_targets(
                 DeployTarget {
                     alias: Some(alias.clone()),
                     substrate_did: c.service_id().to_string(),
-                    applier: c.clone() as Arc<dyn PlanApplier>,
+                    actor: c.clone() as Arc<dyn SubstrateActor>,
                 },
             )
         })
@@ -542,6 +542,7 @@ async fn a_two_substrate_app_deploys_each_service_to_its_placed_node() {
             instance_certificates: &instance_certs,
             registry_certificates: &registry_certs,
             emit_bindings: true,
+            generation: 0,
         },
         &journal,
         deployment_id,
@@ -598,6 +599,7 @@ async fn a_placed_members_endpoint_record_resolves_to_its_own_substrate() {
             instance_certificates: &instance_certs,
             registry_certificates: &registry_certs,
             emit_bindings: true,
+            generation: 0,
         },
         &journal,
         deployment_id,
@@ -725,6 +727,7 @@ async fn an_unreachable_substrate_leaves_the_deployment_degraded_and_retryable()
             instance_certificates: &instance_certs,
             registry_certificates: &registry_certs,
             emit_bindings: true,
+            generation: 0,
         },
         &journal,
         deployment_id,
@@ -774,6 +777,7 @@ async fn an_unreachable_substrate_leaves_the_deployment_degraded_and_retryable()
             instance_certificates: &instance_certs,
             registry_certificates: &registry_certs,
             emit_bindings: true,
+            generation: 0,
         },
         &journal,
         deployment_id,
@@ -816,6 +820,7 @@ async fn a_dependencys_record_resolves_through_the_dependents_own_registry() {
             instance_certificates: &instance_certs,
             registry_certificates: &registry_certs,
             emit_bindings: true,
+            generation: 0,
         },
         &journal,
         deployment_id,
