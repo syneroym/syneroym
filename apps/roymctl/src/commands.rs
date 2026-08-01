@@ -25,6 +25,7 @@ pub mod member_identity;
 pub mod registry;
 pub mod security;
 pub mod substrate;
+pub mod supervisor;
 pub mod svc;
 
 use security::{KekCommands, SecretCommands};
@@ -83,6 +84,11 @@ pub enum Commands {
     Secret {
         #[command(subcommand)]
         command: SecretCommands,
+    },
+    /// Operate a running App Supervisor
+    Supervisor {
+        #[command(subcommand)]
+        command: supervisor::SupervisorCommands,
     },
 }
 
@@ -235,6 +241,17 @@ pub async fn run(
                 &command,
                 &api_url,
                 substrate_did,
+                &dir,
+                run_as.as_deref(),
+                ucan_path.as_deref(),
+            )
+            .await?;
+        }
+        Commands::Supervisor { command } => {
+            supervisor::handle(
+                &command,
+                &api_url,
+                substrate_opt,
                 &dir,
                 run_as.as_deref(),
                 ucan_path.as_deref(),
