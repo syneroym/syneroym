@@ -501,6 +501,16 @@ impl ControlPlaneService {
     /// (M05A A5a §0.27) -- it records *who is writing*, not what was
     /// installed, so it is not behind A2's defer-until-everything-
     /// succeeds rule that governs bindings.
+    ///
+    /// `presented == 0` never claims supervision, regardless of whether a
+    /// row already exists: the WIT `app-context.generation` doc is
+    /// explicit that `0` means unmanaged, which is what every
+    /// operator-driven `roymctl app deploy` sends. Without this, the
+    /// instance's *first* deploy -- by anyone, including a node-wide
+    /// caller redeploying over a different owner -- would stamp itself in
+    /// as supervisor and lock out every later un-adopted deploy, which is
+    /// exactly the "unadopted instance accepts any authorized writer"
+    /// invariant this function exists to uphold.
     fn check_generation(
         &self,
         app_instance_id: &str,
@@ -511,9 +521,10 @@ impl ControlPlaneService {
         match held {
             None => Ok(AppInstanceManagement {
                 owner_did: caller.caller_did.clone(),
-                supervisor_did: Some(caller.caller_did.clone()),
+                supervisor_did: (presented != 0).then(|| caller.caller_did.clone()),
                 generation: presented,
             }),
+            Some(m) if m.supervisor_did.is_none() && presented == 0 => Ok(m),
             Some(m) if m.supervisor_did.is_none() => Ok(AppInstanceManagement {
                 supervisor_did: Some(caller.caller_did.clone()),
                 generation: presented,
@@ -1610,13 +1621,6 @@ impl ControlPlaneService {
         Ok(())
     }
 
-    /// M04A Slice B7a / F7: gates on ownership before tearing anything down
-    /// -- a non-owner undeploying someone else's service is the same
-    /// escalation as taking it over via redeploy. Checks
-    /// `ORCHESTRATOR_UNDEPLOY` specifically (post-review fix -- see
-    /// `has_node_wide_ability`'s doc comment): a status-only grantee must
-    /// not be able to undeploy someone else's app.
-    ///
     /// Epoch-guarded binding write (M05A A5a, ADR-0021 §3): the only path
     /// that changes a dependent's resolution without redeploying it.
     /// Touches the binding tables and the resolver and nothing else -- no
@@ -1658,9 +1662,24 @@ impl ControlPlaneService {
             Some(_) => {}
         }
 
+        // D-A5-23: persisted immediately, before any binding is examined
+        // -- the same rule every other gate site follows (deploy, restart,
+        // undeploy, claim). A mid-validation refusal below must not leave
+        // the accepting generation unrecorded.
         let management = self.check_generation(&write.app_instance_id, caller, write.generation)?;
+        self.registry
+            .set_app_instance_management(write.app_instance_id.clone(), management)
+            .await
+            .map_err(|e| e.to_string())?;
 
-        let mut outcomes = Vec::with_capacity(write.bindings.len());
+        // Validate every binding before applying any of it: `prepare_binding`
+        // and the `binding_of` existence check are both pure reads, so the
+        // whole list can be checked up front. Without this, a refusal partway
+        // through (a malformed member DID, an undeclared dependency) would
+        // leave earlier bindings already applied with no way for the caller
+        // to know which ones landed -- the WIT contract's "one outcome per
+        // binding, in the order sent" reads as all-or-nothing.
+        let mut prepared = Vec::with_capacity(write.bindings.len());
         for binding in &write.bindings {
             let (dependency_name, entry) = prepare_binding(binding, &write.app_instance_id)?;
 
@@ -1687,7 +1706,14 @@ impl ControlPlaneService {
             })?;
 
             let outcome = classify_binding_write(Some(&held), &entry);
+            prepared.push((binding, dependency_name, entry, outcome));
+        }
+
+        let mut outcomes = Vec::with_capacity(prepared.len());
+        let mut any_applied = false;
+        for (binding, dependency_name, entry, outcome) in prepared {
             if outcome == BindingWriteOutcome::Applied {
+                any_applied = true;
                 let entry_json = serde_json::to_string(&entry).map_err(|e| e.to_string())?;
                 self.registry
                     .save_binding(
@@ -1702,23 +1728,48 @@ impl ControlPlaneService {
                 // particular must not re-register: re-registering evicts
                 // the resolver cache for an unchanged entry, turning the
                 // ordinary retry into cache churn on the hot path.
-                self.logical_resolver.register(
-                    AppInstanceId::new(&write.app_instance_id),
-                    dependency_name,
-                    entry,
-                );
+                //
+                // `try_new`, not `new`: `write.app_instance_id` is
+                // caller-supplied wire input. Not reachable today -- the
+                // `app_context_of` equality check above already guarantees
+                // it equals a stored id validated at deploy -- but that is
+                // a non-local invariant to depend on for a panic, and
+                // `prepare_binding`'s own doc calls out this exact hazard.
+                let app_instance_id =
+                    AppInstanceId::try_new(&write.app_instance_id).map_err(|e| e.to_string())?;
+                self.logical_resolver.register(app_instance_id, dependency_name, entry);
             }
             outcomes.push(wire_binding_outcome(&outcome));
         }
 
-        self.registry
-            .set_app_instance_management(write.app_instance_id.clone(), management)
-            .await
-            .map_err(|e| e.to_string())?;
+        // §4A's dedup key hashes what a deploy *sends*, not what is
+        // currently installed, so it cannot see a push that happened since
+        // the last deploy. Without this, a repair redeploy of byte-identical
+        // content after a push would match the stale hash and take the
+        // no-op path, silently leaving the pushed (not the redeployed)
+        // bindings in place -- exactly the case §4A's "restart is the cheap
+        // path, deploy is the repair path" promises to handle. Clearing the
+        // hash here forces that redeploy through the full reinstall instead.
+        if any_applied
+            && let Some((service_type, health_check_json, _)) =
+                self.registry.deploy_facts(&write.service_id)
+        {
+            self.registry
+                .set_deploy_facts(write.service_id.clone(), service_type, health_check_json, None)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
 
         Ok(outcomes)
     }
 
+    /// M04A Slice B7a / F7: gates on ownership before tearing anything down
+    /// -- a non-owner undeploying someone else's service is the same
+    /// escalation as taking it over via redeploy. Checks
+    /// `ORCHESTRATOR_UNDEPLOY` specifically (post-review fix -- see
+    /// `has_node_wide_ability`'s doc comment): a status-only grantee must
+    /// not be able to undeploy someone else's app.
+    ///
     /// Safe to call from `deploy`'s own rollback path (§2.3): at that point
     /// `owner_of` is one of (a) `None` (the native-capability-registration
     /// failure path, reached before `set_owner` ever ran), (b) already
@@ -1992,9 +2043,13 @@ impl ControlPlaneService {
                 "'{service_id}' is a tcp service; its process runs outside this substrate and \
                  cannot be restarted here"
             )),
-            Some(AppServiceType::NativeHost) | None => {
+            Some(AppServiceType::NativeHost) => {
                 Err(format!("'{service_id}' is a native-host service and has no restart path"))
             }
+            None => Err(format!(
+                "'{service_id}' has a recorded service type ('{recorded_type}') this substrate \
+                 does not recognize; redeploy to correct it"
+            )),
         }
     }
 
@@ -2069,6 +2124,17 @@ impl ControlPlaneService {
                  app instance is node-scoped because the instance spans services",
                 caller.caller_did
             ));
+        }
+        // A release against an app instance with no row at all must be a
+        // no-op: `check_generation`'s `None` arm exists to let `deploy` and
+        // `claim` create a row on first touch, which is right for them but
+        // wrong here -- it would let a release mint an ownership row for an
+        // instance nobody has ever deployed, blocking a later legitimate
+        // deploy from a different caller and leaving an unreachable row
+        // behind (no service ever names an instance nobody deployed, so
+        // `undeploy_impl`'s cleanup can never find it).
+        if self.registry.app_instance_management_of(&app_instance_id).is_none() {
+            return Ok(());
         }
         let mut management = self.check_generation(&app_instance_id, caller, generation)?;
         management.supervisor_did = None;
@@ -3498,6 +3564,48 @@ mod tests {
         );
     }
 
+    /// The same property, but with a genuinely *different* authorized
+    /// writer than the instance's first deploy -- the case
+    /// `an_unadopted_app_instance_accepts_any_authorized_writer` names but
+    /// does not actually exercise, since it reuses the same caller twice.
+    /// A node-wide caller is what `deploy_with_context`'s own
+    /// app-instance-owner check requires to deploy over a different
+    /// owner's instance; without generation 0 staying unmanaged on the
+    /// instance's *first* write, this second, node-wide-authorized deploy
+    /// would be rejected as "a second writer at the same generation",
+    /// defeating that owner-check bypass entirely.
+    #[tokio::test]
+    async fn a_second_different_authorized_writer_may_also_deploy_into_an_unadopted_instance() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let alice = scoped_deploy_caller("did:key:zAlice", "frontend-svc");
+        let bob = node_wide_caller("did:key:zBob");
+
+        service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(app_context("app-1", "frontend", vec![])),
+                &alice,
+            )
+            .await
+            .unwrap();
+
+        let result = service
+            .deploy_with_context(
+                "backend-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(app_context("app-1", "backend", vec![])),
+                &bob,
+            )
+            .await;
+        assert!(
+            result.is_ok(),
+            "a different node-wide-authorized caller must also be able to deploy into an \
+             unadopted instance: {result:?}"
+        );
+    }
+
     /// §0.24: releasing an app instance clears its management stamp
     /// (`supervisor_did`/`generation`, not `owner_did` -- release restores
     /// manual operation, it does not transfer ownership), so a plain
@@ -3526,6 +3634,27 @@ mod tests {
             )
             .await;
         assert!(result.is_ok(), "a released instance must accept a plain deploy again: {result:?}");
+    }
+
+    /// `check_generation`'s `None` arm exists so `deploy`/`claim` can
+    /// create a row on an app instance's first touch -- right for them,
+    /// wrong for `release`. Releasing an instance nobody has ever deployed
+    /// must be a no-op, not mint an `owner_did` row that blocks a later
+    /// legitimate deploy from a different caller and can never be reclaimed
+    /// (no service ever names an instance nobody deployed, so `undeploy`'s
+    /// cleanup can never reach it).
+    #[tokio::test]
+    async fn releasing_an_unknown_app_instance_is_a_no_op() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let attacker = node_wide_caller("did:key:zAttacker");
+
+        service.release_app_instance("app-never-deployed".to_string(), 0, &attacker).await.unwrap();
+
+        assert!(
+            service.registry.app_instance_management_of("app-never-deployed").is_none(),
+            "releasing an app instance with no row must not create one"
+        );
     }
 
     /// The other half of the backlog row `release-app-instance` was built
@@ -3785,6 +3914,108 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("cache") && err.contains("redeploy"), "{err}");
+    }
+
+    /// D-A5-23: the accepting generation is persisted before any binding is
+    /// examined, not after the whole call succeeds -- so a write that is
+    /// later refused (here, an undeclared dependency) still leaves the
+    /// substrate remembering who was authorized to write at that
+    /// generation, the same property §0.27 proves on the deploy path.
+    #[tokio::test]
+    async fn a_refused_write_still_persists_the_accepting_generation() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let supervisor = node_wide_caller("did:key:zSupervisor");
+
+        service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(AppContext {
+                    generation: 1,
+                    ..app_context(
+                        "app-1",
+                        "frontend",
+                        vec![dependency_binding("backend", vec!["did:key:zBackendMember"])],
+                    )
+                }),
+                &supervisor,
+            )
+            .await
+            .unwrap();
+
+        let result = service
+            .write_bindings(
+                BindingWrite {
+                    service_id: "frontend-svc".to_string(),
+                    app_instance_id: "app-1".to_string(),
+                    bindings: vec![dependency_binding("cache", vec!["did:key:zCacheMember"])],
+                    generation: 2,
+                },
+                &supervisor,
+            )
+            .await;
+        assert!(result.is_err(), "the undeclared dependency must still be refused");
+
+        let management = service.registry.app_instance_management_of("app-1").unwrap();
+        assert_eq!(
+            management.generation, 2,
+            "the accepting generation must be persisted even though the write itself failed"
+        );
+    }
+
+    /// The whole binding list is validated before any of it is applied: a
+    /// refusal partway through (here, the second binding names an
+    /// undeclared dependency) must leave every earlier binding in the same
+    /// call untouched, not partially applied with no way for the caller to
+    /// know which ones landed.
+    #[tokio::test]
+    async fn a_refused_binding_leaves_no_earlier_binding_in_the_same_call_applied() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let caller = node_wide_caller("did:key:zAlice");
+
+        service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                inline_manifest(None, None, None),
+                Some(app_context(
+                    "app-1",
+                    "frontend",
+                    vec![dependency_binding("backend", vec!["did:key:zBackendMember"])],
+                )),
+                &caller,
+            )
+            .await
+            .unwrap();
+
+        let err = service
+            .write_bindings(
+                BindingWrite {
+                    service_id: "frontend-svc".to_string(),
+                    app_instance_id: "app-1".to_string(),
+                    bindings: vec![
+                        DependencyBinding {
+                            epoch: 1,
+                            members: vec!["did:key:zNewMember".to_string()],
+                            ..dependency_binding("backend", vec!["did:key:zNewMember"])
+                        },
+                        dependency_binding("cache", vec!["did:key:zCacheMember"]),
+                    ],
+                    generation: 0,
+                },
+                &caller,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("cache") && err.contains("redeploy"), "{err}");
+
+        let backend =
+            service.registry.binding_of("frontend-svc", "backend").await.unwrap().unwrap();
+        assert!(
+            backend.contains("zBackendMember") && !backend.contains("zNewMember"),
+            "the earlier, individually-valid binding must not have been applied: {backend}"
+        );
     }
 
     /// Matrix row 6: an ordinary retry -- the same epoch, the same content
@@ -4063,6 +4294,70 @@ mod tests {
         assert_ne!(
             gen_after_first, gen_after_second,
             "a redeploy of a stopped service must reinstall, not no-op"
+        );
+    }
+
+    /// The dedup key hashes what a deploy *sends*, not what a later
+    /// `write-bindings` push installs, so a repair redeploy of
+    /// byte-identical content after a push must not match the stale hash
+    /// and take the no-op path -- that would leave the pushed bindings in
+    /// place under a deploy that reports success, defeating "restart is
+    /// the cheap path, deploy is the repair path" (§4A).
+    #[tokio::test]
+    async fn a_redeploy_after_a_binding_push_reinstalls_the_manifests_own_bindings() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let caller = node_wide_caller("did:key:zAlice");
+        let manifest = inline_manifest(None, None, None);
+        let ctx = app_context(
+            "app-1",
+            "frontend",
+            vec![dependency_binding("backend", vec!["did:key:zBackendMember"])],
+        );
+
+        service
+            .deploy_with_context(
+                "frontend-svc".to_string(),
+                manifest.clone(),
+                Some(ctx.clone()),
+                &caller,
+            )
+            .await
+            .unwrap();
+
+        // A push moves the installed binding to a different target at a
+        // higher epoch, as a supervisor's `write-bindings` would.
+        service
+            .write_bindings(
+                BindingWrite {
+                    service_id: "frontend-svc".to_string(),
+                    app_instance_id: "app-1".to_string(),
+                    bindings: vec![DependencyBinding {
+                        epoch: 1,
+                        members: vec!["did:key:zPushedMember".to_string()],
+                        ..dependency_binding("backend", vec!["did:key:zPushedMember"])
+                    }],
+                    generation: 0,
+                },
+                &caller,
+            )
+            .await
+            .unwrap();
+        let pushed = service.registry.binding_of("frontend-svc", "backend").await.unwrap().unwrap();
+        assert!(pushed.contains("zPushedMember"), "{pushed}");
+
+        // An operator, unaware of the push, redeploys the identical
+        // manifest and context to repair the app -- this must reinstall
+        // the manifest's own bindings, not no-op against the pushed state.
+        service
+            .deploy_with_context("frontend-svc".to_string(), manifest, Some(ctx), &caller)
+            .await
+            .unwrap();
+        let repaired =
+            service.registry.binding_of("frontend-svc", "backend").await.unwrap().unwrap();
+        assert!(
+            repaired.contains("zBackendMember") && !repaired.contains("zPushedMember"),
+            "a repair redeploy after a push must reinstall the manifest's own bindings: {repaired}"
         );
     }
 
