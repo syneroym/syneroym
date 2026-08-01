@@ -208,6 +208,7 @@ fn bare_tcp_manifest(
             schema: None,
             rotation_policy: None,
             fdae_policy: None,
+            health_check: None,
         },
         service_type: ServiceType::Tcp(TcpManifest {
             endpoints: vec![NetworkEndpoint {

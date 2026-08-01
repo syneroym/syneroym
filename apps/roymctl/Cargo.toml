@@ -9,6 +9,7 @@ workspace = true
 [dependencies]
 clap.workspace = true
 anyhow.workspace = true
+async-trait.workspace = true
 tokio.workspace = true
 syneroym-identity.workspace = true
 syneroym-sdk.workspace = true

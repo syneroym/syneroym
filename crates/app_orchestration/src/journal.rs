@@ -13,6 +13,11 @@ pub enum DeploymentState {
     Planned,
     Applying,
     Active,
+    /// Some services applied and some did not. No rollback (ADR-0021 §5 /
+    /// task.md non-goals): rolling back a stateful service is itself
+    /// destructive, so the deployment stays here until a re-run completes
+    /// the missing actions.
+    Degraded,
     RollingBack,
     RolledBack,
 }
@@ -23,6 +28,7 @@ impl fmt::Display for DeploymentState {
             Self::Planned => "PLANNED",
             Self::Applying => "APPLYING",
             Self::Active => "ACTIVE",
+            Self::Degraded => "DEGRADED",
             Self::RollingBack => "ROLLING_BACK",
             Self::RolledBack => "ROLLED_BACK",
         };
@@ -38,6 +44,7 @@ impl FromStr for DeploymentState {
             "PLANNED" => Ok(Self::Planned),
             "APPLYING" => Ok(Self::Applying),
             "ACTIVE" => Ok(Self::Active),
+            "DEGRADED" => Ok(Self::Degraded),
             "ROLLING_BACK" => Ok(Self::RollingBack),
             "ROLLED_BACK" => Ok(Self::RolledBack),
             _ => Err(anyhow!("Unknown deployment state: {}", s)),
@@ -53,6 +60,15 @@ pub struct DeploymentRecord {
     pub state: DeploymentState,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+/// One (service, substrate) unit of work inside a deployment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActionRecord {
+    pub action_type: String,
+    pub logical_ref: String,
+    pub substrate_alias: Option<String>,
+    pub substrate_did: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -114,45 +130,34 @@ impl DeploymentJournal {
     }
 
     fn init_schema(conn: &Connection) -> Result<()> {
-        let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-
-        if version < 1 {
-            conn.execute_batch(
-                "BEGIN;
-                 CREATE TABLE IF NOT EXISTS deployments (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    instance_id TEXT NOT NULL,
-                    plan_json TEXT NOT NULL,
-                    state TEXT NOT NULL,
-                    created_at INTEGER NOT NULL,
-                    updated_at INTEGER NOT NULL
-                 );
-                 CREATE INDEX IF NOT EXISTS idx_deployments_instance_id ON \
-                 deployments(instance_id);
-                 PRAGMA user_version = 1;
-                 COMMIT;",
-            )?;
-        }
-
-        if version < 2 {
-            conn.execute_batch(
-                "BEGIN;
-                 CREATE TABLE IF NOT EXISTS deployment_actions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    deployment_id INTEGER NOT NULL,
-                    action_type TEXT NOT NULL,
-                    logical_ref TEXT NOT NULL,
-                    state TEXT NOT NULL,
-                    created_at INTEGER NOT NULL,
-                    updated_at INTEGER NOT NULL,
-                    FOREIGN KEY(deployment_id) REFERENCES deployments(id)
-                 );
-                 CREATE INDEX IF NOT EXISTS idx_deployment_actions_dep_id ON \
-                 deployment_actions(deployment_id);
-                 PRAGMA user_version = 2;
-                 COMMIT;",
-            )?;
-        }
+        // Unconditional, not gated on `PRAGMA user_version`: pre-release, schema
+        // changes are made in place with no version ladder, and `IF NOT EXISTS`
+        // is already idempotent.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS deployments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                instance_id TEXT NOT NULL,
+                plan_json TEXT NOT NULL,
+                state TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_deployments_instance_id ON deployments(instance_id);
+             CREATE TABLE IF NOT EXISTS deployment_actions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                deployment_id INTEGER NOT NULL,
+                action_type TEXT NOT NULL,
+                logical_ref TEXT NOT NULL,
+                substrate_alias TEXT,
+                substrate_did TEXT NOT NULL,
+                state TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                FOREIGN KEY(deployment_id) REFERENCES deployments(id)
+             );
+             CREATE INDEX IF NOT EXISTS idx_deployment_actions_dep_id
+                ON deployment_actions(deployment_id);",
+        )?;
 
         Ok(())
     }
@@ -182,14 +187,25 @@ impl DeploymentJournal {
         deployment_id: i64,
         action_type: &str,
         logical_ref: &str,
+        substrate_alias: Option<&str>,
+        substrate_did: &str,
         state: ActionState,
     ) -> Result<i64> {
         let now = Utc::now().timestamp();
         self.conn.execute(
-            "INSERT INTO deployment_actions (deployment_id, action_type, logical_ref, state, \
-             created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![deployment_id, action_type, logical_ref, state.to_string(), now, now],
+            "INSERT INTO deployment_actions (deployment_id, action_type, logical_ref, \
+             substrate_alias, substrate_did, state, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                deployment_id,
+                action_type,
+                logical_ref,
+                substrate_alias,
+                substrate_did,
+                state.to_string(),
+                now,
+                now
+            ],
         )?;
         Ok(self.conn.last_insert_rowid())
     }
@@ -203,19 +219,56 @@ impl DeploymentJournal {
         Ok(())
     }
 
-    pub fn get_completed_actions(&self, deployment_id: i64) -> Result<Vec<(String, String)>> {
+    pub fn get_completed_actions(&self, deployment_id: i64) -> Result<Vec<ActionRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT action_type, logical_ref 
-             FROM deployment_actions 
-             WHERE deployment_id = ?1 AND state = 'COMPLETED'",
+            "SELECT action_type, logical_ref, substrate_alias, substrate_did
+             FROM deployment_actions
+             WHERE deployment_id = ?1 AND state = 'COMPLETED'
+             ORDER BY id ASC",
         )?;
 
         let mut rows = stmt.query(params![deployment_id])?;
         let mut completed = Vec::new();
         while let Some(row) = rows.next()? {
-            let action_type: String = row.get(0)?;
-            let logical_ref: String = row.get(1)?;
-            completed.push((action_type, logical_ref));
+            completed.push(ActionRecord {
+                action_type: row.get(0)?,
+                logical_ref: row.get(1)?,
+                substrate_alias: row.get(2)?,
+                substrate_did: row.get(3)?,
+            });
+        }
+        Ok(completed)
+    }
+
+    /// Every completed action for an app instance, across **all** its
+    /// deployment records, oldest first.
+    ///
+    /// The per-record query above answers "what does this run still owe?"; this
+    /// one answers "where has this service actually landed, ever?", which is a
+    /// different question and spans records: a plan edit starts a new record,
+    /// so the run that placed a service can be two records back. The
+    /// placement-change refusal is its only caller.
+    pub fn get_completed_actions_for_instance(
+        &self,
+        instance_id: &AppInstanceId,
+    ) -> Result<Vec<ActionRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT a.action_type, a.logical_ref, a.substrate_alias, a.substrate_did
+               FROM deployment_actions a
+               JOIN deployments d ON d.id = a.deployment_id
+              WHERE d.instance_id = ?1 AND a.state = 'COMPLETED'
+              ORDER BY a.id ASC",
+        )?;
+
+        let mut rows = stmt.query(params![instance_id.as_str()])?;
+        let mut completed = Vec::new();
+        while let Some(row) = rows.next()? {
+            completed.push(ActionRecord {
+                action_type: row.get(0)?,
+                logical_ref: row.get(1)?,
+                substrate_alias: row.get(2)?,
+                substrate_did: row.get(3)?,
+            });
         }
         Ok(completed)
     }
@@ -316,6 +369,7 @@ mod tests {
                     app_instance_id: AppInstanceId::new(instance_name),
                     service_name: LogicalServiceName::new("echo"),
                 },
+                substrate: None,
                 config: ServiceConfig {
                     service_type: ServiceType::Wasm,
                     source: "test.wasm".to_string(),
@@ -328,6 +382,7 @@ mod tests {
                     schema: None,
                     rotation_policy: Default::default(),
                     fdae: None,
+                    health_check: None,
                 },
                 resolved_dependencies: BTreeMap::new(),
                 topology_mode: TopologyMode::Singleton,
@@ -355,5 +410,132 @@ mod tests {
         // Retrieve again
         let record2 = journal.get_latest(&AppInstanceId::new("inst-1")).unwrap().unwrap();
         assert_eq!(record2.state, DeploymentState::Applying);
+    }
+
+    #[test]
+    fn an_action_row_round_trips_its_alias_and_substrate_did() {
+        let journal = DeploymentJournal::open_in_memory().unwrap();
+        let plan = dummy_plan("inst-1");
+        let deployment_id = journal.append(&plan, DeploymentState::Applying).unwrap();
+
+        journal
+            .append_action(
+                deployment_id,
+                "ADD",
+                "inst-1/echo",
+                Some("edge-1"),
+                "did:key:zNodeA",
+                ActionState::Completed,
+            )
+            .unwrap();
+
+        let completed = journal.get_completed_actions(deployment_id).unwrap();
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].action_type, "ADD");
+        assert_eq!(completed[0].logical_ref, "inst-1/echo");
+        assert_eq!(completed[0].substrate_alias.as_deref(), Some("edge-1"));
+        assert_eq!(completed[0].substrate_did, "did:key:zNodeA");
+    }
+
+    #[test]
+    fn an_action_row_with_no_alias_round_trips_a_null_alias() {
+        let journal = DeploymentJournal::open_in_memory().unwrap();
+        let plan = dummy_plan("inst-1");
+        let deployment_id = journal.append(&plan, DeploymentState::Applying).unwrap();
+
+        journal
+            .append_action(
+                deployment_id,
+                "ADD",
+                "inst-1/echo",
+                None,
+                "did:key:zNodeA",
+                ActionState::Completed,
+            )
+            .unwrap();
+
+        let completed = journal.get_completed_actions(deployment_id).unwrap();
+        assert_eq!(completed[0].substrate_alias, None);
+    }
+
+    #[test]
+    fn the_degraded_state_round_trips_through_display_and_from_str() {
+        assert_eq!(DeploymentState::Degraded.to_string(), "DEGRADED");
+        assert_eq!("DEGRADED".parse::<DeploymentState>().unwrap(), DeploymentState::Degraded);
+    }
+
+    #[test]
+    fn completed_actions_for_an_instance_span_every_record_oldest_first() {
+        let journal = DeploymentJournal::open_in_memory().unwrap();
+        let plan = dummy_plan("inst-1");
+
+        // First deployment record: the service lands on edge-1.
+        let first_id = journal.append(&plan, DeploymentState::Active).unwrap();
+        journal
+            .append_action(
+                first_id,
+                "ADD",
+                "inst-1/echo",
+                Some("edge-1"),
+                "did:key:zNodeA",
+                ActionState::Completed,
+            )
+            .unwrap();
+
+        // A plan edit starts a second record: the service is now on edge-2.
+        let second_id = journal.append(&plan, DeploymentState::Active).unwrap();
+        journal
+            .append_action(
+                second_id,
+                "ADD",
+                "inst-1/echo",
+                Some("edge-2"),
+                "did:key:zNodeB",
+                ActionState::Completed,
+            )
+            .unwrap();
+
+        let completed =
+            journal.get_completed_actions_for_instance(&AppInstanceId::new("inst-1")).unwrap();
+        assert_eq!(completed.len(), 2);
+        // Oldest first, so `rfind` on the caller's side finds the current home.
+        assert_eq!(completed[0].substrate_did, "did:key:zNodeA");
+        assert_eq!(completed[1].substrate_did, "did:key:zNodeB");
+    }
+
+    #[test]
+    fn completed_actions_for_an_instance_ignores_another_instances_rows() {
+        let journal = DeploymentJournal::open_in_memory().unwrap();
+        let plan_1 = dummy_plan("inst-1");
+        let plan_2 = dummy_plan("inst-2");
+
+        let id_1 = journal.append(&plan_1, DeploymentState::Active).unwrap();
+        journal
+            .append_action(
+                id_1,
+                "ADD",
+                "inst-1/echo",
+                Some("edge-1"),
+                "did:key:zNodeA",
+                ActionState::Completed,
+            )
+            .unwrap();
+
+        let id_2 = journal.append(&plan_2, DeploymentState::Active).unwrap();
+        journal
+            .append_action(
+                id_2,
+                "ADD",
+                "inst-2/echo",
+                Some("edge-2"),
+                "did:key:zNodeB",
+                ActionState::Completed,
+            )
+            .unwrap();
+
+        let completed =
+            journal.get_completed_actions_for_instance(&AppInstanceId::new("inst-1")).unwrap();
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].logical_ref, "inst-1/echo");
     }
 }

@@ -263,6 +263,20 @@ impl RegistryClient {
         Self { dht_client, registry_url, http_client }
     }
 
+    /// The HTTP registry URL this client publishes into, if configured
+    /// (M05A A4 -- lets a substrate report its own registry namespace rather
+    /// than a caller having to guess it from config).
+    #[must_use]
+    pub fn registry_url(&self) -> Option<&str> {
+        self.registry_url.as_deref()
+    }
+
+    /// Whether this client has a mainline DHT client configured.
+    #[must_use]
+    pub const fn dht_enabled(&self) -> bool {
+        self.dht_client.is_some()
+    }
+
     /// Registers the endpoint to the DHT and optionally the HTTP registry.
     pub async fn register(
         &self,

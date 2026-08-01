@@ -121,6 +121,49 @@ define_string_wrapper!(
 define_string_wrapper!(InterfaceName, "Name of the interface a service implements.");
 define_string_wrapper!(DependencyName, "Name of a dependency within an application.");
 
+define_string_wrapper!(
+    SubstrateAlias,
+    "Operator-chosen name for a substrate in the deploy inventory.",
+    |s: &str| {
+        if s.is_empty() {
+            return Err(anyhow!("SubstrateAlias cannot be empty"));
+        }
+        if s.contains('/') {
+            return Err(anyhow!("SubstrateAlias cannot contain '/'"));
+        }
+        // Placement names an inventory alias, never a bare DID: an alias is
+        // the indirection that lets one manifest deploy against different
+        // operators' topologies, and a DID written here would defeat it.
+        if s.starts_with("did:") {
+            return Err(anyhow!(
+                "SubstrateAlias '{s}' looks like a DID; placement names an inventory alias"
+            ));
+        }
+        Ok(())
+    }
+);
+
+/// How a service's hosting substrate is chosen.
+///
+/// One variant today. It is an enum rather than a bare alias so a later
+/// pool- or constraint-based selector is an added variant instead of a
+/// schema change.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PlacementSelector {
+    /// Place on the substrate registered in the deploy inventory under this
+    /// alias.
+    Substrate(SubstrateAlias),
+}
+
+impl PlacementSelector {
+    pub fn alias(&self) -> &SubstrateAlias {
+        match self {
+            Self::Substrate(alias) => alias,
+        }
+    }
+}
+
 /// Logical reference to a service, fully identifying it within a specific
 /// application instance.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -197,6 +240,104 @@ pub enum RotationPolicy {
     None,
 }
 
+/// Default readiness-probe timeout, in milliseconds. Short on purpose: a
+/// probe is a liveness question, and a slow answer is already a bad one.
+pub const DEFAULT_PROBE_TIMEOUT_MS: u32 = 2_000;
+
+const fn default_probe_timeout_ms() -> u32 {
+    DEFAULT_PROBE_TIMEOUT_MS
+}
+
+const fn default_expect_status() -> u16 {
+    200
+}
+
+/// Author-declared readiness probe (ADR-0021 §7's active signal, applied to a
+/// service the supervisor manages rather than a bound external one).
+///
+/// Absent means **liveness only**: the substrate reports whether the instance
+/// is running and nothing more. Present means the substrate additionally runs
+/// this probe and reports its outcome as a distinct signal, because
+/// remediation differs between "not running" and "running but not ready".
+/// For a `tcp` service, where the process runs outside the substrate
+/// entirely, this is the *only* evidence of liveness there is.
+///
+/// Externally tagged, one struct per variant -- the shape `PlacementSelector`
+/// already proved round-trips through TOML and JSON while nested inside a
+/// `#[serde(flatten)]`ed `ServiceConfig`. An internally tagged (`tag = "kind"`)
+/// enum reads better in TOML but has no such proof under `flatten`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HealthCheck {
+    /// Open a TCP connection to the host:port `interface` is registered on.
+    /// Valid for `tcp` and `container` services.
+    TcpConnect(TcpProbe),
+    /// HTTP GET `path` against the host:port `interface` is registered on.
+    /// Valid for `tcp` and `container` services.
+    HttpGet(HttpProbe),
+    /// Invoke `method` on `interface` in the deployed component. Valid for
+    /// `wasm` services. Any non-error return is a pass -- the probe asks
+    /// whether the guest can run, not what it answers.
+    Rpc(RpcProbe),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TcpProbe {
+    pub interface: InterfaceName,
+    #[serde(default = "default_probe_timeout_ms")]
+    pub timeout_ms: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HttpProbe {
+    pub interface: InterfaceName,
+    pub path: String,
+    #[serde(default = "default_expect_status")]
+    pub expect_status: u16,
+    #[serde(default = "default_probe_timeout_ms")]
+    pub timeout_ms: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RpcProbe {
+    pub interface: InterfaceName,
+    pub method: String,
+    #[serde(default = "default_probe_timeout_ms")]
+    pub timeout_ms: u32,
+}
+
+impl HealthCheck {
+    /// The service types this probe kind can address (D-A4-6). Read by the
+    /// deploy-time validation, so a manifest error surfaces at deploy rather
+    /// than as a permanently `failing` probe.
+    #[must_use]
+    pub const fn valid_for(&self) -> &'static [ServiceType] {
+        match self {
+            Self::TcpConnect(_) | Self::HttpGet(_) => &[ServiceType::Tcp, ServiceType::Container],
+            Self::Rpc(_) => &[ServiceType::Wasm],
+        }
+    }
+
+    #[must_use]
+    pub fn interface(&self) -> &InterfaceName {
+        match self {
+            Self::TcpConnect(p) => &p.interface,
+            Self::HttpGet(p) => &p.interface,
+            Self::Rpc(p) => &p.interface,
+        }
+    }
+
+    /// Kebab-case name of the variant, for error messages.
+    #[must_use]
+    pub const fn kind_name(&self) -> &'static str {
+        match self {
+            Self::TcpConnect(_) => "tcp-connect",
+            Self::HttpGet(_) => "http-get",
+            Self::Rpc(_) => "rpc",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ResourceQuota {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -228,6 +369,9 @@ pub struct ServiceConfig {
     pub rotation_policy: RotationPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fdae: Option<FdaeManifest>,
+    /// Author-declared readiness probe (M05A A4). Absent = liveness only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health_check: Option<HealthCheck>,
 }
 
 /// Author-side declaration of a deploy-time document.
@@ -267,6 +411,9 @@ pub struct ServiceSpec {
     pub config: ServiceConfig,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<LogicalServiceName>,
+    /// Overrides the manifest-level default for this service only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<PlacementSelector>,
 }
 
 /// Defines a dependency on another application.
@@ -284,6 +431,10 @@ pub struct SynAppManifest {
     pub version: Version,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Default for every service this manifest declares, and for every
+    /// spawned child manifest that declares none of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<PlacementSelector>,
     #[serde(default)]
     pub services: BTreeMap<LogicalServiceName, ServiceSpec>,
     #[serde(default)]
@@ -379,6 +530,12 @@ impl SynAppManifest {
 pub struct PlannedService {
     pub service_id: ServiceId,
     pub logical_ref: LogicalServiceRef,
+    /// The substrate this service is placed on, after the manifest default
+    /// and any per-service override have been folded together. `None` means
+    /// the substrate the deploy was aimed at, which is what every manifest
+    /// written before placement existed still means.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub substrate: Option<SubstrateAlias>,
     #[serde(flatten)]
     pub config: ServiceConfig,
     /// Declared dependency name -> the member master DIDs currently serving
@@ -601,6 +758,7 @@ mod tests {
                     app_instance_id: AppInstanceId::new("guild-instance-1"),
                     service_name: LogicalServiceName::new("identity"),
                 },
+                substrate: None,
                 config: ServiceConfig {
                     service_type: ServiceType::Wasm,
                     source: "crates/sandbox_wasm/benches/identity.wasm".to_string(),
@@ -613,6 +771,7 @@ mod tests {
                     schema: None,
                     rotation_policy: RotationPolicy::RestartOnRotation,
                     fdae: None,
+                    health_check: None,
                 },
                 resolved_dependencies: BTreeMap::new(),
                 topology_mode: TopologyMode::Singleton,
@@ -715,6 +874,7 @@ mod tests {
                     app_instance_id: AppInstanceId::new("guild-instance-1"),
                     service_name: LogicalServiceName::new("identity"),
                 },
+                substrate: None,
                 config: ServiceConfig {
                     service_type: ServiceType::Wasm,
                     source: "crates/sandbox_wasm/benches/identity.wasm".to_string(),
@@ -727,6 +887,7 @@ mod tests {
                     schema: None,
                     rotation_policy: RotationPolicy::RestartOnRotation,
                     fdae: None,
+                    health_check: None,
                 },
                 resolved_dependencies: BTreeMap::new(),
                 topology_mode: TopologyMode::Singleton,
@@ -736,5 +897,249 @@ mod tests {
         let toml_str = plan.to_toml().unwrap();
         assert!(toml_str.contains("DATABASE_URL"));
         assert!(toml_str.contains("PORT"));
+    }
+
+    #[test]
+    fn a_manifest_default_placement_round_trips_through_toml_and_json() {
+        let toml_str = r#"
+            id = "syneroym:guild-app"
+            version = "0.1.0"
+
+            [placement]
+            substrate = "edge-1"
+
+            [services.identity]
+            service_type = "wasm"
+            source = "identity.wasm"
+        "#;
+
+        let manifest = SynAppManifest::from_toml(toml_str).unwrap();
+        assert_eq!(
+            manifest.placement,
+            Some(PlacementSelector::Substrate(SubstrateAlias::new("edge-1")))
+        );
+
+        let toml_round = manifest.to_toml().unwrap();
+        assert_eq!(SynAppManifest::from_toml(&toml_round).unwrap(), manifest);
+
+        let json_round = manifest.to_json().unwrap();
+        assert_eq!(SynAppManifest::from_json(&json_round).unwrap(), manifest);
+
+        // Absent placement stays absent -- pre-placement manifests are unaffected.
+        let no_placement = r#"
+            id = "syneroym:guild-app"
+            version = "0.1.0"
+        "#;
+        assert_eq!(SynAppManifest::from_toml(no_placement).unwrap().placement, None);
+    }
+
+    #[test]
+    fn a_per_service_placement_override_round_trips_through_toml_and_json() {
+        let toml_str = r#"
+            id = "syneroym:guild-app"
+            version = "0.1.0"
+
+            [placement]
+            substrate = "edge-1"
+
+            [services.identity]
+            service_type = "wasm"
+            source = "identity.wasm"
+
+            [services.identity.placement]
+            substrate = "edge-2"
+        "#;
+
+        let manifest = SynAppManifest::from_toml(toml_str).unwrap();
+        let identity = manifest.services.get(&LogicalServiceName::new("identity")).unwrap();
+        assert_eq!(
+            identity.placement,
+            Some(PlacementSelector::Substrate(SubstrateAlias::new("edge-2")))
+        );
+
+        // This is the round trip that would catch a #[serde(flatten)] regression:
+        // an externally-tagged enum nested inside a struct also using `flatten`.
+        let toml_round = manifest.to_toml().unwrap();
+        assert_eq!(SynAppManifest::from_toml(&toml_round).unwrap(), manifest);
+
+        let json_round = manifest.to_json().unwrap();
+        assert_eq!(SynAppManifest::from_json(&json_round).unwrap(), manifest);
+    }
+
+    #[test]
+    fn a_substrate_alias_rejects_a_bare_did() {
+        let err = SubstrateAlias::try_new("did:key:z6MkExample").unwrap_err();
+        assert!(err.to_string().contains("looks like a DID"));
+    }
+
+    #[test]
+    fn a_substrate_alias_rejects_an_empty_name() {
+        assert!(SubstrateAlias::try_new("").is_err());
+    }
+
+    #[test]
+    fn a_substrate_alias_rejects_a_path_separator() {
+        assert!(SubstrateAlias::try_new("edge/1").is_err());
+    }
+
+    #[test]
+    fn a_planned_service_round_trips_its_substrate() {
+        let mut svc = PlannedService {
+            service_id: ServiceId::new("did:key:h123"),
+            logical_ref: LogicalServiceRef {
+                app_instance_id: AppInstanceId::new("guild-instance-1"),
+                service_name: LogicalServiceName::new("identity"),
+            },
+            substrate: Some(SubstrateAlias::new("edge-1")),
+            config: ServiceConfig {
+                service_type: ServiceType::Wasm,
+                source: "identity.wasm".to_string(),
+                hash: None,
+                interfaces: vec![],
+                env: BTreeMap::new(),
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema: None,
+                rotation_policy: RotationPolicy::RestartOnRotation,
+                fdae: None,
+                health_check: None,
+            },
+            resolved_dependencies: BTreeMap::new(),
+            topology_mode: TopologyMode::Singleton,
+        };
+
+        let toml_round = toml::to_string(&svc).unwrap();
+        assert!(toml_round.contains("edge-1"));
+        let parsed: PlannedService = toml::from_str(&toml_round).unwrap();
+        assert_eq!(parsed, svc);
+
+        // `None` serializes with no `substrate` key at all, matching
+        // every manifest written before placement existed.
+        svc.substrate = None;
+        let toml_round = toml::to_string(&svc).unwrap();
+        assert!(!toml_round.contains("substrate"));
+    }
+
+    #[test]
+    fn a_health_check_round_trips_through_toml_and_json() {
+        let toml_str = r#"
+            id = "syneroym:guild-app"
+            version = "0.1.0"
+
+            [services.backend]
+            service_type = "container"
+            source = "unused"
+            interfaces = ["http"]
+
+            [services.backend.health_check.http-get]
+            interface = "http"
+            path = "/healthz"
+            expect_status = 200
+            timeout_ms = 1500
+
+            [services.tcpsvc]
+            service_type = "tcp"
+            source = "unused"
+            interfaces = ["main"]
+
+            [services.tcpsvc.health_check.tcp-connect]
+            interface = "main"
+
+            [services.wasmsvc]
+            service_type = "wasm"
+            source = "unused"
+            interfaces = ["rpc"]
+
+            [services.wasmsvc.health_check.rpc]
+            interface = "rpc"
+            method = "ping"
+        "#;
+
+        let manifest = SynAppManifest::from_toml(toml_str).unwrap();
+        let backend = manifest.services.get(&LogicalServiceName::new("backend")).unwrap();
+        assert_eq!(
+            backend.config.health_check,
+            Some(HealthCheck::HttpGet(HttpProbe {
+                interface: InterfaceName::new("http"),
+                path: "/healthz".to_string(),
+                expect_status: 200,
+                timeout_ms: 1500,
+            }))
+        );
+
+        // This is the round trip that would catch a #[serde(flatten)] regression:
+        // an externally-tagged enum nested inside a struct also using `flatten`.
+        let toml_round = manifest.to_toml().unwrap();
+        assert_eq!(SynAppManifest::from_toml(&toml_round).unwrap(), manifest);
+
+        let json_round = manifest.to_json().unwrap();
+        assert_eq!(SynAppManifest::from_json(&json_round).unwrap(), manifest);
+    }
+
+    #[test]
+    fn an_absent_health_check_emits_no_key() {
+        let toml_str = r#"
+            id = "syneroym:guild-app"
+            version = "0.1.0"
+
+            [services.identity]
+            service_type = "wasm"
+            source = "unused"
+        "#;
+        let manifest = SynAppManifest::from_toml(toml_str).unwrap();
+        let identity = manifest.services.get(&LogicalServiceName::new("identity")).unwrap();
+        assert_eq!(identity.config.health_check, None);
+        let serialized = manifest.to_toml().unwrap();
+        assert!(!serialized.contains("health_check"));
+    }
+
+    #[test]
+    fn probe_defaults_apply_when_omitted() {
+        let toml_str = r#"
+            id = "syneroym:guild-app"
+            version = "0.1.0"
+
+            [services.backend]
+            service_type = "container"
+            source = "unused"
+
+            [services.backend.health_check.http-get]
+            interface = "http"
+            path = "/healthz"
+        "#;
+        let manifest = SynAppManifest::from_toml(toml_str).unwrap();
+        let backend = manifest.services.get(&LogicalServiceName::new("backend")).unwrap();
+        match backend.config.health_check.as_ref().unwrap() {
+            HealthCheck::HttpGet(p) => {
+                assert_eq!(p.expect_status, 200);
+                assert_eq!(p.timeout_ms, DEFAULT_PROBE_TIMEOUT_MS);
+            }
+            other => panic!("expected HttpGet, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn valid_for_pairs_each_kind_with_its_service_types() {
+        let tcp = HealthCheck::TcpConnect(TcpProbe {
+            interface: InterfaceName::new("main"),
+            timeout_ms: DEFAULT_PROBE_TIMEOUT_MS,
+        });
+        assert_eq!(tcp.valid_for(), &[ServiceType::Tcp, ServiceType::Container]);
+
+        let http = HealthCheck::HttpGet(HttpProbe {
+            interface: InterfaceName::new("main"),
+            path: "/healthz".to_string(),
+            expect_status: 200,
+            timeout_ms: DEFAULT_PROBE_TIMEOUT_MS,
+        });
+        assert_eq!(http.valid_for(), &[ServiceType::Tcp, ServiceType::Container]);
+
+        let rpc = HealthCheck::Rpc(RpcProbe {
+            interface: InterfaceName::new("main"),
+            method: "ping".to_string(),
+            timeout_ms: DEFAULT_PROBE_TIMEOUT_MS,
+        });
+        assert_eq!(rpc.valid_for(), &[ServiceType::Wasm]);
     }
 }

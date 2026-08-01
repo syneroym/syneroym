@@ -4,7 +4,7 @@ use anyhow::Result;
 
 use crate::{
     journal::{DeploymentJournal, DeploymentState},
-    models::{AppInstanceId, DeploymentPlan, LogicalServiceRef, PlannedService},
+    models::{AppInstanceId, DeploymentPlan, LogicalServiceRef, PlannedService, SubstrateAlias},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,23 +51,36 @@ impl<'a> Reconciler<'a> {
 
     pub fn recover_applying(&self, instance_id: &AppInstanceId) -> Result<Option<ReconcilePlan>> {
         let latest = self.journal.get_latest(instance_id)?;
+        // D-A3-18: `Degraded` is the resting state of every partially-failed
+        // deploy, so leaving this gated on `Applying` alone would make recovery
+        // go blind on exactly the state A3 introduces.
         if let Some(record) = latest
-            && record.state == DeploymentState::Applying
+            && matches!(record.state, DeploymentState::Applying | DeploymentState::Degraded)
         {
             let last_active = self.journal.get_last_state(instance_id, DeploymentState::Active)?;
 
             let mut actions = Self::diff_plans(last_active.map(|r| r.plan).as_ref(), &record.plan);
 
-            // Filter out actions that were already completed in this APPLYING deployment.
+            // Filter out actions that were already completed in this record.
             let completed = self.journal.get_completed_actions(record.id)?;
             actions.retain(|a| {
-                let (a_type, l_ref) = match a {
-                    ReconcileAction::Add(svc) => ("ADD", &svc.logical_ref),
-                    ReconcileAction::Remove(r) => ("REMOVE", r),
-                    ReconcileAction::Update { new, .. } => ("UPDATE", &new.logical_ref),
+                let (a_type, l_ref, alias) = match a {
+                    ReconcileAction::Add(svc) => {
+                        ("ADD", svc.logical_ref.to_string(), svc.substrate.as_ref())
+                    }
+                    ReconcileAction::Remove(r) => ("REMOVE", r.to_string(), None),
+                    ReconcileAction::Update { new, .. } => {
+                        ("UPDATE", new.logical_ref.to_string(), new.substrate.as_ref())
+                    }
                 };
-                let l_str = l_ref.to_string();
-                !completed.iter().any(|(ct, cr)| ct == a_type && cr == &l_str)
+                // D-A3-11: this path has no inventory, so it compares on the
+                // alias rather than the resolved DID -- a diagnostic for
+                // `app reconcile`, not the resume path `apply_plan` itself uses.
+                !completed.iter().any(|c| {
+                    c.action_type == a_type
+                        && c.logical_ref == l_ref
+                        && c.substrate_alias.as_deref() == alias.map(SubstrateAlias::as_str)
+                })
             });
 
             return Ok(Some(ReconcilePlan {
@@ -130,8 +143,11 @@ mod tests {
     use semver::Version;
 
     use super::*;
-    use crate::models::{
-        AppBlueprintId, LogicalServiceName, ServiceConfig, ServiceId, ServiceType, TopologyMode,
+    use crate::{
+        journal::ActionState,
+        models::{
+            AppBlueprintId, LogicalServiceName, ServiceConfig, ServiceId, ServiceType, TopologyMode,
+        },
     };
 
     fn dummy_plan(instance_name: &str) -> DeploymentPlan {
@@ -145,6 +161,7 @@ mod tests {
                     app_instance_id: AppInstanceId::new(instance_name),
                     service_name: LogicalServiceName::new("echo"),
                 },
+                substrate: None,
                 config: ServiceConfig {
                     service_type: ServiceType::Wasm,
                     source: "test.wasm".to_string(),
@@ -157,6 +174,7 @@ mod tests {
                     schema: None,
                     rotation_policy: Default::default(),
                     fdae: None,
+                    health_check: None,
                 },
                 resolved_dependencies: BTreeMap::new(),
                 topology_mode: TopologyMode::Singleton,
@@ -208,6 +226,85 @@ mod tests {
             }
             _ => panic!("Expected Add action since there was no active plan before"),
         }
+    }
+
+    #[test]
+    fn recover_applying_drops_an_action_already_completed_on_the_same_substrate() {
+        let journal = DeploymentJournal::open_in_memory().unwrap();
+        let mut plan = dummy_plan("inst-1");
+        plan.services[0].substrate = Some(SubstrateAlias::new("edge-1"));
+
+        let deployment_id = journal.append(&plan, DeploymentState::Applying).unwrap();
+        journal
+            .append_action(
+                deployment_id,
+                "ADD",
+                "inst-1/echo",
+                Some("edge-1"),
+                "did:key:zNodeA",
+                ActionState::Completed,
+            )
+            .unwrap();
+
+        let reconciler = Reconciler::new(&journal);
+        let recovery_plan = reconciler
+            .recover_applying(&AppInstanceId::new("inst-1"))
+            .unwrap()
+            .expect("Should recover");
+
+        assert!(recovery_plan.actions.is_empty(), "the completed action should be filtered out");
+    }
+
+    #[test]
+    fn recover_applying_keeps_an_action_completed_on_a_different_substrate() {
+        let journal = DeploymentJournal::open_in_memory().unwrap();
+        let mut plan = dummy_plan("inst-1");
+        plan.services[0].substrate = Some(SubstrateAlias::new("edge-1"));
+
+        let deployment_id = journal.append(&plan, DeploymentState::Applying).unwrap();
+        // Completed, but on a different alias than the plan now asks for --
+        // this is the first proof in the tree that the filter filters at all
+        // rather than always passing.
+        journal
+            .append_action(
+                deployment_id,
+                "ADD",
+                "inst-1/echo",
+                Some("edge-2"),
+                "did:key:zNodeB",
+                ActionState::Completed,
+            )
+            .unwrap();
+
+        let reconciler = Reconciler::new(&journal);
+        let recovery_plan = reconciler
+            .recover_applying(&AppInstanceId::new("inst-1"))
+            .unwrap()
+            .expect("Should recover");
+
+        assert_eq!(recovery_plan.actions.len(), 1);
+        match &recovery_plan.actions[0] {
+            ReconcileAction::Add(svc) => {
+                assert_eq!(svc.substrate, Some(SubstrateAlias::new("edge-1")));
+            }
+            _ => panic!("Expected Add action"),
+        }
+    }
+
+    #[test]
+    fn recover_applying_recovers_a_degraded_deployment_not_only_an_applying_one() {
+        let journal = DeploymentJournal::open_in_memory().unwrap();
+        let plan = dummy_plan("inst-1");
+
+        let _ = journal.append(&plan, DeploymentState::Degraded).unwrap();
+
+        let reconciler = Reconciler::new(&journal);
+        let recovery_plan = reconciler
+            .recover_applying(&AppInstanceId::new("inst-1"))
+            .unwrap()
+            .expect("Degraded deployments must still be recoverable");
+
+        assert_eq!(recovery_plan.actions.len(), 1);
     }
 
     #[test]

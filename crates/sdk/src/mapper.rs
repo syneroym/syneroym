@@ -6,18 +6,19 @@ use std::{
 use syneroym_app_orchestration::{
     DEFAULT_BINDING_CACHE_TTL_MS,
     models::{
-        DeploymentPlan, DocumentRef, LogicalServiceName, RotationPolicy, ServiceId, ServiceType,
-        TopologyMode,
+        DeploymentPlan, DocumentRef, HealthCheck, LogicalServiceName, PlannedService,
+        RotationPolicy, ServiceId, ServiceType, TopologyMode,
     },
 };
 use syneroym_core::{deploy_docs, util};
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     AppContext as WitAppContext, ArtifactSource, ContainerManifest, ContainerPortMapping,
     ContainerVolumeFile, ContainerVolumeMapping, DependencyBinding as WitDependencyBinding,
-    DeployManifest, DeploymentPlan as WitDeploymentPlan, DocumentSource, NetworkEndpoint,
-    PlannedService, ResourceQuota, RotationPolicy as WitRotationPolicy,
-    ServiceConfig as WitServiceConfig, ServiceType as WitServiceType, TcpManifest,
-    TopologyMode as WitTopologyMode, WasmManifest,
+    DeployManifest, DeploymentPlan as WitDeploymentPlan, DocumentSource,
+    HealthCheck as WitHealthCheck, HttpProbe as WitHttpProbe, NetworkEndpoint,
+    PlannedService as WitPlannedService, ResourceQuota, RotationPolicy as WitRotationPolicy,
+    RpcProbe as WitRpcProbe, ServiceConfig as WitServiceConfig, ServiceType as WitServiceType,
+    TcpManifest, TcpProbe as WitTcpProbe, TopologyMode as WitTopologyMode, WasmManifest,
 };
 
 /// Author-side container volume, mirroring the wire record but with `files`
@@ -73,6 +74,38 @@ fn map_mode(mode: TopologyMode) -> WitTopologyMode {
     }
 }
 
+/// Maps the app model's `HealthCheck` to the wire variant. Pure translation:
+/// no defaulting, no validation -- serde already applied the field defaults
+/// at parse time, and kind/type compatibility is the substrate's deploy-time
+/// check (D-A4-6), so a client cannot smuggle a bad pairing past it.
+fn map_health_check(check: &HealthCheck) -> WitHealthCheck {
+    match check {
+        HealthCheck::TcpConnect(p) => WitHealthCheck::TcpConnect(WitTcpProbe {
+            interface_name: p.interface.to_string(),
+            timeout_ms: p.timeout_ms,
+        }),
+        HealthCheck::HttpGet(p) => WitHealthCheck::HttpGet(WitHttpProbe {
+            interface_name: p.interface.to_string(),
+            path: p.path.clone(),
+            expect_status: p.expect_status,
+            timeout_ms: p.timeout_ms,
+        }),
+        HealthCheck::Rpc(p) => WitHealthCheck::Rpc(WitRpcProbe {
+            interface_name: p.interface.to_string(),
+            method: p.method.clone(),
+            timeout_ms: p.timeout_ms,
+        }),
+    }
+}
+
+/// Maps exactly the services in `services`, while computing every
+/// dependency's topology mode from the **whole** `plan`.
+///
+/// The split matters: a dependency's `mode` belongs to the dependency, which
+/// may be placed on a different substrate and therefore absent from
+/// `services`. Deriving modes from the subset would silently default every
+/// cross-substrate dependency to `Singleton`.
+///
 /// `instance_certificates` maps a `PlannedService.service_id` (post
 /// member-master substitution, if any) to the JSON-serialized
 /// `DelegationCertificate` to install for it, and `registry_certificates` the
@@ -81,32 +114,35 @@ fn map_mode(mode: TopologyMode) -> WitTopologyMode {
 /// service then maps to `None` for both fields, exactly as before either
 /// parameter existed. The mapper only *translates* values that already
 /// exist; it never mints or signs anything itself.
+///
+/// `PlannedService.substrate` is not mapped onto the wire: a substrate has no
+/// use for the placement of services it is not hosting, and publishing it
+/// would hand every node a partial topology map of the app for nothing.
 pub fn map_deployment_plan_to_wit(
-    plan: DeploymentPlan,
+    plan: &DeploymentPlan,
+    services: &[&PlannedService],
     instance_certificates: &BTreeMap<ServiceId, String>,
     registry_certificates: &BTreeMap<ServiceId, String>,
     emit_bindings: bool,
 ) -> anyhow::Result<WitDeploymentPlan> {
-    // `plan.app_instance_id` is moved into `WitDeploymentPlan` at the end of
-    // this function; clone it now so every service's app-context can use it
-    // too.
     let plan_instance_id = plan.app_instance_id.to_string();
     // `mode` belongs to the *target* of a dependency, not the dependent --
-    // build the lookup once, over every service in the plan, before the
-    // per-service loop needs it.
+    // build the lookup once, over every service in the whole plan, before the
+    // per-service loop needs it. A dependency may be placed on a different
+    // substrate and therefore absent from `services`.
     let target_modes: BTreeMap<LogicalServiceName, TopologyMode> = plan
         .services
         .iter()
         .map(|svc| (svc.logical_ref.service_name.clone(), svc.topology_mode))
         .collect();
 
-    let mut services = Vec::new();
-    for svc in plan.services {
+    let mut wit_services = Vec::new();
+    for svc in services {
         let wit_config = WitServiceConfig {
-            env: svc.config.env.into_iter().collect(),
-            args: svc.config.args,
+            env: svc.config.env.clone().into_iter().collect(),
+            args: svc.config.args.clone(),
             custom_config: svc.config.custom_config.clone(),
-            quota: svc.config.quota.map(|q| ResourceQuota {
+            quota: svc.config.quota.clone().map(|q| ResourceQuota {
                 max_instructions: q.max_instructions,
                 max_memory_bytes: q.max_memory_bytes,
             }),
@@ -126,6 +162,7 @@ pub fn map_deployment_plan_to_wit(
                 .as_ref()
                 .map(|f| map_document_ref(&f.policy, "fdae policy"))
                 .transpose()?,
+            health_check: svc.config.health_check.as_ref().map(map_health_check),
         };
 
         let service_type = match svc.config.service_type {
@@ -260,7 +297,7 @@ pub fn map_deployment_plan_to_wit(
                 Vec::new()
             },
         });
-        services.push(PlannedService {
+        wit_services.push(WitPlannedService {
             service_id: svc.service_id.to_string(),
             logical_ref: svc.logical_ref.to_string(),
             manifest: DeployManifest {
@@ -277,7 +314,7 @@ pub fn map_deployment_plan_to_wit(
         app_instance_id: plan.app_instance_id.to_string(),
         blueprint_id: plan.blueprint_id.to_string(),
         version: plan.version.to_string(),
-        services,
+        services: wit_services,
     })
 }
 
@@ -287,8 +324,9 @@ mod tests {
 
     use semver::Version;
     use syneroym_app_orchestration::models::{
-        AppBlueprintId, AppInstanceId, FdaeManifest, LogicalServiceName, LogicalServiceRef,
-        PlannedService, ServiceConfig, ServiceId, ServiceType, TopologyMode,
+        AppBlueprintId, AppInstanceId, FdaeManifest, HttpProbe, InterfaceName, LogicalServiceName,
+        LogicalServiceRef, PlannedService, RpcProbe, ServiceConfig, ServiceId, ServiceType,
+        TcpProbe, TopologyMode,
     };
 
     use super::*;
@@ -306,6 +344,7 @@ mod tests {
             schema: None,
             rotation_policy: Default::default(),
             fdae: None,
+            health_check: None,
         }
     }
 
@@ -320,11 +359,29 @@ mod tests {
                     app_instance_id: AppInstanceId::new("inst-1"),
                     service_name: LogicalServiceName::new("svc"),
                 },
+                substrate: None,
                 config,
                 resolved_dependencies: BTreeMap::new(),
                 topology_mode: TopologyMode::Singleton,
             }],
         }
+    }
+
+    /// Whole-plan mapping, which is what every test but the subset one wants.
+    fn map_all(
+        plan: &DeploymentPlan,
+        instance_certificates: &BTreeMap<ServiceId, String>,
+        registry_certificates: &BTreeMap<ServiceId, String>,
+        emit_bindings: bool,
+    ) -> anyhow::Result<WitDeploymentPlan> {
+        let all: Vec<&PlannedService> = plan.services.iter().collect();
+        map_deployment_plan_to_wit(
+            plan,
+            &all,
+            instance_certificates,
+            registry_certificates,
+            emit_bindings,
+        )
     }
 
     /// The point of the whole change: a bare manifest path is resolved here,
@@ -341,13 +398,8 @@ mod tests {
             policy: DocumentRef::Local(policy.to_string_lossy().into_owned()),
         });
 
-        let wit_plan = map_deployment_plan_to_wit(
-            plan_with_config(config),
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-            true,
-        )
-        .unwrap();
+        let wit_plan =
+            map_all(&plan_with_config(config), &BTreeMap::new(), &BTreeMap::new(), true).unwrap();
         match &wit_plan.services[0].manifest.config.fdae_policy {
             Some(DocumentSource::Inline(content)) => {
                 assert_eq!(content, r#"{"version":"fdae/v1"}"#);
@@ -363,13 +415,8 @@ mod tests {
             policy: DocumentRef::Remote { remote_path: "policies/shared.json".to_string() },
         });
 
-        let wit_plan = map_deployment_plan_to_wit(
-            plan_with_config(config),
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-            true,
-        )
-        .unwrap();
+        let wit_plan =
+            map_all(&plan_with_config(config), &BTreeMap::new(), &BTreeMap::new(), true).unwrap();
         match &wit_plan.services[0].manifest.config.fdae_policy {
             Some(DocumentSource::Path(path)) => assert_eq!(path, "policies/shared.json"),
             other => panic!("expected a host path, got {other:?}"),
@@ -383,26 +430,81 @@ mod tests {
             Some(FdaeManifest { policy: DocumentRef::Local("does-not-exist.json".to_string()) });
 
         assert!(
-            map_deployment_plan_to_wit(
-                plan_with_config(config),
-                &BTreeMap::new(),
-                &BTreeMap::new(),
-                true,
-            )
-            .is_err()
+            map_all(&plan_with_config(config), &BTreeMap::new(), &BTreeMap::new(), true,).is_err()
         );
     }
 
     #[test]
     fn map_deployment_plan_to_wit_maps_absent_fdae_to_none() {
-        let wit_plan = map_deployment_plan_to_wit(
-            plan_with_config(base_config()),
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-            true,
-        )
-        .unwrap();
+        let wit_plan =
+            map_all(&plan_with_config(base_config()), &BTreeMap::new(), &BTreeMap::new(), true)
+                .unwrap();
         assert!(wit_plan.services[0].manifest.config.fdae_policy.is_none());
+    }
+
+    #[test]
+    fn no_health_check_maps_to_none() {
+        let wit_plan =
+            map_all(&plan_with_config(base_config()), &BTreeMap::new(), &BTreeMap::new(), true)
+                .unwrap();
+        assert!(wit_plan.services[0].manifest.config.health_check.is_none());
+    }
+
+    #[test]
+    fn a_health_check_maps_onto_the_wire() {
+        let mut tcp_config = base_config();
+        tcp_config.health_check = Some(HealthCheck::TcpConnect(TcpProbe {
+            interface: InterfaceName::new("main"),
+            timeout_ms: 1234,
+        }));
+        let wit_plan =
+            map_all(&plan_with_config(tcp_config), &BTreeMap::new(), &BTreeMap::new(), true)
+                .unwrap();
+        match wit_plan.services[0].manifest.config.health_check.as_ref().unwrap() {
+            WitHealthCheck::TcpConnect(p) => {
+                assert_eq!(p.interface_name, "main");
+                assert_eq!(p.timeout_ms, 1234);
+            }
+            other => panic!("expected TcpConnect, got {other:?}"),
+        }
+
+        let mut http_config = base_config();
+        http_config.health_check = Some(HealthCheck::HttpGet(HttpProbe {
+            interface: InterfaceName::new("http"),
+            path: "/healthz".to_string(),
+            expect_status: 204,
+            timeout_ms: 1500,
+        }));
+        let wit_plan =
+            map_all(&plan_with_config(http_config), &BTreeMap::new(), &BTreeMap::new(), true)
+                .unwrap();
+        match wit_plan.services[0].manifest.config.health_check.as_ref().unwrap() {
+            WitHealthCheck::HttpGet(p) => {
+                assert_eq!(p.interface_name, "http");
+                assert_eq!(p.path, "/healthz");
+                assert_eq!(p.expect_status, 204);
+                assert_eq!(p.timeout_ms, 1500);
+            }
+            other => panic!("expected HttpGet, got {other:?}"),
+        }
+
+        let mut rpc_config = base_config();
+        rpc_config.health_check = Some(HealthCheck::Rpc(RpcProbe {
+            interface: InterfaceName::new("rpc"),
+            method: "ping".to_string(),
+            timeout_ms: 2000,
+        }));
+        let wit_plan =
+            map_all(&plan_with_config(rpc_config), &BTreeMap::new(), &BTreeMap::new(), true)
+                .unwrap();
+        match wit_plan.services[0].manifest.config.health_check.as_ref().unwrap() {
+            WitHealthCheck::Rpc(p) => {
+                assert_eq!(p.interface_name, "rpc");
+                assert_eq!(p.method, "ping");
+                assert_eq!(p.timeout_ms, 2000);
+            }
+            other => panic!("expected Rpc, got {other:?}"),
+        }
     }
 
     fn container_config(custom: &str) -> ServiceConfig {
@@ -434,8 +536,8 @@ mod tests {
             serde_json::to_string(&conf.to_string_lossy().into_owned()).unwrap()
         );
 
-        let wit_plan = map_deployment_plan_to_wit(
-            plan_with_config(container_config(&custom)),
+        let wit_plan = map_all(
+            &plan_with_config(container_config(&custom)),
             &BTreeMap::new(),
             &BTreeMap::new(),
             true,
@@ -459,8 +561,8 @@ mod tests {
     #[test]
     fn container_volume_without_files_still_parses() {
         let custom = r#"{"volumes":[{"host_path":"data","container_path":"/data"}]}"#;
-        let wit_plan = map_deployment_plan_to_wit(
-            plan_with_config(container_config(custom)),
+        let wit_plan = map_all(
+            &plan_with_config(container_config(custom)),
             &BTreeMap::new(),
             &BTreeMap::new(),
             true,
@@ -477,8 +579,8 @@ mod tests {
     #[test]
     fn malformed_volumes_and_ports_both_fail_the_deploy() {
         let bad_volumes = r#"{"volumes":[{"host_path":"data"}]}"#;
-        let err = map_deployment_plan_to_wit(
-            plan_with_config(container_config(bad_volumes)),
+        let err = map_all(
+            &plan_with_config(container_config(bad_volumes)),
             &BTreeMap::new(),
             &BTreeMap::new(),
             true,
@@ -488,8 +590,8 @@ mod tests {
         assert!(err.contains("invalid container volumes"), "{err}");
 
         let bad_ports = r#"{"ports":[{"interface_name":"default","port":80,"protocol":"tcp"}]}"#;
-        let err = map_deployment_plan_to_wit(
-            plan_with_config(container_config(bad_ports)),
+        let err = map_all(
+            &plan_with_config(container_config(bad_ports)),
             &BTreeMap::new(),
             &BTreeMap::new(),
             true,
@@ -510,14 +612,9 @@ mod tests {
         config.fdae =
             Some(FdaeManifest { policy: DocumentRef::Local(big.to_string_lossy().into_owned()) });
 
-        let err = map_deployment_plan_to_wit(
-            plan_with_config(config),
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-            true,
-        )
-        .unwrap_err()
-        .to_string();
+        let err = map_all(&plan_with_config(config), &BTreeMap::new(), &BTreeMap::new(), true)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("exceeding the"), "{err}");
     }
 
@@ -544,6 +641,7 @@ mod tests {
                 PlannedService {
                     service_id: ServiceId::new("did:key:hBackend"),
                     logical_ref: backend_ref,
+                    substrate: None,
                     config: base_config(),
                     resolved_dependencies: BTreeMap::new(),
                     topology_mode: TopologyMode::Redundant,
@@ -551,6 +649,7 @@ mod tests {
                 PlannedService {
                     service_id: ServiceId::new("did:key:hFrontend"),
                     logical_ref: frontend_ref,
+                    substrate: None,
                     config: base_config(),
                     resolved_dependencies: BTreeMap::from([(
                         LogicalServiceName::new("backend"),
@@ -567,13 +666,8 @@ mod tests {
 
     #[test]
     fn the_app_context_carries_one_binding_per_depends_on_entry_with_the_targets_mode() {
-        let wit_plan = map_deployment_plan_to_wit(
-            plan_with_a_dependency(),
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-            true,
-        )
-        .unwrap();
+        let wit_plan =
+            map_all(&plan_with_a_dependency(), &BTreeMap::new(), &BTreeMap::new(), true).unwrap();
 
         let frontend =
             wit_plan.services.iter().find(|s| s.logical_ref.ends_with("frontend")).unwrap();
@@ -599,15 +693,46 @@ mod tests {
         );
     }
 
+    /// This is the latent bug §5.1 exists to fix: `backend`'s topology mode
+    /// must come from the *whole* plan, not from the subset being mapped.
+    /// Mapping only `frontend` (as A3's per-substrate deploy call does when
+    /// `backend` is placed elsewhere) must still emit `backend`'s real mode
+    /// on the binding -- a naive "filter the plan, then map" shape would
+    /// silently default it to `Singleton` since `backend` itself is absent
+    /// from the subset.
     #[test]
-    fn a_plan_with_no_dependencies_emits_an_empty_binding_list() {
+    fn mapping_one_service_resolves_a_dependencys_mode_from_the_whole_plan() {
+        let plan = plan_with_a_dependency();
+        let frontend_only: Vec<&PlannedService> = plan
+            .services
+            .iter()
+            .filter(|s| s.logical_ref.service_name.as_str() == "frontend")
+            .collect();
+
         let wit_plan = map_deployment_plan_to_wit(
-            plan_with_config(base_config()),
+            &plan,
+            &frontend_only,
             &BTreeMap::new(),
             &BTreeMap::new(),
             true,
         )
         .unwrap();
+
+        assert_eq!(wit_plan.services.len(), 1);
+        let ctx = wit_plan.services[0].app_context.as_ref().unwrap();
+        let binding = &ctx.bindings[0];
+        assert!(
+            matches!(binding.mode, WitTopologyMode::Redundant),
+            "backend's mode must be resolved from the whole plan even though only frontend was \
+             mapped"
+        );
+    }
+
+    #[test]
+    fn a_plan_with_no_dependencies_emits_an_empty_binding_list() {
+        let wit_plan =
+            map_all(&plan_with_config(base_config()), &BTreeMap::new(), &BTreeMap::new(), true)
+                .unwrap();
         assert!(wit_plan.services[0].app_context.as_ref().unwrap().bindings.is_empty());
     }
 
@@ -620,13 +745,8 @@ mod tests {
     /// fabricated ones.
     #[test]
     fn emit_bindings_false_publishes_no_fabricated_member_dids() {
-        let wit_plan = map_deployment_plan_to_wit(
-            plan_with_a_dependency(),
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-            false,
-        )
-        .unwrap();
+        let wit_plan =
+            map_all(&plan_with_a_dependency(), &BTreeMap::new(), &BTreeMap::new(), false).unwrap();
 
         for svc in &wit_plan.services {
             assert!(
