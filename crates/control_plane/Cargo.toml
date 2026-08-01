@@ -14,6 +14,7 @@ podman_sandbox = ["dep:syneroym-sandbox-podman"]
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
+blake3.workspace = true
 dashmap.workspace = true
 futures.workspace = true
 syneroym-core.workspace = true

@@ -1273,6 +1273,33 @@ impl AppSandboxEngine {
         Ok(())
     }
 
+    /// Evict and recompile `service_id` from the artifact `deploy_wasm`
+    /// persisted to `blobs_dir` (M05A A5a). A5's remediation half of
+    /// restart-in-place: a wasm service has no process, so "restart" means
+    /// dropping the cached `InstancePre` (and with it the resolved FDAE
+    /// policy) and rebuilding it from disk.
+    ///
+    /// Fails -- rather than `load_cached_wasm`'s `warn!` -- when no
+    /// artifact is on disk: a supervisor must be able to tell "restarted"
+    /// from "there was nothing to restart", or bounded remediation counts
+    /// a no-op as an attempt and exhausts its budget against a service it
+    /// never touched.
+    ///
+    /// **No identity work.** The instance key is HKDF-derived from the
+    /// node identity and the calling DID, so a restart on the same node
+    /// under the same caller yields the *same* key and the installed
+    /// certificate stays valid; the endpoint record is unchanged, so there
+    /// is nothing to republish.
+    pub async fn reload_wasm(&self, service_id: &str) -> Result<()> {
+        Self::validate_service_id(service_id)?;
+        let file_path = self.blobs_dir.join(format!("{service_id}.wasm"));
+        if !file_path.exists() {
+            anyhow::bail!("no WASM artifact on disk for {service_id}; redeploy it");
+        }
+        self.stop_wasm(service_id).await?;
+        self.load_cached_wasm(service_id).await
+    }
+
     /// Helper to load a cached WASM component from disk and compile it
     async fn load_cached_wasm(&self, service_id: &str) -> Result<()> {
         Self::validate_service_id(service_id)?;

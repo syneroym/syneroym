@@ -8,8 +8,33 @@ use std::{fmt::Debug, sync::Arc};
 use anyhow::Result;
 use async_trait::async_trait;
 use dashmap::DashMap;
+use serde::{Deserialize, Serialize};
 
 use crate::local_registry::SubstrateEndpoint;
+
+/// (`service_type`, `health_check_json`, `manifest_hash`) -- what a deploy
+/// recorded about a service (M05A A4/A5a). Named so the in-memory caches
+/// below stay readable now that A5a's `manifest_hash` widened it to three
+/// fields.
+pub type DeployFacts = (String, Option<String>, Option<String>);
+
+/// Who manages an app instance on this substrate (ADR-0021 §4). The
+/// generation is a **tiebreaker among already-authorized writers**, not
+/// an authorization mechanism: a party without `orchestrator/deploy` is
+/// refused regardless of what generation it presents.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppInstanceManagement {
+    /// First-write-wins, unchanged from A2's `app_instance_owners`.
+    pub owner_did: String,
+    /// The supervisor that most recently wrote at `generation`. `None`
+    /// until an operator's `adopt` names one -- an unadopted instance is
+    /// writable by any authorized caller, which is what keeps A0-A4's
+    /// hand-deploy path working after this lands, and what
+    /// `release-app-instance` returns it to.
+    pub supervisor_did: Option<String>,
+    /// Minted by the operator's `adopt`, never self-incremented.
+    pub generation: u64,
+}
 
 /// A trait abstracting stable storage for the `EndpointRegistry`.
 #[async_trait]
@@ -47,16 +72,23 @@ pub trait EndpointStorage: Send + Sync {
     async fn remove_cert(&self, service_id: &str) -> Result<()>;
 
     /// Every stored deploy fact, as (`service_id`, `service_type`,
-    /// `health_check_json`) (M05A A4).
-    async fn load_all_deploy_facts(&self) -> Result<Vec<(String, String, Option<String>)>>;
-    /// Record what a deploy said `service_id` is, and its declared health
-    /// check if any (upsert -- a redeploy that drops the check writes
-    /// `None`, clearing it by construction).
+    /// `health_check_json`, `manifest_hash`) (M05A A4, `manifest_hash`
+    /// added A5a for deploy idempotency, failure-matrix row 10).
+    async fn load_all_deploy_facts(
+        &self,
+    ) -> Result<Vec<(String, String, Option<String>, Option<String>)>>;
+    /// Record what a deploy said `service_id` is, its declared health
+    /// check if any, and the canonical content hash of what was actually
+    /// installed (upsert -- a redeploy that drops the check writes
+    /// `None`, clearing it by construction; `manifest_hash` is written
+    /// only on full deploy success, so a half-failed deploy is never
+    /// deduplicated on the next attempt).
     async fn save_deploy_facts(
         &self,
         service_id: &str,
         service_type: &str,
         health_check_json: Option<&str>,
+        manifest_hash: Option<&str>,
     ) -> Result<()>;
     /// Forget `service_id`'s deploy facts. Idempotent.
     async fn remove_deploy_facts(&self, service_id: &str) -> Result<()>;
@@ -91,17 +123,36 @@ pub trait EndpointStorage: Send + Sync {
         dependency_name: &str,
         topology_entry_json: &str,
     ) -> Result<()>;
+    /// One persisted binding's `entry_json` (M05A A5a). The epoch guard
+    /// compares against exactly one row, so `load_all_bindings`' full
+    /// scan (which exists for the startup replay) is the wrong shape for
+    /// it.
+    async fn load_binding(&self, service_id: &str, dependency_name: &str)
+    -> Result<Option<String>>;
+    /// Every persisted binding for one service, as (`dependency_name`,
+    /// `entry_json`), for `status`'s per-dependent convergence report
+    /// (M05A A5a).
+    async fn load_bindings_for(&self, service_id: &str) -> Result<Vec<(String, String)>>;
 
-    /// Load every recorded app-instance owner as (`app_instance_id`,
-    /// `owner_did`) (A2 post-review fix, first-write-wins deploy takeover
-    /// guard -- see `save_app_instance_owner`).
-    async fn load_all_app_instance_owners(&self) -> Result<Vec<(String, String)>>;
-    /// Record `owner_did` as the first caller to declare `app_instance_id`
-    /// in a deploy's `app_context` (upsert). Overwrites any existing entry
-    /// -- the takeover check is the caller's responsibility
-    /// (`ControlPlaneService::deploy_with_context`), not this store's, the
+    /// Load every recorded app-instance management stamp as
+    /// (`app_instance_id`, `AppInstanceManagement`) (M05A A5a, replacing
+    /// A2's `app_instance_owners`).
+    async fn load_all_app_instance_management(
+        &self,
+    ) -> Result<Vec<(String, AppInstanceManagement)>>;
+    /// Record `management` for `app_instance_id` (upsert). The takeover /
+    /// generation-tiebreak logic is the caller's responsibility
+    /// (`ControlPlaneService::check_generation`), not this store's, the
     /// same split `save_owner` already uses for `service_id` ownership.
-    async fn save_app_instance_owner(&self, app_instance_id: &str, owner_did: &str) -> Result<()>;
+    async fn save_app_instance_management(
+        &self,
+        app_instance_id: &str,
+        management: &AppInstanceManagement,
+    ) -> Result<()>;
+    /// Forget `app_instance_id`'s management stamp. Idempotent. Called
+    /// when the last service of an instance is undeployed -- the standing
+    /// backlog row `app_instance_owners` rows never get forgotten.
+    async fn remove_app_instance_management(&self, app_instance_id: &str) -> Result<()>;
 }
 
 /// A thread-safe in-memory storage for testing.
@@ -110,10 +161,10 @@ pub struct MockStorage {
     data: Arc<DashMap<(String, String), SubstrateEndpoint>>,
     owners: Arc<DashMap<String, String>>,
     certs: Arc<DashMap<String, String>>,
-    deploy_facts: Arc<DashMap<String, (String, Option<String>)>>,
+    deploy_facts: Arc<DashMap<String, DeployFacts>>,
     app_contexts: Arc<DashMap<String, (String, String)>>,
     bindings: Arc<DashMap<(String, String), (String, String)>>,
-    app_instance_owners: Arc<DashMap<String, String>>,
+    app_instance_management: Arc<DashMap<String, AppInstanceManagement>>,
 }
 
 impl Default for MockStorage {
@@ -132,7 +183,7 @@ impl MockStorage {
             deploy_facts: Arc::new(DashMap::new()),
             app_contexts: Arc::new(DashMap::new()),
             bindings: Arc::new(DashMap::new()),
-            app_instance_owners: Arc::new(DashMap::new()),
+            app_instance_management: Arc::new(DashMap::new()),
         }
     }
 }
@@ -176,11 +227,15 @@ impl EndpointStorage for MockStorage {
         self.certs.remove(service_id);
         Ok(())
     }
-    async fn load_all_deploy_facts(&self) -> Result<Vec<(String, String, Option<String>)>> {
+    async fn load_all_deploy_facts(
+        &self,
+    ) -> Result<Vec<(String, String, Option<String>, Option<String>)>> {
         Ok(self
             .deploy_facts
             .iter()
-            .map(|e| (e.key().clone(), e.value().0.clone(), e.value().1.clone()))
+            .map(|e| {
+                (e.key().clone(), e.value().0.clone(), e.value().1.clone(), e.value().2.clone())
+            })
             .collect())
     }
     async fn save_deploy_facts(
@@ -188,10 +243,15 @@ impl EndpointStorage for MockStorage {
         service_id: &str,
         service_type: &str,
         health_check_json: Option<&str>,
+        manifest_hash: Option<&str>,
     ) -> Result<()> {
         self.deploy_facts.insert(
             service_id.to_string(),
-            (service_type.to_string(), health_check_json.map(str::to_string)),
+            (
+                service_type.to_string(),
+                health_check_json.map(str::to_string),
+                manifest_hash.map(str::to_string),
+            ),
         );
         Ok(())
     }
@@ -245,11 +305,43 @@ impl EndpointStorage for MockStorage {
         );
         Ok(())
     }
-    async fn load_all_app_instance_owners(&self) -> Result<Vec<(String, String)>> {
-        Ok(self.app_instance_owners.iter().map(|e| (e.key().clone(), e.value().clone())).collect())
+    async fn load_binding(
+        &self,
+        service_id: &str,
+        dependency_name: &str,
+    ) -> Result<Option<String>> {
+        Ok(self
+            .bindings
+            .get(&(service_id.to_string(), dependency_name.to_string()))
+            .map(|e| e.value().1.clone()))
     }
-    async fn save_app_instance_owner(&self, app_instance_id: &str, owner_did: &str) -> Result<()> {
-        self.app_instance_owners.insert(app_instance_id.to_string(), owner_did.to_string());
+    async fn load_bindings_for(&self, service_id: &str) -> Result<Vec<(String, String)>> {
+        Ok(self
+            .bindings
+            .iter()
+            .filter(|e| e.key().0 == service_id)
+            .map(|e| (e.key().1.clone(), e.value().1.clone()))
+            .collect())
+    }
+    async fn load_all_app_instance_management(
+        &self,
+    ) -> Result<Vec<(String, AppInstanceManagement)>> {
+        Ok(self
+            .app_instance_management
+            .iter()
+            .map(|e| (e.key().clone(), e.value().clone()))
+            .collect())
+    }
+    async fn save_app_instance_management(
+        &self,
+        app_instance_id: &str,
+        management: &AppInstanceManagement,
+    ) -> Result<()> {
+        self.app_instance_management.insert(app_instance_id.to_string(), management.clone());
+        Ok(())
+    }
+    async fn remove_app_instance_management(&self, app_instance_id: &str) -> Result<()> {
+        self.app_instance_management.remove(app_instance_id);
         Ok(())
     }
 }

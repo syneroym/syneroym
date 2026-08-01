@@ -430,6 +430,29 @@ impl ContainerEngine {
         Ok(())
     }
 
+    /// `podman start <name>` (M05A A5a). The other half of a restart --
+    /// `stop` alone leaves the container created but down, which `readyz`
+    /// correctly reports as `not-running` forever. Unlike `stop`
+    /// (best-effort teardown), a failure here is a real error: a
+    /// supervisor's bounded remediation needs to know whether the restart
+    /// actually succeeded.
+    pub async fn start(&self, service_id: &str) -> Result<()> {
+        info!(service_id = %service_id, "ContainerEngine: Starting Podman container");
+
+        let sanitized_id = sanitize_id(service_id);
+        let output = Command::new(&self.podman_path)
+            .args(["start", &sanitized_id])
+            .output()
+            .context("Failed to execute podman start")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("podman start failed for {service_id}: {stderr}");
+        }
+
+        Ok(())
+    }
+
     /// Completely remove a stopped container
     pub async fn remove(&self, service_id: &str) -> Result<()> {
         info!(service_id = %service_id, "ContainerEngine: Removing Podman container");

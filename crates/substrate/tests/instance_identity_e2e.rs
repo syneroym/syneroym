@@ -349,7 +349,7 @@ async fn a_member_master_authorizes_a_distinct_instance_key_on_each_real_node_it
     // Undeploy removes the deployed service; the certificate itself is
     // covered at the control-plane unit level
     // (`undeploy_removes_the_instance_certificate_with_the_owner_row`).
-    operator_a.undeploy(member_master_did.clone()).await.expect("undeploy on node A failed");
+    operator_a.undeploy(member_master_did.clone(), 0).await.expect("undeploy on node A failed");
     let services_a_after =
         operator_a.list_svcs().await.expect("list on node A after undeploy failed");
     assert!(

@@ -334,7 +334,7 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
                             cycle
                         );
                         dep_err_clone.fetch_add(1, Ordering::Relaxed);
-                        let _ = orchestrator_client.undeploy(unique_service_id.clone()).await;
+                        let _ = orchestrator_client.undeploy(unique_service_id.clone(), 0).await;
                         let _ = orchestrator_client.shutdown().await;
                         continue;
                     }
@@ -374,7 +374,8 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
                         .await;
 
                     // Undeploy the WASM service from the substrate!
-                    if let Err(e) = orchestrator_client.undeploy(unique_service_id.clone()).await {
+                    if let Err(e) = orchestrator_client.undeploy(unique_service_id.clone(), 0).await
+                    {
                         warn!(
                             "Deploy Churn Cycle {} failed to undeploy WASM service {}: {:?}",
                             cycle, unique_service_id, e

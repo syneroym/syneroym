@@ -18,7 +18,7 @@ pub mod deploy;
 pub mod health;
 pub mod mapper;
 pub use deploy::{
-    ApplyReport, ApplyRequest, DeployTarget, PlanApplier, ServiceFailure, apply_plan,
+    ApplyReport, ApplyRequest, DeployTarget, ServiceFailure, SubstrateActor, apply_plan,
     resolve_targets,
 };
 use serde_json::Value;
@@ -30,9 +30,10 @@ use syneroym_rpc::{
     MESSAGING_MESSAGE_METHOD, MessagingNotification, framing,
 };
 pub use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
-    ArtifactSource, ContainerManifest, ContainerPortMapping, ContainerVolumeMapping,
-    DeployManifest, DeploymentPlan, HealthCheck, HttpProbe, InstanceIdentity, NetworkEndpoint,
-    PlannedService, RpcProbe, ServiceConfig, ServiceType, TcpManifest, TcpProbe, WasmManifest,
+    ArtifactSource, BindingWrite, ContainerManifest, ContainerPortMapping, ContainerVolumeMapping,
+    DependencyBinding, DeployManifest, DeploymentPlan, HealthCheck, HttpProbe, InstanceIdentity,
+    NetworkEndpoint, PlannedService, RpcProbe, ServiceConfig, ServiceType, TcpManifest, TcpProbe,
+    TopologyMode, WasmManifest,
 };
 use tokio::{io, net::TcpStream, sync::mpsc, time};
 use tracing::debug;
@@ -79,6 +80,16 @@ pub enum ProbeStatus {
     Failing(String),
 }
 
+/// Outcome of one epoch-guarded binding write (ADR-0021 §3, M05A A5a).
+/// **No `rename_all`** -- see [`InstancePhase`]'s doc comment.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum BindingWriteOutcome {
+    Applied,
+    NoOp,
+    Stale(u64),
+    Conflict(u64),
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ServiceStatus {
     pub service_id: String,
@@ -91,6 +102,10 @@ pub struct ServiceStatus {
     pub instance_certificate_issued_at: Option<u64>,
     pub instance_certificate_expires_at: Option<u64>,
     pub probe_checked_at: Option<u64>,
+    /// Per declared dependency of this service, the epoch this substrate
+    /// currently serves it (M05A A5a). `status`'s per-dependent binding
+    /// convergence report.
+    pub binding_epochs: Vec<(String, u64)>,
 }
 
 /// What this node is, as opposed to what is running on it (M05A A4). Present
@@ -720,13 +735,56 @@ impl SyneroymClient {
         }
     }
 
-    pub async fn undeploy(&self, service_id: String) -> Result<()> {
-        let params = serde_json::to_value((service_id,))?;
+    /// `generation` is checked against the app instance's recorded
+    /// management stamp when the service has one (M05A A5a, ADR-0021 §4);
+    /// send 0 for a standalone service.
+    pub async fn undeploy(&self, service_id: String, generation: u64) -> Result<()> {
+        let params = serde_json::to_value((service_id, generation))?;
         let res = self.request("orchestrator", "undeploy", params).await?;
         if res.result == serde_json::json!({"status": "undeployed"}) {
             Ok(())
         } else {
             Err(anyhow::anyhow!("Undeployment failed: {:?}", res.result))
+        }
+    }
+
+    /// Epoch-guarded binding write (M05A A5a, ADR-0021 §3) -- the only
+    /// path that changes a dependent's resolution without redeploying it.
+    /// One outcome per binding, in the order sent.
+    pub async fn write_bindings(&self, write: BindingWrite) -> Result<Vec<BindingWriteOutcome>> {
+        let params = serde_json::to_value((write,))?;
+        let res = self.request("orchestrator", "write-bindings", params).await?;
+        Ok(serde_json::from_value(res.result)?)
+    }
+
+    /// Restart a deployed service in place, without reinstalling it (M05A
+    /// A5's bounded remediation). `generation` is checked against the app
+    /// instance's recorded management stamp when the service has one;
+    /// send 0 for a standalone service.
+    pub async fn restart(&self, service_id: String, generation: u64) -> Result<()> {
+        let params = serde_json::to_value((service_id, generation))?;
+        let res = self.request("orchestrator", "restart", params).await?;
+        if res.result == serde_json::json!({"status": "restarted"}) {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Restart failed: {:?}", res.result))
+        }
+    }
+
+    /// Clear an app instance's management stamp (M05A A5a §0.24):
+    /// `supervisor_did` back to `None`, `generation` back to 0. Without
+    /// this, an adopted instance can never be hand-deployed again.
+    pub async fn release_app_instance(
+        &self,
+        app_instance_id: String,
+        generation: u64,
+    ) -> Result<()> {
+        let params = serde_json::to_value((app_instance_id, generation))?;
+        let res = self.request("orchestrator", "release-app-instance", params).await?;
+        if res.result == serde_json::json!({"status": "released"}) {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Releasing the app instance failed: {:?}", res.result))
         }
     }
 

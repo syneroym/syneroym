@@ -184,8 +184,58 @@ interface orchestrator {
     /// Deploy a new service using a deployment manifest
     deploy: func(service-id: string, manifest: deploy-manifest) -> result<_, string>;
 
-    /// Undeploy a service, stopping it and cleaning up resources
-    undeploy: func(service-id: string) -> result<_, string>;
+    /// Undeploy a service, stopping it and cleaning up resources.
+    /// `generation` is checked against the app instance's recorded
+    /// management stamp when the service has one (ADR-0021 §4's
+    /// "lifecycle actions"): a superseded supervisor must not be able to
+    /// undeploy services it no longer manages. A standalone service with
+    /// no app context is ungated; send 0.
+    undeploy: func(service-id: string, generation: u64) -> result<_, string>;
+
+    /// Restart a deployed service in place, without reinstalling it
+    /// (M05A A5's bounded remediation). Type-dispatched off the service
+    /// type recorded at deploy: a wasm component is evicted and
+    /// recompiled from the artifact the substrate already holds; a
+    /// container is stopped and started; a `tcp` service is **refused**,
+    /// because its process runs outside this substrate and there is
+    /// nothing here to restart -- an error the supervisor must see rather
+    /// than a silent success it would count as a remediation attempt.
+    ///
+    /// `generation` is checked against the app instance's recorded
+    /// management stamp when the service has one, the same rule
+    /// `undeploy` follows. A standalone service with no app context is
+    /// ungated; send 0.
+    restart: func(service-id: string, generation: u64) -> result<_, string>;
+
+    /// An app instance's management stamp, or `none` if no deploy has
+    /// ever named it here. `adopt`'s read half (M05A A5): a supervisor
+    /// must be able to learn the held generation before it can mint the
+    /// next one, and no service-level record carries it.
+    record app-instance-management {
+        owner-did: string,
+        supervisor-did: option<string>,
+        generation: u64,
+    }
+    app-instance-management-of: func(app-instance-id: string)
+        -> result<option<app-instance-management>, string>;
+
+    /// Claim management of an app instance at `generation` -- ADR-0021
+    /// §4's operator-minted adopt, made durable at the moment of the
+    /// claim rather than on whatever write happens next. Subject to the
+    /// same four-case rule as every other write, so two supervisors
+    /// racing an adopt lose deterministically here instead of both
+    /// believing they won until one issues a deploy.
+    claim-app-instance: func(app-instance-id: string, generation: u64)
+        -> result<_, string>;
+
+    /// Clear an app instance's management stamp: `supervisor-did` back to
+    /// none and `generation` back to 0, keeping the owner. Called by the
+    /// supervisor on retire/release. Without it, an adopted instance can
+    /// never be hand-deployed again -- a plain `app deploy` presents 0
+    /// against a held generation and is refused forever, with no verb
+    /// able to undo it.
+    release-app-instance: func(app-instance-id: string, generation: u64)
+        -> result<_, string>;
 
     /// List currently deployed services
     %list: func() -> result<list<deployed-service>, string>;
@@ -222,6 +272,44 @@ interface orchestrator {
         cache-ttl-ms: u64,
     }
 
+    /// Outcome of one epoch-guarded binding write (ADR-0021 §3). Four
+    /// cases kept distinct because the supervisor's next action differs
+    /// per case: `applied`/`no-op` are both success, `stale` means this
+    /// writer is behind and must re-read, `conflict` means a second
+    /// writer exists and is the signal the generation stamp exists for.
+    /// The u64 payload is the epoch this substrate holds.
+    variant binding-write-outcome {
+        applied,
+        no-op,
+        stale(u64),
+        conflict(u64),
+    }
+
+    record binding-write {
+        /// The deployed service whose binding table this targets.
+        service-id: string,
+        app-instance-id: string,
+        bindings: list<dependency-binding>,
+        /// The writing supervisor's generation for this app instance
+        /// (ADR-0021 §4). A generation lower than the recorded one is
+        /// rejected outright, before any binding is examined.
+        generation: u64,
+    }
+
+    /// Push current bindings into a deployed service's configuration
+    /// without reinstalling it (ADR-0021 §1/§3). Deliberately not
+    /// `deploy`: `deploy` is a full reinstall and would restart every
+    /// dependent, which the milestone's reference scenario step 5
+    /// forbids. One outcome per binding, in the order sent.
+    ///
+    /// May only **update** a dependency the service already declared at
+    /// deploy: a name with no existing binding row is refused, because a
+    /// guest's declared dependency set is a deploy-time contract and a
+    /// push must not be able to inject a logical name the service never
+    /// asked for.
+    write-bindings: func(write: binding-write)
+        -> result<list<binding-write-outcome>, string>;
+
     /// Which app instance this service is being deployed as part of, and
     /// what its declared dependencies currently resolve to. Absent for a
     /// standalone deploy that participates in no app.
@@ -229,6 +317,14 @@ interface orchestrator {
         app-instance-id: string,
         service-name: string,
         bindings: list<dependency-binding>,
+        /// The generation the writer manages this app instance at
+        /// (ADR-0021 §4). `0` means "unmanaged", which is what every
+        /// operator-driven `roymctl app deploy` sends and what an
+        /// un-adopted instance accepts. A supervisor sends the
+        /// generation its `adopt` minted -- without this field it would
+        /// present 0 and be locked out of its own app on the first
+        /// reconcile after an adopt.
+        generation: u64,
     }
 
     /// A planned service in a deployment plan.
@@ -305,6 +401,13 @@ interface orchestrator {
         /// Unix seconds the probe result was produced. Earlier than
         /// `checked-at` when a cached result was served.
         probe-checked-at: option<u64>,
+        /// Per declared dependency of **this** service, the epoch this
+        /// substrate currently serves it (M05A A5a). Read from the
+        /// per-dependent binding row, not the shared resolver entry: the
+        /// resolver is keyed `(app-instance-id, service-name)` and is one
+        /// value per node, so reading it would give every dependent the
+        /// same answer and make "per-dependent convergence" unreadable.
+        binding-epochs: list<tuple<string, u64>>,
     }
 
     /// What this node is, as opposed to what is running on it. Answers two
