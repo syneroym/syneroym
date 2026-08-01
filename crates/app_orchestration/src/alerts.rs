@@ -102,6 +102,10 @@ pub struct AlertStore {
     conn: Arc<Mutex<Connection>>,
 }
 
+// Lock-poisoning from a panicking holder is a programming error (bug) that
+// leaves the data in an inconsistent state; there is no safe recovery path.
+// `expect` is therefore the correct idiom here, matching `StaticInventory`'s.
+#[allow(clippy::expect_used)]
 impl AlertStore {
     pub fn open<P: AsRef<Path>>(dir: P, db_name: &str) -> Result<Self> {
         if db_name.contains('/') || db_name.contains('\\') || db_name.contains("..") {

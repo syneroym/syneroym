@@ -37,6 +37,11 @@ pub struct SupervisorStore {
     pub alerts: AlertStore,
 }
 
+// Lock-poisoning from a panicking holder is a programming error (bug) that
+// leaves the data in an inconsistent state; there is no safe recovery path.
+// `expect` is therefore the correct idiom here, matching `StaticInventory`'s
+// (`crates/app_orchestration/src/resolver.rs`).
+#[allow(clippy::expect_used)]
 impl SupervisorStore {
     pub fn open<P: AsRef<Path>>(dir: P, db_name: &str) -> Result<Self> {
         if db_name.contains('/') || db_name.contains('\\') || db_name.contains("..") {
