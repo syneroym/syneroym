@@ -105,7 +105,6 @@ pub struct ServiceStatus {
     /// Per declared dependency of this service, the epoch this substrate
     /// currently serves it (M05A A5a). `status`'s per-dependent binding
     /// convergence report.
-    #[serde(default)]
     pub binding_epochs: Vec<(String, u64)>,
 }
 

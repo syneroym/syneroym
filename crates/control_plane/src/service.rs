@@ -463,22 +463,10 @@ impl NativeService for ControlPlaneService {
                 Ok(NativeResponse { payload: serde_json::json!({"status": "deployed_plan"}) })
             }
             "undeploy" => {
-                // Tolerates a bare `service_id` or a `(service_id,)`
-                // 1-tuple from a pre-A5a caller, defaulting `generation`
-                // to 0 -- the "unmanaged" value an ungated (or
-                // not-yet-adopted) undeploy already presents.
                 let (service_id, generation): (String, u64) =
-                    serde_json::from_value(invocation.params.clone())
-                        .or_else(|_| {
-                            serde_json::from_value::<(String,)>(invocation.params.clone())
-                                .map(|(s,)| (s, 0))
-                        })
-                        .or_else(|_| {
-                            serde_json::from_value::<String>(invocation.params).map(|s| (s, 0))
-                        })
-                        .map_err(|e| {
-                            RpcError::InvalidParams(format!("Failed to parse undeploy params: {e}"))
-                        })?;
+                    serde_json::from_value(invocation.params).map_err(|e| {
+                        RpcError::InvalidParams(format!("Failed to parse undeploy params: {e}"))
+                    })?;
                 self.undeploy(service_id, generation, &invocation.caller)
                     .await
                     .map_err(RpcError::InternalError)?;

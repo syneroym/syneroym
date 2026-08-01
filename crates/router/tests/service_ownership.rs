@@ -364,7 +364,7 @@ async fn undeploy_result(
     let invocation = NativeInvocation {
         interface: "orchestrator".to_string(),
         method: "undeploy".to_string(),
-        params: json!((service_id,)),
+        params: json!((service_id, 0u64)),
         caller: caller.clone(),
     };
     service.dispatch(invocation).await
