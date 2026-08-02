@@ -25,6 +25,7 @@ use syneroym_app_orchestration::{
 };
 use syneroym_core::{
     deploy_docs,
+    dht_registry::SignedEndpointInfo,
     local_registry::{NATIVE_CAPABILITY_INTERFACES, SubstrateEndpoint},
     storage::AppInstanceManagement,
     util,
@@ -156,6 +157,31 @@ const fn app_service_type(t: &WitServiceType) -> AppServiceType {
         WitServiceType::Wasm(_) => AppServiceType::Wasm,
         WitServiceType::Container(_) => AppServiceType::Container,
         WitServiceType::Tcp(_) => AppServiceType::Tcp,
+    }
+}
+
+/// The content of a `registry_certificate` blob that actually describes the
+/// deployed service, as distinct from the parts that change on every mint
+/// regardless of whether anything else did (review finding E-1):
+/// `SignedEndpointInfo.info.not_after` (`SystemTime::now()` plus a fixed
+/// window) and `pkarr_packet_hex` (its own embedded signing timestamp) both
+/// churn on every `certify_placed_members` call. Falls back to hashing the
+/// raw string on a parse failure -- that can only make the dedup *more*
+/// conservative (a parse failure never equals anything, including itself
+/// byte-for-byte reapplied), never less safe.
+fn stable_registry_certificate_for_hash(json: &str) -> String {
+    match serde_json::from_str::<SignedEndpointInfo>(json) {
+        Ok(signed) => serde_json::to_string(&(
+            &signed.info.service_id,
+            &signed.info.substrate_id,
+            &signed.info.endpoint_type,
+            &signed.info.mechanisms,
+            &signed.info.nickname,
+            signed.info.is_private,
+            &signed.info.ttl,
+        ))
+        .unwrap_or_else(|_| json.to_string()),
+        Err(_) => json.to_string(),
     }
 }
 
@@ -1212,8 +1238,39 @@ impl ControlPlaneService {
                 .collect();
             (&c.app_instance_id, &c.service_name, bindings)
         });
+        // Review finding E-1 (A-2's fix was inert): `manifest.instance_
+        // certificate`/`registry_certificate` are minted fresh on every
+        // apply -- `certify_placed_members` calls `certify_instance` and
+        // builds an `EndpointInfo` whose `not_after` is derived from
+        // `SystemTime::now()`, both landing in this same manifest
+        // (`sdk::mapper`). Hashing the raw blobs meant those two fields
+        // alone made the hash differ on every apply, epoch notwithstanding
+        // -- the no-op branch below was unreachable from either real
+        // deploy path (`roymctl app deploy` mints per call too). Dropping
+        // both fields entirely is not the fix either: a certificate going
+        // from installed to absent (or naming a different master/key) is
+        // a real content change, not freshness churn, and must still
+        // reinstall -- `a_redeploy_without_a_certificate_clears_a_
+        // previously_installed_one` pins exactly that. So each is hashed
+        // on its *stable* identity fields only: `installed_instance_cert`
+        // is already parsed and verified above, so its `master_did`/
+        // `temporary_did`/`scope` are reused directly rather than
+        // re-parsing the raw JSON; `registry_certificate` has no earlier
+        // parse to reuse, so `stable_registry_certificate_for_hash` does
+        // its own, falling back to the raw string (never less safe, only
+        // less deduplicating) if it does not parse.
+        let instance_cert_for_hash =
+            installed_instance_cert.as_ref().map(|c| (&c.master_did, &c.temporary_did, &c.scope));
+        let registry_cert_for_hash =
+            manifest.registry_certificate.as_deref().map(stable_registry_certificate_for_hash);
+        let manifest_for_hash = (
+            &manifest.config,
+            &manifest.service_type,
+            instance_cert_for_hash,
+            registry_cert_for_hash,
+        );
         let incoming_hash = {
-            let canonical = serde_json::to_string(&(&manifest, &context_for_hash))
+            let canonical = serde_json::to_string(&(&manifest_for_hash, &context_for_hash))
                 .map_err(|e| format!("Failed to canonicalize deploy manifest for dedup: {e}"))?;
             blake3::hash(canonical.as_bytes()).to_hex().to_string()
         };
@@ -4445,6 +4502,90 @@ mod tests {
             management.generation, 2,
             "the redeploy's generation must be recorded even though the deploy itself was a no-op \
              -- without this assertion this test passes against the bug §0.27 fixes"
+        );
+    }
+
+    /// Review finding E-1: `instance_certificate`/`registry_certificate`
+    /// are minted fresh by `certify_placed_members` on every real apply
+    /// (a new signature, a `SystemTime::now()`-derived expiry), so the
+    /// test above -- which leaves both `None` on every call, like every
+    /// other row-10 test -- never exercised the actual supervisor/
+    /// `roymctl app deploy` path: hashing the whole manifest made those
+    /// two fields alone change the hash every time, epoch or no epoch,
+    /// so the no-op branch was unreachable from either real deploy path.
+    /// Two independently-issued, genuinely different-in-bytes certificates
+    /// for the *same* member -- like two real applies of the same desired
+    /// state -- must still dedup as a no-op: without this assertion, this
+    /// test passes against the bug E-1 found.
+    #[tokio::test]
+    async fn an_identical_redeploy_with_freshly_minted_certificates_is_still_a_no_op() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
+        let (service, _registry) =
+            service_with_node_identity(temp_dir.path(), node_identity.clone()).await;
+        let caller = node_wide_caller("did:key:zOwner");
+
+        let member_master = syneroym_identity::Identity::generate().unwrap();
+        let service_id = derive_did_key(&member_master.public_key());
+        let derived = node_identity.derive_service_identity(&caller.caller_did, &service_id);
+
+        // Different `expires_in_secs` guarantees different `expires_at_secs`
+        // (and therefore a different signature) even if both calls land in
+        // the same wall-clock second -- the churn E-1 is about, reproduced
+        // deterministically rather than raced against real time.
+        let cert_a = DelegationCertificate::issue(
+            &member_master,
+            derived.public_key(),
+            3600,
+            SCOPE_SERVICE_INSTANCE.to_string(),
+        )
+        .unwrap();
+        let cert_b = DelegationCertificate::issue(
+            &member_master,
+            derived.public_key(),
+            7200,
+            SCOPE_SERVICE_INSTANCE.to_string(),
+        )
+        .unwrap();
+        assert_ne!(
+            cert_a.to_json().unwrap(),
+            cert_b.to_json().unwrap(),
+            "the two certificates must actually differ in bytes for this test to mean anything"
+        );
+
+        let ctx = app_context("app-1", "frontend", vec![]);
+        let mut first = owner_test_manifest();
+        first.instance_certificate = Some(cert_a.to_json().unwrap());
+        let mut second = owner_test_manifest();
+        second.instance_certificate = Some(cert_b.to_json().unwrap());
+
+        service
+            .deploy_with_context(
+                service_id.clone(),
+                first,
+                Some(AppContext { generation: 1, ..ctx.clone() }),
+                &caller,
+            )
+            .await
+            .unwrap();
+        let gen_before =
+            service.storage_provider.get_latest_config_generation(&service_id).await.unwrap();
+
+        service
+            .deploy_with_context(
+                service_id.clone(),
+                second,
+                Some(AppContext { generation: 2, ..ctx }),
+                &caller,
+            )
+            .await
+            .unwrap();
+        let gen_after =
+            service.storage_provider.get_latest_config_generation(&service_id).await.unwrap();
+        assert_eq!(
+            gen_before, gen_after,
+            "a redeploy with identical content but a freshly re-issued certificate for the same \
+             member must still be a no-op -- certificate freshness is not a content change"
         );
     }
 

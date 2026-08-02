@@ -420,7 +420,18 @@ async fn a_partial_deploy_is_degraded_and_its_failed_service_is_retried_without_
     // declares no health check (D-A4-19: a `tcp` service with no probe
     // reports `unknown`, not a fault), so "landed" is read off `signal
     // != "not-deployed"`, not `"healthy"`.
-    let deadline = Instant::now() + Duration::from_secs(40);
+    //
+    // Review finding E-2: a 40s deadline was too tight against this
+    // loop's own cost. `svc-a` lands at 28-30s in every run measured, and
+    // `status`'s own on-demand sweep (D-A5-21) reads the journal at the
+    // *start* of the call, before it blocks up to 10s reaching the still-
+    // down `managed-b` -- so the 40s deadline left room for roughly one
+    // more poll after landing, and whether that poll's journal read fell
+    // before or after the deploy committed was a coin flip. Widened to
+    // match the second wait loop's own margin below (90s), which leaves
+    // several full 10s-worst-case polls of headroom after landing rather
+    // than one.
+    let deadline = Instant::now() + Duration::from_secs(90);
     loop {
         let status = supervisor_node
             .substrate_client

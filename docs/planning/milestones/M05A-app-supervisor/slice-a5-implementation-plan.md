@@ -193,6 +193,46 @@ gaps left unaddressed by oversight.
   that persisted desired state and one that was refused now return
   distinguishable error messages.
 
+**Fix-verification pass (2026-08-02), against commit e2583cd.** Two more
+findings, both against the fixes above rather than the original code —
+caught by re-review, not self-discovered:
+
+- **E-1 (high, fixed): A-2's fix was inert.** `context_for_hash` excluding
+  `epoch` changed nothing observable, because `manifest.instance_
+  certificate`/`registry_certificate` were still hashed raw, and both are
+  minted fresh — a new signature, a `SystemTime::now()`-derived expiry —
+  on *every* apply through either real deploy path
+  (`certify_placed_members`, called by the supervisor and by `roymctl app
+  deploy` alike). So the manifest hash differed on every apply regardless
+  of `epoch`, content, or anything else, and row 10's no-op branch was
+  never reachable from a real caller — only from a test that leaves both
+  certificate fields `None`, which is every row-10 test that existed
+  before this pass. Fixed by hashing each certificate's stable identity
+  fields instead of the raw blob: `master_did`/`temporary_did`/`scope`
+  for the instance certificate (already parsed and verified earlier in
+  `deploy_with_context`, reused rather than re-parsed); `service_id`/
+  `substrate_id`/`endpoint_type`/`mechanisms`/`nickname`/`is_private`/
+  `ttl` for the registry certificate (a new `stable_registry_certificate_
+  for_hash` helper, falling back to the raw string on a parse failure so
+  a malformed blob can only ever make the dedup more conservative, never
+  less safe). A dropped-or-changed certificate must still force a
+  reinstall — `a_redeploy_without_a_certificate_clears_a_previously_
+  installed_one` already pinned that, and briefly regressed while a first
+  attempt at this fix dropped the certificate fields from the hash
+  entirely rather than hashing their stable parts. New regression test:
+  `an_identical_redeploy_with_freshly_minted_certificates_is_still_a_
+  no_op`, two independently-issued, byte-different certificates for the
+  same member. Row 10 in `task.md` corrected to say so.
+- **E-2 (high, fixed): `supervisor_loop_e2e` was flaky.** The matrix-row-12
+  e2e's first wait loop used a 40s deadline against a fixture whose first
+  deploy lands at 28–30s and whose `status` calls (D-A5-21's on-demand
+  sweep) can each cost up to `MANAGED_SUBSTRATE_CONNECT_TIMEOUT` (10s)
+  reaching the substrate the test deliberately stopped — leaving room for
+  roughly one more poll after landing, and whether that poll's journal
+  read (taken before the connect-timeout block) fell before or after the
+  deploy committed was a coin flip. Widened to 90s, matching the second
+  wait loop's own already-generous margin.
+
 **Read §0 first, then §2.** §0 records **twenty-nine** places where
 `task.md`'s A5 paragraph leaves a decision unmade, names a component that
 does not exist, or is stale against what A0–A4 actually shipped, plus what
@@ -4123,3 +4163,826 @@ it — both findings, once resolved, made the push smaller rather than larger,
 and F7 means moving it would move the exit criterion with it.
 
 **Test count: 41 → 48**, and one test converted from e2e to unit (row 11).
+
+---
+
+# Part V — A5d: unattended renewal
+
+**Status:** 📋 Planned (2026-08-02). Not started. This is the `§0` findings
+pass **D-A5-2** requires before A5d is handed to an implementer. §15 planned
+A5d to a six-item sketch — renewal, `RotationPolicy`, the `SynSvcNativeService`
+gap, certificate maximum lifetime, master-anchor refresh, revocation — plus
+one paragraph naming what "unattended" does not mean. Everything below is
+what §15, `task.md`, and A5c's shipped code leave open, understated, or
+stated in a way the actual tree does not support.
+
+Same discipline as A0 §6 / A1 §6 / A2 §0 / A3 §0 / A4 §0 / P0 §0 / A5 §0 / A5c
+§19.
+
+**Headline.** §15's six items read as six independent features. Reading A5c's
+shipped loop against them turns the count into **fourteen findings, and half
+of them are about one fact none of the six items states**: there is no
+substrate verb today that installs a certificate without reinstalling the
+whole service. Every one of "renewal," "`RotationPolicy` becomes load-bearing,"
+and "the `SynSvcNativeService` gap" is downstream of that one missing verb, and
+§15 discusses all three as if the install path already existed. It doesn't —
+A5c never needed it, because A5c's only certificate writes happen inside
+`apply_plan`'s full redeploy (§19.10). A5d is the first slice that installs a
+certificate on its own, and it has nowhere to send that write.
+
+---
+
+## §26 — What §15, `task.md`, and A5c leave open, understate, or state wrongly
+
+### 26.1 (Scope-changing, blocking) There is no verb that installs a certificate without reinstalling the service, and reusing `deploy` is the wrong fix
+
+§15 item 1 says renewal "reissue[s] via `deploy::certify_instance` through the
+supervisor's own client," as if minting the certificate is the whole job. It
+is half the job. `certify_instance` (`crates/sdk/src/deploy.rs:320-352`)
+returns a `DelegationCertificate`; nothing in the tree accepts one on its own.
+
+**What exists.** The only production writer of an instance certificate is
+`deploy_with_context`'s cert-verification block
+(`crates/control_plane/src/service/orchestration.rs:1065-1099`), which runs
+inline in the middle of a full deploy, followed by the `set_instance_cert`/
+`remove_instance_cert` write and the `SynSvcNativeService` rebuild
+(`orchestration.rs:1493-1509`, `:1569-1580`). `deploy_with_context` also
+reinstalls the wasm component or container, reruns FDAE policy validation, and
+bumps the service's config generation
+(`orchestration.rs:1350-1355`, rolled back via `rollback_config_generation`
+at `:564-568` on any later failure). None of that is renewal's business — the
+manifest, the config, and the FDAE policy have not changed.
+
+**Reusing `deploy` for renewal would be the exact churn §19.2 and §19.10
+already found and fixed once.** §19.10 stopped the loop from re-certifying
+every member every pass because it "churns exactly the artifact A5d exists to
+renew on a considered schedule." Routing renewal back through `deploy` (or
+`apply_plan`) reopens that: the full hex-inlined Wasm artifact §19.2's backlog
+row complains about would cross the wire on every renewal cycle, for a change
+that touches nothing but a certificate.
+
+**Fix.** A new verb, sized like `restart` — an in-place lifecycle action next
+to a full reinstall, not a variant of one:
+
+```wit
+/// Install a freshly-issued instance certificate on an already-deployed
+/// service, without reinstalling it -- the certificate-only counterpart to
+/// `restart`. `generation` is checked against the app instance's recorded
+/// management stamp when the service has one, exactly as `restart` is.
+renew-cert: func(service-id: string, generation: u64, instance-certificate: string) -> result<_, string>;
+```
+
+`renew_cert_impl` gated identically to `restart_impl`
+(`orchestration.rs:2061-2127`): the same `ORCHESTRATOR_DEPLOY` capability
+check (`:2067-2076`), the same owner-or-node-wide-grantee check A5c's
+D-A5c-15 added to `restart` (`:2078-2090`), the same generation gate scoped to
+an app context only (`:2092-2100`). See **D-A5d-1**.
+
+### 26.2 (Scope-changing) The cert-verification block is inline in `deploy_with_context`; `renew-cert` cannot duplicate it
+
+`deploy_with_context`'s three checks — the certificate names this `service_id`
+(`orchestration.rs:1070-1077`), it certifies the key this node derives for
+this caller (`:1078-1092`), and its signature/window/scope verify
+(`:1093-1095`) — are security-critical and currently only exist inline in one
+function. `renew_cert_impl` needs the identical three checks; copying them is
+exactly the "inline fully-qualified path twice" problem this repo's own
+`AGENTS.md` import-cleanup rule exists to catch one level up, except the risk
+here is worse than an import: two copies of DID/signature verification
+drifting apart silently is a security bug, not a style one. Factor the block
+into `verify_installed_instance_cert(node_identity, caller_did, service_id,
+cert_json) -> Result<DelegationCertificate, String>`, called from both
+`deploy_with_context` and `renew_cert_impl`. See **D-A5d-2**.
+
+### 26.3 (Scope-changing, correctness prerequisite) `renew-cert` must rebuild `SynSvcNativeService`, and every piece it needs is already a stored fact
+
+§15 item 3 calls this "a correctness prerequisite, not a follow-up," which is
+right, but confirm what is actually broken today: **nothing, yet.** The
+backlog row (`docs/planning/deferred-backlog.md:81`) and `SynSvcNativeService`'s
+own doc comment (`crates/control_plane/src/synsvc_native.rs:100-112`) are
+both explicit that the by-value cert copy cannot drift *today* because the
+sole production writer of an instance cert (`deploy_with_context`) already
+rebuilds the native service in the same pass
+(`native_dispatch.insert(service_id, Arc::new(SynSvcNativeService::new(...)))`,
+`orchestration.rs:1493-1509`). A5d is what makes the gap real: it is the
+first code path that installs a certificate through anything other than
+`deploy_with_context`.
+
+**Every non-certificate input `SynSvcNativeService::new` needs is already
+reachable without the manifest.** `orchestration.rs:1493-1509` passes
+`key_store`, `storage_provider`, `blob_provider`, `messaging_broker`,
+`node_identity`, `caller.caller_did`, and an `Arc<Policy>` derived from
+`fdae_policy` — all `self.*` fields on `ControlPlaneService` except the FDAE
+policy, which is a local variable computed from the manifest during deploy.
+But the FDAE policy is also *persisted*: `save_fdae_policy`/`load_fdae_policy`
+(`crates/data_db/src/sqlite.rs:1914-1947`, trait at
+`crates/data_db/src/traits.rs:102-105`) round-trip it per `service_id`
+independent of any deploy call. So `renew_cert_impl` does not need the
+manifest at all: `load_fdae_policy(service_id)`, parse if present, then
+`native_dispatch.insert` a fresh `SynSvcNativeService` with the new cert and
+everything else unchanged. See **D-A5d-3**.
+
+**One thing to confirm rather than assume — `caller_did`.** `SynSvcNativeService::new`
+takes `&caller.caller_did` (`orchestration.rs:1504`, constructor at
+`synsvc_native.rs:368-401`), and ADR-0020 amendment 21 makes the derived
+instance key depend on it. This is not a gap: §0.19/D-A5-19 already established
+that a supervisor cannot manage placement it did not itself deploy, so the
+same client — the supervisor's own — is the caller on both the original
+`deploy` and every later `renew-cert` for that instance. `renew_cert_impl`
+passing through whichever `caller.caller_did` the RPC arrived under is
+therefore correct without special-casing, because that caller is always the
+same DID a working renewal path can ever reach.
+
+### 26.4 (Scope-changing, blocking) Vault-locked detection is a per-call `Result`, and `VaultLocked` needs a place in a schema that has none reserved for a global fact
+
+§15 promises "the renewal loop raises a `VaultLocked` alert... the moment it
+finds the vault shut," without saying what that alert targets. `AlertRecord`
+(`crates/app_orchestration/src/alerts.rs:111-124`) requires **both**
+`instance_id: AppInstanceId` and `substrate_did: String` — there is no
+schema slot for a supervisor-process-wide fact belonging to no instance and
+no substrate, and D-A5c-6 already set the precedent of not touching this
+schema for a new concern.
+
+**This is not actually a gap — it is the same shape `SubstrateUnreachable`
+already uses.** A locked vault, like an unreachable substrate, is one root
+cause that affects every instance with a member due for renewal; the fix is
+the same fan-out: raise `VaultLocked` once per **placed member currently near
+expiry**, scoped to that member's `instance_id`/`logical_ref`/`substrate_did`
+— not one row per fact, one row per affected member, which is exactly what an
+operator reading `supervisor alerts <instance_id>` needs to see and exactly
+what the existing schema already supports with no change.
+
+**Detection is two-tiered, cheapest check first.** `KeyStore::kek_is_loaded()
+-> bool` (`crates/data_keystore/src/key_store.rs:70-72`) is a non-`Result`,
+no-I/O check — call it once per pass, before any `MasterVault::get_or_mint`
+attempt. If false, skip the entire renewal work-list for this pass (not the
+rest of `reconcile_instance_pass` — health, remediation, and the binding push
+all continue; none of them touch the vault), and raise/refresh `VaultLocked`
+for every near-expiry member. `VaultError::Locked`
+(`crates/app_supervisor/src/keys.rs:36-44`) remains the per-call variant a
+direct `get`/`get_or_mint` surfaces, for the (should-not-happen, defensive)
+case where `kek_is_loaded()` said yes but the vault open still fails between
+the check and the call. See **D-A5d-4**.
+
+### 26.5 (Understated) The near-expiry decision needs no new poll — `ServiceHealth` already carries the two timestamps A5a shipped for this
+
+§15 does not say where "near expiry" comes from. `ServiceHealth`
+(`crates/sdk/src/health.rs:88-102`) already carries
+`instance_certificate_issued_at`/`instance_certificate_expires_at`
+(`:94-95`), filled at all five production sites A5c's D-A5c-5 already wired.
+`is_near_expiry_parts(issued_at, expires_at, now)`
+(`crates/identity/src/delegation.rs:27-37`, the 25%-of-lifetime-remaining
+rule) is a `const fn` over exactly those two numbers. So the renewal decision
+for a placed member is a pure function of data the pass's existing health poll
+(`reconcile_instance_pass`, `service.rs:387`) already produced this pass — no
+new RPC, no new poll interval. Renewal is a **fourth work-list**, computed
+alongside `needs_work` and `restart_candidates`, not folded into either: it is
+neither a plan diff nor a health-based remediation, and treating it as one
+would make it retry on the wrong triggers (§26.12). See **D-A5d-5**.
+
+### 26.6 (Ambiguous) `RotationPolicy` is already on the wire and in the stored plan; the decision is client-side, and the substrate never needs to see it
+
+§15 item 2 says `RotationPolicy` "becomes load-bearing here and only here,"
+without saying which side reads it. It cannot be the substrate: `models.rs`'s
+`RotationPolicy` (`crates/app_orchestration/src/models.rs:237-240`, field at
+`:369`) maps one-way to `WitRotationPolicy` inside `service-config`
+(`mapper.rs:165-168`, `control-plane.wit:75`) and is **never matched on
+anywhere in the substrate** — confirmed dead code today. It does not need to
+become live there either: the supervisor already holds the full stored plan
+(the same `DeploymentPlan`/`ServiceSpec` per service `SupervisorStore`
+persists from `submit`), so `svc.config.rotation_policy` is a local read
+inside the renewal work-list, made once the new cert has installed
+successfully. `RestartOnRotation` issues a `restart` call — the same RPC
+A5c's remediation already exercises with its owner/generation gate — `None`
+does nothing further. The wire field stays exactly as A5c's mapper already
+emits it; A5d adds a reader, not a new carrier. See **D-A5d-6**.
+
+### 26.7 (Scope-changing) A substrate-side maximum-lifetime cap would break the attended posture's own definition; the fix is a generous backstop, not a forcing function
+
+§15 item 4 says renewal "closes" the backlog row wanting a maximum instance
+certificate lifetime (`docs/planning/deferred-backlog.md:86`), framing it as
+something the online-key posture simply enables. It does not simply enable
+it — enforcing a **tight** cap substrate-side would contradict ADR-0020 §3
+directly: "**Attended posture:** certificates are long-lived and revocation is
+the real control... An operator issues on a stated cadence." An attended-mode
+operator's `--expires-hours` is deliberately long-lived by design, and a hard
+substrate-side ceiling tuned for the online-key posture's short renewal
+cadence would refuse that operator's own deploys.
+
+**The two postures need two different things from this row, and only one of
+them is A5d's to give.** The online-key posture gets short-lived certificates
+for free the moment renewal is automated — that is §15's own framing, and it
+needs no enforcement, only A5d's renewal loop choosing a short
+`expires_hours` when it calls `certify_instance`. What A0 never built, and
+what the backlog row is actually asking for, is a **backstop**: nothing bounds
+`expires_at_secs` at all today, so a client-side mint error (or a malicious
+one) can produce a certificate valid for years, unnoticed until the near-expiry
+warning simply never fires. The fix the row wants is a generous ceiling at
+install verification — the same shape task.md's own `EndpointInfo.not_after`
+precedent already uses and justifies: "deliberately generous (30 days) so it
+is a backstop for a signer that stops renewing entirely, not a routine failure
+mode." A 30-day cap, enforced inside §26.2's new shared
+`verify_installed_instance_cert` helper (so both `deploy` and `renew-cert`
+apply it identically) does not touch any attended-posture operator running
+the CLI's actual default (24h) or anything a reasonable manual cadence would
+choose, and catches exactly the unbounded mistake the row names. See
+**D-A5d-7**.
+
+### 26.8 (Scope-changing) Master-anchor refresh needs its own cadence and its own persisted "last refreshed" fact — riding the reconcile tick is not free
+
+§15 item 5 says "the loop performs it," as if the existing 30-second pass
+tick is the schedule. It should not be: `refresh_master_anchor`
+(`crates/core/src/dht_registry.rs:624`) re-signs and republishes the whole
+anchor payload over HTTP (and optionally the DHT), and the backlog row this
+closes (`deferred-backlog.md:89`) calls the failure mode a **daily** duty — an
+anchor older than 24 hours stops verifying at every consumer. Running that
+call every 30 seconds is needless load for a fact that only needs to move once
+a day; running it only when a service happens to need renewal ties two
+unrelated cadences together for no reason.
+
+**Fix.** `SupervisorRole` gains `master_anchor_refresh_interval_secs`
+(default a fraction of the anchor's 24-hour validity window with real
+margin — a day-scale interval refreshed well before expiry, the same
+margin-before-expiry shape `is_near_expiry_parts`'s 25% already uses for
+certificates). The 30-second pass tick stays the only timer in the process
+(D-A5c-8 already made spawning a second one a reviewed, deliberate choice for
+the main loop; a third scheduled thing does not get its own): each pass reads
+a small persisted `(master_did, last_refreshed_at)` fact from
+`SupervisorStore` and only calls `refresh_master_anchor` when overdue. This is
+the same "evaluated every pass against a persisted fact, not a new timer"
+shape D-A5c-9's single client set and D-A5c-14's pause re-read already
+established for this loop.
+
+**The read-modify-write race** (`deferred-backlog.md:89`: "a compare-and-set
+the registry does not offer, or a single writer") is closed by the same fact
+ADR-0020 amendment 20 already established for custody: mint-in-place means
+exactly one `MasterVault` ever generates a given master, and export/import
+moves a **file**, not concurrent live access. Under the topology this tree
+actually supports — one supervisor process holding a given master at a time —
+there is structurally one writer. A5d documents this as the accepted
+invariant rather than building a CAS the registry (`crates/community_registry`)
+does not expose; a redundant-supervisor deployment sharing one master via
+`import-master` on two live processes is out of scope here and stays a backlog
+row, since it needs the registry to grow compare-and-set semantics, not
+anything A5d's loop can provide alone. See **D-A5d-8**.
+
+### 26.9 (Coverage) `CertificateNearExpiry` and `CertificateExpired` already exist and are already dead; A5d wires them up, it does not add them
+
+`AlertKind` (`crates/app_orchestration/src/alerts.rs:29-70`) already carries
+`CertificateNearExpiry` (`:40`) and `CertificateExpired` (`:44`), with their
+`Display`/`FromStr` arms already written (`:78-79`, `:98-99`) and already
+covered by the round-trip test (`:391-403`). Neither is raised anywhere in
+`crates/app_supervisor` today — grep confirms zero call sites. §15 does not
+mention them at all, reading as though A5d must add new kinds; it must not,
+and the round-trip test needs no new entries.
+
+**Their purpose, precisely.** They are not renewal's success path — a
+renewal that succeeds needs no alert. They are what a stalled renewal reports:
+`CertificateNearExpiry` when a member is within the 25% window and either the
+vault is locked (§26.4, alongside `VaultLocked` on the same member) or a
+`renew-cert` call itself failed; `CertificateExpired` when
+`is_expired_parts` (`delegation.rs:46-48`) says it is too late. Both need the
+same clearing rule §19.20 (F5) established for `remediation.terminal`: raised
+alerts with no path back to cleared are exactly the bug that finding exists to
+prevent. Both clear the moment a subsequent pass's health poll reports a
+non-near-expiry timestamp for that member — the same healthy-sweep clearing
+shape D-A5c-11's `Superseded` and D-A5c-20's `remediation.terminal` already
+use, recomputed from the substrate's own answer rather than tracked as a flag.
+See **D-A5d-9**.
+
+### 26.10 (Scope-changing, blocking) Revocation has no production write path today, and revoking a key without also stopping its renewal undoes itself
+
+§15 item 6 names the backlog row (`deferred-backlog.md:88`) and stops there.
+The row itself says the gap plainly: "nothing in the tree can *add* to a
+master anchor's `revoked_keys`... the only non-empty publisher is a unit
+test." `apps/roymctl/src/commands/identity.rs`'s `publish-anchor` hardcodes
+`vec![]`. `MasterAnchorPayload.revoked_keys` (`dht_registry.rs:650`) is read
+(`crates/router/src/handshake.rs:89`, `route_handler/io.rs:69`) but never
+written outside `handshake.rs`'s own test (`:362-383`), which mutates a
+`MockResolver`'s in-memory state directly — not a call any production code
+path exercises.
+
+**What the instance-level DID actually is, so the verb has an argument to
+take.** The revoked entry is the derived **instance** DID (`temporary_did`),
+not the master — the same value `resolve-instance-identity`
+(`control-plane.wit:182`) already computes deterministically from `(node
+identity, calling DID, service_id)`. `roymctl supervisor revoke-instance
+<instance_id> <logical_ref>` needs no stored "current instance DID" table: it
+re-derives the same value any deploy or renewal would, by asking the
+substrate the member is placed on.
+
+**The self-defeating case §15 does not mention.** Revoking a key and leaving
+the member under active management is not a fix — the very next pass's
+renewal work-list (§26.5) finds that member's certificate near expiry (or not
+even that, if it hasn't reached the 25% window), mints a fresh one via
+`certify_instance`, and installs it via `renew-cert`, silently reinstating the
+key the operator just revoked. A revoked instance's certificate ages out
+under the attended posture precisely because nothing renews it; under the
+online-key posture, something does, and revocation must say so. `revoke-
+instance`'s implementation therefore does two things in one operator action,
+same as `retire` is one verb for "several related state changes, not a
+teardown": (1) the anchor mutation — read-modify-write the current anchor
+(§26.8's single-writer invariant applies identically here), append the
+derived instance DID, re-sign, republish; (2) mark that specific
+`(instance_id, logical_ref)` placement excluded from the renewal work-list
+going forward — the same per-service "stop attempting this one, keep
+reconciling the rest" shape §19.1's `PlacementChangeRefused` already
+established, not a whole-instance pause. An operator who wants the process
+itself gone still issues `undeploy`/`retire` separately, the same two-step
+`§21`'s manual relocation path already documents. See **D-A5d-10**.
+
+### 26.11 (Understated) Composition: renewal is a step inside the existing write phase, not a second pass or a second tick
+
+The user-facing question this pass exists to answer plainly: **renewal folds
+into `reconcile_instance_pass`, it does not get its own pass.** Three existing
+decisions already force this rather than leave it open:
+
+- **D-A5c-7's per-instance lock** is held for the whole of a resident pass
+  (`service.rs:232-233`) and for every operator write. A standalone renewal
+  path running on its own tick would either duplicate that lock (racing a
+  concurrent `submit`/`adopt` against `renew-cert`, exactly what D-A5c-7
+  exists to prevent) or need its own coordination invented from scratch for a
+  problem the pass already solves.
+- **D-A5c-9's one client set per pass** already builds and closes a
+  `BTreeMap<SubstrateAlias, Arc<SyneroymClient>>` per instance
+  (`reconcile_instance_pass`, `:349`, `:533`). Renewal needs a live client to
+  the same substrate the health poll and the write phase already connected
+  to this pass; reusing it is free, a second connection is not.
+- **§26.5's near-expiry data comes from this pass's own health poll.** A
+  separate renewal cadence would need its own poll to get the same two
+  timestamps `ServiceHealth` already carries here.
+
+So renewal is a fourth work-list inside `apply_write_phase`
+(alongside `needs_work`, `restart_candidates`, and the binding push), gated
+the same way the write phase already is — only entered when there is
+something to do — and using the pass's existing clients, lock, and health
+data. It needs no new interval config on `SupervisorRole` beyond §26.8's
+master-anchor field: the near-expiry check is cheap enough (a pure function
+over two integers already in memory) to evaluate every 30-second tick without
+a separate cadence, the same way remediation's healthy-sweep check already
+does. See **D-A5d-11**.
+
+### 26.12 (Coverage) Dedup against `needs_work`, not against `restart_candidates`
+
+A service already in this pass's `needs_work` (§19.2, D-A5c-2) is about to go
+through `apply_plan` → `certify_placed_members`
+(`deploy.rs:359`, called from `service.rs:1130-1138`), which mints a fresh
+certificate unconditionally as part of that path — adding it to the renewal
+work-list too would certify it twice in one pass for no reason. `restart_
+candidates` (remediation, §21) is different: a bounded restart reloads the
+running instance in place and touches no certificate at all, so a service
+under remediation this pass still needs an independent renewal check. The
+renewal work-list is therefore `{placed members near expiry} \ needs_work`,
+evaluated **after** `needs_work` is computed and **independently of**
+`restart_candidates`. See **D-A5d-12**.
+
+### 26.13 (Understated) The order within one member's renewal: mint, install, then rotate — and a failure at any step must not silently skip the next
+
+Per renewal candidate: `certify_instance` (mint, client-side, no substrate
+write yet) → `renew-cert` (§26.1, installs + rebuilds `SynSvcNativeService`,
+§26.3) → if `RotationPolicy::RestartOnRotation` (§26.6), `restart`. A failure
+at `certify_instance` (e.g. the vault locked mid-loop, §26.4's race between
+the cheap check and the actual mint) or at `renew-cert` (e.g. the substrate
+unreachable) must not attempt the `restart` step — restarting a service whose
+certificate installation just failed serves nothing and burns a lifecycle
+action for no gain. Each step's failure raises `CertificateNearExpiry` (not
+yet expired, so not the harder alert) naming which step failed, and the
+member is retried next pass rather than the pass failing the whole instance.
+See **D-A5d-13**.
+
+### 26.14 (Understated) `revoke-instance` takes the same per-instance lock every other write verb does
+
+§26.10's design has `revoke-instance` write two things: the anchor, and the
+placement's renewal-exclusion. Both must happen under `handle_revoke_
+instance`'s own acquisition of `instance_lock(instance_id)`
+(`service.rs:173-178`), the same discipline `handle_submit`/`handle_adopt`/
+`handle_release`/`handle_retire`/`handle_force_reconcile` already follow.
+Without it, an operator's `revoke-instance` and a resident pass's renewal
+work-list for the same member are racing: the pass could mint and install a
+fresh certificate for a member the operator is mid-revoke on, in the gap
+between the anchor write and the exclusion write landing. Taking the lock for
+the whole verb, the same way every other instance-scoped write does, closes
+the same class of race D-A5c-7 closed for every earlier verb. See
+**D-A5d-14**.
+
+### 26.15 (Correctness, found in review — F-A5d-1) The renewal-exclusion in §26.10 only stops the loop; `submit` and `force-reconcile` silently reinstate a revoked key
+
+§26.10's design stops the resident loop's own renewal work-list from
+re-certifying a revoked member, but that is not the only place a certificate
+gets (re)minted. `handle_submit`/`deploy_submission` and
+`handle_force_reconcile` (`service.rs:1089-1110`, `:1765-1810`) both call
+`apply_with_clients(plan, plan, ...)` (`:1121-1135`) with the **full, stored
+plan** — not a filtered one — which calls `certify_placed_members`
+(`deploy.rs:359`) unconditionally for every service the plan names, with no
+revocation check anywhere on that path. So an operator who revokes a member
+and later runs an ordinary `submit` of the same plan, or a `force-reconcile`
+(which `handle_force_reconcile`'s own doc, `service.rs:1798-1801`, already
+notes bypasses several checks `submit` applies, for the identical reason
+§19.1 first found), gets that member silently re-certified and reinstalled —
+no error, no alert, nothing in §29's original test list catches it. This
+directly undercuts §26.10's own premise: "revocation must say so." As
+designed it only says so in one of at least two live re-mint paths.
+
+**Fix.** A revoked placement is a persisted fact, not something derived only
+inside the renewal work-list: `SupervisorStore` gains a small
+`revoked_placements` table, `(app_instance_id, logical_ref) -> revoked_at`,
+written by `revoke-instance` (§26.10) and read by **two** consumers: the
+renewal work-list's exclusion (as originally designed) **and**
+`apply_with_clients`, which now skips `certify_placed_members` (and the
+deploy/redeploy call under it) for any service present in that table,
+regardless of whether the caller was the loop, `submit`, or `force-reconcile`.
+A revoked service is excluded from the effective plan the same way §19.1
+excludes a placement-changed one — skipped, not failing the whole call —
+and raises a new `AlertKind::InstanceRevoked` (D-A5c-21's precedent: add a
+kind only when reusing an existing one would misreport, and none of the ten
+existing kinds names "this service will not be reinstalled while revoked").
+See **D-A5d-15**, and D-A5d-12's formula revised below.
+
+### 26.16 (Understated, found in review — F-A5d-2) Renewal needs its own certificate lifetime, and nothing in this pass named one
+
+§26.7 argues the online-key posture "gets short-lived certificates for free"
+once renewal is automated, but never says how short. The supervisor already
+has a constant for this — `INSTANCE_CERT_EXPIRES_HOURS`
+(`crates/app_supervisor/src/service.rs:60-63`, `= sdk::deploy::
+DEFAULT_INSTANCE_CERT_EXPIRES_HOURS = 24`), used by every existing
+`certify_placed_members` call, with its own doc comment flagging exactly this
+gap: "the attended posture's default, since A5b mints and certifies but does
+not yet renew (A5d)." Left untouched, A5d could ship minting at the same 24
+hours the deploy path already uses, which delivers none of what §15 promises
+("certificates stay short-lived... become the default").
+
+**Fix.** `SupervisorRole` gains `renewed_cert_expires_hours` (default **4**):
+comfortably larger than the 30-second pass interval times the number of
+passes `is_near_expiry_parts`'s 25%-remaining rule leaves before actual
+expiry (many, at 4 hours), so renewal has wide margin to succeed before a
+cert is genuinely at risk, while being a real reduction in blast radius from
+24 hours. This constant is already supervisor-scoped, not shared with
+`roymctl`'s own attended-posture `--expires-hours` default — changing it
+touches no operator-facing CLI default. It replaces
+`INSTANCE_CERT_EXPIRES_HOURS` for **both** the initial `certify_placed_members`
+mint and every renewal's `certify_instance` call, so a managed instance has
+one certificate lifetime throughout its life rather than a confusing 24-hour
+first cert followed by 4-hour renewals. See **D-A5d-16**.
+
+### 26.17 (Understated, found in review — F-A5d-3) A vault lock discovered mid-mint must raise the same alert as one discovered before the pass starts
+
+§26.4's design raises `VaultLocked` from the cheap, up-front `kek_is_loaded()`
+check, but §26.13's generic per-step failure handling — which raises
+`CertificateNearExpiry` naming the failed step — is what actually runs when
+the defensive race fires (`kek_is_loaded()` said unlocked, then the real
+`certify_instance`/`get_or_mint` call hits `VaultError::Locked` between the
+check and the call). The same root cause then surfaces under two different
+`AlertKind`s depending purely on when it is detected within one pass, which
+directly undercuts §26.4's own stated purpose — making the unattended/
+attended gap "visible in the same place every other supervisor fault is."
+
+**Fix.** The per-candidate mint/install step (§26.13, D-A5d-13) special-cases
+`VaultError::Locked` specifically: that error, wherever it is caught, raises/
+refreshes `VaultLocked` for that member — never the generic
+`CertificateNearExpiry` per-step handler. Every other failure cause at any
+step keeps raising `CertificateNearExpiry` naming the step, unchanged. One
+condition, one alert kind, regardless of which of the two checks caught it.
+See **D-A5d-17**.
+
+### 26.18 (Understated, found in review — F-A5d-5, F-A5d-6) `renew_cert_impl`'s construction inputs and its FDAE re-parse failure mode need pinning down precisely
+
+Two gaps in §26.3's design, both found by checking it against the real
+`SynSvcNativeService::new` call site rather than a summary of it:
+
+**(a) The enumerated input list was incomplete.** §26.3 named `key_store`,
+`storage_provider`, `blob_provider`, `messaging_broker`, `node_identity`,
+`caller.caller_did`, and the FDAE policy as "every non-certificate input" —
+omitting two of the constructor's eleven parameters,
+`service_proxy: Weak<dyn ServiceProxy>` and `row_authorizer: Weak<dyn
+RowAuthorizer>` (`synsvc_native.rs:368-401`), supplied at the one existing
+call site via `self.current_service_proxy()`/`self.current_row_authorizer()`
+(`orchestration.rs:1505-1506`). Both remain `self`-reachable the identical
+way, so D-A5d-3's conclusion still holds — but `renew_cert_impl` must mirror
+the **whole** call site, not a partial enumeration of it, or an
+implementation copying only the named list produces a native service with
+dead proxy/authorizer hooks.
+
+**(b) A stored FDAE policy that fails to re-parse must abort the renewal, not
+silently drop enforcement.** `load_fdae_policy` can return `Some(json)` for
+bytes that were valid when saved but that a schema/parser change since then
+now rejects (the same `parse_and_validate` call the deploy path already runs,
+`orchestration.rs:1352-1355`, which fails the *whole deploy* on a bad
+document). `renew_cert_impl` must fail the same way — abort before installing
+anything — rather than falling back to `fdae_policy: None`, which would
+silently remove row/column filtering for that service's renewed instance.
+See **D-A5d-18**.
+
+### 26.19 (Correctness, found in review — F-A5d-7) `renew-cert` needs the same "is this actually deployed" gate `restart` already has
+
+`restart_impl` refuses a `service_id` with no recorded deploy facts
+(`orchestration.rs:2102-2106`) before doing anything else. §26.1/D-A5d-1's
+gating for `renew-cert` copies `restart_impl`'s capability, owner, and
+generation checks, but not this one. Without it, a caller holding an
+`ORCHESTRATOR_DEPLOY` grant naming a `service_id` that was never deployed
+could call `renew-cert` and have `renew_cert_impl` construct and register a
+live `SynSvcNativeService`/native-dispatch entry for it: `owner_of(&service_
+id).is_none()` passes the owner check vacuously, and `load_fdae_policy`
+returning `None` for an unknown id is not an error. Low practical
+exploitability — the supervisor's own renewal only ever targets a
+`service_id` it itself deployed, per §0.19/D-A5-19 — but the gate is missing
+and unaddressed. Fix: `renew_cert_impl` requires `self.registry.deploy_
+facts(&service_id).is_some()` before proceeding, the identical signal
+`restart_impl` already relies on. See **D-A5d-19**.
+
+---
+
+## §27 — Decisions
+
+| ID | Decision |
+|---|---|
+| **D-A5d-1** | A new WIT verb, `renew-cert(service-id, generation, instance-certificate) -> result<_, string>`, installs a certificate in place without reinstalling the service (§26.1). Gated identically to `restart`: `ORCHESTRATOR_DEPLOY` capability, owner-or-node-wide-grantee check, generation gate scoped to an app context. `deploy`/`apply_plan` are not renewal's path; reusing them was considered and rejected as the exact per-pass churn §19.2/§19.10 already fixed once. |
+| **D-A5d-2** | The cert-verification block inline in `deploy_with_context` (`orchestration.rs:1065-1099`) is factored into `verify_installed_instance_cert(node_identity, caller_did, service_id, cert_json)`, called from both `deploy_with_context` and the new `renew_cert_impl` (§26.2). No duplicated security-critical logic. |
+| **D-A5d-3** | `renew_cert_impl` rebuilds `SynSvcNativeService` via `native_dispatch.insert`, sourcing every non-certificate field from `self.*` (already available on `ControlPlaneService`) and the FDAE policy from `storage_provider.load_fdae_policy(service_id)` (§26.3) — no manifest needed. Confirmed as a real prerequisite (nothing is broken by its absence *today*, since A5c's only cert writer already rebuilds this in the same pass) rather than a symptom of an existing bug. |
+| **D-A5d-4** | `VaultLocked` is raised/cleared per **placed member currently near expiry**, using the existing `AlertRecord` schema (`instance_id`/`logical_ref`/`substrate_did`) unchanged — the same per-affected-entity fan-out `SubstrateUnreachable` already uses for one root cause touching several rows (§26.4). Detection: `KeyStore::kek_is_loaded()` (cheap, non-`Result`) checked once per pass before any vault call; `VaultError::Locked` remains the defensive per-call fallback. A locked vault skips only the renewal work-list, not the rest of the pass. |
+| **D-A5d-5** | The near-expiry decision is a pure read of `ServiceHealth.instance_certificate_{issued,expires}_at` (already populated by D-A5c-5) through `is_near_expiry_parts` — no new poll (§26.5). Renewal is its own, fourth work-list (`needs_work`, `restart_candidates`, renewal, binding push), not folded into either existing one. |
+| **D-A5d-6** | `RotationPolicy` is read from the supervisor's own stored plan (`ServiceSpec.rotation_policy`, already on the wire via `mapper.rs`) after a successful `renew-cert`, never from the substrate (§26.6) — the substrate-side field stays unread, as it is today. `RestartOnRotation` issues a `restart` call after install; `None` does not. |
+| **D-A5d-7** | A **30-day** maximum instance-certificate lifetime is enforced inside D-A5d-2's shared `verify_installed_instance_cert`, applied uniformly to every deploy and every renewal (§26.7) — a generous backstop against an unbounded mint, matching the reasoning already used for `EndpointInfo.not_after`, not a forcing cap that would reject the attended posture's deliberately long-lived certificates. |
+| **D-A5d-8** | `SupervisorRole` gains `master_anchor_refresh_interval_secs` (default a day-scale interval with real margin before the anchor's 24-hour validity window). No second timer: each 30-second pass reads a persisted `(master_did, last_refreshed_at)` fact from `SupervisorStore` and calls `refresh_master_anchor` only when overdue (§26.8). The read-modify-write race is closed by documenting mint-in-place's existing single-writer invariant, not by building compare-and-set the registry does not offer; concurrent redundant-supervisor custody of one master stays a backlog row. |
+| **D-A5d-9** | `CertificateNearExpiry`/`CertificateExpired` (already-defined, already-tested, currently unused `AlertKind` variants) are wired to fire when a renewal attempt for a near-expiry/expired member does not succeed this pass (§26.9) — not on every near-expiry member unconditionally, since a member whose renewal *does* succeed needs no alert. Both clear on the next pass's health poll reporting a healthy timestamp, the same recomputed-not-flagged shape as `Superseded` (D-A5c-11) and `remediation.terminal` (D-A5c-20). |
+| **D-A5d-10** | **Revised after review (F-A5d-1).** `roymctl supervisor revoke-instance <instance_id> <logical_ref>` re-derives the instance DID via `resolve-instance-identity`, appends it to the current master anchor's `revoked_keys` under D-A5d-8's single-writer invariant, and republishes. The exclusion itself is now a **persisted fact** (D-A5d-15), not something the renewal work-list alone enforces. Tearing the process down is still a separate `undeploy`/`retire`, the operator's own two-step. |
+| **D-A5d-11** | Renewal is a step inside the existing `reconcile_instance_pass`/`apply_write_phase`, using the pass's own per-instance lock (D-A5c-7), its one client set (D-A5c-9), and its own health poll's data (§26.5) — not a second pass, not a second tick, not a second client build (§26.11). |
+| **D-A5d-12** | **Revised after review (F-A5d-4).** The renewal work-list is `{placed members near expiry} \ needs_work \ revoked_placements` — a service already going through `apply_plan`/`certify_placed_members` this pass is not renewed again; a service under `restart_candidates` remediation is still independently checked, since a restart touches no certificate; a revoked placement (D-A5d-15) is never a candidate (§26.12, §26.15). |
+| **D-A5d-13** | Per candidate, the order is mint → install → rotate (`certify_instance` → `renew-cert` → conditional `restart`), and a failure at any step skips the remaining steps for that member without failing the rest of the pass; the member is retried next tick (§26.13). `VaultError::Locked` at any step is carved out from this generic handling — see D-A5d-17. |
+| **D-A5d-14** | `handle_revoke_instance` takes the instance's lock (`instance_lock`, D-A5c-7's mechanism) for the whole verb, so it cannot race the resident loop's own renewal of the same member (§26.14). |
+| **D-A5d-15** | *(found in review, F-A5d-1)* `SupervisorStore` gains a `revoked_placements` table (`(app_instance_id, logical_ref) -> revoked_at`), written by `revoke-instance` and read by **both** the renewal work-list and `apply_with_clients` (§26.15). `apply_with_clients` skips `certify_placed_members` and the (re)deploy under it for any revoked placement, on **every** caller — `submit`, `force-reconcile`, and the resident loop alike — raising a new `AlertKind::InstanceRevoked` (D-A5c-21's precedent: a new kind only because none of the existing ten would describe it without misreporting) and continuing with the rest of the plan. Closes the gap where an ordinary `submit`/`force-reconcile` silently reinstated a revoked key. |
+| **D-A5d-16** | *(found in review, F-A5d-2)* `SupervisorRole` gains `renewed_cert_expires_hours` (default **4**), replacing `INSTANCE_CERT_EXPIRES_HOURS` for **both** the initial `certify_placed_members` mint and every renewal's `certify_instance` call (§26.16) — one certificate lifetime for a managed instance's whole life, a real reduction from 24 hours, comfortably inside D-A5d-7's 30-day backstop, and untouched for `roymctl`'s own attended-posture default. |
+| **D-A5d-17** | *(found in review, F-A5d-3)* `VaultError::Locked`, wherever caught during a renewal candidate's mint/install step, always raises/refreshes `VaultLocked` — never the generic `CertificateNearExpiry` per-step handler D-A5d-13 uses for every other failure cause (§26.17). One root cause, one alert kind, regardless of whether `kek_is_loaded()`'s up-front check or the per-call race caught it. |
+| **D-A5d-18** | *(found in review, F-A5d-5, F-A5d-6)* `renew_cert_impl` mirrors the **whole** of `SynSvcNativeService::new`'s existing call site — including `service_proxy`/`row_authorizer`, omitted from §26.3's original enumeration — not a partial list of it (§26.18). A stored FDAE policy that fails to re-parse aborts `renew_cert_impl` before installing anything, the same failure mode `deploy_with_context` already has for a bad policy document, rather than silently dropping enforcement. |
+| **D-A5d-19** | *(found in review, F-A5d-7)* `renew_cert_impl` requires `self.registry.deploy_facts(&service_id).is_some()` before proceeding, mirroring the gate `restart_impl` already has (§26.19) — refusing a `renew-cert` call against a `service_id` that was never deployed, even for a capability-holding caller. |
+
+---
+
+## §28 — Phase plan and merge order
+
+Each phase is independently reviewable, and the substrate-side verb lands
+before anything in the loop depends on it.
+
+1. **Substrate-side, no supervisor involved.** D-A5d-2's
+   `verify_installed_instance_cert` extraction (used, unchanged in behavior,
+   by the existing `deploy_with_context`); D-A5d-7's 30-day cap added inside
+   it; the new `renew-cert` WIT verb, `renew_cert_impl` (D-A5d-1, D-A5d-3,
+   **D-A5d-18's full-call-site mirror and abort-on-bad-FDAE-reparse**,
+   **D-A5d-19's `deploy_facts` gate**), and its `crates/sdk` client wrapper
+   (`SyneroymClient::renew_cert`, mirroring `restart`'s shape at
+   `sdk/src/lib.rs:764-772`). Mergeable alone; exercised directly against a
+   running substrate with no supervisor changes. Tests 1-8, 33-35.
+2. **Supervisor-side plumbing, no loop changes yet.** `SupervisorRole` gains
+   `master_anchor_refresh_interval_secs` (D-A5d-8) and
+   `renewed_cert_expires_hours` (**D-A5d-16**, replacing
+   `INSTANCE_CERT_EXPIRES_HOURS`); `SupervisorStore` gains the
+   `(master_did, last_refreshed_at)` table and **D-A5d-15's
+   `revoked_placements` table**; `VaultLocked` and **`InstanceRevoked`**
+   added to `AlertKind` (`Display`/`FromStr` match arms, round-trip test) —
+   the two genuinely new variants (§26.9 confirms `CertificateNearExpiry`/
+   `CertificateExpired` already exist). Tests 9-13, 36.
+3. **The renewal work-list.** Computed inside `apply_write_phase` per
+   D-A5d-5/11/12: near-expiry detection off the pass's existing `ServiceHealth`
+   data, deduped against `needs_work` **and `revoked_placements`**, gated on
+   `kek_is_loaded()` with `VaultLocked` fan-out (D-A5d-4) when locked. Per
+   candidate: mint (at D-A5d-16's `renewed_cert_expires_hours`), install,
+   conditional rotate, per-step failure handling (D-A5d-13, **with
+   D-A5d-17's `VaultError::Locked` carve-out to `VaultLocked` rather than
+   the generic handler**); `CertificateNearExpiry`/`CertificateExpired`
+   raised on stall, cleared on the next healthy read (D-A5d-9). Tests 14-24,
+   37-38.
+4. **Master-anchor refresh on the existing tick.** D-A5d-8's overdue check
+   and `refresh_master_anchor` call, evaluated once per pass per master this
+   instance's plan names. Tests 25-27.
+5. **Revocation surface.** `roymctl supervisor revoke-instance`
+   (`SupervisorCommands::RevokeInstance`, following `Retire`'s single-`String`
+   shape at `supervisor.rs:58`), `handle_revoke_instance` under the instance
+   lock (D-A5d-14), the anchor mutation, **the `revoked_placements` write
+   (D-A5d-15)**, and **`apply_with_clients`' skip-and-alert gate that every
+   caller — `submit`, `force-reconcile`, and the loop — now shares**. Tests
+   28-32, 39-40.
+
+**What could move, stated the way A5c's §22 stated its own:**
+
+- **Nothing here depends on A5e.** All six of §15's items are self-contained
+  once phase 1's verb exists; the milestone's remaining scale-out work
+  (`replicas`, cross-app `Bind`, ADR-0021 §7) touches none of this slice's
+  surface.
+- **Phase 5 (revocation) does *not* ship separately — withdrawn after
+  review (F-A5d-1).** The first draft of this pass recommended the opposite,
+  reasoning that matrix row 14's *property* (a revoked key fails while a
+  fresh one from the same master still verifies) was already proven by A0's
+  test, so the operator-surface half was the least load-bearing of the six
+  items. That was wrong: as originally scoped, revocation didn't survive an
+  ordinary `submit`/`force-reconcile` on the same instance (§26.15), so
+  nothing in this plan actually proved the operator-facing property —
+  "once I revoke this key, it stays revoked" — at all. D-A5d-15's
+  `revoked_placements` table is now load-bearing for **every** caller that
+  can mint a certificate, not only the loop, and phase 5 is no longer
+  separable from phases 1-3 without leaving that gap open again.
+- **§26.7's 30-day cap could, in principle, be its own tiny slice** ahead of
+  everything else here, since it touches only `deploy_with_context` and needs
+  no supervisor code at all. Not split out: it shares D-A5d-2's extraction
+  work exactly, and extracting the helper twice (once for the cap, once for
+  `renew-cert`) is strictly more work than doing both in phase 1.
+
+---
+
+## §29 — A5d tests
+
+Named the way §8, §13, and §23 named theirs. **e2e are marked; everything
+else is a unit test.**
+
+**Phase 1 —** `crates/control_plane/src/service/orchestration.rs`,
+`crates/sdk/src/lib.rs`, `control-plane.wit`:
+
+1. `renew_cert_installs_a_new_certificate_without_touching_the_config_generation`
+2. `renew_cert_rebuilds_syn_svc_native_service_with_the_new_certificate` —
+   signs a `RelationshipProof` immediately after and asserts it verifies
+   against the *new* cert, not the one construction started with
+3. `renew_cert_is_refused_for_a_service_owned_by_another_caller`
+4. `renew_cert_by_a_node_wide_deploy_grantee_ignores_the_service_owner`
+5. `renew_cert_respects_the_same_generation_gate_as_restart`
+6. `verify_installed_instance_cert_rejects_a_certificate_over_the_thirty_day_cap`
+7. `verify_installed_instance_cert_accepts_the_cli_default_twenty_four_hour_certificate`
+   — the attended-posture regression guard for D-A5d-7
+8. `renew_cert_leaves_fdae_policy_untouched_when_none_was_ever_saved` — the
+   `load_fdae_policy` `None` arm
+
+**Phase 2 —** `crates/core/src/config.rs`, `crates/app_supervisor/src/store.rs`,
+`crates/app_orchestration/src/alerts.rs`:
+
+9. `supervisor_role_master_anchor_refresh_interval_secs_has_a_day_scale_default`
+10. `store_persists_and_reads_back_last_refreshed_at_per_master`
+11. `every_alert_kind_round_trips_through_display_and_from_str` — extended
+    with `VaultLocked`, not a new test (the existing one at `alerts.rs:391`)
+12. `vault_locked_is_scoped_to_the_specific_near_expiry_member_it_affects`
+13. `raising_vault_locked_for_two_members_of_one_instance_opens_two_rows`
+
+**Phase 3 —** `crates/app_supervisor/src/service.rs`:
+
+14. `a_pass_renews_a_member_within_the_near_expiry_window`
+15. `a_pass_does_not_renew_a_member_outside_the_near_expiry_window`
+16. `a_member_in_needs_work_is_not_also_renewed_this_pass` (D-A5d-12)
+17. `a_member_under_restart_remediation_is_still_checked_for_renewal` (D-A5d-12)
+18. `a_locked_vault_skips_renewal_but_not_health_or_remediation_this_pass`
+19. `a_locked_vault_raises_vault_locked_for_every_near_expiry_member`
+20. `restart_on_rotation_follows_a_successful_install_with_a_restart_call`
+21. `rotation_policy_none_installs_without_restarting`
+22. `a_failed_mint_does_not_attempt_install_or_restart_for_that_member`
+23. `a_failed_install_does_not_attempt_restart_for_that_member`
+24. `certificate_near_expiry_clears_on_the_next_passs_healthy_read`
+
+**Phase 4 —** `crates/app_supervisor/src/service.rs`,
+`crates/core/src/dht_registry.rs`:
+
+25. `master_anchor_refresh_is_skipped_when_not_yet_overdue`
+26. `master_anchor_refresh_fires_once_the_interval_elapses`
+27. `master_anchor_refresh_updates_last_refreshed_at_on_success`
+
+**Phase 5 —** `apps/roymctl/src/commands/supervisor.rs`,
+`crates/app_supervisor/src/service.rs`:
+
+28. `revoke_instance_appends_the_derived_instance_did_to_revoked_keys`
+29. `revoke_instance_writes_a_revoked_placements_row`
+30. `a_renewal_pass_skips_a_revoked_placement_even_when_near_expiry`
+31. `revoke_instance_takes_the_instance_lock_for_the_whole_call` — asserts a
+    concurrent resident pass for the same instance blocks until it releases
+32. **[e2e]** `revoked_instance_key_handshake_fails_while_a_fresh_one_
+    verifies` — the automation half of matrix row 14, exercised through the
+    real `revoke-instance` verb rather than `handshake.rs`'s existing
+    `MockResolver` mutation, closing the row's "mechanism with no trigger
+    outside tests" gap
+
+**Tests added in review (F-A5d-1, F-A5d-2, F-A5d-3, F-A5d-5, F-A5d-6, F-A5d-7):**
+
+33. `renew_cert_is_refused_for_a_service_id_with_no_recorded_deploy_facts`
+    (D-A5d-19, §26.19)
+34. `renew_cert_mirrors_the_deploy_call_sites_service_proxy_and_row_
+    authorizer` (D-A5d-18a, §26.18) — asserts a call routed through the
+    rebuilt native service resolves an FDAE-gated relation the same as
+    immediately after a real `deploy`
+35. `renew_cert_aborts_on_a_stored_fdae_policy_that_fails_to_reparse` —
+    never installs the new certificate, never touches `native_dispatch`
+    (D-A5d-18b, §26.18)
+36. `every_alert_kind_round_trips_through_display_and_from_str` — extended
+    with `InstanceRevoked` alongside `VaultLocked`, not a new test (D-A5d-15)
+37. `renewal_mints_at_renewed_cert_expires_hours_not_the_deploy_default` —
+    asserts the renewed certificate's lifetime is `renewed_cert_expires_
+    hours` (4h default), strictly shorter than the prior
+    `INSTANCE_CERT_EXPIRES_HOURS` (24h) (D-A5d-16, §26.16)
+38. `a_vault_error_locked_race_during_mint_raises_vault_locked_not_
+    certificate_near_expiry` — the defensive per-call path, distinct from
+    test 19's up-front `kek_is_loaded()` path, both landing on the same
+    alert kind (D-A5d-17, §26.17)
+39. `a_submit_of_the_same_plan_does_not_recertify_a_revoked_placement` —
+    the gap F-A5d-1 found: `submit`, not just the loop, must respect
+    `revoked_placements` (D-A5d-15, §26.15)
+40. `a_force_reconcile_does_not_recertify_a_revoked_placement_and_raises_
+    instance_revoked_for_the_rest_of_the_plan` — `force-reconcile`'s
+    unfiltered-plan path, the second re-mint route F-A5d-1 found, with the
+    rest of the plan's services still reconciled normally
+
+**Test count: 32 → 40.**
+
+---
+
+## §30 — Docs and backlog for A5d
+
+**Docs**
+
+- `docs/developer-guide.md` — the `[roles.supervisor]` block gains
+  `master_anchor_refresh_interval_secs` and `renewed_cert_expires_hours`
+  (default 4h, D-A5d-16); the online-key posture's actual certificate
+  lifetime under automation (short, renewal-driven) versus the 30-day
+  backstop (D-A5d-7) explained as two different numbers for two different
+  purposes; `roymctl supervisor revoke-instance` documented beside
+  `export-master`/`import-master`, including that it also stops that one
+  placement's renewal **on every write path — the loop, `submit`, and
+  `force-reconcile` alike (D-A5d-15)** — not the whole instance.
+- `task.md` — the A5d bullet corrected: renewal needs a new `renew-cert` verb
+  (not a reuse of `deploy`), and matrix rows 1/3's automation half and row
+  14's second half are closed by phases 3 and 5 respectively, each with its
+  test named.
+- `status.md` — an A5d section in the A0-A5c shape.
+- ADR-0020 — a third amendment, the same shape as the 2026-08-01 one: §3's
+  "issues and renews unattended" now has a concrete mechanism
+  (`renew-cert`, §26.1) instead of reusing `deploy`; §4's custody section gains
+  a note that master-anchor refresh's read-modify-write race is closed by the
+  same single-writer fact custody already established (§26.8), not a new
+  guarantee.
+- `docs/planning/deferred-backlog.md` — the row at line 81
+  ("`SynSvcNativeService`... must also refresh") resolved by D-A5d-3; line 86
+  (max lifetime) resolved by D-A5d-7 with the 30-day number recorded, not left
+  `TBD`; line 88 (revocation surface) resolved by D-A5d-10; line 89
+  (master-anchor refresh race/schedule) resolved by D-A5d-8.
+
+**Backlog rows resolved**
+
+- *"A renewal that installs a certificate outside `deploy` must also refresh
+  `SynSvcNativeService`"* — D-A5d-3.
+- *"No maximum lifetime enforced on an installed instance certificate"* —
+  D-A5d-7, with the number (30 days) recorded.
+- *"No operator surface for revoking an instance key"* — D-A5d-10, closed
+  end-to-end (not only for the loop) by D-A5d-15.
+- *"Master-anchor refresh is a read-modify-write with a race, and a daily
+  operator duty nothing performs on a schedule"* — D-A5d-8, both halves: the
+  schedule (per-pass overdue check against a persisted fact) and the race
+  (single-writer invariant, not a CAS).
+
+**Backlog rows to add**
+
+- ***A redundant supervisor holding one master via `import-master` on two live
+  processes has no compare-and-set for master-anchor refresh*** (§26.8) — the
+  single-writer invariant D-A5d-8 relies on holds for the topology this tree
+  supports today (one supervisor per master), not for a future
+  redundant-supervisor deployment. Needs the registry
+  (`crates/community_registry`) to grow real compare-and-set, or an explicit
+  single-writer lease. → **post-M5**, pairs with A6's own single-writer cron
+  lease note in `task.md`'s A6 section, since both are instances of the same
+  "more than one supervisor for one thing" problem.
+- ***`revoke-instance` has no path back*** — once a placement gets a row in
+  `revoked_placements` (D-A5d-15), nothing removes it; an operator who
+  revoked a key by mistake, or wants to bring a member back under management
+  after replacing its instance key by hand, has no verb for it. The table
+  gives a concrete place an "un-revoke" would write to, but A5d does not build
+  the write. → **TBD**, needs a decided semantics for "un-revoke" (and for
+  whether it also needs to remove the DID from the anchor's `revoked_keys`,
+  which is a separate, harder read-modify-write than clearing one local row)
+  that A5d does not need to invent to close matrix row 14.
+- Whatever A5e's own `§0` pass finds.
+
+---
+
+## §31 — Review response (2026-08-02)
+
+An independent review of Part V spot-checked 38 of its `file:line` claims
+(against the commit-`e2583cd` baseline — an unrelated, concurrent
+fix-verification pass was landing in `orchestration.rs` while the review ran,
+which produced transient false-positive mismatches the reviewer re-verified
+away rather than reported as real). **Zero citations were wrong**; two were
+imprecise by the doc's own looser convention (a struct-open line versus its
+field line, a function-signature line versus the read inside it) but not
+incorrect. Every substantive problem the review found was in the
+**decisions**, not the citations. Seven findings: **one blocking, four
+should-fix, two minor**. All seven incorporated.
+
+| # | Finding | Disposition |
+|---|---|---|
+| **F-A5d-1** | *(blocking)* D-A5d-10's revocation-exclusion only stopped the loop's own renewal work-list. `handle_submit`/`deploy_submission` and `handle_force_reconcile` both call `apply_with_clients` with the full, unfiltered plan, which calls `certify_placed_members` unconditionally for every service in it — so an ordinary `submit` or `force-reconcile` after a `revoke-instance` silently re-minted and reinstalled the revoked key, with no error and no alert | **Incorporated.** §26.15, **D-A5d-15**: a persisted `revoked_placements` table, read by *every* caller that can mint a certificate — the loop, `submit`, and `force-reconcile` alike — not only the renewal work-list. A new `AlertKind::InstanceRevoked` names the skip. Tests 39-40 added. The review's own judgment call — that this makes phase 5 more load-bearing, not less — is taken; §28's "could ship separately" recommendation is withdrawn |
+| **F-A5d-2** | *(should-fix)* Neither §26.7 nor D-A5d-7 named the certificate lifetime the renewal loop's own `certify_instance` call should request. The supervisor's existing `INSTANCE_CERT_EXPIRES_HOURS` constant is 24h — the deploy-time default — and its own doc comment already flags it as needing to change once A5d ships, untouched by the original pass | **Incorporated** as §26.16, **D-A5d-16**: `SupervisorRole::renewed_cert_expires_hours` (default 4h), replacing the 24h constant for both the initial mint and every renewal, so a managed instance has one lifetime throughout its life rather than a confusing 24h-then-4h split. Test 37 added |
+| **F-A5d-3** | *(should-fix)* The two vault-lock detection paths (the up-front `kek_is_loaded()` check and the defensive per-call `VaultError::Locked` race) landed on two different `AlertKind`s — `VaultLocked` from the first, the generic `CertificateNearExpiry` per-step handler from the second — for the identical root cause, undercutting §26.4's own stated purpose of making the vault-locked gap visible in one place | **Incorporated** as §26.17, **D-A5d-17**: `VaultError::Locked`, caught anywhere in the mint/install step, always raises `VaultLocked`, carved out from D-A5d-13's generic per-step handling. Test 38 added |
+| **F-A5d-4** | *(should-fix)* D-A5d-12's formula (`{placed members near expiry} \ needs_work`) was stated once in §27 and never revised even though §28's phase 5 already implied a third exclusion term, leaving the decisions table — this document's own single source of truth, by its established convention — silently out of date the moment phase 5 landed | **Incorporated.** D-A5d-12 revised in place to `\ needs_work \ revoked_placements`, cross-referencing D-A5d-15 |
+| **F-A5d-5** | *(minor)* §26.3's enumeration of `SynSvcNativeService::new`'s non-certificate inputs omitted two of its eleven parameters, `service_proxy`/`row_authorizer` — both `self`-reachable the same way as the rest, so D-A5d-3's conclusion held, but the specific list was incomplete enough that an implementer following only the enumeration rather than the real call site would wire a native service with dead proxy/authorizer hooks | **Incorporated** as part of §26.18, **D-A5d-18**: `renew_cert_impl` mirrors the whole call site rather than an enumerated subset. Test 34 added |
+| **F-A5d-6** | *(minor)* Neither §26.3 nor D-A5d-3 said what happens if a stored FDAE policy fails to re-parse — silently falling back to `fdae_policy: None` would be a silent enforcement bypass for the renewed instance, a materially different (and worse) failure mode than deploy's, which fails the whole call on a bad document | **Incorporated** as the other half of §26.18/D-A5d-18: a re-parse failure aborts `renew_cert_impl` before installing anything, matching deploy's own behavior. Test 35 added |
+| **F-A5d-7** | *(minor)* D-A5d-1's `renew-cert` gating mirrored `restart_impl`'s capability, owner, and generation checks but not its implicit "is this actually deployed" gate (`deploy_facts` must exist) — a capability-holding caller could otherwise construct a live native-dispatch entry for a `service_id` that was never deployed | **Incorporated** as §26.19, **D-A5d-19**: `renew_cert_impl` requires `deploy_facts(&service_id).is_some()`, the same signal `restart_impl` already relies on. Test 33 added |
+
+**One judgment the review offered that this pass takes without modification:**
+the recommendation to withdraw §28's "phase 5 ships separately" call. The
+first draft reasoned from matrix row 14's *property* (already proven by A0's
+test) to the operator-surface half being the least load-bearing item in the
+slice; F-A5d-1 shows the property the *operator* actually needs —
+revocation that survives an ordinary redeploy — was not proven by anything in
+the original scope. Recorded in §28 rather than only here, since that is
+where an implementer reads it.
+
+**Test count: 32 → 40**, all eight added tests traceable to a specific
+finding above.
