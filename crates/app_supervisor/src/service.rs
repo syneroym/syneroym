@@ -1013,7 +1013,17 @@ impl SupervisorService {
     /// leaves several passes of margin before it becomes one.
     async fn refresh_due_master_anchors(&self, plan: &DeploymentPlan, now: u64) {
         let Some(writer) = &self.anchor_writer else { return };
+        // Logged rather than alerted. A locked vault is already alerted on,
+        // per member, the moment a renewal is due -- and that fires on a
+        // four-hour clock against this refresh's twelve-hour one, so a
+        // supervisor whose vault stays shut long enough for an anchor to
+        // matter has already raised `VaultLocked` several times over.
+        // Raising a second kind here would be the same fact twice.
         if !self.vault.kek_is_loaded() {
+            tracing::warn!(
+                app_instance_id = %plan.app_instance_id,
+                "vault locked; skipping this instance's master-anchor refresh check this pass"
+            );
             return;
         }
         let now = now as i64;
