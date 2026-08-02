@@ -537,13 +537,13 @@ async fn alerts_are_recorded_deduplicated_and_cleared_across_three_sweeps() {
     // Sweep 1: fault, opens a new incident.
     let report1 = health::poll_once(&targets, &expected_services).await;
     assert!(matches!(report1.services[0].signal, health::Signal::ProbeFailing(_)));
-    let opened1 = health::record_report(&alerts, &instance_id, &report1, 1000).unwrap();
+    let opened1 = health::record_report(&alerts, &instance_id, &report1, 1000, &[]).unwrap();
     assert_eq!(opened1.len(), 1);
     assert_eq!(alerts.active(&instance_id).unwrap().len(), 1);
 
     // Sweep 2: still failing -- refreshes the existing row, opens nothing new.
     let report2 = health::poll_once(&targets, &expected_services).await;
-    let opened2 = health::record_report(&alerts, &instance_id, &report2, 1001).unwrap();
+    let opened2 = health::record_report(&alerts, &instance_id, &report2, 1001, &[]).unwrap();
     assert!(opened2.is_empty(), "a second failing sweep must not open a second row");
     assert_eq!(alerts.active(&instance_id).unwrap().len(), 1);
 
@@ -563,7 +563,7 @@ async fn alerts_are_recorded_deduplicated_and_cleared_across_three_sweeps() {
     let listener = TcpListener::bind(format!("127.0.0.1:{target_port}")).unwrap();
     let report3 = health::poll_once(&targets, &expected_services).await;
     assert_eq!(report3.services[0].signal, health::Signal::Healthy, "{:?}", report3.services[0]);
-    health::record_report(&alerts, &instance_id, &report3, 1002).unwrap();
+    health::record_report(&alerts, &instance_id, &report3, 1002, &[]).unwrap();
     assert!(alerts.active(&instance_id).unwrap().is_empty());
     assert_eq!(
         alerts.all(&instance_id).unwrap().len(),

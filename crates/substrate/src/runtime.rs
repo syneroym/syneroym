@@ -43,7 +43,7 @@ use syneroym_router::{ConnectionRouter, RouteHandlerDeps};
 use syneroym_rpc::{NativeDispatchRegistry, NativeService};
 use syneroym_sandbox_podman::ContainerEngine;
 use syneroym_sandbox_wasm::AppSandboxEngine;
-use tokio::{net::TcpListener, signal, time};
+use tokio::{net::TcpListener, signal, task::JoinHandle, time};
 use tracing::{debug, error, info, warn};
 
 use crate::identity;
@@ -162,6 +162,15 @@ pub struct RuntimeServices {
     #[cfg(feature = "client_gateway")]
     client_gateway: Option<ClientGateway>,
     supervisor: Option<Arc<SupervisorHandle>>,
+    /// M05A A5c §19.8/D-A5c-8: the supervisor's resident loop is spawned
+    /// (not pinned in `run_until_shutdown`'s own `select!`), so it
+    /// outlives that function's stack frame -- `shutdown` cancels the
+    /// loop's token and awaits this handle, rather than relying on a
+    /// token nothing would ever join in time. Populated by
+    /// `run_until_shutdown`, not `init`, so A5b's startup-ordering note
+    /// (the loop starts only after both composition calls have already
+    /// run) stays true.
+    supervisor_join: Option<JoinHandle<anyhow::Result<()>>>,
 }
 
 impl Debug for RuntimeServices {
@@ -208,6 +217,7 @@ impl RuntimeServices {
                 None
             },
             supervisor: None,
+            supervisor_join: None,
         })
     }
 
@@ -227,6 +237,14 @@ impl RuntimeServices {
     ) where
         F: Future<Output = ()>,
     {
+        // M05A A5c §19.8/D-A5c-8: spawned here, at the top of this
+        // function rather than in `init`, so the loop's start still comes
+        // after both composition calls -- and so it is a real
+        // `tokio::spawn`ed task by the time the `select!` below races its
+        // `JoinHandle`, not the pinned-and-dropped-on-exit future this
+        // used to be.
+        self.supervisor_join = spawn_supervisor_role(&self.supervisor);
+
         #[cfg(feature = "community_registry")]
         let mut registry_fut = pin::pin!(async {
             match self.community_registry.as_mut() {
@@ -321,7 +339,22 @@ impl RuntimeServices {
 
         let mut connection_router_fut = pin::pin!(connection_router.run());
         let mut expiry_sweep_fut = pin::pin!(instance_cert_expiry_sweep_loop(endpoint_registry));
-        let mut supervisor_fut = pin::pin!(run_supervisor_role(&self.supervisor));
+        // M05A A5c §19.8/D-A5c-8: races the spawned loop's `JoinHandle`
+        // rather than pinning the loop itself -- the supervisor exiting
+        // (a task panic, or the join failing) still brings the substrate
+        // down, unchanged from before, but the loop itself now survives
+        // past this `select!` returning instead of being dropped mid-pass.
+        let mut supervisor_fut = pin::pin!(async {
+            match self.supervisor_join.as_mut() {
+                Some(handle) => match handle.await {
+                    Ok(res) => res,
+                    Err(join_err) => {
+                        Err(anyhow::anyhow!("supervisor loop task panicked: {join_err}"))
+                    }
+                },
+                None => pending_component().await,
+            }
+        });
         let mut shutdown_signal = pin::pin!(shutdown_signal);
 
         info!(profile = %config.profile, "starting substrate components");
@@ -340,6 +373,19 @@ impl RuntimeServices {
 
     async fn shutdown(&mut self) {
         shutdown_supervisor_role(&self.supervisor).await;
+        // M05A A5c D-A5c-8: cancelling the token above unblocks `run`'s
+        // `select!`, but only awaiting this handle proves the pass in
+        // flight, if any, actually finished closing the clients it had
+        // open -- a token alone does not wait for anything.
+        if let Some(handle) = self.supervisor_join.take() {
+            match handle.await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => error!(error = %error, "supervisor loop exited with an error"),
+                Err(join_err) => {
+                    error!(error = %join_err, "supervisor loop task panicked during shutdown")
+                }
+            }
+        }
 
         #[cfg(feature = "client_gateway")]
         if let Some(service) = self.client_gateway.as_mut()
@@ -368,24 +414,34 @@ async fn pending_component() -> anyhow::Result<()> {
     future::pending().await
 }
 
+/// Spawns the supervisor's resident loop (M05A A5c §19.8/D-A5c-8) so it
+/// outlives `run_until_shutdown`'s own stack frame instead of being
+/// dropped mid-pass when some other component's future resolves first.
 /// Not `#[cfg(feature = "supervisor")]` itself -- `supervisor` is always
 /// `None` when the cargo feature is off (`init_supervisor` refuses to
-/// build one), so this only needs its *body* gated, keeping `RuntimeServices`
-/// free of per-call `cfg` splits the way `community_registry`/`coordinator`/
-/// `client_gateway` already are on their own fields.
-async fn run_supervisor_role(supervisor: &Option<Arc<SupervisorHandle>>) -> anyhow::Result<()> {
+/// build one), so this only needs its *body* gated, keeping
+/// `RuntimeServices` free of per-call `cfg` splits the way
+/// `community_registry`/`coordinator`/`client_gateway` already are on
+/// their own fields.
+fn spawn_supervisor_role(
+    supervisor: &Option<Arc<SupervisorHandle>>,
+) -> Option<JoinHandle<anyhow::Result<()>>> {
     #[cfg(feature = "supervisor")]
-    match supervisor {
-        Some(service) => service.run().await,
-        None => pending_component().await,
+    {
+        supervisor.clone().map(|service| tokio::spawn(async move { service.run().await }))
     }
     #[cfg(not(feature = "supervisor"))]
     {
         let _ = supervisor;
-        pending_component().await
+        None
     }
 }
 
+/// Cancels the loop's token (`SupervisorService::shutdown`) -- the caller
+/// is responsible for then awaiting the `JoinHandle`
+/// `spawn_supervisor_role` returned, which is what actually waits for the
+/// pass in flight to finish closing its clients (M05A A5c D-A5c-8;
+/// cancelling alone does not wait for anything).
 async fn shutdown_supervisor_role(supervisor: &Option<Arc<SupervisorHandle>>) {
     #[cfg(feature = "supervisor")]
     if let Some(service) = supervisor
@@ -513,6 +569,26 @@ async fn setup_router(
         endpoint_registry
             .register(service_id.to_string(), "supervisor".to_string(), supervisor_endpoint)
             .await?;
+        // M05A A5c §19.5a/D-A5c-6: gives the supervisor's own alert
+        // publication a `messaging` endpoint to publish under -- a
+        // supervisor role is not a deployed service, so without this
+        // registration nothing resolves `SUPERVISOR_DISPATCH_ID` for the
+        // `messaging` interface at all. **Deliberately** registered under
+        // the same reserved id every other supervisor verb uses: the
+        // router's own subscribe path (`dispatch.rs::handle_messaging_
+        // subscribe`) namespaces this one service id with the
+        // publish-side (unconditional-prefix) rule instead of the
+        // ordinary subscribe-side rule every deployed service's
+        // `messaging` endpoint gets -- see that function's own comment
+        // for why. Do not "correct" that divergence back to the ordinary
+        // rule: it is what keeps a caller's subscribe confined to
+        // `svc/supervisor/...` on a node that hosts no deployed services
+        // of its own to share the reach with (test 26 fails if reverted).
+        let messaging_endpoint =
+            SubstrateEndpoint::NativeHostChannel { service_id: SUPERVISOR_DISPATCH_ID.to_string() };
+        endpoint_registry
+            .register(service_id.to_string(), "messaging".to_string(), messaging_endpoint)
+            .await?;
         Some(init_supervisor(config, service_id, &shared).await?)
     } else {
         None
@@ -573,6 +649,11 @@ struct SharedNodeHandles {
     /// client, to other substrates (ADR-0021 §8) -- a second handle to the
     /// node's own key material, not a distinct identity.
     client_identity: Arc<Identity>,
+    /// M05A A5c §19.5a/D-A5c-6: the same broker `AppSandboxEngine` and
+    /// `ControlPlaneService` publish/subscribe through, so the supervisor's
+    /// alert publication shares one broker with the rest of the node
+    /// instead of standing up a second one.
+    messaging_broker: Arc<MqttBroker>,
 }
 
 /// The literal `native_dispatch` key the supervisor's `NativeService`
@@ -619,6 +700,11 @@ async fn init_supervisor(
         store,
         vault,
         &shared.client_identity,
+        shared.messaging_broker.clone(),
+        role.alert_topic.clone(),
+        role.poll_interval_secs,
+        role.max_restart_attempts,
+        role.restart_backoff_secs,
     ));
     shared
         .native_dispatch
@@ -784,6 +870,7 @@ async fn build_route_handler_deps(
         storage_provider: storage_provider.clone(),
         native_dispatch: native_dispatch.clone(),
         client_identity: supervisor_client_identity,
+        messaging_broker: messaging_broker.clone(),
     };
 
     Ok((

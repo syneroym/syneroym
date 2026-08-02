@@ -445,6 +445,7 @@ async fn deploy_two_service_app(
             registry_certificates: &registry_certs,
             emit_bindings: true,
             generation: 0,
+            binding_epochs: &BTreeMap::new(),
         },
         &journal,
         deployment_id,

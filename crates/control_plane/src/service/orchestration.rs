@@ -2059,6 +2059,20 @@ impl ControlPlaneService {
             ));
         }
 
+        // M05A A5c §19.17: `deploy`/`undeploy`/`write-bindings` all refuse a
+        // takeover of a service a different caller owns; `restart` was the
+        // one lifecycle write missing this check. A node-wide grantee (the
+        // same override `undeploy_impl` honours) skips it for free.
+        if let Some(owner) = self.registry.owner_of(&service_id)
+            && owner != caller.caller_did
+            && !self.has_node_wide_ability(caller, Ability::ORCHESTRATOR_DEPLOY)
+        {
+            return Err(format!(
+                "service '{service_id}' is owned by {owner}; only its owner or a substrate owner \
+                 may restart it"
+            ));
+        }
+
         // Generation gate, only where an app instance exists (§0.23) --
         // ungated for a standalone service, same as `undeploy`.
         if let Some((instance, _)) = self.registry.app_context_of(&service_id) {
@@ -2590,16 +2604,20 @@ impl ControlPlaneService {
                     params: Value::Array(vec![]),
                     id: Some(Value::from(1)),
                 };
-                // `caller: None` -- a substrate-originated probe, the same
-                // choice `ProxyRouter::invoke_local` makes for a guest-to-
-                // guest call.
+                // M05A A5c §19.13/D-A5c-12: `execute_probe_json`, not
+                // `execute_wasm_json` directly -- bounded by the engine's
+                // own `probe_instance_permits`, so a sweep with many
+                // `rpc`-probed wasm services cannot request more
+                // concurrent component instantiations than the pool can
+                // serve (`caller: None` is still a substrate-originated
+                // probe, the same choice `ProxyRouter::invoke_local` makes
+                // for a guest-to-guest call).
                 match tokio::time::timeout(
                     Duration::from_millis(u64::from(p.timeout_ms)),
-                    self.app_sandbox_engine.execute_wasm_json(
+                    self.app_sandbox_engine.execute_probe_json(
                         service_id,
                         &p.interface_name,
                         &request,
-                        None,
                     ),
                 )
                 .await
@@ -4725,6 +4743,64 @@ mod tests {
 
         let err = service.restart("frontend-svc".to_string(), 3, &caller).await.unwrap_err();
         assert!(err.contains("at generation 5"), "{err}");
+    }
+
+    /// M05A A5c §19.17: `restart` was the one lifecycle write with no
+    /// service-owner check -- a scoped grantee for `service_id` could
+    /// restart a service a *different* caller owns, which `deploy`/
+    /// `undeploy`/`write-bindings` all already refuse as a takeover.
+    #[tokio::test]
+    async fn restart_is_refused_for_a_service_owned_by_another_caller() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let alice = node_wide_caller("did:key:zAlice");
+
+        service
+            .deploy("owned-svc".to_string(), inline_manifest(None, None, None), &alice)
+            .await
+            .unwrap();
+        assert_eq!(service.registry.owner_of("owned-svc"), Some("did:key:zAlice".to_string()));
+
+        let bob = scoped_deploy_caller("did:key:zBob", "owned-svc");
+        let err = service.restart("owned-svc".to_string(), 0, &bob).await.unwrap_err();
+        assert!(err.contains("owned-svc") && err.contains("owned by"), "{err}");
+    }
+
+    /// The boundary of the check above: a node-wide `orchestrator/deploy`
+    /// grantee -- the shape a supervisor holds (§0.28) -- restarts a
+    /// service it does not own without being blocked by the new check.
+    #[tokio::test]
+    async fn restart_by_a_node_wide_deploy_grantee_ignores_the_service_owner() {
+        let wasm_bytes = fs::read(greeter_wasm_path())
+            .expect("greeter fixture must be built (see test-components/greeter's own build step)");
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let alice = node_wide_caller("did:key:zAlice");
+
+        let manifest = DeployManifest {
+            config: ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema: None,
+                rotation_policy: None,
+                fdae_policy: None,
+                health_check: None,
+            },
+            service_type: WitServiceType::Wasm(WasmManifest {
+                source: ArtifactSource::Binary(wasm_bytes),
+                hash: None,
+                interfaces: vec![GREETER_INTERFACE_NAME.to_string()],
+            }),
+            registry_certificate: None,
+            instance_certificate: None,
+        };
+        service.deploy("owned-wasm-svc".to_string(), manifest, &alice).await.unwrap();
+        assert_eq!(service.registry.owner_of("owned-wasm-svc"), Some("did:key:zAlice".to_string()));
+
+        let bob = node_wide_caller("did:key:zBob");
+        service.restart("owned-wasm-svc".to_string(), 0, &bob).await.unwrap();
     }
 
     /// §0.23 / matrix row 14's blast-radius half at the substrate level: a
@@ -8360,6 +8436,86 @@ mod tests {
             matches!(status.services[0].probe, ProbeStatus::Passing),
             "{:?}",
             status.services[0].probe
+        );
+    }
+
+    /// M05A A5c §19.13 / D-A5c-12: the health-poll-cost budget, measured
+    /// **before** the resident loop exists so `poll_interval_secs`'s
+    /// default is chosen from this number rather than defended after it.
+    /// "One in-process node" (one real `ControlPlaneService`, dispatched
+    /// directly -- no client, no network) with 20 real `rpc`-probed wasm
+    /// services, all cache-missing on this, their first sweep --
+    /// `probe_cached`'s 5s minimum interval means every sweep at the
+    /// default 30s `poll_interval_secs` pays this cost, which is the
+    /// number this finding says is at risk. A4-05 already runs every
+    /// target's probe concurrently, so this also pins that the batching
+    /// holds at 20 rather than degrading linearly.
+    ///
+    /// Budget, set a priori: **under 2s** for the whole pass. The other
+    /// two numbers in the finding (**at most 2 RPCs per substrate**, and
+    /// **under 5% of one core**) are not asserted here: the RPC count is
+    /// this test's own shape by construction -- one `status` call for all
+    /// 20 ids, exactly what a supervisor's sweep issues, with the second
+    /// RPC (`app-instance-management-of`) being an O(1) generation read
+    /// unrelated to service count and already pinned as exactly one call
+    /// per substrate per pass at the call site (`SupervisorService::
+    /// max_held_generation_from_clients`); and CPU-percent is not
+    /// portably measurable from a `#[tokio::test]` -- a wall-clock budget
+    /// comfortably under 2s on a shared thread pool is the proxy for it
+    /// here, with `mise run bench:poll-cost` re-running this same test
+    /// with its duration printed for a repeatable number outside the
+    /// pass/fail assertion.
+    #[tokio::test]
+    async fn a_steady_state_sweep_of_twenty_services_stays_within_the_poll_budget() {
+        let wasm_bytes = fs::read(stream_test_wasm_path()).expect(
+            "stream-test fixture must be built (see test-components/stream-test's own build step)",
+        );
+        let temp_dir = tempfile::tempdir().unwrap();
+        let service = service_for_inline_tests(temp_dir.path()).await;
+        let owner = node_wide_caller("owner");
+
+        let mut service_ids = Vec::new();
+        for i in 0..20 {
+            let id = format!("budget-svc-{i}");
+            let manifest = DeployManifest {
+                config: ServiceConfig {
+                    env: vec![],
+                    args: vec![],
+                    custom_config: None,
+                    quota: None,
+                    schema: None,
+                    rotation_policy: None,
+                    fdae_policy: None,
+                    health_check: Some(WitHealthCheck::Rpc(WitRpcProbe {
+                        interface_name: STREAM_TEST_DRIVER_INTERFACE.to_string(),
+                        method: "get-uploaded-content".to_string(),
+                        timeout_ms: 2000,
+                    })),
+                },
+                service_type: WitServiceType::Wasm(WasmManifest {
+                    source: ArtifactSource::Binary(wasm_bytes.clone()),
+                    hash: None,
+                    interfaces: vec![STREAM_TEST_DRIVER_INTERFACE.to_string()],
+                }),
+                registry_certificate: None,
+                instance_certificate: None,
+            };
+            service.deploy(id.clone(), manifest, &owner).await.unwrap();
+            service_ids.push(id);
+        }
+
+        let start = std::time::Instant::now();
+        let status = service.status(service_ids, &owner).await.unwrap();
+        let elapsed = start.elapsed();
+
+        assert_eq!(status.services.len(), 20);
+        for s in &status.services {
+            assert!(matches!(s.probe, ProbeStatus::Passing), "{:?}", s.probe);
+        }
+        eprintln!("D-A5c-12 poll-cost budget: 20-service sweep took {elapsed:?} (budget 2s)");
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "a 20-service sweep took {elapsed:?}, over the 2s budget (D-A5c-12)"
         );
     }
 

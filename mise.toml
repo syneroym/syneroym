@@ -61,6 +61,10 @@ run = "cargo run -p syneroym-perf -- concurrency"
 description = "Run Soak / Endurance Tests"
 run = "cargo run -p syneroym-perf -- soak"
 
+[tasks."bench:poll-cost"]
+description = "Time the App Supervisor's health-poll-cost budget (M05A A5c D-A5c-12) against a 20-service in-process instance"
+run = "cargo test -p syneroym-control-plane --lib a_steady_state_sweep_of_twenty_services_stays_within_the_poll_budget -- --nocapture"
+
 [tasks."release:build"]
 description = "Build release binaries for syneroym-substrate and roymctl with target support"
 run = "./scripts/build-release.sh \"${1:-}\""

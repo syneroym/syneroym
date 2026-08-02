@@ -544,28 +544,70 @@ What's different from a single-substrate deploy:
 
 #### Operating an App with a Supervisor (`roymctl supervisor`)
 
-The **App Supervisor** (M05A Slice A5b, [ADR-0021](decisions/0021-binding-propagation-and-app-supervisor.md)
-§8) is a substrate role that holds desired state for the app instances it
-manages and applies it on request over its own `supervisor` interface. This
-slice has **no autonomy** — nothing runs on a timer yet, and every action
-below is a direct response to an RPC call. Two postures exist for who
-deploys and renews certificates: manual (`roymctl app deploy`, described
-above) or supervised (`roymctl supervisor …`, below). Pick one per app
-instance; a supervisor's `submit` and a plain `app deploy` are not meant to
-alternate against the same instance.
+The **App Supervisor** (M05A Slices A5b/A5c,
+[ADR-0021](decisions/0021-binding-propagation-and-app-supervisor.md) §8) is a
+substrate role that holds desired state for the app instances it manages and
+**reconciles it on a resident loop**, on top of answering direct RPC calls
+over its own `supervisor` interface. Two postures exist for who deploys and
+renews certificates: manual (`roymctl app deploy`, described above) or
+supervised (`roymctl supervisor …`, below). Pick one per app instance; a
+supervisor's `submit` and a plain `app deploy` are not meant to alternate
+against the same instance.
 
 ##### Enabling the role
 
 ```toml
 # substrate.toml
 [roles.supervisor]
-poll_interval_secs = 30       # unused until the resident loop (a later slice)
-db_name = "supervisor.db"     # desired state, journal, and alerts -- one file
-max_restart_attempts = 3      # unused until the resident loop
-restart_backoff_secs = 30     # unused until the resident loop
-alert_topic = "supervisor/alerts"  # unused until MQTT publication (a later slice)
+poll_interval_secs = 30       # the resident loop's tick period
+db_name = "supervisor.db"     # desired state, journal, alerts, and remediation -- one file
+max_restart_attempts = 3      # bounded restart-in-place ceiling per service (see "Remediation" below)
+restart_backoff_secs = 30     # minimum wait between two restart attempts for one service --
+                               # equal to poll_interval_secs by default, so at defaults a
+                               # service is restarted at most once per pass, deliberately
+alert_topic = "supervisor/alerts"  # MQTT topic prefix; see "Alerts over MQTT" below
 master_backup_dir = "master-backups"  # relative to app_data_dir; see below
 ```
+
+##### The resident loop
+
+Every `poll_interval_secs`, the loop sweeps every non-paused, non-retired
+instance: a health poll, then a **filtered** redeploy of only the services
+that changed since the last fully-landed plan or that never landed at all
+(never a full redeploy of everything on every pass), then one bounded
+restart attempt for any landed service the sweep found not running. A pass
+that outruns the interval drops the tick it overran rather than queuing a
+burst.
+
+**Remediation is restart-in-place only, and only for a landed service found
+not running.** A declared readiness probe failing (`ProbeFailing`) is
+alert-only — there is no way today to tell "still starting" from "genuinely
+broken" (`HealthCheck` has no initial-delay or failure-threshold field), so
+restarting on it would burn the attempt budget on a service that was never
+actually broken. A substrate that does not answer at all
+(`SubstrateUnreachable`) never triggers a restart either — restarting cannot
+fix a substrate the loop cannot reach. After `max_restart_attempts`, a
+service goes **terminal**: the loop stops restarting it, an alert
+(`RemediationExhausted`) names the way out, and only `supervisor
+force-reconcile` or `supervisor adopt` clears the terminal flag (both are a
+fresh start by construction) — an out-of-band recovery (an operator
+restarting the container themselves) still clears it the ordinary way too,
+through the next healthy sweep.
+
+**A resubmit that would move an already-landed service to a different
+substrate is refused, permanently — the loop never retries it.**
+Relocating a running member safely needs an `undeploy` on the old substrate,
+an ordering rule between that and the new deploy, and durable retry across
+both — none of which exist yet, so the supervisor refuses rather than risk
+two live copies of one member. The manual path today: `svc remove` on the
+old substrate, `roymctl app forget` to clear the stale placement record,
+then resubmit.
+
+**A service the resubmitted plan no longer names is never undeployed.** The
+loop raises `OrphanedService` and leaves it running — undeploying a stateful
+service because a manifest was edited is destructive, and `retire` is
+deliberately not a teardown either. Remove it by hand (`svc remove`) if
+that is what you actually want.
 
 ##### Custody: the supervisor mints its own member masters
 
@@ -658,13 +700,37 @@ roymctl --substrate <supervisor-node-did> supervisor alerts guild-instance-1
 ```
 
 `pause`/`resume` mark an instance in the supervisor's own store without
-touching anything on the substrates it manages. `release` hands an instance
-back to manual operation by clearing the management stamp on every placed
-substrate (does **not** undeploy); `retire` does the same and additionally
-makes the supervisor's own desired-state row terminal, refusing a later
-`submit` until the instance is adopted again. `force-reconcile` re-runs the
-mint/certify/apply pipeline against whatever is currently stored, without
-waiting for a resident loop (which does not exist in this slice).
+touching anything on the substrates it manages — `pause` stops the resident
+loop from touching this instance automatically, and nothing else; every
+other verb stays allowed while paused. `release` hands an instance back to
+manual operation by clearing the management stamp on every placed substrate
+(does **not** undeploy); `retire` does the same and additionally makes the
+supervisor's own desired-state row terminal, refusing a later `submit`
+until the instance is adopted again. `force-reconcile` re-runs the
+mint/certify/apply pipeline against whatever is currently stored — the same
+work the resident loop itself does when the instance's plan changes since
+the last landed one, run immediately rather than waiting for the next tick.
+
+##### Alerts over MQTT
+
+Every alert a pass newly opens is published as it happens, in addition to
+being queryable through `supervisor alerts`. Subscribe over the supervisor
+node's own `messaging` capability, targeting the supervisor node's own DID:
+
+```bash
+# The topic an operator subscribes to is unnamespaced -- `<alert_topic>/
+# <app-instance-id>`, matching `[roles.supervisor] alert_topic` above.
+# A SyneroymClient (or any messaging/subscribe caller) targeting the
+# supervisor node's own DID:
+client.subscribe("messaging", "supervisor/alerts/guild-instance-1")
+```
+
+Each message is the alert's `app_instance_id`, `kind`, and `label` as JSON.
+**Messages are not retained** — a subscriber connecting after an alert
+opened does not receive it; `supervisor alerts` (or `--all` for the full
+history including cleared ones) is the durable, replayable read. Any
+verified (non-anonymous) caller may subscribe; there is no capability gate
+on this yet (tracked in `deferred-backlog.md`).
 
 ### Interacting with Applications
 

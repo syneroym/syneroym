@@ -205,6 +205,23 @@ pub struct AppSandboxEngine {
     /// this fixed budget (and `STREAM_INSTANCE_POOL_HEADROOM` alongside
     /// it) in code, not raising `max_concurrent_instances` alone.
     abac_instance_permits: Arc<Semaphore>,
+    /// Pool slots a health sweep's `rpc` probes may hold concurrently, out
+    /// of the `STREAM_INSTANCE_POOL_HEADROOM` slots already reserved for
+    /// short-lived ordinary calls generally (M05A A5c §19.13/D-A5c-12,
+    /// found measuring the health-poll-cost budget). Before this, nothing
+    /// bounded how many `rpc` probes could instantiate a component at
+    /// once: `status_impl`'s own concurrent fan-out (A4-05) sends every
+    /// target's probe at the same time, and once that count exceeds this
+    /// engine's `total_component_instances` pool, wasmtime rejects the
+    /// excess outright -- a real deploy reporting `ProbeFailing` with a
+    /// resource-exhaustion message, not an unhealthy service. Acquiring a
+    /// permit here turns that into bounded queuing instead: a wasm-heavy
+    /// instance's sweep degrades to serialized-but-correct probing rather
+    /// than spurious failures. Scoped to probes specifically, not every
+    /// ordinary call -- the broader "nothing gates ordinary calls against
+    /// the pool at all" question is unrelated to this budget and out of
+    /// scope here.
+    probe_instance_permits: Arc<Semaphore>,
     /// Epoch-tick budget for an ordinary dispatch call (RPC/proxy
     /// invocation, message delivery, one streaming chunk) -- see
     /// `AppSandboxRole::dispatch_epoch_timeout_secs`.
@@ -395,6 +412,9 @@ impl AppSandboxEngine {
             max_concurrent_streams_per_service,
             stream_instance_permits: Arc::new(Semaphore::new(stream_instance_budget as usize)),
             abac_instance_permits: Arc::new(Semaphore::new(abac_instance_budget as usize)),
+            probe_instance_permits: Arc::new(Semaphore::new(
+                STREAM_INSTANCE_POOL_HEADROOM as usize,
+            )),
             dispatch_epoch_ticks,
             lifecycle_hook_epoch_ticks,
             abac_epoch_ticks,
@@ -698,6 +718,27 @@ impl AppSandboxEngine {
         let wasm_results =
             self.execute_wasm_vals(service_id, interface_name, request, caller).await?;
         crate::conversions::wasm_results_to_json(&wasm_results)
+    }
+
+    /// The `rpc` health-probe entry point (M05A A5c §19.13/D-A5c-12):
+    /// identical to [`Self::execute_wasm_json`] with `caller: None` (a
+    /// substrate-originated probe, the same choice `ProxyRouter::
+    /// invoke_local` makes for a guest-to-guest call), except bounded by
+    /// `probe_instance_permits` -- see that field's doc comment for why a
+    /// health sweep's own concurrent fan-out needs its own cap rather than
+    /// relying on wasmtime's pool to reject the excess.
+    pub async fn execute_probe_json(
+        &self,
+        service_id: &str,
+        interface_name: &str,
+        request: &JsonRpcRequest,
+    ) -> Result<Value> {
+        let _permit = self
+            .probe_instance_permits
+            .acquire()
+            .await
+            .map_err(|_| anyhow!("probe_instance_permits semaphore is closed"))?;
+        self.execute_wasm_json(service_id, interface_name, request, None).await
     }
 
     /// Everything shared by [`Self::execute_wasm`]/[`Self::execute_wasm_json`]:
@@ -2358,6 +2399,7 @@ mod tests {
             max_concurrent_streams_per_service: 8,
             stream_instance_permits: Arc::new(Semaphore::new(8)),
             abac_instance_permits: Arc::new(Semaphore::new(1)),
+            probe_instance_permits: Arc::new(Semaphore::new(2)),
             dispatch_epoch_ticks: ticks_for_secs(5),
             lifecycle_hook_epoch_ticks: ticks_for_secs(30),
             abac_epoch_ticks: ticks_for_secs(2),
@@ -2425,6 +2467,7 @@ mod tests {
             max_concurrent_streams_per_service: 8,
             stream_instance_permits: Arc::new(Semaphore::new(8)),
             abac_instance_permits: Arc::new(Semaphore::new(1)),
+            probe_instance_permits: Arc::new(Semaphore::new(2)),
             dispatch_epoch_ticks: ticks_for_secs(5),
             lifecycle_hook_epoch_ticks: ticks_for_secs(30),
             abac_epoch_ticks: ticks_for_secs(2),

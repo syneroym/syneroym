@@ -7,8 +7,9 @@ use std::{future::Future, pin::Pin, sync::Arc, time::Instant};
 
 use anyhow::{Result, anyhow};
 use serde_json::Value;
+use syneroym_control_plane::SUPERVISOR_RESERVED_SERVICE_ID;
 use syneroym_core::local_registry::SubstrateEndpoint;
-use syneroym_mqtt_broker::namespace_topic;
+use syneroym_mqtt_broker::{namespace_topic, namespace_topic_for_publish};
 use syneroym_rpc::{
     CallerContext, JsonRpcConverter, JsonRpcRequest, JsonRpcResponse, MESSAGING_MESSAGE_METHOD,
     MessagingNotification, NativeService, UNSUPPORTED_PROTOCOL_RPC_CODE, framing,
@@ -380,6 +381,38 @@ impl RouteHandler {
         self.handle_json_rpc_loop(reader, &mut writer, preamble, pipeline, caller.as_ref()).await
     }
 
+    /// Which namespacing rule a `messaging` subscribe uses, by service id
+    /// (M05A A5c §19.5c/§19.5e, D-A5c-6). Every *deployed service*'s
+    /// `messaging` endpoint namespaces with `namespace_topic`, whose
+    /// subscribe-side cross-service opt-in (a literal `svc/` prefix
+    /// passed through unchanged) is deliberate -- ADR-0010's Topic
+    /// Namespace Isolation section. The supervisor's own `messaging`
+    /// endpoint (`SUPERVISOR_RESERVED_SERVICE_ID`, registered under the
+    /// node's own DID, not a deployed service) is the one exception:
+    /// registering it under that opt-in would hand any verified caller a
+    /// subscribe handle for *any* `svc/<id>/#` topic on this node, not
+    /// just the alert topic it is meant to expose -- new reach on a
+    /// supervisor-only node, which hosts no deployed services to share
+    /// that reach with already. So this one service id is namespaced with
+    /// the **publish**-side rule instead (`namespace_topic_for_publish`,
+    /// unconditional prefix), which is also what `SupervisorService::
+    /// publish_opened_alerts` uses to build the matching string.
+    ///
+    /// This is a deliberate divergence, not an oversight -- do not
+    /// "correct" it back to `namespace_topic` for every service id; test
+    /// `a_subscribe_naming_another_services_topic_stays_inside_the_
+    /// supervisors_namespace` (`crates/router`) fails the moment it is.
+    /// Pulled out of `handle_messaging_subscribe` as its own function so
+    /// that test can exercise the branch directly, with no live broker or
+    /// stream needed.
+    fn subscribe_namespaced_topic(service_id: &str, topic: &str) -> String {
+        if service_id == SUPERVISOR_RESERVED_SERVICE_ID {
+            namespace_topic_for_publish(service_id, topic)
+        } else {
+            namespace_topic(service_id, topic)
+        }
+    }
+
     /// Holds `writer` open across the connection's lifetime, forwarding
     /// every message the broker delivers as a `messaging/message`
     /// notification frame (`id: null`). A native subscriber has no
@@ -403,7 +436,7 @@ impl RouteHandler {
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
     {
-        let namespaced = namespace_topic(&service_id, &topic);
+        let namespaced = Self::subscribe_namespaced_topic(&service_id, &topic);
         let (handle, mut receiver) = self
             .inner
             .messaging_broker
@@ -477,4 +510,44 @@ pub fn log_pipeline(
         endpoint = ?endpoint,
         "router planned stream handling"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// M05A A5c §19.5e (D-A5c-6, review F10): a subscribe naming a topic
+    /// that already looks like another service's fully-qualified topic
+    /// would, under the ordinary subscribe-side rule (`namespace_topic`),
+    /// pass through unchanged -- the deliberate cross-service opt-in every
+    /// *deployed service*'s `messaging` endpoint honours. The supervisor's
+    /// own endpoint must not: it is registered under the node's own DID,
+    /// hosts no deployed services to share that opt-in with, and holds
+    /// member master keys, so a caller must stay confined to
+    /// `svc/supervisor/...` regardless of what topic string it supplies.
+    #[test]
+    fn a_subscribe_naming_another_services_topic_stays_inside_the_supervisors_namespace() {
+        let namespaced = RouteHandler::subscribe_namespaced_topic(
+            SUPERVISOR_RESERVED_SERVICE_ID,
+            "svc/some-other-service/topic",
+        );
+        assert_eq!(
+            namespaced,
+            format!("svc/{SUPERVISOR_RESERVED_SERVICE_ID}/svc/some-other-service/topic"),
+            "the supervisor's own subscribe must not honour the cross-service opt-in"
+        );
+    }
+
+    /// The boundary: an ordinary deployed service's subscribe must keep
+    /// the cross-service opt-in unchanged -- this fix is scoped to the
+    /// supervisor's one reserved service id, not every `messaging`
+    /// endpoint on the node.
+    #[test]
+    fn an_ordinary_services_subscribe_keeps_the_cross_service_opt_in() {
+        let namespaced = RouteHandler::subscribe_namespaced_topic(
+            "did:key:zOrdinaryService",
+            "svc/some-other-service/topic",
+        );
+        assert_eq!(namespaced, "svc/some-other-service/topic");
+    }
 }

@@ -76,10 +76,14 @@ pub struct ActionRecord {
     pub substrate_did: String,
 }
 
+/// No `Pending` variant (M05A A5c §24): nothing in this tree ever wrote one
+/// -- `apply_plan` (`sdk/src/deploy.rs`) writes `InProgress` directly for
+/// each action since nothing enqueues work ahead of applying it, and the
+/// resident loop's own filtered plan (D-A5c-2) is applied the same way.
+/// Removed rather than left as a variant no writer will ever populate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ActionState {
-    Pending,
     InProgress,
     Completed,
     Failed,
@@ -88,7 +92,6 @@ pub enum ActionState {
 impl fmt::Display for ActionState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
-            Self::Pending => "PENDING",
             Self::InProgress => "IN_PROGRESS",
             Self::Completed => "COMPLETED",
             Self::Failed => "FAILED",
@@ -102,7 +105,6 @@ impl FromStr for ActionState {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "PENDING" => Ok(Self::Pending),
             "IN_PROGRESS" => Ok(Self::InProgress),
             "COMPLETED" => Ok(Self::Completed),
             "FAILED" => Ok(Self::Failed),

@@ -27,6 +27,14 @@ pub struct DesiredState {
     pub updated_at: i64,
 }
 
+/// One service's bounded-restart bookkeeping (§14 step 6, D-A5c-20).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RemediationState {
+    pub attempts: u32,
+    pub last_attempt_at: Option<i64>,
+    pub terminal: bool,
+}
+
 /// One SQLite file holding desired state, the deployment journal, and
 /// alerts (D-A5-11) -- what A4 promised A5 "the schema, the types, and the
 /// folding logic, not the file", cashed in.
@@ -80,7 +88,197 @@ impl SupervisorStore {
                 retired         INTEGER NOT NULL DEFAULT 0,
                 submitted_at    INTEGER NOT NULL,
                 updated_at      INTEGER NOT NULL
+             );
+             -- M05A A5c D-A5c-4 (§19.3): one counter per *dependent
+             -- service*, not per dependency -- every binding that service
+             -- emits shares this one value. An absent row reads as epoch 0,
+             -- meaning \"no supervisor has written here\" (the same meaning
+             -- `roymctl app deploy`'s own epoch-0 writes already carry), so
+             -- a hand-deployed instance this supervisor has never pushed to
+             -- converges rather than reading as a false negative.
+             CREATE TABLE IF NOT EXISTS binding_epochs (
+                app_instance_id TEXT NOT NULL,
+                logical_ref     TEXT NOT NULL,
+                epoch           INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (app_instance_id, logical_ref)
+             );
+             -- §14 step 6 / D-A5c-20: attempt bookkeeping for bounded
+             -- restart-in-place remediation, durable across a supervisor
+             -- restart. `terminal` is cleared by `force-reconcile` and
+             -- `adopt` (D-A5c-20), not only by a healthy sweep -- a
+             -- terminal `InstanceNotRunning` service is never restarted
+             -- again, so the sweep that would otherwise clear it never
+             -- fires.
+             CREATE TABLE IF NOT EXISTS remediation (
+                app_instance_id TEXT NOT NULL,
+                logical_ref     TEXT NOT NULL,
+                attempts        INTEGER NOT NULL DEFAULT 0,
+                last_attempt_at INTEGER,
+                terminal        INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (app_instance_id, logical_ref)
              );",
+        )?;
+        Ok(())
+    }
+
+    /// This dependent service's current binding epoch, or `0` if it has
+    /// never written one (D-A5c-4) -- the reading a hand-deployed or
+    /// never-pushed-to service must have for the convergence join to be
+    /// correct rather than a false negative.
+    pub fn binding_epoch(&self, app_instance_id: &str, logical_ref: &str) -> Result<u64> {
+        let conn = self.conn.lock().expect("supervisor store connection lock poisoned");
+        conn.query_row(
+            "SELECT epoch FROM binding_epochs WHERE app_instance_id = ?1 AND logical_ref = ?2",
+            params![app_instance_id, logical_ref],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        .map_or(Ok(0), |e| Ok(e as u64))
+    }
+
+    /// Advances this dependent service's binding epoch by one and returns
+    /// the new value. The supervisor's own invariant (D-A5c-4): this is
+    /// called before *every* write this service's bindings are part of --
+    /// a push or a deploy alike -- so any write this supervisor issues
+    /// always carries a strictly higher epoch than anything it has itself
+    /// written before, which is what makes `install_app_context`'s
+    /// unguarded `save_binding` correct rather than a regression.
+    pub fn advance_binding_epoch(&self, app_instance_id: &str, logical_ref: &str) -> Result<u64> {
+        let conn = self.conn.lock().expect("supervisor store connection lock poisoned");
+        conn.execute(
+            "INSERT INTO binding_epochs (app_instance_id, logical_ref, epoch)
+             VALUES (?1, ?2, 1)
+             ON CONFLICT(app_instance_id, logical_ref) DO UPDATE SET epoch = epoch + 1",
+            params![app_instance_id, logical_ref],
+        )?;
+        conn.query_row(
+            "SELECT epoch FROM binding_epochs WHERE app_instance_id = ?1 AND logical_ref = ?2",
+            params![app_instance_id, logical_ref],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|e| e as u64)
+        .map_err(Into::into)
+    }
+
+    /// Sets this dependent service's binding epoch to `epoch` if that is
+    /// higher than what is currently held, otherwise leaves it unchanged
+    /// -- the retry half of D-A5c-19 (§19.19/F4): a `Stale(held)` push
+    /// outcome retries at `held + 1`, which the caller computes and
+    /// passes here directly (no re-read: `Stale` already carries the
+    /// number), so the supervisor's own table agrees with the substrate
+    /// afterward. Unlike `advance_binding_epoch`, this sets an absolute
+    /// value, not a `+1` delta.
+    pub fn set_binding_epoch_at_least(
+        &self,
+        app_instance_id: &str,
+        logical_ref: &str,
+        epoch: u64,
+    ) -> Result<()> {
+        let conn = self.conn.lock().expect("supervisor store connection lock poisoned");
+        conn.execute(
+            "INSERT INTO binding_epochs (app_instance_id, logical_ref, epoch)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(app_instance_id, logical_ref) DO UPDATE SET
+                epoch = MAX(epoch, excluded.epoch)",
+            params![app_instance_id, logical_ref, epoch as i64],
+        )?;
+        Ok(())
+    }
+
+    /// This service's remediation bookkeeping, if any restart has ever
+    /// been attempted for it.
+    pub fn remediation_state(
+        &self,
+        app_instance_id: &str,
+        logical_ref: &str,
+    ) -> Result<Option<RemediationState>> {
+        let conn = self.conn.lock().expect("supervisor store connection lock poisoned");
+        conn.query_row(
+            "SELECT attempts, last_attempt_at, terminal FROM remediation
+             WHERE app_instance_id = ?1 AND logical_ref = ?2",
+            params![app_instance_id, logical_ref],
+            |row| {
+                Ok(RemediationState {
+                    attempts: row.get::<_, i64>(0)? as u32,
+                    last_attempt_at: row.get(1)?,
+                    terminal: row.get::<_, i64>(2)? != 0,
+                })
+            },
+        )
+        .optional()
+        .map_err(Into::into)
+    }
+
+    /// Records one restart attempt, incrementing the counter and stamping
+    /// `now`. Returns the new attempt count -- the loop's own remediation
+    /// policy (§14 step 3, Phase 6) compares this against
+    /// `max_restart_attempts` to decide whether this is the attempt that
+    /// goes terminal.
+    pub fn record_restart_attempt(
+        &self,
+        app_instance_id: &str,
+        logical_ref: &str,
+        now: i64,
+    ) -> Result<u32> {
+        let conn = self.conn.lock().expect("supervisor store connection lock poisoned");
+        conn.execute(
+            "INSERT INTO remediation (app_instance_id, logical_ref, attempts, last_attempt_at, \
+             terminal)
+             VALUES (?1, ?2, 1, ?3, 0)
+             ON CONFLICT(app_instance_id, logical_ref) DO UPDATE SET
+                attempts = attempts + 1, last_attempt_at = ?3",
+            params![app_instance_id, logical_ref, now],
+        )?;
+        conn.query_row(
+            "SELECT attempts FROM remediation WHERE app_instance_id = ?1 AND logical_ref = ?2",
+            params![app_instance_id, logical_ref],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|a| a as u32)
+        .map_err(Into::into)
+    }
+
+    /// Marks this service's remediation terminal -- matrix row 13:
+    /// exceeding `max_restart_attempts` stops the restart loop for this
+    /// service until `force-reconcile` or `adopt` clears it (D-A5c-20).
+    pub fn mark_remediation_terminal(
+        &self,
+        app_instance_id: &str,
+        logical_ref: &str,
+    ) -> Result<()> {
+        let conn = self.conn.lock().expect("supervisor store connection lock poisoned");
+        conn.execute(
+            "UPDATE remediation SET terminal = 1
+             WHERE app_instance_id = ?1 AND logical_ref = ?2",
+            params![app_instance_id, logical_ref],
+        )?;
+        Ok(())
+    }
+
+    /// Clears one service's remediation row entirely -- a healthy sweep's
+    /// own clearing path (§14 step 6): the service recovered on its own
+    /// (an out-of-band restart, a container restart policy) or the bounded
+    /// restart itself succeeded, so the next fault starts counting from
+    /// zero rather than compounding a stale attempt count.
+    pub fn clear_remediation(&self, app_instance_id: &str, logical_ref: &str) -> Result<()> {
+        let conn = self.conn.lock().expect("supervisor store connection lock poisoned");
+        conn.execute(
+            "DELETE FROM remediation WHERE app_instance_id = ?1 AND logical_ref = ?2",
+            params![app_instance_id, logical_ref],
+        )?;
+        Ok(())
+    }
+
+    /// Clears every remediation row for an instance -- `force-reconcile`
+    /// and `adopt`'s own clearing path (D-A5c-20 / F5): both are a fresh
+    /// start by construction, so a terminal `InstanceNotRunning` service
+    /// that nothing will ever restart again becomes escapable through
+    /// them rather than staying stuck forever.
+    pub fn clear_remediation_for_instance(&self, app_instance_id: &str) -> Result<()> {
+        let conn = self.conn.lock().expect("supervisor store connection lock poisoned");
+        conn.execute(
+            "DELETE FROM remediation WHERE app_instance_id = ?1",
+            params![app_instance_id],
         )?;
         Ok(())
     }
@@ -356,5 +554,104 @@ mod tests {
         assert!(!store.get("inst-1").unwrap().unwrap().retired);
         store.submit("inst-1", "{\"v\":2}", "{}", "did:key:owner", 0).unwrap();
         assert_eq!(store.get("inst-1").unwrap().unwrap().plan_json, "{\"v\":2}");
+    }
+
+    // ── M05A A5c: binding epochs (D-A5c-4) ──────────────────────────────
+
+    /// The epoch is held **per dependent service**, not per dependency
+    /// (§19.3, revised after review F2): there is only one row for
+    /// "frontend", so every dependency it declares reads the identical
+    /// value -- there is no per-dependency key to diverge in the first
+    /// place.
+    #[test]
+    fn a_written_epoch_is_held_per_dependent_and_shared_by_its_dependencies() {
+        let store = SupervisorStore::open_in_memory().unwrap();
+        let epoch = store.advance_binding_epoch("inst-1", "inst-1/frontend").unwrap();
+        assert_eq!(epoch, 1);
+        assert_eq!(store.binding_epoch("inst-1", "inst-1/frontend").unwrap(), 1);
+    }
+
+    /// F2's failure, pinned: the first draft's scalar `ApplyRequest.epoch`
+    /// let a redeploy write a *lower* epoch over a higher one a push had
+    /// already reached, so the next push then conflicted at an epoch the
+    /// substrate had already served. The counter must only ever advance.
+    #[test]
+    fn a_redeploy_after_a_push_carries_an_epoch_above_what_was_pushed() {
+        let store = SupervisorStore::open_in_memory().unwrap();
+        let pushed = store.advance_binding_epoch("inst-1", "inst-1/frontend").unwrap();
+        let redeployed = store.advance_binding_epoch("inst-1", "inst-1/frontend").unwrap();
+        assert!(redeployed > pushed, "redeploy epoch {redeployed} must exceed push epoch {pushed}");
+    }
+
+    /// F3's false negative, pinned: an instance this supervisor has never
+    /// written a binding for must read epoch 0, which is also what a
+    /// hand-deployed substrate reports (`roymctl app deploy` emits every
+    /// binding at epoch 0) -- so the pair reads converged, not stale.
+    #[test]
+    fn an_absent_row_reads_as_epoch_zero_so_a_hand_deployed_binding_converges() {
+        let store = SupervisorStore::open_in_memory().unwrap();
+        assert_eq!(store.binding_epoch("inst-1", "inst-1/frontend").unwrap(), 0);
+    }
+
+    // ── M05A A5c: remediation bookkeeping (§14 step 6, D-A5c-20) ────────
+
+    /// §14 step 6's durability claim: a supervisor restart must resume
+    /// remediation state, not reset every service's attempt count back to
+    /// zero and re-earn the same restart budget again.
+    #[test]
+    fn remediation_attempts_survive_a_store_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let store = SupervisorStore::open(dir.path(), "supervisor.db").unwrap();
+            store.record_restart_attempt("inst-1", "inst-1/backend", 1000).unwrap();
+            store.record_restart_attempt("inst-1", "inst-1/backend", 1030).unwrap();
+        }
+        let store = SupervisorStore::open(dir.path(), "supervisor.db").unwrap();
+        let state = store.remediation_state("inst-1", "inst-1/backend").unwrap().unwrap();
+        assert_eq!(state.attempts, 2);
+        assert_eq!(state.last_attempt_at, Some(1030));
+        assert!(!state.terminal);
+    }
+
+    #[test]
+    fn a_healthy_sweep_clears_the_remediation_row() {
+        let store = SupervisorStore::open_in_memory().unwrap();
+        store.record_restart_attempt("inst-1", "inst-1/backend", 1000).unwrap();
+        assert!(store.remediation_state("inst-1", "inst-1/backend").unwrap().is_some());
+
+        store.clear_remediation("inst-1", "inst-1/backend").unwrap();
+        assert!(store.remediation_state("inst-1", "inst-1/backend").unwrap().is_none());
+    }
+
+    /// F5 / D-A5c-20: `force-reconcile` is the escape hatch from a
+    /// terminal remediation row -- a service nothing will restart again
+    /// cannot become healthy on its own, so the healthy-sweep clearing
+    /// path above never fires for it.
+    #[test]
+    fn force_reconcile_clears_a_terminal_remediation_row() {
+        let store = SupervisorStore::open_in_memory().unwrap();
+        store.record_restart_attempt("inst-1", "inst-1/backend", 1000).unwrap();
+        store.mark_remediation_terminal("inst-1", "inst-1/backend").unwrap();
+        assert!(store.remediation_state("inst-1", "inst-1/backend").unwrap().unwrap().terminal);
+
+        // `force-reconcile`'s own clearing path: every remediation row for
+        // the instance, not just this one service.
+        store.clear_remediation_for_instance("inst-1").unwrap();
+        assert!(store.remediation_state("inst-1", "inst-1/backend").unwrap().is_none());
+    }
+
+    /// F5 / D-A5c-20's second clearing path: `adopt` mints a new
+    /// generation, a fresh start by construction, so it clears the same
+    /// way `force-reconcile` does.
+    #[test]
+    fn adopt_clears_a_terminal_remediation_row() {
+        let store = SupervisorStore::open_in_memory().unwrap();
+        store.record_restart_attempt("inst-1", "inst-1/backend", 1000).unwrap();
+        store.mark_remediation_terminal("inst-1", "inst-1/backend").unwrap();
+
+        // `adopt`'s clearing path is the identical store method --
+        // both verbs mean "start over", so both call it.
+        store.clear_remediation_for_instance("inst-1").unwrap();
+        assert!(store.remediation_state("inst-1", "inst-1/backend").unwrap().is_none());
     }
 }

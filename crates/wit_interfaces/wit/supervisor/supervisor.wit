@@ -91,6 +91,14 @@ interface supervisor {
     /// Hand the instance back to manual operation: clears the stamp on
     /// every substrate it is placed on. Does **not** undeploy.
     release:         func(app-instance-id: string) -> result<_, string>;
+    /// Stops the resident loop from touching this instance automatically
+    /// -- nothing else. Every other verb (`submit`/`force-reconcile`/
+    /// `adopt`/`release`/`retire`) stays allowed while paused; pausing
+    /// automation to act by hand is the ordinary reason to pause (M05A
+    /// A5c D-A5c-14). Takes effect at the start of the loop's next
+    /// *write* phase, not mid-pass -- a pause landing during a pass's
+    /// health sweep does not abort writes already in flight for that
+    /// same pass.
     pause:           func(app-instance-id: string) -> result<_, string>;
     %resume:         func(app-instance-id: string) -> result<_, string>;
     /// Stop managing and release. Deliberately not a teardown: retiring a

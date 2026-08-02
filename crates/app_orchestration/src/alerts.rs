@@ -47,6 +47,26 @@ pub enum AlertKind {
     /// supervisor has adopted the instance. This supervisor stops managing
     /// it rather than bumping its own generation to match.
     SupervisorSuperseded,
+    /// Bounded restart-in-place exhausted `max_restart_attempts` without the
+    /// service becoming healthy (M05A A5c, failure-matrix row 13). Terminal:
+    /// the service is not restarted again until `force-reconcile` or `adopt`
+    /// clears it (D-A5c-20).
+    RemediationExhausted,
+    /// A binding write landed at the current epoch with different content
+    /// than the substrate already held -- the two-writer signal ADR-0021 §3
+    /// requires be reported distinctly from a stale rejection (M05A A5c,
+    /// D-A5c-4/D-A5c-19).
+    BindingConflict,
+    /// A re-submit or `force-reconcile` tried to move a service to a
+    /// different substrate than where it is already landed. Refused, not
+    /// retried -- relocation is a milestone non-goal (M05A A5c, D-A5c-1).
+    PlacementChangeRefused,
+    /// A service the stored plan no longer names, but that the loop found
+    /// still running -- dropped by a plan-level edit rather than by the
+    /// operator. Not undeployed (D-A5c-3): undeploying a stateful service
+    /// because a manifest was edited is destructive, so this is a standing
+    /// alert instead.
+    OrphanedService,
 }
 
 impl fmt::Display for AlertKind {
@@ -58,6 +78,10 @@ impl fmt::Display for AlertKind {
             Self::CertificateNearExpiry => "CERTIFICATE_NEAR_EXPIRY",
             Self::CertificateExpired => "CERTIFICATE_EXPIRED",
             Self::SupervisorSuperseded => "SUPERVISOR_SUPERSEDED",
+            Self::RemediationExhausted => "REMEDIATION_EXHAUSTED",
+            Self::BindingConflict => "BINDING_CONFLICT",
+            Self::PlacementChangeRefused => "PLACEMENT_CHANGE_REFUSED",
+            Self::OrphanedService => "ORPHANED_SERVICE",
         };
         write!(f, "{}", s)
     }
@@ -74,6 +98,10 @@ impl FromStr for AlertKind {
             "CERTIFICATE_NEAR_EXPIRY" => Ok(Self::CertificateNearExpiry),
             "CERTIFICATE_EXPIRED" => Ok(Self::CertificateExpired),
             "SUPERVISOR_SUPERSEDED" => Ok(Self::SupervisorSuperseded),
+            "REMEDIATION_EXHAUSTED" => Ok(Self::RemediationExhausted),
+            "BINDING_CONFLICT" => Ok(Self::BindingConflict),
+            "PLACEMENT_CHANGE_REFUSED" => Ok(Self::PlacementChangeRefused),
+            "ORPHANED_SERVICE" => Ok(Self::OrphanedService),
             _ => Err(anyhow!("Unknown alert kind: {}", s)),
         }
     }
@@ -352,6 +380,31 @@ mod tests {
         let all = store.all(&inst).unwrap();
         assert_eq!(all.len(), 2);
         assert_eq!(store.active(&inst).unwrap().len(), 1);
+    }
+
+    /// M05A A5c §19.6: `AlertKind` has a `Display` and a `FromStr`, and a
+    /// variant added to one and not the other makes its own stored rows
+    /// unreadable at the next `alerts` call with no compile error. Every
+    /// variant, named explicitly rather than derived, so a future addition
+    /// here must also be added to this list.
+    #[test]
+    fn every_alert_kind_round_trips_through_display_and_from_str() {
+        let all = [
+            AlertKind::SubstrateUnreachable,
+            AlertKind::InstanceNotRunning,
+            AlertKind::ProbeFailing,
+            AlertKind::CertificateNearExpiry,
+            AlertKind::CertificateExpired,
+            AlertKind::SupervisorSuperseded,
+            AlertKind::RemediationExhausted,
+            AlertKind::BindingConflict,
+            AlertKind::PlacementChangeRefused,
+            AlertKind::OrphanedService,
+        ];
+        for kind in all {
+            let round_tripped: AlertKind = kind.to_string().parse().unwrap();
+            assert_eq!(round_tripped, kind, "{kind} did not round-trip");
+        }
     }
 
     #[test]
