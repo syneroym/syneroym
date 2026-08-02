@@ -771,6 +771,25 @@ impl SyneroymClient {
         }
     }
 
+    /// Install a freshly-issued instance certificate on an already-deployed
+    /// service, without reinstalling it (M05A A5's unattended renewal).
+    /// `generation` follows `restart`'s rule; send 0 for a standalone
+    /// service.
+    pub async fn renew_cert(
+        &self,
+        service_id: String,
+        generation: u64,
+        instance_certificate: String,
+    ) -> Result<()> {
+        let params = serde_json::to_value((service_id, generation, instance_certificate))?;
+        let res = self.request("orchestrator", "renew-cert", params).await?;
+        if res.result == serde_json::json!({"status": "cert_renewed"}) {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Certificate renewal failed: {:?}", res.result))
+        }
+    }
+
     /// Clear an app instance's management stamp (M05A A5a §0.24):
     /// `supervisor_did` back to `None`, `generation` back to 0. Without
     /// this, an adopted instance can never be hand-deployed again.

@@ -642,3 +642,68 @@ Full reasoning for both is in
 [slice-a5-implementation-plan.md](../planning/milestones/M05A-app-supervisor/slice-a5-implementation-plan.md)
 §0.8, §0.19, §0.29, and §0.31; only the corrections themselves are repeated
 here.
+
+**Amendment (2026-08-03, after Slice A5d implementation).** Three
+corrections, all found building the unattended renewal §3 promises.
+
+22. **§3 says the online-key posture "issues and renews unattended", and
+    there was no verb to renew with.** The only production writer of an
+    instance certificate was `deploy`'s own install path, inline in the
+    middle of a full reinstall. So "renew" had nowhere to send its write:
+    reusing `deploy` would have resent the whole inlined artifact,
+    re-validated the FDAE policy, and bumped the service's config
+    generation on every renewal cycle, for a change that touches none of
+    them. **Decision: a new `renew-cert` verb**, sized like `restart` -- an
+    in-place lifecycle action next to a full reinstall, not a variant of
+    one -- gated identically (the same capability, the same
+    owner-or-node-wide check, the same generation gate, the same "is this
+    actually deployed" signal). The install-time verification §1 describes
+    is now one shared function called from both paths rather than one
+    inline block, because two copies of DID and signature verification
+    drifting apart is a security bug, not a style one.
+23. **§3's "short-lived and revocable" now has enforcement behind both
+    words, and they are two different mechanisms with two different
+    numbers.** *Short-lived* is what the supervisor mints: every
+    certificate it issues, the first one and every renewal alike, carries
+    `renewed_cert_expires_hours` (4 hours by default), which is affordable
+    only because renewal is automated. Separately, every substrate now
+    enforces a **30-day ceiling** on any certificate offered to it, on
+    `deploy` and `renew-cert` alike. That ceiling is a backstop against an
+    unbounded mint, not a policy: an attended-posture operator's
+    certificates are deliberately long-lived by this section's own design,
+    and a ceiling tuned for an automated cadence would refuse their
+    deploys. *Revocable* was already true as a mechanism and had no
+    trigger -- nothing in the tree could add to a master anchor's
+    `revoked_keys` outside a unit test. It now has one
+    (`RegistryClient::revoke_instance_key`, behind `roymctl supervisor
+    revoke-instance`), and revoking also stops every path that would
+    re-mint that member's certificate, since a revocation the next
+    ordinary redeploy silently undoes is not a revocation.
+24. **§4's custody section gains the note that makes master-anchor refresh
+    safe without a compare-and-set.** An anchor stops verifying 24 hours
+    after it was signed, so republishing it is a standing duty, and each
+    republication is a read-modify-write against whatever the registry
+    currently holds. The registry offers no compare-and-set. It does not
+    need to here: amendment 20's mint-in-place means exactly one
+    `MasterVault` ever generates a given master, and `export-master`/
+    `import-master` move a *file* rather than granting two live processes
+    concurrent access -- so under the topology this tree supports there is
+    structurally one writer. That is the accepted invariant, stated rather
+    than assumed. A redundant-supervisor deployment sharing one master
+    across two live processes would break it, and is out of scope here.
+
+One thing this amendment deliberately does **not** fix, restated because
+A5d makes it sharper rather than better: the supervisor's vault is locked
+after every restart (the KEK is memory-only, by M04A's own design), so
+"unattended" in §3 means *unattended between KEK injections*. Cutting the
+minted lifetime to 4 hours also cuts the window an operator has to
+re-inject before managed members fail closed, from a day to somewhere
+between roughly one and four hours. The trade is deliberate -- it is what
+the online-key posture is for -- but it promotes the new `VaultLocked`
+alert from honest reporting to the single control between a routine
+restart and an outage. A KEK that survives a restart is a key-management
+decision with its own threat model, not something renewal can settle.
+
+Full reasoning is in
+[slice-a5-implementation-plan.md](../planning/milestones/M05A-app-supervisor/slice-a5-implementation-plan.md)
+Part V (§26-§32); only the corrections themselves are repeated here.

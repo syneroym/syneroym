@@ -3,6 +3,7 @@
 //! `AlertStore` (D-A5-11): one SQLite file, three concerns.
 
 use std::{
+    collections::BTreeSet,
     path::Path,
     sync::{Arc, Mutex},
 };
@@ -115,6 +116,29 @@ impl SupervisorStore {
                 attempts        INTEGER NOT NULL DEFAULT 0,
                 last_attempt_at INTEGER,
                 terminal        INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (app_instance_id, logical_ref)
+             );
+             -- M05A A5d: when each managed master's anchor was last
+             -- republished. Keyed by master DID rather than by instance,
+             -- because the anchor belongs to the master: two instances
+             -- naming the same master must not each refresh it on their
+             -- own schedule. Read every pass and compared against
+             -- `master_anchor_refresh_interval_secs`, so the refresh needs
+             -- no timer of its own.
+             CREATE TABLE IF NOT EXISTS master_anchor_refresh (
+                master_did        TEXT PRIMARY KEY,
+                last_refreshed_at INTEGER NOT NULL
+             );
+             -- M05A A5d: placements whose instance key an operator has
+             -- revoked. Read by *every* path that can mint a certificate
+             -- -- the renewal work-list, `submit`, and `force-reconcile`
+             -- alike -- because revoking a key and then silently
+             -- re-minting one on the next ordinary redeploy is not a
+             -- revocation at all.
+             CREATE TABLE IF NOT EXISTS revoked_placements (
+                app_instance_id TEXT NOT NULL,
+                logical_ref     TEXT NOT NULL,
+                revoked_at      INTEGER NOT NULL,
                 PRIMARY KEY (app_instance_id, logical_ref)
              );",
         )?;
@@ -281,6 +305,73 @@ impl SupervisorStore {
             params![app_instance_id],
         )?;
         Ok(())
+    }
+
+    /// When this master's anchor was last republished, or `None` if this
+    /// supervisor never has. An absent row reads as "overdue", which is the
+    /// correct first-pass behavior: an anchor this supervisor has no record
+    /// of publishing may not exist at the registry at all, and until it
+    /// does every certificate the master issues is unusable on the wire.
+    pub fn last_master_anchor_refresh(&self, master_did: &str) -> Result<Option<i64>> {
+        let conn = self.conn.lock().expect("supervisor store connection lock poisoned");
+        conn.query_row(
+            "SELECT last_refreshed_at FROM master_anchor_refresh WHERE master_did = ?1",
+            params![master_did],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(Into::into)
+    }
+
+    /// Stamps a successful anchor republication. Only called after
+    /// `refresh_master_anchor` returns cleanly -- a failed publish must
+    /// leave the previous stamp alone so the next pass retries.
+    pub fn record_master_anchor_refresh(&self, master_did: &str, at: i64) -> Result<()> {
+        let conn = self.conn.lock().expect("supervisor store connection lock poisoned");
+        conn.execute(
+            "INSERT INTO master_anchor_refresh (master_did, last_refreshed_at)
+             VALUES (?1, ?2)
+             ON CONFLICT(master_did) DO UPDATE SET last_refreshed_at = excluded.last_refreshed_at",
+            params![master_did, at],
+        )?;
+        Ok(())
+    }
+
+    /// Records that this placement's instance key has been revoked. From
+    /// here on, no path mints a certificate for it -- not the resident
+    /// loop's renewal work-list, not `submit`, not `force-reconcile`.
+    /// Idempotent: revoking twice keeps the first timestamp, which is the
+    /// one an operator would want to read.
+    pub fn revoke_placement(
+        &self,
+        app_instance_id: &str,
+        logical_ref: &str,
+        revoked_at: i64,
+    ) -> Result<()> {
+        let conn = self.conn.lock().expect("supervisor store connection lock poisoned");
+        conn.execute(
+            "INSERT OR IGNORE INTO revoked_placements (app_instance_id, logical_ref, revoked_at)
+             VALUES (?1, ?2, ?3)",
+            params![app_instance_id, logical_ref, revoked_at],
+        )?;
+        Ok(())
+    }
+
+    /// Every revoked placement of one app instance, by logical ref. Read
+    /// once per pass and once per operator write, then consulted in memory
+    /// -- a plan's services are checked against it individually.
+    pub fn revoked_placements(&self, app_instance_id: &str) -> Result<BTreeSet<String>> {
+        let conn = self.conn.lock().expect("supervisor store connection lock poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT logical_ref FROM revoked_placements WHERE app_instance_id = ?1
+             ORDER BY logical_ref ASC",
+        )?;
+        let mut rows = stmt.query(params![app_instance_id])?;
+        let mut out = BTreeSet::new();
+        while let Some(row) = rows.next()? {
+            out.insert(row.get::<_, String>(0)?);
+        }
+        Ok(out)
     }
 
     /// Replaces desired state for `app_instance_id`, keeping exactly one
@@ -638,6 +729,58 @@ mod tests {
         // the instance, not just this one service.
         store.clear_remediation_for_instance("inst-1").unwrap();
         assert!(store.remediation_state("inst-1", "inst-1/backend").unwrap().is_none());
+    }
+
+    // ── M05A A5d: anchor-refresh bookkeeping and revoked placements ─────
+
+    /// The refresh cadence is evaluated against this persisted fact on the
+    /// ordinary pass tick rather than by a timer of its own, so the fact
+    /// has to survive a supervisor restart -- otherwise every restart
+    /// republishes every anchor immediately, which is load without
+    /// benefit.
+    #[test]
+    fn store_persists_and_reads_back_last_refreshed_at_per_master() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let store = SupervisorStore::open(dir.path(), "supervisor.db").unwrap();
+            assert_eq!(
+                store.last_master_anchor_refresh("did:key:zMasterA").unwrap(),
+                None,
+                "a master this supervisor has never published for must read as overdue"
+            );
+            store.record_master_anchor_refresh("did:key:zMasterA", 1_000).unwrap();
+            store.record_master_anchor_refresh("did:key:zMasterB", 2_000).unwrap();
+            store.record_master_anchor_refresh("did:key:zMasterA", 3_000).unwrap();
+        }
+        let store = SupervisorStore::open(dir.path(), "supervisor.db").unwrap();
+        assert_eq!(store.last_master_anchor_refresh("did:key:zMasterA").unwrap(), Some(3_000));
+        assert_eq!(store.last_master_anchor_refresh("did:key:zMasterB").unwrap(), Some(2_000));
+    }
+
+    /// D-A5d-15: the revocation exclusion is a persisted fact because more
+    /// than one caller reads it -- the renewal work-list, `submit`, and
+    /// `force-reconcile` -- and because it must outlive the process that
+    /// recorded it.
+    #[test]
+    fn a_revoked_placement_is_recorded_per_member_and_survives_a_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let store = SupervisorStore::open(dir.path(), "supervisor.db").unwrap();
+            assert!(store.revoked_placements("inst-1").unwrap().is_empty());
+            store.revoke_placement("inst-1", "inst-1/backend", 1_000).unwrap();
+            // Idempotent, and scoped to the one member named.
+            store.revoke_placement("inst-1", "inst-1/backend", 2_000).unwrap();
+            store.revoke_placement("inst-2", "inst-2/backend", 1_000).unwrap();
+        }
+        let store = SupervisorStore::open(dir.path(), "supervisor.db").unwrap();
+        assert_eq!(
+            store.revoked_placements("inst-1").unwrap(),
+            BTreeSet::from(["inst-1/backend".to_string()])
+        );
+        assert_eq!(
+            store.revoked_placements("inst-2").unwrap(),
+            BTreeSet::from(["inst-2/backend".to_string()])
+        );
     }
 
     /// F5 / D-A5c-20's second clearing path: `adopt` mints a new

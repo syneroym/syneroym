@@ -5,11 +5,13 @@
 //! store, the interface, and master custody -- no autonomy: `status` sweeps
 //! on demand, and the resident reconcile loop is a later slice.
 
+pub mod anchors;
 pub mod inventory;
 pub mod keys;
 pub mod service;
 pub mod store;
 
+pub use anchors::{AnchorWriter, RegistryAnchorWriter};
 pub use keys::{MasterVault, MintedMaster, VaultError};
 pub use service::SupervisorService;
 pub use store::{DesiredState, SupervisorStore};

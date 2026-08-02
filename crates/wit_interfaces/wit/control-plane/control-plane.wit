@@ -207,6 +207,25 @@ interface orchestrator {
     /// ungated; send 0.
     restart: func(service-id: string, generation: u64) -> result<_, string>;
 
+    /// Install a freshly-issued instance certificate on an already-deployed
+    /// service, without reinstalling it -- the certificate-only counterpart
+    /// to `restart`. Deliberately not `deploy`: a renewal changes nothing
+    /// but the certificate, and routing it through a full reinstall would
+    /// resend the whole artifact and restart every dependent for a change
+    /// that touches neither.
+    ///
+    /// The certificate is verified exactly as `deploy` verifies the one a
+    /// manifest carries (it names this `service-id`, it certifies the key
+    /// this node derives for this caller, and its signature/window/scope
+    /// verify), and the service's native-capability channel is rebuilt
+    /// around the new certificate so later outbound calls sign under it.
+    ///
+    /// `generation` is checked against the app instance's recorded
+    /// management stamp when the service has one, exactly as `restart` is.
+    /// A standalone service with no app context is ungated; send 0.
+    renew-cert: func(service-id: string, generation: u64, instance-certificate: string)
+        -> result<_, string>;
+
     /// An app instance's management stamp, or `none` if no deploy has
     /// ever named it here. `adopt`'s read half (M05A A5): a supervisor
     /// must be able to learn the held generation before it can mint the

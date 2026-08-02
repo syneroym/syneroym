@@ -21,11 +21,15 @@ use serde_json::Value;
 use syneroym_app_orchestration::{
     AlertKind, DeploymentState, ReconcileAction, Reconciler,
     models::{
-        AppInstanceId, DeploymentPlan, LogicalServiceRef, PlannedService, ServiceId, SubstrateAlias,
+        AppInstanceId, DeploymentPlan, LogicalServiceRef, PlannedService, RotationPolicy,
+        ServiceId, SubstrateAlias,
     },
 };
 use syneroym_control_plane::SUPERVISOR_RESERVED_SERVICE_ID;
-use syneroym_identity::Identity;
+use syneroym_identity::{
+    Identity,
+    delegation::{is_expired_parts, is_near_expiry_parts},
+};
 use syneroym_mqtt_broker::{MqttBroker, namespace_topic_for_publish};
 use syneroym_rpc::{
     Ability, CallerContext, NativeInvocation, NativeResponse, NativeService,
@@ -45,7 +49,7 @@ use tokio::sync::Mutex as AsyncMutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    MasterVault, MintedMaster,
+    AnchorWriter, MasterVault, MintedMaster,
     inventory::{SupervisorInventory, SupervisorInventoryEntry},
     keys,
     store::{RemediationState, SupervisorStore},
@@ -57,10 +61,6 @@ const SUPERVISOR_INTERFACE: &str = "supervisor";
 /// out to several substrates concurrently rather than being a single
 /// operator-watched command.
 const MANAGED_SUBSTRATE_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-/// Matches `sdk::deploy::DEFAULT_INSTANCE_CERT_EXPIRES_HOURS` -- the
-/// attended posture's default, since A5b mints and certifies but does not
-/// yet renew (A5d).
-const INSTANCE_CERT_EXPIRES_HOURS: u64 = deploy::DEFAULT_INSTANCE_CERT_EXPIRES_HOURS;
 /// The `substrate_did` D-A5c-10's "planned but never landed"
 /// `InstanceNotRunning` alert is keyed under -- deliberately not the
 /// empty string `record_report`'s own per-service loop uses for a
@@ -68,6 +68,49 @@ const INSTANCE_CERT_EXPIRES_HOURS: u64 = deploy::DEFAULT_INSTANCE_CERT_EXPIRES_H
 /// alert on every pass right before it gets re-raised (see the call
 /// site's own comment).
 const NEVER_LANDED_SUBSTRATE_DID: &str = "supervisor:never-landed";
+
+/// One pass's write half, as arguments. A struct rather than nine
+/// positional parameters because A5d adds a fourth work-list to a signature
+/// that was already at the edge of readable.
+struct WritePhase<'a> {
+    instance_id: &'a AppInstanceId,
+    app_instance_id: &'a str,
+    plan: &'a DeploymentPlan,
+    needs_work: &'a BTreeSet<String>,
+    /// `(logical_ref, service_id, substrate_did)`, as `restart_candidates`
+    /// produces them.
+    restart_candidates: &'a [(String, String, String)],
+    renewal_candidates: &'a [RenewalCandidate],
+    did_to_alias: &'a BTreeMap<String, String>,
+    clients: &'a BTreeMap<SubstrateAlias, Arc<SyneroymClient>>,
+    now: u64,
+}
+
+/// One placed member due for certificate renewal this pass, resolved from
+/// the pass's own health report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RenewalCandidate {
+    logical_ref: String,
+    service_name: String,
+    /// The member master DID -- what the certificate names and what the
+    /// substrate knows the service by.
+    service_id: String,
+    substrate_did: String,
+    /// Carried so a failed renewal can tell "not yet expired" from "already
+    /// expired" without re-reading the report.
+    expires_at: u64,
+}
+
+/// Why one member's renewal stopped. `VaultLocked` is carved out from the
+/// generic per-step failure because it is one root cause with one operator
+/// action, and reporting it under two different alert kinds depending on
+/// which of the two checks caught it would defeat the point of raising it
+/// at all.
+#[derive(Debug)]
+enum RenewalFailure {
+    VaultLocked,
+    Step { step: &'static str, error: String },
+}
 
 pub struct SupervisorService {
     node_did: String,
@@ -97,6 +140,27 @@ pub struct SupervisorService {
     /// `SupervisorRole.restart_backoff_secs` (default 30) -- minimum wait
     /// between two restart attempts for one service (§19.14, phase 6).
     restart_backoff_secs: u64,
+    /// `SupervisorRole.renewed_cert_expires_hours` (default 4) -- the
+    /// lifetime *every* instance certificate this supervisor mints carries,
+    /// the first one at deploy and every renewal alike, so a managed member
+    /// has one certificate lifetime for its whole life rather than a long
+    /// first one followed by short renewals. Deliberately not `roymctl`'s
+    /// own attended-posture default, which serves an operator with no
+    /// renewal loop behind them.
+    renewed_cert_expires_hours: u64,
+    /// `SupervisorRole.max_renewals_per_pass` (default 5) -- how many
+    /// members one pass may renew before deferring the rest to the next
+    /// one. See the config field's own doc for why renewal, alone among
+    /// the pass's work-lists, needs a cap.
+    max_renewals_per_pass: u32,
+    /// `SupervisorRole.master_anchor_refresh_interval_secs` (default 12h).
+    master_anchor_refresh_interval_secs: u64,
+    /// Where master-anchor refreshes and revocations are published.
+    /// `None` when this node has no registry configured: an anchor
+    /// published nowhere would leave every consumer failing closed on a
+    /// record it cannot distinguish from a revoked one, so the supervisor
+    /// holds no writer rather than one that quietly does nothing.
+    anchor_writer: Option<Arc<dyn AnchorWriter>>,
     /// A per-app-instance async mutex, held for the whole duration of a
     /// loop pass and for the whole duration of `submit`/`force-reconcile`/
     /// `adopt`/`release`/`retire` -- not `pause`/`resume` (single-column
@@ -143,6 +207,10 @@ impl SupervisorService {
         poll_interval_secs: u64,
         max_restart_attempts: u32,
         restart_backoff_secs: u64,
+        renewed_cert_expires_hours: u64,
+        max_renewals_per_pass: u32,
+        master_anchor_refresh_interval_secs: u64,
+        anchor_writer: Option<Arc<dyn AnchorWriter>>,
     ) -> Self {
         Self {
             node_did,
@@ -154,6 +222,10 @@ impl SupervisorService {
             poll_interval_secs,
             max_restart_attempts,
             restart_backoff_secs,
+            renewed_cert_expires_hours,
+            max_renewals_per_pass,
+            master_anchor_refresh_interval_secs,
+            anchor_writer,
             instance_locks: DashMap::new(),
             last_reconciled: DashMap::new(),
             cancellation_token: CancellationToken::new(),
@@ -495,6 +567,28 @@ impl SupervisorService {
             let _ = self.store.clear_remediation(app_instance_id, &svc.logical_ref.to_string());
         }
 
+        // M05A A5d: the fourth work-list. Its input is this pass's own
+        // health poll -- `ServiceHealth` already carries the certificate's
+        // issued/expires pair -- so renewal needs no poll and no cadence of
+        // its own. Deduped against `needs_work` (a service about to go
+        // through `apply_plan` gets a fresh certificate there, so renewing
+        // it here would certify it twice in one pass) but deliberately
+        // *not* against `restart_candidates`: a restart reloads the running
+        // instance and touches no certificate, so a service under
+        // remediation still needs its own renewal check.
+        let revoked = self.store.revoked_placements(app_instance_id).unwrap_or_default();
+        let renewal_candidates = Self::renewal_candidates(
+            &report,
+            &needs_work,
+            &revoked,
+            now,
+            self.max_renewals_per_pass,
+        );
+        // D-A5d-9's clearing rule, the same recomputed-not-flagged shape
+        // `Superseded` and `remediation.terminal` already use: a member the
+        // substrate now reports with a healthy certificate window has no
+        // stalled renewal, whatever an earlier pass raised.
+        self.clear_settled_renewal_alerts(&instance_id, &report, now);
         self.publish_opened_alerts(app_instance_id, &opened).await;
 
         let held_max = Self::max_held_generation_from_clients(
@@ -516,17 +610,25 @@ impl SupervisorService {
             return;
         }
 
-        if !needs_work.is_empty() || !restart_candidates.is_empty() {
-            self.apply_write_phase(
-                &instance_id,
+        // The anchor refresh is evaluated every pass against a persisted
+        // fact rather than on a timer of its own, so it -- unlike the three
+        // work-lists -- always has something to check.
+        if !needs_work.is_empty()
+            || !restart_candidates.is_empty()
+            || !renewal_candidates.is_empty()
+            || self.anchor_writer.is_some()
+        {
+            self.apply_write_phase(WritePhase {
+                instance_id: &instance_id,
                 app_instance_id,
-                &plan,
-                &needs_work,
-                &restart_candidates,
-                &did_to_alias,
-                &clients,
+                plan: &plan,
+                needs_work: &needs_work,
+                restart_candidates: &restart_candidates,
+                renewal_candidates: &renewal_candidates,
+                did_to_alias: &did_to_alias,
+                clients: &clients,
                 now,
-            )
+            })
             .await;
         }
         self.last_reconciled.insert(app_instance_id.to_string(), now as i64);
@@ -545,18 +647,18 @@ impl SupervisorService {
     /// phase", not mid-write; this is that write phase's own boundary).
     /// Also picks up a generation `adopt` may have bumped since the
     /// pass's own early read.
-    #[allow(clippy::too_many_arguments)]
-    async fn apply_write_phase(
-        &self,
-        instance_id: &AppInstanceId,
-        app_instance_id: &str,
-        plan: &DeploymentPlan,
-        needs_work: &BTreeSet<String>,
-        restart_candidates: &[(String, String, String)],
-        did_to_alias: &BTreeMap<String, String>,
-        clients: &BTreeMap<SubstrateAlias, Arc<SyneroymClient>>,
-        now: u64,
-    ) {
+    async fn apply_write_phase(&self, phase: WritePhase<'_>) {
+        let WritePhase {
+            instance_id,
+            app_instance_id,
+            plan,
+            needs_work,
+            restart_candidates,
+            renewal_candidates,
+            did_to_alias,
+            clients,
+            now,
+        } = phase;
         let Ok(Some(fresh_state)) = self.store.get(app_instance_id) else { return };
         if fresh_state.paused || fresh_state.retired {
             return;
@@ -640,7 +742,321 @@ impl SupervisorService {
             )
             .await;
         }
+
+        self.renew_due_members(
+            instance_id,
+            app_instance_id,
+            plan,
+            renewal_candidates,
+            did_to_alias,
+            &Self::actors_from_clients(clients),
+            fresh_state.generation,
+            now,
+            &mut opened,
+        )
+        .await;
+        self.refresh_due_master_anchors(plan, now).await;
         self.publish_opened_alerts(app_instance_id, &opened).await;
+    }
+
+    /// The placed members whose installed certificate is inside its
+    /// near-expiry window this pass, minus the two exclusions D-A5d-12
+    /// names and capped at `max_renewals_per_pass`.
+    ///
+    /// A pure function of the pass's own health report, so the whole
+    /// selection rule is testable with no vault, no client, and no store.
+    /// The near-expiry decision itself is `is_near_expiry_parts` -- the
+    /// same 25%-of-lifetime definition the substrate's own sweep uses, so
+    /// the two cannot disagree about what "due" means.
+    fn renewal_candidates(
+        report: &health::HealthReport,
+        needs_work: &BTreeSet<String>,
+        revoked: &BTreeSet<String>,
+        now: u64,
+        cap: u32,
+    ) -> Vec<RenewalCandidate> {
+        report
+            .services
+            .iter()
+            .filter(|svc| {
+                let l_ref = svc.logical_ref.to_string();
+                !needs_work.contains(&l_ref) && !revoked.contains(&l_ref)
+            })
+            .filter_map(|svc| {
+                let issued = svc.instance_certificate_issued_at?;
+                let expires = svc.instance_certificate_expires_at?;
+                is_near_expiry_parts(issued, expires, now).then(|| RenewalCandidate {
+                    logical_ref: svc.logical_ref.to_string(),
+                    service_name: svc.logical_ref.service_name.to_string(),
+                    service_id: svc.service_id.clone(),
+                    substrate_did: svc.substrate_did.clone(),
+                    expires_at: expires,
+                })
+            })
+            .take(cap as usize)
+            .collect()
+    }
+
+    /// Mint, install, and (if the plan says so) rotate, once per due
+    /// member.
+    ///
+    /// The vault check comes first and covers the whole work-list:
+    /// `kek_is_loaded` is a cheap, no-I/O read, and a locked vault means
+    /// *every* mint below would fail identically. Skipping the list rather
+    /// than the pass is deliberate -- health, remediation, and the anchor
+    /// refresh all continue, since none of them opens the vault.
+    #[allow(clippy::too_many_arguments)]
+    async fn renew_due_members(
+        &self,
+        instance_id: &AppInstanceId,
+        app_instance_id: &str,
+        plan: &DeploymentPlan,
+        candidates: &[RenewalCandidate],
+        did_to_alias: &BTreeMap<String, String>,
+        actors: &BTreeMap<SubstrateAlias, Arc<dyn SubstrateActor>>,
+        generation: u64,
+        now: u64,
+        opened: &mut Vec<(AlertKind, String)>,
+    ) {
+        if candidates.is_empty() {
+            return;
+        }
+        if !self.vault.kek_is_loaded() {
+            for candidate in candidates {
+                self.raise_vault_locked(instance_id, candidate, opened);
+            }
+            return;
+        }
+
+        for candidate in candidates {
+            let Some(alias) = did_to_alias.get(&candidate.substrate_did) else { continue };
+            let Some(actor) = actors.get(&SubstrateAlias::new(alias.clone())) else { continue };
+            if let Err(failure) = self.renew_one_member(plan, candidate, actor, generation).await {
+                match failure {
+                    // D-A5d-17: one root cause, one alert kind. A vault
+                    // locked between `kek_is_loaded` above and the mint
+                    // below is the same condition, found later, and must
+                    // not surface under a different name for it.
+                    RenewalFailure::VaultLocked => {
+                        self.raise_vault_locked(instance_id, candidate, opened);
+                    }
+                    RenewalFailure::Step { step, error } => {
+                        self.raise_renewal_stalled(
+                            instance_id,
+                            candidate,
+                            &format!(
+                                "renewal {step} for '{}' failed: {error}",
+                                candidate.logical_ref
+                            ),
+                            now,
+                            opened,
+                        );
+                    }
+                }
+                tracing::warn!(
+                    app_instance_id,
+                    logical_ref = %candidate.logical_ref,
+                    "certificate renewal did not complete this pass; retrying next pass"
+                );
+            }
+        }
+    }
+
+    /// One member's mint -> install -> rotate, in that order, stopping at
+    /// the first failure. A restart is deliberately not attempted after a
+    /// failed install: rotating a service whose new certificate never
+    /// landed serves nothing and spends a lifecycle action for no gain.
+    async fn renew_one_member(
+        &self,
+        plan: &DeploymentPlan,
+        candidate: &RenewalCandidate,
+        actor: &Arc<dyn SubstrateActor>,
+        generation: u64,
+    ) -> Result<(), RenewalFailure> {
+        let master = keys::master_for_member(
+            &self.vault,
+            &plan.app_instance_id.to_string(),
+            &candidate.service_name,
+        )
+        .await
+        .map_err(|e| match e {
+            keys::VaultError::Locked => RenewalFailure::VaultLocked,
+            other => RenewalFailure::Step { step: "master lookup", error: other.to_string() },
+        })?;
+
+        let cert = deploy::certify_instance_via_actor(
+            actor,
+            &master,
+            &candidate.service_id,
+            self.renewed_cert_expires_hours,
+        )
+        .await
+        .map_err(|e| RenewalFailure::Step { step: "mint", error: e.to_string() })?;
+        let cert_json = cert
+            .to_json()
+            .map_err(|e| RenewalFailure::Step { step: "mint", error: e.to_string() })?;
+
+        actor
+            .renew_cert(candidate.service_id.clone(), generation, cert_json)
+            .await
+            .map_err(|error| RenewalFailure::Step { step: "install", error })?;
+
+        // The one place `RotationPolicy` is read. The substrate never sees
+        // it: the supervisor holds the stored plan, so this is a local
+        // decision made once the new certificate is known to be installed.
+        let rotation = plan
+            .services
+            .iter()
+            .find(|svc| svc.logical_ref.to_string() == candidate.logical_ref)
+            .map(|svc| svc.config.rotation_policy);
+        if rotation == Some(RotationPolicy::RestartOnRotation) {
+            actor
+                .restart(candidate.service_id.clone(), generation)
+                .await
+                .map_err(|error| RenewalFailure::Step { step: "rotation restart", error })?;
+        }
+        Ok(())
+    }
+
+    fn raise_vault_locked(
+        &self,
+        instance_id: &AppInstanceId,
+        candidate: &RenewalCandidate,
+        opened: &mut Vec<(AlertKind, String)>,
+    ) {
+        if let Ok(true) = self.store.alerts.raise(
+            instance_id,
+            Some(&candidate.logical_ref),
+            None,
+            &candidate.substrate_did,
+            AlertKind::VaultLocked,
+            &format!(
+                "'{}' needs its instance certificate renewed, but this supervisor's vault is \
+                 locked so its member master cannot be read; run: roymctl --substrate <this node> \
+                 security inject-kek --kek-hex <...>",
+                candidate.logical_ref
+            ),
+        ) {
+            opened.push((AlertKind::VaultLocked, candidate.logical_ref.clone()));
+        }
+    }
+
+    /// A renewal that did not complete. `CertificateExpired` once the
+    /// window has actually closed -- a current outage, not a reminder --
+    /// and `CertificateNearExpiry` while there is still time (A4-04's own
+    /// distinction, applied to the renewal path).
+    fn raise_renewal_stalled(
+        &self,
+        instance_id: &AppInstanceId,
+        candidate: &RenewalCandidate,
+        detail: &str,
+        now: u64,
+        opened: &mut Vec<(AlertKind, String)>,
+    ) {
+        let kind = if is_expired_parts(candidate.expires_at, now) {
+            AlertKind::CertificateExpired
+        } else {
+            AlertKind::CertificateNearExpiry
+        };
+        if let Ok(true) = self.store.alerts.raise(
+            instance_id,
+            Some(&candidate.logical_ref),
+            None,
+            &candidate.substrate_did,
+            kind,
+            detail,
+        ) {
+            opened.push((kind, candidate.logical_ref.clone()));
+        }
+    }
+
+    /// Clears every renewal-related alert for a member the substrate now
+    /// reports with a certificate comfortably inside its window. Recomputed
+    /// from the substrate's own answer each pass rather than tracked as a
+    /// flag, so a renewal that succeeded out of band clears these just as a
+    /// supervisor-driven one does.
+    fn clear_settled_renewal_alerts(
+        &self,
+        instance_id: &AppInstanceId,
+        report: &health::HealthReport,
+        now: u64,
+    ) {
+        for svc in &report.services {
+            let (Some(issued), Some(expires)) =
+                (svc.instance_certificate_issued_at, svc.instance_certificate_expires_at)
+            else {
+                continue;
+            };
+            if is_near_expiry_parts(issued, expires, now) {
+                continue;
+            }
+            let l_ref = svc.logical_ref.to_string();
+            for kind in [
+                AlertKind::CertificateNearExpiry,
+                AlertKind::CertificateExpired,
+                AlertKind::VaultLocked,
+            ] {
+                let _ =
+                    self.store.alerts.clear(instance_id, Some(&l_ref), &svc.substrate_did, kind);
+            }
+        }
+    }
+
+    /// Republishes each master this instance's plan names, but only once
+    /// its `master_anchor_refresh_interval_secs` has elapsed since the last
+    /// successful publication. Evaluated on the ordinary pass tick against
+    /// a persisted fact rather than on a timer of its own -- the same shape
+    /// the loop's other periodic decisions already use.
+    ///
+    /// Failures are logged, never alerted: an anchor that is still inside
+    /// its 24-hour validity window is not yet a fault, and the interval
+    /// leaves several passes of margin before it becomes one.
+    async fn refresh_due_master_anchors(&self, plan: &DeploymentPlan, now: u64) {
+        let Some(writer) = &self.anchor_writer else { return };
+        if !self.vault.kek_is_loaded() {
+            return;
+        }
+        let now = now as i64;
+        let interval = self.master_anchor_refresh_interval_secs as i64;
+        let mut refreshed: BTreeSet<String> = BTreeSet::new();
+        for svc in &plan.services {
+            let master_did = svc.service_id.to_string();
+            // Two services naming one master (not reachable from today's
+            // compiler, but cheap to be right about) share one anchor and
+            // must not each republish it in the same pass.
+            if !refreshed.insert(master_did.clone()) {
+                continue;
+            }
+            let last = self.store.last_master_anchor_refresh(&master_did).unwrap_or(None);
+            if last.is_some_and(|at| now.saturating_sub(at) < interval) {
+                continue;
+            }
+            let master = match keys::master_for_member(
+                &self.vault,
+                &plan.app_instance_id.to_string(),
+                svc.logical_ref.service_name.as_str(),
+            )
+            .await
+            {
+                Ok(m) => m,
+                Err(e) => {
+                    tracing::warn!(master_did, error = %e, "cannot read this master to refresh its anchor");
+                    continue;
+                }
+            };
+            match writer.refresh(&master).await {
+                Ok(()) => {
+                    if let Err(e) = self.store.record_master_anchor_refresh(&master_did, now) {
+                        tracing::warn!(master_did, error = %e, "failed to stamp a master-anchor refresh");
+                    }
+                }
+                Err(e) => tracing::warn!(
+                    master_did,
+                    error = %e,
+                    "failed to refresh a master anchor; retrying on a later pass"
+                ),
+            }
+        }
     }
 
     /// The plan to journal as this pass's new baseline, as distinct from
@@ -1127,12 +1543,63 @@ impl SupervisorService {
         generation: u64,
         minted: Vec<MintedMaster>,
     ) -> Result<Vec<MintedMaster>, String> {
+        // M05A A5d / D-A5d-15: the one place every certificate-minting
+        // caller passes through -- the resident loop, `submit`, and
+        // `force-reconcile` alike. Filtering here rather than only in the
+        // renewal work-list is what makes revocation stick: `submit` and
+        // `force-reconcile` both call this with the full stored plan, so
+        // without this an ordinary resubmit would silently re-mint and
+        // reinstall the very key the operator just revoked. Skipped, not
+        // failed, the same way a placement-changed service is -- the rest
+        // of the plan still reconciles.
+        let app_instance_id = plan.app_instance_id.to_string();
+        let revoked = self.store.revoked_placements(&app_instance_id).unwrap_or_default();
+        // `None` on the ordinary path, so a plan carrying hex-inlined wasm
+        // artifacts is not cloned just to discover nothing is revoked.
+        let filtered: Option<(DeploymentPlan, DeploymentPlan)> = if revoked.is_empty() {
+            None
+        } else {
+            let mut opened = Vec::new();
+            if let Ok(instance_id) = AppInstanceId::try_new(app_instance_id.clone()) {
+                for svc in &plan.services {
+                    let l_ref = svc.logical_ref.to_string();
+                    if !revoked.contains(&l_ref) {
+                        continue;
+                    }
+                    if let Ok(true) = self.store.alerts.raise(
+                        &instance_id,
+                        Some(&l_ref),
+                        svc.substrate.as_ref().map(SubstrateAlias::as_str),
+                        &svc.substrate.as_ref().map_or_else(String::new, ToString::to_string),
+                        AlertKind::InstanceRevoked,
+                        &format!(
+                            "'{l_ref}' has a revoked instance key, so it is not reinstalled or \
+                             re-certified; the rest of the plan still reconciles. Undeploy it \
+                             separately if the process itself should stop"
+                        ),
+                    ) {
+                        opened.push((AlertKind::InstanceRevoked, l_ref));
+                    }
+                }
+            }
+            self.publish_opened_alerts(&app_instance_id, &opened).await;
+            let mut filtered = plan.clone();
+            filtered.services.retain(|s| !revoked.contains(&s.logical_ref.to_string()));
+            let mut filtered_record = record_plan.clone();
+            filtered_record.services.retain(|s| !revoked.contains(&s.logical_ref.to_string()));
+            Some((filtered, filtered_record))
+        };
+        let (plan, record_plan) = match &filtered {
+            Some((p, r)) => (p, r),
+            None => (plan, record_plan),
+        };
+
         let (instance_certs, registry_certs) = deploy::certify_placed_members(
             plan,
             masters,
             clients,
             None,
-            INSTANCE_CERT_EXPIRES_HOURS,
+            self.renewed_cert_expires_hours,
         )
         .await
         .map_err(|e| e.to_string())?;
@@ -1847,6 +2314,149 @@ impl SupervisorService {
         Ok(NativeResponse { payload: serde_json::json!({"status": "imported"}) })
     }
 
+    /// Revoke one placed member's instance key: append its derived DID to
+    /// the master anchor's revoked list, then record the placement revoked
+    /// so nothing mints it a fresh certificate afterwards.
+    ///
+    /// Under the instance lock for the whole verb, the same discipline
+    /// every other instance-scoped write follows. Without it, this and a
+    /// resident pass's renewal of the same member race: the pass could mint
+    /// and install a fresh certificate in the gap between the anchor write
+    /// and the exclusion write landing, which is precisely the window this
+    /// verb exists to close.
+    ///
+    /// Order matters. The local exclusion is written **after** the anchor
+    /// publish succeeds, so a failed publish leaves the placement under
+    /// ordinary management rather than half-revoked -- excluded from
+    /// renewal here while still fully trusted by every consumer.
+    async fn handle_revoke_instance(
+        &self,
+        caller: &CallerContext,
+        params: Value,
+    ) -> RpcResult<NativeResponse> {
+        self.require_admin(caller)?;
+        let (app_instance_id, logical_ref): (String, String) = serde_json::from_value(params)
+            .map_err(|e| {
+                RpcError::InvalidParams(format!("failed to parse revoke-instance params: {e}"))
+            })?;
+        let lock = self.instance_lock(&app_instance_id);
+        let _guard = lock.lock().await;
+
+        // Checked here as well as inside `record_revocation`, so a node
+        // with no registry refuses before spending a round trip resolving
+        // an instance identity it can do nothing with.
+        if self.anchor_writer.is_none() {
+            return Err(RpcError::InternalError(
+                "this supervisor's node has no registry configured (substrate.registry_url), so \
+                 it cannot publish a revocation; a revocation nothing can resolve is not a \
+                 revocation"
+                    .to_string(),
+            ));
+        }
+
+        let state = self
+            .store
+            .get(&app_instance_id)
+            .map_err(|e| RpcError::InternalError(e.to_string()))?
+            .ok_or_else(|| {
+                RpcError::InternalError(format!(
+                    "no desired state submitted for app instance '{app_instance_id}'"
+                ))
+            })?;
+        let plan = DeploymentPlan::from_json(&state.plan_json)
+            .map_err(|e| RpcError::InternalError(e.to_string()))?;
+        let inventory: SupervisorInventory = serde_json::from_str(&state.inventory_json)
+            .map_err(|e| RpcError::InternalError(e.to_string()))?;
+
+        let svc =
+            plan.services.iter().find(|s| s.logical_ref.to_string() == logical_ref).ok_or_else(
+                || {
+                    RpcError::InvalidParams(format!(
+                        "app instance '{app_instance_id}' has no member '{logical_ref}' in its \
+                         stored plan"
+                    ))
+                },
+            )?;
+        let alias = svc.substrate.as_ref().ok_or_else(|| {
+            RpcError::InternalError(format!("member '{logical_ref}' has no substrate placement"))
+        })?;
+        let entry = inventory.get(alias.as_str()).ok_or_else(|| {
+            RpcError::InternalError(format!("no inventory entry for substrate alias '{alias}'"))
+        })?;
+
+        // Re-derived from the hosting substrate rather than read from a
+        // stored table: the instance DID is a deterministic function of
+        // (node identity, calling DID, service_id), so the substrate that
+        // hosts the member is the authority on what its key actually is.
+        let mut client = self
+            .connected_client(entry)
+            .await
+            .map_err(|e| RpcError::InternalError(format!("failed to reach '{alias}': {e}")))?;
+        let identity = client.instance_identity(svc.service_id.as_str()).await;
+        let _ = client.shutdown().await;
+        let instance_did = identity
+            .map_err(|e| {
+                RpcError::InternalError(format!(
+                    "failed to resolve the instance identity for '{logical_ref}': {e}"
+                ))
+            })?
+            .instance_did;
+
+        self.record_revocation(
+            &app_instance_id,
+            &logical_ref,
+            svc.logical_ref.service_name.as_str(),
+            &instance_did,
+        )
+        .await
+        .map_err(RpcError::InternalError)?;
+
+        Ok(NativeResponse {
+            payload: serde_json::json!({
+                "status": "revoked",
+                "instance_did": instance_did,
+                "note": "the member's process is still running; undeploy it separately if that is \
+                         intended",
+            }),
+        })
+    }
+
+    /// `revoke-instance`'s two writes, once the instance DID is known.
+    /// Split from the verb so the ordering below is exercisable without a
+    /// live substrate answering `resolve-instance-identity` -- which is the
+    /// only reason the verb needs a network at all.
+    ///
+    /// The anchor publish comes first and the local exclusion only after it
+    /// succeeds. Reversed, a failed publish would leave the placement
+    /// half-revoked: excluded from renewal here, while every consumer still
+    /// fully trusts the key -- so it would quietly age out instead of
+    /// failing closed, which is the opposite of what was asked for.
+    async fn record_revocation(
+        &self,
+        app_instance_id: &str,
+        logical_ref: &str,
+        service_name: &str,
+        instance_did: &str,
+    ) -> Result<(), String> {
+        let writer = self.anchor_writer.as_ref().ok_or_else(|| {
+            "this supervisor's node has no registry configured (substrate.registry_url), so it \
+             cannot publish a revocation"
+                .to_string()
+        })?;
+        let master = keys::master_for_member(&self.vault, app_instance_id, service_name)
+            .await
+            .map_err(|e| e.to_string())?;
+        writer
+            .revoke_instance(&master, instance_did)
+            .await
+            .map_err(|e| format!("failed to publish the revocation: {e}"))?;
+
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        self.store
+            .revoke_placement(app_instance_id, logical_ref, now as i64)
+            .map_err(|e| e.to_string())
+    }
+
     /// The read half of D-A5c-4/D-A5c-5 (§19.4): per declared dependency
     /// of every dependent in the plan, what this supervisor last wrote
     /// (`SupervisorStore::binding_epoch`) versus what the sweep's
@@ -2314,6 +2924,9 @@ impl NativeService for SupervisorService {
             "import-master" => {
                 self.handle_import_master(&invocation.caller, invocation.params).await
             }
+            "revoke-instance" => {
+                self.handle_revoke_instance(&invocation.caller, invocation.params).await
+            }
             "status" => self.handle_status(&invocation.caller, invocation.params).await,
             "alerts" => self.handle_alerts(&invocation.caller, invocation.params).await,
             method => Err(RpcError::MethodNotFound(method.to_string())),
@@ -2329,6 +2942,7 @@ mod tests {
         ActionState,
         models::{AppBlueprintId, LogicalServiceName, ServiceConfig, ServiceType, TopologyMode},
     };
+    use syneroym_identity::{DelegationCertificate, substrate};
     use syneroym_rpc::AuthLevel;
 
     use super::*;
@@ -2337,60 +2951,90 @@ mod tests {
         Arc::new(MqttBroker::new(syneroym_mqtt_broker::MqttBrokerConfig::default()).unwrap())
     }
 
-    fn service() -> SupervisorService {
-        let dir = tempfile::tempdir().unwrap();
-        let store = SupervisorStore::open_in_memory().unwrap();
-        let storage_provider: Arc<dyn syneroym_data_db::traits::StorageProvider> = Arc::new(
-            syneroym_data_db::SqliteStorageProvider::new(dir.path().join("db"), false).unwrap(),
-        );
-        let key_store = Arc::new(syneroym_data_keystore::KeyStore::new());
-        let vault = MasterVault::new(
-            storage_provider,
-            key_store,
-            "supervisor".to_string(),
-            dir.path().join("backups"),
-        );
-        let identity = Identity::generate().unwrap();
-        SupervisorService::new(
-            "did:key:zSupervisorNode".to_string(),
-            store,
-            vault,
-            &identity,
-            test_broker(),
-            "supervisor/alerts".to_string(),
-            30,
-            3,
-            30,
-        )
+    /// What a fixture varies about the supervisor under test. Everything
+    /// else -- node DID, broker, alert topic, intervals -- is fixed, since
+    /// no test has a reason to change it.
+    #[derive(Default)]
+    struct Fixture {
+        /// Encryption on with no KEK injected, so the vault genuinely
+        /// refuses reads. §0.31's whole point is that a
+        /// disabled-encryption fixture proves nothing about the locked
+        /// case.
+        locked_vault: bool,
+        /// Injects a KEK even when `locked_vault` turned encryption on --
+        /// an encrypted vault that is currently *open*. Only the vault-race
+        /// test needs this: it then clears the KEK to reach the state
+        /// `kek_is_loaded()` cannot describe, where the check has already
+        /// passed and the read that follows fails locked.
+        inject_kek_anyway: bool,
+        /// `None` leaves the default (5).
+        max_renewals_per_pass: Option<u32>,
+        anchor_writer: Option<Arc<dyn AnchorWriter>>,
+        master_anchor_refresh_interval_secs: Option<u64>,
     }
 
-    /// Encryption on, no KEK injected -- §0.31's whole point is that a
-    /// disabled-encryption fixture proves nothing about the locked case.
+    impl Fixture {
+        fn build(self) -> SupervisorService {
+            self.build_with_key_store().0
+        }
+
+        /// Hands back the `KeyStore` alongside the service, so a test can
+        /// change the vault's locked state *after* construction -- the only
+        /// way to reach the race D-A5d-17 carves out, where
+        /// `kek_is_loaded()` answers "unlocked" and the vault read that
+        /// follows still fails.
+        fn build_with_key_store(
+            self,
+        ) -> (SupervisorService, Arc<syneroym_data_keystore::KeyStore>) {
+            let dir = tempfile::tempdir().unwrap();
+            let store = SupervisorStore::open_in_memory().unwrap();
+            let storage_provider: Arc<dyn syneroym_data_db::traits::StorageProvider> = Arc::new(
+                syneroym_data_db::SqliteStorageProvider::new(
+                    dir.path().join("db"),
+                    self.locked_vault,
+                )
+                .unwrap(),
+            );
+            let key_store = Arc::new(syneroym_data_keystore::KeyStore::new());
+            // An unlocked fixture must actually report its KEK as loaded:
+            // `kek_is_loaded` is what gates the renewal work-list, and it
+            // reads the `KeyStore`, not the storage provider's encryption
+            // flag.
+            if !self.locked_vault || self.inject_kek_anyway {
+                key_store.inject_kek([7u8; 32]).unwrap();
+            }
+            let vault = MasterVault::new(
+                storage_provider,
+                key_store.clone(),
+                "supervisor".to_string(),
+                dir.path().join("backups"),
+            );
+            let identity = Identity::generate().unwrap();
+            let service = SupervisorService::new(
+                "did:key:zSupervisorNode".to_string(),
+                store,
+                vault,
+                &identity,
+                test_broker(),
+                "supervisor/alerts".to_string(),
+                30,
+                3,
+                30,
+                4,
+                self.max_renewals_per_pass.unwrap_or(5),
+                self.master_anchor_refresh_interval_secs.unwrap_or(12 * 3600),
+                self.anchor_writer,
+            );
+            (service, key_store)
+        }
+    }
+
+    fn service() -> SupervisorService {
+        Fixture::default().build()
+    }
+
     fn service_with_locked_vault() -> SupervisorService {
-        let dir = tempfile::tempdir().unwrap();
-        let store = SupervisorStore::open_in_memory().unwrap();
-        let storage_provider: Arc<dyn syneroym_data_db::traits::StorageProvider> = Arc::new(
-            syneroym_data_db::SqliteStorageProvider::new(dir.path().join("db"), true).unwrap(),
-        );
-        let key_store = Arc::new(syneroym_data_keystore::KeyStore::new());
-        let vault = MasterVault::new(
-            storage_provider,
-            key_store,
-            "supervisor".to_string(),
-            dir.path().join("backups"),
-        );
-        let identity = Identity::generate().unwrap();
-        SupervisorService::new(
-            "did:key:zSupervisorNode".to_string(),
-            store,
-            vault,
-            &identity,
-            test_broker(),
-            "supervisor/alerts".to_string(),
-            30,
-            3,
-            30,
-        )
+        Fixture { locked_vault: true, ..Fixture::default() }.build()
     }
 
     fn unauthenticated_caller() -> CallerContext {
@@ -3357,16 +4001,17 @@ mod tests {
         // the F6 window, simulated directly rather than raced.
         s.store.pause("inst-1").unwrap();
 
-        s.apply_write_phase(
-            &AppInstanceId::new("inst-1"),
-            "inst-1",
-            &plan,
-            &needs_work,
-            &[],
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-            0,
-        )
+        s.apply_write_phase(WritePhase {
+            instance_id: &AppInstanceId::new("inst-1"),
+            app_instance_id: "inst-1",
+            plan: &plan,
+            needs_work: &needs_work,
+            restart_candidates: &[],
+            renewal_candidates: &[],
+            did_to_alias: &BTreeMap::new(),
+            clients: &BTreeMap::new(),
+            now: 0,
+        })
         .await;
 
         assert!(
@@ -3717,6 +4362,22 @@ mod tests {
             Ok(())
         }
 
+        async fn renew_cert(
+            &self,
+            _service_id: String,
+            _generation: u64,
+            _instance_certificate: String,
+        ) -> Result<(), String> {
+            unimplemented!("not exercised by remediation tests")
+        }
+
+        async fn instance_identity(
+            &self,
+            _service_id: &str,
+        ) -> Result<syneroym_sdk::InstanceIdentity, String> {
+            unimplemented!("not exercised by remediation tests")
+        }
+
         async fn held_generation(&self, _app_instance_id: &str) -> Result<Option<u64>, String> {
             *self.held_generation_calls.lock().unwrap() += 1;
             Ok(Some(0))
@@ -3915,16 +4576,17 @@ mod tests {
             "did:key:zEdge1".to_string(),
         )];
 
-        s.apply_write_phase(
-            &AppInstanceId::new("inst-1"),
-            "inst-1",
-            &plan,
-            &BTreeSet::new(),
-            &restart_candidates,
-            &did_to_alias,
-            &clients,
-            0,
-        )
+        s.apply_write_phase(WritePhase {
+            instance_id: &AppInstanceId::new("inst-1"),
+            app_instance_id: "inst-1",
+            plan: &plan,
+            needs_work: &BTreeSet::new(),
+            restart_candidates: &restart_candidates,
+            renewal_candidates: &[],
+            did_to_alias: &did_to_alias,
+            clients: &clients,
+            now: 0,
+        })
         .await;
 
         let state = s.store.remediation_state("inst-1", "inst-1/backend").unwrap();
@@ -4069,6 +4731,22 @@ mod tests {
         }
 
         async fn restart(&self, _service_id: String, _generation: u64) -> Result<(), String> {
+            unimplemented!("not exercised by push tests")
+        }
+
+        async fn renew_cert(
+            &self,
+            _service_id: String,
+            _generation: u64,
+            _instance_certificate: String,
+        ) -> Result<(), String> {
+            unimplemented!("not exercised by push tests")
+        }
+
+        async fn instance_identity(
+            &self,
+            _service_id: &str,
+        ) -> Result<syneroym_sdk::InstanceIdentity, String> {
             unimplemented!("not exercised by push tests")
         }
 
@@ -4320,5 +4998,1067 @@ mod tests {
             2,
             "the retry must carry a fresh epoch, not reuse the one the failed attempt spent"
         );
+    }
+
+    // ── M05A A5d: unattended renewal, anchor refresh, revocation ─────────
+
+    /// A fake substrate for the renewal path: answers `instance_identity`
+    /// with a fixed, real ed25519 key (so a certificate minted over it is
+    /// genuinely valid), records every `renew_cert`/`restart`, and can be
+    /// told to fail either one.
+    #[derive(Debug)]
+    struct RenewalActor {
+        instance_key: Identity,
+        instance_identity_error: Option<String>,
+        renew_error: Option<String>,
+        restart_error: Option<String>,
+        renewed: Mutex<Vec<(String, u64, String)>>,
+        restarted: Mutex<Vec<String>>,
+    }
+
+    impl Default for RenewalActor {
+        fn default() -> Self {
+            Self {
+                instance_key: Identity::generate().unwrap(),
+                instance_identity_error: None,
+                renew_error: None,
+                restart_error: None,
+                renewed: Mutex::new(Vec::new()),
+                restarted: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SubstrateActor for RenewalActor {
+        async fn apply_plan(&self, _plan: syneroym_sdk::DeploymentPlan) -> Result<(), String> {
+            unimplemented!("not exercised by renewal tests")
+        }
+
+        async fn write_bindings(
+            &self,
+            _write: BindingWrite,
+        ) -> Result<Vec<BindingWriteOutcome>, String> {
+            unimplemented!("not exercised by renewal tests")
+        }
+
+        async fn restart(&self, service_id: String, _generation: u64) -> Result<(), String> {
+            if let Some(e) = &self.restart_error {
+                return Err(e.clone());
+            }
+            self.restarted.lock().unwrap().push(service_id);
+            Ok(())
+        }
+
+        async fn renew_cert(
+            &self,
+            service_id: String,
+            generation: u64,
+            instance_certificate: String,
+        ) -> Result<(), String> {
+            if let Some(e) = &self.renew_error {
+                return Err(e.clone());
+            }
+            self.renewed.lock().unwrap().push((service_id, generation, instance_certificate));
+            Ok(())
+        }
+
+        async fn instance_identity(
+            &self,
+            _service_id: &str,
+        ) -> Result<syneroym_sdk::InstanceIdentity, String> {
+            if let Some(e) = &self.instance_identity_error {
+                return Err(e.clone());
+            }
+            Ok(syneroym_sdk::InstanceIdentity {
+                instance_did: substrate::derive_did_key(&self.instance_key.public_key()),
+                pubkey_hex: hex::encode(self.instance_key.public_key().to_bytes()),
+            })
+        }
+
+        async fn held_generation(&self, _app_instance_id: &str) -> Result<Option<u64>, String> {
+            unimplemented!("not exercised by renewal tests")
+        }
+    }
+
+    /// An `AnchorWriter` that records what it was asked to publish and can
+    /// be made to fail, so both the schedule and the revocation write are
+    /// testable with no registry.
+    #[derive(Debug, Default)]
+    struct RecordingAnchorWriter {
+        refreshed: Mutex<Vec<String>>,
+        revoked: Mutex<Vec<(String, String)>>,
+        fail: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl AnchorWriter for RecordingAnchorWriter {
+        async fn refresh(&self, master: &Identity) -> Result<(), String> {
+            if self.fail {
+                return Err("registry unreachable".to_string());
+            }
+            self.refreshed.lock().unwrap().push(substrate::derive_did_key(&master.public_key()));
+            Ok(())
+        }
+
+        async fn revoke_instance(
+            &self,
+            master: &Identity,
+            instance_did: &str,
+        ) -> Result<(), String> {
+            if self.fail {
+                return Err("registry unreachable".to_string());
+            }
+            self.revoked
+                .lock()
+                .unwrap()
+                .push((substrate::derive_did_key(&master.public_key()), instance_did.to_string()));
+            Ok(())
+        }
+    }
+
+    /// A member with a real master in the supervisor's vault, under the
+    /// same computable name `mint_and_substitute` would have stored it as
+    /// -- so the renewal path finds it exactly the way production does.
+    async fn seeded_member(s: &SupervisorService, service_name: &str) -> String {
+        let master = s.vault.get_or_mint(&format!("member-inst-1-{service_name}-0")).await.unwrap();
+        substrate::derive_did_key(&master.public_key())
+    }
+
+    /// A plan naming one placed member by its real master DID, with the
+    /// given rotation policy.
+    fn plan_json_with_master(
+        service_name: &str,
+        master_did: &str,
+        rotation_policy: &str,
+    ) -> String {
+        serde_json::json!({
+            "app_instance_id": "inst-1",
+            "blueprint_id": "syneroym:test",
+            "version": "1.0.0",
+            "services": [{
+                "service_id": master_did,
+                "logical_ref": format!("inst-1/{service_name}"),
+                "substrate": "edge-1",
+                "service_type": "tcp", "source": "127.0.0.1:9000",
+                "rotation_policy": rotation_policy,
+                "resolved_dependencies": {},
+                "topology_mode": "singleton"
+            }]
+        })
+        .to_string()
+    }
+
+    /// One member's health, carrying a certificate window. `elapsed_ratio`
+    /// is how far through its lifetime the certificate is at `NOW`.
+    const NOW: u64 = 1_000_000;
+
+    fn health_with_cert(
+        service_name: &str,
+        service_id: &str,
+        substrate_did: &str,
+        issued_at: u64,
+        expires_at: u64,
+    ) -> health::ServiceHealth {
+        health::ServiceHealth {
+            logical_ref: LogicalServiceRef {
+                app_instance_id: AppInstanceId::new("inst-1"),
+                service_name: LogicalServiceName::new(service_name),
+            },
+            service_id: service_id.to_string(),
+            alias: Some(SubstrateAlias::new("edge-1")),
+            substrate_did: substrate_did.to_string(),
+            signal: Signal::Healthy,
+            instance_certificate_issued_at: Some(issued_at),
+            instance_certificate_expires_at: Some(expires_at),
+            binding_epochs: Vec::new(),
+        }
+    }
+
+    /// 90% through a 4-hour lifetime: inside `is_near_expiry_parts`'s
+    /// 25%-remaining window.
+    fn near_expiry_health(service_name: &str, service_id: &str) -> health::ServiceHealth {
+        health_with_cert(service_name, service_id, "did:key:zEdge1", NOW - 12_960, NOW + 1_440)
+    }
+
+    /// Freshly issued: 0% elapsed, comfortably outside the window.
+    fn fresh_health(service_name: &str, service_id: &str) -> health::ServiceHealth {
+        health_with_cert(service_name, service_id, "did:key:zEdge1", NOW, NOW + 14_400)
+    }
+
+    fn report_of(services: Vec<health::ServiceHealth>) -> health::HealthReport {
+        health::HealthReport { substrates: Vec::new(), services }
+    }
+
+    fn edge_1_actor(actor: Arc<RenewalActor>) -> BTreeMap<SubstrateAlias, Arc<dyn SubstrateActor>> {
+        BTreeMap::from([(SubstrateAlias::new("edge-1"), actor as Arc<dyn SubstrateActor>)])
+    }
+
+    fn edge_1_alias() -> BTreeMap<String, String> {
+        BTreeMap::from([("did:key:zEdge1".to_string(), "edge-1".to_string())])
+    }
+
+    #[tokio::test]
+    async fn a_pass_renews_a_member_within_the_near_expiry_window() {
+        let s = service();
+        let master_did = seeded_member(&s, "backend").await;
+        let plan =
+            DeploymentPlan::from_json(&plan_json_with_master("backend", &master_did, "none"))
+                .unwrap();
+        let report = report_of(vec![near_expiry_health("backend", &master_did)]);
+
+        let candidates = SupervisorService::renewal_candidates(
+            &report,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            NOW,
+            5,
+        );
+        assert_eq!(candidates.len(), 1, "{candidates:?}");
+
+        let actor = Arc::new(RenewalActor::default());
+        let mut opened = Vec::new();
+        s.renew_due_members(
+            &AppInstanceId::new("inst-1"),
+            "inst-1",
+            &plan,
+            &candidates,
+            &edge_1_alias(),
+            &edge_1_actor(actor.clone()),
+            7,
+            NOW,
+            &mut opened,
+        )
+        .await;
+
+        let renewed = actor.renewed.lock().unwrap();
+        assert_eq!(renewed.len(), 1, "the member must have had a certificate installed");
+        assert_eq!(renewed[0].0, master_did);
+        assert_eq!(renewed[0].1, 7, "the install must carry this supervisor's generation");
+        let cert = DelegationCertificate::from_json(&renewed[0].2).unwrap();
+        assert_eq!(cert.master_did, master_did);
+        assert!(opened.is_empty(), "a successful renewal raises no alert: {opened:?}");
+    }
+
+    #[tokio::test]
+    async fn a_pass_does_not_renew_a_member_outside_the_near_expiry_window() {
+        let master_did = "did:key:hBackend";
+        let report = report_of(vec![fresh_health("backend", master_did)]);
+        let candidates = SupervisorService::renewal_candidates(
+            &report,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            NOW,
+            5,
+        );
+        assert!(candidates.is_empty(), "{candidates:?}");
+    }
+
+    /// D-A5d-12: a service already in `needs_work` is about to be
+    /// re-certified by `apply_plan` this same pass, so renewing it here
+    /// would mint it a second certificate for no reason.
+    #[test]
+    fn a_member_in_needs_work_is_not_also_renewed_this_pass() {
+        let report = report_of(vec![near_expiry_health("backend", "did:key:hBackend")]);
+        let needs_work = BTreeSet::from(["inst-1/backend".to_string()]);
+        let candidates =
+            SupervisorService::renewal_candidates(&report, &needs_work, &BTreeSet::new(), NOW, 5);
+        assert!(candidates.is_empty(), "{candidates:?}");
+    }
+
+    /// The other half of D-A5d-12: a restart reloads the running instance
+    /// and touches no certificate, so a member under remediation still
+    /// needs its own, independent renewal check. `restart_candidates` is
+    /// therefore not an input to this decision at all.
+    #[test]
+    fn a_member_under_restart_remediation_is_still_checked_for_renewal() {
+        let mut unhealthy = near_expiry_health("backend", "did:key:hBackend");
+        unhealthy.signal = Signal::InstanceNotRunning("down".to_string());
+        let report = report_of(vec![unhealthy]);
+        let candidates = SupervisorService::renewal_candidates(
+            &report,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            NOW,
+            5,
+        );
+        assert_eq!(candidates.len(), 1, "{candidates:?}");
+    }
+
+    /// D-A5d-4: a locked vault skips the renewal work-list and nothing
+    /// else -- health, remediation, and the anchor check all continue,
+    /// since none of them opens the vault.
+    #[tokio::test]
+    async fn a_locked_vault_skips_renewal_but_not_health_or_remediation_this_pass() {
+        let s = service_with_locked_vault();
+        let plan = DeploymentPlan::from_json(&plan_json_with_master(
+            "backend",
+            "did:key:hBackend",
+            "none",
+        ))
+        .unwrap();
+        let candidates = SupervisorService::renewal_candidates(
+            &report_of(vec![near_expiry_health("backend", "did:key:hBackend")]),
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            NOW,
+            5,
+        );
+        let actor = Arc::new(RenewalActor::default());
+        let mut opened = Vec::new();
+
+        s.renew_due_members(
+            &AppInstanceId::new("inst-1"),
+            "inst-1",
+            &plan,
+            &candidates,
+            &edge_1_alias(),
+            &edge_1_actor(actor.clone()),
+            0,
+            NOW,
+            &mut opened,
+        )
+        .await;
+
+        assert!(
+            actor.renewed.lock().unwrap().is_empty(),
+            "a locked vault must not reach the substrate at all"
+        );
+        assert_eq!(opened, vec![(AlertKind::VaultLocked, "inst-1/backend".to_string())]);
+
+        // The rest of the pass is unaffected: a restart candidate on the
+        // same instance still records its attempt.
+        let restart_actor = Arc::new(CountingActor::default());
+        let dyn_actor: Arc<dyn SubstrateActor> = restart_actor.clone();
+        let mut opened2 = Vec::new();
+        s.attempt_restart(
+            &AppInstanceId::new("inst-1"),
+            "inst-1",
+            "inst-1/backend",
+            "did:key:hBackend",
+            "did:key:zEdge1",
+            &dyn_actor,
+            0,
+            NOW,
+            &mut opened2,
+        )
+        .await;
+        assert_eq!(*restart_actor.restart_calls.lock().unwrap(), 1);
+    }
+
+    /// One root cause, one row per affected member -- the same fan-out
+    /// `SubstrateUnreachable` already uses, and what an operator reading
+    /// `alerts <instance>` needs to see.
+    #[tokio::test]
+    async fn a_locked_vault_raises_vault_locked_for_every_near_expiry_member() {
+        let s = service_with_locked_vault();
+        let plan = DeploymentPlan::from_json(&plan_json_with_master(
+            "backend",
+            "did:key:hBackend",
+            "none",
+        ))
+        .unwrap();
+        let report = report_of(vec![
+            near_expiry_health("backend", "did:key:hBackend"),
+            near_expiry_health("frontend", "did:key:hFrontend"),
+            fresh_health("worker", "did:key:hWorker"),
+        ]);
+        let candidates = SupervisorService::renewal_candidates(
+            &report,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            NOW,
+            5,
+        );
+        let mut opened = Vec::new();
+
+        s.renew_due_members(
+            &AppInstanceId::new("inst-1"),
+            "inst-1",
+            &plan,
+            &candidates,
+            &edge_1_alias(),
+            &edge_1_actor(Arc::new(RenewalActor::default())),
+            0,
+            NOW,
+            &mut opened,
+        )
+        .await;
+
+        let instance_id = AppInstanceId::new("inst-1");
+        let locked: Vec<_> = s
+            .store
+            .alerts
+            .active(&instance_id)
+            .unwrap()
+            .into_iter()
+            .filter(|a| a.kind == AlertKind::VaultLocked)
+            .collect();
+        assert_eq!(locked.len(), 2, "one row per affected member, not one per fact: {locked:?}");
+        let refs: BTreeSet<_> = locked.iter().filter_map(|a| a.logical_ref.clone()).collect();
+        assert_eq!(
+            refs,
+            BTreeSet::from(["inst-1/backend".to_string(), "inst-1/frontend".to_string()]),
+            "the member whose certificate is nowhere near expiry must not be alerted on"
+        );
+        assert!(
+            locked.iter().all(|a| a.detail.contains("inject-kek")),
+            "the alert must name the operator action that fixes it"
+        );
+    }
+
+    /// D-A5d-6: `RotationPolicy` is read from the supervisor's own stored
+    /// plan, after the new certificate has installed successfully. The
+    /// substrate never sees it.
+    #[tokio::test]
+    async fn restart_on_rotation_follows_a_successful_install_with_a_restart_call() {
+        let s = service();
+        let master_did = seeded_member(&s, "backend").await;
+        let plan = DeploymentPlan::from_json(&plan_json_with_master(
+            "backend",
+            &master_did,
+            "restart-on-rotation",
+        ))
+        .unwrap();
+        let actor = Arc::new(RenewalActor::default());
+        let mut opened = Vec::new();
+
+        s.renew_due_members(
+            &AppInstanceId::new("inst-1"),
+            "inst-1",
+            &plan,
+            &SupervisorService::renewal_candidates(
+                &report_of(vec![near_expiry_health("backend", &master_did)]),
+                &BTreeSet::new(),
+                &BTreeSet::new(),
+                NOW,
+                5,
+            ),
+            &edge_1_alias(),
+            &edge_1_actor(actor.clone()),
+            0,
+            NOW,
+            &mut opened,
+        )
+        .await;
+
+        assert_eq!(actor.renewed.lock().unwrap().len(), 1);
+        assert_eq!(*actor.restarted.lock().unwrap(), vec![master_did]);
+    }
+
+    #[tokio::test]
+    async fn rotation_policy_none_installs_without_restarting() {
+        let s = service();
+        let master_did = seeded_member(&s, "backend").await;
+        let plan =
+            DeploymentPlan::from_json(&plan_json_with_master("backend", &master_did, "none"))
+                .unwrap();
+        let actor = Arc::new(RenewalActor::default());
+        let mut opened = Vec::new();
+
+        s.renew_due_members(
+            &AppInstanceId::new("inst-1"),
+            "inst-1",
+            &plan,
+            &SupervisorService::renewal_candidates(
+                &report_of(vec![near_expiry_health("backend", &master_did)]),
+                &BTreeSet::new(),
+                &BTreeSet::new(),
+                NOW,
+                5,
+            ),
+            &edge_1_alias(),
+            &edge_1_actor(actor.clone()),
+            0,
+            NOW,
+            &mut opened,
+        )
+        .await;
+
+        assert_eq!(actor.renewed.lock().unwrap().len(), 1);
+        assert!(actor.restarted.lock().unwrap().is_empty());
+    }
+
+    /// D-A5d-13, first step: a mint that fails must not go on to install
+    /// or restart. `CertificateNearExpiry` names the step, and the member
+    /// is retried next pass rather than failing the whole instance.
+    #[tokio::test]
+    async fn a_failed_mint_does_not_attempt_install_or_restart_for_that_member() {
+        let s = service();
+        let master_did = seeded_member(&s, "backend").await;
+        let plan = DeploymentPlan::from_json(&plan_json_with_master(
+            "backend",
+            &master_did,
+            "restart-on-rotation",
+        ))
+        .unwrap();
+        let actor = Arc::new(RenewalActor {
+            instance_identity_error: Some("substrate refused the identity query".to_string()),
+            ..RenewalActor::default()
+        });
+        let mut opened = Vec::new();
+
+        s.renew_due_members(
+            &AppInstanceId::new("inst-1"),
+            "inst-1",
+            &plan,
+            &SupervisorService::renewal_candidates(
+                &report_of(vec![near_expiry_health("backend", &master_did)]),
+                &BTreeSet::new(),
+                &BTreeSet::new(),
+                NOW,
+                5,
+            ),
+            &edge_1_alias(),
+            &edge_1_actor(actor.clone()),
+            0,
+            NOW,
+            &mut opened,
+        )
+        .await;
+
+        assert!(actor.renewed.lock().unwrap().is_empty());
+        assert!(actor.restarted.lock().unwrap().is_empty());
+        assert_eq!(opened, vec![(AlertKind::CertificateNearExpiry, "inst-1/backend".to_string())]);
+        let alerts = s.store.alerts.active(&AppInstanceId::new("inst-1")).unwrap();
+        assert!(alerts.iter().any(|a| a.detail.contains("mint")), "{alerts:?}");
+    }
+
+    /// D-A5d-13, second step: restarting a service whose new certificate
+    /// never landed serves nothing and spends a lifecycle action for no
+    /// gain.
+    #[tokio::test]
+    async fn a_failed_install_does_not_attempt_restart_for_that_member() {
+        let s = service();
+        let master_did = seeded_member(&s, "backend").await;
+        let plan = DeploymentPlan::from_json(&plan_json_with_master(
+            "backend",
+            &master_did,
+            "restart-on-rotation",
+        ))
+        .unwrap();
+        let actor = Arc::new(RenewalActor {
+            renew_error: Some("substrate unreachable".to_string()),
+            ..RenewalActor::default()
+        });
+        let mut opened = Vec::new();
+
+        s.renew_due_members(
+            &AppInstanceId::new("inst-1"),
+            "inst-1",
+            &plan,
+            &SupervisorService::renewal_candidates(
+                &report_of(vec![near_expiry_health("backend", &master_did)]),
+                &BTreeSet::new(),
+                &BTreeSet::new(),
+                NOW,
+                5,
+            ),
+            &edge_1_alias(),
+            &edge_1_actor(actor.clone()),
+            0,
+            NOW,
+            &mut opened,
+        )
+        .await;
+
+        assert!(actor.restarted.lock().unwrap().is_empty());
+        assert_eq!(opened, vec![(AlertKind::CertificateNearExpiry, "inst-1/backend".to_string())]);
+        let alerts = s.store.alerts.active(&AppInstanceId::new("inst-1")).unwrap();
+        assert!(alerts.iter().any(|a| a.detail.contains("install")), "{alerts:?}");
+    }
+
+    /// D-A5d-9's clearing rule: raised alerts with no path back to cleared
+    /// are exactly the bug §19.20 exists to prevent. Recomputed from the
+    /// substrate's own answer, not tracked as a flag -- so a renewal that
+    /// succeeded out of band clears these too.
+    #[tokio::test]
+    async fn certificate_near_expiry_clears_on_the_next_passs_healthy_read() {
+        let s = service();
+        let instance_id = AppInstanceId::new("inst-1");
+        for kind in [
+            AlertKind::CertificateNearExpiry,
+            AlertKind::CertificateExpired,
+            AlertKind::VaultLocked,
+        ] {
+            s.store
+                .alerts
+                .raise(
+                    &instance_id,
+                    Some("inst-1/backend"),
+                    None,
+                    "did:key:zEdge1",
+                    kind,
+                    "stalled",
+                )
+                .unwrap();
+        }
+
+        // Still near expiry: nothing clears.
+        s.clear_settled_renewal_alerts(
+            &instance_id,
+            &report_of(vec![near_expiry_health("backend", "did:key:hBackend")]),
+            NOW,
+        );
+        assert_eq!(s.store.alerts.active(&instance_id).unwrap().len(), 3);
+
+        // A healthy certificate window clears all three at once.
+        s.clear_settled_renewal_alerts(
+            &instance_id,
+            &report_of(vec![fresh_health("backend", "did:key:hBackend")]),
+            NOW,
+        );
+        assert!(s.store.alerts.active(&instance_id).unwrap().is_empty());
+    }
+
+    /// D-A5d-16: the supervisor mints at its own, short lifetime -- not
+    /// the attended posture's 24-hour deploy default, which serves an
+    /// operator with no renewal loop behind them.
+    #[tokio::test]
+    async fn renewal_mints_at_renewed_cert_expires_hours_not_the_deploy_default() {
+        let s = service();
+        let master_did = seeded_member(&s, "backend").await;
+        let plan =
+            DeploymentPlan::from_json(&plan_json_with_master("backend", &master_did, "none"))
+                .unwrap();
+        let actor = Arc::new(RenewalActor::default());
+        let mut opened = Vec::new();
+
+        s.renew_due_members(
+            &AppInstanceId::new("inst-1"),
+            "inst-1",
+            &plan,
+            &SupervisorService::renewal_candidates(
+                &report_of(vec![near_expiry_health("backend", &master_did)]),
+                &BTreeSet::new(),
+                &BTreeSet::new(),
+                NOW,
+                5,
+            ),
+            &edge_1_alias(),
+            &edge_1_actor(actor.clone()),
+            0,
+            NOW,
+            &mut opened,
+        )
+        .await;
+
+        let renewed = actor.renewed.lock().unwrap();
+        let cert = DelegationCertificate::from_json(&renewed[0].2).unwrap();
+        let lifetime = cert.expires_at_secs - cert.issued_at_secs;
+        assert_eq!(lifetime, s.renewed_cert_expires_hours * 3600);
+        assert!(
+            lifetime < deploy::DEFAULT_INSTANCE_CERT_EXPIRES_HOURS * 3600,
+            "a renewed certificate must be strictly shorter-lived than the attended default"
+        );
+    }
+
+    /// D-A5d-17: the same root cause must surface under the same alert
+    /// kind whichever of the two checks catches it. This is the defensive
+    /// per-call path -- `kek_is_loaded` said unlocked, and the vault read
+    /// itself then failed -- distinct from the up-front check's own test
+    /// above.
+    #[tokio::test]
+    async fn a_vault_error_locked_race_during_mint_raises_vault_locked_not_certificate_near_expiry()
+    {
+        // An encrypted vault, open at construction so the cheap up-front
+        // check passes, then closed again before the mint -- the exact
+        // ordering the carve-out exists for, produced directly rather than
+        // raced.
+        let (s, key_store) =
+            Fixture { locked_vault: true, inject_kek_anyway: true, ..Fixture::default() }
+                .build_with_key_store();
+        assert!(s.vault.kek_is_loaded());
+
+        let plan = DeploymentPlan::from_json(&plan_json_with_master(
+            "backend",
+            "did:key:hBackend",
+            "none",
+        ))
+        .unwrap();
+        let candidate = RenewalCandidate {
+            logical_ref: "inst-1/backend".to_string(),
+            service_name: "backend".to_string(),
+            service_id: "did:key:hBackend".to_string(),
+            substrate_did: "did:key:zEdge1".to_string(),
+            expires_at: NOW + 1_440,
+        };
+        let actor = Arc::new(RenewalActor::default());
+        let mut opened = Vec::new();
+        key_store.clear_kek();
+
+        s.renew_due_members(
+            &AppInstanceId::new("inst-1"),
+            "inst-1",
+            &plan,
+            std::slice::from_ref(&candidate),
+            &edge_1_alias(),
+            &edge_1_actor(actor.clone()),
+            0,
+            NOW,
+            &mut opened,
+        )
+        .await;
+
+        assert!(actor.renewed.lock().unwrap().is_empty());
+        assert_eq!(
+            opened,
+            vec![(AlertKind::VaultLocked, "inst-1/backend".to_string())],
+            "a vault lock found mid-mint is the same condition as one found up front, and must \
+             not surface under a different alert kind"
+        );
+    }
+
+    /// D-A5d-21: renewal is the one work-list whose arrivals are
+    /// correlated by construction -- every member of an instance is minted
+    /// in the same call at the same lifetime, so a whole instance reaches
+    /// its near-expiry window in the same pass, every cycle. The cap
+    /// bounds how long one pass holds the instance lock; the remainder
+    /// rolls to the next pass, recomputed from live health data rather
+    /// than queued.
+    #[test]
+    fn a_pass_renews_at_most_max_renewals_per_pass_candidates_and_defers_the_rest() {
+        let names = ["a", "b", "c", "d", "e", "f", "g"];
+        let report = report_of(
+            names
+                .iter()
+                .map(|n| near_expiry_health(n, &format!("did:key:h{n}")))
+                .collect::<Vec<_>>(),
+        );
+
+        let first = SupervisorService::renewal_candidates(
+            &report,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            NOW,
+            5,
+        );
+        assert_eq!(first.len(), 5, "the cap must hold: {first:?}");
+
+        // The next pass recomputes from live health. The five that landed
+        // now report fresh certificates; the deferred two are still due
+        // and are picked up.
+        let taken: BTreeSet<String> = first.iter().map(|c| c.logical_ref.clone()).collect();
+        let next_report = report_of(
+            names
+                .iter()
+                .map(|n| {
+                    let id = format!("did:key:h{n}");
+                    if taken.contains(&format!("inst-1/{n}")) {
+                        fresh_health(n, &id)
+                    } else {
+                        near_expiry_health(n, &id)
+                    }
+                })
+                .collect::<Vec<_>>(),
+        );
+        let second = SupervisorService::renewal_candidates(
+            &next_report,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            NOW,
+            5,
+        );
+        let deferred: BTreeSet<String> = second.iter().map(|c| c.logical_ref.clone()).collect();
+        assert_eq!(deferred.len(), 2, "{second:?}");
+        assert!(deferred.is_disjoint(&taken));
+    }
+
+    // ── Phase 4: master-anchor refresh on the existing tick ──────────────
+
+    #[tokio::test]
+    async fn master_anchor_refresh_is_skipped_when_not_yet_overdue() {
+        let writer = Arc::new(RecordingAnchorWriter::default());
+        let s = Fixture {
+            anchor_writer: Some(writer.clone()),
+            master_anchor_refresh_interval_secs: Some(43_200),
+            ..Fixture::default()
+        }
+        .build();
+        let master_did = seeded_member(&s, "backend").await;
+        let plan =
+            DeploymentPlan::from_json(&plan_json_with_master("backend", &master_did, "none"))
+                .unwrap();
+        s.store.record_master_anchor_refresh(&master_did, NOW as i64 - 100).unwrap();
+
+        s.refresh_due_master_anchors(&plan, NOW).await;
+
+        assert!(writer.refreshed.lock().unwrap().is_empty());
+        assert_eq!(
+            s.store.last_master_anchor_refresh(&master_did).unwrap(),
+            Some(NOW as i64 - 100),
+            "a skipped refresh must not move the stamp"
+        );
+    }
+
+    #[tokio::test]
+    async fn master_anchor_refresh_fires_once_the_interval_elapses() {
+        let writer = Arc::new(RecordingAnchorWriter::default());
+        let s = Fixture {
+            anchor_writer: Some(writer.clone()),
+            master_anchor_refresh_interval_secs: Some(43_200),
+            ..Fixture::default()
+        }
+        .build();
+        let master_did = seeded_member(&s, "backend").await;
+        let plan =
+            DeploymentPlan::from_json(&plan_json_with_master("backend", &master_did, "none"))
+                .unwrap();
+        s.store.record_master_anchor_refresh(&master_did, NOW as i64 - 43_201).unwrap();
+
+        s.refresh_due_master_anchors(&plan, NOW).await;
+
+        assert_eq!(*writer.refreshed.lock().unwrap(), vec![master_did]);
+    }
+
+    /// The stamp moves only on success: a failed publish must leave the
+    /// previous one alone so the next pass retries rather than waiting out
+    /// another whole interval.
+    #[tokio::test]
+    async fn master_anchor_refresh_updates_last_refreshed_at_on_success() {
+        let s = Fixture {
+            anchor_writer: Some(Arc::new(RecordingAnchorWriter::default())),
+            ..Fixture::default()
+        }
+        .build();
+        let master_did = seeded_member(&s, "backend").await;
+        let plan =
+            DeploymentPlan::from_json(&plan_json_with_master("backend", &master_did, "none"))
+                .unwrap();
+
+        // Never published before, so overdue on the first pass.
+        assert_eq!(s.store.last_master_anchor_refresh(&master_did).unwrap(), None);
+        s.refresh_due_master_anchors(&plan, NOW).await;
+        assert_eq!(s.store.last_master_anchor_refresh(&master_did).unwrap(), Some(NOW as i64));
+
+        let failing = Fixture {
+            anchor_writer: Some(Arc::new(RecordingAnchorWriter {
+                fail: true,
+                ..RecordingAnchorWriter::default()
+            })),
+            ..Fixture::default()
+        }
+        .build();
+        let failing_master = seeded_member(&failing, "backend").await;
+        let failing_plan =
+            DeploymentPlan::from_json(&plan_json_with_master("backend", &failing_master, "none"))
+                .unwrap();
+        failing.refresh_due_master_anchors(&failing_plan, NOW).await;
+        assert_eq!(
+            failing.store.last_master_anchor_refresh(&failing_master).unwrap(),
+            None,
+            "a failed publish must not be stamped as a success"
+        );
+    }
+
+    // ── Phase 5: revocation ──────────────────────────────────────────────
+
+    /// D-A5d-15: a revoked placement is skipped by `apply_with_clients`
+    /// itself, which is the one path every certificate-minting caller
+    /// passes through -- the loop, `submit`, and `force-reconcile` alike.
+    /// Without that, an ordinary resubmit silently re-mints the very key
+    /// the operator revoked.
+    #[tokio::test]
+    async fn a_submit_of_the_same_plan_does_not_recertify_a_revoked_placement() {
+        let s = service();
+        let plan =
+            DeploymentPlan::from_json(&plan_json_two_services("inst-1", "backend", "frontend"))
+                .unwrap();
+        s.store.revoke_placement("inst-1", "inst-1/backend", 1_000).unwrap();
+
+        // No clients are built for either service, so `certify_placed_
+        // members` fails on whichever service actually reaches it -- and
+        // the error names it. A revoked service that reached it would show
+        // up here by name.
+        let err = s
+            .apply_with_clients(&plan, &plan, &BTreeMap::new(), &BTreeMap::new(), 0, Vec::new())
+            .await
+            .unwrap_err();
+        assert!(
+            !err.contains("hFabricatedA"),
+            "the revoked member must never reach the certify step: {err}"
+        );
+        assert!(
+            err.contains("hFabricatedB"),
+            "the rest of the plan must still be attempted: {err}"
+        );
+
+        let alerts = s.store.alerts.active(&AppInstanceId::new("inst-1")).unwrap();
+        let revoked: Vec<_> =
+            alerts.iter().filter(|a| a.kind == AlertKind::InstanceRevoked).collect();
+        assert_eq!(revoked.len(), 1, "{alerts:?}");
+        assert_eq!(revoked[0].logical_ref.as_deref(), Some("inst-1/backend"));
+    }
+
+    /// `force-reconcile` reaches the same gate by the same route: its own
+    /// doc already notes it bypasses several checks `submit` applies, so
+    /// putting the exclusion anywhere upstream of `apply_with_clients`
+    /// would have left this path open.
+    #[tokio::test]
+    async fn a_force_reconcile_does_not_recertify_a_revoked_placement_and_raises_instance_revoked_for_the_rest_of_the_plan()
+     {
+        let s = service();
+        let plan_json = plan_json_two_services("inst-1", "backend", "frontend");
+        let plan = DeploymentPlan::from_json(&plan_json).unwrap();
+        s.store.submit("inst-1", &plan_json, "{}", "did:key:owner", 0).unwrap();
+        s.store.revoke_placement("inst-1", "inst-1/backend", 1_000).unwrap();
+
+        let err = s
+            .apply_with_clients(&plan, &plan, &BTreeMap::new(), &BTreeMap::new(), 0, Vec::new())
+            .await
+            .unwrap_err();
+        assert!(!err.contains("hFabricatedA"), "{err}");
+
+        let alerts = s.store.alerts.active(&AppInstanceId::new("inst-1")).unwrap();
+        let revoked = alerts
+            .iter()
+            .find(|a| a.kind == AlertKind::InstanceRevoked)
+            .unwrap_or_else(|| panic!("no InstanceRevoked alert among {alerts:?}"));
+        assert!(
+            revoked.detail.contains("Undeploy it separately"),
+            "the alert must say revocation is not a teardown: {}",
+            revoked.detail
+        );
+    }
+
+    /// The renewal work-list's own half of the same exclusion.
+    #[test]
+    fn a_renewal_pass_skips_a_revoked_placement_even_when_near_expiry() {
+        let report = report_of(vec![
+            near_expiry_health("backend", "did:key:hBackend"),
+            near_expiry_health("frontend", "did:key:hFrontend"),
+        ]);
+        let revoked = BTreeSet::from(["inst-1/backend".to_string()]);
+        let candidates =
+            SupervisorService::renewal_candidates(&report, &BTreeSet::new(), &revoked, NOW, 5);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].logical_ref, "inst-1/frontend");
+    }
+
+    /// D-A5d-14: without the lock, an operator's `revoke-instance` and a
+    /// resident pass's renewal of the same member race -- the pass could
+    /// mint and install a fresh certificate in the gap between the anchor
+    /// write and the exclusion write landing, which is the window this
+    /// verb exists to close.
+    #[tokio::test]
+    async fn revoke_instance_takes_the_instance_lock_for_the_whole_call() {
+        let s = Arc::new(
+            Fixture {
+                anchor_writer: Some(Arc::new(RecordingAnchorWriter::default())),
+                ..Fixture::default()
+            }
+            .build(),
+        );
+        s.store
+            .submit("inst-1", &plan_json_no_services("inst-1"), "{}", "did:key:owner", 0)
+            .unwrap();
+
+        let held = s.instance_lock("inst-1");
+        let guard = held.lock().await;
+
+        let s2 = s.clone();
+        let call = tokio::spawn(async move {
+            dispatch(
+                &s2,
+                admin_caller("did:key:zSupervisorNode"),
+                "revoke-instance",
+                serde_json::json!(["inst-1", "inst-1/backend"]),
+            )
+            .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!call.is_finished(), "revoke-instance must block on the instance lock");
+        drop(guard);
+
+        // Now it proceeds -- and refuses, because the stored plan names no
+        // such member. What matters here is that it got that far only
+        // after the lock was released.
+        let err = call.await.unwrap().unwrap_err();
+        assert!(err.to_string().contains("inst-1/backend"), "{err}");
+    }
+
+    /// The anchor half: the *derived instance* DID goes into the master's
+    /// revoked list, never the master's own -- revoking the master would
+    /// repudiate every instance it has ever certified.
+    #[tokio::test]
+    async fn revoke_instance_appends_the_derived_instance_did_to_revoked_keys() {
+        let writer = Arc::new(RecordingAnchorWriter::default());
+        let s = Fixture { anchor_writer: Some(writer.clone()), ..Fixture::default() }.build();
+        let master_did = seeded_member(&s, "backend").await;
+
+        s.record_revocation("inst-1", "inst-1/backend", "backend", "did:key:zInstanceKey")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            *writer.revoked.lock().unwrap(),
+            vec![(master_did.clone(), "did:key:zInstanceKey".to_string())]
+        );
+        assert_ne!(
+            writer.revoked.lock().unwrap()[0].1,
+            master_did,
+            "the revoked entry must be the instance key, not the member master"
+        );
+    }
+
+    /// The local half, and the ordering between the two: the anchor
+    /// publish comes first, and the exclusion is written only after it
+    /// succeeds. A failed publish must leave the placement under ordinary
+    /// management rather than half-revoked -- excluded from renewal here
+    /// while still fully trusted by every consumer, which would let it age
+    /// out quietly instead of failing closed.
+    #[tokio::test]
+    async fn revoke_instance_writes_a_revoked_placements_row() {
+        let s = Fixture {
+            anchor_writer: Some(Arc::new(RecordingAnchorWriter::default())),
+            ..Fixture::default()
+        }
+        .build();
+        seeded_member(&s, "backend").await;
+
+        s.record_revocation("inst-1", "inst-1/backend", "backend", "did:key:zInstanceKey")
+            .await
+            .unwrap();
+        assert_eq!(
+            s.store.revoked_placements("inst-1").unwrap(),
+            BTreeSet::from(["inst-1/backend".to_string()])
+        );
+
+        let failing_writer =
+            Arc::new(RecordingAnchorWriter { fail: true, ..RecordingAnchorWriter::default() });
+        let failing = Fixture { anchor_writer: Some(failing_writer), ..Fixture::default() }.build();
+        seeded_member(&failing, "backend").await;
+
+        let err = failing
+            .record_revocation("inst-1", "inst-1/backend", "backend", "did:key:zInstanceKey")
+            .await
+            .unwrap_err();
+        assert!(err.contains("failed to publish"), "{err}");
+        assert!(
+            failing.store.revoked_placements("inst-1").unwrap().is_empty(),
+            "a revocation that did not publish must not have written a local exclusion"
+        );
+    }
+
+    /// A node with no registry configured cannot publish a revocation at
+    /// all, and must say so rather than writing a local exclusion that no
+    /// consumer can see.
+    #[tokio::test]
+    async fn revoke_instance_is_refused_when_the_node_has_no_registry_configured() {
+        let s = service();
+        s.store
+            .submit("inst-1", &plan_json_no_services("inst-1"), "{}", "did:key:owner", 0)
+            .unwrap();
+
+        let err = s
+            .handle_revoke_instance(
+                &admin_caller("did:key:zSupervisorNode"),
+                serde_json::json!(["inst-1", "inst-1/backend"]),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("registry"), "{err}");
+        assert!(s.store.revoked_placements("inst-1").unwrap().is_empty());
     }
 }

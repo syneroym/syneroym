@@ -493,6 +493,16 @@ impl NativeService for ControlPlaneService {
                     .map_err(RpcError::InternalError)?;
                 Ok(NativeResponse { payload: serde_json::json!({"status": "restarted"}) })
             }
+            "renew-cert" => {
+                let (service_id, generation, instance_certificate): (String, u64, String) =
+                    serde_json::from_value(invocation.params).map_err(|e| {
+                        RpcError::InvalidParams(format!("Failed to parse renew-cert params: {e}"))
+                    })?;
+                self.renew_cert(service_id, generation, instance_certificate, &invocation.caller)
+                    .await
+                    .map_err(RpcError::InternalError)?;
+                Ok(NativeResponse { payload: serde_json::json!({"status": "cert_renewed"}) })
+            }
             "app-instance-management-of" => {
                 let (app_instance_id,): (String,) = serde_json::from_value(invocation.params)
                     .map_err(|e| {

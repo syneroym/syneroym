@@ -4,10 +4,10 @@
 [ADR-0020](../../../decisions/0020-stable-logical-service-identity.md),
 [ADR-0021](../../../decisions/0021-binding-propagation-and-app-supervisor.md)
 
-**Overall:** Design accepted 2026-07-27. Slices P0, A0-A4, A5a, A5b, A5c
-complete; A5 splits into five sub-slices per
+**Overall:** Design accepted 2026-07-27. Slices P0, A0-A4, A5a, A5b, A5c,
+A5d complete; A5 splits into five sub-slices per
 [slice-a5-implementation-plan.md](slice-a5-implementation-plan.md) §2 —
-A5d-A5e not started.
+A5e not started.
 
 ## Slice status
 
@@ -22,7 +22,7 @@ A5d-A5e not started.
 | A5a | Substrate write primitives (binding push, restart, generation gate, content-hash dedup) | **Complete** — [implementation plan](slice-a5-implementation-plan.md) Part I | A4 (Complete) |
 | A5b | The supervisor role, store, `supervisor` interface, and master custody | **Complete (2026-08-01)** — [implementation plan](slice-a5-implementation-plan.md) Part II, evidence below | A5a (Complete) |
 | A5c | The resident reconcile loop and bounded remediation | **Complete (2026-08-02)** — [implementation plan](slice-a5-implementation-plan.md) Part IV, evidence below | A5b (Complete) |
-| A5d | Unattended certificate renewal | Not started | A5c |
+| A5d | Unattended certificate renewal, master-anchor refresh, revocation surface | **Complete (2026-08-03)** — [implementation plan](slice-a5-implementation-plan.md) Part V, evidence below | A5c (Complete) |
 | A5e | Scale-out, cross-app probes, budgets | Not started | A5c, A5d |
 | A6 | Durable delivery via outbox/DLQ | **Deferred, post-M5** | M5 item 1 Complete |
 
@@ -2219,6 +2219,143 @@ regression — confirmed by re-running `cargo test -p syneroym-substrate
 two new supervisor ones) and `cargo test -p syneroym-community-registry`
 unsandboxed (16/16). `mise run test:e2e` (Playwright/WebRTC, unrelated to
 the Rust e2e suite above) 4/4.
+
+## A5d — Verification evidence (2026-08-03)
+
+Planned to executable depth in
+[slice-a5-implementation-plan.md](slice-a5-implementation-plan.md) Part V
+(§26-§32), after two independent reviews: the first found seven findings
+(one blocking — F-A5d-1: the revocation exclusion as originally scoped only
+stopped the resident loop, so an ordinary `submit` or `force-reconcile`
+silently re-minted the revoked key), the second five (none blocking, the
+strongest being G3: renewal is the one work-list whose arrivals are
+correlated by construction, since every member of an instance is minted in
+the same call at the same lifetime). All twelve incorporated before
+implementation started.
+
+**The headline correction the plan's `§0` pass made, restated because it is
+what shaped the slice:** §15 read as six independent features, and half of
+them turned out to be downstream of one fact none of the six stated —
+**there was no verb that installs a certificate without reinstalling the
+whole service**. Renewal, `RotationPolicy` becoming load-bearing, and the
+`SynSvcNativeService` refresh all needed that verb to exist first.
+
+**What shipped, by phase (§28's merge order):**
+
+- **Phase 1 (substrate-side, no supervisor involved).** The cert-verification
+  block inline in `deploy_with_context` is factored into
+  `verify_installed_instance_cert` (D-A5d-2) and gains a **30-day maximum
+  lifetime** check (D-A5d-7) applied identically on both paths. The new
+  `renew-cert` WIT verb, `renew_cert_impl` (D-A5d-1), and its `crates/sdk`
+  client wrapper: gated exactly as `restart_impl` is — the same
+  `ORCHESTRATOR_DEPLOY` capability, the same owner-or-node-wide-grantee
+  check, the same app-context-scoped generation gate, and the same
+  `deploy_facts` "is this actually deployed" gate (D-A5d-19), without which
+  a capability-holding caller could register a live native-dispatch entry
+  for a `service_id` nothing ever deployed. `renew_cert_impl` rebuilds
+  `SynSvcNativeService` mirroring the **whole** of deploy's construction
+  site including `service_proxy`/`row_authorizer` (D-A5d-18a), and re-reads
+  the stored FDAE policy — a document that no longer parses **aborts the
+  renewal before anything is installed** rather than falling back to `None`,
+  which would be a silent enforcement bypass (D-A5d-18b). `SubstrateActor`
+  gained `renew_cert` and `instance_identity` so the supervisor's whole
+  mint → install → rotate sequence is exercisable against a fake substrate.
+- **Phase 2 (supervisor plumbing).** `SupervisorRole` gains
+  `master_anchor_refresh_interval_secs` (12h, 2x margin inside an anchor's
+  24-hour validity window), `renewed_cert_expires_hours` (4h, replacing the
+  24h `INSTANCE_CERT_EXPIRES_HOURS` constant for **both** the initial mint
+  and every renewal, so a managed member has one lifetime for its whole
+  life), and `max_renewals_per_pass` (5). `SupervisorStore` gains
+  `master_anchor_refresh` and `revoked_placements` tables. Two genuinely new
+  `AlertKind`s, `VaultLocked` and `InstanceRevoked` — §26.9 confirmed
+  `CertificateNearExpiry`/`CertificateExpired` already existed, already
+  round-trip-tested, and merely had no producer.
+- **Phase 3 (the renewal work-list).** Computed inside `apply_write_phase`
+  as a **fourth** work-list beside `needs_work`, `restart_candidates`, and
+  the binding push. Its input is the pass's own health poll — `ServiceHealth`
+  already carries the certificate's issued/expires pair — so renewal needs
+  no new RPC and no cadence of its own (D-A5d-5). Deduped against
+  `needs_work` (a service about to go through `apply_plan` is re-certified
+  there) and `revoked_placements`, but deliberately **not** against
+  `restart_candidates`: a restart touches no certificate, so a service under
+  remediation still needs an independent renewal check (D-A5d-12). Gated on
+  `KeyStore::kek_is_loaded()` once per pass, which skips only the renewal
+  list — health, remediation, and the anchor check all continue, since none
+  of them opens the vault (D-A5d-4). Per candidate: mint → install →
+  conditional restart, stopping at the first failure (D-A5d-13), with
+  `VaultError::Locked` carved out to always raise `VaultLocked` wherever it
+  is caught, so one root cause never surfaces under two alert kinds
+  depending on which check found it (D-A5d-17). `RotationPolicy` is finally
+  read — from the supervisor's own stored plan, after a successful install;
+  the substrate-side field stays unread, as it is today (D-A5d-6).
+- **Phase 4 (master-anchor refresh).** On the existing 30-second tick, not a
+  second timer: each pass reads a persisted `(master_did, last_refreshed_at)`
+  fact and republishes only when overdue (D-A5d-8). A failed publish leaves
+  the previous stamp alone so the next pass retries rather than waiting out
+  another whole interval. `RegistryClient::revoke_instance_key` was added
+  beside `refresh_master_anchor`, and both sit behind a supervisor-side
+  `AnchorWriter` trait so the schedule and the revocation write are testable
+  with no live registry. A node with no `substrate.registry_url` holds **no**
+  anchor writer rather than one that silently does nothing.
+- **Phase 5 (revocation).** `roymctl supervisor revoke-instance <instance>
+  <logical-ref>`, `handle_revoke_instance` under the instance lock for the
+  whole verb (D-A5d-14), the anchor mutation, the `revoked_placements` write,
+  and — the fix F-A5d-1 forced — a skip-and-alert gate inside
+  `apply_with_clients`, the one path **every** certificate-minting caller
+  goes through. The anchor publish comes first and the local exclusion only
+  after it succeeds: reversed, a failed publish would leave a placement
+  half-revoked, excluded from renewal locally while every consumer still
+  trusts the key, so it would age out quietly instead of failing closed.
+
+**Test delta:** 42 named tests (§29). 11 in
+`crates/control_plane/src/service/orchestration.rs` (phase 1, including the
+two cap-boundary tests and the three review-added gates), 2 in
+`crates/core/src/config.rs`, 2 in `crates/app_supervisor/src/store.rs`, the
+existing `every_alert_kind_round_trips_through_display_and_from_str`
+extended with both new variants, ~20 in
+`crates/app_supervisor/src/service.rs`, and 2 e2e in
+`crates/substrate/tests/cert_renewal_e2e.rs` (port block 12_300/12_310,
+continuing from A5c's 12_200 range).
+
+**One scoping decision worth stating plainly, since it narrows what the
+e2e proves.** §29 test 42 asks for "a live handshake proving the new
+certificate is in use." What the e2e proves live is that `renew-cert`
+installs over the real wire, that its verification block runs on the new
+path (a certificate minted for the *other* node's derived key is refused,
+and the previously installed one survives the refusal), and that the
+substrate afterwards reports the renewed certificate as the one it holds.
+What it does **not** drive is a WASM guest's own outbound call presenting
+that certificate across a real cross-node hop — that arm only fires for
+`CallOrigin::Guest`, and building a WASM-guest two-node harness for it is
+the same out-of-proportion item `instance_identity_e2e.rs` and three
+backlog rows already decline. What the renewed certificate is *used for*
+once installed is covered at unit scale by
+`renew_cert_rebuilds_syn_svc_native_service_with_the_new_certificate`,
+which signs a relationship proof afterwards and checks it verifies against
+the new certificate.
+
+Row 14b's e2e is not narrowed the same way: it drives the real revocation
+writer against a real HTTP registry and reads the result back through the
+real ingress check (`HandshakeVerifier::verify_preamble` with a
+`RegistryClient` resolver), which is exactly the "mechanism with no trigger
+outside tests" the backlog row named. It also pins that a second revocation
+carries the first forward — the read-modify-write the same row called out.
+
+**Backlog rows resolved:** the `SynSvcNativeService` refresh (D-A5d-3), the
+maximum instance-certificate lifetime with its number recorded (D-A5d-7,
+30 days), the operator surface for revoking an instance key (D-A5d-10/15),
+and master-anchor refresh's schedule *and* race (D-A5d-8). **Two rows
+added:** concurrent redundant-supervisor custody of one master has no
+compare-and-set (post-M5), and `revoke-instance` has no path back (TBD).
+
+**Gates:** `cargo +nightly fmt --all` clean; `cargo clippy --workspace
+--all-targets --all-features` clean, no warnings. `cargo test --workspace
+--no-fail-fast`, sandboxed: every failure is a real port bind or DHT
+bootstrap the sandbox blocks — the identical set A5c's entry above already
+enumerates, re-confirmed by re-running the affected crates unsandboxed
+(`syneroym-community-registry` 16/16; `cargo test -p syneroym-substrate
+--no-fail-fast` green, including the new `cert_renewal_e2e.rs`). `mise run
+test:e2e` (Playwright/WebRTC, unrelated to the Rust e2e suite) 4/4.
 
 ## Dependencies pulled in
 

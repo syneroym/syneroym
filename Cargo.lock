@@ -7517,6 +7517,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "dashmap",
+ "hex",
  "rusqlite",
  "semver",
  "serde",

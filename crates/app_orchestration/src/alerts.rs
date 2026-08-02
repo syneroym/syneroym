@@ -67,6 +67,23 @@ pub enum AlertKind {
     /// because a manifest was edited is destructive, so this is a standing
     /// alert instead.
     OrphanedService,
+    /// The supervisor's own vault holds no KEK, so it cannot read the
+    /// member master this service's certificate must be reissued from
+    /// (M05A A5d). The ordinary state of a freshly-booted supervisor,
+    /// since the KEK arrives by `security.inject-kek` and does not survive
+    /// a restart -- and, once renewal is automated, the single thing
+    /// standing between a routine restart and every managed member's
+    /// handshakes failing closed. Raised per affected member, the same
+    /// fan-out `SubstrateUnreachable` uses for one root cause touching
+    /// several rows.
+    VaultLocked,
+    /// An operator revoked this placement's instance key, so nothing
+    /// reinstalls or re-certifies it -- not the resident loop, not
+    /// `submit`, not `force-reconcile` (M05A A5d). Distinct from
+    /// `OrphanedService`: that one is a plan edit the supervisor declined
+    /// to act on, this one is an operator decision it is actively
+    /// enforcing.
+    InstanceRevoked,
 }
 
 impl fmt::Display for AlertKind {
@@ -82,6 +99,8 @@ impl fmt::Display for AlertKind {
             Self::BindingConflict => "BINDING_CONFLICT",
             Self::PlacementChangeRefused => "PLACEMENT_CHANGE_REFUSED",
             Self::OrphanedService => "ORPHANED_SERVICE",
+            Self::VaultLocked => "VAULT_LOCKED",
+            Self::InstanceRevoked => "INSTANCE_REVOKED",
         };
         write!(f, "{}", s)
     }
@@ -102,6 +121,8 @@ impl FromStr for AlertKind {
             "BINDING_CONFLICT" => Ok(Self::BindingConflict),
             "PLACEMENT_CHANGE_REFUSED" => Ok(Self::PlacementChangeRefused),
             "ORPHANED_SERVICE" => Ok(Self::OrphanedService),
+            "VAULT_LOCKED" => Ok(Self::VaultLocked),
+            "INSTANCE_REVOKED" => Ok(Self::InstanceRevoked),
             _ => Err(anyhow!("Unknown alert kind: {}", s)),
         }
     }
@@ -400,6 +421,8 @@ mod tests {
             AlertKind::BindingConflict,
             AlertKind::PlacementChangeRefused,
             AlertKind::OrphanedService,
+            AlertKind::VaultLocked,
+            AlertKind::InstanceRevoked,
         ];
         for kind in all {
             let round_tripped: AlertKind = kind.to_string().parse().unwrap();
