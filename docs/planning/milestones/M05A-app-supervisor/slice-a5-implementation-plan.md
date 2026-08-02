@@ -108,6 +108,91 @@ now per dependent service, with a written invariant that makes
 `install_app_context`'s unguarded write correct (§19.3). Three further
 findings became new sections (§19.19-§19.21).
 
+**Code review on the merged A5c commit (2026-08-02).** Eighteen findings
+against the shipped code (A-1..A-8 correctness, B-1..B-3
+security/concurrency, C-1..C-4 test coverage, D-1..D-3 docs). Fourteen
+incorporated as code or test fixes; four are conscious sign-offs, not
+gaps left unaddressed by oversight.
+
+- **A-1 (high, fixed):** the loop never converged after a partial deploy
+  — `apply_write_phase` journaled only the subset of services this pass
+  actually applied, so `Reconciler::compute_diff`'s next read forgot
+  every already-landed service outside that subset and redeployed it,
+  which then dropped this pass's own subset out of the *next* baseline
+  in turn. Two services on two substrates alternated being redeployed
+  forever. Fixed by `record_plan_for_pass`: the journaled baseline now
+  carries every service already believed landed plus whatever this pass
+  is applying, distinct from the (possibly narrower) plan that actually
+  gets deployed.
+- **A-2 (high, fixed):** the binding epoch — bookkeeping for *who is
+  writing*, advanced before every apply (D-A5c-4) — was inside the
+  deploy dedup hash, so every re-apply changed the hash and forced a
+  real reinstall of every dependent service, the exact restart
+  `write-bindings` exists to avoid. Fixed the same way `generation` was
+  already excluded from that hash: each binding is hashed minus its
+  `epoch`.
+- **A-3 (high, fixed):** `ManagedService.restart_attempts` was hardcoded
+  `0` — phase 6's own stated deliverable — despite the `remediation`
+  table recording every attempt since phase 6. `handle_status` now reads
+  it back.
+- **A-4 (medium, fixed):** `AlertKind::PlacementChangeRefused` was
+  declared and round-trip tested but never raised; `refuse_placement_change`
+  now raises and publishes it before returning the refusal.
+- **A-5 (medium, fixed):** a failed binding push propagated its error
+  with no alert raised at all — only a clean `Stale`/`Conflict`
+  *outcome* alerted, never the round trip failing outright (matrix row
+  11's actual scenario). Fixed; row 11's task.md wording corrected to
+  match what the code (and test 47) now actually do — see that row for
+  why "instance marked `Degraded`" was never accurate and still is not,
+  independent of this fix.
+- **A-6 (medium, fixed):** four `let Ok(...) else { return }` reads at
+  the top of `reconcile_instance_pass`, and the connect failures
+  `connect_best_effort` returns, were silently discarded — no log, no
+  trace of why an instance stopped being supervised. All five now log a
+  `tracing::warn!`.
+- **A-7 (medium, fixed):** a deployment record left `Applying` by a
+  crash was never moved out of it, pinning `handle_status` to
+  "Applying" forever once nothing else happened to re-apply for that
+  instance. Fixed: a pass that finds its instance's latest record still
+  `Applying` recovers it to `Degraded` on sight — safe because the
+  per-instance lock the pass already holds proves no apply for this
+  instance can genuinely still be in flight.
+- **A-8 (low, fixed):** `last_reconciled_at` was hardcoded `None` under
+  a comment saying no loop existed yet to fill it. The loop now stamps
+  it (in-memory, per instance) at the end of every pass it runs.
+- **B-1 (medium, conscious sign-off, no code change):** any verified
+  caller can subscribe to the supervisor's alert topic with no
+  capability check — already recorded accurately in
+  `deferred-backlog.md` §8 (`messaging/subscribe needs no capability`)
+  before this review, including the exact asymmetry (node-owner-only
+  writes, unauthenticated-adjacent reads). Signed off here rather than
+  building a `messaging/subscribe`-shaped ability this session: it is a
+  router-wide gap affecting every deployed service's messaging endpoint,
+  not specific to the supervisor, and is correctly scoped as its own
+  post-M5 row.
+- **B-2, B-3 (low, conscious sign-offs, no code change):** unbounded
+  shutdown latency against many unreachable substrates, and an
+  unbounded `instance_locks` map keyed on admin-caller-supplied ids.
+  Both are real, both are the kind of thing A6's durable-delivery
+  rework and ordinary operational limits (an admin-only surface, a
+  bounded inventory) already bound in practice. Not worth a structural
+  change in this pass; flagged here as read, not missed.
+- **C-1..C-4 (medium/low, fixed):** four test-coverage gaps closed with
+  new tests — a real `dispatch("status", …)` call now asserts a
+  populated `bindings` array (C-1); `apply_write_phase`'s
+  `did_to_alias -> clients -> actor` restart lookup is now driven
+  end-to-end rather than only at its two ends (C-2); a counting fake
+  pins `max_held_generation_from_clients`'s "one RPC per substrate, not
+  per service" half of the poll-cost budget (C-3); two new tests drive
+  `handle_submit` and a real loop pass against an externally-held
+  `instance_lock`, rather than four anonymous holders of it (C-4).
+- **D-1, D-2, D-3 (low, fixed):** the backlog's merged "resolved" row
+  overclaimed `probe_cached` had gained single-flight dedup (it has
+  not — only the pool-exhaustion half was fixed; the row is split and
+  reopened); `status.md` said "three e2e" and listed two; a `submit`
+  that persisted desired state and one that was refused now return
+  distinguishable error messages.
+
 **Read §0 first, then §2.** §0 records **twenty-nine** places where
 `task.md`'s A5 paragraph leaves a decision unmade, names a component that
 does not exist, or is stale against what A0–A4 actually shipped, plus what

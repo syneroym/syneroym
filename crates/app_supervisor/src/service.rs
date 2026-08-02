@@ -104,6 +104,15 @@ pub struct SupervisorService {
     /// Per-instance rather than global so one unreachable substrate cannot
     /// stall every other instance's loop pass.
     instance_locks: DashMap<String, Arc<AsyncMutex<()>>>,
+    /// Unix-seconds timestamp of the last time the *resident loop*
+    /// finished a reconcile pass for this instance, keyed by
+    /// `app_instance_id` -- distinct from `status`'s own on-demand health
+    /// sweep, which does not write here (review finding A-8: this field
+    /// used to be hardcoded `None` under a comment claiming no loop
+    /// existed yet to fill it). In-memory only, not persisted: a
+    /// supervisor restart correctly reports "no pass since restart"
+    /// rather than replaying a stale wall-clock time.
+    last_reconciled: DashMap<String, i64>,
     /// Cancelled by `shutdown` -- the resident loop (`run`, spawned by
     /// `RuntimeServices::run_until_shutdown`, not pinned in its own
     /// `select!`) watches this to stop between passes rather than being
@@ -146,6 +155,7 @@ impl SupervisorService {
             max_restart_attempts,
             restart_backoff_secs,
             instance_locks: DashMap::new(),
+            last_reconciled: DashMap::new(),
             cancellation_token: CancellationToken::new(),
         }
     }
@@ -235,16 +245,74 @@ impl SupervisorService {
     /// which a content-unchanged diff cannot see on its own). One client
     /// set for the whole pass (D-A5c-9), closed once at the end.
     async fn reconcile_instance_pass(&self, app_instance_id: &str) {
-        let Ok(Some(state)) = self.store.get(app_instance_id) else { return };
+        // Review finding A-6: each of these four reads used to fail
+        // silently -- no log, no alert -- which drops the instance out
+        // of every future pass with nothing anywhere to say why. None of
+        // the four can raise a *stored* alert (the failure is in reading
+        // the store, or in parsing what it just returned, so there is no
+        // instance state left to attach one to that is any more trustworthy
+        // than the log line itself), but a `tracing::warn!` at least makes
+        // the drop observable instead of indistinguishable from an
+        // instance that was never submitted.
+        let Ok(Some(state)) = self.store.get(app_instance_id) else {
+            tracing::warn!(
+                app_instance_id,
+                "failed to read this instance's desired state; skipping it this pass"
+            );
+            return;
+        };
         if state.paused || state.retired {
             return;
         }
-        let Ok(plan) = DeploymentPlan::from_json(&state.plan_json) else { return };
-        let Ok(inventory) = serde_json::from_str::<SupervisorInventory>(&state.inventory_json)
-        else {
+        let Ok(plan) = DeploymentPlan::from_json(&state.plan_json) else {
+            tracing::warn!(
+                app_instance_id,
+                "stored plan-json does not parse as a DeploymentPlan; skipping this instance \
+                 until it is resubmitted"
+            );
             return;
         };
-        let Ok(instance_id) = AppInstanceId::try_new(app_instance_id.to_string()) else { return };
+        let Ok(inventory) = serde_json::from_str::<SupervisorInventory>(&state.inventory_json)
+        else {
+            tracing::warn!(
+                app_instance_id,
+                "stored inventory-json does not parse; skipping this instance until it is \
+                 resubmitted"
+            );
+            return;
+        };
+        let Ok(instance_id) = AppInstanceId::try_new(app_instance_id.to_string()) else {
+            tracing::warn!(
+                app_instance_id,
+                "the stored app_instance_id itself is not a valid AppInstanceId; skipping this \
+                 instance"
+            );
+            return;
+        };
+
+        // Review finding A-7: nothing else ever moves a crashed-mid-apply
+        // record out of `Applying` -- `apply_with_clients` only ever
+        // updates one to `Active`/`Degraded` itself, from inside the same
+        // call that appended it. The per-instance lock this pass holds
+        // (D-A5c-7) proves that call is gone: a second apply for this
+        // instance cannot be in flight while we hold the lock, so a
+        // record still reading `Applying` here was abandoned by a process
+        // that exited between appending it and updating it. `Degraded` is
+        // the correct resting state for "we do not know whether this
+        // landed" (D-A3-18) -- `handle_status` would otherwise report
+        // `Applying` forever, past the point this pass's own diff (which
+        // reads completed action rows, not this record's state) has
+        // already re-derived and retried whatever was actually missing.
+        if let Ok(Some(latest)) = self.store.journal.get_latest(&instance_id)
+            && latest.state == DeploymentState::Applying
+            && let Err(e) = self.store.journal.update_state(latest.id, DeploymentState::Degraded)
+        {
+            tracing::warn!(
+                app_instance_id,
+                error = %e,
+                "failed to recover a deployment record stuck in Applying"
+            );
+        }
 
         let landed =
             self.store.journal.get_completed_actions_for_instance(&instance_id).unwrap_or_default();
@@ -278,7 +346,21 @@ impl SupervisorService {
         let plan_aliases: BTreeSet<String> =
             Self::placed_aliases(&plan).unwrap_or_default().into_iter().collect();
         let connect_aliases = Self::connect_aliases_for_pass(&plan_aliases, &did_to_alias);
-        let (clients, _failed) = self.connect_best_effort(&connect_aliases, &inventory).await;
+        let (clients, failed) = self.connect_best_effort(&connect_aliases, &inventory).await;
+        // Review finding A-6: these used to be discarded entirely. An
+        // unreachable substrate is already visible another way (the
+        // health sweep reports it as a fault for a service placed
+        // there), but an alias with no inventory entry or no credential
+        // is a configuration problem the health sweep cannot see at
+        // all, since it never gets far enough to try connecting.
+        for (alias, reason) in &failed {
+            tracing::warn!(
+                app_instance_id,
+                alias,
+                reason,
+                "failed to connect to a substrate this pass needs"
+            );
+        }
 
         let mut targets: BTreeMap<String, HealthTarget> = BTreeMap::new();
         for (did, alias) in &did_to_alias {
@@ -429,6 +511,7 @@ impl SupervisorService {
         // pass (no deploy, no push, no restart) but was still polled for
         // health above.
         if superseded {
+            self.last_reconciled.insert(app_instance_id.to_string(), now as i64);
             Self::shutdown_clients(clients.into_values()).await;
             return;
         }
@@ -446,6 +529,7 @@ impl SupervisorService {
             )
             .await;
         }
+        self.last_reconciled.insert(app_instance_id.to_string(), now as i64);
         Self::shutdown_clients(clients.into_values()).await;
     }
 
@@ -494,11 +578,27 @@ impl SupervisorService {
                     && s.substrate.as_ref().is_some_and(|a| clients.contains_key(a))
             });
             if !filtered_plan.services.is_empty() {
+                // Review finding A-1: what gets *applied* this pass is
+                // deliberately narrowed to `filtered_plan`, but what gets
+                // *journaled* as the new baseline must not be -- diffing
+                // future passes against a snapshot that only ever holds
+                // this pass's touched subset drops every untouched,
+                // already-landed service out of the baseline, so the next
+                // pass reads it as missing and redeploys it, which then
+                // drops today's subset out in turn. The loop alternates
+                // forever instead of converging. `record_plan` carries
+                // every service this supervisor still believes landed
+                // (everything outside `needs_work`) plus whatever this
+                // pass is about to (re)land, and excludes only a
+                // `needs_work` service still unreachable this pass, which
+                // genuinely has not landed.
+                let record_plan = Self::record_plan_for_pass(plan, needs_work, clients);
                 match keys::mint_and_substitute(&mut filtered_plan, &self.vault).await {
                     Ok((minted, masters)) => {
                         if let Err(e) = self
                             .apply_with_clients(
                                 &filtered_plan,
+                                &record_plan,
                                 &masters,
                                 clients,
                                 fresh_state.generation,
@@ -541,6 +641,32 @@ impl SupervisorService {
             .await;
         }
         self.publish_opened_alerts(app_instance_id, &opened).await;
+    }
+
+    /// The plan to journal as this pass's new baseline, as distinct from
+    /// `filtered_plan`, the (possibly smaller) plan this pass actually
+    /// deploys (M05A A5c review finding A-1). Recording only the touched
+    /// subset as `Active` made `Reconciler::compute_diff` -- which reads
+    /// the *last* `Active` record wholesale -- forget every already-
+    /// landed service the current pass did not happen to touch, so the
+    /// next pass read it as missing and redeployed it, dropping today's
+    /// subset out of its own new snapshot in turn: two services on two
+    /// substrates alternate being redeployed forever instead of the loop
+    /// converging. Keeps every service already believed landed
+    /// (anything outside `needs_work`) plus whatever this pass is about
+    /// to (re)land; excludes only a `needs_work` service with nowhere
+    /// reachable to send it this pass, which genuinely has not landed.
+    fn record_plan_for_pass(
+        plan: &DeploymentPlan,
+        needs_work: &BTreeSet<String>,
+        clients: &BTreeMap<SubstrateAlias, Arc<SyneroymClient>>,
+    ) -> DeploymentPlan {
+        let mut record_plan = plan.clone();
+        record_plan.services.retain(|s| {
+            !needs_work.contains(&s.logical_ref.to_string())
+                || s.substrate.as_ref().is_some_and(|a| clients.contains_key(a))
+        });
+        record_plan
     }
 
     /// One bounded restart attempt for a landed-but-`InstanceNotRunning`
@@ -749,7 +875,16 @@ impl SupervisorService {
     /// Reads only what this supervisor's own journal has recorded landed
     /// -- never `roymctl`'s `--dir` -- so it is safe to call from both
     /// `submit` and `force-reconcile`.
-    fn refuse_placement_change(
+    ///
+    /// Review finding A-4: §21 q9 specifies that a refusal here raises
+    /// `AlertKind::PlacementChangeRefused` -- the variant existed, tested
+    /// only in its own `Display`/`FromStr` round trip, with nothing in
+    /// either caller ever raising it. Raised (and published, same as
+    /// every other alert this file opens) before the refusal is returned,
+    /// so a refused submission is visible on `alerts` even though it is
+    /// otherwise indistinguishable from a plain RPC error to whatever
+    /// received it.
+    async fn refuse_placement_change(
         &self,
         plan: &DeploymentPlan,
         inventory: &SupervisorInventory,
@@ -767,13 +902,28 @@ impl SupervisorService {
             let Some(alias) = &svc.substrate else { continue };
             let Some(entry) = inventory.get(alias.as_str()) else { continue };
             if prev.substrate_did != entry.did {
-                return Err(format!(
+                let detail = format!(
                     "service '{l_ref}' is already deployed on substrate {} and this submission \
                      would place it on {} ('{alias}'); the supervisor does not relocate a running \
                      member -- undeploy it on the old substrate and clear its placement record \
                      (`roymctl app forget`) before resubmitting",
                     prev.substrate_did, entry.did
-                ));
+                );
+                if let Ok(true) = self.store.alerts.raise(
+                    &instance_id,
+                    Some(&l_ref),
+                    prev.substrate_alias.as_deref(),
+                    &prev.substrate_did,
+                    AlertKind::PlacementChangeRefused,
+                    &detail,
+                ) {
+                    self.publish_opened_alerts(
+                        &plan.app_instance_id.to_string(),
+                        &[(AlertKind::PlacementChangeRefused, l_ref)],
+                    )
+                    .await;
+                }
+                return Err(detail);
             }
         }
         Ok(())
@@ -955,14 +1105,23 @@ impl SupervisorService {
         // However `apply_with_clients` below returns, every client this
         // call opened must be closed -- not just on the success path
         // (S6).
-        let result = self.apply_with_clients(&plan, &masters, &clients, generation, minted).await;
+        let result =
+            self.apply_with_clients(&plan, &plan, &masters, &clients, generation, minted).await;
         Self::shutdown_clients(clients.into_values()).await;
         result.map(|minted| (minted, plan))
     }
 
+    /// `plan` is what this call actually mints, certifies, and deploys.
+    /// `record_plan` is what gets journaled as the new baseline for
+    /// `Reconciler::compute_diff` to read next time -- equal to `plan`
+    /// for every full apply (`deploy_submission`, `handle_submit`), but
+    /// deliberately wider than it for the loop's filtered pass (M05A
+    /// A5c review finding A-1): see `record_plan_for_pass`'s own doc for
+    /// why the two must not be conflated.
     async fn apply_with_clients(
         &self,
         plan: &DeploymentPlan,
+        record_plan: &DeploymentPlan,
         masters: &BTreeMap<ServiceId, Identity>,
         clients: &BTreeMap<SubstrateAlias, Arc<SyneroymClient>>,
         generation: u64,
@@ -981,7 +1140,7 @@ impl SupervisorService {
         let deployment_id = self
             .store
             .journal
-            .append(plan, DeploymentState::Applying)
+            .append(record_plan, DeploymentState::Applying)
             .map_err(|e| e.to_string())?;
         let targets: BTreeMap<SubstrateAlias, DeployTarget> = clients
             .iter()
@@ -1098,7 +1257,20 @@ impl SupervisorService {
             .store
             .advance_binding_epoch(&app_instance_id, &l_ref)
             .map_err(|e| e.to_string())?;
-        let outcomes = self.write_bindings_at_epoch(plan, svc, actor, generation, epoch).await?;
+        // Review finding A-5: a `write_bindings` call that fails outright
+        // (the dependent unreachable, matrix row 11) used to propagate
+        // with `?`, before the alert-raising code below was ever reached
+        // -- the alert only fired for a `Stale`/`Conflict` *outcome*, a
+        // clean round trip reporting a problem, never for the round trip
+        // itself failing.
+        let outcomes = match self.write_bindings_at_epoch(plan, svc, actor, generation, epoch).await
+        {
+            Ok(o) => o,
+            Err(e) => {
+                self.raise_binding_push_failure(instance_id, svc, &l_ref, &e, opened);
+                return Err(e);
+            }
+        };
 
         let stale_held = outcomes.iter().find_map(|o| match o {
             BindingWriteOutcome::Stale(held) => Some(*held),
@@ -1109,7 +1281,13 @@ impl SupervisorService {
             self.store
                 .set_binding_epoch_at_least(&app_instance_id, &l_ref, retry_epoch)
                 .map_err(|e| e.to_string())?;
-            self.write_bindings_at_epoch(plan, svc, actor, generation, retry_epoch).await?
+            match self.write_bindings_at_epoch(plan, svc, actor, generation, retry_epoch).await {
+                Ok(o) => o,
+                Err(e) => {
+                    self.raise_binding_push_failure(instance_id, svc, &l_ref, &e, opened);
+                    return Err(e);
+                }
+            }
         } else {
             outcomes
         };
@@ -1133,6 +1311,31 @@ impl SupervisorService {
             opened.push((AlertKind::BindingConflict, l_ref));
         }
         Ok(outcomes)
+    }
+
+    /// The alert half of matrix row 11: a push that fails to reach the
+    /// dependent at all (not a clean `Stale`/`Conflict` outcome) still
+    /// needs to be visible on `alerts`, the same `AlertKind` a bad
+    /// outcome raises -- an operator reading `alerts` should not have to
+    /// know which of the two shapes a failed push took.
+    fn raise_binding_push_failure(
+        &self,
+        instance_id: &AppInstanceId,
+        svc: &PlannedService,
+        l_ref: &str,
+        error: &str,
+        opened: &mut Vec<(AlertKind, String)>,
+    ) {
+        if let Ok(true) = self.store.alerts.raise(
+            instance_id,
+            Some(l_ref),
+            None,
+            &svc.substrate.as_ref().map_or_else(String::new, ToString::to_string),
+            AlertKind::BindingConflict,
+            &format!("a binding push for '{l_ref}' failed to reach the dependent: {error}"),
+        ) {
+            opened.push((AlertKind::BindingConflict, l_ref.to_string()));
+        }
     }
 
     /// Builds the `binding-write` a real deploy would emit for `svc`
@@ -1247,7 +1450,7 @@ impl SupervisorService {
         // M05A A5c D-A5c-1: checked in the same pre-flight as `retired`/
         // `generation` above, before any deploy work runs -- a changed
         // placement must be refused, not silently applied.
-        self.refuse_placement_change(&plan, &inventory).map_err(RpcError::InternalError)?;
+        self.refuse_placement_change(&plan, &inventory).await.map_err(RpcError::InternalError)?;
 
         // Mint before connecting anywhere -- a locked vault or a bad plan
         // must fail before anything is persisted or a network round trip
@@ -1289,9 +1492,22 @@ impl SupervisorService {
         let clients =
             self.build_clients(&aliases, &inventory).await.map_err(RpcError::InternalError)?;
         let apply_result =
-            self.apply_with_clients(&plan, &masters, &clients, s.generation, minted).await;
+            self.apply_with_clients(&plan, &plan, &masters, &clients, s.generation, minted).await;
         Self::shutdown_clients(clients.into_values()).await;
-        let minted = apply_result.map_err(RpcError::InternalError)?;
+        // Review finding D-3: this error and a pre-flight refusal
+        // (retired/generation/placement, all above) used to read
+        // identically to the caller -- a plain string -- despite being
+        // opposites: a refusal wrote nothing and needs a corrected plan,
+        // while reaching here means the desired state above is already
+        // durable and the resident loop will retry whatever did not
+        // land. Said explicitly so an operator does not have to already
+        // know that ordering to read the error correctly.
+        let minted = apply_result.map_err(|e| {
+            RpcError::InternalError(format!(
+                "desired state was recorded; the immediate apply did not fully land and will be \
+                 retried by the resident loop: {e}"
+            ))
+        })?;
 
         let result = SubmitResult {
             masters: minted
@@ -1582,7 +1798,7 @@ impl SupervisorService {
         // M05A A5c D-A5c-1: `force-reconcile` never calls `store.submit`,
         // so nothing else on this path checks placement either -- the
         // identical fixture-trick reasoning as the `retired` check above.
-        self.refuse_placement_change(&plan, &inventory).map_err(RpcError::InternalError)?;
+        self.refuse_placement_change(&plan, &inventory).await.map_err(RpcError::InternalError)?;
         // D-A5c-20 (§19.20/F5): a directed reconcile is a fresh start,
         // regardless of what this call's own outcome turns out to be --
         // a terminal `InstanceNotRunning` service is otherwise never
@@ -1786,7 +2002,21 @@ impl SupervisorService {
         let plan_aliases: BTreeSet<String> =
             Self::placed_aliases(&plan).unwrap_or_default().into_iter().collect();
         let connect_aliases = Self::connect_aliases_for_pass(&plan_aliases, &did_to_alias);
-        let (clients, _failed) = self.connect_best_effort(&connect_aliases, &inventory).await;
+        let (clients, failed) = self.connect_best_effort(&connect_aliases, &inventory).await;
+        // Review finding A-6: these used to be discarded entirely. An
+        // unreachable substrate is already visible another way (the
+        // health sweep reports it as a fault for a service placed
+        // there), but an alias with no inventory entry or no credential
+        // is a configuration problem the health sweep cannot see at
+        // all, since it never gets far enough to try connecting.
+        for (alias, reason) in &failed {
+            tracing::warn!(
+                app_instance_id,
+                alias,
+                reason,
+                "failed to connect to a substrate this pass needs"
+            );
+        }
 
         let mut targets: BTreeMap<String, HealthTarget> = BTreeMap::new();
         for (did, alias) in &did_to_alias {
@@ -1935,7 +2165,19 @@ impl SupervisorService {
                 substrate_did: s.substrate_did.clone(),
                 signal: Self::signal_str(&s.signal).to_string(),
                 detail: Self::signal_detail(&s.signal),
-                restart_attempts: 0,
+                // Review finding A-3: Phase 6's stated deliverable was
+                // this field leaving 0 -- the `remediation` table has
+                // recorded every attempt since phase 6, this was simply
+                // never read back. `Ok(None)` (no restart ever attempted)
+                // and a read failure both fall back to 0, which is the
+                // correct value for "no attempts recorded", not a
+                // reported error.
+                restart_attempts: self
+                    .store
+                    .remediation_state(&app_instance_id, &s.logical_ref.to_string())
+                    .ok()
+                    .flatten()
+                    .map_or(0, |r| r.attempts),
             })
             .collect();
 
@@ -1976,13 +2218,15 @@ impl SupervisorService {
             state: overall_state,
             generation: state.generation,
             supervisor_did: self.node_did.clone(),
-            // A5b runs no reconcile loop -- `status` polls health on
-            // demand, which is not the same thing (D-A5-21). `Some(now)`
-            // here reported every instance as having just reconciled,
-            // even one that never has, the one fabricated number in an
-            // otherwise careful response (H1, Slice A5b review). `None`
-            // until A5c's loop actually reconciles something.
-            last_reconciled_at: None,
+            // A5b ran no reconcile loop, so this used to be permanently
+            // `None` (D-A5-21; H1, Slice A5b review, on why it is not
+            // `Some(now)` either -- that reported every instance as
+            // having just reconciled, even one that never has). A5c's
+            // loop now stamps `last_reconciled` at the end of every pass
+            // it actually runs for this instance (review finding A-8);
+            // `status`'s own on-demand sweep, right here, deliberately
+            // does not count as one.
+            last_reconciled_at: self.last_reconciled.get(&app_instance_id).map(|v| *v as u64),
             services,
             // M05A A5c §19.4/D-A5c-5 (F7, the exit criterion's own test):
             // read off the store's own written epoch and this pass's
@@ -2757,6 +3001,93 @@ mod tests {
         assert_eq!(aliases, vec!["edge-1".to_string()]);
     }
 
+    /// Review finding A-1: the whole fix in one assertion. `svc-a` is
+    /// outside `needs_work` (already landed, unchanged) and `svc-b` is
+    /// inside it and reachable this pass -- both must survive into the
+    /// record. Before this fix, `record_plan_for_pass` did not exist and
+    /// the filtered (`needs_work`-only) plan was journaled directly,
+    /// which is what `svc-a` dropping out of this assertion would
+    /// reproduce.
+    #[test]
+    fn record_plan_for_pass_keeps_untouched_services_alongside_this_passs_subset() {
+        let plan_json = serde_json::json!({
+            "app_instance_id": "inst-1",
+            "blueprint_id": "syneroym:test",
+            "version": "1.0.0",
+            "services": [
+                {
+                    "service_id": "did:key:hSvcA",
+                    "logical_ref": "inst-1/svc-a",
+                    "substrate": "edge-1",
+                    "service_type": "tcp", "source": "127.0.0.1:9000",
+                    "rotation_policy": "none",
+                    "resolved_dependencies": {},
+                    "topology_mode": "singleton"
+                },
+                {
+                    "service_id": "did:key:hSvcB",
+                    "logical_ref": "inst-1/svc-b",
+                    "substrate": "edge-2",
+                    "service_type": "tcp", "source": "127.0.0.1:9001",
+                    "rotation_policy": "none",
+                    "resolved_dependencies": {},
+                    "topology_mode": "singleton"
+                }
+            ]
+        })
+        .to_string();
+        let plan = DeploymentPlan::from_json(&plan_json).unwrap();
+        let needs_work: BTreeSet<String> = ["inst-1/svc-b".to_string()].into_iter().collect();
+        let identity = Identity::generate().unwrap();
+        let client = Arc::new(SyneroymClient::new_with_identity(
+            "did:key:zEdge2".to_string(),
+            String::new(),
+            identity,
+        ));
+        let clients: BTreeMap<SubstrateAlias, Arc<SyneroymClient>> =
+            BTreeMap::from([(SubstrateAlias::new("edge-2"), client)]);
+
+        let record_plan = SupervisorService::record_plan_for_pass(&plan, &needs_work, &clients);
+
+        let refs: BTreeSet<String> =
+            record_plan.services.iter().map(|s| s.logical_ref.to_string()).collect();
+        assert_eq!(
+            refs,
+            BTreeSet::from(["inst-1/svc-a".to_string(), "inst-1/svc-b".to_string()]),
+            "svc-a (untouched) and svc-b (this pass's subset) must both survive"
+        );
+    }
+
+    /// The other half: a `needs_work` service whose substrate this pass
+    /// never reached has not landed and must not be recorded as if it
+    /// had -- recording it would make a later pass believe it is already
+    /// active and never retry it.
+    #[test]
+    fn record_plan_for_pass_drops_a_needs_work_service_still_unreachable_this_pass() {
+        let plan_json = serde_json::json!({
+            "app_instance_id": "inst-1",
+            "blueprint_id": "syneroym:test",
+            "version": "1.0.0",
+            "services": [{
+                "service_id": "did:key:hSvcB",
+                "logical_ref": "inst-1/svc-b",
+                "substrate": "edge-2",
+                "service_type": "tcp", "source": "127.0.0.1:9001",
+                "rotation_policy": "none",
+                "resolved_dependencies": {},
+                "topology_mode": "singleton"
+            }]
+        })
+        .to_string();
+        let plan = DeploymentPlan::from_json(&plan_json).unwrap();
+        let needs_work: BTreeSet<String> = ["inst-1/svc-b".to_string()].into_iter().collect();
+
+        let record_plan =
+            SupervisorService::record_plan_for_pass(&plan, &needs_work, &BTreeMap::new());
+
+        assert!(record_plan.services.is_empty(), "an unreachable needs_work service must not land");
+    }
+
     // ── M05A A5c: MQTT alert publication (D-A5-13/D-A5c-6) ──────────────
 
     fn expected_alert_topic(app_instance_id: &str) -> String {
@@ -2985,6 +3316,28 @@ mod tests {
         assert!(s.store.alerts.active(&AppInstanceId::new("retired-inst")).unwrap().is_empty());
     }
 
+    /// Review finding A-8: `last_reconciled_at` used to be hardcoded
+    /// `None` forever, under a stale comment claiming no loop existed to
+    /// fill it. A paused/retired instance is skipped before the health
+    /// sweep even runs (see the test above), so it must stay unstamped;
+    /// a plain instance with an empty service list still gets a full
+    /// pass (the health sweep and the diff both run over zero services)
+    /// and must be stamped by it.
+    #[tokio::test]
+    async fn a_loop_pass_stamps_last_reconciled_at_but_a_skipped_instance_is_untouched() {
+        let s = service();
+        let plan = plan_json_no_services("inst-1");
+        let paused_plan = plan_json_no_services("paused-inst");
+        s.store.submit("inst-1", &plan, "{}", "did:key:owner", 0).unwrap();
+        s.store.submit("paused-inst", &paused_plan, "{}", "did:key:owner", 0).unwrap();
+        s.store.pause("paused-inst").unwrap();
+
+        s.run_pass().await;
+
+        assert!(s.last_reconciled.contains_key("inst-1"));
+        assert!(!s.last_reconciled.contains_key("paused-inst"));
+    }
+
     /// §19.16/F6/D-A5c-14: `apply_write_phase` is the write phase
     /// `reconcile_instance_pass` calls after its health sweep -- this
     /// tests its own re-read directly, standing in for a `pause` that
@@ -3020,6 +3373,68 @@ mod tests {
             s.store.journal.get_latest(&AppInstanceId::new("inst-1")).unwrap().is_none(),
             "a paused instance must not have had a deploy attempted"
         );
+    }
+
+    /// Review finding A-7: a record left `Applying` by a process that
+    /// crashed between `journal.append` and `journal.update_state` must
+    /// not pin `handle_status` to "Applying" forever. The per-instance
+    /// lock a pass holds is what makes this safe to recover on sight --
+    /// nothing can genuinely still be applying for this instance while
+    /// the pass itself holds that lock.
+    #[tokio::test]
+    async fn a_pass_recovers_a_deployment_record_stuck_in_applying() {
+        let s = service();
+        let plan_json = plan_json_no_services("inst-1");
+        s.store.submit("inst-1", &plan_json, "{}", "did:key:owner", 0).unwrap();
+        let plan = DeploymentPlan::from_json(&plan_json).unwrap();
+        s.store.journal.append(&plan, DeploymentState::Applying).unwrap();
+
+        s.reconcile_instance_pass("inst-1").await;
+
+        let latest = s.store.journal.get_latest(&AppInstanceId::new("inst-1")).unwrap().unwrap();
+        assert_eq!(latest.state, DeploymentState::Degraded);
+    }
+
+    /// Review finding A-4: a placement change was already refused
+    /// (D-A5c-1), but nothing raised the alert §21 q9 specifies for it --
+    /// only `Display`/`FromStr` ever touched the variant. A refusal must
+    /// now be visible on `alerts`, not only as this call's own `Err`.
+    #[tokio::test]
+    async fn refuse_placement_change_raises_and_stores_placement_change_refused() {
+        let s = service();
+        let landed_plan =
+            DeploymentPlan::from_json(&plan_json_one_service("inst-1", "backend", Some("edge-1")))
+                .unwrap();
+        let deployment_id = s.store.journal.append(&landed_plan, DeploymentState::Active).unwrap();
+        s.store
+            .journal
+            .append_action(
+                deployment_id,
+                "ADD",
+                "inst-1/backend",
+                Some("edge-1"),
+                "did:key:zEdge1",
+                ActionState::Completed,
+            )
+            .unwrap();
+
+        let moved_plan =
+            DeploymentPlan::from_json(&plan_json_one_service("inst-1", "backend", Some("edge-2")))
+                .unwrap();
+        let inventory = SupervisorInventory::from([(
+            "edge-2".to_string(),
+            SupervisorInventoryEntry {
+                did: "did:key:zEdge2".to_string(),
+                api_url: None,
+                ucan: None,
+            },
+        )]);
+
+        let err = s.refuse_placement_change(&moved_plan, &inventory).await.unwrap_err();
+        assert!(err.contains("does not relocate"), "{err}");
+
+        let alerts = s.store.alerts.active(&AppInstanceId::new("inst-1")).unwrap();
+        assert!(alerts.iter().any(|a| a.kind == AlertKind::PlacementChangeRefused), "{alerts:?}");
     }
 
     /// D-A5c-11 (§19.12): `update_superseded_alert` is the exact decision
@@ -3071,13 +3486,44 @@ mod tests {
         assert!(active.iter().any(|a| a.kind == AlertKind::InstanceNotRunning), "{active:?}");
     }
 
-    /// D-A5c-7 (§19.7): the per-instance lock is what `handle_submit`/
-    /// `handle_force_reconcile`/`handle_adopt`/`handle_release`/
-    /// `handle_retire` and a loop pass all acquire for their whole
-    /// duration -- tested at the lock itself, which two concurrently
+    /// Review finding C-3: D-A5c-12's poll-cost budget is "at most 2 RPCs
+    /// per substrate per pass" (one batched `status`, one
+    /// `app-instance-management-of`) -- the shipped budget test
+    /// (`orchestration.rs`) measures wall-clock duration only, and
+    /// nothing anywhere asserted the RPC-count half as a number that
+    /// could regress. This pins the `app-instance-management-of` half
+    /// directly: `max_held_generation_from_clients` must call
+    /// `held_generation` exactly once per *alias* (one call per
+    /// substrate), never once per service placed on it -- three aliases
+    /// here stand in for a substrate hosting many services, and the
+    /// count must stay 3, not grow with however many services this test
+    /// does not even bother placing. The "one batched status" half has
+    /// no equivalent unit seam (`SyneroymClient` is concrete, not
+    /// injectable into the health-poll path) and stays a duration-only
+    /// regression guard; recorded in the deferred backlog.
+    #[tokio::test]
+    async fn max_held_generation_from_clients_calls_held_generation_once_per_alias() {
+        let actor = Arc::new(CountingActor::default());
+        let dyn_actor: Arc<dyn SubstrateActor> = actor.clone();
+        let aliases: BTreeSet<String> =
+            ["edge-1", "edge-2", "edge-3"].into_iter().map(String::from).collect();
+        let clients: BTreeMap<SubstrateAlias, Arc<dyn SubstrateActor>> =
+            aliases.iter().map(|a| (SubstrateAlias::new(a.clone()), dyn_actor.clone())).collect();
+
+        let held_max =
+            SupervisorService::max_held_generation_from_clients("inst-1", &aliases, &clients).await;
+
+        assert_eq!(held_max, Some(0));
+        assert_eq!(*actor.held_generation_calls.lock().unwrap(), 3);
+    }
+
+    /// D-A5c-7 (§19.7): `instance_lock` itself, which two concurrently
     /// driven holders for the *same* instance id must never both be
     /// inside at once. `instance_lock` for two *different* ids would
-    /// return two different mutexes and is not what this proves.
+    /// return two different mutexes and is not what this proves. Review
+    /// finding C-4: this pins the lock's own mutual exclusion, not that
+    /// `submit` and a loop pass actually reach for it -- the two tests
+    /// below drive the real methods.
     #[tokio::test]
     async fn a_submit_and_a_loop_pass_for_one_instance_do_not_interleave() {
         let s = service();
@@ -3102,6 +3548,89 @@ mod tests {
             h.await.unwrap();
         }
         assert!(!overlapped.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    /// Review finding C-4: drives the real `run_pass` against a real
+    /// externally-held `instance_lock`, rather than four anonymous
+    /// holders of it -- proof that a loop pass genuinely blocks on the
+    /// same lock `instance_lock(app_instance_id)` returns, not merely
+    /// that the lock type is a working mutex.
+    #[tokio::test]
+    async fn a_loop_pass_blocks_on_this_instances_externally_held_lock() {
+        let s = Arc::new(service());
+        let plan_json = plan_json_no_services("inst-1");
+        s.store.submit("inst-1", &plan_json, "{}", "did:key:owner", 0).unwrap();
+
+        let held = s.instance_lock("inst-1");
+        let guard = held.lock().await;
+
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let pass_s = s.clone();
+        let pass_done = done.clone();
+        let handle = tokio::spawn(async move {
+            pass_s.run_pass().await;
+            pass_done.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !done.load(std::sync::atomic::Ordering::SeqCst),
+            "a loop pass must not proceed while this instance's lock is held elsewhere"
+        );
+
+        drop(guard);
+        tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("the pass must proceed once the lock is released")
+            .unwrap();
+        assert!(done.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    /// Review finding C-4's other half: `handle_submit` for the same
+    /// instance id must block on that instance's lock too, driven
+    /// through the real `dispatch("submit", …)` path rather than a
+    /// stand-in.
+    #[tokio::test]
+    async fn a_submit_blocks_on_this_instances_externally_held_lock() {
+        let s = Arc::new(service());
+        let plan_json = plan_json_no_services("inst-1");
+
+        let held = s.instance_lock("inst-1");
+        let guard = held.lock().await;
+
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let submit_s = s.clone();
+        let submit_done = done.clone();
+        let submit_plan_json = plan_json.clone();
+        let handle = tokio::spawn(async move {
+            dispatch(
+                &submit_s,
+                admin_caller("did:key:zSupervisorNode"),
+                "submit",
+                serde_json::json!([{
+                    "app_instance_id": "inst-1",
+                    "plan_json": submit_plan_json,
+                    "inventory_json": "{}",
+                    "generation": 0,
+                }]),
+            )
+            .await
+            .unwrap();
+            submit_done.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !done.load(std::sync::atomic::Ordering::SeqCst),
+            "submit must not proceed while this instance's lock is held elsewhere"
+        );
+
+        drop(guard);
+        tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("submit must proceed once the lock is released")
+            .unwrap();
+        assert!(done.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     /// D-A5c-8 (§19.8/F1): the loop is spawned, not pinned in a `select!`
@@ -3167,6 +3696,7 @@ mod tests {
     #[derive(Debug, Default)]
     struct CountingActor {
         restart_calls: Mutex<u32>,
+        held_generation_calls: Mutex<u32>,
     }
 
     #[async_trait::async_trait]
@@ -3188,7 +3718,8 @@ mod tests {
         }
 
         async fn held_generation(&self, _app_instance_id: &str) -> Result<Option<u64>, String> {
-            unimplemented!("not exercised by remediation tests")
+            *self.held_generation_calls.lock().unwrap() += 1;
+            Ok(Some(0))
         }
     }
 
@@ -3347,6 +3878,60 @@ mod tests {
             *actor.restart_calls.lock().unwrap(),
             3,
             "a terminal service must not be restarted again"
+        );
+    }
+
+    /// Review finding C-2: tests 35-38 (above) call `attempt_restart`
+    /// directly, and 39-40 (below) test `restart_candidates` in
+    /// isolation -- nothing drove the wiring between them, the
+    /// `did_to_alias -> clients -> actor` lookup inside
+    /// `apply_write_phase` that a mis-keyed alias or DID would silently
+    /// `continue` past with no restart and no error. Uses a real,
+    /// never-connected `SyneroymClient` rather than a fake: its `restart`
+    /// fails fast with "Not connected" (no socket, no hang), which is
+    /// enough to prove the lookup found it and called it -- the point
+    /// here is the wiring, not the RPC outcome, which `attempt_restart`'s
+    /// own tests already cover.
+    #[tokio::test]
+    async fn a_restart_candidate_reaches_the_actor_through_apply_write_phases_own_lookup() {
+        let s = service();
+        let plan_json = plan_json_one_service("inst-1", "backend", Some("edge-1"));
+        s.store.submit("inst-1", &plan_json, "{}", "did:key:owner", 0).unwrap();
+        let plan = DeploymentPlan::from_json(&plan_json).unwrap();
+
+        let identity = Identity::generate().unwrap();
+        let client = Arc::new(SyneroymClient::new_with_identity(
+            "did:key:zEdge1".to_string(),
+            String::new(),
+            identity,
+        ));
+        let clients: BTreeMap<SubstrateAlias, Arc<SyneroymClient>> =
+            BTreeMap::from([(SubstrateAlias::new("edge-1"), client)]);
+        let did_to_alias: BTreeMap<String, String> =
+            BTreeMap::from([("did:key:zEdge1".to_string(), "edge-1".to_string())]);
+        let restart_candidates = vec![(
+            "inst-1/backend".to_string(),
+            "did:key:hFabricated".to_string(),
+            "did:key:zEdge1".to_string(),
+        )];
+
+        s.apply_write_phase(
+            &AppInstanceId::new("inst-1"),
+            "inst-1",
+            &plan,
+            &BTreeSet::new(),
+            &restart_candidates,
+            &did_to_alias,
+            &clients,
+            0,
+        )
+        .await;
+
+        let state = s.store.remediation_state("inst-1", "inst-1/backend").unwrap();
+        assert!(
+            state.is_some_and(|r| r.attempts == 1),
+            "the candidate must reach a real actor call and record an attempt, not be silently \
+             dropped by the did_to_alias/clients lookup: {state:?}"
         );
     }
 
@@ -3639,6 +4224,44 @@ mod tests {
         assert!(rows[0].converged);
     }
 
+    /// Review finding C-1: §23 test 45 (above) calls
+    /// `binding_convergence_rows` directly, by its own doc comment --
+    /// never through a real `status` response, so nothing pins the wire
+    /// shape (`InstanceStatus.bindings` field name, its serialization) a
+    /// caller actually reads. This drives the exact same declared
+    /// dependency through `dispatch("status", …)` instead: no live
+    /// substrate exists in this test, so `observed_epoch` is `None`
+    /// rather than `Some(1)` (the exact case
+    /// `a_dependent_that_does_not_answer_reports_unconverged_rather_than_absent`
+    /// covers directly against the pure function below), but the point
+    /// here is that the array arrives non-empty at all, through the real
+    /// call.
+    #[tokio::test]
+    async fn status_returns_a_populated_bindings_array_over_a_real_dispatch_call() {
+        let s = service();
+        let svc = dependent_service("frontend", "backend");
+        let plan = plan_with_one_dependent(svc);
+        s.store.submit("inst-1", &plan.to_json().unwrap(), "{}", "did:key:owner", 0).unwrap();
+        s.store.advance_binding_epoch("inst-1", "inst-1/frontend").unwrap();
+
+        let res = dispatch(
+            &s,
+            admin_caller("did:key:zSupervisorNode"),
+            "status",
+            serde_json::json!(["inst-1"]),
+        )
+        .await
+        .unwrap();
+        let status: InstanceStatus = serde_json::from_value(res.payload).unwrap();
+
+        assert_eq!(status.bindings.len(), 1, "{:?}", status.bindings);
+        assert_eq!(status.bindings[0].dependent_logical_ref, "inst-1/frontend");
+        assert_eq!(status.bindings[0].dependency_name, "backend");
+        assert_eq!(status.bindings[0].written_epoch, 1);
+        assert_eq!(status.bindings[0].observed_epoch, None);
+        assert!(!status.bindings[0].converged);
+    }
+
     /// F7's negative half: a dependent absent from the sweep (unreachable,
     /// or never landed) must still produce a row -- `observed_epoch:
     /// None`, `converged: false` -- not silently vanish from the list, or
@@ -3662,7 +4285,11 @@ mod tests {
 
     /// Matrix row 11: a push against a dependent that cannot be reached
     /// fails (the epoch has still advanced, D-A5c-4's own invariant --
-    /// the next attempt must never retry at an epoch already spent), and
+    /// the next attempt must never retry at an epoch already spent), is
+    /// visible on the operator read surface (review finding A-5: the
+    /// original version of this test asserted only the epoch and a
+    /// successful retry -- the state-visible half of the row's own
+    /// wording -- and never checked `opened`/`alerts` at all), and
     /// succeeds cleanly once that dependent answers again. A unit test
     /// against a fake actor, deliberately (§23's own note: the wire path
     /// is already proven live by A5a's `binding_push_e2e.rs`, so this is
@@ -3682,6 +4309,9 @@ mod tests {
         let first = s.push_bindings(&instance_id, &plan, &svc, &dyn_actor, 0, &mut opened).await;
         assert!(first.is_err());
         assert_eq!(s.store.binding_epoch("inst-1", "inst-1/frontend").unwrap(), 1);
+        assert_eq!(opened, vec![(AlertKind::BindingConflict, "inst-1/frontend".to_string())]);
+        let alerts = s.store.alerts.active(&instance_id).unwrap();
+        assert!(alerts.iter().any(|a| a.kind == AlertKind::BindingConflict), "{alerts:?}");
 
         let second = s.push_bindings(&instance_id, &plan, &svc, &dyn_actor, 0, &mut opened).await;
         assert_eq!(second.unwrap(), vec![BindingWriteOutcome::Applied]);

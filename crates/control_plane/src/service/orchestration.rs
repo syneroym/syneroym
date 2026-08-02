@@ -1194,8 +1194,24 @@ impl ControlPlaneService {
         // generation this deploy itself presented, so a rollback of the
         // supervisor's own deploy is never rejected by its own gate.
         let generation = app_context.as_ref().map_or(0, |c| c.generation);
-        let context_for_hash =
-            app_context.as_ref().map(|c| (&c.app_instance_id, &c.service_name, &c.bindings));
+        // Review finding A-2: `epoch` is `generation`'s sibling, not its
+        // opposite -- it too records who is writing (the supervisor
+        // advances it before every apply, D-A5c-4), not what gets
+        // installed. Hashing it raw meant every re-apply changed the
+        // hash and forced a genuine reinstall of every dependent, which
+        // is exactly the restart `write-bindings` exists to avoid. Each
+        // binding is hashed minus its `epoch`, by the same reasoning
+        // §4A already applies to `generation` above.
+        let context_for_hash = app_context.as_ref().map(|c| {
+            let bindings: Vec<_> = c
+                .bindings
+                .iter()
+                .map(|b| {
+                    (&b.dependency_name, &b.app_instance_id, &b.mode, &b.members, b.cache_ttl_ms)
+                })
+                .collect();
+            (&c.app_instance_id, &c.service_name, bindings)
+        });
         let incoming_hash = {
             let canonical = serde_json::to_string(&(&manifest, &context_for_hash))
                 .map_err(|e| format!("Failed to canonicalize deploy manifest for dedup: {e}"))?;
@@ -8457,14 +8473,19 @@ mod tests {
     /// this test's own shape by construction -- one `status` call for all
     /// 20 ids, exactly what a supervisor's sweep issues, with the second
     /// RPC (`app-instance-management-of`) being an O(1) generation read
-    /// unrelated to service count and already pinned as exactly one call
-    /// per substrate per pass at the call site (`SupervisorService::
-    /// max_held_generation_from_clients`); and CPU-percent is not
-    /// portably measurable from a `#[tokio::test]` -- a wall-clock budget
-    /// comfortably under 2s on a shared thread pool is the proxy for it
-    /// here, with `mise run bench:poll-cost` re-running this same test
-    /// with its duration printed for a repeatable number outside the
-    /// pass/fail assertion.
+    /// unrelated to service count. That second RPC's own "exactly one
+    /// call per substrate, not per service" half is a separate,
+    /// dedicated regression test at the call site (review finding C-3:
+    /// this doc used to claim that without one existing --
+    /// `max_held_generation_from_clients_calls_held_generation_once_per_alias`,
+    /// `crates/app_supervisor/src/service.rs`, drives
+    /// `SupervisorService::max_held_generation_from_clients` against a
+    /// counting fake and pins the call count directly). CPU-percent is
+    /// not portably measurable from a `#[tokio::test]` -- a wall-clock
+    /// budget comfortably under 2s on a shared thread pool is the proxy
+    /// for it here, with `mise run bench:poll-cost` re-running this same
+    /// test with its duration printed for a repeatable number outside
+    /// the pass/fail assertion.
     #[tokio::test]
     async fn a_steady_state_sweep_of_twenty_services_stays_within_the_poll_budget() {
         let wasm_bytes = fs::read(stream_test_wasm_path()).expect(

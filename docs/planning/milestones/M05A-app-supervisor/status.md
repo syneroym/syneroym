@@ -2202,7 +2202,7 @@ on store state after a refusal, only on the error message).
 
 **Test delta:** 48 named tests (§23) — 34 unit tests in
 `crates/app_supervisor/src/service.rs`, a handful more in `store.rs`/
-`sdk/src/{deploy,health,mapper}.rs`, and three e2e:
+`sdk/src/{deploy,health,mapper}.rs`, and two e2e:
 `supervisor_alerts_e2e.rs` (test 27, port block 12_200),
 `supervisor_loop_e2e.rs` (test 48, port blocks 12_400/12_500/12_600).
 
