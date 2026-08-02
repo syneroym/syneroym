@@ -67,6 +67,13 @@ supervisor.
   Backup is an operator duty this milestone documents rather than automates.
 - **No supervisor HA.** Single writer, enforced by the generation stamp
   (ADR-0021 §4). A lease for redundant supervisors is post-M5.
+- **No external discovery of an app's topology.** Slice A7 mints the
+  app-instance master DID and nothing more; publishing it to the registry,
+  the signed topology document, and the resolve RPC are slices S1-S2 of the
+  [Logical Service Discovery Overlay](../../meta-implementation-plan.md#committed-work-logical-service-discovery-overlay-2026-08-02)
+  ([ADR-0022](../../../decisions/0022-two-tier-logical-service-discovery.md)).
+  Through this milestone, a caller outside an app instance still cannot
+  resolve a logical service inside it.
 
 ---
 
@@ -534,6 +541,43 @@ supervisors are wanted. Nothing above the trait changes.
 [deferred-backlog.md](../../deferred-backlog.md) §8 *Node lifecycle & ops* so it
 is not remembered by accident.
 
+### A7 — App-instance master identity *(pulled forward, 2026-08-02)*
+
+> **Numbered after A6 but not sequenced after it.** A7 depends only on A5b's
+> vault custody and may land before, after, or alongside A5d/A5e. A6 is the
+> only slice in this milestone gated on an external trigger.
+
+Mint an **app-instance master DID** at `adopt`, hold it in the supervisor's
+own vault beside the member masters, record it on the instance row, and
+surface it on `status`. `export-master` / `import-master` cover it by name, so
+supervisor handover moves it the same way it moves any other master.
+
+Design of record:
+[ADR-0022](../../../decisions/0022-two-tier-logical-service-discovery.md) §1.
+Slice **S0** of the [Logical Service Discovery Overlay](../../meta-implementation-plan.md#committed-work-logical-service-discovery-overlay-2026-08-02).
+
+**Scope is identity and custody only.** No registry publication, no topology
+document, no resolve RPC — those are S1 and S2, outside this milestone. What
+lands here is the DID, where it lives, and how it moves.
+
+**Why it is pulled forward rather than left with S1.** `adopt` is the natural
+mint point and A5b already built the vault, the minting path, and the
+generation counter. Doing it now is an addition to files that are already
+open; doing it later is a second pass through `adopt`, the instance rows, and
+vault naming, in a supervisor that has shipped. Nothing pre-release makes the
+retrofit *hard* — it is simply wasted work.
+
+**Why an app-level DID at all** (ADR-0022 §1, condensed): the supervisor has
+no identity of its own — `status` reports the node's DID — so addressing an
+app by its supervisor would change the app's address on every handover. The
+app DID stays stable while the supervisor underneath changes, and it is the
+natural subject for access grants, where a grant against each member DID
+changes on every membership change.
+
+`app_instance_id` is unchanged and stays the human name, in vault names, alert
+topics, and `LogicalServiceRef`'s display form — the same alias/DID split the
+substrate inventory already uses.
+
 ---
 
 ## Migration impact
@@ -682,3 +726,5 @@ Standard gates: `cargo +nightly fmt --all`, `cargo clippy --workspace
   flipped to Complete with evidence.
 - Slice A6 recorded as outstanding in `deferred-backlog.md` §8 *Node lifecycle &
   ops* with its pickup trigger — this milestone closes without it, deliberately.
+- An app instance carries a master DID minted at `adopt`, readable through
+  `status`, and movable through `export-master` / `import-master` (slice A7).

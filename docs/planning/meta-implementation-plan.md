@@ -452,6 +452,53 @@ phase per the 2026-07-16 resequencing.
 
 ---
 
+## Committed Work: Logical Service Discovery Overlay (2026-08-02)
+
+**Design of record:** [ADR-0022](../decisions/0022-two-tier-logical-service-discovery.md).
+This is the build-out of the 2026-07-16 resequencing's item 4 spike — "the
+orchestrator's shard-discovery / data-routing design question" — whose design
+half is now discharged. Recorded here, not in
+[deferred-backlog.md](./deferred-backlog.md), for the reason the *Live
+App-Context Registry* interstitial above gives for itself: this is committed
+platform work, not droppable debt. Every slice below carries an explicit
+pickup trigger so none of it is remembered by accident.
+
+**Two rows moved here out of `deferred-backlog.md` §5, where they were
+tracked in isolation** — same move, same reasoning, as the
+`expected_asserter_did` row the Live App-Context Registry interstitial
+absorbed:
+
+- *Cross-app `Bind` dependency naming has no manifest surface* (was targeted
+  "A5 / first real cross-app dependency") — now **S4** below. ADR-0022 §5
+  settles how it is authorized, which was the missing half.
+- *`TopologyMode::Sharded` has no expressible sharding strategy in a manifest*
+  (was `TBD`) — now **S1** below. ADR-0022's consequences note that
+  `Sharded` needs four things at once and is unusable with any one missing;
+  the manifest surface is the first.
+
+**Position in the build order.** This is **not** M7 work. M7's `[PLT-RED]` is
+*state* replication — SQLite WAL, pub/sub log, blob — and sits **downstream**
+of this: replicating a service across three members is pointless while callers
+cannot discover the current member set. Only S5 rides with M7.
+
+**Slices and pickup triggers:**
+
+| # | Scope | Pickup trigger |
+|---|---|---|
+| **S0** | App-instance master DID: minted at `adopt`, held in the supervisor vault, surfaced on `status`, exportable/importable for handover. Identity and custody only — no registry publication. | **Pulled forward into M05A as slice A7** (2026-08-02). `adopt` is the natural mint point and is being built now; retrofitting an identity into a shipped supervisor is a second pass through the same files. |
+| **S1** | Tier 1: the app-DID registry record, generation-fenced, published and refreshed by the supervisor. Manifest surface for `ShardingStrategy` (absorbed backlog row). | M05A slice A7 (S0) Complete. |
+| **S2** | Tier 2: the signed topology document, the supervisor `resolve` RPC, and the client-side verify/cache path feeding `LogicalResolver::register`. Ships the `epoch` field unenforced. | S1 Complete. |
+| **S3** | Gateway hostname scheme (`-a…-s…-i…`) plus the routing-key request header; coordinator relay of the document in the WebRTC bootstrap page. | S2 Complete. |
+| **S4** | Cross-app `Bind`: manifest surface, UCAN-scoped per-service exposure declared in the submitted plan, and replacing `prepare_binding`'s intra-app refusal with an authorization check (absorbed backlog row). | S2 Complete **and** a first real cross-app dependency exists. |
+| **S5** | Shard rebalancing, and enforcing the epoch fence on the data path. | **M7** `[PLT-RED]` — nothing to rebalance until redundancy/sharding is actually deployed. S2 must already have shipped the field. |
+
+**Why S2's epoch field ships before S5 enforces it:** adding a field to a wire
+format is free before anything depends on that format and expensive
+afterwards. Stated here because the two slices are separated by a milestone
+and the reason would otherwise be lost.
+
+---
+
 ## Milestone 5: Async Lifecycle and Developer Experience
 
 > **Build order:** see the *M5–M7 Resequencing* amendment above — item 1
@@ -487,7 +534,7 @@ phase per the 2026-07-16 resequencing.
    - Defining the plan-fragment serialization contract (Substrait schema version pinning).
    - Defining the network protocol for distributing plan fragments to edge nodes.
    - Defining what "done" looks like (e.g., a working end-to-end query across 2 nodes in a test).
-   - *(Design TBD to resolve before M5: How the Orchestrator discovers which node holds which shard, and how data routing tables are maintained for `[PLT-DAP-01]`)*
+   - ~~*(Design TBD to resolve before M5: How the Orchestrator discovers which node holds which shard, and how data routing tables are maintained for `[PLT-DAP-01]`)*~~ **Discharged 2026-08-02** by [ADR-0022](../decisions/0022-two-tier-logical-service-discovery.md), the same way item 5's registry-trust-model ADR is discharged by ADR-0020 §6. The build-out is the *Logical Service Discovery Overlay* item below, which carries its own pickup triggers.
 3. **Versioning:** Implement pre-upgrade SQLite snapshotting and automatic rollback mechanisms.
 4. **Developer Tools:** Release the mock SDK, project templates, the zero-drift `roymctl dev` local environment, and remote package retrieval over HTTP/OCI for the `ManifestCatalog`.
 5. **`ControllerAgreement` Creation Tool:** Build the `roymctl` tool to create/sign a `ControllerAgreement`, spun out of M04A Slice B7 (`docs/planning/milestones/M04A-proxy-and-auth-foundation/plans/B7.md` §6; task.md's post-B7b item list). Until this exists, B7b's ownership/deploy capability gate is inert — every substrate remains unowned, so this closes that gap. **Amended 2026-07-27:** the tool itself is **pulled forward into [M05A](./milestones/M05A-app-supervisor/task.md) as Slice P0**, because item 5 has no position in the 2026-07-16 resequencing (which front-loads item 1 and defers items 2-4) and M05A's multi-substrate placement cannot ship responsibly while ownership is unestablishable. Of the three items bundled with it: the **registry-trust-model ADR is discharged** by [ADR-0020](../decisions/0020-stable-logical-service-identity.md) §6 plus M05A slice A1 — the same change to `verify()`'s contract, with B7's "needs a real consumer" gate met; **multiple-substrate-owners representation (F12)** and **Tier 1 for the five data native-capability interfaces (F3)** stay here, neither being needed for single-owner multi-substrate placement.

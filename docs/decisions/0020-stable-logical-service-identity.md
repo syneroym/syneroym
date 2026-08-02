@@ -7,7 +7,10 @@ unattended monitoring and remediation), where "move a service to another
 substrate" turned out to be unimplementable under the current identity
 model. Paired with
 [ADR-0021](0021-binding-propagation-and-app-supervisor.md), which depends on
-this one.
+this one. Extended by
+[ADR-0022](0022-two-tier-logical-service-discovery.md), which applies §6's
+self-signed keying rule a level up — to the app instance itself — so that a
+caller *outside* an app can discover the member set §2 makes stable.
 
 **Context**:
 

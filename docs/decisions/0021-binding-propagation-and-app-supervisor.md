@@ -6,7 +6,11 @@ Supersedes the "Dynamic Pull (Server SynApp Mode)" design recorded in
 [system-architecture.md](../system-architecture.md) §LFC-MGT and
 [system-requirements-spec.md](../system-requirements-spec.md) §LFC-MGT.
 Amended 2026-08-01 -- see the dated amendment note at the end of this
-document.
+document. Extended by
+[ADR-0022](0022-two-tier-logical-service-discovery.md), which keeps push as
+the *intra-app* mechanism and adds a pull path for callers outside the app
+instance -- narrower than the live directory this ADR rejects, since what is
+fetched is a signed, cacheable document rather than a hot-path query.
 
 **Context**:
 
