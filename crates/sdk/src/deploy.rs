@@ -52,6 +52,13 @@ pub trait SubstrateActor: fmt::Debug + Send + Sync {
     /// for later delivery is usually wrong -- and that is a decision for
     /// A6's implementation, not a reason to leave it outside the trait.
     async fn restart(&self, service_id: String, generation: u64) -> Result<(), String>;
+    /// This substrate's held generation for an app instance, if it has
+    /// ever recorded one (M05A A5c §19.7/§19.12) -- the supervisor's own
+    /// resident loop uses this to detect supersession (ADR-0021 §4).
+    /// Behind this trait, not called directly against `SyneroymClient`,
+    /// so the loop's superseded/skip decisions are testable against a
+    /// fake substrate with no live connection.
+    async fn held_generation(&self, app_instance_id: &str) -> Result<Option<u64>, String>;
 }
 
 #[async_trait::async_trait]
@@ -90,6 +97,19 @@ impl SubstrateActor for SyneroymClient {
             Err(format!("Restart failed: {:?}", res.result))
         }
     }
+
+    /// `app-instance-management-of` returns `option<app-instance-
+    /// management>`, which serializes as `null` or the record's fields
+    /// directly (ordinary serde `Option`).
+    async fn held_generation(&self, app_instance_id: &str) -> Result<Option<u64>, String> {
+        let params =
+            serde_json::to_value((app_instance_id.to_string(),)).map_err(|e| e.to_string())?;
+        let res = self
+            .request("orchestrator", "app-instance-management-of", params)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(res.result.get("generation").and_then(serde_json::Value::as_u64))
+    }
 }
 
 /// A connected deploy target: the alias it was named by (`None` for the
@@ -118,6 +138,14 @@ pub struct ApplyRequest<'a> {
     /// for every caller through A5a -- the supervisor that presents a
     /// real, `adopt`-minted generation does not exist yet.
     pub generation: u64,
+    /// The binding epoch to stamp on each dependent service's own
+    /// bindings, keyed by the dependent's `LogicalServiceRef` (M05A A5c
+    /// §19.3/D-A5c-4) -- not a scalar, since one apply can deploy several
+    /// dependent services whose counters have each advanced independently.
+    /// A service absent from this map maps its bindings at epoch `0`,
+    /// meaning "no supervisor has written here", which is what every
+    /// caller through A5b still means by it.
+    pub binding_epochs: &'a BTreeMap<LogicalServiceRef, u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -253,6 +281,7 @@ pub async fn apply_plan(
             req.registry_certificates,
             req.emit_bindings,
             req.generation,
+            req.binding_epochs,
         ) {
             Err(e) => Err(e.to_string()),
             Ok(wit_plan) => target.actor.apply_plan(wit_plan).await,
@@ -437,6 +466,10 @@ mod tests {
         async fn restart(&self, _service_id: String, _generation: u64) -> Result<(), String> {
             unimplemented!("not exercised by apply_plan's own tests")
         }
+
+        async fn held_generation(&self, _app_instance_id: &str) -> Result<Option<u64>, String> {
+            unimplemented!("not exercised by apply_plan's own tests")
+        }
     }
 
     fn dummy_config() -> ServiceConfig {
@@ -525,6 +558,7 @@ mod tests {
                 registry_certificates: &BTreeMap::new(),
                 emit_bindings: false,
                 generation: 0,
+                binding_epochs: &BTreeMap::new(),
             },
             &journal,
             deployment_id,
@@ -559,6 +593,7 @@ mod tests {
                 registry_certificates: &BTreeMap::new(),
                 emit_bindings: false,
                 generation: 0,
+                binding_epochs: &BTreeMap::new(),
             },
             &journal,
             deployment_id,
@@ -594,6 +629,7 @@ mod tests {
                 registry_certificates: &BTreeMap::new(),
                 emit_bindings: false,
                 generation: 0,
+                binding_epochs: &BTreeMap::new(),
             },
             &journal,
             deployment_id,
@@ -638,6 +674,7 @@ mod tests {
                 registry_certificates: &BTreeMap::new(),
                 emit_bindings: false,
                 generation: 0,
+                binding_epochs: &BTreeMap::new(),
             },
             &journal,
             deployment_id,
@@ -685,6 +722,7 @@ mod tests {
                 registry_certificates: &BTreeMap::new(),
                 emit_bindings: false,
                 generation: 0,
+                binding_epochs: &BTreeMap::new(),
             },
             &journal,
             deployment_id,
@@ -747,6 +785,7 @@ mod tests {
                 registry_certificates: &BTreeMap::new(),
                 emit_bindings: false,
                 generation: 0,
+                binding_epochs: &BTreeMap::new(),
             },
             &journal,
             deployment_id,
@@ -790,6 +829,7 @@ mod tests {
                 registry_certificates: &BTreeMap::new(),
                 emit_bindings: false,
                 generation: 0,
+                binding_epochs: &BTreeMap::new(),
             },
             &journal,
             deployment_id,
@@ -825,6 +865,7 @@ mod tests {
         )]);
 
         let no_certs = BTreeMap::new();
+        let no_epochs = BTreeMap::new();
         let fut = apply_plan(
             ApplyRequest {
                 plan: &p,
@@ -834,6 +875,7 @@ mod tests {
                 registry_certificates: &no_certs,
                 emit_bindings: false,
                 generation: 0,
+                binding_epochs: &no_epochs,
             },
             &journal,
             deployment_id,

@@ -93,6 +93,12 @@ pub struct ServiceHealth {
     pub signal: Signal,
     pub instance_certificate_issued_at: Option<u64>,
     pub instance_certificate_expires_at: Option<u64>,
+    /// This service's persisted per-dependent binding epochs, as the
+    /// substrate reports them (`ServiceStatus.binding_epochs`, A5a §6).
+    /// Empty whenever there is no real answer to read it from -- an
+    /// unreachable substrate, an untargeted one, or a service the substrate
+    /// has no record of (M05A A5c §19.4) -- rather than fabricating one.
+    pub binding_epochs: Vec<(String, u64)>,
 }
 
 /// Why a substrate produced no facts and no per-service answer -- distinct
@@ -190,6 +196,7 @@ pub async fn poll_once(
                     signal: Signal::Unknown(msg.clone()),
                     instance_certificate_issued_at: None,
                     instance_certificate_expires_at: None,
+                    binding_epochs: Vec::new(),
                 });
             }
             continue;
@@ -226,6 +233,7 @@ pub async fn poll_once(
                         signal: Signal::SubstrateUnreachable(e.clone()),
                         instance_certificate_issued_at: None,
                         instance_certificate_expires_at: None,
+                        binding_epochs: Vec::new(),
                     });
                 }
             }
@@ -250,6 +258,7 @@ pub async fn poll_once(
                             ),
                             instance_certificate_issued_at: None,
                             instance_certificate_expires_at: None,
+                            binding_epochs: Vec::new(),
                         });
                         continue;
                     };
@@ -279,6 +288,7 @@ pub async fn poll_once(
                         signal,
                         instance_certificate_issued_at: st.instance_certificate_issued_at,
                         instance_certificate_expires_at: st.instance_certificate_expires_at,
+                        binding_epochs: st.binding_epochs.clone(),
                     });
                 }
             }
@@ -294,6 +304,7 @@ pub async fn poll_once(
             signal: Signal::NotDeployed,
             instance_certificate_issued_at: None,
             instance_certificate_expires_at: None,
+            binding_epochs: Vec::new(),
         });
     }
 
@@ -304,11 +315,22 @@ pub async fn poll_once(
 /// Folds a report into the alert store: raises what is now failing, clears
 /// what is no longer. Returns the alerts this sweep *opened*, so a caller
 /// prints transitions rather than re-printing the standing set every time.
+///
+/// `extra_live_pairs` (M05A A5c D-A5c-10): `(logical_ref, substrate_did)`
+/// pairs the caller manages an alert for *outside* this report -- the
+/// supervisor's own "planned but never landed" `InstanceNotRunning` alert
+/// is one, keyed at a sentinel `substrate_did` this report never mentions,
+/// specifically so it is never confused with a real substrate's row.
+/// Without naming it here, the A4-03 stale-alert sweep below would treat
+/// it as an alert for a service/substrate pair that has "left the sweep"
+/// and clear it on every single call, since nothing in `report` ever
+/// mentions that pair. Every other caller passes `&[]`.
 pub fn record_report(
     alerts: &AlertStore,
     instance_id: &AppInstanceId,
     report: &HealthReport,
     now: u64,
+    extra_live_pairs: &[(String, String)],
 ) -> Result<Vec<(AlertKind, String)>> {
     let mut opened = Vec::new();
 
@@ -435,6 +457,7 @@ pub fn record_report(
         .services
         .iter()
         .map(|s| (s.logical_ref.to_string(), s.substrate_did.clone()))
+        .chain(extra_live_pairs.iter().cloned())
         .collect();
     let live_substrates: HashSet<&str> =
         report.substrates.iter().map(|s| s.substrate_did.as_str()).collect();
@@ -598,6 +621,41 @@ mod tests {
         assert!(!report.is_healthy());
     }
 
+    /// M05A A5c §19.4: `ServiceHealth.binding_epochs` must actually carry
+    /// what `ServiceStatus.binding_epochs` reported -- the field the exit
+    /// criterion's convergence read depends on, dropped silently before this
+    /// fix.
+    #[tokio::test]
+    async fn poll_once_carries_each_services_binding_epochs_through_to_service_health() {
+        let mut status =
+            service_status("did:key:svc", InstancePhase::Running, ProbeStatus::Passing);
+        status.binding_epochs = vec![("backend".to_string(), 3)];
+        let status = SubstrateStatus { node: None, checked_at: 0, services: vec![status] };
+        let targets = BTreeMap::from([(
+            "did:key:b".to_string(),
+            target("did:key:b", Arc::new(FakeQuery::ok(status))),
+        )]);
+        let expected = vec![expected("frontend", "did:key:svc", "did:key:b")];
+
+        let report = poll_once(&targets, &expected).await;
+        assert_eq!(report.services[0].binding_epochs, vec![("backend".to_string(), 3)]);
+    }
+
+    /// The arm that would otherwise panic or fabricate: an unreachable
+    /// substrate has no answer to read a binding epoch from, so the field
+    /// must read empty rather than stale or synthesized.
+    #[tokio::test]
+    async fn poll_once_reports_empty_binding_epochs_for_an_unreachable_substrate() {
+        let targets = BTreeMap::from([(
+            "did:key:b".to_string(),
+            target("did:key:b", Arc::new(FakeQuery::err("connection refused"))),
+        )]);
+        let expected = vec![expected("backend", "did:key:svc", "did:key:b")];
+
+        let report = poll_once(&targets, &expected).await;
+        assert!(report.services[0].binding_epochs.is_empty());
+    }
+
     #[tokio::test]
     async fn a_service_with_no_completed_placement_reports_not_deployed() {
         let targets = BTreeMap::new();
@@ -627,9 +685,10 @@ mod tests {
                 signal: Signal::InstanceNotRunning("down".to_string()),
                 instance_certificate_issued_at: None,
                 instance_certificate_expires_at: None,
+                binding_epochs: Vec::new(),
             }],
         };
-        record_report(&alerts, &instance_id, &not_running, 1000).unwrap();
+        record_report(&alerts, &instance_id, &not_running, 1000, &[]).unwrap();
         assert_eq!(alerts.active(&instance_id).unwrap().len(), 1);
         assert_eq!(alerts.active(&instance_id).unwrap()[0].kind, AlertKind::InstanceNotRunning);
 
@@ -643,9 +702,10 @@ mod tests {
                 signal: Signal::ProbeFailing("bad".to_string()),
                 instance_certificate_issued_at: None,
                 instance_certificate_expires_at: None,
+                binding_epochs: Vec::new(),
             }],
         };
-        record_report(&alerts, &instance_id, &probe_failing, 1001).unwrap();
+        record_report(&alerts, &instance_id, &probe_failing, 1001, &[]).unwrap();
         let active = alerts.active(&instance_id).unwrap();
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].kind, AlertKind::ProbeFailing);
@@ -672,6 +732,7 @@ mod tests {
                     signal: Signal::SubstrateUnreachable("unreachable".to_string()),
                     instance_certificate_issued_at: None,
                     instance_certificate_expires_at: None,
+                    binding_epochs: Vec::new(),
                 },
                 ServiceHealth {
                     logical_ref: l_ref("backend2"),
@@ -681,10 +742,11 @@ mod tests {
                     signal: Signal::SubstrateUnreachable("unreachable".to_string()),
                     instance_certificate_issued_at: None,
                     instance_certificate_expires_at: None,
+                    binding_epochs: Vec::new(),
                 },
             ],
         };
-        let opened = record_report(&alerts, &instance_id, &report, 1000).unwrap();
+        let opened = record_report(&alerts, &instance_id, &report, 1000, &[]).unwrap();
         assert_eq!(opened.iter().filter(|(k, _)| *k == AlertKind::SubstrateUnreachable).count(), 1);
         assert_eq!(alerts.active(&instance_id).unwrap().len(), 1);
     }
@@ -715,9 +777,10 @@ mod tests {
                 signal: Signal::Unknown("no health target built for this substrate".to_string()),
                 instance_certificate_issued_at: None,
                 instance_certificate_expires_at: None,
+                binding_epochs: Vec::new(),
             }],
         };
-        let opened = record_report(&alerts, &instance_id, &report, 1000).unwrap();
+        let opened = record_report(&alerts, &instance_id, &report, 1000, &[]).unwrap();
         assert!(opened.is_empty(), "{opened:?}");
         assert!(alerts.active(&instance_id).unwrap().is_empty());
     }
@@ -741,15 +804,16 @@ mod tests {
                 signal: Signal::ProbeFailing("bad".to_string()),
                 instance_certificate_issued_at: None,
                 instance_certificate_expires_at: None,
+                binding_epochs: Vec::new(),
             }],
         };
-        record_report(&alerts, &instance_id, &failing, 1000).unwrap();
+        record_report(&alerts, &instance_id, &failing, 1000, &[]).unwrap();
         assert_eq!(alerts.active(&instance_id).unwrap().len(), 1);
 
         // The next sweep no longer names "backend" at all -- removed from
         // the manifest, or forgotten.
         let empty = HealthReport { substrates: vec![], services: vec![] };
-        record_report(&alerts, &instance_id, &empty, 1001).unwrap();
+        record_report(&alerts, &instance_id, &empty, 1001, &[]).unwrap();
         assert!(alerts.active(&instance_id).unwrap().is_empty());
         assert_eq!(alerts.all(&instance_id).unwrap().len(), 1, "the row must still be readable");
     }
@@ -770,9 +834,10 @@ mod tests {
                 signal: Signal::Healthy,
                 instance_certificate_issued_at: Some(now),
                 instance_certificate_expires_at: Some(now + 24 * 3600),
+                binding_epochs: Vec::new(),
             }],
         };
-        record_report(&alerts, &instance_id, &report, now).unwrap();
+        record_report(&alerts, &instance_id, &report, now, &[]).unwrap();
         assert!(alerts.active(&instance_id).unwrap().is_empty());
     }
 
@@ -796,9 +861,10 @@ mod tests {
                 signal: Signal::Healthy,
                 instance_certificate_issued_at: Some(now - 25 * 3600),
                 instance_certificate_expires_at: Some(now - 3600),
+                binding_epochs: Vec::new(),
             }],
         };
-        let opened = record_report(&alerts, &instance_id, &report, now).unwrap();
+        let opened = record_report(&alerts, &instance_id, &report, now, &[]).unwrap();
         assert_eq!(opened, vec![(AlertKind::CertificateExpired, l_ref("backend").to_string())]);
         let active = alerts.active(&instance_id).unwrap();
         assert_eq!(active.len(), 1);

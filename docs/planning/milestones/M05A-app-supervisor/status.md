@@ -4,10 +4,10 @@
 [ADR-0020](../../../decisions/0020-stable-logical-service-identity.md),
 [ADR-0021](../../../decisions/0021-binding-propagation-and-app-supervisor.md)
 
-**Overall:** Design accepted 2026-07-27. Slices P0, A0-A4, A5a, A5b complete;
-A5 splits into five sub-slices per
+**Overall:** Design accepted 2026-07-27. Slices P0, A0-A4, A5a, A5b, A5c
+complete; A5 splits into five sub-slices per
 [slice-a5-implementation-plan.md](slice-a5-implementation-plan.md) §2 —
-A5c-A5e not started.
+A5d-A5e not started.
 
 ## Slice status
 
@@ -21,7 +21,7 @@ A5c-A5e not started.
 | A4 | Health declaration + read-only monitoring | **Complete (2026-07-31)** — [implementation plan](slice-a4-implementation-plan.md), evidence below | A3 (Complete) |
 | A5a | Substrate write primitives (binding push, restart, generation gate, content-hash dedup) | **Complete** — [implementation plan](slice-a5-implementation-plan.md) Part I | A4 (Complete) |
 | A5b | The supervisor role, store, `supervisor` interface, and master custody | **Complete (2026-08-01)** — [implementation plan](slice-a5-implementation-plan.md) Part II, evidence below | A5a (Complete) |
-| A5c | The resident reconcile loop and bounded remediation | Not started | A5b (Complete) |
+| A5c | The resident reconcile loop and bounded remediation | **Complete (2026-08-02)** — [implementation plan](slice-a5-implementation-plan.md) Part IV, evidence below | A5b (Complete) |
 | A5d | Unattended certificate renewal | Not started | A5c |
 | A5e | Scale-out, cross-app probes, budgets | Not started | A5c, A5d |
 | A6 | Durable delivery via outbox/DLQ | **Deferred, post-M5** | M5 item 1 Complete |
@@ -2029,6 +2029,196 @@ test rewritten in place, not added, per the note above.
 `cargo clippy --workspace --all-targets --all-features` clean; `cargo
 test --workspace` 1236+/1236+, exit 0, unsandboxed; `mise run test:e2e`
 12/12; `crates/substrate --test supervisor_interface_e2e` 6/6.
+
+**Two behaviour changes round 2 made that its own notes above state only
+in passing** (recorded 2026-08-01 while planning A5c, because both are
+things a later slice must not rediscover):
+
+- **`retire` is no longer terminal.** N3's fix (`SupervisorStore::
+  un_retire`, called by `handle_adopt` on a successful claim) changes what
+  the flag *means*, not just what error message names the way out.
+  Before: `retired` was a one-way door and every refusal pointed at a
+  recovery path that did not exist. After: `retired` is "this supervisor
+  has stopped managing the instance until an operator re-adopts it",
+  and `adopt` clears it. `release` deliberately does **not** — it clears
+  the substrate-side stamp only and says nothing about whether *this*
+  supervisor should resume. Consequences for A5c: the resident loop's
+  work list (`all_active`) excludes retired instances, and an instance can
+  re-enter that list without a restart, so the loop must read the flag per
+  pass rather than snapshotting it at boot. The §13 test name was updated
+  with the behaviour (`retire_refuses_a_later_submit_until_un_retired`).
+- **`impl Drop for SyneroymClient` changes a type this milestone does not
+  own.** The fix landed in `crates/sdk/src/lib.rs`, not in the supervisor,
+  so it affects every holder of a `SyneroymClient` in the tree: `roymctl`
+  (a short-lived process — the spawned `close_in_background` task can lose
+  the race with process exit, which is no worse than the previous abort
+  but is also no better), `syneroym-client-gateway` (which caches clients
+  in a `DashMap`, so `Drop` fires on eviction or shutdown, when the runtime
+  may already be winding down), and all thirteen `crates/substrate/tests/*`
+  e2e files. It is a backstop, not a close path: it cannot `.await` the
+  graceful QUIC handshake, so any caller that must *know* the close
+  finished still calls `shutdown` explicitly. A5c inherits that rule — its
+  loop connects on a timer, so every pass must close its clients rather
+  than lean on `Drop`.
+
+**A5b defect owned and fixed in A5c, recorded here since A5b is merged and
+there is no A5b to reopen (§19.1):** `SupervisorService` never called
+`check_no_placement_change` — that function is private to `roymctl` and
+reads the operator's own `--dir/identities/` files, which the supervisor
+has no equivalent of. A resubmit whose plan moved an already-landed service
+to a different substrate was therefore accepted silently, deploying a
+second live copy of that member. `refuse_placement_change` (D-A5c-1) is
+A5c's own fix, not a reuse.
+
+## A5c — Verification evidence (2026-08-02)
+
+Planned to executable depth in
+[slice-a5-implementation-plan.md](slice-a5-implementation-plan.md) Part IV
+(§19-§25), after an independent review found ten findings against that
+pass — two blocking (F1: a bare `CancellationToken` cannot stop the loop in
+time, since `shutdown()` is not reached until after the `select!` that
+would drop it has already returned; F2: a scalar `ApplyRequest.epoch`
+cannot express one dependent's counter diverging from another's) — nine
+incorporated as raised, one (F8, the row-11/row-12 e2e triggers) answered
+differently: row 11 became a unit test against a fake `SubstrateActor`
+rather than a second e2e, since §19.18 already established A5c has no
+reachable membership-change trigger of its own, so any two-node version
+would need a fixture reaching into `supervisor.db` on a running node.
+
+**What shipped, by phase (§22's merge order):**
+
+- **Phase 1 (substrate-side fixes, no supervisor involved):**
+  `restart_impl` gains an `owner_of` check with the node-wide
+  `ORCHESTRATOR_DEPLOY` override `undeploy_impl` already has (D-A5c-15);
+  `ServiceHealth` gains `binding_epochs: Vec<(String, u64)>`, filled at all
+  five production `poll_once` construction sites; `ApplyRequest` gains
+  `binding_epochs: &BTreeMap<LogicalServiceRef, u64>`, replacing
+  `mapper.rs`'s hardcoded `0`.
+- **Phase 2 (the A5b defects A5c inherits):** `refuse_placement_change`
+  (D-A5c-1), called from `handle_submit` and `handle_force_reconcile`'s
+  pre-flight, beside `retired`/generation; `overall_state` gains `Degraded`
+  when any planned service has no landed placement (D-A5c-10); `Applying`
+  sourced from `journal.get_latest` (D-A5c-13); one client set per pass,
+  shared by the health sweep and the generation read (D-A5c-9).
+- **Phase 3 (bookkeeping and the budget):** `SupervisorStore` gains
+  `binding_epochs` (per-dependent-service counter, `advance_binding_epoch`)
+  and `remediation` (`record_restart_attempt`/`mark_remediation_terminal`/
+  `clear_remediation`/`clear_remediation_for_instance`) tables; four new
+  `AlertKind`s (`RemediationExhausted`, `BindingConflict`,
+  `PlacementChangeRefused`, `OrphanedService`); the poll-cost budget
+  harness (a 20-service steady-state pass, D-A5c-12).
+- **Phase 4 (MQTT):** `SharedNodeHandles` gains `messaging_broker`;
+  `runtime.rs` registers a `messaging` endpoint for the supervisor beside
+  its `supervisor` registration; the supervisor's own subscribe path
+  namespaces with the **publish**-side rule (`namespace_topic_for_publish`)
+  rather than the ordinary cross-service opt-in every deployed service's
+  `messaging` endpoint gets (D-A5c-6) — a deliberate divergence, not an
+  oversight, guarded by a negative test. `publish_opened_alerts` publishes
+  every alert a pass newly opened, over the newly-opened list `record_
+  report`'s caller already has, after the store write commits.
+- **Phase 5 (the loop):** `AppSupervisor::run` is now **spawned**, not
+  pinned in `RuntimeServices::run_until_shutdown`'s own `select!` (D-A5c-8)
+  — `RuntimeServices` holds the `JoinHandle`, races `&mut` it in the arm
+  the pinned future used to occupy, and `shutdown` cancels the loop's
+  `CancellationToken` and then awaits the handle. A per-app-instance
+  `tokio::Mutex` (`DashMap<String, Arc<Mutex<()>>>`) is held for a whole
+  loop pass and for the whole of `submit`/`force-reconcile`/`adopt`/
+  `release`/`retire` (D-A5c-7). `reconcile_instance_pass`'s work list is
+  `Reconciler::compute_diff`'s Add/Update actions plus `missing_placement`
+  (D-A5c-2) — a content-unchanged diff against an older `Active` snapshot
+  cannot see a service the current sweep finds with no landed placement at
+  all, which is exactly D-A5c-10's own gap; `Remove` actions are excluded
+  from the work list (D-A5c-3) and instead raise `OrphanedService`. A
+  `pause`/`retire` landing during the health sweep — the one window the
+  per-instance lock does not close, since neither takes it — is caught by
+  a **second** read at the top of the write phase (D-A5c-14/F6).
+  `SubstrateActor` gained `held_generation` (M05A A5c §23) so the
+  superseded/skip decision (`max_held_generation_from_clients`,
+  `update_superseded_alert`) is testable against a fake substrate rather
+  than only through a live one.
+- **Phase 6 (remediation):** a landed service the sweep finds
+  `InstanceNotRunning` gets one bounded restart attempt per pass, gated on
+  `remediation.terminal` and `restart_backoff_secs`; exceeding
+  `max_restart_attempts` marks it terminal and raises
+  `RemediationExhausted`, naming `force-reconcile` as the escape hatch;
+  `force-reconcile` and `adopt` both clear a terminal remediation row
+  (D-A5c-20/F5), since a service nothing will restart cannot clear it by
+  becoming healthy on its own. `ProbeFailing` and `SubstrateUnreachable`
+  never trigger a restart (D-A5c-17, D-A4-13), pinned as tests rather than
+  left to be widened by accident later.
+- **Phase 7 (the push and convergence):** `push_bindings` mints the next
+  epoch, sends, and — on `Stale(held)` — retries **once**, at `held + 1`,
+  not a re-read (D-A5c-19/F4: `Stale` already carries the number a second
+  round trip would only relearn); `Conflict` is never retried. Either
+  failure raises `BindingConflict`. `apply_with_clients` (submit/force-
+  reconcile/the loop's own redeploy path) now advances and stamps a real
+  per-dependent epoch instead of the phase-1 placeholder. `instance-
+  status.bindings` is a real join (`binding_convergence_rows`) — written
+  epoch from the store, observed epoch from the sweep's `ServiceHealth.
+  binding_epochs`, keyed by dependency name; a dependent absent from the
+  sweep still produces a row (`observed_epoch: None`, `converged: false`),
+  not silent absence (F7, the exit criterion's own test). Not wired into
+  the loop automatically — A5c has no reachable membership change of its
+  own (D-A5c-16); `push_bindings` is exercised directly by fixture-driven
+  tests, for A5e's `replicas` to call once that trigger exists.
+
+**Two real bugs found and fixed while building, not called for by the
+plan text:**
+
+- **Wasmtime pool exhaustion under concurrent health probes.** The
+  20-service poll-cost budget test failed for real, not just slow, at the
+  default `max_concurrent_instances: 10`. `AppSandboxEngine` gained
+  `probe_instance_permits: Arc<Semaphore>` and a new `execute_probe_json`
+  that acquires a permit before calling `execute_wasm_json`; `run_probe`'s
+  `Rpc` arm now calls it instead of `execute_wasm_json` directly. A
+  wasmtime 47.x upgrade was considered as an alternative and explicitly
+  not pursued this milestone (`deferred-backlog.md`).
+- **`MqttBroker` subscription death on a benign empty wakeup.** `subscribe
+  ()`'s forwarding task treated `LinkRx::next()`'s `Ok(None)` (a benign
+  "woken but nothing forwardable" event from `rumqttd`) the same as a real
+  `Err` (permanent disconnect), killing every subscription after its first
+  delivered message under any realistic timing gap between publishes.
+  Fixed: `Ok(None) => continue`. General-purpose, not A5c-specific —
+  found only because A5c's own alert-publication tests exercise a
+  publish/subscribe gap a synthetic tight-loop test never would.
+
+**A gap found building test 48 (matrix row 12's e2e), not named by the
+plan's own §19/§23:** `handle_submit`'s original ordering ran the full
+mint/certify/apply pipeline *before* `store.submit`, so a substrate
+unreachable at submit time made the whole call fail closed with **nothing**
+persisted — not even for the service placed on a substrate that was
+perfectly reachable. Reordered: mint (a locked vault must still fail before
+anything is recorded, unchanged) → `store.submit` → a best-effort apply
+attempt, still surfaced to the caller as an error if it does not fully
+land. A second, related gap: `apply_write_phase`'s filtered plan, unfiltered,
+would hand `deploy::apply_plan` a plan spanning two substrates with a
+target built for only one — `resolve_targets` fails the *whole* call closed
+over the missing one (correct for `roymctl app deploy`'s own all-or-nothing
+call, wrong for a pass that should land what it can). Fixed by narrowing
+the filtered plan to services whose alias this pass actually connected to;
+an unreachable one simply stays in `needs_work` for the next pass. Neither
+change alters `handle_submit`'s existing refusal tests (none of them assert
+on store state after a refusal, only on the error message).
+
+**Test delta:** 48 named tests (§23) — 34 unit tests in
+`crates/app_supervisor/src/service.rs`, a handful more in `store.rs`/
+`sdk/src/{deploy,health,mapper}.rs`, and two e2e:
+`supervisor_alerts_e2e.rs` (test 27, port block 12_200),
+`supervisor_loop_e2e.rs` (test 48, port blocks 12_400/12_500/12_600).
+
+**Gates:** `cargo +nightly fmt --all` clean; `cargo clippy --workspace
+--all-targets --all-features` clean, no warnings. `cargo test --workspace
+--no-fail-fast`, sandboxed: every failure (`syneroym-community-registry`,
+`syneroym-control-plane`'s probe tests, `syneroym-mqtt-broker`'s
+`no_network_listener_is_bound`, `crates/router`'s `connection_limit`/
+`multi_hop_relay`/`tls_rotation`/the documented-flaky `native_dispatch_
+identity` mainline-DHT panic, and every `crates/substrate/tests/*.rs` e2e
+file) is a real port bind or DHT bootstrap the sandbox blocks, not a
+regression — confirmed by re-running `cargo test -p syneroym-substrate
+--no-fail-fast` unsandboxed (exit 0, every e2e file green, including the
+two new supervisor ones) and `cargo test -p syneroym-community-registry`
+unsandboxed (16/16). `mise run test:e2e` (Playwright/WebRTC, unrelated to
+the Rust e2e suite above) 4/4.
 
 ## Dependencies pulled in
 

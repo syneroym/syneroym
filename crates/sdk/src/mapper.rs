@@ -6,8 +6,8 @@ use std::{
 use syneroym_app_orchestration::{
     DEFAULT_BINDING_CACHE_TTL_MS,
     models::{
-        DeploymentPlan, DocumentRef, HealthCheck, LogicalServiceName, PlannedService,
-        RotationPolicy, ServiceId, ServiceType, TopologyMode,
+        DeploymentPlan, DocumentRef, HealthCheck, LogicalServiceName, LogicalServiceRef,
+        PlannedService, RotationPolicy, ServiceId, ServiceType, TopologyMode,
     },
 };
 use syneroym_core::{deploy_docs, util};
@@ -133,6 +133,7 @@ pub fn map_deployment_plan_to_wit(
     registry_certificates: &BTreeMap<ServiceId, String>,
     emit_bindings: bool,
     generation: u64,
+    binding_epochs: &BTreeMap<LogicalServiceRef, u64>,
 ) -> anyhow::Result<WitDeploymentPlan> {
     let plan_instance_id = plan.app_instance_id.to_string();
     // `mode` belongs to the *target* of a dependency, not the dependent --
@@ -314,8 +315,14 @@ pub fn map_deployment_plan_to_wit(
                         app_instance_id: plan_instance_id.clone(),
                         mode: map_mode(target_modes.get(name).copied().unwrap_or_default()),
                         members: members.iter().map(ToString::to_string).collect(),
-                        // A2 mints no epochs; the supervisor does (A5).
-                        epoch: 0,
+                        // M05A A5c §19.3/D-A5c-4: the epoch belongs to the
+                        // *dependent* service, not the dependency -- one
+                        // counter per (app_instance_id, dependent
+                        // logical_ref), shared by every one of that
+                        // service's bindings. `0` (an absent entry) means
+                        // "no supervisor has written here", which is also
+                        // what every caller through A5b still means by it.
+                        epoch: binding_epochs.get(&svc.logical_ref).copied().unwrap_or(0),
                         cache_ttl_ms: DEFAULT_BINDING_CACHE_TTL_MS,
                     })
                     .collect()
@@ -407,7 +414,9 @@ mod tests {
         let all: Vec<&PlannedService> = plan.services.iter().collect();
         // Unmanaged (M05A A5a): none of these tests exercise the
         // generation gate, which is `map_deployment_plan_to_wit`'s own
-        // concern to unit-test.
+        // concern to unit-test. Epoch defaults to empty (every binding maps
+        // at 0) for the same reason -- the epoch map is its own test's
+        // concern.
         map_deployment_plan_to_wit(
             plan,
             &all,
@@ -415,6 +424,7 @@ mod tests {
             registry_certificates,
             emit_bindings,
             0,
+            &BTreeMap::new(),
         )
     }
 
@@ -750,6 +760,7 @@ mod tests {
             &BTreeMap::new(),
             true,
             0,
+            &BTreeMap::new(),
         )
         .unwrap();
 
@@ -761,6 +772,41 @@ mod tests {
             "backend's mode must be resolved from the whole plan even though only frontend was \
              mapped"
         );
+    }
+
+    /// M05A A5c §19.3/D-A5c-4: the epoch is keyed by the *dependent*
+    /// service's own logical ref, not by the dependency name -- frontend's
+    /// one entry in the map must land on every one of frontend's bindings.
+    #[test]
+    fn a_plan_mapped_at_a_nonzero_epoch_emits_that_epoch_on_every_binding() {
+        let plan = plan_with_a_dependency();
+        let frontend_ref = plan.services[1].logical_ref.clone();
+        let epochs = BTreeMap::from([(frontend_ref, 7u64)]);
+
+        let all: Vec<&PlannedService> = plan.services.iter().collect();
+        let wit_plan = map_deployment_plan_to_wit(
+            &plan,
+            &all,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            true,
+            0,
+            &epochs,
+        )
+        .unwrap();
+
+        let frontend =
+            wit_plan.services.iter().find(|s| s.logical_ref.ends_with("frontend")).unwrap();
+        let ctx = frontend.app_context.as_ref().unwrap();
+        assert_eq!(ctx.bindings.len(), 1);
+        assert_eq!(ctx.bindings[0].epoch, 7);
+
+        // backend has no entry in the map, so it must fall back to 0 --
+        // meaning "no supervisor has written here" -- rather than
+        // inheriting frontend's value or panicking on a missing key.
+        let backend =
+            wit_plan.services.iter().find(|s| s.logical_ref.ends_with("backend")).unwrap();
+        assert!(backend.app_context.as_ref().unwrap().bindings.is_empty());
     }
 
     #[test]

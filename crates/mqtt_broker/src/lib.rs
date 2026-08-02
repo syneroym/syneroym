@@ -216,7 +216,25 @@ impl MqttBroker {
                                 }
                             }
                             Ok(Some(_)) => continue,
-                            Ok(None) | Err(_) => break,
+                            // `LinkRx::next()` returns `Ok(None)` on a
+                            // *benign* empty wakeup -- rumqttd's router
+                            // trigger fired but the notification batch it
+                            // swapped in had nothing forwardable in it
+                            // (its own doc comment: "one router_rx trigger
+                            // signifies a bunch of notifications", not
+                            // "signifies at least one"). Treating it the
+                            // same as `Err` (a genuine link failure) closed
+                            // this subscription's channel after its first
+                            // delivered message under realistic timing --
+                            // reliably reproduced by a real caller doing
+                            // any nontrivial async work between two
+                            // publishes (a live RPC dispatch, not just a
+                            // tight loop or a `sleep`), which is exactly
+                            // how a subscriber is actually used. Loop and
+                            // keep waiting instead; only a real `Err`
+                            // ends the subscription.
+                            Ok(None) => continue,
+                            Err(_) => break,
                         }
                     }
                 }

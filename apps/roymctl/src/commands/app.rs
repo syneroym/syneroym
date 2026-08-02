@@ -632,6 +632,11 @@ pub async fn handle(
                     // whatever `adopt` minted, and does not go through
                     // this command.
                     generation: 0,
+                    // Unmanaged for the same reason: the epoch is the
+                    // resident loop's counter (M05A A5c), and an absent
+                    // entry here means the same "no supervisor has written
+                    // here" that `generation: 0` above already means.
+                    binding_epochs: &BTreeMap::new(),
                 },
                 &journal,
                 record_id,
@@ -934,7 +939,7 @@ pub async fn handle(
                         .map(|d| d.as_secs())
                         .unwrap_or(0);
                     for (kind, subject) in
-                        health::record_report(&alerts, &instance_id, &report, now)?
+                        health::record_report(&alerts, &instance_id, &report, now, &[])?
                     {
                         eprintln!("ALERT {kind:?}: {subject}");
                     }
@@ -1274,6 +1279,10 @@ mod tests {
 
         async fn restart(&self, _service_id: String, _generation: u64) -> Result<(), String> {
             unimplemented!("check_no_placement_change must never call restart()")
+        }
+
+        async fn held_generation(&self, _app_instance_id: &str) -> Result<Option<u64>, String> {
+            unimplemented!("check_no_placement_change must never call held_generation()")
         }
     }
 

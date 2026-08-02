@@ -6,7 +6,11 @@ Supersedes the "Dynamic Pull (Server SynApp Mode)" design recorded in
 [system-architecture.md](../system-architecture.md) §LFC-MGT and
 [system-requirements-spec.md](../system-requirements-spec.md) §LFC-MGT.
 Amended 2026-08-01 -- see the dated amendment note at the end of this
-document.
+document. Extended by
+[ADR-0022](0022-two-tier-logical-service-discovery.md), which keeps push as
+the *intra-app* mechanism and adds a pull path for callers outside the app
+instance -- narrower than the live directory this ADR rejects, since what is
+fetched is a signed, cacheable document rather than a hot-path query.
 
 **Context**:
 
@@ -142,6 +146,17 @@ this is a distinct concern from deploy idempotency: a re-sent *deploy* is
 deduplicated on (instance, service, content hash), while a re-sent *binding
 write* is deduplicated on epoch plus content. Both are needed; neither covers the
 other.
+
+**Who mints the epoch (M05A A5c, §19.3/D-A5c-4).** This section names the
+guard but not the number's owner. The App Supervisor mints and holds it,
+**per dependent service**, not per dependency: one counter for
+`(app_instance_id, dependent_logical_ref)`, carried on every binding that
+dependent's own write emits, incremented before the write it will label —
+never after, and never derived from what the substrate reports holding.
+`roymctl app deploy`'s unmanaged, hand-deployed path keeps writing at epoch
+`0`, which reads as "no supervisor has written here" rather than a
+regression: a supervisor later adopting that instance starts its own counter
+above it, so its first push is still `higher` and applies cleanly.
 
 ## 4. An app instance has exactly one writer, and it is stamped
 

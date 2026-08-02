@@ -211,3 +211,42 @@ fn namespace_topic_for_publish_always_prefixes_caller_namespace() {
         "a bare topic is prefixed with the caller's own namespace"
     );
 }
+
+/// Found while building M05A A5c's alert publication: a real caller
+/// (`SupervisorService::handle_status`) doing genuine async work between
+/// two publishes -- not a tight loop, not a bare `sleep` -- reliably hit
+/// `LinkRx::next()` returning `Ok(None)` for a *benign* empty wakeup
+/// (rumqttd's router trigger fired with nothing forwardable in the
+/// batch), which the forwarding task used to treat identically to a real
+/// link `Err`, permanently closing the subscriber's channel after its
+/// first delivered message. This pins the fix: the subscription must
+/// survive an empty wakeup and keep receiving whatever is published
+/// after it.
+#[tokio::test]
+async fn a_subscription_survives_a_benign_empty_wakeup_between_publishes() {
+    let broker = test_broker();
+    let (_handle, mut rx) = broker.subscribe("app/topic".to_string()).await.expect("subscribe");
+    broker.publish("app/topic".to_string(), b"one".to_vec()).await.expect("publish 1");
+
+    let (first_topic, first_payload) = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .expect("did not time out")
+        .expect("channel closed after the first message");
+    assert_eq!(first_topic, "app/topic");
+    assert_eq!(first_payload, b"one");
+
+    // Real async work between the two publishes, not a tight loop --
+    // this is what actually exposed the bug; a bare `sleep` alone did
+    // not reproduce it.
+    for _ in 0..50 {
+        tokio::task::yield_now().await;
+    }
+
+    broker.publish("app/topic".to_string(), b"two".to_vec()).await.expect("publish 2");
+    let (second_topic, second_payload) = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .expect("did not time out")
+        .expect("channel closed before the second message arrived");
+    assert_eq!(second_topic, "app/topic");
+    assert_eq!(second_payload, b"two");
+}

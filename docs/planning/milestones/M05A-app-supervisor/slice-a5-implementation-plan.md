@@ -87,6 +87,152 @@ by a check nothing could satisfy. The client-side encryption half is
 recorded as its own backlog row, since the substrate implementing an E2E
 layer no client can speak is a gap independent of A5.
 
+**A5a and A5b are merged; A5c has its own findings pass in Part IV
+(2026-08-01, revised same day after review).** Per D-A5-2 each sub-slice
+gets its own `§0` before execution. **Part IV** (§19-§25) is A5c's:
+twenty-one findings, nine scope-changing, twenty-one decisions
+(`D-A5c-N`), a phase plan, forty-eight named tests, and answers to §18
+questions 8 and 9. Read it instead of §14 before starting A5c — §14
+remains as the original phase-and-signature sketch, and Part IV corrects
+it in five places. A5d and A5e still owe theirs.
+
+**Review pass on Part IV (2026-08-01), §25.** Ten findings, two blocking;
+nine incorporated, one answered differently. Both blockers were decisions
+this pass got wrong rather than code it misread: **the cancellation token
+could never fire in time**, because `run_until_shutdown` drops the loop
+future before `shutdown()` is ever reached — so the loop is spawned and
+joined instead (§19.8); and **a scalar epoch on `ApplyRequest` could not
+express a per-dependency counter**, so a redeploy would write a lower
+epoch over a higher one and the next push would conflict — the counter is
+now per dependent service, with a written invariant that makes
+`install_app_context`'s unguarded write correct (§19.3). Three further
+findings became new sections (§19.19-§19.21).
+
+**Code review on the merged A5c commit (2026-08-02).** Eighteen findings
+against the shipped code (A-1..A-8 correctness, B-1..B-3
+security/concurrency, C-1..C-4 test coverage, D-1..D-3 docs). Fourteen
+incorporated as code or test fixes; four are conscious sign-offs, not
+gaps left unaddressed by oversight.
+
+- **A-1 (high, fixed):** the loop never converged after a partial deploy
+  — `apply_write_phase` journaled only the subset of services this pass
+  actually applied, so `Reconciler::compute_diff`'s next read forgot
+  every already-landed service outside that subset and redeployed it,
+  which then dropped this pass's own subset out of the *next* baseline
+  in turn. Two services on two substrates alternated being redeployed
+  forever. Fixed by `record_plan_for_pass`: the journaled baseline now
+  carries every service already believed landed plus whatever this pass
+  is applying, distinct from the (possibly narrower) plan that actually
+  gets deployed.
+- **A-2 (high, fixed):** the binding epoch — bookkeeping for *who is
+  writing*, advanced before every apply (D-A5c-4) — was inside the
+  deploy dedup hash, so every re-apply changed the hash and forced a
+  real reinstall of every dependent service, the exact restart
+  `write-bindings` exists to avoid. Fixed the same way `generation` was
+  already excluded from that hash: each binding is hashed minus its
+  `epoch`.
+- **A-3 (high, fixed):** `ManagedService.restart_attempts` was hardcoded
+  `0` — phase 6's own stated deliverable — despite the `remediation`
+  table recording every attempt since phase 6. `handle_status` now reads
+  it back.
+- **A-4 (medium, fixed):** `AlertKind::PlacementChangeRefused` was
+  declared and round-trip tested but never raised; `refuse_placement_change`
+  now raises and publishes it before returning the refusal.
+- **A-5 (medium, fixed):** a failed binding push propagated its error
+  with no alert raised at all — only a clean `Stale`/`Conflict`
+  *outcome* alerted, never the round trip failing outright (matrix row
+  11's actual scenario). Fixed; row 11's task.md wording corrected to
+  match what the code (and test 47) now actually do — see that row for
+  why "instance marked `Degraded`" was never accurate and still is not,
+  independent of this fix.
+- **A-6 (medium, fixed):** four `let Ok(...) else { return }` reads at
+  the top of `reconcile_instance_pass`, and the connect failures
+  `connect_best_effort` returns, were silently discarded — no log, no
+  trace of why an instance stopped being supervised. All five now log a
+  `tracing::warn!`.
+- **A-7 (medium, fixed):** a deployment record left `Applying` by a
+  crash was never moved out of it, pinning `handle_status` to
+  "Applying" forever once nothing else happened to re-apply for that
+  instance. Fixed: a pass that finds its instance's latest record still
+  `Applying` recovers it to `Degraded` on sight — safe because the
+  per-instance lock the pass already holds proves no apply for this
+  instance can genuinely still be in flight.
+- **A-8 (low, fixed):** `last_reconciled_at` was hardcoded `None` under
+  a comment saying no loop existed yet to fill it. The loop now stamps
+  it (in-memory, per instance) at the end of every pass it runs.
+- **B-1 (medium, conscious sign-off, no code change):** any verified
+  caller can subscribe to the supervisor's alert topic with no
+  capability check — already recorded accurately in
+  `deferred-backlog.md` §8 (`messaging/subscribe needs no capability`)
+  before this review, including the exact asymmetry (node-owner-only
+  writes, unauthenticated-adjacent reads). Signed off here rather than
+  building a `messaging/subscribe`-shaped ability this session: it is a
+  router-wide gap affecting every deployed service's messaging endpoint,
+  not specific to the supervisor, and is correctly scoped as its own
+  post-M5 row.
+- **B-2, B-3 (low, conscious sign-offs, no code change):** unbounded
+  shutdown latency against many unreachable substrates, and an
+  unbounded `instance_locks` map keyed on admin-caller-supplied ids.
+  Both are real, both are the kind of thing A6's durable-delivery
+  rework and ordinary operational limits (an admin-only surface, a
+  bounded inventory) already bound in practice. Not worth a structural
+  change in this pass; flagged here as read, not missed.
+- **C-1..C-4 (medium/low, fixed):** four test-coverage gaps closed with
+  new tests — a real `dispatch("status", …)` call now asserts a
+  populated `bindings` array (C-1); `apply_write_phase`'s
+  `did_to_alias -> clients -> actor` restart lookup is now driven
+  end-to-end rather than only at its two ends (C-2); a counting fake
+  pins `max_held_generation_from_clients`'s "one RPC per substrate, not
+  per service" half of the poll-cost budget (C-3); two new tests drive
+  `handle_submit` and a real loop pass against an externally-held
+  `instance_lock`, rather than four anonymous holders of it (C-4).
+- **D-1, D-2, D-3 (low, fixed):** the backlog's merged "resolved" row
+  overclaimed `probe_cached` had gained single-flight dedup (it has
+  not — only the pool-exhaustion half was fixed; the row is split and
+  reopened); `status.md` said "three e2e" and listed two; a `submit`
+  that persisted desired state and one that was refused now return
+  distinguishable error messages.
+
+**Fix-verification pass (2026-08-02), against commit e2583cd.** Two more
+findings, both against the fixes above rather than the original code —
+caught by re-review, not self-discovered:
+
+- **E-1 (high, fixed): A-2's fix was inert.** `context_for_hash` excluding
+  `epoch` changed nothing observable, because `manifest.instance_
+  certificate`/`registry_certificate` were still hashed raw, and both are
+  minted fresh — a new signature, a `SystemTime::now()`-derived expiry —
+  on *every* apply through either real deploy path
+  (`certify_placed_members`, called by the supervisor and by `roymctl app
+  deploy` alike). So the manifest hash differed on every apply regardless
+  of `epoch`, content, or anything else, and row 10's no-op branch was
+  never reachable from a real caller — only from a test that leaves both
+  certificate fields `None`, which is every row-10 test that existed
+  before this pass. Fixed by hashing each certificate's stable identity
+  fields instead of the raw blob: `master_did`/`temporary_did`/`scope`
+  for the instance certificate (already parsed and verified earlier in
+  `deploy_with_context`, reused rather than re-parsed); `service_id`/
+  `substrate_id`/`endpoint_type`/`mechanisms`/`nickname`/`is_private`/
+  `ttl` for the registry certificate (a new `stable_registry_certificate_
+  for_hash` helper, falling back to the raw string on a parse failure so
+  a malformed blob can only ever make the dedup more conservative, never
+  less safe). A dropped-or-changed certificate must still force a
+  reinstall — `a_redeploy_without_a_certificate_clears_a_previously_
+  installed_one` already pinned that, and briefly regressed while a first
+  attempt at this fix dropped the certificate fields from the hash
+  entirely rather than hashing their stable parts. New regression test:
+  `an_identical_redeploy_with_freshly_minted_certificates_is_still_a_
+  no_op`, two independently-issued, byte-different certificates for the
+  same member. Row 10 in `task.md` corrected to say so.
+- **E-2 (high, fixed): `supervisor_loop_e2e` was flaky.** The matrix-row-12
+  e2e's first wait loop used a 40s deadline against a fixture whose first
+  deploy lands at 28–30s and whose `status` calls (D-A5-21's on-demand
+  sweep) can each cost up to `MANAGED_SUBSTRATE_CONNECT_TIMEOUT` (10s)
+  reaching the substrate the test deliberately stopped — leaving room for
+  roughly one more poll after landing, and whether that poll's journal
+  read (taken before the connect-timeout block) fell before or after the
+  deploy committed was a coin flip. Widened to 90s, matching the second
+  wait loop's own already-generous margin.
+
 **Read §0 first, then §2.** §0 records **twenty-nine** places where
 `task.md`'s A5 paragraph leaves a decision unmade, names a component that
 does not exist, or is stale against what A0–A4 actually shipped, plus what
@@ -2313,7 +2459,10 @@ global `--as`/`--ucan` supply the `substrate/admin` credential.
 Unit, `crates/app_supervisor/src/store.rs`:
 1. `submitting_twice_replaces_desired_state_and_keeps_one_row`
 2. `pause_and_resume_round_trip`
-3. `retire_is_terminal_and_a_later_submit_is_refused`
+3. `retire_refuses_a_later_submit_until_un_retired` — renamed from
+   `retire_is_terminal_and_a_later_submit_is_refused` when review round 2
+   made `retire` non-terminal (`un_retire`, called by `handle_adopt`); the
+   old name asserted a property that is no longer true
 
 Unit, `crates/app_supervisor/src/service.rs`:
 4. `every_verb_is_refused_without_substrate_admin`
@@ -2733,3 +2882,2107 @@ A2's 'no network hop' budget".
     key-management design with its own threat model and does not belong in a
     supervisor slice. Worth an explicit answer because ADR-0020 §3's
     "unattended" is one of the milestone's headline claims.
+
+---
+
+# Part IV — A5c: the loop and remediation
+
+**Status:** 📋 Planned (2026-08-01). Not started. This is the `§0` findings
+pass **D-A5-2** requires before A5c is handed to an implementer. Part III's
+§14 planned A5c to phase-and-signature detail only; everything below is what
+§14, `task.md`, and A5b left open, understated, or stated wrongly.
+
+Same discipline as A0 §6 / A1 §6 / A2 §0 / A3 §0 / A4 §0 / P0 §0 / A5 §0.
+
+**Headline.** §14 has eight steps. Reading the code A5c builds on turns them
+into **eighteen findings, nine of which change what A5c has to build**, and
+one of which is a **live defect in A5b that A5c is the first slice able to
+see**: the supervisor has no placement-change refusal at all, so a re-submit
+that moves a service silently runs two live copies of one member (§19.1).
+A5c is not "put A5b's `status` on a timer." Roughly half of it is making
+things A5b returns empty or hardcoded actually have a source.
+
+---
+
+## §19 — What §14, `task.md`, and A5b leave open, understate, or state wrongly
+
+### 19.1 (Scope-changing, blocking) The supervisor has no placement-change refusal, and §14 step 5 says it does
+
+§14 step 5 opens: "a re-`submit` that moves a service to a different
+substrate hits `check_no_placement_change`'s refusal, which A5 keeps." That
+is not true on the supervisor's side.
+
+`check_no_placement_change` is a **private function in
+`apps/roymctl/src/commands/app.rs:290`**, called from exactly one place
+(`app.rs:574`, inside `roymctl app deploy`). It is not in `syneroym-sdk`,
+not in `syneroym-app-orchestration`, and not reachable from
+`crates/app_supervisor`. `SupervisorService::deploy_submission`
+([service.rs:267](../../../../crates/app_supervisor/src/service.rs#L267))
+goes straight from `placed_aliases` to `mint_and_substitute` to
+`build_clients` to `apply_plan`, with no placement check anywhere on the
+path.
+
+**Consequence, today, with no loop involved.** An operator re-submits a plan
+whose `frontend` moved from alias `edge-1` to `edge-2`. `submit` accepts it,
+`apply_plan` deploys `frontend` on `edge-2`, and the copy on `edge-1` **keeps
+running**. Both copies hold the same member master DID, both serve calls,
+both write rows into their own local databases under that one identity. This
+is exactly the two-publisher state D-A3-12 introduced the refusal to prevent,
+reachable through a verb A5b shipped.
+
+**Failure-matrix row 20 does not cover this.** Row 20's guarantee is that the
+old substrate's *endpoint record* replay is rejected once the master signs a
+newer one. That settles name resolution and nothing else. The old process is
+still up, still reachable by anything holding a cached address or a direct
+connection, and still the sole holder of the rows it wrote.
+
+**Also, `check_no_placement_change` cannot simply be moved.** Its error
+message calls `member_identity::deployed_service_id(dir, svc)`
+(`app.rs:299`), which reads the operator's `<--dir>/identities/member-*.key`
+files. The supervisor has no `--dir` and its masters are in the vault, not on
+that path. So A5c builds a supervisor-side refusal, it does not lift one.
+
+**Fix.** A pre-flight refusal in `handle_submit`, in the same block as the
+`retired` and `generation` checks (`service.rs:411-431`) — before
+`deploy_submission` runs, for the same reason B3 and N1 moved those there.
+The inputs already exist on this side: `journal.
+get_completed_actions_for_instance` plus `deploy::current_placement`, which
+`handle_status` already uses at `service.rs:829`. `force-reconcile` needs the
+identical check, for N3's reason: it never calls `store.submit`, so nothing
+on that path would refuse anything. See **D-A5c-1**.
+
+**This is an A5b defect, not new A5c work.** Recorded that way in `status.md`
+so the slice that shipped it owns it, and fixed in A5c because that is the
+next slice open.
+
+### 19.2 (Scope-changing) `compute_diff` → `apply_plan` is the wrong pairing, and it is what the resume/skip backlog row is really about
+
+§14 step 2 says: "`Reconciler::compute_diff` against the stored plan, then
+`deploy::apply_plan` through per-alias `SubstrateActor`s." Two problems.
+
+**(a) `apply_plan` cannot execute a diff.** It iterates
+`resolve_targets(plan, ...)` and appends only `"ADD"` actions
+([deploy.rs:220-243](../../../../crates/sdk/src/deploy.rs#L220)). There is no
+`REMOVE` branch and no `UPDATE` branch. `ReconcileAction::Remove`
+([reconcile.rs:15](../../../../crates/app_orchestration/src/reconcile.rs#L15))
+has no executor anywhere in the tree. So a re-submit that drops a service
+from the plan leaves that service running on its substrate forever, and the
+loop never notices — it is not in the plan, so nothing polls it either.
+
+**(b) The skip check is scoped to one `deployment_id`, and that is
+deliberate at its other caller.** The backlog row *"The supervisor's
+`submit`/`force-reconcile` never skip an already-landed service"* names the
+fix as re-scoping `apply_plan`'s skip and requires every caller be audited
+first. Audit:
+
+| Caller | `deployment_id` it passes | Effect of re-scoping the skip to the instance |
+|---|---|---|
+| `roymctl app deploy` ([app.rs:604-637](../../../../apps/roymctl/src/commands/app.rs#L604)) | Reuses the latest record **only** when its state is `Applying`/`Degraded` **and** the plan is byte-identical; otherwise a fresh id | **Breaking.** An unchanged `app deploy` against a healthy `Active` instance becomes a no-op that deploys nothing. "Redeploy to repair" is a real operator move today, and its only escape would become `roymctl app forget` first |
+| `SupervisorService::deploy_submission` ([service.rs:309](../../../../crates/app_supervisor/src/service.rs#L309)) | A fresh `journal.append` every call | Would skip correctly — the behaviour the row wants |
+| `crates/sdk/src/deploy.rs` unit tests (8 sites) | Ids the test controls | Several assert on redeploy counts; would need rewriting |
+| `multi_substrate_placement_e2e.rs` (5 sites), `binding_push_e2e.rs` (1) | Ids the test controls | `multi_substrate_placement_e2e.rs:772`'s `report_again` exists to assert a second `apply_plan` at the same id skips; unaffected |
+
+**Recommendation: do not touch `apply_plan`.** The row is real but the fix it
+names is the wrong one. The loop's work list should come from what is
+*actually wrong*, not from journal archaeology: `compute_diff` for
+plan-level changes, plus the health report for services that are placed but
+not healthy. `apply_plan` is then called with a **filtered plan** containing
+only the services that need work, which is a caller-side change with no
+effect on `roymctl`. That resolves the row's underlying complaint (the full
+hex-inlined Wasm artifact crossing the wire every pass) without a
+caller-visible semantic change anywhere else. `ReconcileAction::Remove` gets
+an explicit answer instead of being silently dropped: A5c does **not**
+undeploy on a plan-level removal, and says so, because undeploying a stateful
+service on a manifest edit is destructive and `retire` is deliberately not a
+teardown. The loop raises an alert naming the orphan instead. See
+**D-A5c-2**, **D-A5c-3**.
+
+### 19.3 (Scope-changing) The written epoch has no home, and the first push would report a conflict against the supervisor itself
+
+An exit criterion is per-dependent binding convergence, and §14 step 4 pushes
+bindings at "the instance's generation". Generation and epoch are different
+numbers and the epoch has no owner.
+
+- `map_deployment_plan_to_wit` hardcodes `epoch: 0` for every binding it
+  emits ([mapper.rs:317-318](../../../../crates/sdk/src/mapper.rs#L317)),
+  with the comment "A2 mints no epochs; the supervisor does (A5)".
+- `install_app_context` writes the persisted per-dependent binding row
+  **unguarded** at whatever epoch arrived
+  ([orchestration.rs:466-486](../../../../crates/control_plane/src/service/orchestration.rs#L466)) —
+  the four-case guard is on `write-bindings` only.
+- So after the supervisor's own initial deploy, every dependent's persisted
+  row sits at **epoch 0**.
+- `classify_binding_write` at an equal epoch with different members returns
+  `Conflict`, not `Applied`
+  ([resolver.rs:217-226](../../../../crates/app_orchestration/src/resolver.rs#L217)).
+
+**Consequence:** the supervisor's very first `write-bindings` after a
+membership change, sent at epoch 0 because nothing minted anything else,
+comes back `Conflict(0)` — and §14 step 4 turns a `Conflict` into an alert.
+The supervisor would raise `BindingConflict` against its own single-writer
+deploy, on the first push it ever performs. There is no second writer.
+
+**Fix — revised after review (F2, F3), because the first version of this
+paragraph did not survive its own second redeploy.**
+
+The first version said: `ApplyRequest` gains a scalar `epoch: u64` beside
+`generation`, and the store table is keyed per *dependency*
+`(app_instance_id, dependent_logical_ref, dependency_name)`. Those two do not
+fit together. `ApplyRequest`
+([deploy.rs:106-121](../../../../crates/sdk/src/deploy.rs#L106)) and
+`map_deployment_plan_to_wit`
+([mapper.rs:129-136](../../../../crates/sdk/src/mapper.rs#L129)) both take one
+number for a whole apply, the way `generation` does. So once pushes advance
+one dependency past another, a later redeploy writes the **same** number to
+every binding — and because `install_app_context`'s `save_binding` is
+unguarded, the lower number is silently persisted over the higher one. The
+next push at `written + 1` then lands at an epoch the substrate has already
+served: equal epoch, different content, `Conflict`. The failure this finding
+exists to prevent, one redeploy later.
+
+**The epoch is per dependent *service*, not per dependency.** One counter per
+`(app_instance_id, dependent_logical_ref)`, incremented on any write that
+changes any of that service's bindings, and carried on **every** binding that
+write emits. `ApplyRequest` gains `binding_epochs: &BTreeMap<
+LogicalServiceRef, u64>` — one entry per service in the apply, since
+`apply_plan` deploys several — and `map_deployment_plan_to_wit` looks the
+value up per service instead of hardcoding `0`. The persisted substrate-side
+row stays keyed per dependency (A5a's, unchanged): all of one dependent's
+rows simply share an epoch value, which is what makes per-dependency
+*convergence* still readable while keeping the counter something a deploy can
+carry.
+
+**A deploy is an authoritative write, and that is what makes the unguarded
+`save_binding` safe.** `install_app_context`'s own comment says the four-case
+guard "belongs at exactly this call and is the supervisor slice's". A5c
+deliberately **does not** put it there. Adding it would break `roymctl app
+deploy`, which writes at epoch 0 every time: a second hand-deploy with changed
+content would become `Conflict` at an equal epoch. Instead the invariant is
+that the supervisor's counter **always advances before a write**, so every
+deploy it issues carries a strictly higher number than anything it has itself
+written, and an unguarded overwrite is the correct outcome rather than a
+regression. That invariant is pinned by a test, not left to the comment.
+
+**What `0` means, and why the operator path keeps it (F3).** `roymctl app
+deploy` passes `generation: 0` with an explicit "unmanaged" comment
+([app.rs:628-637](../../../../apps/roymctl/src/commands/app.rs#L628)) and
+keeps epoch `0` for the same reason. So `0` means **"no supervisor has
+written here"**, not "nothing has ever been written". That is the useful
+meaning: a supervisor adopting a hand-deployed instance starts its counter at
+0 and its first write is 1, which is greater than what the operator left, so
+the first push applies. And the convergence read needs no special case for
+this: an absent row in the supervisor's table reads as `written_epoch: 0`,
+the hand-deployed substrate reports `observed: 0`, they are equal, and the
+dependent correctly reports **converged** rather than the false negative F3
+warned about.
+
+See **D-A5c-4**.
+
+### 19.4 (Scope-changing) `instance-status.bindings` cannot be filled from what `poll_once` returns
+
+A5b disclosed this field as empty and said A5c populates it. The observed
+half is not reachable from the sweep as written.
+
+`ServiceStatus` — the substrate's wire answer — carries `binding_epochs:
+Vec<(String, u64)>`
+([sdk/src/lib.rs:108](../../../../crates/sdk/src/lib.rs#L108)), added by A5a
+§6 for exactly this. But `poll_once` folds `ServiceStatus` into
+`ServiceHealth` ([health.rs:88-96](../../../../crates/sdk/src/health.rs#L88))
+and **drops the field**: `ServiceHealth` has `signal`, the two certificate
+timestamps, and nothing else. So the supervisor's own sweep throws away the
+one number the exit criterion needs.
+
+**Fix.** `ServiceHealth` gains `binding_epochs: Vec<(String, u64)>`, filled
+in **all five** production construction sites in `poll_once` — `health.rs:185`,
+`:221`, `:243`, `:274`, `:289` — empty where there is no answer. (An earlier
+draft of this paragraph said three; the review counted them. The eight further
+sites in that file are test fixtures and follow the same change.)
+
+`BindingConvergence` is then a join: `written_epoch` from §19.3's per-dependent
+counter, `observed_epoch` from `ServiceHealth`, `converged = observed ==
+Some(written)`. A dependent this supervisor has never written to reports
+`written_epoch: 0` — and a hand-deployed one reports `observed: 0` as well,
+so it converges correctly rather than reading as a false negative (§19.3's
+answer to F3). A dependent the supervisor *has* written to but that has not
+answered reports `observed: None` and `converged: false`, which is the real
+unconverged case. See **D-A5c-5**.
+
+### 19.5 (Scope-changing) The supervisor cannot reach the MQTT broker, and nothing can subscribe to it
+
+D-A5-13 decides the topic. Four things underneath it are undecided or do not
+work.
+
+**(a) No handle.** `SharedNodeHandles`
+(`crates/substrate/src/runtime.rs`) carries `key_store`,
+`storage_provider`, `native_dispatch`, and `client_identity`. It does not
+carry `messaging_broker`, which is built at `runtime.rs:705` and handed to
+`AppSandboxEngine` and `ControlPlaneService`. `init_supervisor`
+(`runtime.rs:595`) therefore has nothing to publish through, and
+`SupervisorService::new` has no parameter for one.
+
+**(b) No subscriber path.** `messaging` is registered in `EndpointRegistry`
+**per deployed service only** — `NATIVE_CAPABILITY_INTERFACES`, looped over
+at [orchestration.rs:1452](../../../../crates/control_plane/src/service/orchestration.rs#L1452),
+inside `deploy`. The substrate registers exactly three interfaces under its
+**own** DID: `orchestrator` (`runtime.rs:498`), `security` (`:503`), and
+`supervisor` (`:514`). A supervisor role is not a deployed service, so
+`SyneroymClient::subscribe("messaging", topic)` against the supervisor node
+resolves no pipeline and fails. D-A5-13's documented operator flow — "publish
+under the supervisor's own service id and document the `subscribe` call" —
+does not currently work end to end.
+
+**(c) The two namespacing functions are not symmetric — and A5c makes it
+three behaviours, deliberately.**
+`namespace_topic_for_publish(service_id, topic)` always prefixes;
+`namespace_topic(service_id, topic)` (the subscribe side, used at
+[dispatch.rs:405](../../../../crates/router/src/route_handler/dispatch.rs#L405))
+passes a literal `svc/` prefix through unchanged
+(`crates/mqtt_broker/src/lib.rs:70-82`). The published and subscribed strings
+must be identical for a message to arrive. That is a test, not an argument.
+
+**(e)'s containment fix adds a third behaviour**: the supervisor's own
+subscribe path prefixes unconditionally, so that one endpoint **does not
+honour the cross-service opt-in every other `messaging` endpoint honours**.
+That divergence is the whole point of the fix, and it is exactly the kind of
+thing a later reader corrects back to `namespace_topic` on the grounds that
+every other subscribe uses it — silently reopening (e)'s reach. Two guards,
+because either alone is weak:
+
+- **A comment at both sites**, saying the divergence is intended and naming
+  what it prevents: at the `messaging` registration in `runtime.rs` (which
+  creates the endpoint) and at the branch itself (which is where the "fix"
+  would be typed).
+- **Test 26**, the negative case, which fails the moment the branch reverts.
+  The comment explains why; the test is what actually holds.
+
+**One layering cost to pick deliberately, not discover.** The obvious
+implementation branches inside `handle_messaging_subscribe` on
+`service_id == SUPERVISOR_DISPATCH_ID`, which puts a supervisor constant in
+the router. The alternative is carrying the rule on the endpoint itself,
+which needs a `SubstrateEndpoint` change for one case. Take the branch, and
+say in its comment that the constant is there because the router has no other
+way to tell a node-owned endpoint from a deployed service's. A third option —
+a long-lived `subscribe-alerts` on the `supervisor` interface, which would
+inherit the `substrate/admin` gate and close (e) outright rather than
+narrowing it — needs a new `LongLivedStreamMethod` arm and its own capability
+check, and is larger than the containment this slice needs. Recorded here so
+the post-M5 row has a known shape rather than only a complaint.
+
+**(d) Nothing is retained.** `MqttBroker::publish` is `try_publish` with no
+retain flag; the retained variant is `#[cfg(test)]` only
+(`mqtt_broker/src/lib.rs:149`, `:164`). An operator who subscribes *after* an
+alert fires receives nothing. That is fine — `AlertStore` is the durable
+record and the `alerts` verb is the read surface — but the developer guide
+must say it, or an operator will treat the topic as a queue.
+
+**(e) An authorization asymmetry worth deciding, not discovering — and the
+reach is wider than this paragraph first said (F10).** Every verb on the
+`supervisor` interface requires `substrate/admin` (`service.rs:101-118`).
+`messaging/subscribe`'s only gate is that the caller is not anonymous
+([dispatch.rs:350](../../../../crates/router/src/route_handler/dispatch.rs#L350)).
+Publishing alerts to MQTT therefore makes them readable by **any verified
+caller** — strictly weaker than the read verb carrying the same data.
+
+The first draft stopped there, and understated it. `namespace_topic`, the
+subscribe side, passes a literal `svc/` prefix through **unchanged** as a
+deliberate cross-service opt-in
+([mqtt_broker/src/lib.rs:70-72](../../../../crates/mqtt_broker/src/lib.rs#L70)).
+So registering `messaging` under the node's own DID does not hand a caller the
+alert topic — it hands them a subscribe handle for **any `svc/<id>/#` topic on
+that node**. On a node already hosting deployed services that reach exists
+anyway through those services' own `messaging` endpoints. On a
+**supervisor-only node, which hosts none, it is new reach that A5c would
+introduce** — on the one node in the fleet that holds member master keys and
+manages other people's apps.
+
+**Fix, narrow and local.** On the supervisor's `messaging` pipeline only,
+subscribe namespaces with the **publish-side** rule
+(`namespace_topic_for_publish`, which prefixes unconditionally) instead of
+`namespace_topic`. A caller can then only ever subscribe within
+`svc/supervisor/`, so the registration adds exactly the alert topic and
+nothing else. The remaining asymmetry — any verified caller may read *this
+supervisor's* alerts — stays a backlog row, now correctly scoped. This does
+not touch the shared router path for deployed services, whose cross-service
+opt-in is deliberate and unrelated. See **D-A5c-6**.
+
+**(f) Where publication goes, and what a failure does.** D-A5-13 already
+places it in `record_report`'s caller rather than inside it. That is right
+and the reason is now concrete: `record_report` returns
+`Vec<(AlertKind, String)>` of the incidents this pass **newly opened**
+([health.rs:307-312](../../../../crates/sdk/src/health.rs#L307)), and it
+returns them *after* the store write has committed. So publishing from the
+caller cannot lose an alert by construction: the row exists before the
+publish is attempted. A publish failure is logged and the pass continues; it
+is never propagated with `?`. See **D-A5c-6**.
+
+### 19.6 (Confirmed, with a correction) The new `AlertKind`s need no schema change — but §14 miscounts them, and one enum has two halves
+
+§14 step 7 claims "Same `AlertStore` table, no schema change." **Confirmed.**
+`alerts.kind` is `TEXT NOT NULL` and the active-row uniqueness index is
+`(instance_id, IFNULL(logical_ref,''), substrate_did, kind)`
+(`crates/app_orchestration/src/alerts.rs`) — both take an arbitrary new
+string with no DDL change.
+
+Two corrections:
+
+- **§14's four are the wrong four.** `SupervisorSuperseded` already exists;
+  A5b added it (`alerts.rs:49`) to close matrix row 9's supervisor half. A5c
+  adds `RemediationExhausted`, `BindingConflict`, `PlacementChangeRefused`,
+  and — found in review, §19.21 — **`OrphanedService`**, which D-A5c-3 needs
+  and no other kind can carry. Four, but not §14's four.
+- **`AlertKind` has a `Display` and a `FromStr`** (`alerts.rs:52`, `:66`).
+  `FromStr` is how stored rows are read back. A variant added to one and not
+  the other makes its own rows unreadable at the next `alerts` call, with no
+  compile error. A round-trip test over every variant is the guard, and it
+  does not exist yet.
+
+### 19.7 (Scope-changing) The store's lock is not enough, and everything in A5b assumed a single caller
+
+Every A5b path runs inside an RPC on `&self`. A resident loop is a second
+caller against the same `SupervisorStore` (`Arc<Mutex<Connection>>`), the
+same `MasterVault`, and the same managed substrates. The lock is held **per
+statement**, never across a read-then-write, so it protects individual rows
+and nothing above them.
+
+Concrete races:
+
+| Race | What happens |
+|---|---|
+| `submit` vs. a loop pass, same instance | `handle_submit` reads state (`service.rs:411`), deploys the **new** plan, then writes it (`:444`). A pass starting between the read and the write reads the **old** plan from the store and deploys that. Two `apply_plan` runs against the same substrates, interleaved, with different plans. Both present the same generation from the same supervisor DID, so `check_generation` accepts both (`Ordering::Equal`, matching `supervisor_did`) — the substrate offers no protection here |
+| `retire`/`release` vs. a loop pass | `release_on_every_substrate` clears the stamp while a pass is mid-`apply_plan`. The pass's remaining deploys land against a released instance and re-establish a stamp `retire` just cleared |
+| `adopt` vs. a loop pass | `claim_next_generation` writes `held + 1` to every substrate, then `set_generation` locally (`service.rs:534`). A pass reading between them uses the **old** generation and is refused by `check_generation` at every substrate it touches |
+| Two loop passes | Cannot happen with one `tokio::interval` and a sequential body — but only as long as a pass is guaranteed to finish before the next tick. A pass that outruns `poll_interval_secs` (30s default) against slow substrates makes it possible. `tokio::interval`'s default `MissedTickBehavior::Burst` then fires immediately |
+| `MasterVault::get_or_mint` | **Safe.** Its own `mint_lock` (`keys.rs:135`) already serializes read-then-write |
+
+**Fix.** A per-app-instance async mutex — `DashMap<String,
+Arc<tokio::Mutex<()>>>` on `SupervisorService` — acquired for the whole
+duration of a loop pass and for the whole duration of `submit`,
+`force-reconcile`, `adopt`, `release`, and `retire`. Not `pause`/`resume`
+(single-column flag writes) and not `status`/`alerts` (reads, and blocking an
+operator's read behind a slow pass is worse than a slightly stale answer).
+Per-instance rather than global so one unreachable substrate cannot stall
+every other instance's loop. Also set
+`MissedTickBehavior::Skip` so a long pass drops the tick it overran instead
+of queueing a burst. See **D-A5c-7**.
+
+### 19.8 (Understated) The loop is not spawned, so it is dropped mid-pass at shutdown
+
+D-A5-8's `Send` fix was justified as "unblocking `tokio::spawn` for A5c's
+loop." That is not how the loop is wired. `run_supervisor_role(&self.
+supervisor)` is `pin!`ed and raced inside `RuntimeServices::run`'s
+`tokio::select!` (`runtime.rs:324`, `:335`). It is a borrowed future in a
+select, not a spawned task, so it needs no `'static`.
+
+The fix is still worth having — the loop holds the store across `.await`
+points and `RuntimeServices::run`'s own future must stay `Send` — but the
+sentence in D-A5-8 describes a mechanism A5c does not use, and it hides the
+real consequence: **when any other arm of that `select!` completes, the loop
+future is dropped wherever it happens to be.** If that is mid-pass, every
+`SyneroymClient` the pass opened is dropped-not-closed. `Drop for
+SyneroymClient` (added in A5b review round 2) backstops it with a background
+close, but `shutdown_supervisor_role` runs *after* the `select!` returns, so
+those spawned closes race runtime teardown and may never complete.
+
+**Fix — revised after review (F1); the first version did not work.** It said:
+the loop takes a `CancellationToken`, and `SupervisorService::shutdown`
+cancels it and waits. **Nothing would ever cancel it in time.**
+`run_until_shutdown` returns at `runtime.rs:339` and `supervisor_fut` dies
+with that stack frame; `shutdown()` is not reached until `runtime.rs:116`, via
+`services.shutdown()` → `shutdown_supervisor_role`. By then there is no pass
+left to cancel and no task to wait on, so "cancels it and waits" waits on
+nothing and the close still goes through `Drop` — the outcome this finding
+says A5c must not rely on. Phase 5's test for it would have exercised a
+mechanism that never runs.
+
+**The loop is spawned**, so it outlives the `select!` scope:
+`RuntimeServices` holds a `JoinHandle`, `run_until_shutdown` races
+`&mut handle` in the same `select!` arm the pinned future occupies today (so a
+supervisor that exits still brings the substrate down, unchanged), and
+`shutdown` cancels the token and **awaits the handle**. The spawn happens at
+the top of `run_until_shutdown`, not in `init` — A5b's startup-ordering note
+is emphatic about not perturbing when the two composition calls run, and this
+keeps the loop's start after both.
+
+That also corrects this finding's own aside about **D-A5-8**. The first draft
+said the `Send` fix "describes a mechanism A5c does not use." With the loop
+spawned, `tokio::spawn` **is** the mechanism, `Send + 'static` is required,
+and D-A5-8's stated justification was right after all. See **D-A5c-8**.
+
+### 19.9 (Understated) `handle_status` connects to every substrate twice per call, and the loop makes that a per-interval cost
+
+`handle_status` builds one client per placed alias for the health sweep
+(`service.rs:856`), runs `poll_once`, closes them all (`:879`) — and then
+calls `max_held_generation`, which calls `connected_client` **again** for the
+same aliases (`:232`) and closes them again.
+
+In A5b that is two connect/close cycles per substrate per operator command:
+unnoticeable. On a 30-second timer it is two `wait_for_ready` handshakes per
+substrate per interval, forever, where one would do. `MANAGED_SUBSTRATE_
+CONNECT_TIMEOUT` is 10s (`service.rs:48`), so on a substrate that is slow but
+reachable a single pass can spend 20 seconds of its 30-second budget
+connecting.
+
+**Fix.** One client set per pass, shared by the sweep, the generation read,
+the reconcile, and the push, closed once at the end. This also has to happen
+before §19.13's budget can be measured against anything meaningful. See
+**D-A5c-9**.
+
+### 19.10 (Understated) The loop re-certifies every member on every pass
+
+`apply_with_clients` calls `deploy::certify_placed_members` unconditionally
+before `apply_plan` (`service.rs:299`). Each call is one
+`resolve-instance-identity` RPC per member plus one fresh signature — a
+**new instance certificate every time**.
+
+In A5b that runs once per operator `submit`. On a 30-second timer it mints
+and installs a new certificate for every member of every managed instance
+every 30 seconds. Beyond the cost, it churns exactly the artifact A5d exists
+to renew on a considered schedule, and it makes A5d's near-expiry logic
+untestable — nothing is ever near expiry.
+
+Resolved together with §19.2: certification is scoped to the services the
+filtered plan actually deploys. A pass where nothing needs work certifies
+nothing. See **D-A5c-2**.
+
+### 19.11 (Correctness) A partially-deployed app reports `Active`
+
+Matrix row 12 requires a partial deploy to be visible as `Degraded` on the
+read surface. It is not.
+
+`handle_status` computes `overall_state` from `report.faults().is_empty()`
+(`service.rs:969`). `HealthReport::faults` counts only the three signals
+`Signal::is_fault` admits — `SubstrateUnreachable`, `InstanceNotRunning`,
+`ProbeFailing` ([health.rs:79-84](../../../../crates/sdk/src/health.rs#L79)).
+A service that **never deployed** has no completed placement in the journal,
+so `handle_status` pushes an `ExpectedService` with empty `service_id` and
+`substrate_did` (`service.rs:830-834`) and the sweep reports `NotDeployed`,
+which is deliberately not a fault (D-A4-19: "I cannot tell" must not raise an
+alert).
+
+So an app where 2 of 5 services failed to deploy reports **`Active`**, with
+no alert. D-A4-19's rule is right for a *poll* — a service that is not there
+cannot be probed — but wrong for a *supervisor*, which knows the difference
+between "not in the plan" and "in the plan and missing." The supervisor has
+the plan; the sweep does not.
+
+**Fix.** `overall_state` gains a source the sweep cannot give it: a service
+present in the desired plan with no completed placement is a deploy failure,
+not an unknown. `ManagedState::Degraded` when `report.faults()` is non-empty
+**or** any planned service has no landed placement. `AlertKind::
+InstanceNotRunning` is the wrong kind for it; this is what
+`RemediationExhausted`'s sibling case looks like before any remediation has
+run, so it reuses the existing `InstanceNotRunning` kind with a detail string
+naming the failure, rather than adding a fourth new kind for a state the
+operator reads as the same problem. See **D-A5c-10**.
+
+### 19.12 (Ambiguous) `Superseded` is computed and discarded — and it should stay that way
+
+`handle_status` computes `superseded` per call and never persists it
+(`service.rs:895-943`). ADR-0021 §4 says a superseded supervisor stops
+managing the instance, and with a loop there is finally something to stop.
+
+**Recommendation: no column.** D-A5-6 already settled that the **substrate**
+is the durable arbiter of the generation. A local cached copy can only ever
+disagree with the authority, and a persisted flag would need a clearing rule
+— which is precisely the trap N3 found on `retired`: a flag one path set and
+no path cleared, with error messages naming a recovery that did not exist.
+`max_held_generation` already returns `Option<u64>`, where `None` means
+"could not reach any of them", so the transient case is handled without
+persistence. The durable record that matters is the **alert**, and
+`AlertStore` already provides it, raised and cleared per pass.
+
+What each path does when superseded:
+
+| Path | Behaviour |
+|---|---|
+| Loop pass | Raise/refresh `SupervisorSuperseded`. **Skip every write** for that instance this pass: no deploy, no push, no restart. Continue polling health — reads are safe and the operator still wants status |
+| Loop pass, `held_max == None` | Do not skip. Nothing could be reached, so there is nothing to write to anyway, and the writes will fail on their own with real errors instead of a guess |
+| `force-reconcile` | Refuse, naming `adopt`. It is a directed write; the substrate would reject it at `check_generation` regardless, and refusing locally produces a message that explains why |
+| `submit` | Same refusal, in the same pre-flight as `retired`/`generation`/§19.1. Note the interaction: `submit` already requires the presented generation to equal the stored one, so a superseded supervisor's submit passes the local generation check and only fails at the substrate. The pre-flight is what makes the message right |
+
+See **D-A5c-11**.
+
+### 19.13 (Coverage) The health-poll-cost budget: decide what is measured, against what, before writing the loop
+
+§0.25 assigned this budget to A5c. `task.md` states it as "must not be a
+meaningful load on a target substrate at the intended inventory size" — no
+number, and a budget derived from the first measurement can never fail, which
+is the mistake the convergence budget deliberately avoids by setting its 5 s
+target a priori.
+
+**What is measured**, per steady-state pass against one managed node:
+
+1. Wall-clock duration of the pass.
+2. RPC count per substrate. Target: **one `status` call per substrate**, not
+   one per service — `poll_once` already batches (`StatusQuery::status` takes
+   `Vec<String>`), and §19.9's double-connect is the thing that breaks this.
+3. The managed substrate's own CPU time attributable to serving one pass.
+
+**Against what**, set a priori so it can fail:
+
+- A pass over a **20-service instance on one substrate completes in under
+  2 s** and issues **at most 2 RPCs to that substrate** (one `status`, one
+  `app-instance-management-of`).
+- Serving it costs the target substrate **under 5% of one core averaged over
+  the 30-second poll interval**.
+
+**Why the wasm number is the one at risk.** `probe_cached`'s minimum interval
+is 5 s and the default `poll_interval_secs` is 30, so **every** sweep misses
+the cache and pays a full component instantiation per `rpc`-probed wasm
+service. At 20 wasm services that is 20 instantiations every 30 seconds, on
+the target node, forever. This is the measurement the backlog row *"A4: a
+wasm `rpc` probe costs a component instantiation"* has been waiting for.
+
+**What it decides.** If the budget fails, the fix is a cheaper wasm liveness
+signal, not a longer cache — a longer cache just makes the supervisor slower
+to notice a fault, which is the one thing it exists to do. It also decides
+the other retargeted row, *"A4: `probe_cached` has no single-flight"*: with
+one poller issuing one batched `status` per pass, the loop is not concurrent
+with itself, so that row becomes real only when an operator's `roymctl app
+health` lands inside the loop's own miss window. The measurement says whether
+one duplicated instantiation matters.
+
+**Where.** A timed `#[tokio::test]` against one in-process node with a
+generated 20-service instance, plus a `bench:` entry in `mise.toml` so it is
+repeatable. **Written before the loop**, so `poll_interval_secs`' default is
+chosen from the number rather than defended after it. See **D-A5c-12**.
+
+### 19.14 (Understated) The four inert `SupervisorRole` fields, and the two inert types
+
+Each of these has no production reader today. None should be deleted.
+
+| Item | Location | Becomes |
+|---|---|---|
+| `poll_interval_secs` (default 30) | `crates/core/src/config.rs:566` | The loop's `tokio::interval` period, with `MissedTickBehavior::Skip` (§19.7) |
+| `max_restart_attempts` (default 3) | same | The remediation table's ceiling; on exhaustion → terminal `Degraded` + `RemediationExhausted`, matrix row 13 |
+| `restart_backoff_secs` (default 30) | same | Minimum wait between two restart attempts for one service, read against `remediation.last_attempt_at`. Note it equals the poll interval by default, so at defaults a service is restarted at most once per pass — deliberate, and worth stating in the config doc comment rather than leaving as a coincidence |
+| `alert_topic` (default `"supervisor/alerts"`) | same | D-A5-13's prefix. The published string is `namespace_topic_for_publish(SUPERVISOR_DISPATCH_ID, "<alert_topic>/<app_instance_id>")` (§19.5c) |
+| `SupervisorStore::all_active` | `store.rs:185` | The loop's work list. Its `ORDER BY app_instance_id ASC` plus a sequential pass body means one slow instance delays every later one; accepted for A5c (§19.7 keeps the per-instance locks, so the ordering is a latency property, not a correctness one) and revisited if the budget in §19.13 fails at more than one instance |
+| `ManagedService.restart_attempts`, hardcoded `0` | `service.rs:959` | Read from the remediation table, per `(app_instance_id, logical_ref)` |
+| `ManagedState::Applying`, never produced | `supervisor.wit`, `service.rs:963-973` | See §19.15 |
+
+### 19.15 (Correctness) `ManagedState::Applying` becomes observable the moment a loop exists
+
+`DeploymentState::Applying` is written by `apply_with_clients`
+(`service.rs:312`) and overwritten with `Active` or `Degraded` before the
+same RPC returns (`:348-358`). In A5b no reader can observe it: the only
+writer holds `&self` for the whole window and `status` is a different call.
+
+With a resident loop, an operator's `status` landing mid-pass **can** observe
+it, and `Applying` is then the honest answer — "a reconcile is in flight, ask
+again." A5c gives it a source: `journal.get_latest(instance).state ==
+Applying` maps to `ManagedState::Applying`.
+
+Precedence in `overall_state`, which currently reads
+retired → superseded → paused → degraded/active: insert `Applying` **after**
+`paused` and **before** the health-derived branch. A paused or superseded
+instance's own state is more important than "busy", and a reconcile in flight
+is more useful than a health verdict computed from a half-applied plan. See
+**D-A5c-13**.
+
+### 19.16 (Ambiguous) `paused` finally has to mean something
+
+A5b's review pushed back on gating `submit`/`force-reconcile` on `paused`,
+with the reason recorded: `paused` was spec'd only as "the resident loop
+should not touch this automatically", and that loop did not exist. It does
+now, so the definition can be completed rather than argued from absence.
+
+**Decision: `paused` gates the loop and nothing else.** `all_active` already
+excludes paused instances (`store.rs:190`), so the loop skips them for free —
+**with one window the review found (F6)**: `all_active` filters at query time,
+and D-A5c-7 leaves `pause` out of the per-instance lock as a single-column
+write, so a `pause` arriving *after* the work list was read does not stop the
+pass already running against that instance. That is the one moment `paused`
+would not mean what D-A5c-14 says it means. Closed cheaply: the loop re-reads
+the instance's own desired-state row at the start of each pass's **write**
+phase — it needs the current generation from that row anyway — and skips the
+writes if `paused` or `retired` flipped since the work list was built. The
+WIT doc comment §24 already changes says pause takes effect at the next write
+phase, not mid-write.
+`submit`, `force-reconcile`, `adopt`, `release`, and `retire` stay allowed
+while paused — every one is an operator's directed action, and pausing
+automation to do something by hand is the ordinary reason to pause. A5b's
+push-back therefore stands; A5c is where it stops being a gap and becomes a
+documented rule, in the WIT doc comment on `pause` and in the developer
+guide. See **D-A5c-14**.
+
+### 19.17 (Understated) `restart_impl` has no service-owner check, and the loop is about to become its main caller
+
+The standing backlog row explicitly defers this to "before the remediation
+loop is built on top of `restart`." That is now.
+
+State of the tree: `deploy_with_context` checks `owner_of(service_id)`
+(`orchestration.rs:1029`) *and* the app instance's `owner_did`;
+`undeploy_impl` checks `owner_of` (`:1836`); `write_bindings_impl` checks the
+app instance's `owner_did` (`:1697`). `restart_impl`
+(`orchestration.rs:2045-2097`) checks the `orchestrator/deploy` capability
+and the generation, and never `owner_of`.
+
+**Resolve it: add the check.** The row offers "add it, or document why a
+restart is inside a service-scoped grant's remit when a redeploy is not." Two
+reasons to add it rather than document the omission:
+
+1. **It costs the supervisor nothing.** Both node-wide overrides
+   (`has_node_wide_ability`) are already held: §0.28 requires node-wide
+   `orchestrator/deploy`, and A5b's own e2e found node-wide
+   `orchestrator/status` is needed too. A node-wide grantee skips the owner
+   check by the same rule `deploy`/`undeploy` use.
+2. **The remaining case is the one the other three refuse.** An app-scoped
+   `orchestrator/deploy` grantee restarting a service a *different* caller
+   owns. Three write paths call that a takeover; leaving the fourth open is
+   not a considered position, it is an omission — which the row itself says.
+
+Shape: mirror `undeploy_impl`'s block, with `ORCHESTRATOR_DEPLOY` as the
+node-wide override ability, placed after the capability gate and before the
+generation gate. See **D-A5c-15**.
+
+### 19.18 (Scope-changing) A5c has no reachable membership change, so its binding push has no in-slice trigger
+
+§14 step 4 pushes bindings "after a reconcile changes membership."
+**Nothing in A5c can change a membership set.**
+
+- The compiler emits exactly one member per `PlannedService`;
+  `substitute_and_certify_members` hardcodes index `0` with the comment
+  "nothing in today's manifest format can express more than one member"
+  (`member_identity.rs:150`, the call itself at `:175`). `replicas` is A5e
+  (D-A5-17).
+- `mint_and_substitute` resolves one master per `(app_instance_id,
+  service_name, 0)` and `get_or_mint` returns the existing one, so a
+  re-submit produces the **identical** member DID (`keys.rs:280-293`, and its
+  own test asserts exactly this).
+- A service *added* by a re-submit cannot be pushed as a new binding:
+  `write-bindings` refuses a dependency name with no existing row, by design
+  ("a guest's declared dependency set is a deploy-time contract",
+  `control-plane.wit:305-309`).
+- A service *removed* by a re-submit is not applied at all (§19.2a).
+
+So the push path is real code with no trigger reachable inside A5c's own
+scope. Three honest options:
+
+| Option | Assessment |
+|---|---|
+| Build the push in A5c, exercise it with a fixture that hand-edits a stored plan's `resolved_dependencies` | Keeps §19.3's epoch table and §19.4's convergence read in the slice that needs them for the exit criterion, and gives A5e a tested path to trigger. The test is a fixture, not a scenario — say so |
+| Move the push to A5e with `replicas` | Cleaner trigger, but strands the exit criterion "per-dependent binding convergence" outside the slice `task.md` assigns it to, and leaves `instance-status.bindings` empty for two more slices |
+| Build only the epoch table + convergence read in A5c, push in A5e | Splits one mechanism across two slices for no gain |
+
+**Recommendation: option 1**, with the limitation written into `task.md`'s
+A5c bullet rather than discovered at A5e. See **D-A5c-16**, and §22's note on
+what could move.
+
+### 19.19 (Correctness, found in review — F4) "Retry once at the re-read epoch" can only ever produce a conflict
+
+§14 step 4's rule, carried into this pass unexamined: "`Stale` → re-read and
+retry once, then alert."
+
+`classify_binding_write` returns `Stale(held.epoch)` — the epoch the substrate
+holds — and at an **equal** epoch with different content returns
+`Conflict(held.epoch)`
+([resolver.rs:217-226](../../../../crates/app_orchestration/src/resolver.rs#L217)).
+So retrying **at** the held epoch cannot succeed. It converts a stale
+rejection into a conflict alert and calls that the retry path. The originally
+named test (`a_stale_outcome_is_retried_once_at_the_re_read_epoch_then_alerts`)
+would have pinned the broken behaviour.
+
+**Fix.** The retry is at **`held + 1`**, with the supervisor's own counter for
+that dependent advanced to match so its table and the substrate agree
+afterward. Two things stated with it, because both are easy to get wrong
+later:
+
+- **The "re-read" is unnecessary.** `Stale(held)` already carries the number.
+  A second round trip to learn what the error just told you is pure latency.
+- **Jumping ahead of a genuinely-ahead writer is not the epoch's problem.**
+  If another writer legitimately holds a higher epoch, the arbiter is the
+  **generation**, not the epoch — `check_generation` refuses a lower
+  generation before any binding is examined. A stale epoch reached at an
+  equal generation means one writer's own retry arrived out of order, which is
+  exactly what advancing past it is for.
+
+See **D-A5c-19**.
+
+### 19.20 (Correctness, found in review — F5) `remediation.terminal` is the set-but-never-cleared flag §19.12 refuses to create
+
+§14 step 6 gives the remediation table a `terminal` column, "cleared on a
+healthy sweep." For the only signal that reaches it, that sweep cannot happen.
+
+A service in terminal `Degraded` is never restarted again — matrix row 13 is
+that property, and the test list pins it. Terminal is reached only from
+`InstanceNotRunning` (D-A5c-17 keeps `ProbeFailing` out; D-A4-13 keeps
+`SubstrateUnreachable` out). A service that is not running and that nothing
+will restart cannot become healthy by itself, so **the sweep that would clear
+the flag never fires**.
+
+This is the same trap §19.12 cites as its whole reason for giving
+`Superseded` no column, and the one N3 found on `retired`: a flag one path
+sets, no path clears, and a message naming a recovery that does not exist. The
+pass applied that lesson in one place and reintroduced the pattern two
+sections later.
+
+**Fix.** `force-reconcile` clears the remediation row for the instance, and
+`adopt` clears it too — a new generation is a fresh start by construction.
+`force-reconcile` already means "do the work now", which is exactly the
+operator intent here, and `status.md`'s A5b note sets the precedent that
+`adopt` is the way back in from a terminal flag. The
+`RemediationExhausted` alert's detail names `force-reconcile`, the way the
+placement-refusal alert names the manual relocation path. An out-of-band
+recovery (an operator restarting the container themselves, a container restart
+policy) still clears it through the healthy sweep, which stays as a second
+path rather than the only one. See **D-A5c-20**.
+
+### 19.21 (Coverage, found in review — F9) D-A5c-3's orphan alert has no kind and no test
+
+§19.6 counts three new `AlertKind`s and its correction of §14's miscount is
+right. But **D-A5c-3 raises a fourth alert** — "an alert naming the orphaned
+service" when `compute_diff` yields a `ReconcileAction::Remove` the loop
+deliberately does not execute — and none of the three covers it. Reusing
+`InstanceNotRunning` would misreport it: the service is running, it is just no
+longer wanted.
+
+**Fix.** A fourth kind, `OrphanedService`, so §19.6 reads **four** new kinds:
+`RemediationExhausted`, `BindingConflict`, `PlacementChangeRefused`,
+`OrphanedService`. It joins the `Display`/`FromStr` round-trip test, and
+D-A5c-3 gains a test that the alert is actually raised — nothing in the first
+test list exercised D-A5c-3 at all. Still no schema change: §19.6's conclusion
+holds for any number of new kinds.
+
+---
+
+## §20 — Decisions
+
+| ID | Decision |
+|---|---|
+| **D-A5c-1** | The supervisor gets its **own** placement-change refusal (§19.1), in `handle_submit`'s pre-flight beside `retired`/`generation`, and in `handle_force_reconcile`. It reads `journal.get_completed_actions_for_instance` + `deploy::current_placement` — the inputs `handle_status` already uses — and never touches `roymctl`'s `--dir`. `check_no_placement_change` stays private to `roymctl`; nothing is shared or moved. Recorded as an **A5b defect fixed in A5c**, not as new scope. |
+| **D-A5c-2** | The loop's work list is `Reconciler::compute_diff` **plus** the health report, and `apply_plan` is called with a **filtered plan** containing only the services that need work (§19.2, §19.10). `apply_plan` itself is not changed, so no existing caller's behaviour moves. Certification (`certify_placed_members`) is scoped to the same filtered set, so a pass with nothing to do mints no certificates. |
+| **D-A5c-3** | A5c does **not** undeploy on a plan-level removal (`ReconcileAction::Remove`). Undeploying a stateful service because a manifest was edited is destructive, and `retire` is deliberately not a teardown. The loop raises an alert naming the orphaned service and leaves it running. Written into the docs, since the alternative reading is the natural one. |
+| **D-A5c-4** | **Revised after review (F2, F3).** The **supervisor owns the binding epoch**, and the counter is **per dependent service**, not per dependency (§19.3): one value per `(app_instance_id, dependent_logical_ref)` in a `binding_epochs` table, carried on every binding a write emits for that service. `ApplyRequest` gains `binding_epochs: &BTreeMap<LogicalServiceRef, u64>` — not a scalar, which cannot express divergence once pushes advance — and `map_deployment_plan_to_wit` looks it up per service. The counter **always advances before a write**, which is the invariant that makes `install_app_context`'s unguarded `save_binding` correct rather than a regression; the four-case guard is deliberately **not** added there, since it would break `roymctl app deploy`'s repeated writes at epoch 0. `0` means "no supervisor has written here", the operator path keeps it, and a hand-deployed instance therefore reads as converged rather than as a false negative. |
+| **D-A5c-5** | `ServiceHealth` gains `binding_epochs: Vec<(String, u64)>`, filled at **all five** production `poll_once` construction sites — `health.rs:185`, `:221`, `:243`, `:274`, `:289` (§19.4, count corrected in review). `BindingConvergence` joins it against D-A5c-4's counter: `converged = observed == Some(written)`, with an absent row reading as `0` so the hand-deployed case converges correctly. |
+| **D-A5c-6** | MQTT (§19.5): `SharedNodeHandles` gains `messaging_broker`; `runtime.rs` registers `messaging → NativeHostChannel { service_id: SUPERVISOR_DISPATCH_ID }` beside the existing `supervisor` registration; publication happens in `record_report`'s caller over its returned newly-opened list, **after** the store write, so a publish failure cannot lose an alert; failures are logged, never propagated. Messages are **not retained** and the guide says so. **Added after review (F10):** on the supervisor's `messaging` pipeline only, subscribe namespaces with `namespace_topic_for_publish`'s unconditional rule rather than `namespace_topic`'s, so a literal `svc/` prefix cannot escape `svc/supervisor/`. Without it the registration hands every verified caller a subscribe handle for any `svc/<id>/#` topic on the node — new reach on a supervisor-only node, which hosts no services today. **This is a third namespacing behaviour and the divergence is intended** (§19.5c): that one endpoint deliberately does not honour the cross-service opt-in every other `messaging` endpoint does, so both the `runtime.rs` registration site and the branch itself carry a comment saying so, and test 26 fails if it is "corrected" back to `namespace_topic`. |
+| **D-A5c-7** | A per-app-instance `tokio::Mutex` (a `DashMap<String, Arc<Mutex<()>>>` on `SupervisorService`) is held for a whole loop pass and for the whole of `submit`, `force-reconcile`, `adopt`, `release`, `retire` (§19.7). Not for `pause`/`resume`/`status`/`alerts`. `tokio::interval` uses `MissedTickBehavior::Skip`. |
+| **D-A5c-8** | **Revised after review (F1).** The loop is **spawned**, so it outlives `run_until_shutdown`'s stack frame (§19.8): `RuntimeServices` holds the `JoinHandle`, races `&mut handle` in the `select!` arm the pinned future occupies today, and `shutdown` cancels the token and **awaits the handle**. A token alone does not work — `shutdown()` is not reached until after the `select!` has already dropped the pass, so it would cancel nothing and the close would still go through `Drop`. Spawning happens at the top of `run_until_shutdown`, not in `init`, to leave A5b's startup ordering untouched. This also restores **D-A5-8**'s original justification: `tokio::spawn` is the mechanism after all, so `Send + 'static` is genuinely required. `Drop for SyneroymClient` stays a backstop and is never the close path A5c relies on. |
+| **D-A5c-9** | One client set per pass, shared by the health sweep, the generation read, the reconcile, and the push, closed once (§19.9). `handle_status`'s existing double-connect is fixed in the same change, since the loop and `status` share the pass body. |
+| **D-A5c-10** | `overall_state` is `Degraded` when `report.faults()` is non-empty **or** any planned service has no landed placement (§19.11). `Signal::is_fault`'s definition is **not** changed — D-A4-19's rule is right for a poll; the supervisor adds plan knowledge the poll does not have. |
+| **D-A5c-11** | `Superseded` gets **no column** (§19.12). It is recomputed per pass against the substrate, which D-A5-6 already made the durable arbiter. The alert is the durable record. A superseded instance is skipped for writes but still polled for health; `submit` and `force-reconcile` refuse and name `adopt`. |
+| **D-A5c-12** | The health-poll-cost budget is set **a priori** (§19.13): a 20-service pass under 2 s, at most 2 RPCs per substrate per pass, under 5% of one core on the target averaged over the interval. Measured **before** the loop is written, and `poll_interval_secs`' default is chosen from the result. Resolves or retargets both A4 poller rows with a number. |
+| **D-A5c-13** | `ManagedState::Applying` is sourced from `journal.get_latest(instance).state == Applying` (§19.15), ranked after `paused` and before the health-derived branch. |
+| **D-A5c-14** | `paused` means "the resident loop does not touch this", and nothing else (§19.16). Every operator verb stays allowed while paused. A5b's push-back stands; A5c writes the rule into the WIT doc comment and the guide. **Added after review (F6):** the loop re-reads the instance's desired-state row at the start of each pass's write phase — it needs the current generation from it anyway — so a `pause` landing mid-pass stops the writes, and the doc comment says pause takes effect at the next write phase rather than mid-write. |
+| **D-A5c-15** | `restart_impl` gains an `owner_of` check with a node-wide `ORCHESTRATOR_DEPLOY` override, matching `undeploy_impl` (§19.17). Closes the backlog row that was deferred to exactly this point. |
+| **D-A5c-16** | The binding push ships in A5c with its epoch bookkeeping and convergence read, exercised by a **fixture** that hand-edits a stored plan's `resolved_dependencies` (§19.18). A5c has no reachable membership change of its own; the real trigger is A5e's `replicas`. `task.md`'s A5c bullet is corrected to say so. |
+| **D-A5c-17** | `ProbeFailing` is **alert only** in A5c. See §21. |
+| **D-A5c-18** | A re-submit with changed placement is a **permanent refusal** the loop never retries. The reviewer's answer is confirmed, with one correction: the refusal does not exist yet and must be built (D-A5c-1). See §21. |
+| **D-A5c-19** | *(review, F4)* A `Stale(held)` outcome is retried at **`held + 1`**, not at `held` — retrying at the held epoch with changed content is a `Conflict` by the four-case rule, so the original wording described a path that could never succeed (§19.19). The supervisor's own counter advances to match. There is **no re-read**: `Stale` already carries the number. A writer genuinely ahead is arbitrated by the **generation**, not the epoch. |
+| **D-A5c-20** | *(review, F5)* `remediation.terminal` is cleared by **`force-reconcile`** and by **`adopt`**, not only by a healthy sweep (§19.20) — a terminal `InstanceNotRunning` service is never restarted, so it cannot become healthy on its own and the sweep that would clear it never fires. The `RemediationExhausted` alert detail names `force-reconcile`. This applies §19.12's own rule (no flag without a clearing path) to the table §14 introduced. |
+| **D-A5c-21** | *(review, F9)* A **fourth** new `AlertKind`, `OrphanedService`, carries D-A5c-3's alert for a service dropped from the plan but still running (§19.21). Reusing `InstanceNotRunning` would misreport it — the service *is* running. Still no schema change. |
+
+---
+
+## §21 — The two open questions, answered
+
+### §18 question 8 — does `ProbeFailing` trigger a bounded restart, or alert only?
+
+**Answer: alert only, in A5c.**
+
+**What "running but not ready" means for the service types this tree actually
+deploys.** `HealthCheck` has three variants
+(`crates/app_orchestration/src/models.rs:271-282`), and `restart_impl` has
+four type branches (`orchestration.rs:2077-2096`):
+
+| Service type | Probe available | What `restart` does | Is a restart plausible remediation? |
+|---|---|---|---|
+| `container` | `TcpConnect`, `HttpGet` | `podman stop` then `podman start` | **Yes.** A wedged event loop, a leaked descriptor, a deadlocked process — the classic restart-fixable case |
+| `wasm` | `Rpc` (invoke a method; any non-error return passes) | `reload_wasm`: evict the cached component, recompile from `blobs_dir/<id>.wasm` | **Rarely.** A guest is instantiated per call; a failing `rpc` probe means the component traps or the method errors, and recompiling the identical bytes reproduces the identical component. It helps only for engine-level state (a poisoned cache entry, allocator pressure) |
+| `tcp` | `TcpConnect`, `HttpGet` | **Refused by construction** — the process runs outside this substrate | **No.** Already a backlog row |
+| `nativehost` | none in practice | **Refused** | **No** |
+
+So restart-on-`ProbeFailing` is meaningful for exactly one of four types.
+
+**Three reasons that settle it, in order of weight.**
+
+1. **There is no way to tell "still starting" from "broken", and the
+   declaration has no field for it.** `TcpProbe` carries `interface` and
+   `timeout_ms`; `HttpProbe` adds `path` and `expect_status`; `RpcProbe`
+   names a method. **No initial delay, and no failure threshold.** A service
+   that legitimately takes 40 s to warm up reports `ProbeFailing` on the
+   first sweep after deploy. A restart-on-`ProbeFailing` policy restarts it,
+   then restarts it again on the next sweep, and never lets it start —
+   burning `max_restart_attempts` and landing in terminal `Degraded` on a
+   service that was never broken. This is not a tuning problem; the field
+   that would fix it does not exist.
+
+2. **The two signals are separated at the source precisely because their
+   authority differs.** `InstanceNotRunning` is a substrate-verified fact:
+   the container is not up, the component is not loaded. `restart` is the
+   exact inverse operation, and it is the substrate's own truth on both
+   sides. `ProbeFailing` is an **author-declared assertion** whose meaning
+   the supervisor does not know — the author chose the path, the expected
+   status, and the timeout. Restarting on it converts a readiness assertion
+   into a lifecycle action the author never asked for.
+
+3. **The most common cause is a fault in a different service.** A
+   `frontend`'s `/healthz` that checks its `backend` fails while `backend` is
+   down. Restarting `frontend` repeatedly cannot fix that, and the instance
+   is *already* `Degraded` and *already* alerting on `backend` — the restarts
+   add no information and spend the remediation budget on the wrong service.
+
+**What A5c does instead.** `ProbeFailing` raises and refreshes
+`AlertKind::ProbeFailing` (which already exists, A4) and contributes to
+`Degraded`. `InstanceNotRunning` gets the bounded restart. That keeps §14's
+table intact except for the one undecided row.
+
+**What would make restart-on-`ProbeFailing` safe later**, so this is revisited
+on evidence rather than by mood:
+
+- `HealthCheck` gains `initial_delay_secs` and `failure_threshold` (N
+  consecutive failing sweeps), which is a manifest-format change.
+- Remediation is gated on service type, so the `wasm`/`tcp`/`nativehost`
+  cases are never attempted.
+
+Filed as a backlog row targeted **post-M5**, not at A5e — A5e's scope is
+scale-out and cross-app, and a manifest-format change for probe semantics
+belongs with whatever revisits health declaration, not bolted onto it.
+
+### §18 question 9 — is a re-submit with changed placement a permanent refusal?
+
+**Answer: yes — the reviewer's answer is confirmed. With one correction that
+changes what A5c has to build.**
+
+**Confirming the reviewer's reasoning.** Relocation needs an `undeploy` on
+the old substrate plus an ordering rule between that undeploy and the new
+deploy, and both halves are best-effort synchronous today. If the undeploy
+fails or the supervisor dies between the two, the result is the two-live-copy
+state — the exact failure being avoided. Making it safe needs durable,
+retried, ordered delivery, which is A6's outbox/DLQ work, gated on M5 item 1.
+The question correctly notes that `task.md`'s non-goal text is about
+*remediation* and a deliberate operator re-placement is a different act; the
+answer is still the same, because the blocker is not the intent, it is the
+durability of the two-step. An operator who wants a relocation today has a
+working manual path (`svc remove` on the old node, `app forget`, re-submit),
+and that path is honest about being two steps.
+
+**The correction: the refusal does not exist, and the milestone currently
+does the thing it declares a non-goal.** §14 step 5 assumes the supervisor
+inherits `check_no_placement_change`. It does not (§19.1). So today a
+re-submit with changed placement is not refused, not retried, and not
+alerted — it is **silently applied**, leaving two live copies of one member.
+"The loop must not retry it" was the whole of §14's requirement; the actual
+requirement is "build the refusal, then do not retry it."
+
+**What A5c builds, precisely:**
+
+1. A pre-flight refusal in `handle_submit` and `handle_force_reconcile`
+   (D-A5c-1), so a changed-placement submit fails **before** any deploy,
+   mint, or certification work runs — the ordering B3 and N1 already
+   established for `retired` and `generation`.
+2. The loop marks that service `Degraded`, raises
+   `AlertKind::PlacementChangeRefused`, and **stops attempting that one
+   service** while continuing to reconcile the rest of the instance. Without
+   this the loop retries a permanent refusal every 30 seconds forever, which
+   §14 correctly identified as the hazard.
+3. The alert's detail names the manual relocation path, so an operator has
+   somewhere to go.
+
+Both retargeted backlog rows stay retargeted, with their reasoning unchanged:
+*"A relocated-away substrate keeps trying to publish a member's record"* and
+*"A3: a redeploy that moves a service is refused, not relocated"* both remain
+**post-M5**, with relocation.
+
+---
+
+## §22 — Phase plan and merge order
+
+Each phase is independently reviewable. Phases 1-3 have no loop in them,
+which keeps the largest behaviour change last.
+
+1. **Substrate-side and shared-crate fixes, no supervisor involved.**
+   §19.17's `owner_of` check on `restart_impl`; §19.4's `binding_epochs` on
+   `ServiceHealth` (five construction sites); §19.3's per-service
+   `binding_epochs` map on `ApplyRequest` and the removal of `mapper.rs`'s
+   hardcoded `0`. Mergeable alone; every one is a small, testable change to an
+   existing path. Tests 1-5.
+2. **The A5b defects A5c inherits.** §19.1's placement refusal (submit +
+   force-reconcile); §19.11's `Degraded`-on-missing-placement; §19.15's
+   `Applying`; §19.9's single client set. All of these are correct with or
+   without a loop, and shipping them first means the loop is built on a
+   `status` that already tells the truth. Tests 6-13.
+3. **Bookkeeping and the budget.** §19.3's per-dependent `binding_epochs`
+   table; §14 step 6's `remediation` table **with its clearing paths**
+   (§19.20); §19.6's four new `AlertKind`s with the `Display`/`FromStr` round
+   trip; §19.13's budget harness. **The budget is measured here**, before the
+   loop exists, against a hand-driven sweep — which is what makes the number a
+   target rather than a description. Tests 14-22.
+4. **MQTT.** §19.5's `SharedNodeHandles` field, the `messaging` registration,
+   the unconditional-prefix rule on the supervisor's subscribe path (§19.5e),
+   the publish call in `record_report`'s caller, and the publish/subscribe
+   symmetry test. Independent of the loop: A5b's on-demand `status` already
+   calls `record_report`, so this is observable the moment it lands. Tests
+   23-27.
+5. **The loop.** `AppSupervisor::run` **spawned**, with the interval, the
+   cancellation token joined at shutdown (§19.8), the per-instance locks, the
+   filtered-plan reconcile, and the `Superseded`/`paused` skip rules. Tests
+   28-34.
+6. **Remediation.** The `InstanceNotRunning` branch, backoff, attempt
+   ceiling, terminal `Degraded`, `RemediationExhausted`, and D-A5c-3's
+   `OrphanedService`. `ManagedService.restart_attempts` stops being `0`.
+   Tests 35-41.
+7. **The binding push**, its epoch advance, and the convergence read —
+   including test 45, the exit criterion's own test. Last, because §19.18
+   means its trigger is a fixture rather than a scenario. Tests 42-48.
+
+**What could move between sub-slices**, stated the way A5b's pass moved
+master custody:
+
+- **Nothing needs to move *into* A5c from a later slice.** The one candidate
+  — `replicas`, which would give the push a real trigger — is correctly A5e
+  (D-A5-17) and is the largest single item in the milestone. Pulling it into
+  A5c would make A5c the biggest sub-slice by a wide margin.
+- **The binding push could move *out* to A5e** (§19.18, option 2), and this
+  is the only genuine judgement call in this pass. Recommendation is to keep
+  it, because the exit criterion "an operator can read per-dependent binding
+  convergence" is A5b's stated debt and leaving it empty for two more slices
+  makes it a milestone-end scramble. But if A5c runs long, this is the piece
+  to move, and phase 7 is ordered last so that stays possible.
+
+  **The review argued the opposite** — that F2 and F8 make moving the push
+  look stronger than this paragraph grades it. Considered and **not taken**,
+  because both findings, once resolved, cut the other way:
+
+  - **F2 made the push smaller, not larger.** Its fix is a per-service
+    counter and a rule that a deploy always advances it. That rule is needed
+    for the **deploy** path whether or not a push exists, since
+    `install_app_context` writes binding rows unguarded on every deploy. So
+    moving the push would leave the epoch design in A5c anyway — and leave it
+    with no consumer, which is how designs rot.
+  - **F8 removed the expensive part.** The scramble it correctly predicted
+    was a two-node push e2e with no honest trigger. There now is no such
+    test: the wire path is already proven live by A5a, and the supervisor's
+    own decisions are unit-tested against a fake actor. What remains in
+    phase 7 is bookkeeping and a join.
+  - **F7 is the decisive one.** The exit criterion is phrased as a *read
+    surface*, and test 45 reads it. Without the push there is nothing to
+    read, so moving the push moves the exit criterion — which is precisely
+    the outcome the first paragraph above exists to avoid.
+
+  Kept, therefore, with more support than before rather than less. Phase 7
+  stays last regardless.
+- **§19.1's placement refusal arguably belongs to A5b**, since it is A5b's
+  defect. It is done in A5c because A5b is merged and there is no A5b to
+  reopen; `status.md` records the ownership.
+
+---
+
+## §23 — A5c tests
+
+Named the way §8 and §13 named theirs. **e2e are marked; everything else is a
+unit test.** New e2e port blocks start at **12_200** — 8800-12_100 are taken
+(`multi_substrate_placement_e2e.rs`, `health_monitoring_e2e.rs`,
+`binding_push_e2e.rs`, `supervisor_interface_e2e.rs`), see the comment at the
+top of `crates/substrate/tests/supervisor_interface_e2e.rs`.
+
+**Phase 1 —** `crates/control_plane/src/service/orchestration.rs`,
+`crates/sdk/src/health.rs`, `crates/sdk/src/mapper.rs`:
+
+1. `restart_is_refused_for_a_service_owned_by_another_caller` (§19.17)
+2. `restart_by_a_node_wide_deploy_grantee_ignores_the_service_owner` — the
+   boundary that proves the supervisor is unaffected
+3. `poll_once_carries_each_services_binding_epochs_through_to_service_health`
+   (§19.4)
+4. `poll_once_reports_empty_binding_epochs_for_an_unreachable_substrate` —
+   the arm that would otherwise panic or fabricate
+5. `a_plan_mapped_at_a_nonzero_epoch_emits_that_epoch_on_every_binding`
+   (§19.3)
+
+**Phase 2 —** `crates/app_supervisor/src/service.rs`:
+
+6. `submit_is_refused_when_the_plan_moves_a_service_to_another_substrate`
+   (§19.1) — asserts the error names both substrates
+7. `submit_with_a_changed_placement_is_refused_before_any_deploy_work_runs` —
+   same fixture trick B3 and N1 use: an inventory with no credential, so a
+   "placement" error rather than a "credential" one proves the ordering
+8. `force_reconcile_is_refused_when_the_stored_plan_moves_a_service` (N3's
+   lesson: `force-reconcile` never calls `store.submit`, so it needs its own
+   check)
+9. `submit_is_allowed_when_a_service_keeps_its_substrate` — the boundary, so
+   the refusal cannot be satisfied by refusing everything
+10. `an_instance_with_a_planned_service_that_never_landed_reports_degraded`
+    (§19.11, **matrix row 12**) — today reports `Active`
+11. `a_fully_landed_healthy_instance_still_reports_active` — row 12's
+    boundary
+12. `status_reports_applying_while_a_reconcile_is_in_flight` (§19.15)
+13. `status_connects_to_each_substrate_once` (§19.9) — counts connects
+    through a fake `StatusQuery`; guards the double-connect regression
+
+**Phase 3 —** `crates/app_supervisor/src/store.rs`,
+`crates/app_orchestration/src/alerts.rs`, the budget harness:
+
+14. `a_written_epoch_is_held_per_dependent_and_shared_by_its_dependencies`
+    (§19.3 as revised — the counter is per service, not per dependency)
+15. `a_redeploy_after_a_push_carries_an_epoch_above_what_was_pushed` (F2's
+    failure: the scalar version wrote a lower epoch over a higher one, and
+    the next push then conflicted)
+16. `an_absent_row_reads_as_epoch_zero_so_a_hand_deployed_binding_converges`
+    (F3 — the false negative the operator path would otherwise produce)
+17. `remediation_attempts_survive_a_store_reopen` (§14 step 6's durability
+    claim)
+18. `a_healthy_sweep_clears_the_remediation_row`
+19. `force_reconcile_clears_a_terminal_remediation_row` (§19.20 / F5 — the
+    path that makes terminal escapable at all)
+20. `adopt_clears_a_terminal_remediation_row` (§19.20's second clearing path)
+21. `every_alert_kind_round_trips_through_display_and_from_str` (§19.6) —
+    walks every variant, including `OrphanedService`; the guard against a
+    variant added to one half only
+22. `a_steady_state_sweep_of_twenty_services_stays_within_the_poll_budget`
+    (§19.13, **D-A5c-12**) — asserts pass duration and per-substrate RPC
+    count against the a-priori numbers
+
+**Phase 4 — MQTT,** `crates/app_supervisor/`, `crates/substrate/`:
+
+23. `a_newly_opened_alert_is_published_under_the_supervisors_own_topic`
+24. `a_publish_failure_leaves_the_alert_stored_and_the_pass_running` (§19.5f)
+25. `an_already_open_alert_is_not_republished_on_the_next_sweep` — the
+    property `record_report`'s newly-opened return value provides
+26. `a_subscribe_naming_another_services_topic_stays_inside_the_supervisors_namespace`
+    (§19.5e / **F10**) — the negative test for the unconditional-prefix rule.
+    Without it the registration widens reach to any `svc/<id>/#` on the node.
+    **This is also the regression guard for §19.5c's deliberate divergence**:
+    the supervisor's subscribe path is the one `messaging` endpoint that does
+    not honour the cross-service opt-in, so it reads like a copy-paste slip
+    against every other subscribe site. This test fails the moment someone
+    "corrects" it back to `namespace_topic`; the comments at the two sites
+    explain why, and this is what enforces it
+27. **e2e** `an_operator_subscribed_to_the_alert_topic_receives_an_opened_alert`
+    (`crates/substrate/tests/supervisor_alerts_e2e.rs`, ports **12_200**) —
+    proves §19.5b's `messaging` registration and §19.5c's publish/subscribe
+    string symmetry together, which no unit test can
+
+**Phase 5 — the loop,** `crates/app_supervisor/src/service.rs`:
+
+28. `the_loop_skips_paused_and_retired_instances` (§19.16)
+29. `a_pause_landing_mid_pass_stops_that_passs_writes` (§19.16 / **F6**)
+30. `the_loop_skips_every_write_for_a_superseded_instance_but_still_polls_it`
+    (§19.12)
+31. `an_unreachable_generation_read_does_not_mark_an_instance_superseded` —
+    `max_held_generation`'s `None` case, on the loop's path this time
+32. `a_submit_and_a_loop_pass_for_one_instance_do_not_interleave` (§19.7) —
+    both driven concurrently against a counting fake actor
+33. `shutdown_cancels_the_spawned_loop_and_waits_for_it_to_close_its_clients`
+    (§19.8 as revised / **F1**) — asserts `shutdown` returns only after the
+    handle has joined. The earlier name
+    (`a_cancelled_pass_closes_every_client_it_opened`) would have passed
+    against a token nothing ever cancelled in time
+34. `a_pass_that_outruns_the_interval_does_not_queue_a_burst` (§19.7's
+    `MissedTickBehavior::Skip`)
+
+**Phase 6 — remediation:**
+
+35. `instance_not_running_triggers_a_restart_on_the_next_pass`
+36. `a_restart_is_not_retried_before_the_backoff_elapses`
+37. `remediation_stops_after_max_attempts_and_alerts_once`
+    (**matrix row 13**)
+38. `a_terminal_degraded_service_is_never_restarted_again` (row 13's second
+    half — the property the row's wording turns on)
+39. `probe_failing_never_triggers_a_restart` (**§21 / D-A5c-17**, pinned as a
+    test so a later slice changes the policy deliberately)
+40. `substrate_unreachable_never_triggers_a_restart` (D-A4-13, re-pinned
+    because A5c is the first slice that could get it wrong)
+41. `a_service_dropped_from_the_plan_raises_orphaned_service_and_is_not_undeployed`
+    (§19.21 / **F9** — D-A5c-3, which nothing exercised before)
+
+**Phase 7 — the push and convergence:**
+
+42. `a_membership_change_pushes_at_the_next_epoch_and_records_it`
+43. `a_conflict_outcome_raises_binding_conflict_and_does_not_retry`
+44. `a_stale_outcome_is_retried_once_above_the_held_epoch_then_alerts`
+    (§19.19 / **F4** — renamed from `..._at_the_re_read_epoch_...`, which
+    named a retry that could only ever produce a conflict)
+45. **`status_reports_a_converged_binding_after_a_push_lands`** (§19.4 /
+    **F7**) — the join itself, read off `instance-status.bindings` through a
+    real `status` call. **This is the exit criterion's test**: everything
+    else in this list covers one side of it. `bindings` is hardcoded empty
+    today (`service.rs:988-991`), and A5b's row-9 experience is exactly what
+    happens when a criterion is credited without a test on the surface it is
+    phrased against
+46. `a_dependent_that_does_not_answer_reports_unconverged_rather_than_absent`
+    — test 45's negative half
+47. `a_dependent_unreachable_during_a_push_leaves_the_instance_degraded_and_is_retried_when_it_next_answers`
+    (**matrix row 11**) — a fake `SubstrateActor` whose `write_bindings`
+    fails on pass 1 and succeeds on pass 2. **A unit test, deliberately** —
+    see the note below
+48. **e2e** `a_partial_deploy_is_degraded_and_its_failed_service_is_retried_without_rollback`
+    (`crates/substrate/tests/supervisor_loop_e2e.rs`, ports **12_400**,
+    **matrix row 12**) — two real nodes, one stopped at submit time, so one
+    service lands and one fails; the surviving service is not rolled back,
+    and the next pass retries only the failed one once the node returns
+
+**Why row 11's test is a unit test, and why there is no supervisor push
+e2e** (review **F8** asked how the two row-11/row-12 e2e tests — numbered 40
+and 41 in the list as reviewed, now 47 and 48 — would trigger a push over two
+real nodes, given §19.18 says A5c has no reachable membership change. A fair
+question with no good answer in the original list.) Three facts settle it:
+
+- §19.18's conclusion means **any** e2e push trigger would be artificial —
+  reaching into `supervisor.db` on a running node, or adding a test-only
+  verb. Both are worse than the thing they would prove.
+- The wire path is **already proven live** by A5a's
+  `binding_push_e2e.rs::a_membership_change_pushed_to_a_dependent_takes_
+  effect_without_a_redeploy`. A5c adds no new substrate behaviour to push
+  through; it adds the supervisor's own bookkeeping and decisions.
+- Row 11's property — a push fails against an unreachable dependent, the
+  instance goes `Degraded`, the next pass retries — is **entirely
+  supervisor-side control flow**. A fake actor tests it deterministically;
+  a two-node version tests the same branch through a flakier, slower path.
+
+This inverts A5b's own reasoning rather than contradicting it: there, `adopt`
+and `retire` were *not* unit-testable in isolation, so they were proven live.
+Here the reverse holds, and the honest answer is the one that follows the
+testability, not the format. Row 12 keeps its e2e (test 48) because its
+trigger — stop one of two nodes — is real and needs no fixture surgery.
+
+**Failure-matrix rows, mapped explicitly** — A5b credited row 9 with no test
+and had to add one in review; that is not repeated:
+
+| Row | Test | Kind |
+|---|---|---|
+| **11** — dependent unreachable during a push | 47 | unit (fake actor; see note above) |
+| **12** — partial app deploy (3 of 5) | 10, 11, 48 | unit + e2e |
+| **13** — remediation exceeds max attempts | 37, 38 | unit |
+
+**Exit criterion** — "an operator can read health, alerts, and per-dependent
+binding convergence": tests 45 and 46, on the read surface itself.
+
+**Fixture note**, carried from §13 and still true: the supervisor's node-wide
+`orchestrator/deploy` **and** `orchestrator/status` grants on each managed
+node are hand-issued by the fixture. Nothing in this milestone issues them.
+
+---
+
+## §24 — Docs and backlog for A5c
+
+**Docs**
+
+- `docs/developer-guide.md` — the `[roles.supervisor]` block gains its four
+  previously-inert fields with what each now controls (§19.14), including the
+  note that `restart_backoff_secs` defaulting to the poll interval means one
+  restart attempt per pass; the MQTT alert topic, the exact `subscribe` call,
+  and **that messages are not retained** (§19.5d); that `paused` stops the
+  loop and nothing else (§19.16); that a placement change is refused and the
+  manual relocation path is `svc remove` → `app forget` → re-submit (§21);
+  and that a plan-level service removal is **not** undeployed (D-A5c-3).
+- `task.md` — the A5c bullet corrected for §19.18 (no reachable membership
+  change in A5c, so the push's trigger is A5e's), and rows 11/12/13 annotated
+  with their tests at sign-off.
+- `status.md` — an A5c section in the A0-A5b shape, and the A5b section
+  amended to own §19.1 as its own defect.
+- ADR-0021 — §3's epoch is now explicitly minted and held by the supervisor
+  (D-A5c-4); the ADR says the guard exists but not who owns the number.
+  Decide at A5c sign-off.
+
+**Backlog rows resolved**
+
+- *"A3: `Degraded` has no automatic exit"* — the loop's healthy sweep clears
+  remediation state and the alert.
+- *"A3: `ActionState::Pending` has no writer"* — **re-argued, not resolved.**
+  §14 step 2 planned the loop to enqueue diff actions as `Pending` before
+  applying them. With D-A5c-2 the loop applies a filtered plan through
+  `apply_plan`, which writes `InProgress` directly (`deploy.rs:242`), so
+  there is still no `Pending` writer. Adding one purely to have one is
+  ceremony. **Recommendation: delete the `Pending` variant** rather than
+  invent a writer for it — or keep the row open with an honest target. Either
+  is fine; pick one at A5c sign-off rather than leaving a third slice to
+  rediscover it.
+- *"A4: alerts are not published to MQTT"* — D-A5c-6.
+- *"`restart` is the only lifecycle write with no service-owner check"* —
+  D-A5c-15.
+- *"The supervisor's `submit`/`force-reconcile` never skip an already-landed
+  service"* — resolved by D-A5c-2's filtered plan, **not** by re-scoping
+  `apply_plan`. The row's own named fix is rejected with the caller audit in
+  §19.2 as the reason.
+- *"A4: `probe_cached` has no single-flight"* and *"A4: a wasm `rpc` probe
+  costs a component instantiation"* — resolved or retargeted **with a
+  number**, by D-A5c-12.
+
+**Backlog rows to add**
+
+- ***A `ProbeFailing` service is never restarted, and `HealthCheck` has no
+  initial delay or failure threshold*** (§21) — the two fields that would
+  make restart-on-probe safe do not exist in `TcpProbe`/`HttpProbe`/
+  `RpcProbe`, and remediation would also need per-service-type gating since
+  `restart` is refused outright for `tcp` and `nativehost`. → **post-M5**,
+  with whatever revisits health declaration.
+- ***`ReconcileAction::Remove` has no executor anywhere in the tree***
+  (§19.2a) — `compute_diff` produces it and `apply_plan` iterates only ADDs,
+  so a service dropped from a plan runs forever and is not polled. A5c
+  alerts on it (D-A5c-3) rather than undeploying. → **TBD**, needs a
+  destructive-action policy first.
+- ***`messaging/subscribe` needs no capability, only a handshake*** (§19.5e,
+  widened after review F10) — the original wording, "MQTT alert topics are
+  readable by any verified caller", was too narrow. `messaging/subscribe`
+  gates only on the caller not being anonymous
+  (`route_handler/dispatch.rs:350`), and `namespace_topic` passes a literal
+  `svc/` prefix through as a deliberate cross-service opt-in
+  (`mqtt_broker/src/lib.rs:70-72`), so **any** `messaging` endpoint on a node
+  is a subscribe handle for **any** `svc/<id>/#` topic on it — not only the
+  topic the endpoint belongs to. That is pre-existing on nodes hosting
+  deployed services; A5c avoids widening it to supervisor-only nodes with a
+  local unconditional-prefix rule (D-A5c-6) rather than by leaving the row to
+  describe the narrow case. The real problem for post-M5 is the missing
+  capability gate, and pairs with the existing row wanting a
+  `supervisor/status` ability. → **post-M5**.
+- Whatever A5d's and A5e's own `§0` passes find.
+
+---
+
+## §25 — Review response (2026-08-01)
+
+An independent review of Part IV spot-checked roughly forty of its
+`file:line` claims and found no false ones; every finding below is about a
+**decision** this pass reached, not the code it read. Ten findings: **two
+blocking, six should-fix, two minor**. Nine incorporated as raised, one
+answered differently. No code exists yet, so nothing was re-run — A5c is
+unimplemented and the working tree holds planning documents only.
+
+| # | Finding | Disposition |
+|---|---|---|
+| **F1** | *(blocking)* D-A5c-8's `CancellationToken` cannot fire before the loop is dropped: `run_until_shutdown` returns at `runtime.rs:339` and kills the pinned future, while `shutdown()` is not reached until `runtime.rs:116` | **Incorporated.** Verified exactly as described. The loop is now **spawned** and `shutdown` joins the handle (§19.8, D-A5c-8). The review is also right that this restores D-A5-8's original `Send` justification, which the first draft had dismissed. Phase 5's test renamed, since the old one pinned a mechanism that never ran |
+| **F2** | *(blocking)* A scalar `ApplyRequest.epoch` cannot carry a per-dependency counter, and `install_app_context`'s `save_binding` is unguarded, so a redeploy writes a lower epoch over a higher one and the next push conflicts | **Incorporated, with a design change.** The counter becomes **per dependent service**, `ApplyRequest` takes a map, and a written invariant ("the counter always advances before a write") is what makes the unguarded save correct. The guard is deliberately **not** added at `install_app_context` — it would break `roymctl app deploy`'s repeated writes at epoch 0 (§19.3, D-A5c-4) |
+| **F3** | The operator deploy path's epoch is unspecified, so "0 means never written" would be false for every hand-deployed instance | **Incorporated.** `0` is redefined as "no supervisor has written here", `roymctl` keeps it, and the false negative the review predicted does not occur: the supervisor's absent row reads `0` and the substrate reports `0`, so they match and the dependent converges (§19.3) |
+| **F4** | "Retry once at the re-read epoch" produces a `Conflict`, never an `Applied` | **Incorporated** as a new finding §19.19 and **D-A5c-19**: retry at `held + 1`, no re-read (`Stale` already carries the number), and a genuinely-ahead writer is the generation's problem. Test renamed |
+| **F5** | `remediation.terminal` is the set-but-never-cleared flag §19.12 refuses to create — a terminal service is never restarted, so the healthy sweep that clears the flag never fires | **Incorporated** as §19.20 and **D-A5c-20**. The pass applied that lesson to `Superseded` and reintroduced the pattern two sections later. `force-reconcile` and `adopt` now clear it, and the alert detail names the verb |
+| **F6** | *(minor)* A `pause` landing mid-pass still gets a full pass of writes | **Incorporated.** The loop re-reads the desired-state row at the start of its write phase — it needs the generation from it anyway — and the WIT doc comment states the boundary (§19.16, D-A5c-14) |
+| **F7** | Nothing asserts `instance-status.bindings` is populated — the exit criterion the push is kept for | **Incorporated**, and it is the finding that most matters: this is A5b's row-9 failure in advance. Tests **45 and 46** now read the join off a real `status` call, and §23 names them as the exit criterion's test |
+| **F8** | Tests 40/41 are e2e and §19.18 leaves them with no stated trigger; row 11's coverage rests on it *(numbering as reviewed; they are now 47 and 48)* | **Answered differently.** The review asked for the trigger to be stated. Stating it would not have helped — §19.18's own conclusion means any e2e trigger is artificial (reaching into `supervisor.db` on a running node, or a test-only verb). Row 11's property is entirely supervisor-side control flow, so its test is now a **unit test with a fake actor**, and there is **no supervisor push e2e at all**: A5a's `binding_push_e2e.rs` already proves the wire path live. Row 12 keeps its e2e, whose trigger (stop one of two nodes) is real. Reasoning written into §23 |
+| **F9** | *(minor)* D-A5c-3's orphan alert has no `AlertKind` and no test | **Incorporated** as §19.21 and **D-A5c-21**: a fourth kind, `OrphanedService`, in the round-trip test plus a raise test. §19.6's "three new kinds" corrected to four — though still not §14's four |
+| **F10** | §19.5e understates the reach: registering `messaging` under the node DID hands every verified caller a subscribe handle for any `svc/<id>/#` topic, new reach on a supervisor-only node | **Incorporated.** Verified. Closed locally by namespacing the supervisor's subscribe path with the publish-side unconditional rule, so nothing escapes `svc/supervisor/` (D-A5c-6), plus a negative test and a widened backlog row. **Follow-through:** that fix makes three namespacing behaviours where §19.5c already called two a hazard, and the supervisor's is the one endpoint that deliberately refuses the cross-service opt-in — so §19.5c now requires a comment at both the registration site and the branch, with test 26 as the guard that actually holds if someone reverts it |
+
+**Two factual corrections the review made to this pass**, both verified and
+applied: `ServiceHealth` has **five** production construction sites in
+`poll_once`, not three (`health.rs:185, 221, 243, 274, 289`); and the
+member-index-0 comment is at `member_identity.rs:150`, with the call at
+`:175`.
+
+**One judgement the review offered and this pass does not take:** that F2 and
+F8 strengthen the case for moving the binding push out to A5e. §22 answers
+it — both findings, once resolved, made the push smaller rather than larger,
+and F7 means moving it would move the exit criterion with it.
+
+**Test count: 41 → 48**, and one test converted from e2e to unit (row 11).
+
+---
+
+# Part V — A5d: unattended renewal
+
+**Status:** 📋 Planned (2026-08-02). Not started. This is the `§0` findings
+pass **D-A5-2** requires before A5d is handed to an implementer. §15 planned
+A5d to a six-item sketch — renewal, `RotationPolicy`, the `SynSvcNativeService`
+gap, certificate maximum lifetime, master-anchor refresh, revocation — plus
+one paragraph naming what "unattended" does not mean. Everything below is
+what §15, `task.md`, and A5c's shipped code leave open, understated, or
+stated in a way the actual tree does not support.
+
+Same discipline as A0 §6 / A1 §6 / A2 §0 / A3 §0 / A4 §0 / P0 §0 / A5 §0 / A5c
+§19.
+
+**Headline.** §15's six items read as six independent features. Reading A5c's
+shipped loop against them turns the count into **fourteen findings, and half
+of them are about one fact none of the six items states**: there is no
+substrate verb today that installs a certificate without reinstalling the
+whole service. Every one of "renewal," "`RotationPolicy` becomes load-bearing,"
+and "the `SynSvcNativeService` gap" is downstream of that one missing verb, and
+§15 discusses all three as if the install path already existed. It doesn't —
+A5c never needed it, because A5c's only certificate writes happen inside
+`apply_plan`'s full redeploy (§19.10). A5d is the first slice that installs a
+certificate on its own, and it has nowhere to send that write.
+
+---
+
+## §26 — What §15, `task.md`, and A5c leave open, understate, or state wrongly
+
+### 26.1 (Scope-changing, blocking) There is no verb that installs a certificate without reinstalling the service, and reusing `deploy` is the wrong fix
+
+§15 item 1 says renewal "reissue[s] via `deploy::certify_instance` through the
+supervisor's own client," as if minting the certificate is the whole job. It
+is half the job. `certify_instance` (`crates/sdk/src/deploy.rs:320-352`)
+returns a `DelegationCertificate`; nothing in the tree accepts one on its own.
+
+**What exists.** The only production writer of an instance certificate is
+`deploy_with_context`'s cert-verification block
+(`crates/control_plane/src/service/orchestration.rs:1065-1099`), which runs
+inline in the middle of a full deploy, followed by the `set_instance_cert`/
+`remove_instance_cert` write and the `SynSvcNativeService` rebuild
+(`orchestration.rs:1493-1509`, `:1569-1580`). `deploy_with_context` also
+reinstalls the wasm component or container, reruns FDAE policy validation, and
+bumps the service's config generation
+(`orchestration.rs:1350-1355`, rolled back via `rollback_config_generation`
+at `:564-568` on any later failure). None of that is renewal's business — the
+manifest, the config, and the FDAE policy have not changed.
+
+**Reusing `deploy` for renewal would be the exact churn §19.2 and §19.10
+already found and fixed once.** §19.10 stopped the loop from re-certifying
+every member every pass because it "churns exactly the artifact A5d exists to
+renew on a considered schedule." Routing renewal back through `deploy` (or
+`apply_plan`) reopens that: the full hex-inlined Wasm artifact §19.2's backlog
+row complains about would cross the wire on every renewal cycle, for a change
+that touches nothing but a certificate.
+
+**Fix.** A new verb, sized like `restart` — an in-place lifecycle action next
+to a full reinstall, not a variant of one:
+
+```wit
+/// Install a freshly-issued instance certificate on an already-deployed
+/// service, without reinstalling it -- the certificate-only counterpart to
+/// `restart`. `generation` is checked against the app instance's recorded
+/// management stamp when the service has one, exactly as `restart` is.
+renew-cert: func(service-id: string, generation: u64, instance-certificate: string) -> result<_, string>;
+```
+
+`renew_cert_impl` gated identically to `restart_impl`
+(`orchestration.rs:2061-2127`): the same `ORCHESTRATOR_DEPLOY` capability
+check (`:2067-2076`), the same owner-or-node-wide-grantee check A5c's
+D-A5c-15 added to `restart` (`:2078-2090`), the same generation gate scoped to
+an app context only (`:2092-2100`). See **D-A5d-1**.
+
+### 26.2 (Scope-changing) The cert-verification block is inline in `deploy_with_context`; `renew-cert` cannot duplicate it
+
+`deploy_with_context`'s three checks — the certificate names this `service_id`
+(`orchestration.rs:1070-1077`), it certifies the key this node derives for
+this caller (`:1078-1092`), and its signature/window/scope verify
+(`:1093-1095`) — are security-critical and currently only exist inline in one
+function. `renew_cert_impl` needs the identical three checks; copying them is
+exactly the "inline fully-qualified path twice" problem this repo's own
+`AGENTS.md` import-cleanup rule exists to catch one level up, except the risk
+here is worse than an import: two copies of DID/signature verification
+drifting apart silently is a security bug, not a style one. Factor the block
+into `verify_installed_instance_cert(node_identity, caller_did, service_id,
+cert_json) -> Result<DelegationCertificate, String>`, called from both
+`deploy_with_context` and `renew_cert_impl`. See **D-A5d-2**.
+
+### 26.3 (Scope-changing, correctness prerequisite) `renew-cert` must rebuild `SynSvcNativeService`, and every piece it needs is already a stored fact
+
+§15 item 3 calls this "a correctness prerequisite, not a follow-up," which is
+right, but confirm what is actually broken today: **nothing, yet.** The
+backlog row (`docs/planning/deferred-backlog.md:81`) and `SynSvcNativeService`'s
+own doc comment (`crates/control_plane/src/synsvc_native.rs:100-112`) are
+both explicit that the by-value cert copy cannot drift *today* because the
+sole production writer of an instance cert (`deploy_with_context`) already
+rebuilds the native service in the same pass
+(`native_dispatch.insert(service_id, Arc::new(SynSvcNativeService::new(...)))`,
+`orchestration.rs:1493-1509`). A5d is what makes the gap real: it is the
+first code path that installs a certificate through anything other than
+`deploy_with_context`.
+
+**Every non-certificate input `SynSvcNativeService::new` needs is already
+reachable without the manifest.** `orchestration.rs:1493-1509` passes
+`key_store`, `storage_provider`, `blob_provider`, `messaging_broker`,
+`node_identity`, `caller.caller_did`, and an `Arc<Policy>` derived from
+`fdae_policy` — all `self.*` fields on `ControlPlaneService` except the FDAE
+policy, which is a local variable computed from the manifest during deploy.
+But the FDAE policy is also *persisted*: `save_fdae_policy`/`load_fdae_policy`
+(`crates/data_db/src/sqlite.rs:1914-1947`, trait at
+`crates/data_db/src/traits.rs:102-105`) round-trip it per `service_id`
+independent of any deploy call. So `renew_cert_impl` does not need the
+manifest at all: `load_fdae_policy(service_id)`, parse if present, then
+`native_dispatch.insert` a fresh `SynSvcNativeService` with the new cert and
+everything else unchanged. See **D-A5d-3**.
+
+**One thing to confirm rather than assume — `caller_did`.** `SynSvcNativeService::new`
+takes `&caller.caller_did` (`orchestration.rs:1504`, constructor at
+`synsvc_native.rs:368-401`), and ADR-0020 amendment 21 makes the derived
+instance key depend on it. This is not a gap: §0.19/D-A5-19 already established
+that a supervisor cannot manage placement it did not itself deploy, so the
+same client — the supervisor's own — is the caller on both the original
+`deploy` and every later `renew-cert` for that instance. `renew_cert_impl`
+passing through whichever `caller.caller_did` the RPC arrived under is
+therefore correct without special-casing, because that caller is always the
+same DID a working renewal path can ever reach.
+
+### 26.4 (Scope-changing, blocking) Vault-locked detection is a per-call `Result`, and `VaultLocked` needs a place in a schema that has none reserved for a global fact
+
+§15 promises "the renewal loop raises a `VaultLocked` alert... the moment it
+finds the vault shut," without saying what that alert targets. `AlertRecord`
+(`crates/app_orchestration/src/alerts.rs:111-124`) requires **both**
+`instance_id: AppInstanceId` and `substrate_did: String` — there is no
+schema slot for a supervisor-process-wide fact belonging to no instance and
+no substrate, and D-A5c-6 already set the precedent of not touching this
+schema for a new concern.
+
+**This is not actually a gap — it is the same shape `SubstrateUnreachable`
+already uses.** A locked vault, like an unreachable substrate, is one root
+cause that affects every instance with a member due for renewal; the fix is
+the same fan-out: raise `VaultLocked` once per **placed member currently near
+expiry**, scoped to that member's `instance_id`/`logical_ref`/`substrate_did`
+— not one row per fact, one row per affected member, which is exactly what an
+operator reading `supervisor alerts <instance_id>` needs to see and exactly
+what the existing schema already supports with no change.
+
+**Detection is two-tiered, cheapest check first.** `KeyStore::kek_is_loaded()
+-> bool` (`crates/data_keystore/src/key_store.rs:70-72`) is a non-`Result`,
+no-I/O check — call it once per pass, before any `MasterVault::get_or_mint`
+attempt. If false, skip the entire renewal work-list for this pass (not the
+rest of `reconcile_instance_pass` — health, remediation, and the binding push
+all continue; none of them touch the vault), and raise/refresh `VaultLocked`
+for every near-expiry member. `VaultError::Locked`
+(`crates/app_supervisor/src/keys.rs:36-44`) remains the per-call variant a
+direct `get`/`get_or_mint` surfaces, for the (should-not-happen, defensive)
+case where `kek_is_loaded()` said yes but the vault open still fails between
+the check and the call. See **D-A5d-4**.
+
+### 26.5 (Understated) The near-expiry decision needs no new poll — `ServiceHealth` already carries the two timestamps A5a shipped for this
+
+§15 does not say where "near expiry" comes from. `ServiceHealth`
+(`crates/sdk/src/health.rs:88-102`) already carries
+`instance_certificate_issued_at`/`instance_certificate_expires_at`
+(`:94-95`), filled at all five production sites A5c's D-A5c-5 already wired.
+`is_near_expiry_parts(issued_at, expires_at, now)`
+(`crates/identity/src/delegation.rs:27-37`, the 25%-of-lifetime-remaining
+rule) is a `const fn` over exactly those two numbers. So the renewal decision
+for a placed member is a pure function of data the pass's existing health poll
+(`reconcile_instance_pass`, `service.rs:387`) already produced this pass — no
+new RPC, no new poll interval. Renewal is a **fourth work-list**, computed
+alongside `needs_work` and `restart_candidates`, not folded into either: it is
+neither a plan diff nor a health-based remediation, and treating it as one
+would make it retry on the wrong triggers (§26.12). See **D-A5d-5**.
+
+### 26.6 (Ambiguous) `RotationPolicy` is already on the wire and in the stored plan; the decision is client-side, and the substrate never needs to see it
+
+§15 item 2 says `RotationPolicy` "becomes load-bearing here and only here,"
+without saying which side reads it. It cannot be the substrate: `models.rs`'s
+`RotationPolicy` (`crates/app_orchestration/src/models.rs:237-240`, field at
+`:369`) maps one-way to `WitRotationPolicy` inside `service-config`
+(`mapper.rs:165-168`, `control-plane.wit:75`) and is **never matched on
+anywhere in the substrate** — confirmed dead code today. It does not need to
+become live there either: the supervisor already holds the full stored plan
+(the same `DeploymentPlan`/`ServiceSpec` per service `SupervisorStore`
+persists from `submit`), so `svc.config.rotation_policy` is a local read
+inside the renewal work-list, made once the new cert has installed
+successfully. `RestartOnRotation` issues a `restart` call — the same RPC
+A5c's remediation already exercises with its owner/generation gate — `None`
+does nothing further. The wire field stays exactly as A5c's mapper already
+emits it; A5d adds a reader, not a new carrier. See **D-A5d-6**.
+
+### 26.7 (Scope-changing) A substrate-side maximum-lifetime cap would break the attended posture's own definition; the fix is a generous backstop, not a forcing function
+
+§15 item 4 says renewal "closes" the backlog row wanting a maximum instance
+certificate lifetime (`docs/planning/deferred-backlog.md:86`), framing it as
+something the online-key posture simply enables. It does not simply enable
+it — enforcing a **tight** cap substrate-side would contradict ADR-0020 §3
+directly: "**Attended posture:** certificates are long-lived and revocation is
+the real control... An operator issues on a stated cadence." An attended-mode
+operator's `--expires-hours` is deliberately long-lived by design, and a hard
+substrate-side ceiling tuned for the online-key posture's short renewal
+cadence would refuse that operator's own deploys.
+
+**The two postures need two different things from this row, and only one of
+them is A5d's to give.** The online-key posture gets short-lived certificates
+for free the moment renewal is automated — that is §15's own framing, and it
+needs no enforcement, only A5d's renewal loop choosing a short
+`expires_hours` when it calls `certify_instance`. What A0 never built, and
+what the backlog row is actually asking for, is a **backstop**: nothing bounds
+`expires_at_secs` at all today, so a client-side mint error (or a malicious
+one) can produce a certificate valid for years, unnoticed until the near-expiry
+warning simply never fires. The fix the row wants is a generous ceiling at
+install verification — the same shape task.md's own `EndpointInfo.not_after`
+precedent already uses and justifies: "deliberately generous (30 days) so it
+is a backstop for a signer that stops renewing entirely, not a routine failure
+mode." A 30-day cap, enforced inside §26.2's new shared
+`verify_installed_instance_cert` helper (so both `deploy` and `renew-cert`
+apply it identically) does not touch any attended-posture operator running
+the CLI's actual default (24h) or anything a reasonable manual cadence would
+choose, and catches exactly the unbounded mistake the row names. See
+**D-A5d-7**.
+
+### 26.8 (Scope-changing) Master-anchor refresh needs its own cadence and its own persisted "last refreshed" fact — riding the reconcile tick is not free
+
+§15 item 5 says "the loop performs it," as if the existing 30-second pass
+tick is the schedule. It should not be: `refresh_master_anchor`
+(`crates/core/src/dht_registry.rs:624`) re-signs and republishes the whole
+anchor payload over HTTP (and optionally the DHT), and the backlog row this
+closes (`deferred-backlog.md:89`) calls the failure mode a **daily** duty — an
+anchor older than 24 hours stops verifying at every consumer. Running that
+call every 30 seconds is needless load for a fact that only needs to move once
+a day; running it only when a service happens to need renewal ties two
+unrelated cadences together for no reason.
+
+**Fix.** `SupervisorRole` gains `master_anchor_refresh_interval_secs`
+(default a fraction of the anchor's 24-hour validity window with real
+margin — a day-scale interval refreshed well before expiry, the same
+margin-before-expiry shape `is_near_expiry_parts`'s 25% already uses for
+certificates). The 30-second pass tick stays the only timer in the process
+(D-A5c-8 already made spawning a second one a reviewed, deliberate choice for
+the main loop; a third scheduled thing does not get its own): each pass reads
+a small persisted `(master_did, last_refreshed_at)` fact from
+`SupervisorStore` and only calls `refresh_master_anchor` when overdue. This is
+the same "evaluated every pass against a persisted fact, not a new timer"
+shape D-A5c-9's single client set and D-A5c-14's pause re-read already
+established for this loop.
+
+**The read-modify-write race** (`deferred-backlog.md:89`: "a compare-and-set
+the registry does not offer, or a single writer") is closed by the same fact
+ADR-0020 amendment 20 already established for custody: mint-in-place means
+exactly one `MasterVault` ever generates a given master, and export/import
+moves a **file**, not concurrent live access. Under the topology this tree
+actually supports — one supervisor process holding a given master at a time —
+there is structurally one writer. A5d documents this as the accepted
+invariant rather than building a CAS the registry (`crates/community_registry`)
+does not expose; a redundant-supervisor deployment sharing one master via
+`import-master` on two live processes is out of scope here and stays a backlog
+row, since it needs the registry to grow compare-and-set semantics, not
+anything A5d's loop can provide alone. See **D-A5d-8**.
+
+### 26.9 (Coverage) `CertificateNearExpiry` and `CertificateExpired` already exist and are already dead; A5d wires them up, it does not add them
+
+`AlertKind` (`crates/app_orchestration/src/alerts.rs:29-70`) already carries
+`CertificateNearExpiry` (`:40`) and `CertificateExpired` (`:44`), with their
+`Display`/`FromStr` arms already written (`:78-79`, `:98-99`) and already
+covered by the round-trip test (`:391-403`). Neither is raised anywhere in
+`crates/app_supervisor` today — grep confirms zero call sites. §15 does not
+mention them at all, reading as though A5d must add new kinds; it must not,
+and the round-trip test needs no new entries.
+
+**Their purpose, precisely.** They are not renewal's success path — a
+renewal that succeeds needs no alert. They are what a stalled renewal reports:
+`CertificateNearExpiry` when a member is within the 25% window and either the
+vault is locked (§26.4, alongside `VaultLocked` on the same member) or a
+`renew-cert` call itself failed; `CertificateExpired` when
+`is_expired_parts` (`delegation.rs:46-48`) says it is too late. Both need the
+same clearing rule §19.20 (F5) established for `remediation.terminal`: raised
+alerts with no path back to cleared are exactly the bug that finding exists to
+prevent. Both clear the moment a subsequent pass's health poll reports a
+non-near-expiry timestamp for that member — the same healthy-sweep clearing
+shape D-A5c-11's `Superseded` and D-A5c-20's `remediation.terminal` already
+use, recomputed from the substrate's own answer rather than tracked as a flag.
+See **D-A5d-9**.
+
+### 26.10 (Scope-changing, blocking) Revocation has no production write path today, and revoking a key without also stopping its renewal undoes itself
+
+§15 item 6 names the backlog row (`deferred-backlog.md:88`) and stops there.
+The row itself says the gap plainly: "nothing in the tree can *add* to a
+master anchor's `revoked_keys`... the only non-empty publisher is a unit
+test." `apps/roymctl/src/commands/identity.rs`'s `publish-anchor` hardcodes
+`vec![]`. `MasterAnchorPayload.revoked_keys` (`dht_registry.rs:650`) is read
+(`crates/router/src/handshake.rs:89`, `route_handler/io.rs:69`) but never
+written outside `handshake.rs`'s own test (`:362-383`), which mutates a
+`MockResolver`'s in-memory state directly — not a call any production code
+path exercises.
+
+**What the instance-level DID actually is, so the verb has an argument to
+take.** The revoked entry is the derived **instance** DID (`temporary_did`),
+not the master — the same value `resolve-instance-identity`
+(`control-plane.wit:182`) already computes deterministically from `(node
+identity, calling DID, service_id)`. `roymctl supervisor revoke-instance
+<instance_id> <logical_ref>` needs no stored "current instance DID" table: it
+re-derives the same value any deploy or renewal would, by asking the
+substrate the member is placed on.
+
+**The self-defeating case §15 does not mention.** Revoking a key and leaving
+the member under active management is not a fix — the very next pass's
+renewal work-list (§26.5) finds that member's certificate near expiry (or not
+even that, if it hasn't reached the 25% window), mints a fresh one via
+`certify_instance`, and installs it via `renew-cert`, silently reinstating the
+key the operator just revoked. A revoked instance's certificate ages out
+under the attended posture precisely because nothing renews it; under the
+online-key posture, something does, and revocation must say so. `revoke-
+instance`'s implementation therefore does two things in one operator action,
+same as `retire` is one verb for "several related state changes, not a
+teardown": (1) the anchor mutation — read-modify-write the current anchor
+(§26.8's single-writer invariant applies identically here), append the
+derived instance DID, re-sign, republish; (2) mark that specific
+`(instance_id, logical_ref)` placement excluded from the renewal work-list
+going forward — the same per-service "stop attempting this one, keep
+reconciling the rest" shape §19.1's `PlacementChangeRefused` already
+established, not a whole-instance pause. An operator who wants the process
+itself gone still issues `undeploy`/`retire` separately, the same two-step
+`§21`'s manual relocation path already documents. See **D-A5d-10**.
+
+### 26.11 (Understated) Composition: renewal is a step inside the existing write phase, not a second pass or a second tick
+
+The user-facing question this pass exists to answer plainly: **renewal folds
+into `reconcile_instance_pass`, it does not get its own pass.** Three existing
+decisions already force this rather than leave it open:
+
+- **D-A5c-7's per-instance lock** is held for the whole of a resident pass
+  (`service.rs:232-233`) and for every operator write. A standalone renewal
+  path running on its own tick would either duplicate that lock (racing a
+  concurrent `submit`/`adopt` against `renew-cert`, exactly what D-A5c-7
+  exists to prevent) or need its own coordination invented from scratch for a
+  problem the pass already solves.
+- **D-A5c-9's one client set per pass** already builds and closes a
+  `BTreeMap<SubstrateAlias, Arc<SyneroymClient>>` per instance
+  (`reconcile_instance_pass`, `:349`, `:533`). Renewal needs a live client to
+  the same substrate the health poll and the write phase already connected
+  to this pass; reusing it is free, a second connection is not.
+- **§26.5's near-expiry data comes from this pass's own health poll.** A
+  separate renewal cadence would need its own poll to get the same two
+  timestamps `ServiceHealth` already carries here.
+
+So renewal is a fourth work-list inside `apply_write_phase`
+(alongside `needs_work`, `restart_candidates`, and the binding push), gated
+the same way the write phase already is — only entered when there is
+something to do — and using the pass's existing clients, lock, and health
+data. It needs no new interval config on `SupervisorRole` beyond §26.8's
+master-anchor field: the near-expiry check is cheap enough (a pure function
+over two integers already in memory) to evaluate every 30-second tick without
+a separate cadence, the same way remediation's healthy-sweep check already
+does. See **D-A5d-11**.
+
+### 26.12 (Coverage) Dedup against `needs_work`, not against `restart_candidates`
+
+A service already in this pass's `needs_work` (§19.2, D-A5c-2) is about to go
+through `apply_plan` → `certify_placed_members`
+(`deploy.rs:359`, called from `service.rs:1130-1138`), which mints a fresh
+certificate unconditionally as part of that path — adding it to the renewal
+work-list too would certify it twice in one pass for no reason. `restart_
+candidates` (remediation, §21) is different: a bounded restart reloads the
+running instance in place and touches no certificate at all, so a service
+under remediation this pass still needs an independent renewal check. The
+renewal work-list is therefore `{placed members near expiry} \ needs_work`,
+evaluated **after** `needs_work` is computed and **independently of**
+`restart_candidates`. See **D-A5d-12**.
+
+### 26.13 (Understated) The order within one member's renewal: mint, install, then rotate — and a failure at any step must not silently skip the next
+
+Per renewal candidate: `certify_instance` (mint, client-side, no substrate
+write yet) → `renew-cert` (§26.1, installs + rebuilds `SynSvcNativeService`,
+§26.3) → if `RotationPolicy::RestartOnRotation` (§26.6), `restart`. A failure
+at `certify_instance` (e.g. the vault locked mid-loop, §26.4's race between
+the cheap check and the actual mint) or at `renew-cert` (e.g. the substrate
+unreachable) must not attempt the `restart` step — restarting a service whose
+certificate installation just failed serves nothing and burns a lifecycle
+action for no gain. Each step's failure raises `CertificateNearExpiry` (not
+yet expired, so not the harder alert) naming which step failed, and the
+member is retried next pass rather than the pass failing the whole instance.
+See **D-A5d-13**.
+
+### 26.14 (Understated) `revoke-instance` takes the same per-instance lock every other write verb does
+
+§26.10's design has `revoke-instance` write two things: the anchor, and the
+placement's renewal-exclusion. Both must happen under `handle_revoke_
+instance`'s own acquisition of `instance_lock(instance_id)`
+(`service.rs:173-178`), the same discipline `handle_submit`/`handle_adopt`/
+`handle_release`/`handle_retire`/`handle_force_reconcile` already follow.
+Without it, an operator's `revoke-instance` and a resident pass's renewal
+work-list for the same member are racing: the pass could mint and install a
+fresh certificate for a member the operator is mid-revoke on, in the gap
+between the anchor write and the exclusion write landing. Taking the lock for
+the whole verb, the same way every other instance-scoped write does, closes
+the same class of race D-A5c-7 closed for every earlier verb. See
+**D-A5d-14**.
+
+### 26.15 (Correctness, found in review — F-A5d-1) The renewal-exclusion in §26.10 only stops the loop; `submit` and `force-reconcile` silently reinstate a revoked key
+
+§26.10's design stops the resident loop's own renewal work-list from
+re-certifying a revoked member, but that is not the only place a certificate
+gets (re)minted. `handle_submit`/`deploy_submission` and
+`handle_force_reconcile` (`service.rs:1089-1110`, `:1765-1810`) both call
+`apply_with_clients(plan, plan, ...)` (`:1121-1135`) with the **full, stored
+plan** — not a filtered one — which calls `certify_placed_members`
+(`deploy.rs:359`) unconditionally for every service the plan names, with no
+revocation check anywhere on that path. So an operator who revokes a member
+and later runs an ordinary `submit` of the same plan, or a `force-reconcile`
+(which `handle_force_reconcile`'s own doc, `service.rs:1798-1801`, already
+notes bypasses several checks `submit` applies, for the identical reason
+§19.1 first found), gets that member silently re-certified and reinstalled —
+no error, no alert, nothing in §29's original test list catches it. This
+directly undercuts §26.10's own premise: "revocation must say so." As
+designed it only says so in one of at least two live re-mint paths.
+
+**Fix.** A revoked placement is a persisted fact, not something derived only
+inside the renewal work-list: `SupervisorStore` gains a small
+`revoked_placements` table, `(app_instance_id, logical_ref) -> revoked_at`,
+written by `revoke-instance` (§26.10) and read by **two** consumers: the
+renewal work-list's exclusion (as originally designed) **and**
+`apply_with_clients`, which now skips `certify_placed_members` (and the
+deploy/redeploy call under it) for any service present in that table,
+regardless of whether the caller was the loop, `submit`, or `force-reconcile`.
+A revoked service is excluded from the effective plan the same way §19.1
+excludes a placement-changed one — skipped, not failing the whole call —
+and raises a new `AlertKind::InstanceRevoked` (D-A5c-21's precedent: add a
+kind only when reusing an existing one would misreport, and none of the ten
+existing kinds names "this service will not be reinstalled while revoked").
+See **D-A5d-15**, and D-A5d-12's formula revised below.
+
+### 26.16 (Understated, found in review — F-A5d-2) Renewal needs its own certificate lifetime, and nothing in this pass named one
+
+§26.7 argues the online-key posture "gets short-lived certificates for free"
+once renewal is automated, but never says how short. The supervisor already
+has a constant for this — `INSTANCE_CERT_EXPIRES_HOURS`
+(`crates/app_supervisor/src/service.rs:60-63`, `= sdk::deploy::
+DEFAULT_INSTANCE_CERT_EXPIRES_HOURS = 24`), used by every existing
+`certify_placed_members` call, with its own doc comment flagging exactly this
+gap: "the attended posture's default, since A5b mints and certifies but does
+not yet renew (A5d)." Left untouched, A5d could ship minting at the same 24
+hours the deploy path already uses, which delivers none of what §15 promises
+("certificates stay short-lived... become the default").
+
+**Fix.** `SupervisorRole` gains `renewed_cert_expires_hours` (default **4**):
+comfortably larger than the 30-second pass interval times the number of
+passes `is_near_expiry_parts`'s 25%-remaining rule leaves before actual
+expiry (many, at 4 hours), so renewal has wide margin to succeed before a
+cert is genuinely at risk, while being a real reduction in blast radius from
+24 hours. This constant is already supervisor-scoped, not shared with
+`roymctl`'s own attended-posture `--expires-hours` default — changing it
+touches no operator-facing CLI default. It replaces
+`INSTANCE_CERT_EXPIRES_HOURS` for **both** the initial `certify_placed_members`
+mint and every renewal's `certify_instance` call, so a managed instance has
+one certificate lifetime throughout its life rather than a confusing 24-hour
+first cert followed by 4-hour renewals. See **D-A5d-16**.
+
+### 26.17 (Understated, found in review — F-A5d-3) A vault lock discovered mid-mint must raise the same alert as one discovered before the pass starts
+
+§26.4's design raises `VaultLocked` from the cheap, up-front `kek_is_loaded()`
+check, but §26.13's generic per-step failure handling — which raises
+`CertificateNearExpiry` naming the failed step — is what actually runs when
+the defensive race fires (`kek_is_loaded()` said unlocked, then the real
+`certify_instance`/`get_or_mint` call hits `VaultError::Locked` between the
+check and the call). The same root cause then surfaces under two different
+`AlertKind`s depending purely on when it is detected within one pass, which
+directly undercuts §26.4's own stated purpose — making the unattended/
+attended gap "visible in the same place every other supervisor fault is."
+
+**Fix.** The per-candidate mint/install step (§26.13, D-A5d-13) special-cases
+`VaultError::Locked` specifically: that error, wherever it is caught, raises/
+refreshes `VaultLocked` for that member — never the generic
+`CertificateNearExpiry` per-step handler. Every other failure cause at any
+step keeps raising `CertificateNearExpiry` naming the step, unchanged. One
+condition, one alert kind, regardless of which of the two checks caught it.
+See **D-A5d-17**.
+
+### 26.18 (Understated, found in review — F-A5d-5, F-A5d-6) `renew_cert_impl`'s construction inputs and its FDAE re-parse failure mode need pinning down precisely
+
+Two gaps in §26.3's design, both found by checking it against the real
+`SynSvcNativeService::new` call site rather than a summary of it:
+
+**(a) The enumerated input list was incomplete.** §26.3 named `key_store`,
+`storage_provider`, `blob_provider`, `messaging_broker`, `node_identity`,
+`caller.caller_did`, and the FDAE policy as "every non-certificate input" —
+omitting two of the constructor's eleven parameters,
+`service_proxy: Weak<dyn ServiceProxy>` and `row_authorizer: Weak<dyn
+RowAuthorizer>` (`synsvc_native.rs:368-401`), supplied at the one existing
+call site via `self.current_service_proxy()`/`self.current_row_authorizer()`
+(`orchestration.rs:1505-1506`). Both remain `self`-reachable the identical
+way, so D-A5d-3's conclusion still holds — but `renew_cert_impl` must mirror
+the **whole** call site, not a partial enumeration of it, or an
+implementation copying only the named list produces a native service with
+dead proxy/authorizer hooks.
+
+**(b) A stored FDAE policy that fails to re-parse must abort the renewal, not
+silently drop enforcement.** `load_fdae_policy` can return `Some(json)` for
+bytes that were valid when saved but that a schema/parser change since then
+now rejects (the same `parse_and_validate` call the deploy path already runs,
+`orchestration.rs:1352-1355`, which fails the *whole deploy* on a bad
+document). `renew_cert_impl` must fail the same way — abort before installing
+anything — rather than falling back to `fdae_policy: None`, which would
+silently remove row/column filtering for that service's renewed instance.
+See **D-A5d-18**.
+
+### 26.19 (Correctness, found in review — F-A5d-7) `renew-cert` needs the same "is this actually deployed" gate `restart` already has
+
+`restart_impl` refuses a `service_id` with no recorded deploy facts
+(`orchestration.rs:2102-2106`) before doing anything else. §26.1/D-A5d-1's
+gating for `renew-cert` copies `restart_impl`'s capability, owner, and
+generation checks, but not this one. Without it, a caller holding an
+`ORCHESTRATOR_DEPLOY` grant naming a `service_id` that was never deployed
+could call `renew-cert` and have `renew_cert_impl` construct and register a
+live `SynSvcNativeService`/native-dispatch entry for it: `owner_of(&service_
+id).is_none()` passes the owner check vacuously, and `load_fdae_policy`
+returning `None` for an unknown id is not an error. Low practical
+exploitability — the supervisor's own renewal only ever targets a
+`service_id` it itself deployed, per §0.19/D-A5-19 — but the gate is missing
+and unaddressed. Fix: `renew_cert_impl` requires `self.registry.deploy_
+facts(&service_id).is_some()` before proceeding, the identical signal
+`restart_impl` already relies on. See **D-A5d-19**.
+
+---
+
+## §27 — Decisions
+
+| ID | Decision |
+|---|---|
+| **D-A5d-1** | A new WIT verb, `renew-cert(service-id, generation, instance-certificate) -> result<_, string>`, installs a certificate in place without reinstalling the service (§26.1). Gated identically to `restart`: `ORCHESTRATOR_DEPLOY` capability, owner-or-node-wide-grantee check, generation gate scoped to an app context. `deploy`/`apply_plan` are not renewal's path; reusing them was considered and rejected as the exact per-pass churn §19.2/§19.10 already fixed once. |
+| **D-A5d-2** | The cert-verification block inline in `deploy_with_context` (`orchestration.rs:1065-1099`) is factored into `verify_installed_instance_cert(node_identity, caller_did, service_id, cert_json)`, called from both `deploy_with_context` and the new `renew_cert_impl` (§26.2). No duplicated security-critical logic. |
+| **D-A5d-3** | `renew_cert_impl` rebuilds `SynSvcNativeService` via `native_dispatch.insert`, sourcing every non-certificate field from `self.*` (already available on `ControlPlaneService`) and the FDAE policy from `storage_provider.load_fdae_policy(service_id)` (§26.3) — no manifest needed. Confirmed as a real prerequisite (nothing is broken by its absence *today*, since A5c's only cert writer already rebuilds this in the same pass) rather than a symptom of an existing bug. |
+| **D-A5d-4** | `VaultLocked` is raised/cleared per **placed member currently near expiry**, using the existing `AlertRecord` schema (`instance_id`/`logical_ref`/`substrate_did`) unchanged — the same per-affected-entity fan-out `SubstrateUnreachable` already uses for one root cause touching several rows (§26.4). Detection: `KeyStore::kek_is_loaded()` (cheap, non-`Result`) checked once per pass before any vault call; `VaultError::Locked` remains the defensive per-call fallback. A locked vault skips only the renewal work-list, not the rest of the pass. |
+| **D-A5d-5** | The near-expiry decision is a pure read of `ServiceHealth.instance_certificate_{issued,expires}_at` (already populated by D-A5c-5) through `is_near_expiry_parts` — no new poll (§26.5). Renewal is its own, fourth work-list (`needs_work`, `restart_candidates`, renewal, binding push), not folded into either existing one. |
+| **D-A5d-6** | `RotationPolicy` is read from the supervisor's own stored plan (`ServiceSpec.rotation_policy`, already on the wire via `mapper.rs`) after a successful `renew-cert`, never from the substrate (§26.6) — the substrate-side field stays unread, as it is today. `RestartOnRotation` issues a `restart` call after install; `None` does not. |
+| **D-A5d-7** | A **30-day** maximum instance-certificate lifetime is enforced inside D-A5d-2's shared `verify_installed_instance_cert`, applied uniformly to every deploy and every renewal (§26.7) — a generous backstop against an unbounded mint, matching the reasoning already used for `EndpointInfo.not_after`, not a forcing cap that would reject the attended posture's deliberately long-lived certificates. |
+| **D-A5d-8** | `SupervisorRole` gains `master_anchor_refresh_interval_secs` (default a day-scale interval with real margin before the anchor's 24-hour validity window). No second timer: each 30-second pass reads a persisted `(master_did, last_refreshed_at)` fact from `SupervisorStore` and calls `refresh_master_anchor` only when overdue (§26.8). The read-modify-write race is closed by documenting mint-in-place's existing single-writer invariant, not by building compare-and-set the registry does not offer; concurrent redundant-supervisor custody of one master stays a backlog row. |
+| **D-A5d-9** | `CertificateNearExpiry`/`CertificateExpired` (already-defined, already-tested, currently unused `AlertKind` variants) are wired to fire when a renewal attempt for a near-expiry/expired member does not succeed this pass (§26.9) — not on every near-expiry member unconditionally, since a member whose renewal *does* succeed needs no alert. Both clear on the next pass's health poll reporting a healthy timestamp, the same recomputed-not-flagged shape as `Superseded` (D-A5c-11) and `remediation.terminal` (D-A5c-20). |
+| **D-A5d-10** | **Revised after review (F-A5d-1).** `roymctl supervisor revoke-instance <instance_id> <logical_ref>` re-derives the instance DID via `resolve-instance-identity`, appends it to the current master anchor's `revoked_keys` under D-A5d-8's single-writer invariant, and republishes. The exclusion itself is now a **persisted fact** (D-A5d-15), not something the renewal work-list alone enforces. Tearing the process down is still a separate `undeploy`/`retire`, the operator's own two-step. |
+| **D-A5d-11** | Renewal is a step inside the existing `reconcile_instance_pass`/`apply_write_phase`, using the pass's own per-instance lock (D-A5c-7), its one client set (D-A5c-9), and its own health poll's data (§26.5) — not a second pass, not a second tick, not a second client build (§26.11). |
+| **D-A5d-12** | **Revised after review (F-A5d-4).** The renewal work-list is `{placed members near expiry} \ needs_work \ revoked_placements` — a service already going through `apply_plan`/`certify_placed_members` this pass is not renewed again; a service under `restart_candidates` remediation is still independently checked, since a restart touches no certificate; a revoked placement (D-A5d-15) is never a candidate (§26.12, §26.15). |
+| **D-A5d-13** | Per candidate, the order is mint → install → rotate (`certify_instance` → `renew-cert` → conditional `restart`), and a failure at any step skips the remaining steps for that member without failing the rest of the pass; the member is retried next tick (§26.13). `VaultError::Locked` at any step is carved out from this generic handling — see D-A5d-17. |
+| **D-A5d-14** | `handle_revoke_instance` takes the instance's lock (`instance_lock`, D-A5c-7's mechanism) for the whole verb, so it cannot race the resident loop's own renewal of the same member (§26.14). |
+| **D-A5d-15** | *(found in review, F-A5d-1)* `SupervisorStore` gains a `revoked_placements` table (`(app_instance_id, logical_ref) -> revoked_at`), written by `revoke-instance` and read by **both** the renewal work-list and `apply_with_clients` (§26.15). `apply_with_clients` skips `certify_placed_members` and the (re)deploy under it for any revoked placement, on **every** caller — `submit`, `force-reconcile`, and the resident loop alike — raising a new `AlertKind::InstanceRevoked` (D-A5c-21's precedent: a new kind only because none of the existing ten would describe it without misreporting) and continuing with the rest of the plan. Closes the gap where an ordinary `submit`/`force-reconcile` silently reinstated a revoked key. |
+| **D-A5d-16** | *(found in review, F-A5d-2)* `SupervisorRole` gains `renewed_cert_expires_hours` (default **4**), replacing `INSTANCE_CERT_EXPIRES_HOURS` for **both** the initial `certify_placed_members` mint and every renewal's `certify_instance` call (§26.16) — one certificate lifetime for a managed instance's whole life, a real reduction from 24 hours, comfortably inside D-A5d-7's 30-day backstop, and untouched for `roymctl`'s own attended-posture default. |
+| **D-A5d-17** | *(found in review, F-A5d-3)* `VaultError::Locked`, wherever caught during a renewal candidate's mint/install step, always raises/refreshes `VaultLocked` — never the generic `CertificateNearExpiry` per-step handler D-A5d-13 uses for every other failure cause (§26.17). One root cause, one alert kind, regardless of whether `kek_is_loaded()`'s up-front check or the per-call race caught it. |
+| **D-A5d-18** | *(found in review, F-A5d-5, F-A5d-6)* `renew_cert_impl` mirrors the **whole** of `SynSvcNativeService::new`'s existing call site — including `service_proxy`/`row_authorizer`, omitted from §26.3's original enumeration — not a partial list of it (§26.18). A stored FDAE policy that fails to re-parse aborts `renew_cert_impl` before installing anything, the same failure mode `deploy_with_context` already has for a bad policy document, rather than silently dropping enforcement. |
+| **D-A5d-19** | *(found in review, F-A5d-7)* `renew_cert_impl` requires `self.registry.deploy_facts(&service_id).is_some()` before proceeding, mirroring the gate `restart_impl` already has (§26.19) — refusing a `renew-cert` call against a `service_id` that was never deployed, even for a capability-holding caller. |
+
+---
+
+## §28 — Phase plan and merge order
+
+Each phase is independently reviewable, and the substrate-side verb lands
+before anything in the loop depends on it.
+
+1. **Substrate-side, no supervisor involved.** D-A5d-2's
+   `verify_installed_instance_cert` extraction (used, unchanged in behavior,
+   by the existing `deploy_with_context`); D-A5d-7's 30-day cap added inside
+   it; the new `renew-cert` WIT verb, `renew_cert_impl` (D-A5d-1, D-A5d-3,
+   **D-A5d-18's full-call-site mirror and abort-on-bad-FDAE-reparse**,
+   **D-A5d-19's `deploy_facts` gate**), and its `crates/sdk` client wrapper
+   (`SyneroymClient::renew_cert`, mirroring `restart`'s shape at
+   `sdk/src/lib.rs:764-772`). Mergeable alone; exercised directly against a
+   running substrate with no supervisor changes. Tests 1-8, 33-35.
+2. **Supervisor-side plumbing, no loop changes yet.** `SupervisorRole` gains
+   `master_anchor_refresh_interval_secs` (D-A5d-8) and
+   `renewed_cert_expires_hours` (**D-A5d-16**, replacing
+   `INSTANCE_CERT_EXPIRES_HOURS`); `SupervisorStore` gains the
+   `(master_did, last_refreshed_at)` table and **D-A5d-15's
+   `revoked_placements` table**; `VaultLocked` and **`InstanceRevoked`**
+   added to `AlertKind` (`Display`/`FromStr` match arms, round-trip test) —
+   the two genuinely new variants (§26.9 confirms `CertificateNearExpiry`/
+   `CertificateExpired` already exist). Tests 9-13, 36.
+3. **The renewal work-list.** Computed inside `apply_write_phase` per
+   D-A5d-5/11/12: near-expiry detection off the pass's existing `ServiceHealth`
+   data, deduped against `needs_work` **and `revoked_placements`**, gated on
+   `kek_is_loaded()` with `VaultLocked` fan-out (D-A5d-4) when locked. Per
+   candidate: mint (at D-A5d-16's `renewed_cert_expires_hours`), install,
+   conditional rotate, per-step failure handling (D-A5d-13, **with
+   D-A5d-17's `VaultError::Locked` carve-out to `VaultLocked` rather than
+   the generic handler**); `CertificateNearExpiry`/`CertificateExpired`
+   raised on stall, cleared on the next healthy read (D-A5d-9). Tests 14-24,
+   37-38.
+4. **Master-anchor refresh on the existing tick.** D-A5d-8's overdue check
+   and `refresh_master_anchor` call, evaluated once per pass per master this
+   instance's plan names. Tests 25-27.
+5. **Revocation surface.** `roymctl supervisor revoke-instance`
+   (`SupervisorCommands::RevokeInstance`, following `Retire`'s single-`String`
+   shape at `supervisor.rs:58`), `handle_revoke_instance` under the instance
+   lock (D-A5d-14), the anchor mutation, **the `revoked_placements` write
+   (D-A5d-15)**, and **`apply_with_clients`' skip-and-alert gate that every
+   caller — `submit`, `force-reconcile`, and the loop — now shares**. Tests
+   28-32, 39-40.
+
+**What could move, stated the way A5c's §22 stated its own:**
+
+- **Nothing here depends on A5e.** All six of §15's items are self-contained
+  once phase 1's verb exists; the milestone's remaining scale-out work
+  (`replicas`, cross-app `Bind`, ADR-0021 §7) touches none of this slice's
+  surface.
+- **Phase 5 (revocation) does *not* ship separately — withdrawn after
+  review (F-A5d-1).** The first draft of this pass recommended the opposite,
+  reasoning that matrix row 14's *property* (a revoked key fails while a
+  fresh one from the same master still verifies) was already proven by A0's
+  test, so the operator-surface half was the least load-bearing of the six
+  items. That was wrong: as originally scoped, revocation didn't survive an
+  ordinary `submit`/`force-reconcile` on the same instance (§26.15), so
+  nothing in this plan actually proved the operator-facing property —
+  "once I revoke this key, it stays revoked" — at all. D-A5d-15's
+  `revoked_placements` table is now load-bearing for **every** caller that
+  can mint a certificate, not only the loop, and phase 5 is no longer
+  separable from phases 1-3 without leaving that gap open again.
+- **§26.7's 30-day cap could, in principle, be its own tiny slice** ahead of
+  everything else here, since it touches only `deploy_with_context` and needs
+  no supervisor code at all. Not split out: it shares D-A5d-2's extraction
+  work exactly, and extracting the helper twice (once for the cap, once for
+  `renew-cert`) is strictly more work than doing both in phase 1.
+
+---
+
+## §29 — A5d tests
+
+Named the way §8, §13, and §23 named theirs. **e2e are marked; everything
+else is a unit test.**
+
+**Phase 1 —** `crates/control_plane/src/service/orchestration.rs`,
+`crates/sdk/src/lib.rs`, `control-plane.wit`:
+
+1. `renew_cert_installs_a_new_certificate_without_touching_the_config_generation`
+2. `renew_cert_rebuilds_syn_svc_native_service_with_the_new_certificate` —
+   signs a `RelationshipProof` immediately after and asserts it verifies
+   against the *new* cert, not the one construction started with
+3. `renew_cert_is_refused_for_a_service_owned_by_another_caller`
+4. `renew_cert_by_a_node_wide_deploy_grantee_ignores_the_service_owner`
+5. `renew_cert_respects_the_same_generation_gate_as_restart`
+6. `verify_installed_instance_cert_rejects_a_certificate_over_the_thirty_day_cap`
+7. `verify_installed_instance_cert_accepts_the_cli_default_twenty_four_hour_certificate`
+   — the attended-posture regression guard for D-A5d-7
+8. `renew_cert_leaves_fdae_policy_untouched_when_none_was_ever_saved` — the
+   `load_fdae_policy` `None` arm
+
+**Phase 2 —** `crates/core/src/config.rs`, `crates/app_supervisor/src/store.rs`,
+`crates/app_orchestration/src/alerts.rs`:
+
+9. `supervisor_role_master_anchor_refresh_interval_secs_has_a_day_scale_default`
+10. `store_persists_and_reads_back_last_refreshed_at_per_master`
+11. `every_alert_kind_round_trips_through_display_and_from_str` — extended
+    with `VaultLocked`, not a new test (the existing one at `alerts.rs:391`)
+12. `vault_locked_is_scoped_to_the_specific_near_expiry_member_it_affects`
+13. `raising_vault_locked_for_two_members_of_one_instance_opens_two_rows`
+
+**Phase 3 —** `crates/app_supervisor/src/service.rs`:
+
+14. `a_pass_renews_a_member_within_the_near_expiry_window`
+15. `a_pass_does_not_renew_a_member_outside_the_near_expiry_window`
+16. `a_member_in_needs_work_is_not_also_renewed_this_pass` (D-A5d-12)
+17. `a_member_under_restart_remediation_is_still_checked_for_renewal` (D-A5d-12)
+18. `a_locked_vault_skips_renewal_but_not_health_or_remediation_this_pass`
+19. `a_locked_vault_raises_vault_locked_for_every_near_expiry_member`
+20. `restart_on_rotation_follows_a_successful_install_with_a_restart_call`
+21. `rotation_policy_none_installs_without_restarting`
+22. `a_failed_mint_does_not_attempt_install_or_restart_for_that_member`
+23. `a_failed_install_does_not_attempt_restart_for_that_member`
+24. `certificate_near_expiry_clears_on_the_next_passs_healthy_read`
+
+**Phase 4 —** `crates/app_supervisor/src/service.rs`,
+`crates/core/src/dht_registry.rs`:
+
+25. `master_anchor_refresh_is_skipped_when_not_yet_overdue`
+26. `master_anchor_refresh_fires_once_the_interval_elapses`
+27. `master_anchor_refresh_updates_last_refreshed_at_on_success`
+
+**Phase 5 —** `apps/roymctl/src/commands/supervisor.rs`,
+`crates/app_supervisor/src/service.rs`:
+
+28. `revoke_instance_appends_the_derived_instance_did_to_revoked_keys`
+29. `revoke_instance_writes_a_revoked_placements_row`
+30. `a_renewal_pass_skips_a_revoked_placement_even_when_near_expiry`
+31. `revoke_instance_takes_the_instance_lock_for_the_whole_call` — asserts a
+    concurrent resident pass for the same instance blocks until it releases
+32. **[e2e]** `revoked_instance_key_handshake_fails_while_a_fresh_one_
+    verifies` — the automation half of matrix row 14, exercised through the
+    real `revoke-instance` verb rather than `handshake.rs`'s existing
+    `MockResolver` mutation, closing the row's "mechanism with no trigger
+    outside tests" gap
+
+**Tests added in review (F-A5d-1, F-A5d-2, F-A5d-3, F-A5d-5, F-A5d-6, F-A5d-7):**
+
+33. `renew_cert_is_refused_for_a_service_id_with_no_recorded_deploy_facts`
+    (D-A5d-19, §26.19)
+34. `renew_cert_mirrors_the_deploy_call_sites_service_proxy_and_row_
+    authorizer` (D-A5d-18a, §26.18) — asserts a call routed through the
+    rebuilt native service resolves an FDAE-gated relation the same as
+    immediately after a real `deploy`
+35. `renew_cert_aborts_on_a_stored_fdae_policy_that_fails_to_reparse` —
+    never installs the new certificate, never touches `native_dispatch`
+    (D-A5d-18b, §26.18)
+36. `every_alert_kind_round_trips_through_display_and_from_str` — extended
+    with `InstanceRevoked` alongside `VaultLocked`, not a new test (D-A5d-15)
+37. `renewal_mints_at_renewed_cert_expires_hours_not_the_deploy_default` —
+    asserts the renewed certificate's lifetime is `renewed_cert_expires_
+    hours` (4h default), strictly shorter than the prior
+    `INSTANCE_CERT_EXPIRES_HOURS` (24h) (D-A5d-16, §26.16)
+38. `a_vault_error_locked_race_during_mint_raises_vault_locked_not_
+    certificate_near_expiry` — the defensive per-call path, distinct from
+    test 19's up-front `kek_is_loaded()` path, both landing on the same
+    alert kind (D-A5d-17, §26.17)
+39. `a_submit_of_the_same_plan_does_not_recertify_a_revoked_placement` —
+    the gap F-A5d-1 found: `submit`, not just the loop, must respect
+    `revoked_placements` (D-A5d-15, §26.15)
+40. `a_force_reconcile_does_not_recertify_a_revoked_placement_and_raises_
+    instance_revoked_for_the_rest_of_the_plan` — `force-reconcile`'s
+    unfiltered-plan path, the second re-mint route F-A5d-1 found, with the
+    rest of the plan's services still reconciled normally
+
+**Test count: 32 → 40.**
+
+---
+
+## §30 — Docs and backlog for A5d
+
+**Docs**
+
+- `docs/developer-guide.md` — the `[roles.supervisor]` block gains
+  `master_anchor_refresh_interval_secs` and `renewed_cert_expires_hours`
+  (default 4h, D-A5d-16); the online-key posture's actual certificate
+  lifetime under automation (short, renewal-driven) versus the 30-day
+  backstop (D-A5d-7) explained as two different numbers for two different
+  purposes; `roymctl supervisor revoke-instance` documented beside
+  `export-master`/`import-master`, including that it also stops that one
+  placement's renewal **on every write path — the loop, `submit`, and
+  `force-reconcile` alike (D-A5d-15)** — not the whole instance.
+- `task.md` — the A5d bullet corrected: renewal needs a new `renew-cert` verb
+  (not a reuse of `deploy`), and matrix rows 1/3's automation half and row
+  14's second half are closed by phases 3 and 5 respectively, each with its
+  test named.
+- `status.md` — an A5d section in the A0-A5c shape.
+- ADR-0020 — a third amendment, the same shape as the 2026-08-01 one: §3's
+  "issues and renews unattended" now has a concrete mechanism
+  (`renew-cert`, §26.1) instead of reusing `deploy`; §4's custody section gains
+  a note that master-anchor refresh's read-modify-write race is closed by the
+  same single-writer fact custody already established (§26.8), not a new
+  guarantee.
+- `docs/planning/deferred-backlog.md` — the row at line 81
+  ("`SynSvcNativeService`... must also refresh") resolved by D-A5d-3; line 86
+  (max lifetime) resolved by D-A5d-7 with the 30-day number recorded, not left
+  `TBD`; line 88 (revocation surface) resolved by D-A5d-10; line 89
+  (master-anchor refresh race/schedule) resolved by D-A5d-8.
+
+**Backlog rows resolved**
+
+- *"A renewal that installs a certificate outside `deploy` must also refresh
+  `SynSvcNativeService`"* — D-A5d-3.
+- *"No maximum lifetime enforced on an installed instance certificate"* —
+  D-A5d-7, with the number (30 days) recorded.
+- *"No operator surface for revoking an instance key"* — D-A5d-10, closed
+  end-to-end (not only for the loop) by D-A5d-15.
+- *"Master-anchor refresh is a read-modify-write with a race, and a daily
+  operator duty nothing performs on a schedule"* — D-A5d-8, both halves: the
+  schedule (per-pass overdue check against a persisted fact) and the race
+  (single-writer invariant, not a CAS).
+
+**Backlog rows to add**
+
+- ***A redundant supervisor holding one master via `import-master` on two live
+  processes has no compare-and-set for master-anchor refresh*** (§26.8) — the
+  single-writer invariant D-A5d-8 relies on holds for the topology this tree
+  supports today (one supervisor per master), not for a future
+  redundant-supervisor deployment. Needs the registry
+  (`crates/community_registry`) to grow real compare-and-set, or an explicit
+  single-writer lease. → **post-M5**, pairs with A6's own single-writer cron
+  lease note in `task.md`'s A6 section, since both are instances of the same
+  "more than one supervisor for one thing" problem.
+- ***`revoke-instance` has no path back*** — once a placement gets a row in
+  `revoked_placements` (D-A5d-15), nothing removes it; an operator who
+  revoked a key by mistake, or wants to bring a member back under management
+  after replacing its instance key by hand, has no verb for it. The table
+  gives a concrete place an "un-revoke" would write to, but A5d does not build
+  the write. → **TBD**, needs a decided semantics for "un-revoke" (and for
+  whether it also needs to remove the DID from the anchor's `revoked_keys`,
+  which is a separate, harder read-modify-write than clearing one local row)
+  that A5d does not need to invent to close matrix row 14.
+- Whatever A5e's own `§0` pass finds.
+
+---
+
+## §31 — Review response (2026-08-02)
+
+An independent review of Part V spot-checked 38 of its `file:line` claims
+(against the commit-`e2583cd` baseline — an unrelated, concurrent
+fix-verification pass was landing in `orchestration.rs` while the review ran,
+which produced transient false-positive mismatches the reviewer re-verified
+away rather than reported as real). **Zero citations were wrong**; two were
+imprecise by the doc's own looser convention (a struct-open line versus its
+field line, a function-signature line versus the read inside it) but not
+incorrect. Every substantive problem the review found was in the
+**decisions**, not the citations. Seven findings: **one blocking, four
+should-fix, two minor**. All seven incorporated.
+
+| # | Finding | Disposition |
+|---|---|---|
+| **F-A5d-1** | *(blocking)* D-A5d-10's revocation-exclusion only stopped the loop's own renewal work-list. `handle_submit`/`deploy_submission` and `handle_force_reconcile` both call `apply_with_clients` with the full, unfiltered plan, which calls `certify_placed_members` unconditionally for every service in it — so an ordinary `submit` or `force-reconcile` after a `revoke-instance` silently re-minted and reinstalled the revoked key, with no error and no alert | **Incorporated.** §26.15, **D-A5d-15**: a persisted `revoked_placements` table, read by *every* caller that can mint a certificate — the loop, `submit`, and `force-reconcile` alike — not only the renewal work-list. A new `AlertKind::InstanceRevoked` names the skip. Tests 39-40 added. The review's own judgment call — that this makes phase 5 more load-bearing, not less — is taken; §28's "could ship separately" recommendation is withdrawn |
+| **F-A5d-2** | *(should-fix)* Neither §26.7 nor D-A5d-7 named the certificate lifetime the renewal loop's own `certify_instance` call should request. The supervisor's existing `INSTANCE_CERT_EXPIRES_HOURS` constant is 24h — the deploy-time default — and its own doc comment already flags it as needing to change once A5d ships, untouched by the original pass | **Incorporated** as §26.16, **D-A5d-16**: `SupervisorRole::renewed_cert_expires_hours` (default 4h), replacing the 24h constant for both the initial mint and every renewal, so a managed instance has one lifetime throughout its life rather than a confusing 24h-then-4h split. Test 37 added |
+| **F-A5d-3** | *(should-fix)* The two vault-lock detection paths (the up-front `kek_is_loaded()` check and the defensive per-call `VaultError::Locked` race) landed on two different `AlertKind`s — `VaultLocked` from the first, the generic `CertificateNearExpiry` per-step handler from the second — for the identical root cause, undercutting §26.4's own stated purpose of making the vault-locked gap visible in one place | **Incorporated** as §26.17, **D-A5d-17**: `VaultError::Locked`, caught anywhere in the mint/install step, always raises `VaultLocked`, carved out from D-A5d-13's generic per-step handling. Test 38 added |
+| **F-A5d-4** | *(should-fix)* D-A5d-12's formula (`{placed members near expiry} \ needs_work`) was stated once in §27 and never revised even though §28's phase 5 already implied a third exclusion term, leaving the decisions table — this document's own single source of truth, by its established convention — silently out of date the moment phase 5 landed | **Incorporated.** D-A5d-12 revised in place to `\ needs_work \ revoked_placements`, cross-referencing D-A5d-15 |
+| **F-A5d-5** | *(minor)* §26.3's enumeration of `SynSvcNativeService::new`'s non-certificate inputs omitted two of its eleven parameters, `service_proxy`/`row_authorizer` — both `self`-reachable the same way as the rest, so D-A5d-3's conclusion held, but the specific list was incomplete enough that an implementer following only the enumeration rather than the real call site would wire a native service with dead proxy/authorizer hooks | **Incorporated** as part of §26.18, **D-A5d-18**: `renew_cert_impl` mirrors the whole call site rather than an enumerated subset. Test 34 added |
+| **F-A5d-6** | *(minor)* Neither §26.3 nor D-A5d-3 said what happens if a stored FDAE policy fails to re-parse — silently falling back to `fdae_policy: None` would be a silent enforcement bypass for the renewed instance, a materially different (and worse) failure mode than deploy's, which fails the whole call on a bad document | **Incorporated** as the other half of §26.18/D-A5d-18: a re-parse failure aborts `renew_cert_impl` before installing anything, matching deploy's own behavior. Test 35 added |
+| **F-A5d-7** | *(minor)* D-A5d-1's `renew-cert` gating mirrored `restart_impl`'s capability, owner, and generation checks but not its implicit "is this actually deployed" gate (`deploy_facts` must exist) — a capability-holding caller could otherwise construct a live native-dispatch entry for a `service_id` that was never deployed | **Incorporated** as §26.19, **D-A5d-19**: `renew_cert_impl` requires `deploy_facts(&service_id).is_some()`, the same signal `restart_impl` already relies on. Test 33 added |
+
+**One judgment the review offered that this pass takes without modification:**
+the recommendation to withdraw §28's "phase 5 ships separately" call. The
+first draft reasoned from matrix row 14's *property* (already proven by A0's
+test) to the operator-surface half being the least load-bearing item in the
+slice; F-A5d-1 shows the property the *operator* actually needs —
+revocation that survives an ordinary redeploy — was not proven by anything in
+the original scope. Recorded in §28 rather than only here, since that is
+where an implementer reads it.
+
+**Test count: 32 → 40**, all eight added tests traceable to a specific
+finding above.
