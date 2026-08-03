@@ -2357,6 +2357,110 @@ enumerates, re-confirmed by re-running the affected crates unsandboxed
 --no-fail-fast` green, including the new `cert_renewal_e2e.rs`). `mise run
 test:e2e` (Playwright/WebRTC, unrelated to the Rust e2e suite) 4/4.
 
+**Post-review findings incorporated (2026-08-03).** An independent review of
+`130e34f` found thirteen defects and gaps, two of them in the phase-2
+paragraph above: **§26.9's "already round-trip-tested, and merely had no
+producer" was wrong about `CertificateNearExpiry`/`CertificateExpired`.**
+`sdk::health::record_report` already raised both, unconditionally, for any
+service inside its near-expiry window (the A4 mechanism described earlier in
+this file) — every healthy renewal opened one anyway, and a genuinely
+stalled renewal's own raise silently no-opped against the row `record_report`
+had already opened moments earlier in the same pass. Two high, six medium,
+five low; ten fixed in code, two deferred by a recorded decision, one partly
+closed. A second pass over the fix itself found five further low residuals,
+all closed or explicitly deferred.
+
+- **High.** A typed `CertAlertPolicy` (`Reminder` / `ManagedElsewhere`)
+  replaces the implicit assumption above: `record_report`'s own cert-alert
+  pair is skipped entirely for a caller managing its own renewal, raise and
+  clear alike. Both supervisor call sites (the resident loop, `handle_status`)
+  now read one named `SUPERVISOR_CERT_ALERT_POLICY` constant rather than two
+  independent literals, so the two sites drifting apart — which is how this
+  went undetected the first time — cannot happen silently again. Separately,
+  `apply_with_clients` filtered a revoked member out of `record_plan` as well
+  as the applied plan, so the next pass's diff read the member as a fresh
+  `Add` against a baseline that no longer named it, re-entered `needs_work`,
+  and landed right back at the same filter — an unbounded, silent journal
+  regrowth every pass thereafter. Fixed by keeping the revoked member in
+  `record_plan`; a regression test drives a real second
+  `reconcile_instance_pass` and asserts it appends no new journal record.
+- **Medium, fixed.** A failed `restart-on-rotation` restart used to have no
+  memory independent of the certificate's own alert lifecycle — the next
+  healthy poll cleared it right out from under the real problem. Now a
+  persisted `pending_rotation_restarts` table and a new `RotationRestartPending`
+  `AlertKind` (the file's *third* new kind from this slice, not the two named
+  in phase 2 above) survive until a retry actually succeeds.
+  `revoke-instance` re-derived the instance DID for *the calling caller*,
+  which could differ from the DID an already-installed certificate actually
+  carries (a member adopted but not yet redeployed under the supervisor's own
+  identity) — `resolve-instance-identity` now also reports
+  `installed-temporary-did`, read from the registry rather than derived, and
+  `revoke-instance` prefers it. `status` gains `revoked-placements`, read
+  from the same table `apply_with_clients` already consults, so a revocation
+  is visible immediately rather than only once an unrelated write reaches the
+  member.
+- **Medium, deferred by decision, both recorded on the WIT doc comment and in
+  `deferred-backlog.md` §3/§8:** a paused instance getting no renewal or
+  anchor refresh (deliberate — `pause` is tested to mean *zero* processing,
+  and reversing that needs a design decision, not a drive-by patch); and a
+  node-wide grantee's renewal re-keying the service to its own derived
+  identity (deliberate — an owner-preserving renewal needs the caller to
+  learn the *owner's* prospective derived identity, which nothing exposes
+  today).
+- **Low, fixed.** The renewal cap took whichever candidates sorted first by
+  report order, not by urgency — now sorted by `expires_at` first. A
+  configured `max_renewals_per_pass = 0` silently disabled renewal node-wide
+  — now clamped to 1 with a warning. `InstanceRevoked`'s alert row recorded
+  the substrate *alias* in its `substrate_did` column — now resolved through
+  the pass's own connected clients. The renewal e2e's name and `task.md`
+  matrix row 1 both overclaimed a live handshake the test never drove — the
+  test is renamed to
+  `renew_cert_installs_over_the_real_wire_and_refuses_a_certificate_for_the_wrong_derived_key`
+  and the matrix row corrected. The endpoint-record renewal backlog row named
+  the wrong component as the fix's natural home — repointed at the
+  supervisor, which this slice gave the master, the schedule, and the
+  anchor-refresh precedent renewal needs.
+- **Second pass (five further low residuals, against the fix commit
+  `02e043f`).** `RotationRestartPending` was missing from
+  `every_alert_kind_round_trips_through_display_and_from_str` — added.
+  Nothing pinned which `CertAlertPolicy` the supervisor's own two call sites
+  actually pass — the shared constant above closes the drift risk; a true
+  pass-level regression test is recorded as infeasible rather than built
+  (`renewed_cert_expires_hours` is whole-hours-granularity, and mint-in-place
+  custody means no test can forge a near-expiry certificate for a
+  supervisor-managed member from outside the vault — `deferred-backlog.md`
+  §8). `retry_pending_rotation_restarts` silently skipped a member dropped
+  from the plan forever, leaving both the marker and its alert permanent —
+  now cleared, since nothing keyed off `plan.services` will ever reach that
+  logical ref again. This file's own A5d section needed the correction
+  above. And `handle_revoke_instance`'s DID-selection line
+  (`installed_temporary_did.unwrap_or(instance_did)`) was untested since the
+  verb needs a live client — hoisted into `select_revocation_did`, a pure
+  function, with a direct unit test.
+
+**Tests added: 14** across the two passes — 10 in
+`crates/app_supervisor/src/service.rs` (the revoked-placement second-pass
+regression test, three for the rotation-restart marker/alert lifecycle, one
+for the revocation read-surface, one for the renewal-cap ordering, one for
+the zero-cap clamp, one for the alias-vs-DID alert column, the dropped-
+from-plan cleanup, and the DID-selection helper), 2 in
+`crates/control_plane/src/service/orchestration.rs` (the installed-DID
+reporting, both arms), and 2 in `crates/sdk/src/health.rs`
+(`CertAlertPolicy::ManagedElsewhere`, both directions).
+`every_alert_kind_round_trips_through_display_and_from_str` is extended with
+the third new kind, not counted as a new test.
+
+**Gates, re-run 2026-08-03 (post-review, both passes):** `cargo +nightly fmt
+--all` clean; `cargo clippy --workspace --all-targets --all-features` clean,
+zero warnings; `cargo test -p syneroym-app-supervisor` 109/109, `-p
+syneroym-control-plane` 152/152, `-p syneroym-sdk` 39/39, `-p
+syneroym-app-orchestration` 96/96, all unsandboxed and green; `cargo test -p
+syneroym-substrate --test cert_renewal_e2e --test health_monitoring_e2e`
+unsandboxed, 6/6. `cargo test --workspace --no-fail-fast` (sandboxed): the
+same 23-target listener-bind/DHT-bootstrap set every earlier gate in this
+file already documents, zero assertion failures. `mise run test:e2e`
+(Playwright/WebRTC) 4/4.
+
 ## Dependencies pulled in
 
 1. **`ControllerAgreement` creation tool + the two items B7 pairs with it**, all

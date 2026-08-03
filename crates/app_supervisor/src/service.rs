@@ -68,6 +68,16 @@ const MANAGED_SUBSTRATE_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// alert on every pass right before it gets re-raised (see the call
 /// site's own comment).
 const NEVER_LANDED_SUBSTRATE_DID: &str = "supervisor:never-landed";
+/// This supervisor's own `record_report` calls -- the resident loop's
+/// pass and `handle_status`'s on-demand sweep alike -- are the sole
+/// producer of `CertificateNearExpiry`/`CertificateExpired` for their own
+/// instances (`raise_renewal_stalled`, `clear_settled_renewal_alerts`).
+/// One named constant, not two independent `CertAlertPolicy::
+/// ManagedElsewhere` literals: the two call sites drifting apart (one
+/// left on `Reminder`) is exactly how the double-producer bug this
+/// constant exists to prevent got in undetected the first time.
+const SUPERVISOR_CERT_ALERT_POLICY: health::CertAlertPolicy =
+    health::CertAlertPolicy::ManagedElsewhere;
 
 /// One pass's write half, as arguments. A struct rather than nine
 /// positional parameters because A5d adds a fourth work-list to a signature
@@ -493,21 +503,14 @@ impl SupervisorService {
             .iter()
             .map(|l_ref| (l_ref.clone(), NEVER_LANDED_SUBSTRATE_DID.to_string()))
             .collect();
-        // D-A5d-9: this resident loop is the sole producer
-        // of `CertificateNearExpiry`/`CertificateExpired` for its own
-        // instances (`raise_renewal_stalled`, `clear_settled_renewal_
-        // alerts`) -- `record_report`'s own unconditional near-expiry raise
-        // would otherwise open (and publish) one every renewal cycle even
-        // when the renewal below succeeds, and would make a genuinely
-        // stalled renewal's own raise a silent no-op against the row this
-        // call already opened moments earlier in the same pass.
+        // D-A5d-9: `SUPERVISOR_CERT_ALERT_POLICY`'s own doc explains why.
         let mut opened = match health::record_report(
             &self.store.alerts,
             &instance_id,
             &report,
             now,
             &extra_live_pairs,
-            health::CertAlertPolicy::ManagedElsewhere,
+            SUPERVISOR_CERT_ALERT_POLICY,
         ) {
             Ok(o) => o,
             Err(e) => {
@@ -1077,6 +1080,37 @@ impl SupervisorService {
         for l_ref in pending {
             let Some(svc) = plan.services.iter().find(|s| &s.logical_ref.to_string() == l_ref)
             else {
+                // A resubmit dropped this member from the plan (D-A5c-3:
+                // not undeployed, just no longer named) -- this loop is
+                // keyed off `plan.services`, so no future pass will ever
+                // reach this logical ref here again. Unlike a member that
+                // is merely unreachable this pass, there is no "retry
+                // later" for a row nothing will ever revisit -- clearing
+                // it, and whatever `RotationRestartPending` row it opened,
+                // is the only way either one is not permanent.
+                if let Err(e) = self.store.clear_rotation_restart_owed(app_instance_id, l_ref) {
+                    tracing::warn!(
+                        app_instance_id,
+                        logical_ref = l_ref,
+                        error = %e,
+                        "failed to clear an owed rotation restart for a member dropped from the \
+                         plan"
+                    );
+                }
+                if let Ok(active) = self.store.alerts.active(instance_id) {
+                    for row in active
+                        .iter()
+                        .filter(|r| r.kind == AlertKind::RotationRestartPending)
+                        .filter(|r| r.logical_ref.as_deref() == Some(l_ref.as_str()))
+                    {
+                        let _ = self.store.alerts.clear(
+                            instance_id,
+                            Some(l_ref),
+                            &row.substrate_did,
+                            AlertKind::RotationRestartPending,
+                        );
+                    }
+                }
                 continue;
             };
             let Some(alias) = svc.substrate.as_ref() else { continue };
@@ -2538,6 +2572,27 @@ impl SupervisorService {
         Ok(NativeResponse { payload: serde_json::json!({"status": "imported"}) })
     }
 
+    /// The DID `revoke-instance` actually anchors as revoked. Read from
+    /// the hosting substrate rather than a stored table: the substrate is
+    /// the authority on what key is actually installed.
+    ///
+    /// `instance_did` is what *this caller* (this supervisor) would
+    /// derive -- correct for the certify flow that reads it before
+    /// anything is installed, wrong here whenever the installed
+    /// certificate was minted for a different caller (a member deployed
+    /// by an operator and only later adopted, not yet redeployed).
+    /// Revoking the derived DID in that case anchors a key nothing
+    /// presents, while the key actually in use stays fully trusted -- so
+    /// this prefers `installed_temporary_did`, the substrate's ground
+    /// truth for what is installed right now, and only falls back to the
+    /// derived DID when nothing is installed yet (nothing to read, so the
+    /// prospective key is the closest thing to "the key this placement
+    /// would use"). A free function of the RPC's answer alone, so the
+    /// choice is directly testable without a live client.
+    fn select_revocation_did(identity: syneroym_sdk::InstanceIdentity) -> String {
+        identity.installed_temporary_did.unwrap_or(identity.instance_did)
+    }
+
     /// Revoke one placed member's instance key: append its derived DID to
     /// the master anchor's revoked list, then record the placement revoked
     /// so nothing mints it a fresh certificate afterwards.
@@ -2608,21 +2663,7 @@ impl SupervisorService {
             RpcError::InternalError(format!("no inventory entry for substrate alias '{alias}'"))
         })?;
 
-        // Read from the hosting substrate rather than a stored table: the
-        // substrate is the authority on what key is actually installed.
-        //
-        // `instance_did` is what *this caller* (this
-        // supervisor) would derive -- correct for the certify flow that
-        // reads it before anything is installed, wrong here whenever the
-        // installed certificate was minted for a different caller (a
-        // member deployed by an operator and only later adopted, not yet
-        // redeployed). Revoking the derived DID in that case anchors a
-        // key nothing presents, while the key actually in use stays fully
-        // trusted -- so this prefers `installed_temporary_did`, the
-        // substrate's ground truth for what is installed right now, and
-        // only falls back to the derived DID when nothing is installed
-        // yet (nothing to read, so the prospective key is the closest
-        // thing to "the key this placement would use").
+        // `select_revocation_did`'s own doc explains the choice below.
         let mut client = self
             .connected_client(entry)
             .await
@@ -2634,7 +2675,7 @@ impl SupervisorService {
                 "failed to resolve the instance identity for '{logical_ref}': {e}"
             ))
         })?;
-        let instance_did = identity.installed_temporary_did.unwrap_or(identity.instance_did);
+        let instance_did = Self::select_revocation_did(identity);
 
         self.record_revocation(
             &app_instance_id,
@@ -2922,16 +2963,14 @@ impl SupervisorService {
             .iter()
             .map(|l_ref| (l_ref.clone(), NEVER_LANDED_SUBSTRATE_DID.to_string()))
             .collect();
-        // Same reasoning as the resident loop's own call (D-A5d-9): a
-        // status read must not compete with the loop's own renewal-driven
-        // producer for these two kinds.
+        // Same call, same constant, as the resident loop's own (D-A5d-9).
         let mut opened = health::record_report(
             &self.store.alerts,
             &instance_id,
             &report,
             now,
             &extra_live_pairs,
-            health::CertAlertPolicy::ManagedElsewhere,
+            SUPERVISOR_CERT_ALERT_POLICY,
         )
         .map_err(|e| RpcError::InternalError(e.to_string()))?;
 
@@ -6007,6 +6046,49 @@ mod tests {
         );
     }
 
+    /// A member dropped from the plan by a
+    /// resubmit is never reached by this loop again -- it is keyed off
+    /// `plan.services` -- so unlike an unreachable-this-pass member,
+    /// there is no future retry to defer to. Leaving the marker and the
+    /// alert in place would make both permanent, with nothing left that
+    /// could ever clear either.
+    #[tokio::test]
+    async fn a_member_dropped_from_the_plan_has_its_owed_restart_and_alert_cleared() {
+        let s = service();
+        // A plan that no longer names `inst-1/backend` at all.
+        let plan = DeploymentPlan::from_json(&plan_json_no_services("inst-1")).unwrap();
+        let instance_id = AppInstanceId::new("inst-1");
+        s.store.mark_rotation_restart_owed("inst-1", "inst-1/backend", NOW as i64).unwrap();
+        s.store
+            .alerts
+            .raise(
+                &instance_id,
+                Some("inst-1/backend"),
+                None,
+                "did:key:zEdge1",
+                AlertKind::RotationRestartPending,
+                "owed",
+            )
+            .unwrap();
+        let pending: BTreeSet<String> = ["inst-1/backend".to_string()].into_iter().collect();
+        let mut opened = Vec::new();
+
+        s.retry_pending_rotation_restarts(
+            &instance_id,
+            "inst-1",
+            &plan,
+            &pending,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            0,
+            &mut opened,
+        )
+        .await;
+
+        assert!(s.store.pending_rotation_restarts("inst-1").unwrap().is_empty());
+        assert!(s.store.alerts.active(&instance_id).unwrap().is_empty());
+    }
+
     /// D-A5d-9's clearing rule: raised alerts with no path back to cleared
     /// are exactly the bug §19.20 exists to prevent. Recomputed from the
     /// substrate's own answer, not tracked as a flag -- so a renewal that
@@ -6554,6 +6636,33 @@ mod tests {
         // after the lock was released.
         let err = call.await.unwrap().unwrap_err();
         assert!(err.to_string().contains("inst-1/backend"), "{err}");
+    }
+
+    /// The line that actually decides which DID
+    /// gets revoked had no direct test, since `handle_revoke_instance`
+    /// needs a live client. Hoisted into a pure function so both branches
+    /// are assertable with no substrate at all.
+    #[test]
+    fn select_revocation_did_prefers_the_installed_did_over_the_derived_one() {
+        let installed = syneroym_sdk::InstanceIdentity {
+            instance_did: "did:key:zDerivedForThisCaller".to_string(),
+            pubkey_hex: "aa".to_string(),
+            installed_temporary_did: Some("did:key:zActuallyInstalled".to_string()),
+        };
+        assert_eq!(
+            SupervisorService::select_revocation_did(installed),
+            "did:key:zActuallyInstalled"
+        );
+
+        let nothing_installed = syneroym_sdk::InstanceIdentity {
+            instance_did: "did:key:zDerivedForThisCaller".to_string(),
+            pubkey_hex: "aa".to_string(),
+            installed_temporary_did: None,
+        };
+        assert_eq!(
+            SupervisorService::select_revocation_did(nothing_installed),
+            "did:key:zDerivedForThisCaller"
+        );
     }
 
     /// The anchor half: the *derived instance* DID goes into the master's

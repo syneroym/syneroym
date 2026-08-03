@@ -431,6 +431,7 @@ mod tests {
             AlertKind::OrphanedService,
             AlertKind::VaultLocked,
             AlertKind::InstanceRevoked,
+            AlertKind::RotationRestartPending,
         ];
         for kind in all {
             let round_tripped: AlertKind = kind.to_string().parse().unwrap();
