@@ -560,6 +560,15 @@ fn default_supervisor_alert_topic() -> String {
 fn default_supervisor_master_backup_dir() -> String {
     "master-backups".to_string()
 }
+const fn default_supervisor_master_anchor_refresh_interval_secs() -> u64 {
+    12 * 3600
+}
+const fn default_supervisor_renewed_cert_expires_hours() -> u64 {
+    4
+}
+const fn default_supervisor_max_renewals_per_pass() -> u32 {
+    5
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -580,6 +589,41 @@ pub struct SupervisorRole {
     /// choosing or read one from outside this directory. Relative to
     /// `app_data_dir`.
     pub master_backup_dir: String,
+    /// How often the resident loop republishes each managed master's
+    /// anchor. An anchor stops verifying at every consumer 24 hours after
+    /// it was signed, so the default (12 hours) leaves 2x margin inside
+    /// that window. Not a second timer: each ordinary pass compares this
+    /// against a persisted "last refreshed" fact and only republishes when
+    /// overdue.
+    pub master_anchor_refresh_interval_secs: u64,
+    /// The lifetime the supervisor mints instance certificates at -- both
+    /// the first one at deploy and every unattended renewal, so a managed
+    /// member has one certificate lifetime for its whole life. Short by
+    /// design (4 hours): with renewal automated, a short-lived certificate
+    /// costs nothing operationally and bounds what a leaked instance key is
+    /// worth. Distinct from `roymctl`'s own attended-posture
+    /// `--expires-hours` default, which is unaffected.
+    ///
+    /// **The operational cost, stated plainly:** the supervisor's vault is
+    /// locked after every restart (the KEK arrives by `inject-kek` and does
+    /// not survive one), and nothing renews while it is locked. So this
+    /// number is also the window an operator has to re-inject the KEK
+    /// before managed members start failing handshakes closed -- and the
+    /// real window is shorter, since a member expires this long after *its
+    /// own last renewal*, not after the restart. Between roughly a quarter
+    /// of this value and all of it, depending where in the cycle the
+    /// restart lands. The `VaultLocked` alert is what surfaces it.
+    pub renewed_cert_expires_hours: u64,
+    /// Ceiling on how many members one pass renews. Renewal is the one
+    /// work-list whose arrivals are correlated by construction -- every
+    /// member of an instance is minted in the same call at the same
+    /// lifetime, so a whole instance reaches its near-expiry window in the
+    /// same pass, every cycle. Uncapped, a large instance would hold the
+    /// per-instance lock through N sequential mint/install/restart cycles,
+    /// delaying every other write for that instance. Candidates not taken
+    /// this pass are simply taken on the next one; the near-expiry window
+    /// is wide relative to the pass interval, so nothing is at risk.
+    pub max_renewals_per_pass: u32,
 }
 
 impl Default for SupervisorRole {
@@ -591,6 +635,10 @@ impl Default for SupervisorRole {
             restart_backoff_secs: default_supervisor_restart_backoff_secs(),
             alert_topic: default_supervisor_alert_topic(),
             master_backup_dir: default_supervisor_master_backup_dir(),
+            master_anchor_refresh_interval_secs:
+                default_supervisor_master_anchor_refresh_interval_secs(),
+            renewed_cert_expires_hours: default_supervisor_renewed_cert_expires_hours(),
+            max_renewals_per_pass: default_supervisor_max_renewals_per_pass(),
         }
     }
 }
@@ -972,6 +1020,38 @@ mod tests {
     fn test_streaming_config_defaults() {
         let config = StreamingConfig::default();
         assert_eq!(config.max_concurrent_streams_per_service, 8);
+    }
+
+    /// M05A A5d: the anchor-refresh cadence has to sit comfortably inside
+    /// the 24-hour window after which an anchor stops verifying at every
+    /// consumer -- a refresh interval at or above that window would let
+    /// anchors lapse between passes no matter how reliably the loop runs.
+    #[test]
+    fn supervisor_role_master_anchor_refresh_interval_secs_has_a_day_scale_default() {
+        const ANCHOR_VALIDITY_SECS: u64 = 24 * 3600;
+        let role = SupervisorRole::default();
+        assert!(
+            role.master_anchor_refresh_interval_secs * 2 <= ANCHOR_VALIDITY_SECS,
+            "the refresh interval ({}s) must leave at least 2x margin inside the anchor's \
+             {ANCHOR_VALIDITY_SECS}s validity window",
+            role.master_anchor_refresh_interval_secs
+        );
+        assert!(
+            role.master_anchor_refresh_interval_secs >= 3600,
+            "and must not be so short that a fact needing to move once a day is republished every \
+             few minutes"
+        );
+    }
+
+    /// The supervisor's own certificate lifetime is short by design and is
+    /// deliberately *not* `roymctl`'s attended-posture default (24h), which
+    /// serves an operator with no renewal loop behind them.
+    #[test]
+    fn supervisor_role_renewed_cert_expires_hours_is_short_and_capped() {
+        let role = SupervisorRole::default();
+        assert!(role.renewed_cert_expires_hours < 24, "renewal makes short-lived the default");
+        assert!(role.renewed_cert_expires_hours >= 1, "and it must still be a usable window");
+        assert!(role.max_renewals_per_pass >= 1, "a cap of 0 would renew nothing, ever");
     }
 
     #[test]

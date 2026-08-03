@@ -567,6 +567,10 @@ restart_backoff_secs = 30     # minimum wait between two restart attempts for on
                                # service is restarted at most once per pass, deliberately
 alert_topic = "supervisor/alerts"  # MQTT topic prefix; see "Alerts over MQTT" below
 master_backup_dir = "master-backups"  # relative to app_data_dir; see below
+renewed_cert_expires_hours = 4        # lifetime of EVERY instance certificate this supervisor
+                                      # mints -- the first one and every renewal; see below
+max_renewals_per_pass = 5             # ceiling on renewals attempted in one pass
+master_anchor_refresh_interval_secs = 43200   # 12h; anchors stop verifying after 24h
 ```
 
 ##### The resident loop
@@ -608,6 +612,102 @@ loop raises `OrphanedService` and leaves it running — undeploying a stateful
 service because a manifest was edited is destructive, and `retire` is
 deliberately not a teardown either. Remove it by hand (`svc remove`) if
 that is what you actually want.
+
+##### Unattended certificate renewal
+
+The same pass also **renews instance certificates**. Each pass, any member
+whose installed certificate is inside the last 25% of its lifetime is
+reissued: the supervisor mints a fresh certificate from that member's master
+in its own vault, installs it with the `renew-cert` verb — a
+certificate-only write, no reinstall, no artifact over the wire — and then,
+only if that member's `rotation_policy` is `restart-on-rotation`, restarts
+it. A failure at any step skips the remaining steps for that member and is
+retried on the next pass; it never fails the rest of the instance.
+
+**A restart-on-rotation failure gets its own alert.** If the mint and
+install both land but the restart itself fails, the certificate is not
+stalled — the health poll sees a fresh window on the very next pass, which
+would otherwise clear a `CertificateNearExpiry`/`CertificateExpired` alert
+right out from under the real problem. This case raises
+`RotationRestartPending` instead, backed by a persisted marker independent
+of the certificate window, and it is retried every pass (regardless of
+whether the member is due for renewal again) until the restart actually
+succeeds.
+
+At most `max_renewals_per_pass` members are renewed in one pass. Renewal is
+the one thing the loop does whose work arrives all at once by construction:
+every member of an instance is minted in the same call at the same lifetime,
+so they all reach their near-expiry window in the same pass, every cycle.
+The remainder simply rolls to the next pass — the near-expiry window is
+hours wide against a 30-second tick, so there is a lot of room.
+
+**Two different certificate lifetimes, for two different purposes.**
+`renewed_cert_expires_hours` (4 hours) is what the *supervisor* mints, for
+its first certificate and every renewal alike, so a managed member has one
+lifetime for its whole life. Short is affordable precisely because renewal
+is automated, and it bounds what a leaked instance key is worth. Separately,
+every substrate enforces a **30-day ceiling** on any instance certificate
+offered to it, on `deploy` and `renew-cert` alike. That is a backstop
+against an unbounded mint, not a policy: `roymctl svc deploy
+--expires-hours`'s own attended-posture default (24h), and any reasonable
+manual cadence, are nowhere near it.
+
+> **The restart trade, stated plainly.** The supervisor's vault is locked
+> after every restart — the KEK arrives by `security inject-kek` and does not
+> survive one — and nothing renews while it is locked. With
+> `renewed_cert_expires_hours = 4`, the window to re-inject the KEK before
+> managed members start failing handshakes closed is **between roughly 1 and
+> 4 hours**, not the 24 it used to be: a member expires 4 hours after *its
+> own last renewal*, not 4 hours after the restart, so a restart landing at
+> the start of a member's near-expiry window leaves about an hour. The
+> `VaultLocked` alert fires on the first pass that finds a member due for
+> renewal with the vault shut, once per affected member, and its text names
+> `inject-kek`. Treat it as page-worthy, not informational.
+
+##### Master anchors are refreshed on the same tick
+
+A master anchor stops verifying at every consumer 24 hours after it was
+signed, and every certificate that master issues is unusable on the wire
+without one. The loop republishes each managed master's anchor when
+`master_anchor_refresh_interval_secs` (12 hours, 2× margin) has elapsed
+since the last successful publication — evaluated on the ordinary pass tick
+against a persisted fact, not on a timer of its own. It needs
+`substrate.registry_url` configured on the supervisor's node; without one
+the supervisor holds no anchor writer at all, since an anchor published
+nowhere is worse than none.
+
+The read-modify-write this performs has no compare-and-set behind it. It
+does not need one under the topology this tree supports: mint-in-place means
+exactly one vault ever holds a given master, and `export-master`/
+`import-master` move a *file*, not concurrent live access — so there is
+structurally one writer. Running two supervisors over one imported master
+would break that assumption; it is not supported today.
+
+##### Revoking one member's instance key
+
+```bash
+roymctl --substrate <supervisor-node-did> supervisor revoke-instance \
+  guild-instance-1 guild-instance-1/frontend
+```
+
+Two writes in one action, because either alone is not a revocation. First
+the member master's anchor gains that member's derived instance DID in its
+`revoked_keys` list, so every handshake presenting that key fails from then
+on. Second, the placement is recorded revoked locally, so **nothing
+re-certifies it on any write path — the resident loop's renewal, `submit`,
+and `force-reconcile` alike**. Without the second half, the very next
+ordinary resubmit would silently mint a fresh certificate and reinstate the
+key you just revoked.
+
+Scoped to one member, not the whole instance: everything else keeps
+reconciling, and an `InstanceRevoked` alert names the skip on every pass
+that would otherwise have touched it. Deliberately not a teardown either —
+the member's process keeps running until you issue `svc remove` (or
+`supervisor retire`) separately.
+
+There is no un-revoke verb. Bringing a revoked member back under management
+needs a decided semantics for removing a DID from an anchor's revoked list,
+which this milestone does not settle.
 
 ##### Custody: the supervisor mints its own member masters
 
@@ -677,6 +777,19 @@ abilities are deliberately flat, so holding one does not cover the other.
 An app-scoped selector is not enough either: claiming or releasing an app
 instance is a node-scoped act, because the instance spans services.
 
+> **A node-wide-granted supervisor that is not a member's recorded owner
+> re-keys it on the first renewal.** `renew-cert` verifies the submitted
+> certificate against the *renewing caller's* own derived identity, the
+> same rule `deploy` uses — so a supervisor admitted only through the
+> node-wide `orchestrator/deploy` grant above, on a member it did not
+> itself deploy (adopted but not yet redeployed under its own identity,
+> say), installs a certificate for *its own* derived key on that member's
+> very next unattended renewal. The previous owner's key is not revoked by
+> this; it simply stops being current, silently. Grant node-wide
+> `orchestrator/deploy` only to the supervisor that actually owns — or
+> will immediately redeploy and thereby take ownership of — every member
+> on that substrate.
+
 ##### Submitting, adopting, and reading status
 
 ```bash
@@ -702,7 +815,22 @@ roymctl --substrate <supervisor-node-did> supervisor alerts guild-instance-1
 `pause`/`resume` mark an instance in the supervisor's own store without
 touching anything on the substrates it manages — `pause` stops the resident
 loop from touching this instance automatically, and nothing else; every
-other verb stays allowed while paused. `release` hands an instance back to
+other verb stays allowed while paused.
+
+> **Pausing stops renewal too, not just redeploys.** `all_active` (the
+> resident loop's own work list) excludes a paused instance entirely, so a
+> paused instance gets no health poll, no certificate renewal, and no
+> master-anchor refresh — the same "and nothing else" above covers those.
+> With `renewed_cert_expires_hours = 4`, every member of a paused instance
+> fails its handshake closed within about 4 hours, and its master anchors
+> stop verifying within 24 — both silently, since the alert passes that
+> would otherwise name it never run either. This did not matter at A5c's
+> 24-hour certificates, where a paused instance's operator had a full day
+> to notice and reissue by hand; at A5d's default it is a short, real
+> clock. Resume before it, or renew by hand with `roymctl identity
+> certify-instance` if the pause needs to outlast it.
+
+`release` hands an instance back to
 manual operation by clearing the management stamp on every placed substrate
 (does **not** undeploy); `retire` does the same and additionally makes the
 supervisor's own desired-state row terminal, refusing a later `submit`

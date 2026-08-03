@@ -171,10 +171,20 @@ interface orchestrator {
     /// is deployed, which is what lets the master holder certify the key
     /// without the substrate ever holding the master.
     record instance-identity {
-        /// did:key of the derived instance key.
+        /// did:key of the derived instance key. Prospective -- what *this
+        /// caller* would derive, whether or not a certificate for it has
+        /// ever been installed. `deploy`'s certify flow depends on this
+        /// meaning, so it is not repurposed to answer "what is installed".
         instance-did: string,
         /// Hex-encoded ed25519 public key -- the form a route preamble carries.
         pubkey-hex: string,
+        /// did:key of the *currently installed* instance certificate, if
+        /// one exists (`None` when the service holds no certificate yet).
+        /// Ground truth, not derived: a certificate installed under a
+        /// different caller's derived key still has a real `temporary-did`
+        /// here, even though `instance-did` above would not match it (a
+        /// revoke-instance caller wants this one, not the derived one).
+        installed-temporary-did: option<string>,
     }
 
     /// Query the instance signing key this substrate would derive for
@@ -206,6 +216,39 @@ interface orchestrator {
     /// `undeploy` follows. A standalone service with no app context is
     /// ungated; send 0.
     restart: func(service-id: string, generation: u64) -> result<_, string>;
+
+    /// Install a freshly-issued instance certificate on an already-deployed
+    /// service, without reinstalling it -- the certificate-only counterpart
+    /// to `restart`. Deliberately not `deploy`: a renewal changes nothing
+    /// but the certificate, and routing it through a full reinstall would
+    /// resend the whole artifact and restart every dependent for a change
+    /// that touches neither.
+    ///
+    /// The certificate is verified exactly as `deploy` verifies the one a
+    /// manifest carries (it names this `service-id`, it certifies the key
+    /// this node derives for this caller, and its signature/window/scope
+    /// verify), and the service's native-capability channel is rebuilt
+    /// around the new certificate so later outbound calls sign under it.
+    ///
+    /// `generation` is checked against the app instance's recorded
+    /// management stamp when the service has one, exactly as `restart` is.
+    /// A standalone service with no app context is ungated; send 0.
+    ///
+    /// **A node-wide grantee who is not the recorded owner re-keys the
+    /// service to their own derived identity.** The certificate this call
+    /// verifies must certify *the calling caller's* derived key (the same
+    /// rule `deploy` applies), not the owner's -- so a caller admitted only
+    /// through the owner-or-node-wide check, not because it *is* the
+    /// owner, ends up installing a certificate for its own identity. The
+    /// service's live derived key moves with it; the previous owner's key
+    /// stays valid, and un-revoked, until its own certificate expires on
+    /// its own schedule. This is deliberate today (a narrower,
+    /// owner-preserving renewal needs the caller to learn the *owner's*
+    /// prospective derived identity, which nothing exposes yet), not an
+    /// oversight -- see the deferred-backlog row this doc comment points
+    /// at.
+    renew-cert: func(service-id: string, generation: u64, instance-certificate: string)
+        -> result<_, string>;
 
     /// An app instance's management stamp, or `none` if no deploy has
     /// ever named it here. `adopt`'s read half (M05A A5): a supervisor

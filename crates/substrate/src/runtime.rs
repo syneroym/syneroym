@@ -678,7 +678,9 @@ async fn init_supervisor(
     service_id: &str,
     shared: &SharedNodeHandles,
 ) -> anyhow::Result<Arc<SupervisorHandle>> {
-    use syneroym_app_supervisor::{MasterVault, SupervisorService, store::SupervisorStore};
+    use syneroym_app_supervisor::{
+        MasterVault, RegistryAnchorWriter, SupervisorService, store::SupervisorStore,
+    };
 
     let role = config
         .roles
@@ -705,6 +707,17 @@ async fn init_supervisor(
         role.poll_interval_secs,
         role.max_restart_attempts,
         role.restart_backoff_secs,
+        role.renewed_cert_expires_hours,
+        role.max_renewals_per_pass,
+        role.master_anchor_refresh_interval_secs,
+        // The node's own registry, the same one every other publisher on
+        // this host uses. Absent when none is configured -- see the field's
+        // own doc for why the supervisor then holds no writer at all rather
+        // than one that silently does nothing.
+        RegistryAnchorWriter::from_registry_url(
+            config.substrate.enable_bep0044_dht,
+            config.substrate.registry_url.as_deref(),
+        ),
     ));
     shared
         .native_dispatch

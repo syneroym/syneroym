@@ -160,6 +160,19 @@ impl MasterVault {
         }
     }
 
+    /// Whether a KEK has been injected, so vault reads can succeed at all.
+    /// A cheap, non-`Result`, no-I/O check the resident loop makes once per
+    /// pass before it attempts any renewal work: a locked vault is the
+    /// ordinary state of a freshly-booted supervisor, and finding that out
+    /// by failing one `get_or_mint` per member is both slower and noisier
+    /// than asking up front. `VaultError::Locked` remains the per-call
+    /// answer for the (defensive) case where the vault is locked between
+    /// this check and the call.
+    #[must_use]
+    pub fn kek_is_loaded(&self) -> bool {
+        self.key_store.kek_is_loaded()
+    }
+
     async fn open(&self) -> Result<Box<dyn syneroym_data_db::traits::ServiceStore>, VaultError> {
         self.storage_provider
             .open_service_db(&self.service_id, &self.key_store)
@@ -261,6 +274,26 @@ fn member_master_name(
     let name = format!("member-{app_instance_id}-{service_name}-{index}");
     validate_backup_name(&name)?;
     Ok(name)
+}
+
+/// The member master a *renewal* signs with: read-only, under the same
+/// computable name `mint_and_substitute` stored it as. Deliberately not
+/// `get_or_mint` -- a placed member whose master is missing from the vault
+/// is a custody failure, and minting a fresh one there would silently give
+/// the member a new identity rather than renewing its old one.
+pub async fn master_for_member(
+    vault: &MasterVault,
+    app_instance_id: &str,
+    service_name: &str,
+) -> Result<Identity, VaultError> {
+    let name = member_master_name(app_instance_id, service_name, 0)?;
+    vault.get(&name).await?.ok_or_else(|| {
+        VaultError::Storage(anyhow::anyhow!(
+            "no member master named '{name}' in this supervisor's vault; it was never minted \
+             here, or was minted and then lost -- import it with `roymctl supervisor \
+             import-master {name}`"
+        ))
+    })
 }
 
 /// The `submit` path's own custody step (§0.30/D-A5-26): resolve-or-mint one

@@ -198,6 +198,7 @@ fn supervisor_role() -> SupervisorRole {
         restart_backoff_secs: 30,
         alert_topic: "supervisor/alerts".to_string(),
         master_backup_dir: "master-backups".to_string(),
+        ..SupervisorRole::default()
     }
 }
 

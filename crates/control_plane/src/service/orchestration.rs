@@ -49,6 +49,15 @@ use tracing::info;
 use super::{ControlPlaneService, SUPERVISOR_RESERVED_SERVICE_ID};
 use crate::{config_utils, http_routes, synsvc_native::SynSvcNativeService};
 
+/// The ceiling `verify_installed_instance_cert` enforces on an installed
+/// instance certificate's lifetime (30 days). A backstop against an
+/// unbounded mint, not a forcing function: ADR-0020 §3's attended posture
+/// issues deliberately long-lived certificates on an operator's own
+/// cadence, and a ceiling tuned for automated renewal would refuse them.
+/// Same reasoning, and the same order of magnitude, as
+/// `EndpointInfo.not_after`'s own generous bound.
+const MAX_INSTANCE_CERT_LIFETIME_SECS: u64 = 30 * 24 * 3600;
+
 #[async_trait::async_trait]
 pub trait OrchestratorInterface {
     async fn readyz(&self, service_id: String, caller: &CallerContext) -> Result<(), String>;
@@ -90,6 +99,17 @@ pub trait OrchestratorInterface {
         &self,
         service_id: String,
         generation: u64,
+        caller: &CallerContext,
+    ) -> Result<(), String>;
+    /// Install a freshly-issued instance certificate on an already-deployed
+    /// service, without reinstalling it -- the certificate-only counterpart
+    /// to `restart`, and the path an unattended renewal takes. `generation`
+    /// follows `restart`'s rule.
+    async fn renew_cert(
+        &self,
+        service_id: String,
+        generation: u64,
+        instance_certificate: String,
         caller: &CallerContext,
     ) -> Result<(), String>;
     /// `adopt`'s read half (M05A A5a, §0.26): the management stamp an app
@@ -856,9 +876,19 @@ impl OrchestratorInterface for ControlPlaneService {
         }
 
         let instance = self.node_identity.derive_service_identity(&caller.caller_did, &service_id);
+        // `instance_did` above is what *this caller* would
+        // derive, prospective by design (the doc comment on the WIT
+        // record explains why that must not change). `revoke-instance`
+        // needs the DID actually in use, which is only the same thing
+        // when the installed certificate happened to be minted for this
+        // caller -- so it is reported separately, read straight from the
+        // registry rather than derived.
+        let installed_temporary_did =
+            self.registry.instance_cert(&service_id).map(|c| c.temporary_did);
         Ok(InstanceIdentity {
             instance_did: derive_did_key(&instance.public_key()),
             pubkey_hex: hex::encode(instance.public_key().to_bytes()),
+            installed_temporary_did,
         })
     }
 
@@ -898,6 +928,16 @@ impl OrchestratorInterface for ControlPlaneService {
         caller: &CallerContext,
     ) -> Result<(), String> {
         self.restart_impl(service_id, generation, caller).await
+    }
+
+    async fn renew_cert(
+        &self,
+        service_id: String,
+        generation: u64,
+        instance_certificate: String,
+        caller: &CallerContext,
+    ) -> Result<(), String> {
+        self.renew_cert_impl(service_id, generation, instance_certificate, caller).await
     }
 
     async fn app_instance_management_of(
@@ -1090,37 +1130,11 @@ impl ControlPlaneService {
         // its own master -- the pre-existing fallback, unchanged.
         let installed_instance_cert: Option<DelegationCertificate> =
             match &manifest.instance_certificate {
-                Some(cert_json) => {
-                    let cert = DelegationCertificate::from_json(cert_json)
-                        .map_err(|e| format!("Invalid instance certificate: {e}"))?;
-                    // (1) the certificate is for *this* member.
-                    if cert.master_did != service_id {
-                        return Err(format!(
-                            "instance certificate master_did '{}' does not name this deploy's \
-                             service_id '{service_id}'",
-                            cert.master_did
-                        ));
-                    }
-                    // (2) it certifies *this node's* derived key, not some
-                    // other key the client chose.
-                    let derived_did = derive_did_key(
-                        &self
-                            .node_identity
-                            .derive_service_identity(&caller.caller_did, &service_id)
-                            .public_key(),
-                    );
-                    if cert.temporary_did != derived_did {
-                        return Err(format!(
-                            "instance certificate certifies '{}', not the key this substrate \
-                             would derive ('{derived_did}') for this caller and service_id",
-                            cert.temporary_did
-                        ));
-                    }
-                    // (3) signature, validity window, and the narrow scope.
-                    cert.verify(&service_id, &[SCOPE_SERVICE_INSTANCE])
-                        .map_err(|e| format!("Invalid instance certificate: {e}"))?;
-                    Some(cert)
-                }
+                Some(cert_json) => Some(self.verify_installed_instance_cert(
+                    &caller.caller_did,
+                    &service_id,
+                    cert_json,
+                )?),
                 None => None,
             };
 
@@ -2180,6 +2194,190 @@ impl ControlPlaneService {
                 "'{service_id}' has a recorded service type ('{recorded_type}') this substrate \
                  does not recognize; redeploy to correct it"
             )),
+        }
+    }
+
+    /// ADR-0020 §1's install-time verification of an instance certificate,
+    /// shared by every path that installs one. Extracted so `deploy` and
+    /// `renew-cert` cannot drift apart on it: two copies of DID and
+    /// signature verification silently diverging is a security bug, not a
+    /// style one.
+    ///
+    /// Four checks, in order: the certificate parses, it names
+    /// `service_id` as its master, it certifies the key *this* node derives
+    /// for *this* caller, and its signature/validity window/scope verify.
+    /// Then the lifetime backstop below.
+    fn verify_installed_instance_cert(
+        &self,
+        caller_did: &str,
+        service_id: &str,
+        cert_json: &str,
+    ) -> Result<DelegationCertificate, String> {
+        let cert = DelegationCertificate::from_json(cert_json)
+            .map_err(|e| format!("Invalid instance certificate: {e}"))?;
+        // (1) the certificate is for *this* member.
+        if cert.master_did != service_id {
+            return Err(format!(
+                "instance certificate master_did '{}' does not name this deploy's service_id \
+                 '{service_id}'",
+                cert.master_did
+            ));
+        }
+        // (2) it certifies *this node's* derived key, not some other key
+        // the client chose.
+        let derived_did = derive_did_key(
+            &self.node_identity.derive_service_identity(caller_did, service_id).public_key(),
+        );
+        if cert.temporary_did != derived_did {
+            return Err(format!(
+                "instance certificate certifies '{}', not the key this substrate would derive \
+                 ('{derived_did}') for this caller and service_id",
+                cert.temporary_did
+            ));
+        }
+        // (3) signature, validity window, and the narrow scope.
+        cert.verify(service_id, &[SCOPE_SERVICE_INSTANCE])
+            .map_err(|e| format!("Invalid instance certificate: {e}"))?;
+        // (4) a deliberately generous ceiling on the lifetime, for the same
+        // reason `EndpointInfo.not_after` has one: nothing else bounds
+        // `expires_at_secs`, so a client-side mint error can produce a
+        // certificate valid for years and the near-expiry warning that
+        // would have caught it simply never fires. Generous rather than
+        // tight on purpose -- the attended posture's certificates are
+        // long-lived by design (ADR-0020 §3), and a ceiling tuned for an
+        // automated renewal cadence would refuse those operators' own
+        // deploys. This catches the unbounded mistake, not the deliberate
+        // choice.
+        let lifetime = cert.expires_at_secs.saturating_sub(cert.issued_at_secs);
+        if lifetime > MAX_INSTANCE_CERT_LIFETIME_SECS {
+            return Err(format!(
+                "instance certificate lifetime is {lifetime}s, over this substrate's maximum of \
+                 {MAX_INSTANCE_CERT_LIFETIME_SECS}s ({} days); reissue it with a shorter window",
+                MAX_INSTANCE_CERT_LIFETIME_SECS / 86_400
+            ));
+        }
+        Ok(cert)
+    }
+
+    /// Install a freshly-issued instance certificate on an already-deployed
+    /// service without reinstalling it -- the certificate-only counterpart
+    /// to `restart`, and the only path an unattended renewal has.
+    ///
+    /// Gated identically to `restart_impl`: the same `orchestrator/deploy`
+    /// capability, the same owner-or-node-wide-grantee check, the same
+    /// generation gate scoped to an app context, and the same "is this
+    /// actually deployed" signal. Without that last one, a capability-
+    /// holding caller could register a live native-dispatch entry for a
+    /// `service_id` nothing ever deployed: `owner_of` passes vacuously for
+    /// an unknown id, and an absent FDAE policy is not an error.
+    ///
+    /// Rebuilds the service's `SynSvcNativeService` around the new
+    /// certificate, mirroring `deploy_with_context`'s own construction site
+    /// in full. Without that rebuild the by-value copy the running service
+    /// holds keeps the old certificate, and every `RelationshipProof` it
+    /// signs afterwards fails verification -- so the rebuild is what makes
+    /// renewal a fix rather than a new break.
+    async fn renew_cert_impl(
+        &self,
+        service_id: String,
+        generation: u64,
+        instance_certificate: String,
+        caller: &CallerContext,
+    ) -> Result<(), String> {
+        // Same gate as `deploy`/`restart`: installing a certificate changes
+        // what a service speaks as, which is a lifecycle write.
+        let deploy_resource = ResourceUri(format!("substrate:{}/app/{service_id}", self.node_did));
+        if !caller
+            .has_capability(&deploy_resource, &Ability(Ability::ORCHESTRATOR_DEPLOY.to_string()))
+        {
+            return Err(format!(
+                "caller {} holds no orchestrator/deploy grant for '{service_id}' on this substrate",
+                caller.caller_did
+            ));
+        }
+
+        if let Some(owner) = self.registry.owner_of(&service_id)
+            && owner != caller.caller_did
+            && !self.has_node_wide_ability(caller, Ability::ORCHESTRATOR_DEPLOY)
+        {
+            return Err(format!(
+                "service '{service_id}' is owned by {owner}; only its owner or a substrate owner \
+                 may renew its instance certificate"
+            ));
+        }
+
+        if self.registry.deploy_facts(&service_id).is_none() {
+            return Err(format!(
+                "'{service_id}' is not deployed here; there is nothing to install a certificate on"
+            ));
+        }
+
+        if let Some((instance, _)) = self.registry.app_context_of(&service_id) {
+            let management = self.check_generation(&instance, caller, generation)?;
+            self.registry
+                .set_app_instance_management(instance, management)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+
+        let cert = self.verify_installed_instance_cert(
+            &caller.caller_did,
+            &service_id,
+            &instance_certificate,
+        )?;
+
+        // Re-read rather than re-parse from a manifest this call does not
+        // have. A stored document that no longer parses aborts here, before
+        // anything is installed: falling back to `None` would silently drop
+        // row/column filtering for the renewed instance, a materially worse
+        // failure than the one `deploy_with_context` already has for the
+        // same bad document (it fails the whole call).
+        let stored_fdae = self
+            .storage_provider
+            .load_fdae_policy(&service_id)
+            .await
+            .map_err(|e| format!("Failed to read the stored FDAE policy: {e}"))?;
+        let fdae_policy = match stored_fdae {
+            Some(doc) => Some(Arc::new(syneroym_fdae::parse_and_validate(&doc).map_err(|e| {
+                tracing::warn!("stored FDAE policy for service {service_id} no longer parses: {e}");
+                "the stored FDAE policy no longer validates; renewal aborted rather than \
+                 installing a certificate with row filtering silently dropped"
+                    .to_string()
+            })?)),
+            None => None,
+        };
+
+        self.registry
+            .set_instance_cert(service_id.clone(), cert.clone())
+            .await
+            .map_err(|e| format!("Instance certificate installation failed: {e}"))?;
+
+        // Mirrors `deploy_with_context`'s own construction site in full --
+        // every parameter, not an enumerated subset of it, or the renewed
+        // service comes back with dead proxy/authorizer hooks.
+        if let Some(native_dispatch) = self.native_dispatch.upgrade() {
+            native_dispatch.insert(
+                service_id.clone(),
+                Arc::new(SynSvcNativeService::new(
+                    service_id.clone(),
+                    self.key_store.clone(),
+                    self.storage_provider.clone(),
+                    self.blob_provider.clone(),
+                    self.messaging_broker.clone(),
+                    fdae_policy,
+                    self.node_identity.clone(),
+                    &caller.caller_did,
+                    self.current_service_proxy(),
+                    self.current_row_authorizer(),
+                    Some(cert),
+                )) as Arc<dyn NativeService>,
+            );
+            Ok(())
+        } else {
+            Err(format!(
+                "the certificate for '{service_id}' was installed, but the native dispatch \
+                 registry is unavailable, so the running service still holds the old one"
+            ))
         }
     }
 
@@ -7223,6 +7421,60 @@ mod tests {
         assert_ne!(for_alice.instance_did, for_bob.instance_did);
     }
 
+    /// Before anything is installed, there is no ground
+    /// truth to report -- `installed_temporary_did` is `None`, and
+    /// `instance_did` alone is what a caller about to certify a service
+    /// for the first time reads.
+    #[tokio::test]
+    async fn instance_identity_reports_no_installed_did_before_anything_is_deployed() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
+        let (service, _registry) = service_with_node_identity(temp_dir.path(), node_identity).await;
+        let caller = status_capable_caller("did:key:zOwner");
+
+        let identity = service.instance_identity("svc-a".to_string(), &caller).await.unwrap();
+
+        assert_eq!(identity.installed_temporary_did, None);
+    }
+
+    /// The whole reason `installed_temporary_did` exists.
+    /// Once a certificate is installed under one caller, a *different*
+    /// caller's `instance_identity` still derives its own (different)
+    /// prospective DID in `instance_did` -- unchanged, since `deploy`'s
+    /// certify flow depends on that -- but `installed_temporary_did` now
+    /// reports the certificate actually in force, which is alice's, not
+    /// bob's, regardless of who is asking.
+    #[tokio::test]
+    async fn instance_identity_reports_the_installed_did_even_for_a_different_caller() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
+        let (service, registry, _dispatch) =
+            service_with_dispatch(temp_dir.path(), node_identity.clone()).await;
+        let alice = node_wide_caller("did:key:zAlice");
+        // `instance_identity` gates on `orchestrator/status`, not `deploy`
+        // (§0.28's own flat-abilities split) -- bob needs the former here.
+        let bob = status_capable_caller("did:key:zBob");
+
+        let master = syneroym_identity::Identity::generate().unwrap();
+        let service_id = derive_did_key(&master.public_key());
+        service.deploy(service_id.clone(), owner_test_manifest(), &alice).await.unwrap();
+        let cert = instance_cert_for(&node_identity, &master, &alice.caller_did, &service_id, 3600);
+        service.renew_cert(service_id.clone(), 0, cert.to_json().unwrap(), &alice).await.unwrap();
+        let installed = registry.instance_cert(&service_id).unwrap().temporary_did;
+
+        let for_bob = service.instance_identity(service_id.clone(), &bob).await.unwrap();
+
+        assert_ne!(
+            for_bob.instance_did, installed,
+            "bob's own derived DID must not equal what alice actually installed"
+        );
+        assert_eq!(
+            for_bob.installed_temporary_did,
+            Some(installed),
+            "installed_temporary_did must report the real key regardless of who is asking"
+        );
+    }
+
     #[tokio::test]
     async fn a_deploy_without_a_certificate_still_succeeds_and_stores_none() {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -7351,6 +7603,529 @@ mod tests {
             None,
             "a redeploy without --master must clear the previously installed certificate"
         );
+    }
+
+    // ── M05A A5d: renew-cert ──────────────────────────────────────────────
+
+    /// A minimal, stage-4-free policy for the renewal tests: enough for
+    /// `resolve-relation` on `members` to reach a real query rather than
+    /// short-circuiting, which is what makes "did the policy survive the
+    /// rebuild" observable from outside. Deliberately not `STAGE4_POLICY`
+    /// -- `authorize_rows` needs a guest component to export the after-step
+    /// and is refused on the `tcp` services these tests deploy.
+    const RENEWAL_POLICY: &str = r#"{
+        "version": "fdae/v1",
+        "definitions": {
+            "members": {
+                "table": "members",
+                "principal_column": "owner_id",
+                "permissions": {
+                    "view": {
+                        "allows": ["data-layer/read"],
+                        "paths": [["caller"]]
+                    }
+                }
+            }
+        }
+    }"#;
+
+    /// Like `service_with_node_identity`, but hands the caller the
+    /// `NativeDispatchRegistry` back as well. `ControlPlaneService` holds it
+    /// as a `Weak` (see the cycle its own field doc explains), so a test
+    /// that lets the `Arc` drop at the end of construction gets a registry
+    /// that never upgrades -- and `renew_cert` fails closed on exactly that,
+    /// since the whole point of the verb is the rebuild it does through it.
+    async fn service_with_dispatch(
+        temp_dir: &std::path::Path,
+        node_identity: Arc<syneroym_identity::Identity>,
+    ) -> (ControlPlaneService, EndpointRegistry, NativeDispatchRegistry) {
+        let config = SubstrateConfig::default();
+        let key_store = Arc::new(KeyStore::new());
+        let storage_provider = Arc::new(SqliteStorageProvider::new(temp_dir, false).unwrap());
+        let blob_provider: Arc<dyn BlobProvider> =
+            Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+        let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+        let app_sandbox = Arc::new(
+            AppSandboxEngine::init(
+                &config,
+                vec![],
+                key_store.clone(),
+                storage_provider.clone(),
+                blob_provider.clone(),
+                messaging_broker.clone(),
+                registry.clone(),
+                syneroym_app_orchestration::empty_resolver(),
+            )
+            .await
+            .unwrap(),
+        );
+        let native_dispatch = NativeDispatchRegistry::default();
+
+        let service = ControlPlaneService::init(
+            "orchestrator".to_string(),
+            "did:key:zTestNode".to_string(),
+            app_sandbox,
+            Arc::new(ContainerEngine::new("podman".to_string(), temp_dir, None)),
+            registry.clone(),
+            temp_dir.to_path_buf(),
+            key_store,
+            storage_provider,
+            blob_provider,
+            messaging_broker,
+            native_dispatch.clone(),
+            Arc::new(DashMap::new()),
+            node_identity,
+            syneroym_app_orchestration::empty_resolver(),
+        )
+        .await
+        .unwrap();
+
+        (service, registry, native_dispatch)
+    }
+
+    /// A `service-instance`-scoped certificate over exactly the key this
+    /// substrate derives for `(caller, service_id)` -- what every real mint
+    /// produces and what every install-time check below expects.
+    fn instance_cert_for(
+        node_identity: &syneroym_identity::Identity,
+        master: &syneroym_identity::Identity,
+        caller_did: &str,
+        service_id: &str,
+        expires_in_secs: u64,
+    ) -> DelegationCertificate {
+        let derived = node_identity.derive_service_identity(caller_did, service_id);
+        DelegationCertificate::issue(
+            master,
+            derived.public_key(),
+            expires_in_secs,
+            SCOPE_SERVICE_INSTANCE.to_string(),
+        )
+        .unwrap()
+    }
+
+    /// Asks the service's own native-dispatch entry to sign a relationship
+    /// proof, which carries whichever certificate that entry currently
+    /// holds -- the only way to observe the by-value copy a renewal has to
+    /// refresh, from outside.
+    async fn resolve_relation_through_dispatch(
+        native_dispatch: &NativeDispatchRegistry,
+        service_id: &str,
+        relation: &str,
+        caller: &CallerContext,
+    ) -> Result<syneroym_rpc::RelationshipProof, syneroym_rpc::RpcError> {
+        let entry = native_dispatch
+            .get(service_id)
+            .unwrap_or_else(|| panic!("no native dispatch entry for '{service_id}'"))
+            .clone();
+        let response = entry
+            .dispatch(syneroym_rpc::NativeInvocation {
+                interface: "data-layer".to_string(),
+                method: "resolve-relation".to_string(),
+                params: serde_json::json!({
+                    "relation": relation,
+                    "principal": caller.session.subject_did,
+                }),
+                caller: caller.clone(),
+            })
+            .await?;
+        Ok(serde_json::from_value(response.payload).expect("payload must be a RelationshipProof"))
+    }
+
+    /// The proof a service with no matching relation definition still
+    /// signs -- empty `ids`, but carrying whichever certificate the
+    /// dispatch entry currently holds, which is the only way to observe
+    /// the by-value copy a renewal has to refresh.
+    async fn relationship_proof_from_dispatch(
+        native_dispatch: &NativeDispatchRegistry,
+        service_id: &str,
+        caller: &CallerContext,
+    ) -> syneroym_rpc::RelationshipProof {
+        resolve_relation_through_dispatch(native_dispatch, service_id, "unmatched", caller)
+            .await
+            .expect("resolve-relation must succeed")
+    }
+
+    /// The certificate-only install path: the new certificate lands and the
+    /// service's *config* generation is untouched, which is the whole
+    /// reason `renew-cert` exists rather than a redeploy.
+    #[tokio::test]
+    async fn renew_cert_installs_a_new_certificate_without_touching_the_config_generation() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
+        let (service, registry, _dispatch) =
+            service_with_dispatch(temp_dir.path(), node_identity.clone()).await;
+        let caller = node_wide_caller("did:key:zOwner");
+
+        let master = syneroym_identity::Identity::generate().unwrap();
+        let service_id = derive_did_key(&master.public_key());
+        let first =
+            instance_cert_for(&node_identity, &master, &caller.caller_did, &service_id, 3600);
+        let mut manifest = owner_test_manifest();
+        manifest.instance_certificate = Some(first.to_json().unwrap());
+        service.deploy(service_id.clone(), manifest, &caller).await.unwrap();
+
+        let gen_before =
+            service.storage_provider.get_latest_config_generation(&service_id).await.unwrap();
+
+        let renewed =
+            instance_cert_for(&node_identity, &master, &caller.caller_did, &service_id, 7200);
+        service
+            .renew_cert(service_id.clone(), 0, renewed.to_json().unwrap(), &caller)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            registry.instance_cert(&service_id).map(|c| c.expires_at_secs),
+            Some(renewed.expires_at_secs),
+            "the renewed certificate must be the one installed"
+        );
+        assert_eq!(
+            service.storage_provider.get_latest_config_generation(&service_id).await.unwrap(),
+            gen_before,
+            "a renewal changes no configuration, so it must not bump the config generation"
+        );
+    }
+
+    /// The correctness prerequisite: the running service's by-value copy of
+    /// the certificate must move with the installed one, or every
+    /// `RelationshipProof` it signs afterwards carries a certificate the
+    /// verifier will reject.
+    #[tokio::test]
+    async fn renew_cert_rebuilds_syn_svc_native_service_with_the_new_certificate() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
+        let (service, _registry, dispatch) =
+            service_with_dispatch(temp_dir.path(), node_identity.clone()).await;
+        let caller = node_wide_caller("did:key:zOwner");
+
+        let master = syneroym_identity::Identity::generate().unwrap();
+        let service_id = derive_did_key(&master.public_key());
+        let first =
+            instance_cert_for(&node_identity, &master, &caller.caller_did, &service_id, 3600);
+        let mut manifest = owner_test_manifest();
+        manifest.instance_certificate = Some(first.to_json().unwrap());
+        service.deploy(service_id.clone(), manifest, &caller).await.unwrap();
+
+        let before = relationship_proof_from_dispatch(&dispatch, &service_id, &caller).await;
+        assert_eq!(before.delegation.as_deref(), Some(first.to_json().unwrap().as_str()));
+
+        let renewed =
+            instance_cert_for(&node_identity, &master, &caller.caller_did, &service_id, 7200);
+        assert_ne!(renewed.to_json().unwrap(), first.to_json().unwrap());
+        service
+            .renew_cert(service_id.clone(), 0, renewed.to_json().unwrap(), &caller)
+            .await
+            .unwrap();
+
+        let after = relationship_proof_from_dispatch(&dispatch, &service_id, &caller).await;
+        assert_eq!(
+            after.delegation.as_deref(),
+            Some(renewed.to_json().unwrap().as_str()),
+            "a proof signed after the renewal must carry the *new* certificate, not the one the \
+             native service was constructed with"
+        );
+        after.verify(&service_id).expect("the proof must verify against the renewed certificate");
+    }
+
+    /// `renew-cert` is a lifecycle write, so it inherits `restart`'s own
+    /// service-owner check rather than being reachable by any holder of a
+    /// service-scoped grant.
+    #[tokio::test]
+    async fn renew_cert_is_refused_for_a_service_owned_by_another_caller() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
+        let (service, _registry, _dispatch) =
+            service_with_dispatch(temp_dir.path(), node_identity.clone()).await;
+        let alice = node_wide_caller("did:key:zAlice");
+
+        let master = syneroym_identity::Identity::generate().unwrap();
+        let service_id = derive_did_key(&master.public_key());
+        service.deploy(service_id.clone(), owner_test_manifest(), &alice).await.unwrap();
+
+        let bob = scoped_deploy_caller("did:key:zBob", &service_id);
+        let cert = instance_cert_for(&node_identity, &master, &bob.caller_did, &service_id, 3600);
+        let err = service
+            .renew_cert(service_id.clone(), 0, cert.to_json().unwrap(), &bob)
+            .await
+            .unwrap_err();
+        assert!(err.contains("owned by"), "{err}");
+    }
+
+    /// The boundary of the check above: a node-wide `orchestrator/deploy`
+    /// grantee -- the shape a supervisor holds -- renews a service it does
+    /// not own. The certificate must be minted for *that* caller, since the
+    /// derived instance key depends on the calling DID.
+    #[tokio::test]
+    async fn renew_cert_by_a_node_wide_deploy_grantee_ignores_the_service_owner() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
+        let (service, registry, _dispatch) =
+            service_with_dispatch(temp_dir.path(), node_identity.clone()).await;
+        let alice = node_wide_caller("did:key:zAlice");
+
+        let master = syneroym_identity::Identity::generate().unwrap();
+        let service_id = derive_did_key(&master.public_key());
+        service.deploy(service_id.clone(), owner_test_manifest(), &alice).await.unwrap();
+
+        let bob = node_wide_caller("did:key:zBob");
+        let cert = instance_cert_for(&node_identity, &master, &bob.caller_did, &service_id, 3600);
+        service.renew_cert(service_id.clone(), 0, cert.to_json().unwrap(), &bob).await.unwrap();
+        assert_eq!(
+            registry.instance_cert(&service_id).map(|c| c.temporary_did),
+            Some(cert.temporary_did)
+        );
+    }
+
+    /// A superseded supervisor must not be able to install a certificate on
+    /// a service it no longer manages -- the same generation gate `restart`
+    /// and `undeploy` already apply.
+    #[tokio::test]
+    async fn renew_cert_respects_the_same_generation_gate_as_restart() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
+        let (service, _registry, _dispatch) =
+            service_with_dispatch(temp_dir.path(), node_identity.clone()).await;
+        let caller = node_wide_caller("did:key:zAlice");
+
+        let master = syneroym_identity::Identity::generate().unwrap();
+        let service_id = derive_did_key(&master.public_key());
+        service
+            .deploy_with_context(
+                service_id.clone(),
+                owner_test_manifest(),
+                Some(AppContext { generation: 5, ..app_context("app-1", "frontend", vec![]) }),
+                &caller,
+            )
+            .await
+            .unwrap();
+
+        let cert =
+            instance_cert_for(&node_identity, &master, &caller.caller_did, &service_id, 3600);
+        let err = service
+            .renew_cert(service_id.clone(), 3, cert.to_json().unwrap(), &caller)
+            .await
+            .unwrap_err();
+        assert!(err.contains("at generation 5"), "{err}");
+    }
+
+    /// The backstop against an unbounded mint: nothing else caps
+    /// `expires_at_secs`, so a certificate valid for years would sit there
+    /// unnoticed -- the near-expiry warning that would catch it never fires.
+    #[tokio::test]
+    async fn verify_installed_instance_cert_rejects_a_certificate_over_the_thirty_day_cap() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
+        let (service, registry, _dispatch) =
+            service_with_dispatch(temp_dir.path(), node_identity.clone()).await;
+        let caller = node_wide_caller("did:key:zOwner");
+
+        let master = syneroym_identity::Identity::generate().unwrap();
+        let service_id = derive_did_key(&master.public_key());
+        let too_long = instance_cert_for(
+            &node_identity,
+            &master,
+            &caller.caller_did,
+            &service_id,
+            MAX_INSTANCE_CERT_LIFETIME_SECS + 3600,
+        );
+        let mut manifest = owner_test_manifest();
+        manifest.instance_certificate = Some(too_long.to_json().unwrap());
+
+        let err = service.deploy(service_id.clone(), manifest, &caller).await.unwrap_err();
+        assert!(err.contains("maximum"), "{err}");
+        assert_eq!(registry.instance_cert(&service_id), None);
+    }
+
+    /// The regression guard for the cap above: the attended posture's own
+    /// CLI default (24 hours) is nowhere near it, and so is any reasonable
+    /// manual cadence. The cap catches an unbounded mistake, not a
+    /// deliberate long-lived certificate.
+    #[tokio::test]
+    async fn verify_installed_instance_cert_accepts_the_cli_default_twenty_four_hour_certificate() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
+        let (service, registry, _dispatch) =
+            service_with_dispatch(temp_dir.path(), node_identity.clone()).await;
+        let caller = node_wide_caller("did:key:zOwner");
+
+        let master = syneroym_identity::Identity::generate().unwrap();
+        let service_id = derive_did_key(&master.public_key());
+        // `roymctl svc deploy --expires-hours`'s own default, restated here
+        // rather than imported: `syneroym-sdk` depends on this crate, so
+        // the constant cannot travel the other way.
+        let cli_default_expires_hours = 24;
+        let cli_default = instance_cert_for(
+            &node_identity,
+            &master,
+            &caller.caller_did,
+            &service_id,
+            cli_default_expires_hours * 3600,
+        );
+        let mut manifest = owner_test_manifest();
+        manifest.instance_certificate = Some(cli_default.to_json().unwrap());
+
+        service.deploy(service_id.clone(), manifest, &caller).await.unwrap();
+        assert!(registry.instance_cert(&service_id).is_some());
+    }
+
+    /// The `load_fdae_policy` `None` arm: a service that never declared a
+    /// policy renews cleanly and still has none afterwards.
+    #[tokio::test]
+    async fn renew_cert_leaves_fdae_policy_untouched_when_none_was_ever_saved() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
+        let (service, _registry, _dispatch) =
+            service_with_dispatch(temp_dir.path(), node_identity.clone()).await;
+        let caller = node_wide_caller("did:key:zOwner");
+
+        let master = syneroym_identity::Identity::generate().unwrap();
+        let service_id = derive_did_key(&master.public_key());
+        service.deploy(service_id.clone(), owner_test_manifest(), &caller).await.unwrap();
+        assert_eq!(service.storage_provider.load_fdae_policy(&service_id).await.unwrap(), None);
+
+        let cert =
+            instance_cert_for(&node_identity, &master, &caller.caller_did, &service_id, 3600);
+        service.renew_cert(service_id.clone(), 0, cert.to_json().unwrap(), &caller).await.unwrap();
+        assert_eq!(service.storage_provider.load_fdae_policy(&service_id).await.unwrap(), None);
+    }
+
+    /// Without this gate a capability-holding caller could hand
+    /// `renew-cert` a `service_id` nothing ever deployed and have it
+    /// register a live native-dispatch entry for it: `owner_of` passes
+    /// vacuously for an unknown id, and an absent FDAE policy is not an
+    /// error. `restart` already refuses on the same signal.
+    #[tokio::test]
+    async fn renew_cert_is_refused_for_a_service_id_with_no_recorded_deploy_facts() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
+        let (service, _registry, dispatch) =
+            service_with_dispatch(temp_dir.path(), node_identity.clone()).await;
+        let caller = node_wide_caller("did:key:zOwner");
+
+        let master = syneroym_identity::Identity::generate().unwrap();
+        let service_id = derive_did_key(&master.public_key());
+        let cert =
+            instance_cert_for(&node_identity, &master, &caller.caller_did, &service_id, 3600);
+
+        let err = service
+            .renew_cert(service_id.clone(), 0, cert.to_json().unwrap(), &caller)
+            .await
+            .unwrap_err();
+        assert!(err.contains("not deployed here"), "{err}");
+        assert!(
+            dispatch.get(&service_id).is_none(),
+            "a refused renewal must never have registered a dispatch entry"
+        );
+    }
+
+    /// The renewed native service must mirror the *whole* of
+    /// `deploy_with_context`'s construction site, not an enumerated subset
+    /// of it: an implementation copying only the obvious inputs produces a
+    /// service whose FDAE policy, proxy, and row-authorizer hooks are dead.
+    ///
+    /// Observed through `RENEWAL_POLICY`: a service holding it routes
+    /// `resolve-relation` on `members` into a real query against the
+    /// `members` table (which this fixture never creates, so the query
+    /// reports collection-not-found), while a service whose policy was
+    /// silently dropped short-circuits and answers with a signed, empty
+    /// proof. Err-versus-Ok is therefore exactly "does the rebuilt service
+    /// still hold its policy", and the certificate on the proof is the
+    /// renewal itself.
+    #[tokio::test]
+    async fn renew_cert_mirrors_the_deploy_call_sites_service_proxy_and_row_authorizer() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
+        let (service, _registry, dispatch) =
+            service_with_dispatch(temp_dir.path(), node_identity.clone()).await;
+        let caller = node_wide_caller("did:key:zOwner");
+
+        let master = syneroym_identity::Identity::generate().unwrap();
+        let service_id = derive_did_key(&master.public_key());
+        let first =
+            instance_cert_for(&node_identity, &master, &caller.caller_did, &service_id, 3600);
+        let mut manifest =
+            inline_manifest(None, None, Some(DocumentSource::Inline(RENEWAL_POLICY.to_string())));
+        manifest.instance_certificate = Some(first.to_json().unwrap());
+        service.deploy(service_id.clone(), manifest, &caller).await.unwrap();
+        assert!(service.storage_provider.load_fdae_policy(&service_id).await.unwrap().is_some());
+
+        let after_deploy =
+            resolve_relation_through_dispatch(&dispatch, &service_id, "members", &caller).await;
+        assert!(
+            after_deploy.is_err(),
+            "the deploy-built service must route this relation through its policy"
+        );
+        let deploy_asserter =
+            relationship_proof_from_dispatch(&dispatch, &service_id, &caller).await.asserter_did;
+
+        let renewed =
+            instance_cert_for(&node_identity, &master, &caller.caller_did, &service_id, 7200);
+        service
+            .renew_cert(service_id.clone(), 0, renewed.to_json().unwrap(), &caller)
+            .await
+            .unwrap();
+
+        let after_renewal =
+            resolve_relation_through_dispatch(&dispatch, &service_id, "members", &caller).await;
+        assert!(
+            after_renewal.is_err(),
+            "the rebuilt service must still route this relation through its policy -- an \
+             implementation that mirrored only part of the call site would answer it with a \
+             signed, empty proof instead"
+        );
+        let renewed_proof = relationship_proof_from_dispatch(&dispatch, &service_id, &caller).await;
+        assert_eq!(
+            renewed_proof.asserter_did, deploy_asserter,
+            "the rebuilt service must speak as the same member master"
+        );
+        assert_eq!(renewed_proof.delegation.as_deref(), Some(renewed.to_json().unwrap().as_str()));
+    }
+
+    /// A stored FDAE document that no longer parses must abort the renewal
+    /// before anything is installed. Falling back to `fdae_policy: None`
+    /// would silently drop row/column filtering for the renewed instance --
+    /// a materially worse failure than `deploy`'s, which fails the whole
+    /// call on the same bad document.
+    #[tokio::test]
+    async fn renew_cert_aborts_on_a_stored_fdae_policy_that_fails_to_reparse() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
+        let (service, registry, dispatch) =
+            service_with_dispatch(temp_dir.path(), node_identity.clone()).await;
+        let caller = node_wide_caller("did:key:zOwner");
+
+        let master = syneroym_identity::Identity::generate().unwrap();
+        let service_id = derive_did_key(&master.public_key());
+        let first =
+            instance_cert_for(&node_identity, &master, &caller.caller_did, &service_id, 3600);
+        let mut manifest =
+            inline_manifest(None, None, Some(DocumentSource::Inline(RENEWAL_POLICY.to_string())));
+        manifest.instance_certificate = Some(first.to_json().unwrap());
+        service.deploy(service_id.clone(), manifest, &caller).await.unwrap();
+
+        // Stands in for a schema or parser change landing between the
+        // deploy that saved this document and the renewal that re-reads it.
+        service
+            .storage_provider
+            .save_fdae_policy(&service_id, "{ this is not a policy document }")
+            .await
+            .unwrap();
+
+        let renewed =
+            instance_cert_for(&node_identity, &master, &caller.caller_did, &service_id, 7200);
+        let err = service
+            .renew_cert(service_id.clone(), 0, renewed.to_json().unwrap(), &caller)
+            .await
+            .unwrap_err();
+        assert!(err.contains("no longer validates"), "{err}");
+        assert_eq!(
+            registry.instance_cert(&service_id).map(|c| c.expires_at_secs),
+            Some(first.expires_at_secs),
+            "an aborted renewal must leave the previously installed certificate in place"
+        );
+        let still = relationship_proof_from_dispatch(&dispatch, &service_id, &caller).await;
+        assert_eq!(still.delegation.as_deref(), Some(first.to_json().unwrap().as_str()));
     }
 
     #[tokio::test]

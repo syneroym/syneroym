@@ -938,9 +938,14 @@ pub async fn handle(
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.as_secs())
                         .unwrap_or(0);
-                    for (kind, subject) in
-                        health::record_report(&alerts, &instance_id, &report, now, &[])?
-                    {
+                    for (kind, subject) in health::record_report(
+                        &alerts,
+                        &instance_id,
+                        &report,
+                        now,
+                        &[],
+                        health::CertAlertPolicy::Reminder,
+                    )? {
                         eprintln!("ALERT {kind:?}: {subject}");
                     }
                 }
@@ -1279,6 +1284,22 @@ mod tests {
 
         async fn restart(&self, _service_id: String, _generation: u64) -> Result<(), String> {
             unimplemented!("check_no_placement_change must never call restart()")
+        }
+
+        async fn renew_cert(
+            &self,
+            _service_id: String,
+            _generation: u64,
+            _instance_certificate: String,
+        ) -> Result<(), String> {
+            unimplemented!("check_no_placement_change must never call renew_cert()")
+        }
+
+        async fn instance_identity(
+            &self,
+            _service_id: &str,
+        ) -> Result<syneroym_sdk::InstanceIdentity, String> {
+            unimplemented!("check_no_placement_change must never call instance_identity()")
         }
 
         async fn held_generation(&self, _app_instance_id: &str) -> Result<Option<u64>, String> {

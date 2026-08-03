@@ -27,8 +27,8 @@ use syneroym_identity::{
 };
 
 use crate::{
-    BindingWrite, BindingWriteOutcome, DeploymentPlan as WitDeploymentPlan, SyneroymClient,
-    mapper::map_deployment_plan_to_wit,
+    BindingWrite, BindingWriteOutcome, DeploymentPlan as WitDeploymentPlan, InstanceIdentity,
+    SyneroymClient, mapper::map_deployment_plan_to_wit,
 };
 
 /// The attended posture's default certificate lifetime for a plan-deploy-time
@@ -52,6 +52,21 @@ pub trait SubstrateActor: fmt::Debug + Send + Sync {
     /// for later delivery is usually wrong -- and that is a decision for
     /// A6's implementation, not a reason to leave it outside the trait.
     async fn restart(&self, service_id: String, generation: u64) -> Result<(), String>;
+    /// Install a freshly-issued instance certificate in place, without a
+    /// reinstall (M05A A5's unattended renewal). On the trait for the same
+    /// reason `restart` is: the supervisor's renewal work-list is a control
+    /// flow worth testing against a fake substrate rather than a live one.
+    async fn renew_cert(
+        &self,
+        service_id: String,
+        generation: u64,
+        instance_certificate: String,
+    ) -> Result<(), String>;
+    /// The instance signing key this substrate derives for `service_id`
+    /// under the connecting caller -- the read half of minting a
+    /// certificate. On the trait so a renewal's whole mint -> install ->
+    /// rotate sequence is exercisable without a live substrate.
+    async fn instance_identity(&self, service_id: &str) -> Result<InstanceIdentity, String>;
     /// This substrate's held generation for an app instance, if it has
     /// ever recorded one (M05A A5c §19.7/§19.12) -- the supervisor's own
     /// resident loop uses this to detect supersession (ADR-0021 §4).
@@ -96,6 +111,27 @@ impl SubstrateActor for SyneroymClient {
         } else {
             Err(format!("Restart failed: {:?}", res.result))
         }
+    }
+
+    async fn renew_cert(
+        &self,
+        service_id: String,
+        generation: u64,
+        instance_certificate: String,
+    ) -> Result<(), String> {
+        let params = serde_json::to_value((service_id, generation, instance_certificate))
+            .map_err(|e| e.to_string())?;
+        let res =
+            self.request("orchestrator", "renew-cert", params).await.map_err(|e| e.to_string())?;
+        if res.result == serde_json::json!({"status": "cert_renewed"}) {
+            Ok(())
+        } else {
+            Err(format!("Certificate renewal failed: {:?}", res.result))
+        }
+    }
+
+    async fn instance_identity(&self, service_id: &str) -> Result<InstanceIdentity, String> {
+        SyneroymClient::instance_identity(self, service_id).await.map_err(|e| e.to_string())
     }
 
     /// `app-instance-management-of` returns `option<app-instance-
@@ -323,6 +359,44 @@ pub async fn certify_instance(
     service_id: &str,
     expires_hours: u64,
 ) -> Result<DelegationCertificate> {
+    let identity = client
+        .instance_identity(service_id)
+        .await
+        .context("failed to query the substrate for its derived instance identity")?;
+    certificate_over_instance_identity(master, service_id, &identity, expires_hours)
+}
+
+/// The same round trip as [`certify_instance`], through the
+/// [`SubstrateActor`] boundary -- what an unattended renewal takes, since
+/// the supervisor's loop holds actors rather than raw clients and its
+/// renewal control flow has to be testable against a fake substrate.
+pub async fn certify_instance_via_actor(
+    actor: &Arc<dyn SubstrateActor>,
+    master: &Identity,
+    service_id: &str,
+    expires_hours: u64,
+) -> Result<DelegationCertificate> {
+    let identity = actor.instance_identity(service_id).await.map_err(|e| {
+        anyhow::anyhow!("failed to query the substrate for its derived instance identity: {e}")
+    })?;
+    certificate_over_instance_identity(master, service_id, &identity, expires_hours)
+}
+
+/// The shared half of both `certify_instance` forms: everything after the
+/// substrate has answered with the key it derives. One definition, so a
+/// renewal and a deploy-time mint cannot drift apart on what they check
+/// before signing.
+///
+/// **Bound to the querying client, not just this master.** The substrate
+/// derives the key from its own node identity *and* the calling DID, so a
+/// certificate minted through one client is rejected at install by any
+/// other substrate, and by the same substrate reached as a different caller.
+fn certificate_over_instance_identity(
+    master: &Identity,
+    service_id: &str,
+    identity: &InstanceIdentity,
+    expires_hours: u64,
+) -> Result<DelegationCertificate> {
     let master_did = substrate::derive_did_key(&master.public_key());
     if master_did != service_id {
         anyhow::bail!(
@@ -331,10 +405,6 @@ pub async fn certify_instance(
         );
     }
 
-    let identity = client
-        .instance_identity(service_id)
-        .await
-        .context("failed to query the substrate for its derived instance identity")?;
     let pubkey_bytes = hex::decode(&identity.pubkey_hex)
         .context("substrate returned an invalid hex-encoded instance pubkey")?;
     let pubkey_array: [u8; 32] = pubkey_bytes.try_into().map_err(|_| {
@@ -464,6 +534,19 @@ mod tests {
         }
 
         async fn restart(&self, _service_id: String, _generation: u64) -> Result<(), String> {
+            unimplemented!("not exercised by apply_plan's own tests")
+        }
+
+        async fn renew_cert(
+            &self,
+            _service_id: String,
+            _generation: u64,
+            _instance_certificate: String,
+        ) -> Result<(), String> {
+            unimplemented!("not exercised by apply_plan's own tests")
+        }
+
+        async fn instance_identity(&self, _service_id: &str) -> Result<InstanceIdentity, String> {
             unimplemented!("not exercised by apply_plan's own tests")
         }
 

@@ -85,6 +85,20 @@ pub enum SupervisorCommands {
     ImportMaster {
         name: String,
     },
+    /// Revoke one placed member's derived instance key: publish it into the
+    /// member master's anchor revoked-key list, and stop this supervisor
+    /// re-certifying that placement on every write path -- the resident
+    /// loop's renewal, `submit`, and `reconcile` alike.
+    ///
+    /// Scoped to one member, not the instance. The member's process keeps
+    /// running: use `roymctl app remove` (or `supervisor retire`) if the
+    /// process itself should stop.
+    RevokeInstance {
+        instance_id: String,
+        /// The member's full logical reference, as `status` prints it:
+        /// `<instance-id>/<service-name>`.
+        logical_ref: String,
+    },
 }
 
 fn resolve_under(dir: &Path, path: &Path) -> PathBuf {
@@ -327,6 +341,23 @@ pub async fn handle(
                 .request("supervisor", "import-master", serde_json::to_value([name.clone()])?)
                 .await?;
             println!("Imported master '{name}' into the vault.");
+        }
+        SupervisorCommands::RevokeInstance { instance_id, logical_ref } => {
+            let result = client
+                .request(
+                    "supervisor",
+                    "revoke-instance",
+                    serde_json::to_value((instance_id.clone(), logical_ref.clone()))?,
+                )
+                .await?;
+            let instance_did =
+                result.result.get("instance_did").and_then(|v| v.as_str()).unwrap_or("?");
+            println!("Revoked the instance key for '{logical_ref}' ({instance_did}).");
+            println!(
+                "  Nothing will re-certify this member: not the resident loop, not `submit`, not \
+                 `reconcile`."
+            );
+            println!("  Its process is still running -- remove it separately if that is intended.");
         }
     }
     Ok(())

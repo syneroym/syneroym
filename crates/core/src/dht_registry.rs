@@ -640,6 +640,45 @@ impl RegistryClient {
         self.publish_master_anchor(&master_did, revoked_keys, revoke_list_registry, master, false)
             .await
     }
+
+    /// Adds `instance_did` to `master`'s revoked-key list and republishes
+    /// the anchor. Read-modify-write over the same `fetch_own_master_anchor`
+    /// path `refresh_master_anchor` uses, and for the same reason: the
+    /// publish overwrites the whole payload, so anything already revoked
+    /// has to be carried forward or this call un-revokes it.
+    ///
+    /// The value to pass is the derived **instance** DID (`temporary_did`
+    /// on the certificate, what `resolve-instance-identity` computes), not
+    /// the master's own -- revoking the master would repudiate every
+    /// instance it has ever certified, past and future.
+    ///
+    /// Idempotent: revoking an already-revoked key republishes the same
+    /// list rather than duplicating the entry.
+    ///
+    /// The read-modify-write races a concurrent refresh of the same master.
+    /// Under the topology this tree supports -- mint-in-place means exactly
+    /// one `MasterVault` ever holds a given master, and export/import moves
+    /// a *file* rather than granting concurrent live access -- there is
+    /// structurally one writer, so the race is not reachable. A redundant
+    /// deployment sharing one master across two live processes would need
+    /// real compare-and-set from the registry, which it does not offer.
+    pub async fn revoke_instance_key(
+        &self,
+        master: &Identity,
+        instance_did: &str,
+    ) -> anyhow::Result<()> {
+        let master_did = substrate::derive_did_key(&master.public_key());
+        let (mut revoked_keys, revoke_list_registry) = self
+            .fetch_own_master_anchor(&master_did)
+            .await?
+            .map(|prev| (prev.revoked_keys, prev.revoke_list_registry))
+            .unwrap_or_default();
+        if !revoked_keys.iter().any(|k| k == instance_did) {
+            revoked_keys.push(instance_did.to_string());
+        }
+        self.publish_master_anchor(&master_did, revoked_keys, revoke_list_registry, master, false)
+            .await
+    }
 }
 
 fn default_schema() -> String {

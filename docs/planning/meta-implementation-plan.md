@@ -476,10 +476,58 @@ absorbed:
   `Sharded` needs four things at once and is unusable with any one missing;
   the manifest surface is the first.
 
-**Position in the build order.** This is **not** M7 work. M7's `[PLT-RED]` is
+**Whose milestone this is.** S0-S4 are **Milestone 5 item 2** work, by the
+same lineage as [M05A](./milestones/M05A-app-supervisor/task.md) itself: item 2
+carried the "Design TBD" flag this discharges, and M05A was split out of it on
+2026-07-27. Item 2 therefore has three halves — the supervisor (M05A), this
+discovery overlay (S0-S4), and the federated-query orchestrator
+(DataFusion/Substrait), which this does not touch.
+
+**They are item 2 work that is deliberately *not* deferred with the rest of
+item 2.** The 2026-07-16 resequencing defers items 2-4 to the final phase
+alongside M7. S1-S4 must not inherit that position: M7's `[PLT-RED]` depends
+on them, so filing them next to M7 puts them behind their own consumer. They
+belong to item 2 by subject matter and to the resequencing's item-4 spike
+stream by schedule.
+
+**Position in the build order.** Only **S5** is M7 work. M7's `[PLT-RED]` is
 *state* replication — SQLite WAL, pub/sub log, blob — and sits **downstream**
-of this: replicating a service across three members is pointless while callers
-cannot discover the current member set. Only S5 rides with M7.
+of this overlay, not upstream: replicating a service across three members is
+pointless while callers cannot discover the current member set.
+
+**S1–S4 sit between M05A and M7, in the 2026-07-16 resequencing's item-4
+stream** — the second, decoupled work stream that amendment already accepts.
+They are **not** queued behind M5 item 1 (async primitives) or M6 (the
+product/chat milestone) and may run concurrently with either. Their only real
+gate is M05A slice A7; nothing in S1–S4 needs FDAE work, the async primitives,
+or the chat app.
+
+Read the per-slice triggers below as a *dependency chain within that stream*,
+not as a position in the global order — S1 through S3 are strictly sequential
+because each consumes what the previous one publishes, while S4 additionally
+waits on a real consumer appearing.
+
+**Against M5's own remaining halves, which sit in two different places:** M5
+item 1 (async primitives) is front-loaded ahead of M6 and gates M05A slice A6;
+M5 items 2-4 are deferred to the final phase with M7. S1-S4 have no dependency
+in either direction with any of them. If only one stream is available, do M5
+item 1 first — it unblocks A6 and M6, where the overlay unblocks nothing yet.
+
+**One cross-milestone coupling to know in advance: S3 changes the client
+gateway hostname format, and M6 builds a web/desktop shell against it.** Not a
+reason to reorder either one. The format is centralised in
+`core::util` (build) and `core::protocol_utils` (parse), so as long as M6's
+client goes through those helpers rather than formatting host strings itself,
+S3 changes one place. Recorded here because the cost of discovering it late is
+paid in M6's code, not in this slice's.
+
+So the full picture, start to finish:
+
+```
+M05A (slice A7 = S0)  →  S1 → S2 → S3   ─┐
+                              └→ S4      ─┼→  M7 (+ S5)
+   M5 item 1 → M6 (product path)         ─┘
+```
 
 **Slices and pickup triggers:**
 
@@ -534,7 +582,7 @@ and the reason would otherwise be lost.
    - Defining the plan-fragment serialization contract (Substrait schema version pinning).
    - Defining the network protocol for distributing plan fragments to edge nodes.
    - Defining what "done" looks like (e.g., a working end-to-end query across 2 nodes in a test).
-   - ~~*(Design TBD to resolve before M5: How the Orchestrator discovers which node holds which shard, and how data routing tables are maintained for `[PLT-DAP-01]`)*~~ **Discharged 2026-08-02** by [ADR-0022](../decisions/0022-two-tier-logical-service-discovery.md), the same way item 5's registry-trust-model ADR is discharged by ADR-0020 §6. The build-out is the *Logical Service Discovery Overlay* item below, which carries its own pickup triggers.
+   - ~~*(Design TBD to resolve before M5: How the Orchestrator discovers which node holds which shard, and how data routing tables are maintained for `[PLT-DAP-01]`)*~~ **Discharged 2026-08-02** by [ADR-0022](../decisions/0022-two-tier-logical-service-discovery.md), the same way item 5's registry-trust-model ADR is discharged by ADR-0020 §6. The build-out is the [Logical Service Discovery Overlay](#committed-work-logical-service-discovery-overlay-2026-08-02) item below — **item 2 work that does not defer to the final phase with the rest of item 2**, because M7 depends on it. So item 2 now has three halves: the supervisor (M05A, split out 2026-07-27), the discovery overlay (not deferred), and the federated-query orchestrator below (deferred, unchanged).
 3. **Versioning:** Implement pre-upgrade SQLite snapshotting and automatic rollback mechanisms.
 4. **Developer Tools:** Release the mock SDK, project templates, the zero-drift `roymctl dev` local environment, and remote package retrieval over HTTP/OCI for the `ManifestCatalog`.
 5. **`ControllerAgreement` Creation Tool:** Build the `roymctl` tool to create/sign a `ControllerAgreement`, spun out of M04A Slice B7 (`docs/planning/milestones/M04A-proxy-and-auth-foundation/plans/B7.md` §6; task.md's post-B7b item list). Until this exists, B7b's ownership/deploy capability gate is inert — every substrate remains unowned, so this closes that gap. **Amended 2026-07-27:** the tool itself is **pulled forward into [M05A](./milestones/M05A-app-supervisor/task.md) as Slice P0**, because item 5 has no position in the 2026-07-16 resequencing (which front-loads item 1 and defers items 2-4) and M05A's multi-substrate placement cannot ship responsibly while ownership is unestablishable. Of the three items bundled with it: the **registry-trust-model ADR is discharged** by [ADR-0020](../decisions/0020-stable-logical-service-identity.md) §6 plus M05A slice A1 — the same change to `verify()`'s contract, with B7's "needs a real consumer" gate met; **multiple-substrate-owners representation (F12)** and **Tier 1 for the five data native-capability interfaces (F3)** stay here, neither being needed for single-owner multi-substrate placement.

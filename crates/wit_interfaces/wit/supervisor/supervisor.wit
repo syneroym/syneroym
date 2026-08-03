@@ -72,6 +72,12 @@ interface supervisor {
         /// implied, so an operator reading a converged status is not
         /// reading a guarantee this build cannot make.
         delivery-note: string,
+        /// Logical refs `revoke-instance` has excluded from every write
+        /// path. Otherwise invisible on this read surface
+        /// until something else triggers a write pass that reaches the
+        /// member and raises `InstanceRevoked` -- a state this permanent
+        /// should not depend on that.
+        revoked-placements: list<string>,
     }
 
     record alert {
@@ -122,6 +128,25 @@ interface supervisor {
     /// into the vault. Reads by name from that same directory; takes no
     /// key material and no path.
     import-master: func(name: string) -> result<_, string>;
+
+    /// Revoke one placed member's derived instance key. Two writes in one
+    /// operator action, because either alone is not a revocation:
+    ///
+    /// 1. the member master's anchor gains the derived instance DID in its
+    ///    `revoked-keys` list, so every handshake presenting that key fails
+    ///    from then on; and
+    /// 2. the placement is recorded revoked here, so nothing mints it a
+    ///    fresh certificate afterwards -- not the resident loop's renewal,
+    ///    not `submit`, not `force-reconcile`. Without this half, the very
+    ///    next ordinary redeploy would silently reinstate the key.
+    ///
+    /// Scoped to one member, not the whole instance: the rest keeps
+    /// reconciling. Deliberately not a teardown either -- the process keeps
+    /// running until an operator issues `undeploy`/`retire` separately.
+    ///
+    /// `logical-ref` is the member's full logical reference, as `status`
+    /// reports it (`<app-instance-id>/<service-name>`).
+    revoke-instance: func(app-instance-id: string, logical-ref: string) -> result<_, string>;
 
     status:  func(app-instance-id: string)            -> result<instance-status, string>;
     alerts:  func(app-instance-id: string, all: bool) -> result<list<alert>, string>;
