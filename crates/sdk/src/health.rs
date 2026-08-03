@@ -312,6 +312,31 @@ pub async fn poll_once(
     report
 }
 
+/// Who owns `CertificateNearExpiry`/`CertificateExpired` for this call to
+/// `record_report`.
+///
+/// A5d found the two kinds already had a producer here, unconditional on
+/// any near-expiry window -- correct for a caller with no renewal of its
+/// own (a one-off `roymctl app health`, an attended posture), wrong for
+/// `syneroym-app-supervisor`'s resident loop, which renews automatically
+/// and raises these same two kinds itself, but only when a renewal
+/// actually stalls (`raise_renewal_stalled`). Left both producers
+/// unconditional, every healthy renewal opened a spurious alert (and
+/// published it, since it was genuinely new) while a real stall's own
+/// raise silently no-opped against the one this function had already
+/// opened moments earlier in the same pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CertAlertPolicy {
+    /// Raise `CertificateNearExpiry`/`CertificateExpired` from this
+    /// report's own certificate windows, and clear them once a window
+    /// closes -- the only producer for either kind.
+    Reminder,
+    /// Leave both kinds untouched: the caller raises and clears them
+    /// itself, driven by whether its own renewal succeeded, not by the
+    /// window alone.
+    ManagedElsewhere,
+}
+
 /// Folds a report into the alert store: raises what is now failing, clears
 /// what is no longer. Returns the alerts this sweep *opened*, so a caller
 /// prints transitions rather than re-printing the standing set every time.
@@ -331,6 +356,7 @@ pub fn record_report(
     report: &HealthReport,
     now: u64,
     extra_live_pairs: &[(String, String)],
+    cert_alerts: CertAlertPolicy,
 ) -> Result<Vec<(AlertKind, String)>> {
     let mut opened = Vec::new();
 
@@ -403,43 +429,49 @@ pub fn record_report(
         // certificate has actually expired, which would report a current
         // outage (failure-matrix rows 1/3) with the wording of a renewal
         // reminder.
-        let cert_state =
-            match (svc.instance_certificate_issued_at, svc.instance_certificate_expires_at) {
-                (Some(_), Some(expires)) if is_expired_parts(expires, now) => {
-                    Some((AlertKind::CertificateExpired, expires))
-                }
-                (Some(issued), Some(expires)) if is_near_expiry_parts(issued, expires, now) => {
-                    Some((AlertKind::CertificateNearExpiry, expires))
-                }
-                _ => None,
-            };
-        for kind in [AlertKind::CertificateExpired, AlertKind::CertificateNearExpiry] {
-            match cert_state {
-                Some((k, expires)) if k == kind => {
-                    let detail = match kind {
-                        AlertKind::CertificateExpired => format!(
-                            "instance certificate expired at {expires}; this instance cannot \
-                             handshake until it is renewed with `roymctl identity \
-                             certify-instance`"
-                        ),
-                        _ => format!(
-                            "instance certificate expires at {expires}; renew with `roymctl \
-                             identity certify-instance`"
-                        ),
-                    };
-                    if alerts.raise(
-                        instance_id,
-                        Some(&l_ref),
-                        svc.alias.as_ref().map(SubstrateAlias::as_str),
-                        &svc.substrate_did,
-                        kind,
-                        &detail,
-                    )? {
-                        opened.push((kind, l_ref.clone()));
+        //
+        // `ManagedElsewhere` skips this pair entirely, raise and clear
+        // alike -- the caller (`syneroym-app-supervisor`) is the sole
+        // producer for both kinds in that case, see `CertAlertPolicy`.
+        if cert_alerts == CertAlertPolicy::Reminder {
+            let cert_state =
+                match (svc.instance_certificate_issued_at, svc.instance_certificate_expires_at) {
+                    (Some(_), Some(expires)) if is_expired_parts(expires, now) => {
+                        Some((AlertKind::CertificateExpired, expires))
                     }
-                }
-                _ => {
-                    alerts.clear(instance_id, Some(&l_ref), &svc.substrate_did, kind)?;
+                    (Some(issued), Some(expires)) if is_near_expiry_parts(issued, expires, now) => {
+                        Some((AlertKind::CertificateNearExpiry, expires))
+                    }
+                    _ => None,
+                };
+            for kind in [AlertKind::CertificateExpired, AlertKind::CertificateNearExpiry] {
+                match cert_state {
+                    Some((k, expires)) if k == kind => {
+                        let detail = match kind {
+                            AlertKind::CertificateExpired => format!(
+                                "instance certificate expired at {expires}; this instance cannot \
+                                 handshake until it is renewed with `roymctl identity \
+                                 certify-instance`"
+                            ),
+                            _ => format!(
+                                "instance certificate expires at {expires}; renew with `roymctl \
+                                 identity certify-instance`"
+                            ),
+                        };
+                        if alerts.raise(
+                            instance_id,
+                            Some(&l_ref),
+                            svc.alias.as_ref().map(SubstrateAlias::as_str),
+                            &svc.substrate_did,
+                            kind,
+                            &detail,
+                        )? {
+                            opened.push((kind, l_ref.clone()));
+                        }
+                    }
+                    _ => {
+                        alerts.clear(instance_id, Some(&l_ref), &svc.substrate_did, kind)?;
+                    }
                 }
             }
         }
@@ -688,7 +720,8 @@ mod tests {
                 binding_epochs: Vec::new(),
             }],
         };
-        record_report(&alerts, &instance_id, &not_running, 1000, &[]).unwrap();
+        record_report(&alerts, &instance_id, &not_running, 1000, &[], CertAlertPolicy::Reminder)
+            .unwrap();
         assert_eq!(alerts.active(&instance_id).unwrap().len(), 1);
         assert_eq!(alerts.active(&instance_id).unwrap()[0].kind, AlertKind::InstanceNotRunning);
 
@@ -705,7 +738,8 @@ mod tests {
                 binding_epochs: Vec::new(),
             }],
         };
-        record_report(&alerts, &instance_id, &probe_failing, 1001, &[]).unwrap();
+        record_report(&alerts, &instance_id, &probe_failing, 1001, &[], CertAlertPolicy::Reminder)
+            .unwrap();
         let active = alerts.active(&instance_id).unwrap();
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].kind, AlertKind::ProbeFailing);
@@ -746,7 +780,9 @@ mod tests {
                 },
             ],
         };
-        let opened = record_report(&alerts, &instance_id, &report, 1000, &[]).unwrap();
+        let opened =
+            record_report(&alerts, &instance_id, &report, 1000, &[], CertAlertPolicy::Reminder)
+                .unwrap();
         assert_eq!(opened.iter().filter(|(k, _)| *k == AlertKind::SubstrateUnreachable).count(), 1);
         assert_eq!(alerts.active(&instance_id).unwrap().len(), 1);
     }
@@ -780,7 +816,9 @@ mod tests {
                 binding_epochs: Vec::new(),
             }],
         };
-        let opened = record_report(&alerts, &instance_id, &report, 1000, &[]).unwrap();
+        let opened =
+            record_report(&alerts, &instance_id, &report, 1000, &[], CertAlertPolicy::Reminder)
+                .unwrap();
         assert!(opened.is_empty(), "{opened:?}");
         assert!(alerts.active(&instance_id).unwrap().is_empty());
     }
@@ -807,13 +845,14 @@ mod tests {
                 binding_epochs: Vec::new(),
             }],
         };
-        record_report(&alerts, &instance_id, &failing, 1000, &[]).unwrap();
+        record_report(&alerts, &instance_id, &failing, 1000, &[], CertAlertPolicy::Reminder)
+            .unwrap();
         assert_eq!(alerts.active(&instance_id).unwrap().len(), 1);
 
         // The next sweep no longer names "backend" at all -- removed from
         // the manifest, or forgotten.
         let empty = HealthReport { substrates: vec![], services: vec![] };
-        record_report(&alerts, &instance_id, &empty, 1001, &[]).unwrap();
+        record_report(&alerts, &instance_id, &empty, 1001, &[], CertAlertPolicy::Reminder).unwrap();
         assert!(alerts.active(&instance_id).unwrap().is_empty());
         assert_eq!(alerts.all(&instance_id).unwrap().len(), 1, "the row must still be readable");
     }
@@ -837,7 +876,7 @@ mod tests {
                 binding_epochs: Vec::new(),
             }],
         };
-        record_report(&alerts, &instance_id, &report, now, &[]).unwrap();
+        record_report(&alerts, &instance_id, &report, now, &[], CertAlertPolicy::Reminder).unwrap();
         assert!(alerts.active(&instance_id).unwrap().is_empty());
     }
 
@@ -864,10 +903,116 @@ mod tests {
                 binding_epochs: Vec::new(),
             }],
         };
-        let opened = record_report(&alerts, &instance_id, &report, now, &[]).unwrap();
+        let opened =
+            record_report(&alerts, &instance_id, &report, now, &[], CertAlertPolicy::Reminder)
+                .unwrap();
         assert_eq!(opened, vec![(AlertKind::CertificateExpired, l_ref("backend").to_string())]);
         let active = alerts.active(&instance_id).unwrap();
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].kind, AlertKind::CertificateExpired);
+    }
+
+    /// `syneroym-app-supervisor`'s resident loop is the
+    /// sole producer of `CertificateNearExpiry`/`CertificateExpired` for
+    /// its own instances. Before `CertAlertPolicy` existed, this same
+    /// near-expiry window unconditionally raised (and published) one of
+    /// these on every renewal cycle, whether or not the renewal that ran
+    /// moments later in the same pass actually succeeded -- and made a
+    /// genuinely stalled renewal's own raise a silent no-op against the
+    /// row this call had already opened. `ManagedElsewhere` must raise
+    /// neither kind, for a near-expiry certificate or an expired one,
+    /// leaving the caller as the only producer.
+    #[tokio::test]
+    async fn managed_elsewhere_raises_neither_cert_alert_kind() {
+        let alerts = AlertStore::open_in_memory().unwrap();
+        let instance_id = AppInstanceId::new("inst-1");
+        let now = 1_700_000_000u64;
+
+        let near_expiry = HealthReport {
+            substrates: vec![],
+            services: vec![ServiceHealth {
+                logical_ref: l_ref("backend"),
+                service_id: "did:key:svc".to_string(),
+                alias: None,
+                substrate_did: "did:key:b".to_string(),
+                signal: Signal::Healthy,
+                instance_certificate_issued_at: Some(now - 21_600),
+                instance_certificate_expires_at: Some(now + 1_440),
+                binding_epochs: Vec::new(),
+            }],
+        };
+        let opened = record_report(
+            &alerts,
+            &instance_id,
+            &near_expiry,
+            now,
+            &[],
+            CertAlertPolicy::ManagedElsewhere,
+        )
+        .unwrap();
+        assert!(opened.is_empty(), "{opened:?}");
+        assert!(alerts.active(&instance_id).unwrap().is_empty());
+
+        let expired = HealthReport {
+            substrates: vec![],
+            services: vec![ServiceHealth {
+                instance_certificate_issued_at: Some(now - 25 * 3600),
+                instance_certificate_expires_at: Some(now - 3600),
+                ..near_expiry.services[0].clone()
+            }],
+        };
+        let opened = record_report(
+            &alerts,
+            &instance_id,
+            &expired,
+            now,
+            &[],
+            CertAlertPolicy::ManagedElsewhere,
+        )
+        .unwrap();
+        assert!(opened.is_empty(), "{opened:?}");
+        assert!(alerts.active(&instance_id).unwrap().is_empty());
+    }
+
+    /// The other half: `ManagedElsewhere` must not clear either kind
+    /// either, since the caller -- not this sweep -- decides when a
+    /// stalled renewal's alert is settled.
+    #[tokio::test]
+    async fn managed_elsewhere_does_not_clear_a_cert_alert_the_caller_raised() {
+        let alerts = AlertStore::open_in_memory().unwrap();
+        let instance_id = AppInstanceId::new("inst-1");
+        let now = 1_700_000_000u64;
+        alerts
+            .raise(
+                &instance_id,
+                Some("inst-1/backend"),
+                None,
+                "did:key:b",
+                AlertKind::CertificateNearExpiry,
+                "stalled, raised by the caller",
+            )
+            .unwrap();
+
+        let fresh = HealthReport {
+            substrates: vec![],
+            services: vec![ServiceHealth {
+                logical_ref: l_ref("backend"),
+                service_id: "did:key:svc".to_string(),
+                alias: None,
+                substrate_did: "did:key:b".to_string(),
+                signal: Signal::Healthy,
+                instance_certificate_issued_at: Some(now),
+                instance_certificate_expires_at: Some(now + 14_400),
+                binding_epochs: Vec::new(),
+            }],
+        };
+        record_report(&alerts, &instance_id, &fresh, now, &[], CertAlertPolicy::ManagedElsewhere)
+            .unwrap();
+
+        assert_eq!(
+            alerts.active(&instance_id).unwrap().len(),
+            1,
+            "only the caller's own clearing rule may settle this alert"
+        );
     }
 }

@@ -256,10 +256,18 @@ fn delegated_preamble(
     }
 }
 
-/// The renewal half: `renew-cert` over the real wire installs in place, and
-/// its verification block is live on the new path too.
+/// The renewal half: `renew-cert` over the real wire installs in place, its
+/// verification block is live on the new path too (a certificate minted for
+/// the *other* node's derived key is refused, and the previously installed
+/// one survives the refusal), and the substrate afterwards reports the
+/// renewed certificate as the one it holds -- read back through `list-svcs`,
+/// not through a live handshake. A WASM-guest two-node
+/// harness for that arm is the same out-of-proportion item
+/// `instance_identity_e2e.rs` and three backlog rows already decline; see
+/// `status.md`'s own scoping note for this test).
 #[tokio::test]
-async fn a_renewed_certificate_is_the_one_a_subsequent_handshake_presents() {
+async fn renew_cert_installs_over_the_real_wire_and_refuses_a_certificate_for_the_wrong_derived_key()
+ {
     let _ = ring::default_provider().install_default();
 
     let operator = Identity::generate().unwrap();

@@ -84,6 +84,12 @@ pub enum AlertKind {
     /// to act on, this one is an operator decision it is actively
     /// enforcing.
     InstanceRevoked,
+    /// A renewal installed a fresh certificate but the member's
+    /// `restart-on-rotation` restart then failed. The certificate alone
+    /// settles the health poll, so this is the one
+    /// alert kind that survives a healthy renewal -- cleared only once the
+    /// restart itself succeeds, not by the certificate window closing.
+    RotationRestartPending,
 }
 
 impl fmt::Display for AlertKind {
@@ -101,6 +107,7 @@ impl fmt::Display for AlertKind {
             Self::OrphanedService => "ORPHANED_SERVICE",
             Self::VaultLocked => "VAULT_LOCKED",
             Self::InstanceRevoked => "INSTANCE_REVOKED",
+            Self::RotationRestartPending => "ROTATION_RESTART_PENDING",
         };
         write!(f, "{}", s)
     }
@@ -123,6 +130,7 @@ impl FromStr for AlertKind {
             "ORPHANED_SERVICE" => Ok(Self::OrphanedService),
             "VAULT_LOCKED" => Ok(Self::VaultLocked),
             "INSTANCE_REVOKED" => Ok(Self::InstanceRevoked),
+            "ROTATION_RESTART_PENDING" => Ok(Self::RotationRestartPending),
             _ => Err(anyhow!("Unknown alert kind: {}", s)),
         }
     }

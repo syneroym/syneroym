@@ -938,9 +938,14 @@ pub async fn handle(
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.as_secs())
                         .unwrap_or(0);
-                    for (kind, subject) in
-                        health::record_report(&alerts, &instance_id, &report, now, &[])?
-                    {
+                    for (kind, subject) in health::record_report(
+                        &alerts,
+                        &instance_id,
+                        &report,
+                        now,
+                        &[],
+                        health::CertAlertPolicy::Reminder,
+                    )? {
                         eprintln!("ALERT {kind:?}: {subject}");
                     }
                 }

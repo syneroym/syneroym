@@ -624,6 +624,16 @@ only if that member's `rotation_policy` is `restart-on-rotation`, restarts
 it. A failure at any step skips the remaining steps for that member and is
 retried on the next pass; it never fails the rest of the instance.
 
+**A restart-on-rotation failure gets its own alert.** If the mint and
+install both land but the restart itself fails, the certificate is not
+stalled — the health poll sees a fresh window on the very next pass, which
+would otherwise clear a `CertificateNearExpiry`/`CertificateExpired` alert
+right out from under the real problem. This case raises
+`RotationRestartPending` instead, backed by a persisted marker independent
+of the certificate window, and it is retried every pass (regardless of
+whether the member is due for renewal again) until the restart actually
+succeeds.
+
 At most `max_renewals_per_pass` members are renewed in one pass. Renewal is
 the one thing the loop does whose work arrives all at once by construction:
 every member of an instance is minted in the same call at the same lifetime,
@@ -767,6 +777,19 @@ abilities are deliberately flat, so holding one does not cover the other.
 An app-scoped selector is not enough either: claiming or releasing an app
 instance is a node-scoped act, because the instance spans services.
 
+> **A node-wide-granted supervisor that is not a member's recorded owner
+> re-keys it on the first renewal.** `renew-cert` verifies the submitted
+> certificate against the *renewing caller's* own derived identity, the
+> same rule `deploy` uses — so a supervisor admitted only through the
+> node-wide `orchestrator/deploy` grant above, on a member it did not
+> itself deploy (adopted but not yet redeployed under its own identity,
+> say), installs a certificate for *its own* derived key on that member's
+> very next unattended renewal. The previous owner's key is not revoked by
+> this; it simply stops being current, silently. Grant node-wide
+> `orchestrator/deploy` only to the supervisor that actually owns — or
+> will immediately redeploy and thereby take ownership of — every member
+> on that substrate.
+
 ##### Submitting, adopting, and reading status
 
 ```bash
@@ -792,7 +815,22 @@ roymctl --substrate <supervisor-node-did> supervisor alerts guild-instance-1
 `pause`/`resume` mark an instance in the supervisor's own store without
 touching anything on the substrates it manages — `pause` stops the resident
 loop from touching this instance automatically, and nothing else; every
-other verb stays allowed while paused. `release` hands an instance back to
+other verb stays allowed while paused.
+
+> **Pausing stops renewal too, not just redeploys.** `all_active` (the
+> resident loop's own work list) excludes a paused instance entirely, so a
+> paused instance gets no health poll, no certificate renewal, and no
+> master-anchor refresh — the same "and nothing else" above covers those.
+> With `renewed_cert_expires_hours = 4`, every member of a paused instance
+> fails its handshake closed within about 4 hours, and its master anchors
+> stop verifying within 24 — both silently, since the alert passes that
+> would otherwise name it never run either. This did not matter at A5c's
+> 24-hour certificates, where a paused instance's operator had a full day
+> to notice and reissue by hand; at A5d's default it is a short, real
+> clock. Resume before it, or renew by hand with `roymctl identity
+> certify-instance` if the pause needs to outlast it.
+
+`release` hands an instance back to
 manual operation by clearing the management stamp on every placed substrate
 (does **not** undeploy); `retire` does the same and additionally makes the
 supervisor's own desired-state row terminal, refusing a later `submit`

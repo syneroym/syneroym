@@ -876,9 +876,19 @@ impl OrchestratorInterface for ControlPlaneService {
         }
 
         let instance = self.node_identity.derive_service_identity(&caller.caller_did, &service_id);
+        // `instance_did` above is what *this caller* would
+        // derive, prospective by design (the doc comment on the WIT
+        // record explains why that must not change). `revoke-instance`
+        // needs the DID actually in use, which is only the same thing
+        // when the installed certificate happened to be minted for this
+        // caller -- so it is reported separately, read straight from the
+        // registry rather than derived.
+        let installed_temporary_did =
+            self.registry.instance_cert(&service_id).map(|c| c.temporary_did);
         Ok(InstanceIdentity {
             instance_did: derive_did_key(&instance.public_key()),
             pubkey_hex: hex::encode(instance.public_key().to_bytes()),
+            installed_temporary_did,
         })
     }
 
@@ -7409,6 +7419,60 @@ mod tests {
         let for_bob = service.instance_identity("shared-svc".to_string(), &bob).await.unwrap();
 
         assert_ne!(for_alice.instance_did, for_bob.instance_did);
+    }
+
+    /// Before anything is installed, there is no ground
+    /// truth to report -- `installed_temporary_did` is `None`, and
+    /// `instance_did` alone is what a caller about to certify a service
+    /// for the first time reads.
+    #[tokio::test]
+    async fn instance_identity_reports_no_installed_did_before_anything_is_deployed() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
+        let (service, _registry) = service_with_node_identity(temp_dir.path(), node_identity).await;
+        let caller = status_capable_caller("did:key:zOwner");
+
+        let identity = service.instance_identity("svc-a".to_string(), &caller).await.unwrap();
+
+        assert_eq!(identity.installed_temporary_did, None);
+    }
+
+    /// The whole reason `installed_temporary_did` exists.
+    /// Once a certificate is installed under one caller, a *different*
+    /// caller's `instance_identity` still derives its own (different)
+    /// prospective DID in `instance_did` -- unchanged, since `deploy`'s
+    /// certify flow depends on that -- but `installed_temporary_did` now
+    /// reports the certificate actually in force, which is alice's, not
+    /// bob's, regardless of who is asking.
+    #[tokio::test]
+    async fn instance_identity_reports_the_installed_did_even_for_a_different_caller() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let node_identity = Arc::new(syneroym_identity::Identity::generate().unwrap());
+        let (service, registry, _dispatch) =
+            service_with_dispatch(temp_dir.path(), node_identity.clone()).await;
+        let alice = node_wide_caller("did:key:zAlice");
+        // `instance_identity` gates on `orchestrator/status`, not `deploy`
+        // (§0.28's own flat-abilities split) -- bob needs the former here.
+        let bob = status_capable_caller("did:key:zBob");
+
+        let master = syneroym_identity::Identity::generate().unwrap();
+        let service_id = derive_did_key(&master.public_key());
+        service.deploy(service_id.clone(), owner_test_manifest(), &alice).await.unwrap();
+        let cert = instance_cert_for(&node_identity, &master, &alice.caller_did, &service_id, 3600);
+        service.renew_cert(service_id.clone(), 0, cert.to_json().unwrap(), &alice).await.unwrap();
+        let installed = registry.instance_cert(&service_id).unwrap().temporary_did;
+
+        let for_bob = service.instance_identity(service_id.clone(), &bob).await.unwrap();
+
+        assert_ne!(
+            for_bob.instance_did, installed,
+            "bob's own derived DID must not equal what alice actually installed"
+        );
+        assert_eq!(
+            for_bob.installed_temporary_did,
+            Some(installed),
+            "installed_temporary_did must report the real key regardless of who is asking"
+        );
     }
 
     #[tokio::test]

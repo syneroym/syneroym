@@ -72,6 +72,12 @@ interface supervisor {
         /// implied, so an operator reading a converged status is not
         /// reading a guarantee this build cannot make.
         delivery-note: string,
+        /// Logical refs `revoke-instance` has excluded from every write
+        /// path. Otherwise invisible on this read surface
+        /// until something else triggers a write pass that reaches the
+        /// member and raises `InstanceRevoked` -- a state this permanent
+        /// should not depend on that.
+        revoked-placements: list<string>,
     }
 
     record alert {
