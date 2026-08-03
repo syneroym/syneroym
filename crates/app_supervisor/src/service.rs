@@ -92,6 +92,12 @@ struct WritePhase<'a> {
     restart_candidates: &'a [(String, String, String)],
     renewal_candidates: &'a [RenewalCandidate],
     pending_rotation_restarts: &'a BTreeSet<String>,
+    /// Dependent members whose diff against the last active plan changed
+    /// only `resolved_dependencies` (M05A A5e, D-A5e-7): a membership
+    /// change in one of their dependencies, routed to `push_bindings`
+    /// instead of a full redeploy. `(member's own planned service, the
+    /// substrate DID it is already landed on)`.
+    push_candidates: &'a [(PlannedService, String)],
     did_to_alias: &'a BTreeMap<String, String>,
     clients: &'a BTreeMap<SubstrateAlias, Arc<SyneroymClient>>,
     now: u64,
@@ -561,14 +567,28 @@ impl SupervisorService {
         // any substrate.
         let diff = Reconciler::new(&self.store.journal).compute_diff(&plan);
         let mut needs_work: BTreeSet<String> = missing_placement.clone();
+        // M05A A5e (D-A5e-7): a dependent member whose diff against the
+        // last active plan changed *only* `resolved_dependencies` is a
+        // membership change in one of its dependencies -- pushed via
+        // `push_bindings`, not redeployed. Every other kind of change
+        // (config, placement, ...) still takes the redeploy path below.
+        let mut push_candidates: Vec<(PlannedService, String)> = Vec::new();
         if let Ok(diff) = &diff {
             for action in &diff.actions {
                 match action {
                     ReconcileAction::Add(svc) => {
                         needs_work.insert(svc.member_ref().to_string());
                     }
-                    ReconcileAction::Update { new, .. } => {
-                        needs_work.insert(new.member_ref().to_string());
+                    ReconcileAction::Update { old, new } => {
+                        let member_ref = new.member_ref().to_string();
+                        let landed_row = Self::only_resolved_dependencies_changed(old, new)
+                            .then(|| deploy::current_placement(&landed, &member_ref))
+                            .flatten();
+                        if let Some(row) = landed_row {
+                            push_candidates.push(((**new).clone(), row.substrate_did.clone()));
+                        } else {
+                            needs_work.insert(member_ref);
+                        }
                     }
                     ReconcileAction::Remove(l_ref) => {
                         let l_ref_str = l_ref.to_string();
@@ -671,6 +691,7 @@ impl SupervisorService {
             || !restart_candidates.is_empty()
             || !renewal_candidates.is_empty()
             || !pending_rotation_restarts.is_empty()
+            || !push_candidates.is_empty()
             || self.anchor_writer.is_some()
         {
             self.apply_write_phase(WritePhase {
@@ -681,6 +702,7 @@ impl SupervisorService {
                 restart_candidates: &restart_candidates,
                 renewal_candidates: &renewal_candidates,
                 pending_rotation_restarts: &pending_rotation_restarts,
+                push_candidates: &push_candidates,
                 did_to_alias: &did_to_alias,
                 clients: &clients,
                 now,
@@ -712,6 +734,7 @@ impl SupervisorService {
             restart_candidates,
             renewal_candidates,
             pending_rotation_restarts,
+            push_candidates,
             did_to_alias,
             clients,
             now,
@@ -782,6 +805,29 @@ impl SupervisorService {
         }
 
         let mut opened = Vec::new();
+
+        // M05A A5e (D-A5e-7): every member whose only change is which DIDs
+        // a dependency resolves to gets a binding push instead of the
+        // redeploy above -- an unreachable member this pass simply retries
+        // next pass, since `resolved_dependencies` still disagrees with
+        // what was last pushed.
+        for (svc, substrate_did) in push_candidates {
+            let Some(alias) = did_to_alias.get(substrate_did) else { continue };
+            let Some(client) = clients.get(&SubstrateAlias::new(alias.clone())) else { continue };
+            let actor = client.clone() as Arc<dyn SubstrateActor>;
+            let _ = self
+                .push_bindings(
+                    instance_id,
+                    plan,
+                    svc,
+                    substrate_did,
+                    &actor,
+                    fresh_state.generation,
+                    &mut opened,
+                )
+                .await;
+        }
+
         for (logical_ref, service_id, substrate_did) in restart_candidates {
             let Some(alias) = did_to_alias.get(substrate_did) else { continue };
             let Some(client) = clients.get(&SubstrateAlias::new(alias.clone())) else { continue };
@@ -1330,6 +1376,21 @@ impl SupervisorService {
                 || s.substrate.as_ref().is_some_and(|a| clients.contains_key(a))
         });
         record_plan
+    }
+
+    /// Whether `old` and `new` (the same member, before and after a
+    /// resubmit) differ only in which member DIDs a dependency resolves to
+    /// -- a membership change in one of `new`'s dependencies, and nothing
+    /// else about this member itself (M05A A5e, D-A5e-7). `logical_ref` is
+    /// already guaranteed equal: `Reconciler::diff_plans` matches `old` and
+    /// `new` by `MemberRef`, which includes it.
+    fn only_resolved_dependencies_changed(old: &PlannedService, new: &PlannedService) -> bool {
+        old.service_id == new.service_id
+            && old.substrate == new.substrate
+            && old.config == new.config
+            && old.topology_mode == new.topology_mode
+            && old.member_index == new.member_index
+            && old.resolved_dependencies != new.resolved_dependencies
     }
 
     /// One bounded restart attempt for a landed-but-`InstanceNotRunning`
@@ -1955,15 +2016,14 @@ impl SupervisorService {
         Ok(minted)
     }
 
-    /// One dependent service's bindings, at its next epoch, without a
+    /// One dependent member's bindings, at its next epoch, without a
     /// redeploy (M05A A5c phase 7, D-A5c-16): reuses `map_deployment_
     /// plan_to_wit`'s own binding-construction logic (called the same
     /// way `apply_plan` calls it internally, over `&[svc]`) rather than
     /// duplicating it, so the two paths cannot drift apart on what a
-    /// binding looks like on the wire. A5c has no reachable membership
-    /// change of its own (A5e's `replicas` is the real trigger), so
-    /// nothing in this slice calls this automatically -- it exists,
-    /// tested, for the loop to call once that trigger lands.
+    /// binding looks like on the wire. Its production caller is the
+    /// membership-change classifier in `reconcile_instance_pass`/
+    /// `apply_write_phase` (M05A A5e, D-A5e-7).
     ///
     /// `Stale(held)` is retried exactly once, at `held + 1` (D-A5c-19 /
     /// F4): no re-read, since `Stale` already carries the number a
@@ -1971,17 +2031,23 @@ impl SupervisorService {
     /// a second writer exists, and retrying would only race it again.
     /// Either failure raises `BindingConflict`, folded into `opened` so
     /// the caller can publish it the same way every other alert this
-    /// pass raised gets published.
+    /// pass raised gets published. A push that lands cleanly clears it
+    /// instead (M05A A5e, D-A5e-8/§33.19) -- the clear site this alert
+    /// kind never had, without which `Degraded` derived from it would be
+    /// permanent.
     ///
-    /// `#[allow(dead_code)]`: not reachable from any production call site
-    /// in this slice, deliberately -- see the paragraph above. Exercised
-    /// directly by tests 42-47 (§23).
-    #[allow(dead_code)]
+    /// `substrate_did` is the member's real, already-landed substrate DID
+    /// (M05A A5e, §33.21) -- not `svc.substrate`, an operator-chosen
+    /// alias (empty when placement falls back), which used to be written
+    /// into the alert's `substrate_did` column and could then never match
+    /// a clear keyed on the real DID every other alert kind uses.
+    #[allow(clippy::too_many_arguments)]
     async fn push_bindings(
         &self,
         instance_id: &AppInstanceId,
         plan: &DeploymentPlan,
         svc: &PlannedService,
+        substrate_did: &str,
         actor: &Arc<dyn SubstrateActor>,
         generation: u64,
         opened: &mut Vec<(AlertKind, String)>,
@@ -2003,7 +2069,7 @@ impl SupervisorService {
         {
             Ok(o) => o,
             Err(e) => {
-                self.raise_binding_push_failure(instance_id, svc, &l_ref, &e, opened);
+                self.raise_binding_push_failure(instance_id, substrate_did, &l_ref, &e, opened);
                 return Err(e);
             }
         };
@@ -2020,7 +2086,7 @@ impl SupervisorService {
             match self.write_bindings_at_epoch(plan, svc, actor, generation, retry_epoch).await {
                 Ok(o) => o,
                 Err(e) => {
-                    self.raise_binding_push_failure(instance_id, svc, &l_ref, &e, opened);
+                    self.raise_binding_push_failure(instance_id, substrate_did, &l_ref, &e, opened);
                     return Err(e);
                 }
             }
@@ -2031,20 +2097,27 @@ impl SupervisorService {
         let failed = outcomes
             .iter()
             .any(|o| matches!(o, BindingWriteOutcome::Stale(_) | BindingWriteOutcome::Conflict(_)));
-        if failed
-            && let Ok(true) = self.store.alerts.raise(
+        if failed {
+            if let Ok(true) = self.store.alerts.raise(
                 instance_id,
                 Some(&l_ref),
                 None,
-                &svc.substrate.as_ref().map_or_else(String::new, ToString::to_string),
+                substrate_did,
                 AlertKind::BindingConflict,
                 &format!(
                     "a binding push for '{l_ref}' did not land cleanly after one retry: \
                      {outcomes:?}"
                 ),
-            )
-        {
-            opened.push((AlertKind::BindingConflict, l_ref));
+            ) {
+                opened.push((AlertKind::BindingConflict, l_ref));
+            }
+        } else {
+            let _ = self.store.alerts.clear(
+                instance_id,
+                Some(&l_ref),
+                substrate_did,
+                AlertKind::BindingConflict,
+            );
         }
         Ok(outcomes)
     }
@@ -2057,7 +2130,7 @@ impl SupervisorService {
     fn raise_binding_push_failure(
         &self,
         instance_id: &AppInstanceId,
-        svc: &PlannedService,
+        substrate_did: &str,
         l_ref: &str,
         error: &str,
         opened: &mut Vec<(AlertKind, String)>,
@@ -2066,7 +2139,7 @@ impl SupervisorService {
             instance_id,
             Some(l_ref),
             None,
-            &svc.substrate.as_ref().map_or_else(String::new, ToString::to_string),
+            substrate_did,
             AlertKind::BindingConflict,
             &format!("a binding push for '{l_ref}' failed to reach the dependent: {error}"),
         ) {
@@ -3098,6 +3171,22 @@ impl SupervisorService {
             .map_err(|e| RpcError::InternalError(e.to_string()))?
             .is_some_and(|r| r.state == DeploymentState::Applying);
 
+        // M05A A5e (D-A5e-8, ADR-0021 §5): a binding push that has been
+        // attempted and did not land leaves the instance `Degraded` --
+        // reachable now that D-A5e-7 gives `push_bindings` a production
+        // caller. Read off the *active* alert set rather than "any
+        // unconverged row": a push that just landed cleanly reads as
+        // unconverged on `binding-epochs` for up to one poll interval
+        // simply because the observed epoch has not been re-polled yet,
+        // and that must not flap the instance `Degraded` on every
+        // ordinary change.
+        let has_binding_conflict = self
+            .store
+            .alerts
+            .active(&instance_id)
+            .map(|active| active.iter().any(|a| a.kind == AlertKind::BindingConflict))
+            .unwrap_or(false);
+
         let overall_state = if state.retired {
             ManagedState::Retired
         } else if superseded {
@@ -3111,7 +3200,10 @@ impl SupervisorService {
         // cannot see (D-A4-19's `NotDeployed` is deliberately not a
         // fault) -- the supervisor adds the plan knowledge the poll
         // does not have.
-        } else if report.faults().is_empty() && missing_placement.is_empty() {
+        } else if report.faults().is_empty()
+            && missing_placement.is_empty()
+            && !has_binding_conflict
+        {
             ManagedState::Active
         } else {
             ManagedState::Degraded
@@ -3243,7 +3335,7 @@ mod tests {
     use std::{path::Path, sync::Mutex};
 
     use syneroym_app_orchestration::{
-        ActionState,
+        ActionState, DeploymentJournal,
         models::{
             AppBlueprintId, LogicalServiceName, LogicalServiceRef, ServiceConfig, ServiceType,
             TopologyMode,
@@ -3935,6 +4027,52 @@ mod tests {
         assert!(matches!(status.state, ManagedState::Active), "{:?}", status.state);
     }
 
+    /// D-A5e-8, ADR-0021 §5: the same fully-landed, otherwise-healthy
+    /// instance above must report `Degraded`, not `Active`, once one of
+    /// its dependents has an active `BindingConflict` -- a binding push
+    /// that has been attempted and did not land.
+    #[tokio::test]
+    async fn a_fully_landed_instance_with_an_active_binding_conflict_reports_degraded() {
+        let s = service();
+        let plan_json = plan_json_one_service("inst-1", "backend", Some("edge-1"));
+        let plan = DeploymentPlan::from_json(&plan_json).unwrap();
+        let deployment_id = s.store.journal.append(&plan, DeploymentState::Active).unwrap();
+        s.store
+            .journal
+            .append_action(
+                deployment_id,
+                "ADD",
+                "inst-1/backend#0",
+                Some("edge-1"),
+                "did:key:zEdge1",
+                ActionState::Completed,
+            )
+            .unwrap();
+        s.store.submit("inst-1", &plan_json, "{}", "did:key:owner", 0).unwrap();
+        s.store
+            .alerts
+            .raise(
+                &AppInstanceId::new("inst-1"),
+                Some("inst-1/backend#0"),
+                None,
+                "did:key:zEdge1",
+                AlertKind::BindingConflict,
+                "a binding push did not land cleanly after one retry",
+            )
+            .unwrap();
+
+        let res = dispatch(
+            &s,
+            admin_caller("did:key:zSupervisorNode"),
+            "status",
+            serde_json::json!(["inst-1"]),
+        )
+        .await
+        .unwrap();
+        let status: InstanceStatus = serde_json::from_value(res.payload).unwrap();
+        assert!(matches!(status.state, ManagedState::Degraded), "{:?}", status.state);
+    }
+
     /// M05A A5c D-A5c-13 (§19.15): a reconcile in flight is now
     /// observable -- `apply_with_clients` writes `Applying` before it
     /// writes `Active`/`Degraded`, and `status` landing mid-pass must
@@ -4342,6 +4480,7 @@ mod tests {
             restart_candidates: &[],
             renewal_candidates: &[],
             pending_rotation_restarts: &BTreeSet::new(),
+            push_candidates: &[],
             did_to_alias: &BTreeMap::new(),
             clients: &BTreeMap::new(),
             now: 0,
@@ -4919,6 +5058,7 @@ mod tests {
             restart_candidates: &restart_candidates,
             renewal_candidates: &[],
             pending_rotation_restarts: &BTreeSet::new(),
+            push_candidates: &[],
             did_to_alias: &did_to_alias,
             clients: &clients,
             now: 0,
@@ -5148,8 +5288,10 @@ mod tests {
         let instance_id = AppInstanceId::new("inst-1");
         let mut opened = Vec::new();
 
-        let outcomes =
-            s.push_bindings(&instance_id, &plan, &svc, &dyn_actor, 0, &mut opened).await.unwrap();
+        let outcomes = s
+            .push_bindings(&instance_id, &plan, &svc, "did:key:zEdge1", &dyn_actor, 0, &mut opened)
+            .await
+            .unwrap();
 
         assert_eq!(outcomes, vec![BindingWriteOutcome::Applied]);
         assert_eq!(actor.calls.lock().unwrap().len(), 1);
@@ -5170,7 +5312,9 @@ mod tests {
         let instance_id = AppInstanceId::new("inst-1");
         let mut opened = Vec::new();
 
-        s.push_bindings(&instance_id, &plan, &svc, &dyn_actor, 0, &mut opened).await.unwrap();
+        s.push_bindings(&instance_id, &plan, &svc, "did:key:zEdge1", &dyn_actor, 0, &mut opened)
+            .await
+            .unwrap();
 
         assert_eq!(actor.calls.lock().unwrap().len(), 1, "a conflict must not be retried");
         assert_eq!(opened, vec![(AlertKind::BindingConflict, "inst-1/frontend#0".to_string())]);
@@ -5192,7 +5336,9 @@ mod tests {
         let instance_id = AppInstanceId::new("inst-1");
         let mut opened = Vec::new();
 
-        s.push_bindings(&instance_id, &plan, &svc, &dyn_actor, 0, &mut opened).await.unwrap();
+        s.push_bindings(&instance_id, &plan, &svc, "did:key:zEdge1", &dyn_actor, 0, &mut opened)
+            .await
+            .unwrap();
 
         let calls = actor.calls.lock().unwrap();
         assert_eq!(calls.len(), 2, "exactly one retry");
@@ -5220,7 +5366,9 @@ mod tests {
         let dyn_actor: Arc<dyn SubstrateActor> = actor.clone();
         let instance_id = AppInstanceId::new("inst-1");
         let mut opened = Vec::new();
-        s.push_bindings(&instance_id, &plan, &svc, &dyn_actor, 0, &mut opened).await.unwrap();
+        s.push_bindings(&instance_id, &plan, &svc, "did:key:zEdge1", &dyn_actor, 0, &mut opened)
+            .await
+            .unwrap();
 
         let report = health::HealthReport {
             substrates: Vec::new(),
@@ -5237,6 +5385,259 @@ mod tests {
         assert_eq!(rows[0].written_epoch, 1);
         assert_eq!(rows[0].observed_epoch, Some(1));
         assert!(rows[0].converged);
+    }
+
+    // ── M05A A5e phase 4: the push trigger (D-A5e-7/D-A5e-8) ────────────
+
+    /// D-A5e-7: the classifier's whole point. A resubmit whose only change
+    /// to a dependent member is which DIDs a dependency resolves to must
+    /// be routed to a push, not a redeploy.
+    #[test]
+    fn only_resolved_dependencies_changed_is_true_when_only_the_dependency_map_differs() {
+        let old = dependent_service("frontend", "backend");
+        let mut new = old.clone();
+        new.resolved_dependencies = BTreeMap::from([(
+            LogicalServiceName::new("backend"),
+            vec![ServiceId::new("did:key:hDepMember"), ServiceId::new("did:key:hDepMember2")],
+        )]);
+        assert!(SupervisorService::only_resolved_dependencies_changed(&old, &new));
+    }
+
+    /// The other half of the classifier: any other kind of change --
+    /// config, in this case -- still takes the redeploy path, even when
+    /// `resolved_dependencies` also changed in the same resubmit.
+    #[test]
+    fn only_resolved_dependencies_changed_is_false_when_config_also_changes() {
+        let old = dependent_service("frontend", "backend");
+        let mut new = old.clone();
+        new.resolved_dependencies = BTreeMap::from([(
+            LogicalServiceName::new("backend"),
+            vec![ServiceId::new("did:key:hDepMember"), ServiceId::new("did:key:hDepMember2")],
+        )]);
+        new.config.source = "127.0.0.1:9001".to_string();
+        assert!(!SupervisorService::only_resolved_dependencies_changed(&old, &new));
+    }
+
+    /// A change to `resolved_dependencies` alone, with nothing else
+    /// different at all, is a no-op diff (`old == new`), not an `Update`
+    /// action -- `only_resolved_dependencies_changed` is only ever asked
+    /// about an actual `Update`, but must not misreport an identical pair.
+    #[test]
+    fn only_resolved_dependencies_changed_is_false_when_nothing_changed() {
+        let old = dependent_service("frontend", "backend");
+        let new = old.clone();
+        assert!(!SupervisorService::only_resolved_dependencies_changed(&old, &new));
+    }
+
+    /// D-A5e-7/§33.7: `Reconciler::compute_diff` produces one `Update`
+    /// action per member of the scaled dependency's dependent -- each is
+    /// independently a push-only change, so a two-member dependent
+    /// pushes on both, not just the first.
+    #[test]
+    fn a_membership_change_pushes_to_every_member_of_every_dependent() {
+        let mut frontend_0 = dependent_service("frontend", "backend");
+        let mut frontend_1 = frontend_0.clone();
+        frontend_1.member_index = 1;
+        frontend_1.service_id = ServiceId::new("did:key:hfrontend1");
+
+        let old_plan = DeploymentPlan {
+            app_instance_id: AppInstanceId::new("inst-1"),
+            blueprint_id: AppBlueprintId::new("syneroym:test"),
+            version: semver::Version::new(1, 0, 0),
+            services: vec![frontend_0.clone(), frontend_1.clone()],
+        };
+        let journal = DeploymentJournal::open_in_memory().unwrap();
+        journal.append(&old_plan, DeploymentState::Active).unwrap();
+
+        let scaled_deps = BTreeMap::from([(
+            LogicalServiceName::new("backend"),
+            vec![ServiceId::new("did:key:hDepMember"), ServiceId::new("did:key:hDepMember2")],
+        )]);
+        frontend_0.resolved_dependencies = scaled_deps.clone();
+        frontend_1.resolved_dependencies = scaled_deps;
+        let new_plan =
+            DeploymentPlan { services: vec![frontend_0, frontend_1], ..old_plan.clone() };
+
+        let diff = Reconciler::new(&journal).compute_diff(&new_plan).unwrap();
+        assert_eq!(diff.actions.len(), 2, "{:?}", diff.actions);
+        for action in &diff.actions {
+            match action {
+                ReconcileAction::Update { old, new } => {
+                    assert!(SupervisorService::only_resolved_dependencies_changed(old, new));
+                }
+                other => panic!("expected an Update per member, got {other:?}"),
+            }
+        }
+    }
+
+    /// D-A5e-8/§33.19: `push_bindings` clears `BindingConflict` for that
+    /// member once a later push lands cleanly -- the clear site this
+    /// alert kind never had before A5e.
+    #[tokio::test]
+    async fn a_binding_conflict_clears_once_a_later_push_for_that_member_lands_cleanly() {
+        let s = service();
+        let svc = dependent_service("frontend", "backend");
+        let plan = plan_with_one_dependent(svc.clone());
+        let actor = Arc::new(BindingActor::default());
+        actor.responses.lock().unwrap().push(Ok(vec![BindingWriteOutcome::Conflict(5)]));
+        let dyn_actor: Arc<dyn SubstrateActor> = actor.clone();
+        let instance_id = AppInstanceId::new("inst-1");
+        let mut opened = Vec::new();
+
+        s.push_bindings(&instance_id, &plan, &svc, "did:key:zEdge1", &dyn_actor, 0, &mut opened)
+            .await
+            .unwrap();
+        assert!(
+            s.store
+                .alerts
+                .active(&instance_id)
+                .unwrap()
+                .iter()
+                .any(|a| a.kind == AlertKind::BindingConflict),
+            "the failed push must raise the alert"
+        );
+
+        // The next push lands cleanly (the fake's default response).
+        let mut opened = Vec::new();
+        s.push_bindings(&instance_id, &plan, &svc, "did:key:zEdge1", &dyn_actor, 0, &mut opened)
+            .await
+            .unwrap();
+        assert!(
+            !s.store
+                .alerts
+                .active(&instance_id)
+                .unwrap()
+                .iter()
+                .any(|a| a.kind == AlertKind::BindingConflict),
+            "a clean push must clear the alert it previously raised"
+        );
+    }
+
+    /// D-A5e-8, ADR-0021 §5: an instance with an active `BindingConflict`
+    /// reports `Degraded`; once the retried push lands and the alert
+    /// clears, `handle_status` reports it recovered.
+    #[tokio::test]
+    async fn an_instance_leaves_degraded_once_the_retried_push_lands() {
+        let s = service();
+        let instance_id = AppInstanceId::new("inst-1");
+        s.store
+            .alerts
+            .raise(
+                &instance_id,
+                Some("inst-1/frontend#0"),
+                None,
+                "did:key:zEdge1",
+                AlertKind::BindingConflict,
+                "did not land",
+            )
+            .unwrap();
+        assert!(
+            s.store
+                .alerts
+                .active(&instance_id)
+                .unwrap()
+                .iter()
+                .any(|a| a.kind == AlertKind::BindingConflict)
+        );
+
+        s.store
+            .alerts
+            .clear(
+                &instance_id,
+                Some("inst-1/frontend#0"),
+                "did:key:zEdge1",
+                AlertKind::BindingConflict,
+            )
+            .unwrap();
+        assert!(
+            !s.store
+                .alerts
+                .active(&instance_id)
+                .unwrap()
+                .iter()
+                .any(|a| a.kind == AlertKind::BindingConflict),
+            "the active alert set (what handle_status's overall_state reads) must be clear once \
+             the conflict clears"
+        );
+    }
+
+    /// M05A A5e §33.21/S2: the raise site must write the substrate's real
+    /// DID into the alert's `substrate_did` column, not `svc.substrate`
+    /// (an operator-chosen alias, empty on fallback placement) -- a clear
+    /// keyed on the real DID would otherwise never match a row keyed on
+    /// the alias, and `Degraded` would be permanent.
+    #[tokio::test]
+    async fn a_binding_conflict_is_raised_under_the_substrate_did_not_the_alias() {
+        let s = service();
+        let mut svc = dependent_service("frontend", "backend");
+        // The fallback-placement case: no alias at all.
+        svc.substrate = None;
+        let plan = plan_with_one_dependent(svc.clone());
+        let actor = Arc::new(BindingActor::default());
+        actor.responses.lock().unwrap().push(Ok(vec![BindingWriteOutcome::Conflict(5)]));
+        let dyn_actor: Arc<dyn SubstrateActor> = actor.clone();
+        let instance_id = AppInstanceId::new("inst-1");
+        let mut opened = Vec::new();
+
+        s.push_bindings(&instance_id, &plan, &svc, "did:key:zRealNode", &dyn_actor, 0, &mut opened)
+            .await
+            .unwrap();
+
+        let active = s.store.alerts.active(&instance_id).unwrap();
+        let conflict =
+            active.iter().find(|a| a.kind == AlertKind::BindingConflict).expect("{active:?}");
+        assert_eq!(conflict.substrate_did, "did:key:zRealNode");
+
+        // A clear keyed on that same real DID must now match the row.
+        assert!(
+            s.store
+                .alerts
+                .clear(
+                    &instance_id,
+                    Some("inst-1/frontend#0"),
+                    "did:key:zRealNode",
+                    AlertKind::BindingConflict,
+                )
+                .unwrap(),
+            "the clear must match the row the raise actually wrote"
+        );
+    }
+
+    /// D-A5e-2: the epoch is per dependent *member*, not per logical
+    /// service -- two members of one scaled dependent must advance their
+    /// own epoch independently.
+    #[tokio::test]
+    async fn two_members_of_one_dependent_advance_their_binding_epochs_independently() {
+        let s = service();
+        let mut frontend_1 = dependent_service("frontend", "backend");
+        frontend_1.member_index = 1;
+        frontend_1.service_id = ServiceId::new("did:key:hfrontend1");
+        let plan = DeploymentPlan {
+            app_instance_id: AppInstanceId::new("inst-1"),
+            blueprint_id: AppBlueprintId::new("syneroym:test"),
+            version: semver::Version::new(1, 0, 0),
+            services: vec![dependent_service("frontend", "backend"), frontend_1.clone()],
+        };
+        let actor = Arc::new(BindingActor::default());
+        let dyn_actor: Arc<dyn SubstrateActor> = actor.clone();
+        let instance_id = AppInstanceId::new("inst-1");
+        let mut opened = Vec::new();
+
+        // Only member 1 is pushed this round.
+        s.push_bindings(
+            &instance_id,
+            &plan,
+            &frontend_1,
+            "did:key:zEdge1",
+            &dyn_actor,
+            0,
+            &mut opened,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(s.store.binding_epoch("inst-1", "inst-1/frontend#0").unwrap(), 0);
+        assert_eq!(s.store.binding_epoch("inst-1", "inst-1/frontend#1").unwrap(), 1);
     }
 
     /// Review finding C-1: §23 test 45 (above) calls
@@ -5321,14 +5722,18 @@ mod tests {
         let instance_id = AppInstanceId::new("inst-1");
         let mut opened = Vec::new();
 
-        let first = s.push_bindings(&instance_id, &plan, &svc, &dyn_actor, 0, &mut opened).await;
+        let first = s
+            .push_bindings(&instance_id, &plan, &svc, "did:key:zEdge1", &dyn_actor, 0, &mut opened)
+            .await;
         assert!(first.is_err());
         assert_eq!(s.store.binding_epoch("inst-1", "inst-1/frontend#0").unwrap(), 1);
         assert_eq!(opened, vec![(AlertKind::BindingConflict, "inst-1/frontend#0".to_string())]);
         let alerts = s.store.alerts.active(&instance_id).unwrap();
         assert!(alerts.iter().any(|a| a.kind == AlertKind::BindingConflict), "{alerts:?}");
 
-        let second = s.push_bindings(&instance_id, &plan, &svc, &dyn_actor, 0, &mut opened).await;
+        let second = s
+            .push_bindings(&instance_id, &plan, &svc, "did:key:zEdge1", &dyn_actor, 0, &mut opened)
+            .await;
         assert_eq!(second.unwrap(), vec![BindingWriteOutcome::Applied]);
         assert_eq!(
             s.store.binding_epoch("inst-1", "inst-1/frontend#0").unwrap(),

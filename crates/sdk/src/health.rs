@@ -419,7 +419,7 @@ pub fn record_report(
     }
 
     for svc in &report.services {
-        let l_ref = svc.logical_ref.to_string();
+        let l_ref = svc.member_ref().to_string();
         // Exactly one of the two service-level kinds can be active at a
         // time; the other is cleared on every pass, so a service that moves
         // from "not running" to "probe failing" does not leave a stale
@@ -515,7 +515,7 @@ pub fn record_report(
     let live_services: HashSet<(String, String)> = report
         .services
         .iter()
-        .map(|s| (s.logical_ref.to_string(), s.substrate_did.clone()))
+        .map(|s| (s.member_ref().to_string(), s.substrate_did.clone()))
         .chain(extra_live_pairs.iter().cloned())
         .collect();
     let live_substrates: HashSet<&str> =
@@ -943,7 +943,7 @@ mod tests {
         let opened =
             record_report(&alerts, &instance_id, &report, now, &[], CertAlertPolicy::Reminder)
                 .unwrap();
-        assert_eq!(opened, vec![(AlertKind::CertificateExpired, l_ref("backend").to_string())]);
+        assert_eq!(opened, vec![(AlertKind::CertificateExpired, "inst-1/backend#0".to_string())]);
         let active = alerts.active(&instance_id).unwrap();
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].kind, AlertKind::CertificateExpired);
@@ -1023,7 +1023,7 @@ mod tests {
         alerts
             .raise(
                 &instance_id,
-                Some("inst-1/backend"),
+                Some("inst-1/backend#0"),
                 None,
                 "did:key:b",
                 AlertKind::CertificateNearExpiry,

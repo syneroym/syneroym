@@ -856,7 +856,7 @@ pub async fn handle(
             let mut expected = Vec::new();
             let mut aliases: BTreeMap<String, Option<SubstrateAlias>> = BTreeMap::new();
             for svc in &record.plan.services {
-                match deploy::current_placement(&landed, &svc.logical_ref.to_string()) {
+                match deploy::current_placement(&landed, &svc.member_ref().to_string()) {
                     None => expected.push(health::ExpectedService {
                         logical_ref: svc.logical_ref.clone(),
                         service_id: String::new(),

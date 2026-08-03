@@ -230,7 +230,7 @@ pub fn resolve_targets<'a>(
             ),
             (Some(alias), _) => match targets.get(alias) {
                 Some(t) => out.push((svc, t)),
-                None => missing.push((svc.logical_ref.clone(), alias.clone())),
+                None => missing.push((svc.member_ref(), alias.clone())),
             },
         }
     }
