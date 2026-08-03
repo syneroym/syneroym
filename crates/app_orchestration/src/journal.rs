@@ -422,6 +422,7 @@ mod tests {
                 },
                 resolved_dependencies: BTreeMap::new(),
                 topology_mode: TopologyMode::Singleton,
+                member_index: 0,
             }],
         }
     }

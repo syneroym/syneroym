@@ -21,8 +21,8 @@ use serde_json::Value;
 use syneroym_app_orchestration::{
     AlertKind, DeploymentState, ReconcileAction, Reconciler,
     models::{
-        AppInstanceId, DeploymentPlan, LogicalServiceRef, PlannedService, RotationPolicy,
-        ServiceId, SubstrateAlias,
+        AppInstanceId, DeploymentPlan, MemberRef, PlannedService, RotationPolicy, ServiceId,
+        SubstrateAlias,
     },
 };
 use syneroym_control_plane::SUPERVISOR_RESERVED_SERVICE_ID;
@@ -101,7 +101,9 @@ struct WritePhase<'a> {
 /// the pass's own health report.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RenewalCandidate {
-    logical_ref: String,
+    /// This member's own `MemberRef` display string (M05A A5e, D-A5e-2) --
+    /// what every store/alert call this candidate feeds keys on.
+    member_ref: String,
     service_name: String,
     /// The member master DID -- what the certificate names and what the
     /// substrate knows the service by.
@@ -110,6 +112,10 @@ struct RenewalCandidate {
     /// Carried so a failed renewal can tell "not yet expired" from "already
     /// expired" without re-reading the report.
     expires_at: u64,
+    /// This member's ordinal (M05A A5e, D-A5e-5) -- what
+    /// `keys::master_for_member` reads instead of hardcoding `0`, so
+    /// member N's renewal signs with member N's own master.
+    member_index: u32,
 }
 
 /// Why one member's renewal stopped. `VaultLocked` is carved out from the
@@ -431,20 +437,22 @@ impl SupervisorService {
         let mut missing_placement: BTreeSet<String> = BTreeSet::new();
         let mut did_to_alias: BTreeMap<String, String> = BTreeMap::new();
         for svc in &plan.services {
-            match deploy::current_placement(&landed, &svc.logical_ref.to_string()) {
+            match deploy::current_placement(&landed, &svc.member_ref().to_string()) {
                 None => {
                     expected.push(ExpectedService {
                         logical_ref: svc.logical_ref.clone(),
                         service_id: String::new(),
                         substrate_did: String::new(),
+                        member_index: svc.member_index,
                     });
-                    missing_placement.insert(svc.logical_ref.to_string());
+                    missing_placement.insert(svc.member_ref().to_string());
                 }
                 Some(row) => {
                     expected.push(ExpectedService {
                         logical_ref: svc.logical_ref.clone(),
                         service_id: svc.service_id.to_string(),
                         substrate_did: row.substrate_did.clone(),
+                        member_index: svc.member_index,
                     });
                     if let Some(alias) = &row.substrate_alias {
                         did_to_alias.insert(row.substrate_did.clone(), alias.clone());
@@ -519,7 +527,7 @@ impl SupervisorService {
             }
         };
         for svc in &plan.services {
-            let l_ref = svc.logical_ref.to_string();
+            let l_ref = svc.member_ref().to_string();
             if missing_placement.contains(&l_ref) {
                 if let Ok(true) = self.store.alerts.raise(
                     &instance_id,
@@ -557,10 +565,10 @@ impl SupervisorService {
             for action in &diff.actions {
                 match action {
                     ReconcileAction::Add(svc) => {
-                        needs_work.insert(svc.logical_ref.to_string());
+                        needs_work.insert(svc.member_ref().to_string());
                     }
                     ReconcileAction::Update { new, .. } => {
-                        needs_work.insert(new.logical_ref.to_string());
+                        needs_work.insert(new.member_ref().to_string());
                     }
                     ReconcileAction::Remove(l_ref) => {
                         let l_ref_str = l_ref.to_string();
@@ -582,10 +590,10 @@ impl SupervisorService {
                 }
             }
         }
-        // A service back in the current plan cannot be orphaned this
+        // A member back in the current plan cannot be orphaned this
         // pass, regardless of what an older diff once said.
         for svc in &plan.services {
-            let l_ref = svc.logical_ref.to_string();
+            let l_ref = svc.member_ref().to_string();
             if let Some(row) = deploy::current_placement(&landed, &l_ref) {
                 let _ = self.store.alerts.clear(
                     &instance_id,
@@ -604,7 +612,7 @@ impl SupervisorService {
         // so the next fault starts counting from zero.
         let restart_candidates = Self::restart_candidates(&report);
         for svc in report.services.iter().filter(|s| s.signal == Signal::Healthy) {
-            let _ = self.store.clear_remediation(app_instance_id, &svc.logical_ref.to_string());
+            let _ = self.store.clear_remediation(app_instance_id, &svc.member_ref().to_string());
         }
 
         // M05A A5d: the fourth work-list. Its input is this pass's own
@@ -725,7 +733,7 @@ impl SupervisorService {
             // included; an unreachable one stays in `needs_work` (nothing
             // landed for it) and is picked up again next pass.
             filtered_plan.services.retain(|s| {
-                needs_work.contains(&s.logical_ref.to_string())
+                needs_work.contains(&s.member_ref().to_string())
                     && s.substrate.as_ref().is_some_and(|a| clients.contains_key(a))
             });
             if !filtered_plan.services.is_empty() {
@@ -841,18 +849,19 @@ impl SupervisorService {
             .services
             .iter()
             .filter(|svc| {
-                let l_ref = svc.logical_ref.to_string();
+                let l_ref = svc.member_ref().to_string();
                 !needs_work.contains(&l_ref) && !revoked.contains(&l_ref)
             })
             .filter_map(|svc| {
                 let issued = svc.instance_certificate_issued_at?;
                 let expires = svc.instance_certificate_expires_at?;
                 is_near_expiry_parts(issued, expires, now).then(|| RenewalCandidate {
-                    logical_ref: svc.logical_ref.to_string(),
+                    member_ref: svc.member_ref().to_string(),
                     service_name: svc.logical_ref.service_name.to_string(),
                     service_id: svc.service_id.clone(),
                     substrate_did: svc.substrate_did.clone(),
                     expires_at: expires,
+                    member_index: svc.member_index,
                 })
             })
             .collect();
@@ -917,7 +926,7 @@ impl SupervisorService {
                             candidate,
                             &format!(
                                 "renewal {step} for '{}' failed: {error}",
-                                candidate.logical_ref
+                                candidate.member_ref
                             ),
                             now,
                             opened,
@@ -926,12 +935,12 @@ impl SupervisorService {
                     RenewalFailure::RotationRestart { error } => {
                         if let Err(e) = self.store.mark_rotation_restart_owed(
                             app_instance_id,
-                            &candidate.logical_ref,
+                            &candidate.member_ref,
                             now as i64,
                         ) {
                             tracing::warn!(
                                 app_instance_id,
-                                logical_ref = %candidate.logical_ref,
+                                logical_ref = %candidate.member_ref,
                                 error = %e,
                                 "failed to persist an owed rotation restart"
                             );
@@ -942,7 +951,7 @@ impl SupervisorService {
                             &format!(
                                 "'{}' renewed its certificate but its restart-on-rotation restart \
                                  failed: {error}; retrying next pass",
-                                candidate.logical_ref
+                                candidate.member_ref
                             ),
                             opened,
                         );
@@ -950,7 +959,7 @@ impl SupervisorService {
                 }
                 tracing::warn!(
                     app_instance_id,
-                    logical_ref = %candidate.logical_ref,
+                    logical_ref = %candidate.member_ref,
                     "certificate renewal did not complete this pass; retrying next pass"
                 );
             }
@@ -972,6 +981,7 @@ impl SupervisorService {
             &self.vault,
             &plan.app_instance_id.to_string(),
             &candidate.service_name,
+            candidate.member_index,
         )
         .await
         .map_err(|e| match e {
@@ -1002,7 +1012,7 @@ impl SupervisorService {
         let rotation = plan
             .services
             .iter()
-            .find(|svc| svc.logical_ref.to_string() == candidate.logical_ref)
+            .find(|svc| svc.member_ref().to_string() == candidate.member_ref)
             .map(|svc| svc.config.rotation_policy);
         if rotation == Some(RotationPolicy::RestartOnRotation) {
             actor
@@ -1021,7 +1031,7 @@ impl SupervisorService {
     ) {
         if let Ok(true) = self.store.alerts.raise(
             instance_id,
-            Some(&candidate.logical_ref),
+            Some(&candidate.member_ref),
             None,
             &candidate.substrate_did,
             AlertKind::VaultLocked,
@@ -1029,10 +1039,10 @@ impl SupervisorService {
                 "'{}' needs its instance certificate renewed, but this supervisor's vault is \
                  locked so its member master cannot be read; run: roymctl --substrate <this node> \
                  security inject-kek --kek-hex <...>",
-                candidate.logical_ref
+                candidate.member_ref
             ),
         ) {
-            opened.push((AlertKind::VaultLocked, candidate.logical_ref.clone()));
+            opened.push((AlertKind::VaultLocked, candidate.member_ref.clone()));
         }
     }
 
@@ -1050,13 +1060,13 @@ impl SupervisorService {
     ) {
         if let Ok(true) = self.store.alerts.raise(
             instance_id,
-            Some(&candidate.logical_ref),
+            Some(&candidate.member_ref),
             None,
             &candidate.substrate_did,
             AlertKind::RotationRestartPending,
             detail,
         ) {
-            opened.push((AlertKind::RotationRestartPending, candidate.logical_ref.clone()));
+            opened.push((AlertKind::RotationRestartPending, candidate.member_ref.clone()));
         }
     }
 
@@ -1078,7 +1088,7 @@ impl SupervisorService {
         opened: &mut Vec<(AlertKind, String)>,
     ) {
         for l_ref in pending {
-            let Some(svc) = plan.services.iter().find(|s| &s.logical_ref.to_string() == l_ref)
+            let Some(svc) = plan.services.iter().find(|s| &s.member_ref().to_string() == l_ref)
             else {
                 // A resubmit dropped this member from the plan (D-A5c-3:
                 // not undeployed, just no longer named) -- this loop is
@@ -1186,13 +1196,13 @@ impl SupervisorService {
         };
         if let Ok(true) = self.store.alerts.raise(
             instance_id,
-            Some(&candidate.logical_ref),
+            Some(&candidate.member_ref),
             None,
             &candidate.substrate_did,
             kind,
             detail,
         ) {
-            opened.push((kind, candidate.logical_ref.clone()));
+            opened.push((kind, candidate.member_ref.clone()));
         }
     }
 
@@ -1216,7 +1226,7 @@ impl SupervisorService {
             if is_near_expiry_parts(issued, expires, now) {
                 continue;
             }
-            let l_ref = svc.logical_ref.to_string();
+            let l_ref = svc.member_ref().to_string();
             for kind in [
                 AlertKind::CertificateNearExpiry,
                 AlertKind::CertificateExpired,
@@ -1271,6 +1281,7 @@ impl SupervisorService {
                 &self.vault,
                 &plan.app_instance_id.to_string(),
                 svc.logical_ref.service_name.as_str(),
+                svc.member_index,
             )
             .await
             {
@@ -1315,7 +1326,7 @@ impl SupervisorService {
     ) -> DeploymentPlan {
         let mut record_plan = plan.clone();
         record_plan.services.retain(|s| {
-            !needs_work.contains(&s.logical_ref.to_string())
+            !needs_work.contains(&s.member_ref().to_string())
                 || s.substrate.as_ref().is_some_and(|a| clients.contains_key(a))
         });
         record_plan
@@ -1549,7 +1560,7 @@ impl SupervisorService {
             .get_completed_actions_for_instance(&instance_id)
             .map_err(|e| e.to_string())?;
         for svc in &plan.services {
-            let l_ref = svc.logical_ref.to_string();
+            let l_ref = svc.member_ref().to_string();
             let Some(prev) = deploy::current_placement(&landed, &l_ref) else { continue };
             let Some(alias) = &svc.substrate else { continue };
             let Some(entry) = inventory.get(alias.as_str()) else { continue };
@@ -1798,7 +1809,7 @@ impl SupervisorService {
             let mut opened = Vec::new();
             if let Ok(instance_id) = AppInstanceId::try_new(app_instance_id.clone()) {
                 for svc in &plan.services {
-                    let l_ref = svc.logical_ref.to_string();
+                    let l_ref = svc.member_ref().to_string();
                     if !revoked.contains(&l_ref) {
                         continue;
                     }
@@ -1833,7 +1844,7 @@ impl SupervisorService {
             }
             self.publish_opened_alerts(&app_instance_id, &opened).await;
             let mut filtered = plan.clone();
-            filtered.services.retain(|s| !revoked.contains(&s.logical_ref.to_string()));
+            filtered.services.retain(|s| !revoked.contains(&s.member_ref().to_string()));
             // `record_plan` must keep the revoked member, not drop it.
             // This is the same baseline `Reconciler::
             // compute_diff` reads next pass -- filtering it here as well
@@ -1887,7 +1898,7 @@ impl SupervisorService {
         // here, not just the standalone push (phase 7). A service with no
         // declared dependencies emits no bindings at all, so its epoch is
         // never read; advancing it anyway would be harmless but pointless.
-        let mut binding_epochs: BTreeMap<LogicalServiceRef, u64> = BTreeMap::new();
+        let mut binding_epochs: BTreeMap<MemberRef, u64> = BTreeMap::new();
         for svc in &plan.services {
             if svc.resolved_dependencies.is_empty() {
                 continue;
@@ -1896,10 +1907,10 @@ impl SupervisorService {
                 .store
                 .advance_binding_epoch(
                     &plan.app_instance_id.to_string(),
-                    &svc.logical_ref.to_string(),
+                    &svc.member_ref().to_string(),
                 )
                 .map_err(|e| e.to_string())?;
-            binding_epochs.insert(svc.logical_ref.clone(), epoch);
+            binding_epochs.insert(svc.member_ref(), epoch);
         }
 
         let report = deploy::apply_plan(
@@ -1937,7 +1948,7 @@ impl SupervisorService {
 
         if !report.is_complete() {
             let failures: Vec<String> =
-                report.failures.iter().map(|f| format!("{}: {}", f.logical_ref, f.error)).collect();
+                report.failures.iter().map(|f| format!("{}: {}", f.member_ref, f.error)).collect();
             return Err(format!("deploy applied with failures: {}", failures.join("; ")));
         }
 
@@ -1976,7 +1987,7 @@ impl SupervisorService {
         opened: &mut Vec<(AlertKind, String)>,
     ) -> Result<Vec<BindingWriteOutcome>, String> {
         let app_instance_id = plan.app_instance_id.to_string();
-        let l_ref = svc.logical_ref.to_string();
+        let l_ref = svc.member_ref().to_string();
 
         let epoch = self
             .store
@@ -2075,7 +2086,7 @@ impl SupervisorService {
         generation: u64,
         epoch: u64,
     ) -> Result<Vec<BindingWriteOutcome>, String> {
-        let binding_epochs = BTreeMap::from([(svc.logical_ref.clone(), epoch)]);
+        let binding_epochs = BTreeMap::from([(svc.member_ref(), epoch)]);
         let wit_plan = map_deployment_plan_to_wit(
             plan,
             &[svc],
@@ -2241,6 +2252,7 @@ impl SupervisorService {
                     service_name: m.service_name,
                     master_did: m.master_did,
                     vault_name: m.vault_name,
+                    member_index: m.member_index,
                 })
                 .collect(),
         };
@@ -2648,7 +2660,7 @@ impl SupervisorService {
             .map_err(|e| RpcError::InternalError(e.to_string()))?;
 
         let svc =
-            plan.services.iter().find(|s| s.logical_ref.to_string() == logical_ref).ok_or_else(
+            plan.services.iter().find(|s| s.member_ref().to_string() == logical_ref).ok_or_else(
                 || {
                     RpcError::InvalidParams(format!(
                         "app instance '{app_instance_id}' has no member '{logical_ref}' in its \
@@ -2681,6 +2693,7 @@ impl SupervisorService {
             &app_instance_id,
             &logical_ref,
             svc.logical_ref.service_name.as_str(),
+            svc.member_index,
             &instance_did,
         )
         .await
@@ -2711,6 +2724,7 @@ impl SupervisorService {
         app_instance_id: &str,
         logical_ref: &str,
         service_name: &str,
+        member_index: u32,
         instance_did: &str,
     ) -> Result<(), String> {
         let writer = self.anchor_writer.as_ref().ok_or_else(|| {
@@ -2718,9 +2732,10 @@ impl SupervisorService {
              cannot publish a revocation"
                 .to_string()
         })?;
-        let master = keys::master_for_member(&self.vault, app_instance_id, service_name)
-            .await
-            .map_err(|e| e.to_string())?;
+        let master =
+            keys::master_for_member(&self.vault, app_instance_id, service_name, member_index)
+                .await
+                .map_err(|e| e.to_string())?;
         writer
             .revoke_instance(&master, instance_did)
             .await
@@ -2753,13 +2768,13 @@ impl SupervisorService {
             if svc.resolved_dependencies.is_empty() {
                 continue;
             }
-            let dependent_ref = svc.logical_ref.to_string();
+            let dependent_ref = svc.member_ref().to_string();
             let written_epoch =
                 self.store.binding_epoch(app_instance_id, &dependent_ref).unwrap_or(0);
             let observed: BTreeMap<&str, u64> = report
                 .services
                 .iter()
-                .find(|s| s.logical_ref.to_string() == dependent_ref)
+                .find(|s| s.member_ref().to_string() == dependent_ref)
                 .map(|s| s.binding_epochs.iter().map(|(n, e)| (n.as_str(), *e)).collect())
                 .unwrap_or_default();
             for dependency_name in svc.resolved_dependencies.keys() {
@@ -2792,7 +2807,7 @@ impl SupervisorService {
             .filter(|s| {
                 matches!(s.signal, Signal::InstanceNotRunning(_)) && !s.substrate_did.is_empty()
             })
-            .map(|s| (s.logical_ref.to_string(), s.service_id.clone(), s.substrate_did.clone()))
+            .map(|s| (s.member_ref().to_string(), s.service_id.clone(), s.substrate_did.clone()))
             .collect()
     }
 
@@ -2855,20 +2870,22 @@ impl SupervisorService {
         let mut missing_placement: BTreeSet<String> = BTreeSet::new();
         let mut did_to_alias: BTreeMap<String, String> = BTreeMap::new();
         for svc in &plan.services {
-            match deploy::current_placement(&landed, &svc.logical_ref.to_string()) {
+            match deploy::current_placement(&landed, &svc.member_ref().to_string()) {
                 None => {
                     expected.push(ExpectedService {
                         logical_ref: svc.logical_ref.clone(),
                         service_id: String::new(),
                         substrate_did: String::new(),
+                        member_index: svc.member_index,
                     });
-                    missing_placement.insert(svc.logical_ref.to_string());
+                    missing_placement.insert(svc.member_ref().to_string());
                 }
                 Some(row) => {
                     expected.push(ExpectedService {
                         logical_ref: svc.logical_ref.clone(),
                         service_id: svc.service_id.to_string(),
                         substrate_did: row.substrate_did.clone(),
+                        member_index: svc.member_index,
                     });
                     if let Some(alias) = &row.substrate_alias {
                         did_to_alias.insert(row.substrate_did.clone(), alias.clone());
@@ -2978,7 +2995,7 @@ impl SupervisorService {
         // call below sees every alert this pass newly raised, not only
         // the ones `record_report` itself knows about.
         for svc in &plan.services {
-            let l_ref = svc.logical_ref.to_string();
+            let l_ref = svc.member_ref().to_string();
             if missing_placement.contains(&l_ref) {
                 if self
                     .store
@@ -3042,7 +3059,7 @@ impl SupervisorService {
             .services
             .iter()
             .map(|s| ManagedService {
-                logical_ref: s.logical_ref.to_string(),
+                logical_ref: s.member_ref().to_string(),
                 service_id: s.service_id.clone(),
                 substrate_alias: s
                     .alias
@@ -3061,7 +3078,7 @@ impl SupervisorService {
                 // reported error.
                 restart_attempts: self
                     .store
-                    .remediation_state(&app_instance_id, &s.logical_ref.to_string())
+                    .remediation_state(&app_instance_id, &s.member_ref().to_string())
                     .ok()
                     .flatten()
                     .map_or(0, |r| r.attempts),
@@ -3227,7 +3244,10 @@ mod tests {
 
     use syneroym_app_orchestration::{
         ActionState,
-        models::{AppBlueprintId, LogicalServiceName, ServiceConfig, ServiceType, TopologyMode},
+        models::{
+            AppBlueprintId, LogicalServiceName, LogicalServiceRef, ServiceConfig, ServiceType,
+            TopologyMode,
+        },
     };
     use syneroym_identity::{DelegationCertificate, substrate};
     use syneroym_rpc::AuthLevel;
@@ -3663,7 +3683,7 @@ mod tests {
         let s = service();
         let plan_json = plan_json_one_service("inst-1", "backend", None);
         s.store.submit("inst-1", &plan_json, "{}", "did:key:owner", 0).unwrap();
-        s.store.revoke_placement("inst-1", "inst-1/backend", 1_000).unwrap();
+        s.store.revoke_placement("inst-1", "inst-1/backend#0", 1_000).unwrap();
 
         let res = dispatch(
             &s,
@@ -3675,7 +3695,7 @@ mod tests {
         .unwrap();
         let status: InstanceStatus = serde_json::from_value(res.payload).unwrap();
 
-        assert_eq!(status.revoked_placements, vec!["inst-1/backend".to_string()]);
+        assert_eq!(status.revoked_placements, vec!["inst-1/backend#0".to_string()]);
     }
 
     /// M05A A5c D-A5c-1 (§19.1, matrix row 20's blast-radius neighbor): a
@@ -3694,7 +3714,7 @@ mod tests {
             .append_action(
                 deployment_id,
                 "ADD",
-                "inst-1/backend",
+                "inst-1/backend#0",
                 Some("edge-1"),
                 "did:key:zEdge1",
                 ActionState::Completed,
@@ -3738,7 +3758,7 @@ mod tests {
             .append_action(
                 deployment_id,
                 "ADD",
-                "inst-1/backend",
+                "inst-1/backend#0",
                 Some("edge-1"),
                 "did:key:zEdge1",
                 ActionState::Completed,
@@ -3785,7 +3805,7 @@ mod tests {
             .append_action(
                 deployment_id,
                 "ADD",
-                "inst-1/backend",
+                "inst-1/backend#0",
                 Some("edge-1"),
                 "did:key:zEdge1",
                 ActionState::Completed,
@@ -3824,7 +3844,7 @@ mod tests {
             .append_action(
                 deployment_id,
                 "ADD",
-                "inst-1/backend",
+                "inst-1/backend#0",
                 Some("edge-1"),
                 "did:key:zEdge1",
                 ActionState::Completed,
@@ -3891,7 +3911,7 @@ mod tests {
             .append_action(
                 deployment_id,
                 "ADD",
-                "inst-1/backend",
+                "inst-1/backend#0",
                 Some("edge-1"),
                 "did:key:zEdge1",
                 ActionState::Completed,
@@ -3994,7 +4014,7 @@ mod tests {
         })
         .to_string();
         let plan = DeploymentPlan::from_json(&plan_json).unwrap();
-        let needs_work: BTreeSet<String> = ["inst-1/svc-b".to_string()].into_iter().collect();
+        let needs_work: BTreeSet<String> = ["inst-1/svc-b#0".to_string()].into_iter().collect();
         let identity = Identity::generate().unwrap();
         let client = Arc::new(SyneroymClient::new_with_identity(
             "did:key:zEdge2".to_string(),
@@ -4037,7 +4057,7 @@ mod tests {
         })
         .to_string();
         let plan = DeploymentPlan::from_json(&plan_json).unwrap();
-        let needs_work: BTreeSet<String> = ["inst-1/svc-b".to_string()].into_iter().collect();
+        let needs_work: BTreeSet<String> = ["inst-1/svc-b#0".to_string()].into_iter().collect();
 
         let record_plan =
             SupervisorService::record_plan_for_pass(&plan, &needs_work, &BTreeMap::new());
@@ -4370,7 +4390,7 @@ mod tests {
             .append_action(
                 deployment_id,
                 "ADD",
-                "inst-1/backend",
+                "inst-1/backend#0",
                 Some("edge-1"),
                 "did:key:zEdge1",
                 ActionState::Completed,
@@ -4712,6 +4732,7 @@ mod tests {
             instance_certificate_issued_at: None,
             instance_certificate_expires_at: None,
             binding_epochs: Vec::new(),
+            member_index: 0,
         }
     }
 
@@ -4990,7 +5011,7 @@ mod tests {
             .append_action(
                 deployment_id,
                 "ADD",
-                "inst-1/frontend",
+                "inst-1/frontend#0",
                 Some("edge-1"),
                 "did:key:zEdge1",
                 ActionState::Completed,
@@ -5009,7 +5030,7 @@ mod tests {
             .iter()
             .find(|a| a.kind == AlertKind::OrphanedService)
             .unwrap_or_else(|| panic!("no OrphanedService alert among {active:?}"));
-        assert_eq!(orphan.logical_ref.as_deref(), Some("inst-1/frontend"));
+        assert_eq!(orphan.logical_ref.as_deref(), Some("inst-1/frontend#0"));
         assert_eq!(orphan.substrate_did, "did:key:zEdge1");
     }
 
@@ -5084,6 +5105,7 @@ mod tests {
                 vec![ServiceId::new("did:key:hDepMember")],
             )]),
             topology_mode: TopologyMode::Singleton,
+            member_index: 0,
         }
     }
 
@@ -5131,7 +5153,7 @@ mod tests {
 
         assert_eq!(outcomes, vec![BindingWriteOutcome::Applied]);
         assert_eq!(actor.calls.lock().unwrap().len(), 1);
-        assert_eq!(s.store.binding_epoch("inst-1", "inst-1/frontend").unwrap(), 1);
+        assert_eq!(s.store.binding_epoch("inst-1", "inst-1/frontend#0").unwrap(), 1);
         assert!(opened.is_empty());
     }
 
@@ -5151,7 +5173,7 @@ mod tests {
         s.push_bindings(&instance_id, &plan, &svc, &dyn_actor, 0, &mut opened).await.unwrap();
 
         assert_eq!(actor.calls.lock().unwrap().len(), 1, "a conflict must not be retried");
-        assert_eq!(opened, vec![(AlertKind::BindingConflict, "inst-1/frontend".to_string())]);
+        assert_eq!(opened, vec![(AlertKind::BindingConflict, "inst-1/frontend#0".to_string())]);
     }
 
     /// D-A5c-19/F4: `Stale(held)` retries exactly once, at `held + 1` --
@@ -5176,9 +5198,9 @@ mod tests {
         assert_eq!(calls.len(), 2, "exactly one retry");
         assert_eq!(calls[1].bindings[0].epoch, 6, "the retry must land at held + 1, not held");
         drop(calls);
-        assert_eq!(opened, vec![(AlertKind::BindingConflict, "inst-1/frontend".to_string())]);
+        assert_eq!(opened, vec![(AlertKind::BindingConflict, "inst-1/frontend#0".to_string())]);
         assert_eq!(
-            s.store.binding_epoch("inst-1", "inst-1/frontend").unwrap(),
+            s.store.binding_epoch("inst-1", "inst-1/frontend#0").unwrap(),
             6,
             "the local counter must agree with the substrate after the retry"
         );
@@ -5210,7 +5232,7 @@ mod tests {
         };
         let rows = s.binding_convergence_rows("inst-1", &plan, &report);
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].dependent_logical_ref, "inst-1/frontend");
+        assert_eq!(rows[0].dependent_logical_ref, "inst-1/frontend#0");
         assert_eq!(rows[0].dependency_name, "backend");
         assert_eq!(rows[0].written_epoch, 1);
         assert_eq!(rows[0].observed_epoch, Some(1));
@@ -5235,7 +5257,7 @@ mod tests {
         let svc = dependent_service("frontend", "backend");
         let plan = plan_with_one_dependent(svc);
         s.store.submit("inst-1", &plan.to_json().unwrap(), "{}", "did:key:owner", 0).unwrap();
-        s.store.advance_binding_epoch("inst-1", "inst-1/frontend").unwrap();
+        s.store.advance_binding_epoch("inst-1", "inst-1/frontend#0").unwrap();
 
         let res = dispatch(
             &s,
@@ -5248,7 +5270,7 @@ mod tests {
         let status: InstanceStatus = serde_json::from_value(res.payload).unwrap();
 
         assert_eq!(status.bindings.len(), 1, "{:?}", status.bindings);
-        assert_eq!(status.bindings[0].dependent_logical_ref, "inst-1/frontend");
+        assert_eq!(status.bindings[0].dependent_logical_ref, "inst-1/frontend#0");
         assert_eq!(status.bindings[0].dependency_name, "backend");
         assert_eq!(status.bindings[0].written_epoch, 1);
         assert_eq!(status.bindings[0].observed_epoch, None);
@@ -5265,7 +5287,7 @@ mod tests {
         let s = service();
         let svc = dependent_service("frontend", "backend");
         let plan = plan_with_one_dependent(svc);
-        let _ = s.store.advance_binding_epoch("inst-1", "inst-1/frontend");
+        let _ = s.store.advance_binding_epoch("inst-1", "inst-1/frontend#0");
 
         let report = health::HealthReport { substrates: Vec::new(), services: Vec::new() };
         let rows = s.binding_convergence_rows("inst-1", &plan, &report);
@@ -5301,15 +5323,15 @@ mod tests {
 
         let first = s.push_bindings(&instance_id, &plan, &svc, &dyn_actor, 0, &mut opened).await;
         assert!(first.is_err());
-        assert_eq!(s.store.binding_epoch("inst-1", "inst-1/frontend").unwrap(), 1);
-        assert_eq!(opened, vec![(AlertKind::BindingConflict, "inst-1/frontend".to_string())]);
+        assert_eq!(s.store.binding_epoch("inst-1", "inst-1/frontend#0").unwrap(), 1);
+        assert_eq!(opened, vec![(AlertKind::BindingConflict, "inst-1/frontend#0".to_string())]);
         let alerts = s.store.alerts.active(&instance_id).unwrap();
         assert!(alerts.iter().any(|a| a.kind == AlertKind::BindingConflict), "{alerts:?}");
 
         let second = s.push_bindings(&instance_id, &plan, &svc, &dyn_actor, 0, &mut opened).await;
         assert_eq!(second.unwrap(), vec![BindingWriteOutcome::Applied]);
         assert_eq!(
-            s.store.binding_epoch("inst-1", "inst-1/frontend").unwrap(),
+            s.store.binding_epoch("inst-1", "inst-1/frontend#0").unwrap(),
             2,
             "the retry must carry a fresh epoch, not reuse the one the failed attempt spent"
         );
@@ -5488,6 +5510,7 @@ mod tests {
             instance_certificate_issued_at: Some(issued_at),
             instance_certificate_expires_at: Some(expires_at),
             binding_epochs: Vec::new(),
+            member_index: 0,
         }
     }
 
@@ -5576,7 +5599,7 @@ mod tests {
     #[test]
     fn a_member_in_needs_work_is_not_also_renewed_this_pass() {
         let report = report_of(vec![near_expiry_health("backend", "did:key:hBackend")]);
-        let needs_work = BTreeSet::from(["inst-1/backend".to_string()]);
+        let needs_work = BTreeSet::from(["inst-1/backend#0".to_string()]);
         let candidates =
             SupervisorService::renewal_candidates(&report, &needs_work, &BTreeSet::new(), NOW, 5);
         assert!(candidates.is_empty(), "{candidates:?}");
@@ -5640,7 +5663,7 @@ mod tests {
             actor.renewed.lock().unwrap().is_empty(),
             "a locked vault must not reach the substrate at all"
         );
-        assert_eq!(opened, vec![(AlertKind::VaultLocked, "inst-1/backend".to_string())]);
+        assert_eq!(opened, vec![(AlertKind::VaultLocked, "inst-1/backend#0".to_string())]);
 
         // The rest of the pass is unaffected: a restart candidate on the
         // same instance still records its attempt.
@@ -5714,7 +5737,7 @@ mod tests {
         let refs: BTreeSet<_> = locked.iter().filter_map(|a| a.logical_ref.clone()).collect();
         assert_eq!(
             refs,
-            BTreeSet::from(["inst-1/backend".to_string(), "inst-1/frontend".to_string()]),
+            BTreeSet::from(["inst-1/backend#0".to_string(), "inst-1/frontend#0".to_string()]),
             "the member whose certificate is nowhere near expiry must not be alerted on"
         );
         assert!(
@@ -5835,7 +5858,10 @@ mod tests {
 
         assert!(actor.renewed.lock().unwrap().is_empty());
         assert!(actor.restarted.lock().unwrap().is_empty());
-        assert_eq!(opened, vec![(AlertKind::CertificateNearExpiry, "inst-1/backend".to_string())]);
+        assert_eq!(
+            opened,
+            vec![(AlertKind::CertificateNearExpiry, "inst-1/backend#0".to_string())]
+        );
         let alerts = s.store.alerts.active(&AppInstanceId::new("inst-1")).unwrap();
         assert!(alerts.iter().any(|a| a.detail.contains("mint")), "{alerts:?}");
     }
@@ -5879,7 +5905,10 @@ mod tests {
         .await;
 
         assert!(actor.restarted.lock().unwrap().is_empty());
-        assert_eq!(opened, vec![(AlertKind::CertificateNearExpiry, "inst-1/backend".to_string())]);
+        assert_eq!(
+            opened,
+            vec![(AlertKind::CertificateNearExpiry, "inst-1/backend#0".to_string())]
+        );
         let alerts = s.store.alerts.active(&AppInstanceId::new("inst-1")).unwrap();
         assert!(alerts.iter().any(|a| a.detail.contains("install")), "{alerts:?}");
     }
@@ -5927,14 +5956,17 @@ mod tests {
 
         // The certificate itself landed.
         assert_eq!(actor.renewed.lock().unwrap().len(), 1);
-        assert_eq!(opened, vec![(AlertKind::RotationRestartPending, "inst-1/backend".to_string())]);
+        assert_eq!(
+            opened,
+            vec![(AlertKind::RotationRestartPending, "inst-1/backend#0".to_string())]
+        );
         let alerts = s.store.alerts.active(&AppInstanceId::new("inst-1")).unwrap();
         assert!(
             !alerts.iter().any(|a| a.kind == AlertKind::CertificateNearExpiry),
             "a landed renewal must not also read as a stalled one: {alerts:?}"
         );
         assert!(
-            s.store.pending_rotation_restarts("inst-1").unwrap().contains("inst-1/backend"),
+            s.store.pending_rotation_restarts("inst-1").unwrap().contains("inst-1/backend#0"),
             "the owed restart must be persisted, not just alerted"
         );
 
@@ -5969,12 +6001,12 @@ mod tests {
         ))
         .unwrap();
         let instance_id = AppInstanceId::new("inst-1");
-        s.store.mark_rotation_restart_owed("inst-1", "inst-1/backend", NOW as i64).unwrap();
+        s.store.mark_rotation_restart_owed("inst-1", "inst-1/backend#0", NOW as i64).unwrap();
         s.store
             .alerts
             .raise(
                 &instance_id,
-                Some("inst-1/backend"),
+                Some("inst-1/backend#0"),
                 None,
                 "did:key:zEdge1",
                 AlertKind::RotationRestartPending,
@@ -5982,7 +6014,7 @@ mod tests {
             )
             .unwrap();
         let actor = Arc::new(RenewalActor::default());
-        let pending: BTreeSet<String> = ["inst-1/backend".to_string()].into_iter().collect();
+        let pending: BTreeSet<String> = ["inst-1/backend#0".to_string()].into_iter().collect();
         let mut opened = Vec::new();
 
         s.retry_pending_rotation_restarts(
@@ -6015,12 +6047,12 @@ mod tests {
         ))
         .unwrap();
         let instance_id = AppInstanceId::new("inst-1");
-        s.store.mark_rotation_restart_owed("inst-1", "inst-1/backend", NOW as i64).unwrap();
+        s.store.mark_rotation_restart_owed("inst-1", "inst-1/backend#0", NOW as i64).unwrap();
         let actor = Arc::new(RenewalActor {
             restart_error: Some("still refusing".to_string()),
             ..RenewalActor::default()
         });
-        let pending: BTreeSet<String> = ["inst-1/backend".to_string()].into_iter().collect();
+        let pending: BTreeSet<String> = ["inst-1/backend#0".to_string()].into_iter().collect();
         let mut opened = Vec::new();
 
         s.retry_pending_rotation_restarts(
@@ -6035,7 +6067,7 @@ mod tests {
         )
         .await;
 
-        assert!(s.store.pending_rotation_restarts("inst-1").unwrap().contains("inst-1/backend"));
+        assert!(s.store.pending_rotation_restarts("inst-1").unwrap().contains("inst-1/backend#0"));
         assert!(
             s.store
                 .alerts
@@ -6106,7 +6138,7 @@ mod tests {
                 .alerts
                 .raise(
                     &instance_id,
-                    Some("inst-1/backend"),
+                    Some("inst-1/backend#0"),
                     None,
                     "did:key:zEdge1",
                     kind,
@@ -6198,11 +6230,12 @@ mod tests {
         ))
         .unwrap();
         let candidate = RenewalCandidate {
-            logical_ref: "inst-1/backend".to_string(),
+            member_ref: "inst-1/backend#0".to_string(),
             service_name: "backend".to_string(),
             service_id: "did:key:hBackend".to_string(),
             substrate_did: "did:key:zEdge1".to_string(),
             expires_at: NOW + 1_440,
+            member_index: 0,
         };
         let actor = Arc::new(RenewalActor::default());
         let mut opened = Vec::new();
@@ -6224,7 +6257,7 @@ mod tests {
         assert!(actor.renewed.lock().unwrap().is_empty());
         assert_eq!(
             opened,
-            vec![(AlertKind::VaultLocked, "inst-1/backend".to_string())],
+            vec![(AlertKind::VaultLocked, "inst-1/backend#0".to_string())],
             "a vault lock found mid-mint is the same condition as one found up front, and must \
              not surface under a different alert kind"
         );
@@ -6259,13 +6292,13 @@ mod tests {
         // The next pass recomputes from live health. The five that landed
         // now report fresh certificates; the deferred two are still due
         // and are picked up.
-        let taken: BTreeSet<String> = first.iter().map(|c| c.logical_ref.clone()).collect();
+        let taken: BTreeSet<String> = first.iter().map(|c| c.member_ref.clone()).collect();
         let next_report = report_of(
             names
                 .iter()
                 .map(|n| {
                     let id = format!("did:key:h{n}");
-                    if taken.contains(&format!("inst-1/{n}")) {
+                    if taken.contains(&format!("inst-1/{n}#0")) {
                         fresh_health(n, &id)
                     } else {
                         near_expiry_health(n, &id)
@@ -6280,7 +6313,7 @@ mod tests {
             NOW,
             5,
         );
-        let deferred: BTreeSet<String> = second.iter().map(|c| c.logical_ref.clone()).collect();
+        let deferred: BTreeSet<String> = second.iter().map(|c| c.member_ref.clone()).collect();
         assert_eq!(deferred.len(), 2, "{second:?}");
         assert!(deferred.is_disjoint(&taken));
     }
@@ -6314,8 +6347,8 @@ mod tests {
         );
 
         assert_eq!(
-            candidates.iter().map(|c| c.logical_ref.as_str()).collect::<Vec<_>>(),
-            vec!["inst-1/b"],
+            candidates.iter().map(|c| c.member_ref.as_str()).collect::<Vec<_>>(),
+            vec!["inst-1/b#0"],
             "the one slot must go to the member closest to expiring: {candidates:?}"
         );
     }
@@ -6432,7 +6465,7 @@ mod tests {
         let plan =
             DeploymentPlan::from_json(&plan_json_two_services("inst-1", "backend", "frontend"))
                 .unwrap();
-        s.store.revoke_placement("inst-1", "inst-1/backend", 1_000).unwrap();
+        s.store.revoke_placement("inst-1", "inst-1/backend#0", 1_000).unwrap();
 
         // No clients are built for either service, so `certify_placed_
         // members` fails on whichever service actually reaches it -- and
@@ -6455,7 +6488,7 @@ mod tests {
         let revoked: Vec<_> =
             alerts.iter().filter(|a| a.kind == AlertKind::InstanceRevoked).collect();
         assert_eq!(revoked.len(), 1, "{alerts:?}");
-        assert_eq!(revoked[0].logical_ref.as_deref(), Some("inst-1/backend"));
+        assert_eq!(revoked[0].logical_ref.as_deref(), Some("inst-1/backend#0"));
     }
 
     /// `force-reconcile` reaches the same gate by the same route: its own
@@ -6469,7 +6502,7 @@ mod tests {
         let plan_json = plan_json_two_services("inst-1", "backend", "frontend");
         let plan = DeploymentPlan::from_json(&plan_json).unwrap();
         s.store.submit("inst-1", &plan_json, "{}", "did:key:owner", 0).unwrap();
-        s.store.revoke_placement("inst-1", "inst-1/backend", 1_000).unwrap();
+        s.store.revoke_placement("inst-1", "inst-1/backend#0", 1_000).unwrap();
 
         let err = s
             .apply_with_clients(&plan, &plan, &BTreeMap::new(), &BTreeMap::new(), 0, Vec::new())
@@ -6499,7 +6532,7 @@ mod tests {
         let s = service();
         let plan_json = plan_json_one_service("inst-1", "backend", Some("edge-1"));
         let plan = DeploymentPlan::from_json(&plan_json).unwrap();
-        s.store.revoke_placement("inst-1", "inst-1/backend", 1_000).unwrap();
+        s.store.revoke_placement("inst-1", "inst-1/backend#0", 1_000).unwrap();
 
         let identity = Identity::generate().unwrap();
         let client = Arc::new(SyneroymClient::new_with_identity(
@@ -6538,7 +6571,7 @@ mod tests {
         let plan_json = plan_json_one_service("inst-1", "backend", Some("edge-1"));
         s.store.submit("inst-1", &plan_json, "{}", "did:key:owner", 0).unwrap();
         let plan = DeploymentPlan::from_json(&plan_json).unwrap();
-        s.store.revoke_placement("inst-1", "inst-1/backend", 1_000).unwrap();
+        s.store.revoke_placement("inst-1", "inst-1/backend#0", 1_000).unwrap();
 
         let identity = Identity::generate().unwrap();
         let client = Arc::new(SyneroymClient::new_with_identity(
@@ -6588,11 +6621,11 @@ mod tests {
             near_expiry_health("backend", "did:key:hBackend"),
             near_expiry_health("frontend", "did:key:hFrontend"),
         ]);
-        let revoked = BTreeSet::from(["inst-1/backend".to_string()]);
+        let revoked = BTreeSet::from(["inst-1/backend#0".to_string()]);
         let candidates =
             SupervisorService::renewal_candidates(&report, &BTreeSet::new(), &revoked, NOW, 5);
         assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0].logical_ref, "inst-1/frontend");
+        assert_eq!(candidates[0].member_ref, "inst-1/frontend#0");
     }
 
     /// D-A5d-14: without the lock, an operator's `revoke-instance` and a
@@ -6674,7 +6707,7 @@ mod tests {
         let s = Fixture { anchor_writer: Some(writer.clone()), ..Fixture::default() }.build();
         let master_did = seeded_member(&s, "backend").await;
 
-        s.record_revocation("inst-1", "inst-1/backend", "backend", "did:key:zInstanceKey")
+        s.record_revocation("inst-1", "inst-1/backend", "backend", 0, "did:key:zInstanceKey")
             .await
             .unwrap();
 
@@ -6704,7 +6737,7 @@ mod tests {
         .build();
         seeded_member(&s, "backend").await;
 
-        s.record_revocation("inst-1", "inst-1/backend", "backend", "did:key:zInstanceKey")
+        s.record_revocation("inst-1", "inst-1/backend", "backend", 0, "did:key:zInstanceKey")
             .await
             .unwrap();
         assert_eq!(
@@ -6718,7 +6751,7 @@ mod tests {
         seeded_member(&failing, "backend").await;
 
         let err = failing
-            .record_revocation("inst-1", "inst-1/backend", "backend", "did:key:zInstanceKey")
+            .record_revocation("inst-1", "inst-1/backend", "backend", 0, "did:key:zInstanceKey")
             .await
             .unwrap_err();
         assert!(err.contains("failed to publish"), "{err}");

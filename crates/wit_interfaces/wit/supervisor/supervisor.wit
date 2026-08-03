@@ -28,6 +28,11 @@ interface supervisor {
         /// bare logical name gets "no master named '<service-name>' in
         /// this vault" (S1, Slice A5b review).
         vault-name: string,
+        /// This member's ordinal (M05A A5e). `submit` returns N rows per
+        /// scaled service that are otherwise identical -- `service-name`
+        /// alone cannot distinguish them, only `vault-name` can, and an
+        /// operator should not have to parse it back out of that.
+        member-index: u32,
     }
 
     record submit-result {
@@ -37,6 +42,9 @@ interface supervisor {
     variant managed-state { applying, active, degraded, paused, retired, superseded }
 
     record managed-service {
+        /// The member's full `MemberRef` display string (M05A A5e):
+        /// `<app-instance-id>/<service-name>#<index>`. Two members of one
+        /// scaled service report two distinct rows here.
         logical-ref: string,
         service-id: string,
         substrate-alias: string,
@@ -53,6 +61,9 @@ interface supervisor {
     /// wrote versus what the hosting substrate reports serving *for that
     /// dependent*. Equal epochs mean converged.
     record binding-convergence {
+        /// The dependent member's `MemberRef` display string (M05A A5e):
+        /// each member of a scaled dependent holds its own epoch, and its
+        /// own binding-write history, so this reports one row per member.
         dependent-logical-ref: string,
         dependency-name: string,
         written-epoch: u64,
@@ -72,15 +83,17 @@ interface supervisor {
         /// implied, so an operator reading a converged status is not
         /// reading a guarantee this build cannot make.
         delivery-note: string,
-        /// Logical refs `revoke-instance` has excluded from every write
-        /// path. Otherwise invisible on this read surface
-        /// until something else triggers a write pass that reaches the
-        /// member and raises `InstanceRevoked` -- a state this permanent
-        /// should not depend on that.
+        /// Member refs (`MemberRef` display strings, M05A A5e)
+        /// `revoke-instance` has excluded from every write path. Otherwise
+        /// invisible on this read surface until something else triggers a
+        /// write pass that reaches the member and raises `InstanceRevoked`
+        /// -- a state this permanent should not depend on that.
         revoked-placements: list<string>,
     }
 
     record alert {
+        /// The member's `MemberRef` display string (M05A A5e), or absent
+        /// for a substrate-level alert that belongs to no one member.
         logical-ref: option<string>,
         substrate-did: string,
         kind: string,
@@ -144,8 +157,10 @@ interface supervisor {
     /// reconciling. Deliberately not a teardown either -- the process keeps
     /// running until an operator issues `undeploy`/`retire` separately.
     ///
-    /// `logical-ref` is the member's full logical reference, as `status`
-    /// reports it (`<app-instance-id>/<service-name>`).
+    /// `logical-ref` is the member's full `MemberRef` display string, as
+    /// `status` reports it (`<app-instance-id>/<service-name>#<index>`,
+    /// M05A A5e) -- with two members of one scaled service, the bare
+    /// `<app-instance-id>/<service-name>` no longer names one of them.
     revoke-instance: func(app-instance-id: string, logical-ref: string) -> result<_, string>;
 
     status:  func(app-instance-id: string)            -> result<instance-status, string>;

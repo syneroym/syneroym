@@ -112,6 +112,12 @@ pub struct MintedMaster {
     /// the bare logical name, which is not a valid vault key (S1, Slice
     /// A5b review).
     pub vault_name: String,
+    /// This member's ordinal (M05A A5e, D-A5e-2/§33.17): `submit` returns
+    /// N rows per scaled service that are otherwise identical --
+    /// `service_name` alone cannot distinguish them, only `vault_name`
+    /// can, and an operator reading the printed line should not have to
+    /// parse it back out of that.
+    pub member_index: u32,
 }
 
 pub struct MasterVault {
@@ -281,12 +287,17 @@ fn member_master_name(
 /// `get_or_mint` -- a placed member whose master is missing from the vault
 /// is a custody failure, and minting a fresh one there would silently give
 /// the member a new identity rather than renewing its old one.
+///
+/// `index` is the member's own ordinal (M05A A5e, D-A5e-5) -- reading it
+/// from the caller rather than hardcoding `0` is what keeps member N's
+/// anchor refresh and renewal from silently operating on member 0's master.
 pub async fn master_for_member(
     vault: &MasterVault,
     app_instance_id: &str,
     service_name: &str,
+    index: u32,
 ) -> Result<Identity, VaultError> {
-    let name = member_master_name(app_instance_id, service_name, 0)?;
+    let name = member_master_name(app_instance_id, service_name, index)?;
     vault.get(&name).await?.ok_or_else(|| {
         VaultError::Storage(anyhow::anyhow!(
             "no member master named '{name}' in this supervisor's vault; it was never minted \
@@ -311,8 +322,11 @@ pub async fn mint_and_substitute(
     let mut masters: BTreeMap<ServiceId, Identity> = BTreeMap::new();
     let mut minted = Vec::new();
     for svc in &plan.services {
-        let name =
-            member_master_name(&plan.app_instance_id, svc.logical_ref.service_name.as_str(), 0)?;
+        let name = member_master_name(
+            &plan.app_instance_id,
+            svc.logical_ref.service_name.as_str(),
+            svc.member_index,
+        )?;
         let master = vault.get_or_mint(&name).await?;
         let master_did = substrate::derive_did_key(&master.public_key());
         let master_id = ServiceId::try_new(master_did.clone()).map_err(VaultError::Storage)?;
@@ -321,6 +335,7 @@ pub async fn mint_and_substitute(
             service_name: svc.logical_ref.service_name.to_string(),
             master_did,
             vault_name: name,
+            member_index: svc.member_index,
         });
         masters.insert(master_id, master);
     }
@@ -436,6 +451,7 @@ mod tests {
             },
             resolved_dependencies: BTreeMap::new(),
             topology_mode: TopologyMode::Singleton,
+            member_index: 0,
         }
     }
 
@@ -478,24 +494,87 @@ mod tests {
         assert_eq!(p.services[1].service_id, p2.services[1].service_id);
     }
 
-    /// S5 (Slice A5b review): `AppInstanceId` only checks non-empty, so an
-    /// id containing a path separator used to mint fine and only fail
-    /// later, at `export_master`, once the operator tried to back it up.
-    /// The name must instead be refused at mint time, before anything is
-    /// stored under it.
+    /// D-A5e-5/D-A5e-11: two members of one logical service must resolve
+    /// two distinct masters, keyed on each member's own index -- the
+    /// consequence of `mint_and_substitute` reading `svc.member_index`
+    /// instead of the literal `0` it used to.
     #[tokio::test]
-    async fn a_plan_whose_instance_id_contains_a_path_separator_is_refused_before_minting() {
+    async fn mint_and_substitute_mints_a_distinct_master_per_member_index() {
         let dir = tempfile::tempdir().unwrap();
         let v = vault(dir.path());
-        let mut p = plan(vec![planned_service("frontend", "did:key:hFabricatedFrontend")]);
-        p.app_instance_id = AppInstanceId::new("evil/../instance");
+        let mut member0 = planned_service("backend", "did:key:hFabricated0");
+        let mut member1 = planned_service("backend", "did:key:hFabricated1");
+        member1.member_index = 1;
+        let mut p = plan(vec![member0.clone(), member1.clone()]);
+
+        let (minted, masters) = mint_and_substitute(&mut p, &v).await.unwrap();
+        assert_eq!(minted.len(), 2);
+        assert_ne!(p.services[0].service_id, p.services[1].service_id);
+        assert!(masters.contains_key(&p.services[0].service_id));
+        assert!(masters.contains_key(&p.services[1].service_id));
+
+        // Reusing the same indices resolves the same masters as before,
+        // proving the key really is `(instance, service, index)`.
+        member0.service_id = ServiceId::new("did:key:hFabricated0");
+        member1.service_id = ServiceId::new("did:key:hFabricated1");
+        let mut p2 = plan(vec![member0, member1]);
+        mint_and_substitute(&mut p2, &v).await.unwrap();
+        assert_eq!(p.services[0].service_id, p2.services[0].service_id);
+        assert_eq!(p.services[1].service_id, p2.services[1].service_id);
+    }
+
+    /// D-A5e-5: `master_for_member` reads the caller-supplied index, not a
+    /// hardcoded `0` -- member 1's renewal must sign with member 1's own
+    /// master, never member 0's.
+    #[tokio::test]
+    async fn master_for_member_reads_the_members_own_index_rather_than_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = vault(dir.path());
+        let member0 = v.get_or_mint("member-inst-1-backend-0").await.unwrap();
+        let member1 = v.get_or_mint("member-inst-1-backend-1").await.unwrap();
+        assert_ne!(member0.public_key(), member1.public_key());
+
+        let resolved0 = master_for_member(&v, "inst-1", "backend", 0).await.unwrap();
+        let resolved1 = master_for_member(&v, "inst-1", "backend", 1).await.unwrap();
+        assert_eq!(resolved0.public_key(), member0.public_key());
+        assert_eq!(resolved1.public_key(), member1.public_key());
+        assert_ne!(resolved0.public_key(), resolved1.public_key());
+    }
+
+    /// S5 (Slice A5b review): `AppInstanceId` used to only check non-empty,
+    /// so an id containing a path separator minted fine and only failed
+    /// later, at `export_master`, once the operator tried to back it up.
+    /// M05A A5e's `AppInstanceId` validator now closes that one layer up --
+    /// `AppInstanceId::try_new` itself refuses `/` -- but `LogicalServiceName`
+    /// still permits `..` (it forbids only `/` and `#`), so the same
+    /// defense-in-depth still matters one field over: a service name of
+    /// `..` must still be refused at mint time, before anything is stored
+    /// under it, not discovered later at `export_master`.
+    #[tokio::test]
+    async fn a_plan_whose_service_name_contains_a_path_traversal_is_refused_before_minting() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = vault(dir.path());
+        let mut p = plan(vec![planned_service("..", "did:key:hFabricatedFrontend")]);
+        p.app_instance_id = AppInstanceId::new("inst-1");
 
         let err = mint_and_substitute(&mut p, &v).await.unwrap_err();
         assert!(matches!(err, VaultError::Storage(_)), "{err:?}");
         assert!(
-            v.get("member-evil/../instance-frontend-0").await.unwrap().is_none(),
+            v.get("member-inst-1-..-0").await.unwrap().is_none(),
             "the rejected name must never have been written to the vault"
         );
+    }
+
+    /// M05A A5e (D-A5e-2/D-A5e-12): the collision this validator closes --
+    /// instance `a` + service `b-c` and instance `a-b` + service `c` used to
+    /// mint the identical vault key `member-a-b-c-0`, handing one master DID
+    /// to two different (instance, service) pairs. `AppInstanceId` now
+    /// refuses the separator outright, so the ambiguous instance id can
+    /// never be constructed in the first place.
+    #[test]
+    fn an_app_instance_id_containing_a_path_separator_is_refused_at_construction() {
+        assert!(AppInstanceId::try_new("a-b").is_ok());
+        assert!(AppInstanceId::try_new("a/b").is_err());
     }
 
     #[tokio::test]

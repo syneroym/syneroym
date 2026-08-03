@@ -127,10 +127,18 @@ fn compile_recursive<'a>(
                 service_name: name.clone(),
             };
 
-            // Deterministic ServiceId generation via sha2 + z32
-            let service_id = derive_deterministic_service_id(&logical_ref);
+            // `replicas > 1` compiles to `Redundant` (D-A5e-4); `Sharded`
+            // stays unreachable until a `ShardingStrategy` manifest surface
+            // exists (slice S1). `validate()` already refused `replicas ==
+            // 0`, so this is exactly the member count to emit.
+            let topology_mode =
+                if spec.replicas > 1 { TopologyMode::Redundant } else { TopologyMode::default() };
 
-            let resolved_dependencies = spec
+            // A dependent's `resolved_dependencies` names *every* member of
+            // its dependency (D-A5e-4/§33.7), since a binding write reaches
+            // one member's `service_bindings` row at a time and each is its
+            // own `service_id`.
+            let resolved_dependencies: BTreeMap<LogicalServiceName, Vec<ServiceId>> = spec
                 .depends_on
                 .iter()
                 .map(|dep| {
@@ -138,18 +146,34 @@ fn compile_recursive<'a>(
                         app_instance_id: instance_id.clone(),
                         service_name: dep.clone(),
                     };
-                    (dep.clone(), vec![derive_deterministic_service_id(&dep_ref)])
+                    // `dep` is guaranteed present: `validate()` already
+                    // refused any `depends_on` naming an undefined service.
+                    let dep_member_count =
+                        manifest.services.get(dep).map_or(1, |dep_spec| dep_spec.replicas);
+                    let members = (0..dep_member_count)
+                        .map(|dep_index| derive_deterministic_service_id(&dep_ref, dep_index))
+                        .collect();
+                    (dep.clone(), members)
                 })
                 .collect();
 
-            services.push(PlannedService {
-                service_id,
-                logical_ref,
-                substrate: spec.placement.as_ref().or(default_placement).map(|p| p.alias().clone()),
-                config: spec.config.clone(),
-                resolved_dependencies,
-                topology_mode: TopologyMode::default(),
-            });
+            for member_index in 0..spec.replicas {
+                // Deterministic ServiceId generation via sha2 + z32
+                let service_id = derive_deterministic_service_id(&logical_ref, member_index);
+                services.push(PlannedService {
+                    service_id,
+                    logical_ref: logical_ref.clone(),
+                    substrate: spec
+                        .placement
+                        .as_ref()
+                        .or(default_placement)
+                        .map(|p| p.alias().clone()),
+                    config: spec.config.clone(),
+                    resolved_dependencies: resolved_dependencies.clone(),
+                    topology_mode,
+                    member_index,
+                });
+            }
         }
 
         plans.push(DeploymentPlan {
@@ -166,7 +190,8 @@ fn compile_recursive<'a>(
     })
 }
 
-/// Derives a deterministic `ServiceId` for a logical service reference.
+/// Derives a deterministic `ServiceId` for one member of a logical service
+/// reference.
 ///
 /// **TODO(M2/M3A):** This is a temporary M1 hack that forcefully prepends the
 /// `ed25519-pub` multicodec prefix to a SHA-256 hash to forge a `did:key`. This
@@ -177,10 +202,25 @@ fn compile_recursive<'a>(
 /// replaced by actual deterministic derivation of valid Ed25519 keypairs (e.g.,
 /// via HKDF from a seed), where the public key goes into the plan and the
 /// private key is injected into the service.
-fn derive_deterministic_service_id(logical_ref: &LogicalServiceRef) -> ServiceId {
+///
+/// `member_index` folds into the hash **only above index 0** (M05A A5e,
+/// D-A5e-3): without `--mint-masters` there is no substitution step, so this
+/// fabricated id *is* the deployed `service_id` for an unmastered deploy, and
+/// changing what index 0 hashes to would silently re-identify every existing
+/// unmastered deployment out from under `diff_plans`, which keys on the
+/// logical ref alone and would read the new id as an `Update` rather than a
+/// `Remove`+`Add`.
+fn derive_deterministic_service_id(
+    logical_ref: &LogicalServiceRef,
+    member_index: u32,
+) -> ServiceId {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(logical_ref.to_string().as_bytes());
+    if member_index > 0 {
+        hasher.update(b"#");
+        hasher.update(member_index.to_string().as_bytes());
+    }
     let hash = hasher.finalize();
     let mut bytes = vec![0xed, 0x01]; // multicodec ed25519-pub
     bytes.extend_from_slice(&hash);
@@ -230,6 +270,7 @@ fn sort_services(
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::BTreeSet,
         path::PathBuf,
         time::{Duration, Instant},
     };
@@ -445,6 +486,249 @@ mod tests {
             compiled1.plans[0].services[0].service_id,
             compiled2.plans[0].services[0].service_id
         );
+    }
+
+    /// D-A5e-3 (§33.3, revised after review R1): `derive_deterministic_
+    /// service_id` folds the member index into its hash **only above index
+    /// 0**. Without `--mint-masters` there is no substitution step, so this
+    /// fabricated id *is* the deployed `service_id` -- changing what index 0
+    /// hashes to would silently re-identify every existing unmastered
+    /// deployment. Pins the literal hash a plain, unscaled manifest compiles
+    /// to today, not merely its shape.
+    #[tokio::test]
+    async fn an_unscaled_manifest_compiles_the_service_id_it_compiles_today() {
+        let manifest_toml = r#"
+            id = "syneroym:test-app"
+            version = "1.0.0"
+            [services.svc]
+            service_type = "wasm"
+            source = "svc.wasm"
+        "#;
+        let manifest = SynAppManifest::from_toml(manifest_toml).unwrap();
+        let catalog = LocalFilesystemCatalog::new(PathBuf::from("."));
+        let compiled = compile(AppInstanceId::new("inst"), &manifest, &catalog).await.unwrap();
+
+        let logical_ref = LogicalServiceRef {
+            app_instance_id: AppInstanceId::new("inst"),
+            service_name: LogicalServiceName::new("svc"),
+        };
+        assert_eq!(
+            compiled.plans[0].services[0].service_id,
+            derive_deterministic_service_id(&logical_ref, 0)
+        );
+    }
+
+    /// The whole reason index 0 must stay unconditional: a member index
+    /// folded in unconditionally would change index 0's hash too, and this
+    /// is the property that makes it not change.
+    #[test]
+    fn derive_deterministic_service_id_differs_by_index_above_zero_only() {
+        let logical_ref = LogicalServiceRef {
+            app_instance_id: AppInstanceId::new("inst"),
+            service_name: LogicalServiceName::new("svc"),
+        };
+        let id0 = derive_deterministic_service_id(&logical_ref, 0);
+        let id0_again = derive_deterministic_service_id(&logical_ref, 0);
+        let id1 = derive_deterministic_service_id(&logical_ref, 1);
+        let id2 = derive_deterministic_service_id(&logical_ref, 2);
+        assert_eq!(id0, id0_again);
+        assert_ne!(id0, id1);
+        assert_ne!(id1, id2);
+    }
+
+    // ── M05A A5e phase 2: `replicas` and the compiler (D-A5e-3/D-A5e-4) ─
+
+    /// The no-change regression guard for every existing manifest: a
+    /// manifest with no `replicas` compiles to exactly one member at
+    /// index 0.
+    #[tokio::test]
+    async fn a_manifest_without_replicas_compiles_to_one_member_at_index_zero() {
+        let manifest_toml = r#"
+            id = "syneroym:single-app"
+            version = "1.0.0"
+            [services.svc]
+            service_type = "wasm"
+            source = "svc.wasm"
+        "#;
+        let manifest = SynAppManifest::from_toml(manifest_toml).unwrap();
+        let catalog = LocalFilesystemCatalog::new(PathBuf::from("."));
+        let compiled = compile(AppInstanceId::new("inst"), &manifest, &catalog).await.unwrap();
+
+        assert_eq!(compiled.plans[0].services.len(), 1);
+        assert_eq!(compiled.plans[0].services[0].member_index, 0);
+        assert_eq!(compiled.plans[0].services[0].topology_mode, TopologyMode::Singleton);
+    }
+
+    /// The fabricated ids must differ, or the substitution map two members
+    /// would need at mint time collapses before it ever runs.
+    #[tokio::test]
+    async fn replicas_three_compiles_to_three_planned_services_with_distinct_service_ids() {
+        let manifest_toml = r#"
+            id = "syneroym:scaled-app"
+            version = "1.0.0"
+            [services.backend]
+            service_type = "wasm"
+            source = "backend.wasm"
+            replicas = 3
+        "#;
+        let manifest = SynAppManifest::from_toml(manifest_toml).unwrap();
+        let catalog = LocalFilesystemCatalog::new(PathBuf::from("."));
+        let compiled = compile(AppInstanceId::new("inst"), &manifest, &catalog).await.unwrap();
+
+        assert_eq!(compiled.plans[0].services.len(), 3);
+        let ids: BTreeSet<_> =
+            compiled.plans[0].services.iter().map(|s| s.service_id.clone()).collect();
+        assert_eq!(ids.len(), 3, "every member must have a distinct fabricated id");
+    }
+
+    #[tokio::test]
+    async fn each_member_of_one_logical_service_carries_its_own_stored_index() {
+        let manifest_toml = r#"
+            id = "syneroym:scaled-app"
+            version = "1.0.0"
+            [services.backend]
+            service_type = "wasm"
+            source = "backend.wasm"
+            replicas = 3
+        "#;
+        let manifest = SynAppManifest::from_toml(manifest_toml).unwrap();
+        let catalog = LocalFilesystemCatalog::new(PathBuf::from("."));
+        let compiled = compile(AppInstanceId::new("inst"), &manifest, &catalog).await.unwrap();
+
+        let mut indices: Vec<u32> =
+            compiled.plans[0].services.iter().map(|s| s.member_index).collect();
+        indices.sort_unstable();
+        assert_eq!(indices, vec![0, 1, 2]);
+        // Every member shares the same logical ref -- only the index and
+        // the fabricated id distinguish them.
+        for svc in &compiled.plans[0].services {
+            assert_eq!(svc.logical_ref.service_name.as_str(), "backend");
+        }
+    }
+
+    #[tokio::test]
+    async fn replicas_above_one_compiles_the_topology_mode_as_redundant() {
+        let manifest_toml = r#"
+            id = "syneroym:scaled-app"
+            version = "1.0.0"
+            [services.backend]
+            service_type = "wasm"
+            source = "backend.wasm"
+            replicas = 2
+        "#;
+        let manifest = SynAppManifest::from_toml(manifest_toml).unwrap();
+        let catalog = LocalFilesystemCatalog::new(PathBuf::from("."));
+        let compiled = compile(AppInstanceId::new("inst"), &manifest, &catalog).await.unwrap();
+
+        for svc in &compiled.plans[0].services {
+            assert_eq!(svc.topology_mode, TopologyMode::Redundant);
+        }
+    }
+
+    /// The dependent's `resolved_dependencies` must name every member of a
+    /// scaled dependency, not just its first -- this is what makes a push
+    /// reach every member's own `service_bindings` row.
+    #[tokio::test]
+    async fn a_dependents_resolved_dependencies_names_every_member_of_its_dependency() {
+        let manifest_toml = r#"
+            id = "syneroym:scaled-app"
+            version = "1.0.0"
+
+            [services.backend]
+            service_type = "wasm"
+            source = "backend.wasm"
+            replicas = 2
+
+            [services.frontend]
+            service_type = "wasm"
+            source = "frontend.wasm"
+            depends_on = ["backend"]
+        "#;
+        let manifest = SynAppManifest::from_toml(manifest_toml).unwrap();
+        let catalog = LocalFilesystemCatalog::new(PathBuf::from("."));
+        let compiled = compile(AppInstanceId::new("inst"), &manifest, &catalog).await.unwrap();
+
+        let backend_ids: BTreeSet<_> = compiled.plans[0]
+            .services
+            .iter()
+            .filter(|s| s.logical_ref.service_name.as_str() == "backend")
+            .map(|s| s.service_id.clone())
+            .collect();
+        assert_eq!(backend_ids.len(), 2);
+
+        let frontend = compiled.plans[0]
+            .services
+            .iter()
+            .find(|s| s.logical_ref.service_name.as_str() == "frontend")
+            .unwrap();
+        let resolved = frontend.resolved_dependencies.get(&LogicalServiceName::new("backend"));
+        let resolved: BTreeSet<_> = resolved.unwrap().iter().cloned().collect();
+        assert_eq!(resolved, backend_ids, "frontend must resolve both of backend's members");
+    }
+
+    #[tokio::test]
+    async fn replicas_of_zero_or_above_the_cap_is_refused_at_manifest_validation() {
+        let zero = r#"
+            id = "syneroym:bad"
+            version = "1.0.0"
+            [services.svc]
+            service_type = "wasm"
+            source = "svc.wasm"
+            replicas = 0
+        "#;
+        let err = SynAppManifest::from_toml(zero).unwrap_err();
+        assert!(err.to_string().contains("replicas = 0"), "{err}");
+
+        let above_cap = r#"
+            id = "syneroym:bad"
+            version = "1.0.0"
+            [services.svc]
+            service_type = "wasm"
+            source = "svc.wasm"
+            replicas = 17
+        "#;
+        let err = SynAppManifest::from_toml(above_cap).unwrap_err();
+        assert!(err.to_string().contains("cap"), "{err}");
+
+        let at_cap = r#"
+            id = "syneroym:ok"
+            version = "1.0.0"
+            [services.svc]
+            service_type = "wasm"
+            source = "svc.wasm"
+            replicas = 16
+        "#;
+        assert!(SynAppManifest::from_toml(at_cap).is_ok());
+    }
+
+    /// D-A5e-16 (§41 answer 3): `replicas > 1` alongside a declared
+    /// `schema` is refused, naming M7 as the reason it will relax --
+    /// silently splitting a stateful service's data across N databases is
+    /// discovered as data loss otherwise.
+    #[tokio::test]
+    async fn replicas_above_one_is_refused_for_a_service_declaring_a_schema() {
+        let manifest_toml = r#"
+            id = "syneroym:bad"
+            version = "1.0.0"
+            [services.svc]
+            service_type = "wasm"
+            source = "svc.wasm"
+            replicas = 2
+            schema = "shared.json"
+        "#;
+        let err = SynAppManifest::from_toml(manifest_toml).unwrap_err();
+        assert!(err.to_string().contains("M7"), "{err}");
+
+        // A `schema` with no scale-out stays valid.
+        let unscaled = r#"
+            id = "syneroym:ok"
+            version = "1.0.0"
+            [services.svc]
+            service_type = "wasm"
+            source = "svc.wasm"
+            schema = "shared.json"
+        "#;
+        assert!(SynAppManifest::from_toml(unscaled).is_ok());
     }
 
     #[tokio::test]

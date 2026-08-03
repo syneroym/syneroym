@@ -91,7 +91,29 @@ define_string_wrapper!(
     AppBlueprintId,
     "Unique identifier for an application blueprint/definition."
 );
-define_string_wrapper!(AppInstanceId, "Unique identifier for a running application instance.");
+define_string_wrapper!(
+    AppInstanceId,
+    "Unique identifier for a running application instance.",
+    |s: &str| {
+        if s.is_empty() {
+            return Err(anyhow!("AppInstanceId cannot be empty"));
+        }
+        if s.contains('/') {
+            return Err(anyhow!("AppInstanceId cannot contain '/'"));
+        }
+        // M05A A5e (D-A5e-2/D-A5e-12): `#` is `MemberRef`'s own index
+        // separator. Forbidding it here, on the instance-id half of the
+        // boundary it splits on, is what closes the pre-existing
+        // `member_master_name` collision between instance `a` + service
+        // `b-c` and instance `a-b` + service `c` -- the last segment of a
+        // valid `MemberRef` display form is always a bare `u32`, so only
+        // the instance/service boundary needs the guard.
+        if s.contains('#') {
+            return Err(anyhow!("AppInstanceId cannot contain '#'"));
+        }
+        Ok(())
+    }
+);
 
 define_string_wrapper!(
     LogicalServiceName,
@@ -102,6 +124,12 @@ define_string_wrapper!(
         }
         if s.contains('/') {
             return Err(anyhow!("LogicalServiceName cannot contain '/'"));
+        }
+        // M05A A5e (D-A5e-2): `#` is `MemberRef`'s own index separator --
+        // forbidden here so a `MemberRef` display string can always be
+        // parsed back by splitting on the last `#`, unambiguously.
+        if s.contains('#') {
+            return Err(anyhow!("LogicalServiceName cannot contain '#'"));
         }
         Ok(())
     }
@@ -203,6 +231,58 @@ impl TryFrom<String> for LogicalServiceRef {
 
 impl From<LogicalServiceRef> for String {
     fn from(r: LogicalServiceRef) -> Self {
+        r.to_string()
+    }
+}
+
+/// Identifies one managed **member** of a logical service, as distinct from
+/// the logical service itself (M05A A5e, D-A5e-2).
+///
+/// `LogicalServiceRef` is the key of a logical service -- what the resolver,
+/// `TopologyEntry`, and a binding's dependency name are about. `replicas`
+/// makes that key stop being unique for anything the supervisor stores or
+/// reports per *managed unit*: a placement row, a binding epoch, a
+/// restart-attempt counter, an alert, a `revoke-instance` argument. Those
+/// sites key on `MemberRef` instead; `LogicalServiceRef` is unchanged and
+/// keeps its own meaning.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct MemberRef {
+    pub logical_ref: LogicalServiceRef,
+    pub index: u32,
+}
+
+impl fmt::Display for MemberRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}#{}", self.logical_ref, self.index)
+    }
+}
+
+impl FromStr for MemberRef {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (l_ref_part, index_part) = s.rsplit_once('#').ok_or_else(|| {
+            anyhow!("MemberRef must format as 'app_instance_id/service_name#index'")
+        })?;
+        let index = index_part
+            .parse::<u32>()
+            .map_err(|e| anyhow!("MemberRef index '{index_part}' is not a valid u32: {e}"))?;
+        let logical_ref = LogicalServiceRef::from_str(l_ref_part)?;
+        Ok(MemberRef { logical_ref, index })
+    }
+}
+
+impl TryFrom<String> for MemberRef {
+    type Error = anyhow::Error;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        Self::from_str(&s)
+    }
+}
+
+impl From<MemberRef> for String {
+    fn from(r: MemberRef) -> Self {
         r.to_string()
     }
 }
@@ -404,6 +484,22 @@ pub struct FdaeManifest {
     pub policy: DocumentRef,
 }
 
+/// A `replicas` value above this is refused at `validate()` (M05A A5e,
+/// D-A5e-14): a bound set before the first measurement can never fail. 16
+/// members of one service on one node is already past what a single
+/// substrate's per-service database and instance-certificate budget make
+/// sensible, and per-member placement -- the reason to want more -- does
+/// not exist.
+pub const MAX_REPLICAS: u32 = 16;
+
+const fn default_replicas() -> u32 {
+    1
+}
+
+fn is_one_u32(n: &u32) -> bool {
+    *n == 1
+}
+
 /// Represents the spec of a service in the application manifest.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ServiceSpec {
@@ -414,6 +510,15 @@ pub struct ServiceSpec {
     /// Overrides the manifest-level default for this service only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placement: Option<PlacementSelector>,
+    /// How many members the compiler emits for this service (M05A A5e,
+    /// D-A5e-4). `1` (the default) compiles exactly what every manifest
+    /// written before `replicas` existed still compiles. Above `1`, the
+    /// compiled `topology_mode` becomes `Redundant` -- `Sharded` stays
+    /// unreachable until a `ShardingStrategy` manifest surface exists.
+    /// `#[serde(skip_serializing_if)]` so an unscaled manifest's TOML/JSON
+    /// is byte-for-byte unchanged.
+    #[serde(default = "default_replicas", skip_serializing_if = "is_one_u32")]
+    pub replicas: u32,
 }
 
 /// Defines a dependency on another application.
@@ -521,8 +626,38 @@ impl SynAppManifest {
             }
         }
 
+        // 3. `replicas`, all three rules in one place (M05A A5e,
+        // D-A5e-14/D-A5e-16): `>= 1`, `<= MAX_REPLICAS`, and not alongside a
+        // declared `schema`.
+        for (name, spec) in &self.services {
+            if spec.replicas < 1 {
+                return Err(anyhow!("Service '{}' declares replicas = 0; the minimum is 1", name));
+            }
+            if spec.replicas > MAX_REPLICAS {
+                return Err(anyhow!(
+                    "Service '{}' declares replicas = {}, above the cap of {MAX_REPLICAS}",
+                    name,
+                    spec.replicas
+                ));
+            }
+            if spec.replicas > 1 && spec.config.schema.is_some() {
+                return Err(anyhow!(
+                    "Service '{}' declares replicas = {} alongside a schema: each member is its \
+                     own service_id and therefore its own database, so a stateful service's data \
+                     would silently split across members. `replicas` is for stateless members \
+                     until M7's state replication lands; this refusal relaxes then.",
+                    name,
+                    spec.replicas
+                ));
+            }
+        }
+
         Ok(())
     }
+}
+
+const fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
 }
 
 /// A planned, compiled service instance within a deployment plan.
@@ -539,12 +674,31 @@ pub struct PlannedService {
     #[serde(flatten)]
     pub config: ServiceConfig,
     /// Declared dependency name -> the member master DIDs currently serving
-    /// it. One entry per `ServiceSpec.depends_on` name; the member list is
-    /// a single-element `Singleton` today.
+    /// it. One entry per `ServiceSpec.depends_on` name; the member list has
+    /// one entry per member of that dependency (M05A A5e `replicas`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub resolved_dependencies: BTreeMap<LogicalServiceName, Vec<ServiceId>>,
     #[serde(default)]
     pub topology_mode: TopologyMode,
+    /// This member's ordinal within its logical service (M05A A5e,
+    /// D-A5e-3). `0` for every plan compiled before `replicas` existed --
+    /// a stored field, not a `plan.services` vector position, since two
+    /// live code paths filter and rebuild that vector and an index derived
+    /// from position would change a member's identity depending on which
+    /// pass looked at it. `#[serde(skip_serializing_if)]` so an unscaled
+    /// plan's JSON is byte-for-byte unchanged.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub member_index: u32,
+}
+
+impl PlannedService {
+    /// This member's identity as a managed unit (M05A A5e, D-A5e-2) -- the
+    /// key every per-member stored or reported fact uses, as distinct from
+    /// `logical_ref`, the key of the *logical service* it belongs to.
+    #[must_use]
+    pub fn member_ref(&self) -> MemberRef {
+        MemberRef { logical_ref: self.logical_ref.clone(), index: self.member_index }
+    }
 }
 
 /// Compiled, immutable deployment plan for the active controller or local
@@ -775,6 +929,7 @@ mod tests {
                 },
                 resolved_dependencies: BTreeMap::new(),
                 topology_mode: TopologyMode::Singleton,
+                member_index: 0,
             }],
         };
 
@@ -816,6 +971,114 @@ mod tests {
 
         assert!(ServiceId::try_new("not-did-key").is_err());
         assert!(ServiceId::try_new("did:key:123").is_ok());
+    }
+
+    // ── M05A A5e: `MemberRef` and the `#`/`/` validators (D-A5e-2) ──────
+
+    #[test]
+    fn member_ref_round_trips_through_display_and_from_str() {
+        let m = MemberRef {
+            logical_ref: LogicalServiceRef {
+                app_instance_id: AppInstanceId::new("inst-1"),
+                service_name: LogicalServiceName::new("backend"),
+            },
+            index: 2,
+        };
+        assert_eq!(m.to_string(), "inst-1/backend#2");
+        let parsed = MemberRef::from_str("inst-1/backend#2").unwrap();
+        assert_eq!(parsed, m);
+
+        assert!(MemberRef::from_str("inst-1/backend").is_err(), "no index separator at all");
+        assert!(MemberRef::from_str("inst-1/backend#not-a-number").is_err());
+    }
+
+    /// A service name that (illegally, pre-validation) carried the index
+    /// separator itself must not parse as if the `#` split were the real
+    /// one -- `LogicalServiceName`'s own validator is what actually
+    /// prevents this from ever being stored, but `MemberRef::from_str`
+    /// must independently reject it too, since it re-derives
+    /// `LogicalServiceRef::try_new` on whatever sits before the last `#`.
+    #[test]
+    fn member_ref_parse_rejects_a_service_name_carrying_the_index_separator() {
+        let err = MemberRef::from_str("inst-1/back#end#3").unwrap_err();
+        assert!(err.to_string().contains('#'), "{err}");
+    }
+
+    #[test]
+    fn a_logical_service_name_containing_the_index_separator_is_refused() {
+        assert!(LogicalServiceName::try_new("back#end").is_err());
+        assert!(LogicalServiceName::try_new("backend").is_ok());
+    }
+
+    #[test]
+    fn an_app_instance_id_containing_a_separator_is_refused() {
+        assert!(AppInstanceId::try_new("inst/1").is_err());
+        assert!(AppInstanceId::try_new("inst#1").is_err());
+        assert!(AppInstanceId::try_new("inst-1").is_ok());
+    }
+
+    #[test]
+    fn a_planned_services_member_ref_combines_its_logical_ref_and_index() {
+        let svc = PlannedService {
+            service_id: ServiceId::new("did:key:h123"),
+            logical_ref: LogicalServiceRef {
+                app_instance_id: AppInstanceId::new("inst-1"),
+                service_name: LogicalServiceName::new("backend"),
+            },
+            substrate: None,
+            config: ServiceConfig {
+                service_type: ServiceType::Tcp,
+                source: "127.0.0.1:9000".to_string(),
+                hash: None,
+                interfaces: vec![],
+                env: BTreeMap::new(),
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema: None,
+                rotation_policy: RotationPolicy::RestartOnRotation,
+                fdae: None,
+                health_check: None,
+            },
+            resolved_dependencies: BTreeMap::new(),
+            topology_mode: TopologyMode::Singleton,
+            member_index: 3,
+        };
+        assert_eq!(svc.member_ref().to_string(), "inst-1/backend#3");
+    }
+
+    /// An unscaled plan's JSON must stay byte-for-byte what it was before
+    /// `member_index` existed -- the field is skip-if-zero, so a pre-A5e
+    /// stored plan and a fresh single-member one serialize identically.
+    #[test]
+    fn member_index_zero_emits_no_key_in_serialized_output() {
+        let svc = PlannedService {
+            service_id: ServiceId::new("did:key:h123"),
+            logical_ref: LogicalServiceRef {
+                app_instance_id: AppInstanceId::new("inst-1"),
+                service_name: LogicalServiceName::new("backend"),
+            },
+            substrate: None,
+            config: ServiceConfig {
+                service_type: ServiceType::Tcp,
+                source: "127.0.0.1:9000".to_string(),
+                hash: None,
+                interfaces: vec![],
+                env: BTreeMap::new(),
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema: None,
+                rotation_policy: RotationPolicy::RestartOnRotation,
+                fdae: None,
+                health_check: None,
+            },
+            resolved_dependencies: BTreeMap::new(),
+            topology_mode: TopologyMode::Singleton,
+            member_index: 0,
+        };
+        let toml = toml::to_string(&svc).unwrap();
+        assert!(!toml.contains("member_index"));
     }
 
     #[test]
@@ -891,6 +1154,7 @@ mod tests {
                 },
                 resolved_dependencies: BTreeMap::new(),
                 topology_mode: TopologyMode::Singleton,
+                member_index: 0,
             }],
         };
 
@@ -1007,6 +1271,7 @@ mod tests {
             },
             resolved_dependencies: BTreeMap::new(),
             topology_mode: TopologyMode::Singleton,
+            member_index: 0,
         };
 
         let toml_round = toml::to_string(&svc).unwrap();

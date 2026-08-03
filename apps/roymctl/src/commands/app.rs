@@ -13,8 +13,8 @@ use syneroym_app_orchestration::{
     ActionRecord, ActionState, AlertStore, AppInstanceId, DeploymentJournal, DeploymentPlan,
     DeploymentState, LocalFilesystemCatalog, Reconciler, SynAppManifest, compile,
     models::{
-        AppBlueprintId, LogicalServiceName, LogicalServiceRef, PlannedService, ServiceConfig,
-        ServiceSpec, ServiceType, SubstrateAlias,
+        AppBlueprintId, LogicalServiceName, LogicalServiceRef, MemberRef, PlannedService,
+        ServiceConfig, ServiceSpec, ServiceType, SubstrateAlias,
     },
     substrate_inventory::{SubstrateEntry, SubstrateInventory, check_placement, placement_demand},
 };
@@ -293,7 +293,7 @@ fn check_no_placement_change(
     landed: &[ActionRecord],
 ) -> anyhow::Result<()> {
     for (svc, target) in placed {
-        let l_ref = svc.logical_ref.to_string();
+        let l_ref = svc.member_ref().to_string();
         if let Some(prev) = deploy::current_placement(landed, &l_ref)
             && prev.substrate_did != target.substrate_did
         {
@@ -391,6 +391,7 @@ pub async fn handle(
                         },
                         depends_on: vec![],
                         placement: None,
+                        replicas: 1,
                     },
                 );
                 SynAppManifest {
@@ -664,7 +665,7 @@ pub async fn handle(
                         report.deployed.iter().map(ToString::to_string).collect();
                     let succeeded: Vec<_> = deployed_placed
                         .into_iter()
-                        .filter(|(svc, _)| deployed.contains(&svc.logical_ref.to_string()))
+                        .filter(|(svc, _)| deployed.contains(&svc.member_ref().to_string()))
                         .collect();
                     probe_registry_reachability(&succeeded, &urls).await;
                 }
@@ -683,7 +684,7 @@ pub async fn handle(
                 for failure in &report.failures {
                     eprintln!(
                         "  {} on {} ({}): {}",
-                        failure.logical_ref,
+                        failure.member_ref,
                         failure.alias.as_ref().map(SubstrateAlias::as_str).unwrap_or("--substrate"),
                         failure.substrate_did,
                         failure.error
@@ -765,7 +766,13 @@ pub async fn handle(
                 app_instance_id: instance_id.clone(),
                 service_name: LogicalServiceName::new(service.as_str()),
             };
-            let l_ref = logical_ref.to_string();
+            // M05A A5e: the journal now keys every action row on a
+            // `MemberRef`, not a bare `LogicalServiceRef`. `--service` names
+            // only the logical service, with no way to name one member of a
+            // scaled one -- forgets member 0, the only member an unscaled
+            // deploy ever has. Forgetting one member of a `replicas > 1`
+            // service is not supported by this command yet.
+            let l_ref = (MemberRef { logical_ref: logical_ref.clone(), index: 0 }).to_string();
 
             let parent_dir = journal_path.parent().unwrap_or(Path::new("."));
             let db_name = journal_path
@@ -854,6 +861,7 @@ pub async fn handle(
                         logical_ref: svc.logical_ref.clone(),
                         service_id: String::new(),
                         substrate_did: String::new(),
+                        member_index: svc.member_index,
                     }),
                     Some(row) => {
                         // The plan's `service_id` is the compiler's
@@ -864,6 +872,7 @@ pub async fn handle(
                             logical_ref: svc.logical_ref.clone(),
                             service_id: id,
                             substrate_did: row.substrate_did.clone(),
+                            member_index: svc.member_index,
                         });
                         aliases.insert(
                             row.substrate_did.clone(),
@@ -1336,6 +1345,7 @@ mod tests {
             config: dummy_config(),
             resolved_dependencies: BTreeMap::new(),
             topology_mode: TopologyMode::Singleton,
+            member_index: 0,
         }
     }
 
@@ -1357,7 +1367,7 @@ mod tests {
             app_instance_id: AppInstanceId::new("inst-1"),
             service_name: LogicalServiceName::new("backend"),
         };
-        let name = member_identity::member_master_name(&logical_ref, 0).unwrap();
+        let name = member_identity::member_master_name(&logical_ref, 0);
         let master = member_identity::resolve_or_mint_member_master(dir.path(), &name).unwrap();
         let real_did = substrate::derive_did_key(&master.public_key());
 
@@ -1366,7 +1376,7 @@ mod tests {
         let placed = vec![(&svc, &target)];
         let landed = vec![ActionRecord {
             action_type: "ADD".to_string(),
-            logical_ref: logical_ref.to_string(),
+            logical_ref: format!("{logical_ref}#0"),
             substrate_alias: Some("edge-1".to_string()),
             substrate_did: "did:key:zOldNode".to_string(),
         }];
@@ -1419,7 +1429,7 @@ mod tests {
             .append_action(
                 deployment_id,
                 "ADD",
-                &logical_ref.to_string(),
+                &format!("{logical_ref}#0"),
                 Some("edge-1"),
                 "did:key:zOldNode",
                 ActionState::Completed,
@@ -1519,7 +1529,7 @@ mod tests {
                 .append_action(
                     deployment_id,
                     "ADD",
-                    &logical_ref.to_string(),
+                    &format!("{logical_ref}#0"),
                     Some("edge-1"),
                     "did:key:zOldNode",
                     ActionState::Completed,
@@ -1544,7 +1554,8 @@ mod tests {
 
         let journal = DeploymentJournal::open(dir.path(), "deployments.db").unwrap();
         let landed = journal.get_completed_actions_for_instance(&instance_id).unwrap();
-        let last = landed.iter().rev().find(|r| r.logical_ref == logical_ref.to_string()).unwrap();
+        let last =
+            landed.iter().rev().find(|r| r.logical_ref == format!("{logical_ref}#0")).unwrap();
         assert_eq!(last.action_type, "REMOVE");
         assert_eq!(last.substrate_did, "did:key:zOldNode");
 

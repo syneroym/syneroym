@@ -4,16 +4,19 @@ use anyhow::Result;
 
 use crate::{
     journal::{DeploymentJournal, DeploymentState},
-    models::{AppInstanceId, DeploymentPlan, LogicalServiceRef, PlannedService, SubstrateAlias},
+    models::{AppInstanceId, DeploymentPlan, MemberRef, PlannedService, SubstrateAlias},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReconcileAction {
-    /// Add a new service
+    /// Add a new member
     Add(Box<PlannedService>),
-    /// Remove an existing service
-    Remove(LogicalServiceRef),
-    /// Update an existing service (e.g., config or source changed)
+    /// Remove an existing member, named by its own `MemberRef` (M05A A5e,
+    /// D-A5e-2) -- what makes scale-*down* representable at all: dropping
+    /// one member of a scaled service must name which member, not just
+    /// which logical service it belongs to.
+    Remove(MemberRef),
+    /// Update an existing member (e.g., config or source changed)
     Update { old: Box<PlannedService>, new: Box<PlannedService> },
 }
 
@@ -66,11 +69,11 @@ impl<'a> Reconciler<'a> {
             actions.retain(|a| {
                 let (a_type, l_ref, alias) = match a {
                     ReconcileAction::Add(svc) => {
-                        ("ADD", svc.logical_ref.to_string(), svc.substrate.as_ref())
+                        ("ADD", svc.member_ref().to_string(), svc.substrate.as_ref())
                     }
                     ReconcileAction::Remove(r) => ("REMOVE", r.to_string(), None),
                     ReconcileAction::Update { new, .. } => {
-                        ("UPDATE", new.logical_ref.to_string(), new.substrate.as_ref())
+                        ("UPDATE", new.member_ref().to_string(), new.substrate.as_ref())
                     }
                 };
                 // D-A3-11: this path has no inventory, so it compares on the
@@ -101,11 +104,11 @@ impl<'a> Reconciler<'a> {
         if let Some(active_plan) = active {
             let mut active_map = HashMap::new();
             for s in &active_plan.services {
-                active_map.insert(s.logical_ref.clone(), s);
+                active_map.insert(s.member_ref(), s);
             }
 
             for desired_svc in &desired.services {
-                if let Some(active_svc) = active_map.remove(&desired_svc.logical_ref) {
+                if let Some(active_svc) = active_map.remove(&desired_svc.member_ref()) {
                     if active_svc != desired_svc {
                         actions.push(ReconcileAction::Update {
                             old: Box::new(active_svc.clone()),
@@ -121,8 +124,8 @@ impl<'a> Reconciler<'a> {
             // `active_plan.services` is already topologically sorted, so iterating in
             // reverse ensures dependents are removed before their dependencies.
             for active_svc in active_plan.services.iter().rev() {
-                if active_map.contains_key(&active_svc.logical_ref) {
-                    actions.push(ReconcileAction::Remove(active_svc.logical_ref.clone()));
+                if active_map.contains_key(&active_svc.member_ref()) {
+                    actions.push(ReconcileAction::Remove(active_svc.member_ref()));
                 }
             }
         } else {
@@ -146,7 +149,8 @@ mod tests {
     use crate::{
         journal::ActionState,
         models::{
-            AppBlueprintId, LogicalServiceName, ServiceConfig, ServiceId, ServiceType, TopologyMode,
+            AppBlueprintId, LogicalServiceName, LogicalServiceRef, ServiceConfig, ServiceId,
+            ServiceType, TopologyMode,
         },
     };
 
@@ -178,6 +182,7 @@ mod tests {
                 },
                 resolved_dependencies: BTreeMap::new(),
                 topology_mode: TopologyMode::Singleton,
+                member_index: 0,
             }],
         }
     }
@@ -239,7 +244,7 @@ mod tests {
             .append_action(
                 deployment_id,
                 "ADD",
-                "inst-1/echo",
+                "inst-1/echo#0",
                 Some("edge-1"),
                 "did:key:zNodeA",
                 ActionState::Completed,
@@ -269,7 +274,7 @@ mod tests {
             .append_action(
                 deployment_id,
                 "ADD",
-                "inst-1/echo",
+                "inst-1/echo#0",
                 Some("edge-2"),
                 "did:key:zNodeB",
                 ActionState::Completed,
@@ -342,11 +347,11 @@ mod tests {
             _ => panic!("Expected Add(Y)"),
         }
         match &actions[2] {
-            ReconcileAction::Remove(r) => assert_eq!(r.service_name.as_str(), "B"),
+            ReconcileAction::Remove(r) => assert_eq!(r.logical_ref.service_name.as_str(), "B"),
             _ => panic!("Expected Remove(B)"),
         }
         match &actions[3] {
-            ReconcileAction::Remove(r) => assert_eq!(r.service_name.as_str(), "A"),
+            ReconcileAction::Remove(r) => assert_eq!(r.logical_ref.service_name.as_str(), "A"),
             _ => panic!("Expected Remove(A)"),
         }
     }

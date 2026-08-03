@@ -61,7 +61,7 @@ impl LocalFilesystemCatalog {
         };
         services.insert(
             LogicalServiceName::new("legacy-main"),
-            ServiceSpec { config, depends_on: vec![], placement: None },
+            ServiceSpec { config, depends_on: vec![], placement: None, replicas: 1 },
         );
 
         let manifest = SynAppManifest {
