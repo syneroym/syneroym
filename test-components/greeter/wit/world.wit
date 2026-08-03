@@ -6,5 +6,6 @@ interface greet {
 }
 
 world greeter {
+    import syneroym:host/context;
     export greet;
 }

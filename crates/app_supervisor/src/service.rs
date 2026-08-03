@@ -5307,7 +5307,8 @@ mod tests {
         assert!(
             elapsed < Duration::from_secs(1),
             "the measured interval must be the write's own latency, far under a poll interval \
-             (default 30s) and the 5s budget alike, not `binding-epochs`' own read lag: {elapsed:?}"
+             (default 30s) and the 5s budget alike, not `binding-epochs`' own read lag: \
+             {elapsed:?}"
         );
     }
 

@@ -5,9 +5,10 @@
 [ADR-0021](../../../decisions/0021-binding-propagation-and-app-supervisor.md)
 
 **Overall:** Design accepted 2026-07-27. Slices P0, A0-A4, A5a, A5b, A5c,
-A5d complete; A5 splits into five sub-slices per
-[slice-a5-implementation-plan.md](slice-a5-implementation-plan.md) §2 —
-A5e not started.
+A5d, A5e complete; A5 splits into five sub-slices per
+[slice-a5-implementation-plan.md](slice-a5-implementation-plan.md) §2. A7
+(pulled forward 2026-08-02) not started; the milestone closes when A5e and
+A7 have both landed.
 
 ## Slice status
 
@@ -23,8 +24,9 @@ A5e not started.
 | A5b | The supervisor role, store, `supervisor` interface, and master custody | **Complete (2026-08-01)** — [implementation plan](slice-a5-implementation-plan.md) Part II, evidence below | A5a (Complete) |
 | A5c | The resident reconcile loop and bounded remediation | **Complete (2026-08-02)** — [implementation plan](slice-a5-implementation-plan.md) Part IV, evidence below | A5b (Complete) |
 | A5d | Unattended certificate renewal, master-anchor refresh, revocation surface | **Complete (2026-08-03)** — [implementation plan](slice-a5-implementation-plan.md) Part V, evidence below | A5c (Complete) |
-| A5e | Scale-out, cross-app probes, budgets | Not started | A5c, A5d |
+| A5e | Scale-out, budgets (cross-app probes moved to overlay slice S4) | **Complete (2026-08-04)** — [implementation plan](slice-a5-implementation-plan.md) Part VI, evidence below | A5c, A5d (Complete) |
 | A6 | Durable delivery via outbox/DLQ | **Deferred, post-M5** | M5 item 1 Complete |
+| A7 | App-instance master identity | Not started | A5b (Complete) |
 
 **A1 was added after design review** (2026-07-27) on finding that the
 `master DID → endpoint` mapping ADR-0021 leaned on does not exist: the registry
@@ -2460,6 +2462,192 @@ unsandboxed, 6/6. `cargo test --workspace --no-fail-fast` (sandboxed): the
 same 23-target listener-bind/DHT-bootstrap set every earlier gate in this
 file already documents, zero assertion failures. `mise run test:e2e`
 (Playwright/WebRTC) 4/4.
+
+## A5e — Verification evidence (2026-08-04)
+
+Planned to executable depth in
+[slice-a5-implementation-plan.md](slice-a5-implementation-plan.md) Part VI
+(§33-§42), after three independent reviews: the first found eleven findings
+(five high), the second four (two blocking — both defects *introduced by the
+first review's own fixes*), the third two (one a miscount, the other the
+only defect across all three rounds that fails silently rather than
+announcing itself). All seventeen incorporated before implementation
+started; three questions put to the requester, all three answered as
+recommended (§41).
+
+**The headline correction the plan's own pass made, restated because it
+shaped every phase below:** §16's seven-item sketch read `replicas` as a
+compiler feature — teach `compile` to emit N members, adjust two call sites
+that hardcode index `0`. It is not. **`LogicalServiceRef` is the primary key
+of essentially every durable, reported, and wire-level fact this milestone
+has built**, and `replicas` is the change that makes that key stop being
+unique. Enumerating every site it appears at — the deployment journal, four
+`SupervisorStore` tables, the alert index, the operator read surface, the
+health-report join, the epoch's wire assembly — took three review rounds to
+get right, and the plan says so plainly: the diagnosis held up every round;
+the counting did not.
+
+**The slice also shrank rather than only grew.** §16 items 3 and 4 — the
+cross-app `Bind` manifest surface and the ADR-0021 §7 probe — left the
+milestone on 2026-08-02 (ADR-0022, slice **S4** of the Logical Service
+Discovery Overlay) before this pass even started; reading the code confirmed
+building either inside A5e would still leave failure-matrix rows 15/18
+untestable, since the manifest surface is one of four missing pieces and not
+the load-bearing one (D-A5e-1).
+
+**What shipped, by phase (§35's merge order):**
+
+- **Phase 1 (the member dimension, no behavior change).** `MemberRef {
+  logical_ref, index }` (`Display` = `<app_instance_id>/<service_name>#<index>`)
+  in `app_orchestration::models`, with validators on `LogicalServiceName`
+  and `AppInstanceId` forbidding `#` (and, for the latter, `/`) so the
+  display form cannot be forged from a service name — closing a pre-existing
+  vault-name collision between two different (instance, service) pairs in
+  the same edit (§33.13, D-A5e-12). `PlannedService.member_index: u32`,
+  `derive_deterministic_service_id` folding the index into its hash **only
+  above index 0** (a compile-time-only change would otherwise silently
+  re-identify every existing unmastered deployment, per review finding R1),
+  and `master_for_member`/`mint_and_substitute`/
+  `substitute_and_certify_members`/`deployed_service_id` reading the
+  member's own index instead of the literal `0`. Every plan still compiles
+  to one member at index 0, so this phase is a pure refactor with a
+  regression guard pinned on the literal `service_id`, not just the shape.
+- **Phase 2 (the manifest surface and the compiler).** `ServiceSpec.replicas:
+  u32` (default 1, skip-if-1); N `PlannedService`s per scaled logical
+  service, each with its own fabricated `service_id` and stored
+  `member_index`; `replicas > 1` compiling `topology_mode` to `Redundant`
+  (D-A5e-4) — without this, `select_member`'s `Singleton` arm would send
+  every call to member 0, silently, which the reference-scenario e2e's own
+  step 5 exists to catch (review finding R5). Three `replicas` rules at one
+  `validate()` gate: `>= 1`, `<= 16` (D-A5e-14, a bound set a priori so it
+  can never fail post-hoc), and refused alongside a declared `schema`
+  (D-A5e-16, per the requester's §41 answer 3 — each member is its own
+  `service_id` and therefore its own SQLite database, so scaling a stateful
+  service would silently split its data; the compiler refuses rather than
+  only documents it, naming M7's state replication as the reason the
+  refusal will relax).
+- **Phase 3 (re-keying the durable and reported facts).** The four
+  `SupervisorStore` tables, the alert store's active-alert index,
+  `needs_work`/`missing_placement`, `binding_convergence_rows`, the
+  deployment journal's action rows, and `ApplyReport` all take `MemberRef`
+  in place of a bare logical-ref string. `Reconciler::diff_plans` and
+  `ReconcileAction::Remove` gain the member dimension, which is what makes
+  scale-*down* representable at all. Both placement-change guards
+  (`refuse_placement_change`, `roymctl`'s `check_no_placement_change`) now
+  compare a member against its own journal row, treating a member with none
+  as "never placed" rather than inheriting a sibling's (D-A5e-6) — without
+  this, a scale-out onto a second substrate would be refused as a
+  relocation it never attempted. The operator read surface gains the member
+  dimension across every field of the `supervisor` WIT — `managed-service.
+  logical-ref`, `binding-convergence.dependent-logical-ref`, `alert.
+  logical-ref`, `instance-status.revoked-placements`, `minted-master` (now
+  carrying the member index beside the service name) — and `revoke-instance`
+  itself now takes a `MemberRef`, scoped to one member rather than the
+  whole logical service (found in review, R2). `ServiceHealth` gains a
+  plain `member_index: u32` (not `Option`, since all six production
+  `ExpectedService` construction sites already hold a `PlannedService`),
+  carried on `ExpectedService` per D-A5e-17 — without it, a settled renewal
+  on one member would clear its sibling's certificate alert, and one
+  member's restart attempts would spend the whole instance's budget (found
+  in review, R3). **The re-key's own silent failure mode** (found in the
+  third review, T2): three `current_placement` read sites — the loop's own
+  sweep, `handle_status`'s near-duplicate builder, and `roymctl app
+  status` — still compared a logical-ref string against member-keyed rows
+  after the write side re-keyed, which compiles, never matches, and reports
+  every service of every instance (scaled or not) permanently `Degraded`
+  and unpolled. Closed in the same edit that threads `member_index` through
+  those loops.
+- **Phase 4 (the push trigger).** The loop's membership-change classifier:
+  a dependent whose diff against the last active plan changed *only*
+  `resolved_dependencies` routes to `push_bindings`, per dependent member,
+  rather than into `needs_work` (D-A5e-7) — `push_bindings`'s first
+  production caller, removing the `#[allow(dead_code)]` A5c's own trigger
+  gap (D-A5c-16) left on it. Without this, a re-`submit` that only scales a
+  service would reinstall every dependent, artifact and all — exactly the
+  churn A5c and A5d each separately rejected. `Degraded` now derives from
+  the active `BindingConflict` alert set (D-A5e-8), which needed two things
+  neither existed before this slice: a clear site beside the two raise
+  sites (found in review, R4 — without it, one failed push would pin an
+  instance `Degraded` forever), and a correction to what the raise sites
+  wrote into the alert's `substrate_did` column — a `SubstrateAlias` before
+  this fix, empty on fallback placement, which a same-shape clear could
+  never match (found in the second review, S2). Both raise sites now carry
+  the real DID, threaded the way `restart_candidates` already threads it;
+  free to fix, since `push_bindings` had no production caller until this
+  same phase, so no such row had ever been written outside a test.
+- **Phase 5 (budgets, written down).** Convergence measured on both clocks
+  (a `submit`-driven change applies in-call; a loop-discovered one waits up
+  to one `poll_interval_secs`) and against both of ADR-0021 §6's clauses,
+  concluding the trigger has not fired (D-A5e-9/D-A5e-10) — see *Performance
+  budgets* in `task.md` for the numbers. The no-network-hop Criterion bench
+  (D-A5e-13) lands in `crates/app_orchestration/benches/resolver.rs`, not
+  `crates/router/benches/proxy.rs` as its own backlog row expected —
+  `ProxyRouter` has no dependency target, since `CallTarget::Dependency`
+  resolves in the WASM host capability before a `ProxyRequest` exists.
+  Measured: cache hit ~60 ns, cache miss through the registry ~306 ns,
+  two-member `Redundant` round-robin ~58 ns.
+- **Phase 6 (the reference scenario, end to end).**
+  [reference_scenario_e2e.rs](../../../../crates/substrate/tests/reference_scenario_e2e.rs),
+  port block 12_700 (12_600-12_602 turned out already claimed by
+  `supervisor_loop_e2e.rs`, which the plan's own port note predates —
+  continued from 12_700 instead). `frontend` (a `proxy-test` WASM
+  component) on one substrate depends on `backend` (a `greeter` WASM
+  component) on a second, both managed by one resident supervisor, steps
+  1-6 in a single test: deploy with the binding pushed at deploy time; a
+  genuinely resolved dependency call reaching `backend` through
+  `syneroym:proxy/proxy::call`'s `dependency(...)` target — the first
+  full-substrate exercise of that path in this tree, which `binding_push_
+  e2e.rs`'s own doc comment notes had no wasm fixture to drive when it was
+  written; the substrate going down and the supervisor reporting
+  `SubstrateUnreachable` specifically; the substrate returning under the
+  same identity with `backend` recognized as the same member (unchanged
+  master DID) and no push, which for a WASM component is
+  `AppSandboxEngine::init`'s own boot-time warm-up loop reloading the
+  compiled component from its persisted artifact rather than anything the
+  supervisor triggers; `backend` scaling to two members with a push and no
+  reinstall of `frontend`; and a stale-epoch write rejected followed by an
+  identical re-send at the current epoch landing as a no-op. **Review
+  finding R5's own fix, carried into the e2e rather than left as a unit-only
+  claim:** step 5 does not stop at "a push happened" — it makes repeated
+  dependency calls and asserts both backend members actually answer,
+  distinguished by `greeter`'s own `component_id`, echoed back through the
+  pre-existing (and, before this slice, unused by any fixture)
+  `syneroym:host/context::get-test-context` capability. That capability is
+  the one thing that differs between two otherwise byte-identical
+  `replicas` members, and wiring it into `greeter` needed three small,
+  contained changes: `test-components/greeter/wit/world.wit` importing
+  `syneroym:host/context`, `Cargo.toml`'s `[package.metadata.component.
+  target.dependencies]` pointing `cargo-component`'s own resolver at a
+  vendored copy of the interface, and `greet`'s reply appending `"
+  (Component: {component_id})"`. Three existing call sites asserted an
+  *exact* `greet` reply and needed updating to a prefix check instead —
+  `basic_lifecycle.rs` (twice) and `tests/perf/src/scenarios/
+  wasm_latency.rs` — all still green.
+
+**Test delta:** 41 named tests (§36, 42 → 83), against unit-scale coverage
+in `crates/app_orchestration/{models,compiler,reconcile}.rs`,
+`crates/app_supervisor/src/{keys,service,store}.rs`,
+`apps/roymctl/src/commands/member_identity.rs`, the new
+`crates/app_orchestration/benches/resolver.rs`, and one end-to-end test
+(`reference_scenario_e2e.rs`) covering the full six-step sequence in one
+run.
+
+**One scoping decision worth stating plainly.** Failure-matrix rows 15 and
+18 (the cross-app active/passive probe) do not get a test in this
+milestone, and will not — they moved to slice S4 of the Logical Service
+Discovery Overlay before this pass began, and reading the code confirmed
+building the manifest surface here would still leave them untestable
+without S0-S2 first. `task.md`'s exit criterion "every row of the failure/
+security matrix has a test" carries an explicit, reasoned exception naming
+both rows rather than silently reporting twenty rows closed.
+
+**Gates:** `cargo +nightly fmt --all` clean; `cargo clippy --workspace
+--all-targets --all-features` clean, zero warnings; `cargo test --workspace`
+green (lib/bins 100%; the community-registry/control-plane/mqtt-broker
+network-bind failures under the sandbox are the same pre-existing,
+sandbox-only set every earlier gate in this file documents, confirmed
+unrelated by re-running unsandboxed); `mise run test:e2e` (Playwright/
+WebRTC) green.
 
 ## Dependencies pulled in
 
