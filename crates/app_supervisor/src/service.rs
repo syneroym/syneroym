@@ -5275,6 +5275,42 @@ mod tests {
         }
     }
 
+    /// D-A5e-9: the convergence budget is measured from the membership
+    /// change to the last applied write returning `Applied`/`NoOp` --
+    /// *not* off `binding-epochs`, whose own refresh is bounded by
+    /// `poll_interval_secs` (default 30s, six times the 5s budget). This
+    /// harness proves the two are not the same clock: a push against a
+    /// fake actor that answers immediately completes in a time nowhere
+    /// near a poll interval, so a measurement taken this way is the
+    /// write's own latency, never silently the read surface's lag.
+    #[tokio::test]
+    async fn convergence_is_measured_from_the_membership_change_to_the_last_applied_write() {
+        let s = service();
+        let svc = dependent_service("frontend", "backend");
+        let plan = plan_with_one_dependent(svc.clone());
+        let actor = Arc::new(BindingActor::default());
+        let dyn_actor: Arc<dyn SubstrateActor> = actor.clone();
+        let instance_id = AppInstanceId::new("inst-1");
+        let mut opened = Vec::new();
+
+        // The membership change: the moment the classifier decides this
+        // member needs a push. The clock stops when the last write this
+        // pass issues returns.
+        let start = std::time::Instant::now();
+        let outcomes = s
+            .push_bindings(&instance_id, &plan, &svc, "did:key:zEdge1", &dyn_actor, 0, &mut opened)
+            .await
+            .unwrap();
+        let elapsed = start.elapsed();
+
+        assert_eq!(outcomes, vec![BindingWriteOutcome::Applied]);
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "the measured interval must be the write's own latency, far under a poll interval \
+             (default 30s) and the 5s budget alike, not `binding-epochs`' own read lag: {elapsed:?}"
+        );
+    }
+
     /// D-A5c-4: a push advances this dependent's epoch before sending,
     /// and a clean `Applied` outcome leaves the new value on record --
     /// what the next pass's convergence read compares against.
