@@ -92,7 +92,7 @@ converges without an operator touching anything, closing
 | Gate | State |
 |---|---|
 | **M05A slices P0, A0–A5e, A7 Complete** | ✅ Complete 2026-08-04. B1's consumer is the shipped `SubstrateActor` and its shipped fences |
-| **ADR-0023 accepted** | ⛔ **Proposed.** Blocks B1. The delivery-semantics decisions cannot be discovered during implementation — §2 alone changes what the durable implementation is |
+| **ADR-0023 accepted** | ✅ **Accepted 2026-08-04.** The delivery-semantics decisions cannot be discovered during implementation — §2 alone changes what the durable implementation is |
 | **`[PLT-ASY]` matrix row created** | ⛔ Not created. Blocks *closing* the milestone, not starting it |
 | M04B FDAE | ✅ Complete. B2's guest surface is authorized through the existing proxy gate; no new authorization model |
 | M7 replication | Not required, and must not become required — see non-goals |

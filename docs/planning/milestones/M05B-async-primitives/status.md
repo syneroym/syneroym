@@ -4,10 +4,9 @@
 [ADR-0023](../../../decisions/0023-durable-async-primitives.md) · **Plan:**
 [implementation-plan.md](implementation-plan.md)
 
-**Overall:** 📋 **Planned (2026-08-04). Not started.** The plan exists; ADR-0023
-is **Proposed** and accepting it is step zero — the plan's §2 explains why that
-is not a formality (its §2, try-then-queue, determines what the durable
-implementation is).
+**Overall:** 📋 **Planned (2026-08-04). ADR-0023 accepted 2026-08-04.** B1 is
+starting — the plan's §2 explains why acceptance was not a formality (its §2,
+try-then-queue, determines what the durable implementation is).
 
 **Plan layout.** [implementation-plan.md](implementation-plan.md) is milestone
 level: the split call, cross-cutting findings and decisions, slice sequence,

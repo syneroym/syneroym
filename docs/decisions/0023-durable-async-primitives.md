@@ -1,6 +1,6 @@
 # ADR-0023: Durable Async Primitives — At-Least-Once Delivery, Owner-Local Queues, No Distributed Lock
 
-**Status**: Proposed (2026-08-04). Design of record for
+**Status**: Accepted (2026-08-04). Design of record for
 [Milestone 5 item 1](../planning/meta-implementation-plan.md#milestone-5-async-lifecycle-and-developer-experience)
 (async primitives) and for the milestone that builds it,
 [M05B-async-primitives](../planning/milestones/M05B-async-primitives/task.md).
