@@ -159,8 +159,11 @@ M05A's D-A5-2 established after A5a–A5e.
   recompiles. No version ladder, per pre-release policy.
 - **A manifest change.** B3 adds a schedule surface to `ServiceSpec`. Absent
   means unscheduled, which is every manifest that exists today.
-- **Five new `SupervisorRole` config fields**, for B1's queue: attempt budget,
-  total window, worker tick, visibility timeout, and DLQ cap. *(Corrected
+- **Five new `SupervisorRole` config fields**, for B1's queue: worker tick,
+  attempt budget, backoff ceiling, visibility timeout, and DLQ row cap. *(The
+  total window an operator cares about — about 10 hours — is **derived** from
+  the attempt budget and the ceiling, not configured; an earlier version of this
+  line listed it as a field and omitted the ceiling.)* *(Corrected
   2026-08-04 after review — this line previously read "no new config field",
   which contradicted the reference scenario: `RetryPolicy`'s defaults are 3
   attempts from 100 ms, so an item would dead-letter in under a second where the

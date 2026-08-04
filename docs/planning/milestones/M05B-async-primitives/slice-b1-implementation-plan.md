@@ -361,16 +361,53 @@ grow a second retry *policy*. It does correct its mechanism claim: the queue
 reuses the `RetryPolicy` **struct** and `calculate_jittered_backoff`, and
 implements its own timestamp arithmetic. D-B-5 is reworded accordingly.
 
-**So B1 sizes its own knobs** (D-B1-13), rather than leaving four numbers
-implied:
+**So B1 sizes its own knobs** (D-B1-13). Five new `SupervisorRole` fields, each
+`#[serde(default)]` as every existing member of that struct already is, **with
+the default chosen here rather than left to the implementer**:
 
-| Knob | Value | Reasoning |
+| Field | Default | Reasoning |
 |---|---|---|
-| Attempt budget | Its own field, defaulting well above `RetryPolicy`'s 3 | The budget must outlast a human noticing an outage, not a transient socket error |
-| Total window before dead-lettering | Stated explicitly, and **the property the test asserts** | The interval is an implementation detail; "how long an unreachable substrate has to come back" is the operator-facing number, the same way §0.4's sixty-refresh figure is in M05C |
-| Worker tick | Its own field, well under `poll_interval_secs` (default 30) | Otherwise the queue is slower than the loop it exists to beat — the budget in `task.md` says recovery is within one worker tick, *not* one poll interval |
-| Visibility timeout | Its own field, comfortably above the longest single attempt | Too short re-delivers work still in flight; too long strands a crashed worker's item |
-| DLQ prune bound | A row cap with a stated number, pruned oldest-first on write | D-B1-9 said "prunable" and "the bound is asserted" without saying what the bound is or what triggers the prune |
+| `queue_tick_secs` | **5** | Six times finer than `poll_interval_secs` (30). `task.md`'s budget says recovery is within one worker tick and *not* one poll interval; at 5s that is a real difference a test can assert against a fake clock. Finer buys nothing — the wait is for a substrate to come back, not for the queue to notice |
+| `queue_max_attempts` | **54** | The primary bound. Must outlast a human noticing an outage, not a transient socket error. Chosen *from* the window below rather than picked first — see the arithmetic |
+| `queue_max_backoff_secs` | **900** (15 min) | The ceiling the growth curve settles at. Initial backoff and multiplier stay `RetryPolicy`'s (100 ms, ×2), so the first few retries are fast — a substrate that blipped is served in under a second |
+| `queue_visibility_timeout_secs` | **120** | Four times `DEFAULT_PROXY_CALL_TIMEOUT` ([rpc/proxy.rs:135](../../../../crates/rpc/src/proxy.rs#L135), 30s), which bounds a single delivery attempt. Too short re-delivers work still in flight; too long strands a crashed worker's item for no reason |
+| `queue_dlq_max_rows` | **1000** | Pruned oldest-first, on write, per `(instance)`. A cap and a trigger, not an adjective (D-B1-9) |
+
+**The operator-facing number these produce is about 10 hours**, and *that* is
+what the documentation states and what test 7 asserts — the same way M05C's
+§0.4 states "sixty consecutive failed refreshes" rather than "12 hours".
+
+The arithmetic, written out because a review pass found the first draft's
+version wrong in two places at once (it miscounted the capped waits and then
+rounded the wrong way):
+
+- `queue_max_attempts` counts **attempts**, so 54 attempts means **53 waits**.
+- Waits 1–14 grow from 100 ms to 819.2 s and sum to `0.1 × (2¹⁴ − 1)` =
+  **1638.3 s ≈ 27 minutes**. Wait 15 would be 1638.4 s, so the 900-second
+  ceiling first binds at the **15th wait**, not the 14th.
+- Waits 15–53 are the remaining **39**, all at the ceiling:
+  39 × 900 = **35,100 s = 9.75 h**.
+- **Total ≈ 36,738 s = 10.2 hours.**
+
+Jitter is ±10% per wait, so the worst-case window is about **9.2 hours** and the
+best case about 11.2. In practice the spread is far tighter than that: 39
+independent draws average out, and the bound is what matters here rather than
+the distribution. **Test 7 asserts the nominal figure against an unjittered
+schedule** — jitter is test 5's property, and folding it into this one would
+make the headline number untestable without a wide tolerance that defeats the
+purpose.
+
+**Ten hours is the deliberate trade, and 54 was chosen to reach it** rather than
+picked first and rationalized: the reason for the number is that it covers an
+overnight outage, and at 48 attempts the window is 8.7 hours nominal with a
+7.8-hour worst case — which dead-letters before 6 am on an outage that started
+at 22:00, so it would not do the thing its own justification claims. At 54 the
+worst case still covers a nine-hour night.
+
+The upper bound is a trade too. It dead-letters while a binding write is still
+worth delivering: a queued write is superseded by any newer epoch the loop
+pushes, so an item that has waited a day is almost always stale by the time it
+lands (§0.14), and holding it longer buys an operator nothing but a fuller DLQ.
 
 ### 0.13 (Correctness, blocking) The worker and the resident loop can write the same instance at the same time, and nothing stops them
 
@@ -464,7 +501,7 @@ Five phases. The ordering rule is that **nothing changes behavior until phase
    visibility timeout, `next_attempt_at` arithmetic over `RetryPolicy` +
    `calculate_jittered_backoff` (D-B1-13), and a worker driven by
    `tokio::time::interval` in `build_pass_interval`'s `MissedTickBehavior`
-   shape. Nothing calls it yet. Tests: 2–10.
+   shape. Nothing calls it yet. Tests: 2–12.
 3. **Config, wiring, and the durable actor.** The five `SupervisorRole` fields
    (D-B1-13); the queue store constructed inside
    `SupervisorStore::from_connection` (D-B1-5); the try-then-queue wrapper
@@ -473,16 +510,16 @@ Five phases. The ordering rule is that **nothing changes behavior until phase
    edit at the constructor from phase 1. The worker is spawned beside the
    resident loop and joined the way `supervisor_join` already is
    ([runtime.rs:246](../../../../crates/substrate/src/runtime.rs#L246)), and
-   **not** drained on shutdown (D-B1-8). Tests: 11–23.
+   **not** drained on shutdown (D-B1-8). Tests: 13–26.
 4. **The DLQ surface.** The `AlertKind` variant, the standing alert with its
    count and its clear path (D-B1-6), `dead-letters` and `replay` on
    `supervisor.wit`, the dispatch arms, and `roymctl supervisor dead-letters` /
-   `replay` (D-B1-7). Tests: 24–29.
+   `replay` (D-B1-7). Tests: 27–32.
 5. **The reference scenario and the docs.** The two-substrate e2e from
    [task.md](task.md) — built through the phase-1 constructor, **not** in the
    bare-upcast shape the existing e2e fixtures use (§0.3) — plus the milestone
    plan §3's documentation and the four markers in §0.8 that are B1's.
-   Tests: 30–31.
+   Tests: 33–34.
 
 **What could move:**
 
@@ -532,75 +569,87 @@ per-milestone and restarts at 1.
    **not** an assertion about `retry_with_backoff`, which this queue does not use
 6. `an_item_that_exhausts_its_attempts_moves_to_the_dlq_and_leaves_the_outbox`
    — failure-matrix row 4
-7. `a_completed_item_is_deleted_not_tombstoned` — D-B1-9
-8. `the_dlq_is_capped_and_prunes_oldest_first` — D-B1-9's bound, as a number
-9. `a_terminal_error_skips_the_remaining_attempts` — failure-matrix row 9
-10. `an_empty_queue_tick_issues_one_indexed_query_and_no_scan` — the idle budget
+7. `the_configured_defaults_give_a_ten_hour_window` — §0.12's operator-facing
+   number, computed from the defaults against a fake clock **with jitter
+   disabled**, so it asserts the nominal 36,738 s rather than a range. Pins the
+   *number*, not the curve, so re-tuning a knob must confront what it does to
+   the promise. (Jitter is test 5's property. Asserting both here would need a
+   ±10% tolerance, which would let a genuinely wrong attempt count pass.)
+8. `a_completed_item_is_deleted_not_tombstoned` — D-B1-9
+9. `the_dlq_is_capped_at_its_row_limit_and_prunes_oldest_first` — D-B1-9's
+   bound, as a number and a trigger
+10. `a_terminal_error_skips_the_remaining_attempts` — failure-matrix row 9
+11. `an_empty_queue_tick_issues_one_indexed_query_and_no_scan` — the idle budget
+12. `enqueue_on_failure_costs_one_insert` — the `< 1 ms` budget, asserted as
+    statement count rather than wall-clock, so CI noise cannot fail it.
+    *(Assigned to this phase in review: it is a queue-crate property and had been
+    left under a heading belonging to no phase.)*
 
 **Phase 3 —** config, wiring, the durable actor:
 
-11. `a_reachable_substrate_never_touches_the_queue` — **the load-bearing budget
+13. `a_reachable_substrate_never_touches_the_queue` — **the load-bearing budget
     test**. Asserted as "the queue is untouched", not as a timing, so it cannot
     pass by being fast
-12. `a_successful_write_bindings_returns_the_same_outcomes_it_returns_today` —
+14. `a_successful_write_bindings_returns_the_same_outcomes_it_returns_today` —
     D-B1-1; the four `BindingWriteOutcome` variants, unchanged
-13. `a_transport_failure_enqueues_and_leaves_the_instance_degraded`
-14. `a_callee_error_is_not_enqueued` — only transport failures are retried
-15. `a_failed_restart_is_never_enqueued` — D-B1-3, failure-matrix row 3
-16. `a_failed_apply_plan_and_renew_cert_are_never_enqueued` — **D-B1-12**, the
+15. `a_transport_failure_enqueues_and_leaves_the_instance_degraded`
+16. `a_callee_error_is_not_enqueued` — only transport failures are retried
+17. `a_failed_restart_is_never_enqueued` — D-B1-3, failure-matrix row 3
+18. `a_failed_apply_plan_and_renew_cert_are_never_enqueued` — **D-B1-12**, the
     certificate-expiry case (§0.11). Asserts the refusal, and that the refusal
     names the reason, so a future slice removing it must confront the argument
-17. `applying_a_queued_write_bindings_twice_is_a_no_op` — failure-matrix row 2
+19. `applying_a_queued_write_bindings_twice_is_a_no_op` — failure-matrix row 2
     against the epoch fence
-18. `a_queued_write_delivered_stale_completes_and_does_not_dead_letter` —
+20. `a_queued_write_delivered_stale_completes_and_does_not_dead_letter` —
     **D-B1-15**, the case that would otherwise flood the DLQ with normal
     convergence
-19. `a_queued_write_delivered_conflicting_raises_the_same_alert_as_the_synchronous_path`
-    — D-B1-15; the row test 12's synchronous coverage misses
-20. `the_worker_and_a_loop_pass_never_write_one_instance_concurrently` —
+21. `a_queued_write_delivered_conflicting_raises_the_same_alert_as_the_synchronous_path`
+    — D-B1-15; the row test 14's synchronous coverage misses
+22. `the_worker_and_a_loop_pass_never_write_one_instance_concurrently` —
     D-B1-14, driven by holding the lock and asserting the worker blocks
-21. `shutdown_abandons_in_flight_work_rather_than_draining` — D-B1-8
-22. `the_worker_resumes_a_queued_item_after_a_restart` — in-process analogue of
+23. `shutdown_abandons_in_flight_work_rather_than_draining` — D-B1-8
+24. `the_worker_resumes_a_queued_item_after_a_restart` — in-process analogue of
     e2e step 5
-23. `recovery_completes_within_one_worker_tick_and_not_one_poll_interval` — the
+25. `recovery_completes_within_one_worker_tick_and_not_one_poll_interval` — the
     budget the draft asserted nowhere. Driven against a fake clock with
     `poll_interval_secs` set far above the worker tick, so passing by accident is
     impossible
+26. `the_queue_lives_in_supervisor_db_under_the_same_protection_as_desired_state`
+    — failure-matrix **row 13**'s supervisor half. Asserts the queue tables are
+    in the same database file the journal and alert store use, rather than
+    opening one of their own, so they inherit its encryption posture.
+    *(Assigned to this phase in review: the store is wired here — D-B1-5 — and
+    it had been left under a heading belonging to no phase.)*
 
 **Phase 4 —** the DLQ surface:
 
-24. `a_second_dead_letter_for_one_member_refreshes_the_alert_and_raises_its_count`
+27. `a_second_dead_letter_for_one_member_refreshes_the_alert_and_raises_its_count`
     — D-B1-6, replacing the draft's unbuildable "raises once per dead letter"
-25. `the_alert_clears_when_the_last_dead_letter_for_that_key_is_gone` — D-B1-6's
+28. `the_alert_clears_when_the_last_dead_letter_for_that_key_is_gone` — D-B1-6's
     clear path, the thing `RemediationExhausted` documents and the draft omitted
-26. `dead_letters_lists_what_the_store_holds`
-27. `replay_re_enqueues_and_does_not_execute_inline` — D-B1-7
-28. `a_replayed_item_that_fails_again_returns_to_the_dlq_with_its_history` —
+29. `dead_letters_lists_what_the_store_holds`
+30. `replay_re_enqueues_and_does_not_execute_inline` — D-B1-7
+31. `a_replayed_item_that_fails_again_returns_to_the_dlq_with_its_history` —
     failure-matrix row 5
-29. `every_new_verb_is_refused_without_the_gate_the_neighbouring_verbs_use` —
+32. `every_new_verb_is_refused_without_the_gate_the_neighbouring_verbs_use` —
     failure-matrix row 14; extends
     `every_verb_is_refused_without_substrate_admin` rather than inventing a
     second list
 
-**Phase 5 —** e2e and the two budgets that need a live path:
+**Phase 5 —** e2e:
 
-30. **(e2e)** `a_binding_push_to_an_offline_substrate_converges_after_it_returns`
+33. **(e2e)** `a_binding_push_to_an_offline_substrate_converges_after_it_returns`
     — [task.md](task.md)'s reference scenario steps 1–7, including the
     supervisor restart at step 5. Built through the phase-1 constructor, and
     asserts the item passed **through the queue**, not merely that convergence
     happened (§0.3)
-31. **(e2e)** `a_permanently_unreachable_substrate_lands_in_the_dlq_and_replays`
+34. **(e2e)** `a_permanently_unreachable_substrate_lands_in_the_dlq_and_replays`
     — step 8
 
-**Also required by exit criteria 2 and 3, and named here so they are not
-forgotten:**
-
-32. `the_queue_lives_in_supervisor_db_under_the_same_protection_as_desired_state`
-    — failure-matrix **row 13**'s supervisor half, which the draft left with no
-    test. Asserts the queue tables are in the same database file and inherit its
-    encryption posture, rather than opening one of their own
-33. `enqueue_on_failure_costs_one_insert` — the `< 1 ms` budget, asserted as
-    statement count rather than wall-clock, so CI noise cannot fail it
+**Every test above belongs to a phase.** The first draft left two under a
+trailing "also required by the exit criteria" heading that mapped to no phase in
+§2; they are now tests 12 (queue crate, phase 2) and 26 (store wiring,
+phase 3), which is where the code they assert is written.
 
 ---
 
@@ -620,9 +669,12 @@ direction rather than the other:
   own deliverable. These are different things closing at different times, which
   is the normal case, not a contradiction.
 - A6's trigger is worded "M5 item 1 marked Complete in the matrix". Read
-  literally that is closeout. The pointer already added to
-  [M05A task.md](../M05A-app-supervisor/task.md)'s A6 section notes that A6 is
-  executed as B1; that note now also records that A6's status follows B1.
+  literally that is closeout. **Both places carrying that sentence are amended**
+  — the pointer in [M05A task.md](../M05A-app-supervisor/task.md)'s A6 section
+  and the `deferred-backlog.md` §8 row — each marking the trigger superseded and
+  naming B1 in its place. Without those two edits the correction would live only
+  in documents that do not carry the trigger, which is where it was after this
+  plan's first revision.
 
 So, on B1 landing: A6 is recorded Complete in
 [M05A status.md](../M05A-app-supervisor/status.md), and its

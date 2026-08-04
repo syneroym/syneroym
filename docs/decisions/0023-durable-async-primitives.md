@@ -79,13 +79,17 @@ fenced by a mechanism ADR-0021 or its slices installed for a different reason:
 | `apply_plan` | Content-hash dedup on `(manifest, app_context-minus-generation)` — an unchanged redeploy is a no-op |
 | `write_bindings` | The epoch guard's four-case rule: equal epoch and equal content is an idempotent no-op ([ADR-0021](0021-binding-propagation-and-app-supervisor.md) §3) |
 | `renew_cert` | Installs a certificate in place; installing the same one twice is the same state |
-| `restart` | **Not idempotent** — see §3, which is why it is never queued |
+| `restart` | **Not idempotent** — §3 |
 | `instance_identity`, `held_generation` | Reads |
 
 This is the load-bearing observation of the whole milestone: **the supervisor
 needs no idempotency key**, because the generation stamp, the binding epoch, and
 the content hash are already exactly the dedup mechanism an at-least-once queue
 requires. The queue inherits a correctness argument rather than making one.
+
+This table answers idempotence only. Whether an action should be *deferred* at
+all is a separate question, and §3 answers it differently — three of these four
+writes are not queueable.
 
 A guest-facing outbox has no such inheritance, which is why an idempotency key
 is introduced there and only there (§4).
@@ -119,17 +123,49 @@ dependents converging in microseconds; a queue-always design would put a SQLite
 write on that path for no benefit. **The happy path must not touch the queue at
 all**, and that is a tested budget, not a preference.
 
-## 3. Queueability is declared per action, never globally
+## 3. Queueability is declared per action, and most actions are not queueable
 
-A restart queued for later delivery is usually wrong: the condition that
-justified it has passed, and applying it an hour later restarts a healthy
-service. The `SubstrateActor` trait already anticipates this in `restart`'s own
-doc comment. So each action declares whether it may be deferred, and `restart`
-declares that it may not — a failed restart fails, and the resident loop's
-existing bounded remediation decides what happens next.
+Idempotence and queueability are different questions. §1 answers the first —
+*may this be applied twice*. This section answers the second — *is it still the
+right thing to do an hour later*. An action can be perfectly idempotent and
+still be wrong to defer.
 
-Recorded as a decision because the alternative (a queue wrapper that treats
-every method the same) is the shape that a generic wrapper naturally takes.
+Two things make an action non-queueable, and between them they disqualify three
+of the four writes on `SubstrateActor`:
+
+**The intent expires.** A restart is remediation for a condition observed *now*.
+Delivered an hour later it restarts a service that recovered on its own. The
+supervisor's bounded remediation policy — attempts, backoff, terminal
+`Degraded` — already decides what a failed restart means, and a queue behind it
+would be a second policy disagreeing with the first. The trait already
+anticipates this in `restart`'s own doc comment.
+
+**The payload expires**, which is sharper and was missed on this ADR's first
+draft. A `deployment-plan`'s service record carries
+`instance-certificate: option<string>`, `renew-cert` takes one outright, and
+`renewed_cert_expires_hours` defaults to **4**. A queued `apply_plan` or
+`renew_cert` delivered after that window installs a certificate that is already
+dead — and the substrate *accepts* it, because it is well-formed and correctly
+signed, after which the service fails its handshake closed. A delivery that
+fails is recoverable; a delivery that succeeds into a broken state is not
+obviously even noticed.
+
+**So `write_bindings` is the only queueable action.** That is not a retreat from
+what this ADR is for — it is precisely what ADR-0021 §5 asks for. The binding
+push is the sticky-failure case that ADR is built around, and `BindingWrite`
+carries no certificate and nothing else time-limited: its content is as valid an
+hour later as when it was queued.
+
+Making the certificate-bearing actions durable is a **different design**, not
+more of this one: the queue would store *intent* rather than the payload and
+re-mint at delivery time, which requires the supervisor's vault to be open at
+delivery time — and the vault is locked after every restart until an operator
+injects the KEK. Recorded in the deferred backlog with that reasoning rather than
+attempted here.
+
+Recorded as a decision because the alternative (a queue wrapper that treats every
+method the same) is the shape a generic wrapper naturally takes, and because
+"durable delivery" without this section reads as a promise about all four.
 
 ## 4. Queues are local to their owner; there is no shared queue and no queue on the wire
 
@@ -266,10 +302,16 @@ terms of them, which inverts the order these two appear in the item text.
   substrate-side offline outbox for M6's chat; a real DLQ behind the
   `no DLQ (M5)` markers in `proxy.rs` and the architecture doc; scheduled tasks
   with no new coordination layer.
-- **Costs**: one WIT change (`call-options` gains two fields), one manifest
-  change (a schedule surface), a new invocation path with its own timeout
-  budget, and an at-least-once delivery model that callers outside the
-  supervisor must supply an idempotency key to use safely.
+- **Costs**: one WIT change (`call-options` gains two fields); one manifest
+  change (a schedule surface); **five new `SupervisorRole` config fields** for
+  the queue's own budget — tick, attempt count, backoff ceiling, visibility
+  timeout, and DLQ row cap, because `RetryPolicy`'s defaults (3 attempts from
+  100 ms) size a socket retry and not a wait for an offline substrate; and an
+  at-least-once delivery model that callers outside the supervisor must supply
+  an idempotency key to use safely.
+- **Narrowed deliberately**: durable delivery covers the binding push and not
+  the certificate-bearing actions (§3). The gap is recorded in the deferred
+  backlog rather than left implied by the phrase "durable delivery".
 - **Explicitly does not build**: exactly-once delivery; a distributed lock or a
   registry compare-and-set; a replicated or cross-node queue; durable execution
   of WASM memory; a workflow engine; a pull-side app directory (ADR-0021 §6 is

@@ -611,16 +611,27 @@ is not remembered by accident.
 > executed there, against
 > [ADR-0023](../../../decisions/0023-durable-async-primitives.md), rather than
 > as a late addition to this milestone, so the primitive lands with its first
-> real consumer. Two corrections to the scope note above surfaced in that
-> planning pass, both in
-> M05B's plans: "nothing above the trait changes" holds only under
-> try-then-queue
+> real consumer. **The pickup trigger above is superseded: A6 fires on, and closes
+> with, M05B slice B1** — not on the `[PLT-ASY]` matrix row being marked
+> Complete, which additionally needs B2–B4 (scheduling, guest outbox, sagas)
+> that A6 does not consume. B1 discharges A6's whole scope, so holding this
+> slice's status until that other work lands would be bookkeeping rather than
+> truth ([slice-b1 plan](../M05B-async-primitives/slice-b1-implementation-plan.md)
+> §4).
+>
+> Three further corrections to the scope note above surfaced in that planning
+> pass: "nothing above the trait changes" holds only under try-then-queue
 > ([slice-b1 plan](../M05B-async-primitives/slice-b1-implementation-plan.md)
-> §0.2), and the single-writer cron lease is withdrawn rather than built,
-> because there is nothing for it to arbitrate here
+> §0.2); the single-writer cron lease is withdrawn rather than built, because
+> there is nothing for it to arbitrate here
 > ([milestone plan](../M05B-async-primitives/implementation-plan.md) §0.4,
-> ADR-0023 §6). **This milestone's
-> exit criteria are unaffected and stay closed** — A6 was always outside them.
+> ADR-0023 §6); and **"durable push delivery" is scoped to `write_bindings`
+> only** — `apply_plan` and `renew_cert` embed an instance certificate that
+> expires in 4 hours by default, so a late delivery installs a dead one and
+> looks like success (§0.11, D-B1-12). The binding push carries no certificate,
+> and it is the sticky-failure case ADR-0021 §5 is built around, so nothing this
+> slice asks for is lost. **This milestone's exit criteria are unaffected and
+> stay closed** — A6 was always outside them.
 
 ### A7 — App-instance master identity *(pulled forward, 2026-08-02)* — **Complete (2026-08-04)**
 
