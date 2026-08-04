@@ -147,14 +147,21 @@ pub struct MasterVault {
     /// operator-declared via `SupervisorRole::master_backup_dir`, never
     /// caller-supplied.
     backup_dir: PathBuf,
-    /// Serializes `get_or_mint`'s read-then-write across concurrent
-    /// callers. `SupervisorService::dispatch` takes `&self`, so two
-    /// `submit`s for the same instance can otherwise interleave: both see
-    /// no existing master, both mint one, and the later `write_secret`
-    /// wins -- the earlier call has already certified and deployed a
-    /// member under a master no longer in the vault, which ADR-0020 §4
-    /// calls unrecoverable (S3, Slice A5b review). One process-wide lock
-    /// is enough: minting is rare and never on a hot path.
+    /// Serializes every write to a vault name -- `get_or_mint`'s own
+    /// read-then-write, and `import`'s (M05A A7 review round 2, finding
+    /// 2), across concurrent callers. `SupervisorService::dispatch` takes
+    /// `&self`, so two `submit`s for the same instance can otherwise
+    /// interleave: both see no existing master, both mint one, and the
+    /// later `write_secret` wins -- the earlier call has already
+    /// certified and deployed a member under a master no longer in the
+    /// vault, which ADR-0020 §4 calls unrecoverable (S3, Slice A5b
+    /// review). `import` taking this same lock closes the sibling case:
+    /// without it, a concurrent `import-master` could land between
+    /// `get_or_mint`'s read and its write and be silently clobbered, or
+    /// itself clobber a fresh mint with no warning, since its own
+    /// existence check would be racing against the write it is trying to
+    /// warn about. One process-wide lock is enough: minting and importing
+    /// are both rare and never on a hot path.
     mint_lock: tokio::sync::Mutex<()>,
 }
 
@@ -361,12 +368,16 @@ fn member_master_name(
 ///   name whatever either id's segments contain.
 ///
 /// Still validated through `validate_backup_name`, the same rule
-/// `export_master`/`import_master` enforce on the name they are handed:
-/// `AppInstanceId::try_new` refuses only empty, `/`, and `#`, which is
-/// narrower than what a backup name must avoid (also `\`, `..`, and an
-/// absolute path), so an instance id valid at construction can still be
-/// unusable as a vault key -- refused here, at mint time, rather than
-/// minted and only discovered unbackuppable later.
+/// `export_master`/`import_master` enforce on the name they are handed.
+/// `AppInstanceId::try_new` itself now also refuses `..` and `\` (a fix
+/// made after review found the gap this comment used to describe --
+/// M05A A7 review round 2, finding 5), so a caller that only ever
+/// constructs a name from an already-validated `AppInstanceId` cannot
+/// trip this. This function takes a bare `&str`, not an `AppInstanceId`,
+/// so the check stays as defense-in-depth against a caller that skipped
+/// that construction -- refused here, at mint time, rather than minted
+/// and only discovered unbackuppable later. Do not remove it on the
+/// strength of `AppInstanceId`'s own validator alone.
 ///
 /// Deliberately **no** duplicated copy of this in `roymctl`, unlike
 /// `member_master_name`'s copy in `apps/roymctl/src/commands/
@@ -845,11 +856,14 @@ mod tests {
         }
     }
 
-    /// D-A7-3, §0.3 as corrected in review: `AppInstanceId` permits `..`
-    /// and `\` (it forbids only empty, `/`, and `#`), but
-    /// `validate_backup_name` refuses both -- so an instance id valid at
-    /// construction must still be refused *before* anything is minted
-    /// under it, not discovered later at `export_master`.
+    /// D-A7-3, §0.3 as corrected in review. `AppInstanceId::try_new`
+    /// itself now also refuses `..` and `\` (M05A A7 review round 2,
+    /// finding 5) -- but `app_master`/`app_master_name` take a bare
+    /// `&str`, not an `AppInstanceId`, so this pins the defense-in-depth
+    /// layer directly: a caller that reaches this function with a raw
+    /// string that never went through `AppInstanceId::try_new` must still
+    /// be refused *before* anything is minted under it, not discovered
+    /// later at `export_master`.
     #[tokio::test]
     async fn an_app_instance_id_that_could_not_be_backed_up_is_refused_before_minting() {
         let dir = tempfile::tempdir().unwrap();

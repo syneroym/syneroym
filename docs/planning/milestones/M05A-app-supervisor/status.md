@@ -2933,6 +2933,45 @@ attributes against the pre-review commit, not asserted).
   multi-hop), unchanged.
 - `wasm32-wasip2`: `greeter` still builds clean.
 
+### Post-merge code review, round 2 (2026-08-04), three findings, all incorporated
+
+Three low findings, all created by the round-1 fix itself, not the
+original slice; none change behaviour.
+
+- **Two comments still described `AppInstanceId` as permitting `..` and
+  `\`**, which round 1 had already closed at the type
+  (`crates/app_orchestration/src/models.rs`). Both comments were the
+  stated reason for keeping `app_master_name`'s own
+  `validate_backup_name` call — a reader who checked the claim, found it
+  false, and concluded the check was now redundant could have deleted a
+  real defense-in-depth layer (`app_master_name` takes a bare `&str`, not
+  an `AppInstanceId`, so a caller that skips construction can still reach
+  it with an unvalidated string). Both corrected in
+  `crates/app_supervisor/src/keys.rs` to state plainly that the type-level
+  check exists now, and why the function-level one stays anyway.
+- **`mint_lock`'s own doc comment still described one caller and one
+  race**, from before round 1 gave `import` the same lock. Updated to
+  name both callers and both races.
+- **`record_adopt` (round 1) left `set_generation`, `un_retire`, and
+  `set_app_master_did` with no production caller**, each now a way to
+  write part of what `record_adopt` writes atomically, silently
+  reachable again by a later change. `pub` on all three, so `dead_code`
+  would never have caught it. `un_retire` and `set_app_master_did`
+  deleted outright, with their three test call sites moved onto
+  `record_adopt` directly. `set_generation` kept, `#[cfg(test)]`-gated
+  and its doc comment rewritten to say why: `record_adopt` cannot seed a
+  generation alone without also writing `app_master_did`, which some
+  test setup needs to avoid. Two stale doc comments elsewhere in
+  `store.rs` that still named `un_retire` as the method `handle_adopt`
+  calls were corrected to name `record_adopt` in the same pass.
+
+**Gates, re-run after all three:** `cargo +nightly fmt --all -- --check`
+clean; `cargo clippy --workspace --all-targets --all-features` clean,
+zero warnings; `cargo build --workspace --all-targets` clean;
+`syneroym-app-supervisor` 160/160 (no test count change — three existing
+tests moved from the deleted methods onto `record_adopt`, none added or
+removed).
+
 ## Dependencies pulled in
 
 1. **`ControllerAgreement` creation tool + the two items B7 pairs with it**, all

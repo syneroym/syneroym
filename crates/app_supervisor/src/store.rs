@@ -466,7 +466,7 @@ impl SupervisorStore {
     /// is meant to hand an instance back to manual operation, and a submit
     /// that landed anyway would silently resume supervision behind the
     /// operator's back. `adopt` is the only way back in -- it clears the
-    /// flag on a successful claim (`un_retire`, below); plain `release`
+    /// flag on a successful claim (`record_adopt`, below); plain `release`
     /// does not, since it only clears the substrate-side stamp and says
     /// nothing about whether *this* supervisor should resume managing the
     /// instance (N3, Slice A5b review round 2 -- the message here used to
@@ -608,49 +608,29 @@ impl SupervisorStore {
     /// A later `submit` is refused until the instance is re-adopted
     /// (D-A5-20's substrate-side release is the caller's counterpart --
     /// clearing the substrate's own stamp, not this row). Not terminal:
-    /// `handle_adopt` calls `un_retire` on a successful claim, which is
+    /// `handle_adopt` un-retires as part of `record_adopt`'s combined
+    /// write on a successful claim (M05A A7 review finding 6), which is
     /// the "re-adopted" this doc comment and every refusal message
     /// promise (N3, Slice A5b review round 2).
     pub fn retire(&self, app_instance_id: &str) -> Result<()> {
         self.set_flag(app_instance_id, "retired", true)
     }
 
-    /// `adopt`'s own counterpart to `retire`: an instance that has been
-    /// handed back to manual operation and then explicitly re-adopted is
-    /// no longer retired, so `submit` stops refusing it. Idempotent --
-    /// harmless to call on an instance that was never retired.
-    pub fn un_retire(&self, app_instance_id: &str) -> Result<()> {
-        self.set_flag(app_instance_id, "retired", false)
-    }
-
     /// Updates the held generation in place, without touching the rest of
-    /// desired state -- `adopt`'s own write, distinct from a re-`submit`.
+    /// desired state. Test-only hook (M05A A7 review round 2, finding C):
+    /// `record_adopt`, below, is what `handle_adopt` actually calls in
+    /// production, and it writes the generation together with the
+    /// un-retired flag and the app master DID in one statement -- this
+    /// method exists only to seed a generation in a test's setup step
+    /// without also touching those other two columns, which
+    /// `record_adopt` cannot do alone.
+    #[cfg(test)]
     pub fn set_generation(&self, app_instance_id: &str, generation: u64) -> Result<()> {
         let conn = self.conn.lock().expect("supervisor store connection lock poisoned");
         let now = chrono::Utc::now().timestamp();
         let updated = conn.execute(
             "UPDATE desired_state SET generation = ?1, updated_at = ?2 WHERE app_instance_id = ?3",
             params![generation as i64, now, app_instance_id],
-        )?;
-        if updated == 0 {
-            return Err(anyhow!("no desired state submitted for app instance '{app_instance_id}'"));
-        }
-        Ok(())
-    }
-
-    /// Records this instance's app master DID, resolved or minted by
-    /// `adopt` (M05A A7, D-A7-5) -- written on *every* successful `adopt`,
-    /// not only the one that mints, so the row always agrees with whatever
-    /// the vault currently holds under this instance's name. Same shape as
-    /// `set_generation`: one column plus `updated_at`, erroring when no row
-    /// matched.
-    pub fn set_app_master_did(&self, app_instance_id: &str, app_master_did: &str) -> Result<()> {
-        let conn = self.conn.lock().expect("supervisor store connection lock poisoned");
-        let now = chrono::Utc::now().timestamp();
-        let updated = conn.execute(
-            "UPDATE desired_state SET app_master_did = ?1, updated_at = ?2 WHERE app_instance_id \
-             = ?3",
-            params![app_master_did, now, app_instance_id],
         )?;
         if updated == 0 {
             return Err(anyhow!("no desired state submitted for app instance '{app_instance_id}'"));
@@ -780,9 +760,11 @@ mod tests {
         assert!(err.to_string().contains("retired"), "{err}");
 
         // N3 (Slice A5b review round 2): `retire` is not a dead end --
-        // `un_retire` (called by `handle_adopt` on a successful claim) is
-        // the "run `supervisor adopt`" the refusal above names.
-        store.un_retire("inst-1").unwrap();
+        // `record_adopt` (called by `handle_adopt` on a successful claim,
+        // M05A A7 review finding 6) un-retires as part of its combined
+        // write, which is the "run `supervisor adopt`" the refusal above
+        // names.
+        store.record_adopt("inst-1", 0, "did:key:zAppMaster").unwrap();
         assert!(!store.get("inst-1").unwrap().unwrap().retired);
         store.submit("inst-1", "{\"v\":2}", "{}", "did:key:owner", 0).unwrap();
         assert_eq!(store.get("inst-1").unwrap().unwrap().plan_json, "{\"v\":2}");
@@ -977,7 +959,7 @@ mod tests {
     fn a_recorded_app_master_survives_a_resubmit_and_a_retire() {
         let store = SupervisorStore::open_in_memory().unwrap();
         store.submit("inst-1", "{\"v\":1}", "{}", "did:key:owner", 0).unwrap();
-        store.set_app_master_did("inst-1", "did:key:zAppMaster").unwrap();
+        store.record_adopt("inst-1", 0, "did:key:zAppMaster").unwrap();
         assert_eq!(store.get("inst-1").unwrap().unwrap().app_master_did, "did:key:zAppMaster");
 
         // A later submit at the current generation replaces the plan but
