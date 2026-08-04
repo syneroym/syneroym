@@ -83,6 +83,5 @@ tokio-tungstenite.workspace = true
 futures-util.workspace = true
 webrtc.workspace = true
 syneroym-coordinator-webrtc.workspace = true
-chromiumoxide.workspace = true
 tokio-stream.workspace = true
 ed25519-dalek.workspace = true
