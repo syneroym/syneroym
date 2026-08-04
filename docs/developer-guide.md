@@ -737,9 +737,24 @@ A member master minted this way is **not backed up automatically**. The
 moment `submit` mints one, it prints the DID and the export command:
 
 ```bash
-roymctl --substrate <supervisor-node-did> supervisor export-master member-guild-instance-1-frontend-0
-# -> Wrote master 'member-guild-instance-1-frontend-0' to <supervisor's app_data_dir>/master-backups/member-guild-instance-1-frontend-0.key
+roymctl --substrate <supervisor-node-did> supervisor export-master member-guild-instance-1#frontend-0
+# -> Wrote master 'member-guild-instance-1#frontend-0' to <supervisor's app_data_dir>/master-backups/member-guild-instance-1#frontend-0.key
 ```
+
+> **The vault-key name changed shape in M05A Slice A5e.** Before A5e, a
+> member master's computable name was `member-<app-instance-id>-<service-
+> name>-<index>`; A5e changed the `app-instance-id`/`service-name` boundary
+> to `#` (`member-<app-instance-id>#<service-name>-<index>`) to close a
+> collision between two different (instance, service) pairs that could
+> otherwise stem to the identical name. `get_or_mint` finds nothing under
+> the new name for an instance deployed before this change, so its **next
+> submit re-identifies every member with a fresh master DID** rather than
+> failing — the old master, its anchor, and its `revoke-instance` rows are
+> left behind, orphaned. Pre-release policy accepts this the same way it
+> accepts every other in-place schema change (no migration, no compat
+> shim); if you have a real deployment predating A5e, back up and
+> re-`import-master` each member under its new name (or just accept the
+> re-identification) before its next submit.
 
 That path is on the **supervisor's own host** — collecting the file from
 there (a mounted volume, a backup agent, `scp`) is the operator's own

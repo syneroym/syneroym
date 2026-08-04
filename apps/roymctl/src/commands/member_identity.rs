@@ -30,16 +30,19 @@ use syneroym_sdk::{SyneroymClient, deploy};
 /// command for a longer- or shorter-lived one.
 const DEFAULT_INSTANCE_CERT_EXPIRES_HOURS: u64 = 24;
 
-/// `<dir>/identities/member-<app_instance_id>-<service_name>-<index>.key`'s
+/// `<dir>/identities/member-<app_instance_id>#<service_name>-<index>.key`'s
 /// stem. `index` is the member ordinal (`0` for a `Singleton`).
 ///
-/// Both `AppInstanceId` and `LogicalServiceName` forbid `/` at construction
-/// (M05A A5e closed the `AppInstanceId` gap), so a name containing a path
-/// separator can no longer reach this function at all -- `logical_ref`'s
-/// fields are already validated by the time anything holds a
-/// `LogicalServiceRef`.
+/// The `app_instance_id`/`service_name` boundary is `#`, not `-` (M05A A5e,
+/// D-A5e-12): both id types forbid `/` and `#` at construction, but neither
+/// forbids `-`, so instance `a` + service `b-c` and instance `a-b` +
+/// service `c` would otherwise both stem to `member-a-b-c-0` -- one master
+/// key handed to two different app instances. `#` is forbidden in both, so
+/// it always marks the true boundary regardless of what either segment
+/// contains. Kept in sync with `crates/app_supervisor/src/keys.rs`'s own
+/// `member_master_name`.
 pub fn member_master_name(logical_ref: &LogicalServiceRef, index: u32) -> String {
-    format!("member-{}-{}-{index}", logical_ref.app_instance_id, logical_ref.service_name)
+    format!("member-{}#{}-{index}", logical_ref.app_instance_id, logical_ref.service_name)
 }
 
 fn member_master_path(dir: &Path, name: &str) -> PathBuf {
@@ -234,13 +237,13 @@ mod tests {
     #[test]
     fn member_master_name_is_deterministic() {
         let name = member_master_name(&logical_ref("inst-1", "backend"), 0);
-        assert_eq!(name, "member-inst-1-backend-0");
+        assert_eq!(name, "member-inst-1#backend-0");
     }
 
     #[test]
     fn member_master_name_carries_the_index() {
         let name = member_master_name(&logical_ref("inst-1", "backend"), 2);
-        assert_eq!(name, "member-inst-1-backend-2");
+        assert_eq!(name, "member-inst-1#backend-2");
     }
 
     /// M05A A5e closed this one layer up: `AppInstanceId::try_new` itself
@@ -250,6 +253,18 @@ mod tests {
     #[test]
     fn an_app_instance_id_containing_a_path_separator_is_refused_at_construction() {
         assert!(AppInstanceId::try_new("inst/../escape").is_err());
+    }
+
+    /// D-A5e-12: the pre-existing collision this slice closes -- instance
+    /// `a` + service `b-c` and instance `a-b` + service `c` used to both
+    /// stem to `member-a-b-c-0` under the old `-`-only boundary. The `#`
+    /// boundary keeps them apart because both id types forbid `#`, so `-`
+    /// inside either segment can never be mistaken for the separator.
+    #[test]
+    fn member_master_name_cannot_collide_across_two_instance_and_service_pairs() {
+        let a_bc = member_master_name(&logical_ref("a", "b-c"), 0);
+        let ab_c = member_master_name(&logical_ref("a-b", "c"), 0);
+        assert_ne!(a_bc, ab_c);
     }
 
     #[test]

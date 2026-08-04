@@ -771,7 +771,10 @@ pub async fn handle(
             // only the logical service, with no way to name one member of a
             // scaled one -- forgets member 0, the only member an unscaled
             // deploy ever has. Forgetting one member of a `replicas > 1`
-            // service is not supported by this command yet.
+            // service is not supported by this command yet (deferred-
+            // backlog: "roymctl app forget has no per-member verb"), so a
+            // scaled service is refused below rather than silently acting
+            // on member 0 alone while its siblings stay tracked.
             let l_ref = (MemberRef { logical_ref: logical_ref.clone(), index: 0 }).to_string();
 
             let parent_dir = journal_path.parent().unwrap_or(Path::new("."));
@@ -783,6 +786,26 @@ pub async fn handle(
             let journal = DeploymentJournal::open(parent_dir, db_name)?;
 
             let landed = journal.get_completed_actions_for_instance(&instance_id)?;
+
+            let member_prefix = format!("{logical_ref}#");
+            let landed_member_indices: BTreeSet<u32> = landed
+                .iter()
+                .filter(|r| r.logical_ref.starts_with(&member_prefix))
+                .filter_map(|r| r.logical_ref[member_prefix.len()..].parse::<u32>().ok())
+                .filter(|idx| {
+                    deploy::current_placement(&landed, &format!("{member_prefix}{idx}")).is_some()
+                })
+                .collect();
+            if landed_member_indices.len() > 1 {
+                anyhow::bail!(
+                    "'{service}' in {instance_id} has {} landed members \
+                     ({landed_member_indices:?}); `app forget` does not yet support naming one \
+                     member of a scaled service. Forgetting only member 0 would leave the others \
+                     tracked as if this command had never run.",
+                    landed_member_indices.len()
+                );
+            }
+
             match landed.iter().rev().find(|r| r.logical_ref == l_ref) {
                 None => anyhow::bail!(
                     "no completed deploy is recorded for '{service}' in {instance_id}; nothing to \
@@ -1582,6 +1605,71 @@ mod tests {
         .unwrap();
         let landed_again = journal.get_completed_actions_for_instance(&instance_id).unwrap();
         assert_eq!(landed_again.len(), landed.len(), "{landed_again:?}");
+    }
+
+    /// M05A A5e review: `--service` names a logical service, and this
+    /// command hardcodes member 0 -- forgetting a scaled service used to
+    /// silently forget member 0 alone while its siblings stayed tracked as
+    /// if nothing had happened. Refused instead, naming the count.
+    #[tokio::test]
+    async fn app_forget_refuses_a_service_with_more_than_one_landed_member() {
+        let dir = tempfile::tempdir().unwrap();
+        let instance_id = AppInstanceId::new("inst-forget-scaled");
+        let logical_ref = LogicalServiceRef {
+            app_instance_id: instance_id.clone(),
+            service_name: LogicalServiceName::new("backend"),
+        };
+        let journal_path = dir.path().join("deployments.db");
+
+        {
+            let journal = DeploymentJournal::open(dir.path(), "deployments.db").unwrap();
+            let plan = dummy_deployment_plan(
+                &instance_id,
+                planned_service(logical_ref.clone(), "did:key:hFabricated", "edge-1"),
+            );
+            let deployment_id = journal.append(&plan, DeploymentState::Active).unwrap();
+            journal
+                .append_action(
+                    deployment_id,
+                    "ADD",
+                    &format!("{logical_ref}#0"),
+                    Some("edge-1"),
+                    "did:key:zNode0",
+                    ActionState::Completed,
+                )
+                .unwrap();
+            journal
+                .append_action(
+                    deployment_id,
+                    "ADD",
+                    &format!("{logical_ref}#1"),
+                    Some("edge-2"),
+                    "did:key:zNode1",
+                    ActionState::Completed,
+                )
+                .unwrap();
+        }
+
+        let err = handle(
+            &AppCommands::Forget {
+                instance_id: instance_id.to_string(),
+                service: "backend".to_string(),
+                journal_path: journal_path.clone(),
+            },
+            "http://localhost:1",
+            None,
+            dir.path(),
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("2 landed members"), "{err}");
+
+        // Neither member was touched.
+        let journal = DeploymentJournal::open(dir.path(), "deployments.db").unwrap();
+        let landed = journal.get_completed_actions_for_instance(&instance_id).unwrap();
+        assert!(landed.iter().all(|r| r.action_type == "ADD"), "{landed:?}");
     }
 
     #[tokio::test]

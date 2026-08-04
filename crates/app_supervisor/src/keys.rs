@@ -260,24 +260,34 @@ impl MasterVault {
     }
 }
 
-/// `member-<app_instance_id>-<service_name>-<index>` -- the same computable
+/// `member-<app_instance_id>#<service_name>-<index>` -- the same computable
 /// name A0's `member_master_name` uses, so an operator adopting an
 /// existing deployment's masters finds the same file stem under
 /// `import_master`.
+///
+/// The `app_instance_id`/`service_name` boundary is `#`, not `-` (M05A A5e,
+/// D-A5e-12): both id types forbid `/` and `#` at construction, but neither
+/// forbids `-`, so with a `-` boundary instance `a` + service `b-c` and
+/// instance `a-b` + service `c` collided on the identical name -- one vault
+/// master handed to two different app instances. `#` is forbidden in both,
+/// so it always marks the true boundary regardless of what either segment
+/// contains; the trailing `-index` boundary needs no guard, since `index`
+/// is always a plain `u32` and can never itself contain a `-`, which makes
+/// the rightmost `-` in the whole string unambiguous already. Kept in sync
+/// with `apps/roymctl/src/commands/member_identity.rs`'s own
+/// `member_master_name`.
 ///
 /// Validated against the same rule `export_master`/`import_master` enforce
 /// on the name they are handed, so a name they will later refuse is
 /// refused here instead, at mint time, rather than minting a key that is
 /// permanently un-backup-able and only discovered when the operator tries
-/// (S5, Slice A5b review). `AppInstanceId` itself only checks non-empty --
-/// `apps/roymctl/src/commands/member_identity.rs`'s own
-/// `member_master_name` checks the same gap on its side.
+/// (S5, Slice A5b review).
 fn member_master_name(
     app_instance_id: &str,
     service_name: &str,
     index: u32,
 ) -> Result<String, VaultError> {
-    let name = format!("member-{app_instance_id}-{service_name}-{index}");
+    let name = format!("member-{app_instance_id}#{service_name}-{index}");
     validate_backup_name(&name)?;
     Ok(name)
 }
@@ -530,8 +540,8 @@ mod tests {
     async fn master_for_member_reads_the_members_own_index_rather_than_zero() {
         let dir = tempfile::tempdir().unwrap();
         let v = vault(dir.path());
-        let member0 = v.get_or_mint("member-inst-1-backend-0").await.unwrap();
-        let member1 = v.get_or_mint("member-inst-1-backend-1").await.unwrap();
+        let member0 = v.get_or_mint("member-inst-1#backend-0").await.unwrap();
+        let member1 = v.get_or_mint("member-inst-1#backend-1").await.unwrap();
         assert_ne!(member0.public_key(), member1.public_key());
 
         let resolved0 = master_for_member(&v, "inst-1", "backend", 0).await.unwrap();
@@ -560,21 +570,32 @@ mod tests {
         let err = mint_and_substitute(&mut p, &v).await.unwrap_err();
         assert!(matches!(err, VaultError::Storage(_)), "{err:?}");
         assert!(
-            v.get("member-inst-1-..-0").await.unwrap().is_none(),
+            v.get("member-inst-1#..-0").await.unwrap().is_none(),
             "the rejected name must never have been written to the vault"
         );
     }
 
-    /// M05A A5e (D-A5e-2/D-A5e-12): the collision this validator closes --
-    /// instance `a` + service `b-c` and instance `a-b` + service `c` used to
-    /// mint the identical vault key `member-a-b-c-0`, handing one master DID
-    /// to two different (instance, service) pairs. `AppInstanceId` now
-    /// refuses the separator outright, so the ambiguous instance id can
-    /// never be constructed in the first place.
+    /// `AppInstanceId` forbids `/` (a `validate_backup_name` concern) and
+    /// `#` (`MemberRef`'s own index separator, D-A5e-2), but not `-` -- a
+    /// hyphen in an instance id is ordinary and must keep working.
     #[test]
     fn an_app_instance_id_containing_a_path_separator_is_refused_at_construction() {
         assert!(AppInstanceId::try_new("a-b").is_ok());
         assert!(AppInstanceId::try_new("a/b").is_err());
+    }
+
+    /// M05A A5e (D-A5e-12): the collision `member_master_name`'s `#`
+    /// boundary closes -- instance `a` + service `b-c` and instance `a-b` +
+    /// service `c` used to both mint the identical vault key
+    /// `member-a-b-c-0` under the old `-`-only boundary, handing one master
+    /// DID to two different (instance, service) pairs. Neither id type can
+    /// contain `#`, so the boundary is unambiguous regardless of what
+    /// hyphens either segment carries.
+    #[test]
+    fn member_master_name_cannot_collide_across_two_instance_and_service_pairs() {
+        let a_bc = member_master_name("a", "b-c", 0).unwrap();
+        let ab_c = member_master_name("a-b", "c", 0).unwrap();
+        assert_ne!(a_bc, ab_c);
     }
 
     #[tokio::test]

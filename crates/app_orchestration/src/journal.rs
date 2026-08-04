@@ -331,7 +331,7 @@ impl DeploymentJournal {
 
             Ok(Some(DeploymentRecord {
                 id,
-                instance_id: AppInstanceId::new(inst_str),
+                instance_id: AppInstanceId::try_new(inst_str)?,
                 plan,
                 state,
                 created_at,
@@ -370,7 +370,7 @@ impl DeploymentJournal {
 
             Ok(Some(DeploymentRecord {
                 id,
-                instance_id: AppInstanceId::new(inst_str),
+                instance_id: AppInstanceId::try_new(inst_str)?,
                 plan,
                 state,
                 created_at,

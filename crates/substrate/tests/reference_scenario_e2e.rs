@@ -19,13 +19,21 @@
 //!    component this is `AppSandboxEngine::init`'s own boot-time warm-up loop
 //!    re-populating its component cache from the persisted artifact, not a
 //!    redeploy or a supervisor-triggered restart.
-//! 5. `backend` scales to two members. `frontend` is pushed a new binding, not
-//!    reinstalled -- and, per review round R5, the test does not stop at "a
-//!    push happened": it makes repeated dependency calls and asserts both
-//!    members actually answer (via `greeter`'s own `component_id`, echoed
-//!    through the pre-existing `syneroym:host/context::get-test-context`
-//!    capability -- the one thing that differs between two otherwise
-//!    byte-identical `replicas` members).
+//! 5. `backend` scales to two members. `frontend`'s binding advances and it
+//!    resolves across both members afterward -- proven here by making repeated
+//!    dependency calls and asserting both members actually answer (via
+//!    `greeter`'s own `component_id`, echoed through the pre-existing
+//!    `syneroym:host/context::get-test-context` capability -- the one thing
+//!    that differs between two otherwise byte-identical `replicas` members).
+//!    **What this step does not prove** (M05A A5e review, second round):
+//!    `frontend`'s stable `service_id` and its advanced written epoch are both
+//!    consistent with a full reinstall as much as with a push -- neither is a
+//!    WASM instantiation counter, and this harness has no live component to
+//!    sample one from. The push-not-reinstall claim itself is proven where it
+//!    can actually be told apart: at the unit level, against a fake substrate
+//!    that records which calls it saw (`syneroym-app-supervisor`'s
+//!    `a_diff_whose_only_change_is_resolved_dependencies_pushes_instead_of_redeploying`
+//!    and its `_config_still_takes_the_redeploy_path` counterpart).
 //! 6. A stale-epoch binding write is rejected without regressing the held
 //!    mapping, and an identical re-send at the current epoch is a no-op.
 //!    `binding_push_e2e.rs` already proves the first two operations in
@@ -609,8 +617,12 @@ async fn the_reference_scenario_runs_end_to_end_over_two_substrates() {
         "a substrate reboot with no membership change must not push a new binding"
     );
 
-    // ---- Step 5: backend scales to two members. frontend is pushed, not
-    // reinstalled, and (R5) must actually resolve across both members. ----
+    // ---- Step 5: backend scales to two members and frontend's binding
+    // converges, then (R5) actually resolves across both members. Whether
+    // frontend got there via a push or a full reinstall is not
+    // distinguishable from these RPC-surface assertions alone (M05A A5e
+    // review, second round) -- see the module doc's step 5 note; that
+    // claim is proven separately, at the unit level. ----
     let scaled_plan_json = compiled_plan_json(2).await;
     let scale_res = supervisor_node
         .substrate_client
@@ -639,15 +651,18 @@ async fn the_reference_scenario_runs_end_to_end_over_two_substrates() {
             .and_then(|s| str_field(s, "service_id"))
             .is_some_and(|id| id == backend_member1_did);
         let pushed = frontend_written_epoch(&status).is_some_and(|e| e > epoch_after_deploy);
-        // frontend must never have been reinstalled: its own deployed
-        // service_id is stable across the whole scenario (`--mint-masters`
-        // custody means it is minted once, at step 1, and never again).
+        // frontend's own master DID is stable across the whole scenario
+        // (`--mint-masters` custody means it is minted once, at step 1,
+        // and never again) -- true whether it was pushed or reinstalled,
+        // since a redeploy resolves the same member master by the same
+        // computable name. Not proof of "not reinstalled" on its own; see
+        // the module doc's step 5 note.
         let frontend_unchanged = service_of(&services, "/frontend#0")
             .and_then(|s| str_field(s, "service_id"))
             .is_some_and(|id| id == frontend_service_id);
         assert!(
             frontend_unchanged,
-            "frontend must not be reinstalled by the scale-out: {services:?}"
+            "frontend's master DID must stay stable across the scale-out: {services:?}"
         );
         if backend1_landed && pushed {
             break;
