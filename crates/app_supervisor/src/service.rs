@@ -25,6 +25,7 @@ use syneroym_app_orchestration::{
         RotationPolicy, ServiceId, SubstrateAlias,
     },
 };
+use syneroym_async_queue::QueueItem;
 use syneroym_control_plane::SUPERVISOR_RESERVED_SERVICE_ID;
 use syneroym_identity::{
     Identity,
@@ -37,7 +38,7 @@ use syneroym_rpc::{
 };
 use syneroym_sdk::{
     BindingWrite, BindingWriteOutcome, SyneroymClient,
-    deploy::{self, ApplyRequest, DeployTarget, SubstrateActor},
+    deploy::{self, ApplyRequest, DeployTarget, SubstrateActor, WriteBindingsAttempt},
     health::{self, ExpectedService, HealthTarget, Signal, StatusQuery},
     mapper::map_deployment_plan_to_wit,
 };
@@ -51,7 +52,8 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     AnchorWriter, MasterVault, MintedMaster,
     inventory::{SupervisorInventory, SupervisorInventoryEntry},
-    keys,
+    keys, outbox,
+    outbox::{QueueKey, SupervisorOutbox},
     store::{RemediationState, SupervisorStore},
 };
 
@@ -147,6 +149,51 @@ enum RenewalFailure {
     },
 }
 
+/// How the queue worker reconnects to a claimed item's target substrate
+/// (M05B B1, D-B1-1). A trait rather than a direct call to
+/// `SupervisorService::connected_client`, so `deliver_queued_item` is
+/// testable against a fake instead of a live substrate -- the same
+/// tradeoff `push_bindings`/`attempt_restart` already made by taking an
+/// already-connected `&Arc<dyn SubstrateActor>` rather than connecting
+/// themselves.
+#[async_trait::async_trait]
+trait QueueConnector: fmt::Debug + Send + Sync {
+    async fn connect(
+        &self,
+        entry: &SupervisorInventoryEntry,
+    ) -> anyhow::Result<Arc<dyn WriteBindingsAttempt>>;
+}
+
+/// The production `QueueConnector`: a fresh `SyneroymClient` per delivery,
+/// closed by `Drop` rather than an explicit `shutdown()` call -- unlike
+/// `connected_client`'s other callers, a queue delivery is one-shot and
+/// short-lived, and `Arc<dyn WriteBindingsAttempt>` has no `shutdown` to
+/// call even if it mattered here.
+#[derive(Debug)]
+struct LiveQueueConnector {
+    client_identity_bytes: [u8; 32],
+}
+
+#[async_trait::async_trait]
+impl QueueConnector for LiveQueueConnector {
+    async fn connect(
+        &self,
+        entry: &SupervisorInventoryEntry,
+    ) -> anyhow::Result<Arc<dyn WriteBindingsAttempt>> {
+        let identity = Identity::from_bytes(&self.client_identity_bytes);
+        let mut client = SyneroymClient::new_with_identity(
+            entry.did.clone(),
+            entry.api_url.clone().unwrap_or_default(),
+            identity,
+        );
+        if let Some(token) = &entry.ucan {
+            client = client.with_ucan(token.clone());
+        }
+        client.wait_for_ready(MANAGED_SUBSTRATE_CONNECT_TIMEOUT).await?;
+        Ok(Arc::new(client))
+    }
+}
+
 pub struct SupervisorService {
     node_did: String,
     store: SupervisorStore,
@@ -190,6 +237,17 @@ pub struct SupervisorService {
     max_renewals_per_pass: u32,
     /// `SupervisorRole.master_anchor_refresh_interval_secs` (default 12h).
     master_anchor_refresh_interval_secs: u64,
+    /// `SupervisorRole.queue_tick_secs` (default 5s, M05B B1) -- the
+    /// durable outbox worker's own `tokio::interval` period, independent of
+    /// `poll_interval_secs` (task.md's recovery budget: within one worker
+    /// tick, not one poll interval).
+    queue_tick_secs: u64,
+    /// How the queue worker reconnects to a claimed item's target
+    /// substrate (M05B B1). `LiveQueueConnector` in production; a test
+    /// substitutes a fake, the same reason `push_bindings`/`attempt_restart`
+    /// take an already-connected `&Arc<dyn SubstrateActor>` rather than
+    /// connecting themselves.
+    queue_connector: Arc<dyn QueueConnector>,
     /// Where master-anchor refreshes and revocations are published.
     /// `None` when this node has no registry configured: an anchor
     /// published nowhere would leave every consumer failing closed on a
@@ -256,6 +314,7 @@ impl SupervisorService {
         max_renewals_per_pass: u32,
         master_anchor_refresh_interval_secs: u64,
         anchor_writer: Option<Arc<dyn AnchorWriter>>,
+        queue_tick_secs: u64,
     ) -> Self {
         // `.take(0)` in `renewal_candidates` silently disables renewal for
         // the whole node, with no warning and no config validation to
@@ -286,6 +345,10 @@ impl SupervisorService {
             max_renewals_per_pass,
             master_anchor_refresh_interval_secs,
             anchor_writer,
+            queue_tick_secs,
+            queue_connector: Arc::new(LiveQueueConnector {
+                client_identity_bytes: client_identity.to_bytes(),
+            }),
             instance_locks: DashMap::new(),
             last_reconciled: DashMap::new(),
             cancellation_token: CancellationToken::new(),
@@ -338,6 +401,157 @@ impl SupervisorService {
         let mut interval = tokio::time::interval(Duration::from_secs(poll_interval_secs.max(1)));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         interval
+    }
+
+    /// How many items one worker tick claims before yielding back to the
+    /// interval -- generous relative to any one supervisor's realistic
+    /// outage-time backlog, and bounded so one tick cannot starve every
+    /// later one if the backlog is somehow larger.
+    const QUEUE_WORKER_CLAIM_LIMIT: u32 = 100;
+
+    /// The durable outbox worker (M05B B1, D-B1-1): claims items due from
+    /// this supervisor's own queue and replays each `write_bindings`
+    /// against its target substrate. Spawned beside the resident loop
+    /// (`RuntimeServices::run_until_shutdown`), on the same
+    /// `queue_tick_secs` cadence and the same cancellation token -- and,
+    /// like the resident loop, **not** drained on shutdown (D-B1-8): work
+    /// in flight is abandoned, and the visibility timeout returns it to
+    /// `Pending` on the next start.
+    pub async fn run_queue_worker(&self) -> anyhow::Result<()> {
+        let mut interval = Self::build_pass_interval(self.queue_tick_secs);
+        loop {
+            tokio::select! {
+                () = self.cancellation_token.cancelled() => return Ok(()),
+                _ = interval.tick() => self.queue_worker_tick().await,
+            }
+        }
+    }
+
+    async fn queue_worker_tick(&self) {
+        let now = outbox::now_ms();
+        let items = match self.store.queue.claim_due(now, Self::QUEUE_WORKER_CLAIM_LIMIT) {
+            Ok(items) => items,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to claim due items from the outbox this tick");
+                return;
+            }
+        };
+        for item in items {
+            self.deliver_queued_item(item).await;
+        }
+    }
+
+    /// Replays one claimed item: reconnects to its target substrate,
+    /// attempts the write again, and applies the outcome mapping D-B1-15
+    /// specifies -- `applied`/`no-op`/`stale` complete and clear any
+    /// `BindingConflict` the original transport failure raised; `conflict`
+    /// completes **and** raises that same alert, exactly as the
+    /// synchronous path does; a transport error retries; a callee error
+    /// (the substrate reached and refused -- e.g. its target no longer
+    /// exists, failure-matrix row 9) is terminal.
+    ///
+    /// Takes the same `instance_lock` the resident loop's own pass holds
+    /// (D-B1-14) for the whole delivery -- without it, a queued write and a
+    /// live pass write for the same instance could interleave and race
+    /// this supervisor into a spurious `BindingConflict`, indistinguishable
+    /// from real split-brain.
+    async fn deliver_queued_item(&self, item: QueueItem) {
+        let now = outbox::now_ms();
+        let Ok(key) = item.queue_key.parse::<QueueKey>() else {
+            tracing::warn!(
+                queue_key = %item.queue_key,
+                "outbox item carries an unparseable queue key; dead-lettering"
+            );
+            let _ = self.store.queue.fail(item.id, now, "unparseable queue key", true);
+            return;
+        };
+        let Ok(queued) = serde_json::from_slice::<outbox::QueuedBindingWrite>(&item.payload) else {
+            tracing::warn!(
+                queue_key = %item.queue_key,
+                "outbox item carries an unparseable payload; dead-lettering"
+            );
+            let _ = self.store.queue.fail(item.id, now, "unparseable payload", true);
+            return;
+        };
+        let Ok(instance_id) = AppInstanceId::try_new(key.app_instance_id.clone()) else {
+            let _ =
+                self.store.queue.fail(item.id, now, "queue key's app instance id is invalid", true);
+            return;
+        };
+
+        let lock = self.instance_lock(&key.app_instance_id);
+        let _guard = lock.lock().await;
+
+        let Ok(Some(state)) = self.store.get(&key.app_instance_id) else {
+            let _ = self.store.queue.fail(item.id, now, "app instance no longer known", true);
+            return;
+        };
+        let Ok(inventory) = serde_json::from_str::<SupervisorInventory>(&state.inventory_json)
+        else {
+            let _ =
+                self.store.queue.fail(item.id, now, "stored inventory-json does not parse", true);
+            return;
+        };
+        let Some(entry) = inventory.values().find(|e| e.did == queued.substrate_did) else {
+            let _ = self.store.queue.fail(
+                item.id,
+                now,
+                "target substrate is no longer in this instance's inventory",
+                true,
+            );
+            return;
+        };
+
+        let client = match self.queue_connector.connect(entry).await {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = self.store.queue.fail(item.id, now, &e.to_string(), false);
+                return;
+            }
+        };
+        let outcome = client.attempt_write_bindings(queued.write.clone()).await;
+
+        match outcome {
+            Ok(outcomes) => {
+                let _ = self.store.queue.complete(item.id);
+                let conflict =
+                    outcomes.iter().any(|o| matches!(o, BindingWriteOutcome::Conflict(_)));
+                if conflict {
+                    if let Ok(true) = self.store.alerts.raise(
+                        &instance_id,
+                        Some(&key.logical_ref),
+                        None,
+                        &queued.substrate_did,
+                        AlertKind::BindingConflict,
+                        &format!(
+                            "a queued binding push for '{}' landed as a conflict on replay: \
+                             {outcomes:?}",
+                            key.logical_ref
+                        ),
+                    ) {
+                        self.publish_opened_alerts(
+                            &key.app_instance_id,
+                            &[(AlertKind::BindingConflict, key.logical_ref.clone())],
+                        )
+                        .await;
+                    }
+                } else {
+                    // The original transport failure's own alert (raised
+                    // when this item was first enqueued) is stale now that
+                    // delivery has actually converged.
+                    let _ = self.store.alerts.clear(
+                        &instance_id,
+                        Some(&key.logical_ref),
+                        &queued.substrate_did,
+                        AlertKind::BindingConflict,
+                    );
+                }
+            }
+            Err(err) => {
+                let terminal = deploy::is_callee_error(&err);
+                let _ = self.store.queue.fail(item.id, now, &err.to_string(), terminal);
+            }
+        }
     }
 
     /// Cancels the loop's token -- the spawn site (`RuntimeServices`) is
@@ -874,7 +1088,12 @@ impl SupervisorService {
                 any_push_failed = true;
                 continue;
             };
-            let actor = deploy::build_actor(client.clone());
+            let actor = self.durable_actor(
+                client.clone(),
+                app_instance_id,
+                &svc.member_ref().to_string(),
+                substrate_did,
+            );
             if self
                 .push_bindings(
                     instance_id,
@@ -919,7 +1138,8 @@ impl SupervisorService {
         for (logical_ref, service_id, substrate_did) in restart_candidates {
             let Some(alias) = did_to_alias.get(substrate_did) else { continue };
             let Some(client) = clients.get(&SubstrateAlias::new(alias.clone())) else { continue };
-            let actor = deploy::build_actor(client.clone());
+            let actor =
+                self.durable_actor(client.clone(), app_instance_id, logical_ref, substrate_did);
             self.attempt_restart(
                 instance_id,
                 app_instance_id,
@@ -1867,13 +2087,44 @@ impl SupervisorService {
     }
 
     /// Upcasts a connected client set into the trait-object shape
-    /// `max_held_generation_from_clients` (and, in later phases, the
-    /// remediation/push call sites) takes -- one place doing the upcast
-    /// rather than each call site repeating it.
+    /// `max_held_generation_from_clients` takes. Deliberately the plain,
+    /// undurable constructor (M05B B1): every actor this builds is used for
+    /// exactly one read, `held_generation`, and never for `write_bindings`
+    /// -- durability would add a queue key with nothing meaningful to bind
+    /// it to and no call that could ever use it.
     fn actors_from_clients(
         clients: &BTreeMap<SubstrateAlias, Arc<SyneroymClient>>,
     ) -> BTreeMap<SubstrateAlias, Arc<dyn SubstrateActor>> {
         clients.iter().map(|(alias, c)| (alias.clone(), deploy::build_actor(c.clone()))).collect()
+    }
+
+    /// The durable constructor every other app-supervisor call site with a
+    /// real client builds through (M05B B1, D-B1-4/D-B1-5): `write_bindings`
+    /// on the returned actor attempts synchronously first and enqueues onto
+    /// this supervisor's own outbox only on a transport failure (D-B1-1).
+    /// Every other action stays exactly as undurable as `build_actor` would
+    /// make it (D-B1-3/D-B1-12) -- that declaration lives inside
+    /// `DurableActor` itself, not in which call sites choose this over
+    /// `build_actor`.
+    fn durable_actor(
+        &self,
+        client: Arc<SyneroymClient>,
+        app_instance_id: &str,
+        logical_ref: &str,
+        substrate_did: &str,
+    ) -> Arc<dyn SubstrateActor> {
+        let queue_key = QueueKey {
+            app_instance_id: app_instance_id.to_string(),
+            logical_ref: logical_ref.to_string(),
+            substrate_did: substrate_did.to_string(),
+        };
+        let outbox = Arc::new(SupervisorOutbox::new(self.store.queue.clone()));
+        deploy::build_durable_actor(
+            client,
+            substrate_did.to_string(),
+            queue_key.to_string(),
+            outbox,
+        )
     }
 
     /// Raises or clears `AlertKind::SupervisorSuperseded` from a
@@ -2037,7 +2288,12 @@ impl SupervisorService {
                 ));
                 continue;
             };
-            let actor = deploy::build_actor(client.clone());
+            let actor = self.durable_actor(
+                client.clone(),
+                &plan.app_instance_id.to_string(),
+                &svc.member_ref().to_string(),
+                substrate_did,
+            );
             if let Err(e) = self
                 .push_bindings(
                     &plan.app_instance_id,
@@ -2210,6 +2466,12 @@ impl SupervisorService {
             .journal
             .append(record_plan, DeploymentState::Applying)
             .map_err(|e| e.to_string())?;
+        // Deliberately the plain, undurable constructor (M05B B1): `deploy::
+        // apply_plan` only ever calls `actor.apply_plan(..)` on these
+        // targets, never `write_bindings`, and `apply_plan` is never queued
+        // regardless (D-B1-12) -- there is no per-service logical ref to
+        // bind a queue key to here anyway, since one alias's actor covers
+        // every service placed on it.
         let targets: BTreeMap<SubstrateAlias, DeployTarget> = clients
             .iter()
             .map(|(alias, c)| {
@@ -3652,6 +3914,7 @@ impl NativeService for SupervisorService {
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::{BTreeMap, VecDeque},
         path::{Path, PathBuf},
         sync::Mutex,
     };
@@ -3703,6 +3966,13 @@ mod tests {
         /// operator-carried file), which the default cannot do -- so the
         /// test owns and passes one in, held for the whole test (§0.5).
         backup_dir: Option<PathBuf>,
+        /// `None` leaves the default (5s). Tests driving the queue worker
+        /// against a fake clock set this explicitly (M05B B1).
+        queue_tick_secs: Option<u64>,
+        /// `None` leaves the default (30s). Tests proving recovery happens
+        /// within one worker tick rather than one poll interval set this
+        /// explicitly, far above the tick (M05B B1).
+        poll_interval_secs: Option<u64>,
     }
 
     impl Fixture {
@@ -3772,13 +4042,14 @@ mod tests {
                 &identity,
                 test_broker(),
                 "supervisor/alerts".to_string(),
-                30,
+                self.poll_interval_secs.unwrap_or(30),
                 3,
                 30,
                 4,
                 self.max_renewals_per_pass.unwrap_or(5),
                 self.master_anchor_refresh_interval_secs.unwrap_or(12 * 3600),
                 self.anchor_writer,
+                self.queue_tick_secs.unwrap_or(5),
             );
             service._fixture_tempdir = Some(dir);
             (service, key_store)
@@ -8845,5 +9116,527 @@ mod tests {
         assert!(!row.retired, "adopt must un-retire the instance");
         let did = adopt_field(&res, "app_master_did").and_then(Value::as_str).unwrap();
         assert_eq!(row.app_master_did, did);
+    }
+
+    // ── M05B B1: the durable outbox worker ──────────────────────────────
+
+    /// A fake standing in for a connected substrate on the queue worker's
+    /// replay path: one scripted delivery per DID, consumed in FIFO order.
+    /// `ConnectFails` simulates the substrate still being unreachable;
+    /// `Attempt` simulates a reconnect that succeeds, with `write_bindings`
+    /// itself returning whatever the test scripts.
+    #[derive(Debug, Default)]
+    struct FakeQueueConnector {
+        scripted: Mutex<BTreeMap<String, VecDeque<FakeDelivery>>>,
+    }
+
+    #[derive(Debug)]
+    enum FakeDelivery {
+        /// The reconnect itself fails -- a transport failure.
+        ConnectFails,
+        /// Reconnected; `write_bindings` returns this outcome.
+        Attempt(Result<Vec<BindingWriteOutcome>, String>),
+        /// Reconnected, and the substrate answered with a `JsonRpcError` --
+        /// the callee-error shape `deploy::is_callee_error` classifies as
+        /// terminal, distinct from a plain transport failure (which
+        /// `Attempt(Err(_))` alone cannot express: an ordinary string error
+        /// is not downcastable to `JsonRpcError`, so it would be classified
+        /// as transport, same as `ConnectFails`).
+        CalleeError(String),
+    }
+
+    impl FakeQueueConnector {
+        fn script(&self, did: &str, delivery: FakeDelivery) {
+            self.scripted.lock().unwrap().entry(did.to_string()).or_default().push_back(delivery);
+        }
+    }
+
+    #[derive(Debug)]
+    struct ScriptedAttempt {
+        result: Mutex<Option<anyhow::Result<Vec<BindingWriteOutcome>>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl WriteBindingsAttempt for ScriptedAttempt {
+        async fn attempt_write_bindings(
+            &self,
+            _write: BindingWrite,
+        ) -> anyhow::Result<Vec<BindingWriteOutcome>> {
+            self.result.lock().unwrap().take().expect("scripted result already consumed")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl QueueConnector for FakeQueueConnector {
+        async fn connect(
+            &self,
+            entry: &SupervisorInventoryEntry,
+        ) -> anyhow::Result<Arc<dyn WriteBindingsAttempt>> {
+            let next =
+                self.scripted.lock().unwrap().get_mut(&entry.did).and_then(VecDeque::pop_front);
+            let result: anyhow::Result<Vec<BindingWriteOutcome>> = match next {
+                Some(FakeDelivery::ConnectFails) => {
+                    return Err(anyhow::anyhow!("simulated connect failure"));
+                }
+                Some(FakeDelivery::Attempt(Ok(outcomes))) => Ok(outcomes),
+                Some(FakeDelivery::Attempt(Err(msg))) => Err(anyhow::anyhow!(msg)),
+                Some(FakeDelivery::CalleeError(msg)) => {
+                    Err(syneroym_rpc::JsonRpcError { code: -32010, message: msg, data: None }
+                        .into())
+                }
+                None => return Err(anyhow::anyhow!("no scripted delivery for {}", entry.did)),
+            };
+            Ok(Arc::new(ScriptedAttempt { result: Mutex::new(Some(result)) }))
+        }
+    }
+
+    /// Every real fake in this crate implements the full `SubstrateActor`
+    /// trait, not just `WriteBindingsAttempt` -- `deploy::build_durable_actor`
+    /// requires both, since a durable actor still answers every other
+    /// action synchronously (D-B1-3).
+    #[derive(Debug, Default)]
+    struct FakeSubstrateClient {
+        write_bindings_outcome: Mutex<Option<Result<Vec<BindingWriteOutcome>, String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl WriteBindingsAttempt for FakeSubstrateClient {
+        async fn attempt_write_bindings(
+            &self,
+            _write: BindingWrite,
+        ) -> anyhow::Result<Vec<BindingWriteOutcome>> {
+            match self
+                .write_bindings_outcome
+                .lock()
+                .unwrap()
+                .take()
+                .expect("outcome not set for test")
+            {
+                Ok(outcomes) => Ok(outcomes),
+                Err(msg) => Err(anyhow::anyhow!(msg)),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SubstrateActor for FakeSubstrateClient {
+        async fn apply_plan(&self, _plan: syneroym_sdk::DeploymentPlan) -> Result<(), String> {
+            unimplemented!("not exercised by the queue worker tests")
+        }
+
+        async fn write_bindings(
+            &self,
+            _write: BindingWrite,
+        ) -> Result<Vec<BindingWriteOutcome>, String> {
+            unimplemented!("DurableActor never calls the inner T::write_bindings directly")
+        }
+
+        async fn restart(&self, _service_id: String, _generation: u64) -> Result<(), String> {
+            unimplemented!("not exercised by the queue worker tests")
+        }
+
+        async fn renew_cert(
+            &self,
+            _service_id: String,
+            _generation: u64,
+            _instance_certificate: String,
+        ) -> Result<(), String> {
+            unimplemented!("not exercised by the queue worker tests")
+        }
+
+        async fn instance_identity(
+            &self,
+            _service_id: &str,
+        ) -> Result<syneroym_sdk::InstanceIdentity, String> {
+            unimplemented!("not exercised by the queue worker tests")
+        }
+
+        async fn held_generation(&self, _app_instance_id: &str) -> Result<Option<u64>, String> {
+            unimplemented!("not exercised by the queue worker tests")
+        }
+    }
+
+    fn test_binding_write(service_id: &str, app_instance_id: &str) -> BindingWrite {
+        BindingWrite {
+            service_id: service_id.to_string(),
+            app_instance_id: app_instance_id.to_string(),
+            bindings: vec![],
+            generation: 0,
+        }
+    }
+
+    /// Submits minimal desired state whose inventory names one substrate
+    /// alias/DID pair -- enough for `deliver_queued_item` to resolve a
+    /// queued item's target, without a real plan or a real deploy.
+    fn seed_inventory(store: &SupervisorStore, app_instance_id: &str, substrate_did: &str) {
+        let inventory_json =
+            serde_json::json!({"edge-1": {"did": substrate_did, "api_url": "http://127.0.0.1:1"}})
+                .to_string();
+        store
+            .submit(
+                app_instance_id,
+                &plan_json_no_services(app_instance_id),
+                &inventory_json,
+                "did:key:owner",
+                0,
+            )
+            .unwrap();
+    }
+
+    fn enqueue_test_item(
+        store: &SupervisorStore,
+        app_instance_id: &str,
+        logical_ref: &str,
+        substrate_did: &str,
+        write: BindingWrite,
+    ) -> i64 {
+        let key = QueueKey {
+            app_instance_id: app_instance_id.to_string(),
+            logical_ref: logical_ref.to_string(),
+            substrate_did: substrate_did.to_string(),
+        };
+        let payload =
+            outbox::QueuedBindingWrite { substrate_did: substrate_did.to_string(), write };
+        store
+            .queue
+            .enqueue(&key.to_string(), &serde_json::to_vec(&payload).unwrap(), outbox::now_ms())
+            .unwrap()
+    }
+
+    /// Test 13: the load-bearing budget. A reachable substrate's
+    /// `write_bindings` call must never touch the real, wired-up
+    /// supervisor outbox -- asserted as "the queue is untouched", not as a
+    /// timing, so it cannot pass by being fast.
+    #[tokio::test]
+    async fn a_reachable_substrate_never_touches_the_queue() {
+        let s = service();
+        let fake = Arc::new(FakeSubstrateClient {
+            write_bindings_outcome: Mutex::new(Some(Ok(vec![BindingWriteOutcome::Applied]))),
+        });
+        let outbox = Arc::new(SupervisorOutbox::new(s.store.queue.clone()));
+        let key = QueueKey {
+            app_instance_id: "inst-1".to_string(),
+            logical_ref: "inst-1/backend".to_string(),
+            substrate_did: "did:key:zB".to_string(),
+        };
+        let actor =
+            deploy::build_durable_actor(fake, "did:key:zB".to_string(), key.to_string(), outbox);
+
+        let outcomes =
+            actor.write_bindings(test_binding_write("did:key:zSvc", "inst-1")).await.unwrap();
+        assert_eq!(outcomes, vec![BindingWriteOutcome::Applied]);
+        assert!(s.store.queue.all().unwrap().is_empty());
+        assert!(s.store.queue.dead_letters().unwrap().is_empty());
+    }
+
+    /// Test 19: failure-matrix row 2. The worker's replay of an
+    /// already-applied write must be a no-op from the substrate's own
+    /// epoch guard's perspective -- scripted here as the fake simply
+    /// reporting `NoOp` on delivery, which the worker must complete
+    /// exactly like `Applied`.
+    #[tokio::test]
+    async fn applying_a_queued_write_bindings_twice_is_a_no_op() {
+        let mut s = service();
+        let connector = Arc::new(FakeQueueConnector::default());
+        connector.script("did:key:zB", FakeDelivery::Attempt(Ok(vec![BindingWriteOutcome::NoOp])));
+        s.queue_connector = connector;
+        seed_inventory(&s.store, "inst-1", "did:key:zB");
+        let id = enqueue_test_item(
+            &s.store,
+            "inst-1",
+            "inst-1/backend",
+            "did:key:zB",
+            test_binding_write("did:key:zSvc", "inst-1"),
+        );
+
+        s.queue_worker_tick().await;
+
+        assert!(
+            s.store.queue.all().unwrap().is_empty(),
+            "the item {id} must be gone from the outbox"
+        );
+        assert!(s.store.queue.dead_letters().unwrap().is_empty());
+    }
+
+    /// Test 20: D-B1-15. A `stale` delivery means a newer epoch already
+    /// landed -- convergence, not loss -- so it must complete and must not
+    /// dead-letter.
+    #[tokio::test]
+    async fn a_queued_write_delivered_stale_completes_and_does_not_dead_letter() {
+        let mut s = service();
+        let connector = Arc::new(FakeQueueConnector::default());
+        connector
+            .script("did:key:zB", FakeDelivery::Attempt(Ok(vec![BindingWriteOutcome::Stale(7)])));
+        s.queue_connector = connector;
+        seed_inventory(&s.store, "inst-1", "did:key:zB");
+        enqueue_test_item(
+            &s.store,
+            "inst-1",
+            "inst-1/backend",
+            "did:key:zB",
+            test_binding_write("did:key:zSvc", "inst-1"),
+        );
+
+        s.queue_worker_tick().await;
+
+        assert!(s.store.queue.all().unwrap().is_empty());
+        assert!(
+            s.store.queue.dead_letters().unwrap().is_empty(),
+            "a stale delivery is convergence, not a failure"
+        );
+    }
+
+    /// Test 21: D-B1-15's `conflict` row -- the case test 14's synchronous
+    /// coverage misses. Completes **and** raises the same `BindingConflict`
+    /// alert the synchronous path does.
+    #[tokio::test]
+    async fn a_queued_write_delivered_conflicting_raises_the_same_alert_as_the_synchronous_path() {
+        let mut s = service();
+        let connector = Arc::new(FakeQueueConnector::default());
+        connector.script(
+            "did:key:zB",
+            FakeDelivery::Attempt(Ok(vec![BindingWriteOutcome::Conflict(9)])),
+        );
+        s.queue_connector = connector;
+        seed_inventory(&s.store, "inst-1", "did:key:zB");
+        enqueue_test_item(
+            &s.store,
+            "inst-1",
+            "inst-1/backend",
+            "did:key:zB",
+            test_binding_write("did:key:zSvc", "inst-1"),
+        );
+
+        s.queue_worker_tick().await;
+
+        assert!(s.store.queue.all().unwrap().is_empty(), "a conflict still completes the item");
+        let instance_id = AppInstanceId::try_new("inst-1".to_string()).unwrap();
+        let active = s.store.alerts.active(&instance_id).unwrap();
+        assert!(
+            active.iter().any(|a| a.kind == AlertKind::BindingConflict
+                && a.logical_ref.as_deref() == Some("inst-1/backend")),
+            "{active:?}"
+        );
+    }
+
+    /// A transport failure on replay must return the item to the outbox
+    /// rather than dead-lettering it outright -- the queue's own retry
+    /// budget governs when it finally gives up, not one failed replay.
+    #[tokio::test]
+    async fn a_transport_failure_on_replay_retries_rather_than_dead_lettering() {
+        let mut s = service();
+        let connector = Arc::new(FakeQueueConnector::default());
+        connector.script("did:key:zB", FakeDelivery::ConnectFails);
+        s.queue_connector = connector;
+        seed_inventory(&s.store, "inst-1", "did:key:zB");
+        enqueue_test_item(
+            &s.store,
+            "inst-1",
+            "inst-1/backend",
+            "did:key:zB",
+            test_binding_write("did:key:zSvc", "inst-1"),
+        );
+
+        s.queue_worker_tick().await;
+
+        let remaining = s.store.queue.all().unwrap();
+        assert_eq!(remaining.len(), 1, "a transport failure must stay in the outbox");
+        assert!(s.store.queue.dead_letters().unwrap().is_empty());
+    }
+
+    /// Failure-matrix row 9: a callee error on replay (the substrate
+    /// reached and refusing, e.g. because the target no longer exists) is
+    /// terminal -- straight to the DLQ, not retried.
+    #[tokio::test]
+    async fn a_callee_error_on_replay_dead_letters_immediately() {
+        let mut s = service();
+        let connector = Arc::new(FakeQueueConnector::default());
+        connector.script(
+            "did:key:zB",
+            FakeDelivery::CalleeError("service no longer exists".to_string()),
+        );
+        s.queue_connector = connector;
+        seed_inventory(&s.store, "inst-1", "did:key:zB");
+        enqueue_test_item(
+            &s.store,
+            "inst-1",
+            "inst-1/backend",
+            "did:key:zB",
+            test_binding_write("did:key:zSvc", "inst-1"),
+        );
+
+        s.queue_worker_tick().await;
+
+        assert!(s.store.queue.all().unwrap().is_empty());
+        let dead = s.store.queue.dead_letters().unwrap();
+        assert_eq!(dead.len(), 1);
+        assert_eq!(dead[0].attempts, 1, "a terminal failure dead-letters on its first attempt");
+    }
+
+    /// Test 22: D-B1-14. Without taking `instance_lock`, the worker could
+    /// interleave with a live pass write for the same instance and race
+    /// this supervisor into a spurious `BindingConflict`. Proven by
+    /// holding the lock externally (as a live pass would) and asserting
+    /// the worker's own attempt to take it blocks until released.
+    #[tokio::test]
+    async fn the_worker_and_a_loop_pass_never_write_one_instance_concurrently() {
+        let mut s = service();
+        let connector = Arc::new(FakeQueueConnector::default());
+        connector
+            .script("did:key:zB", FakeDelivery::Attempt(Ok(vec![BindingWriteOutcome::Applied])));
+        s.queue_connector = connector;
+        seed_inventory(&s.store, "inst-1", "did:key:zB");
+        enqueue_test_item(
+            &s.store,
+            "inst-1",
+            "inst-1/backend",
+            "did:key:zB",
+            test_binding_write("did:key:zSvc", "inst-1"),
+        );
+
+        let held = s.instance_lock("inst-1");
+        let guard = held.lock().await;
+
+        let s = Arc::new(s);
+        let s_clone = s.clone();
+        let mut tick = tokio::spawn(async move { s_clone.queue_worker_tick().await });
+
+        tokio::select! {
+            _ = &mut tick => panic!("the worker must block on instance_lock while a pass holds it"),
+            () = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
+        }
+
+        drop(guard);
+        tick.await.unwrap();
+        assert!(
+            s.store.queue.all().unwrap().is_empty(),
+            "the worker delivers once the lock frees up"
+        );
+    }
+
+    /// Test 23: D-B1-8. Cancelling the token must not wait for a delivery
+    /// in flight -- `run_queue_worker` returns as soon as the next
+    /// `select!` iteration observes cancellation, not after the item its
+    /// current tick claimed finishes.
+    #[tokio::test]
+    async fn shutdown_abandons_in_flight_work_rather_than_draining() {
+        let mut s = Fixture { queue_tick_secs: Some(3600), ..Fixture::default() }.build();
+        let connector = Arc::new(FakeQueueConnector::default());
+        // Never resolves within this test's own bound: `ConnectFails`
+        // would return promptly, so instead the item is left unscripted --
+        // `connect` blocks forever waiting on a scripted delivery that
+        // never arrives, standing in for a substrate that never answers.
+        let _ = &connector;
+        s.queue_connector = connector;
+        seed_inventory(&s.store, "inst-1", "did:key:zB");
+        enqueue_test_item(
+            &s.store,
+            "inst-1",
+            "inst-1/backend",
+            "did:key:zB",
+            test_binding_write("did:key:zSvc", "inst-1"),
+        );
+
+        let s = Arc::new(s);
+        let run_handle = {
+            let s = s.clone();
+            tokio::spawn(async move { s.run_queue_worker().await })
+        };
+        // Give the interval its first tick a chance to fire and claim the
+        // one item -- `queue_tick_secs` is 1s below via `build_pass_interval`'s
+        // `.max(1)`, so this is well past that.
+        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+
+        let start = std::time::Instant::now();
+        s.shutdown().await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), run_handle)
+            .await
+            .expect(
+                "run_queue_worker must return promptly on shutdown, not wait for the claimed item",
+            )
+            .unwrap()
+            .unwrap();
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    /// Test 24: the in-process analogue of e2e step 5 -- a queued item
+    /// survives a supervisor restart (a fresh `SupervisorStore` opened
+    /// against the same database file) and the new process's worker
+    /// resumes it.
+    #[tokio::test]
+    async fn the_worker_resumes_a_queued_item_after_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let store = SupervisorStore::open(dir.path(), "supervisor.db").unwrap();
+            seed_inventory(&store, "inst-1", "did:key:zB");
+            enqueue_test_item(
+                &store,
+                "inst-1",
+                "inst-1/backend",
+                "did:key:zB",
+                test_binding_write("did:key:zSvc", "inst-1"),
+            );
+        }
+
+        let store = SupervisorStore::open(dir.path(), "supervisor.db").unwrap();
+        let mut s = Fixture::default().build();
+        s.store = store;
+        let connector = Arc::new(FakeQueueConnector::default());
+        connector
+            .script("did:key:zB", FakeDelivery::Attempt(Ok(vec![BindingWriteOutcome::Applied])));
+        s.queue_connector = connector;
+
+        s.queue_worker_tick().await;
+
+        assert!(
+            s.store.queue.all().unwrap().is_empty(),
+            "the resumed item must have been delivered"
+        );
+    }
+
+    /// Test 25: the budget the plan's first draft asserted nowhere.
+    /// Recovery must complete within one `queue_tick_secs`, not one
+    /// `poll_interval_secs` -- driven against a paused clock with
+    /// `poll_interval_secs` set far above the worker tick, so passing by
+    /// accident (both loops running for real) is impossible.
+    #[tokio::test(start_paused = true)]
+    async fn recovery_completes_within_one_worker_tick_and_not_one_poll_interval() {
+        let mut s = Fixture {
+            queue_tick_secs: Some(5),
+            poll_interval_secs: Some(3600),
+            ..Fixture::default()
+        }
+        .build();
+        let connector = Arc::new(FakeQueueConnector::default());
+        connector
+            .script("did:key:zB", FakeDelivery::Attempt(Ok(vec![BindingWriteOutcome::Applied])));
+        s.queue_connector = connector;
+        seed_inventory(&s.store, "inst-1", "did:key:zB");
+        enqueue_test_item(
+            &s.store,
+            "inst-1",
+            "inst-1/backend",
+            "did:key:zB",
+            test_binding_write("did:key:zSvc", "inst-1"),
+        );
+
+        let s = Arc::new(s);
+        let run_handle = {
+            let s = s.clone();
+            tokio::spawn(async move { s.run_queue_worker().await })
+        };
+
+        tokio::time::advance(std::time::Duration::from_secs(6)).await;
+        // Yield so the worker's now-elapsed tick actually runs.
+        tokio::task::yield_now().await;
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+
+        assert!(
+            s.store.queue.all().unwrap().is_empty(),
+            "recovery must land within one 5s worker tick, well under the 3600s poll interval"
+        );
+
+        s.shutdown().await.unwrap();
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), run_handle).await;
     }
 }

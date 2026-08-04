@@ -7330,6 +7330,7 @@ dependencies = [
  "serde",
  "serde_json",
  "syneroym-app-orchestration",
+ "syneroym-async-queue",
  "syneroym-control-plane",
  "syneroym-core",
  "syneroym-data-db",

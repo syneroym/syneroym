@@ -1,6 +1,7 @@
 //! Desired state for every app instance this supervisor manages, over the
-//! same `Arc<Mutex<Connection>>` that backs `DeploymentJournal` and
-//! `AlertStore` (D-A5-11): one SQLite file, three concerns.
+//! same `Arc<Mutex<Connection>>` that backs `DeploymentJournal`,
+//! `AlertStore`, and (M05B B1, D-B1-5) the durable outbox queue: one SQLite
+//! file, four concerns.
 
 use std::{
     collections::BTreeSet,
@@ -11,6 +12,8 @@ use std::{
 use anyhow::{Result, anyhow};
 use rusqlite::{Connection, OptionalExtension, params};
 use syneroym_app_orchestration::{AlertStore, DeploymentJournal};
+use syneroym_async_queue::{Queue, QueueConfig};
+use syneroym_core::config::SupervisorRole;
 
 /// One app instance's desired state, as last submitted.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,14 +44,16 @@ pub struct RemediationState {
     pub terminal: bool,
 }
 
-/// One SQLite file holding desired state, the deployment journal, and
-/// alerts (D-A5-11) -- what A4 promised A5 "the schema, the types, and the
-/// folding logic, not the file", cashed in.
+/// One SQLite file holding desired state, the deployment journal, alerts,
+/// and (M05B B1, D-B1-5) the durable outbox queue -- what A4 promised A5
+/// "the schema, the types, and the folding logic, not the file", cashed in,
+/// now a fourth time.
 #[derive(Debug, Clone)]
 pub struct SupervisorStore {
     conn: Arc<Mutex<Connection>>,
     pub journal: DeploymentJournal,
     pub alerts: AlertStore,
+    pub queue: Queue,
 }
 
 // Lock-poisoning from a panicking holder is a programming error (bug) that
@@ -58,25 +63,40 @@ pub struct SupervisorStore {
 #[allow(clippy::expect_used)]
 impl SupervisorStore {
     pub fn open<P: AsRef<Path>>(dir: P, db_name: &str) -> Result<Self> {
+        Self::open_with_role(dir, db_name, &SupervisorRole::default())
+    }
+
+    pub fn open_in_memory() -> Result<Self> {
+        Self::from_connection(Connection::open_in_memory()?, &SupervisorRole::default())
+    }
+
+    /// The construction path `runtime.rs` actually uses: `role`'s five
+    /// `queue_*` fields size the outbox's attempt budget, backoff ceiling,
+    /// visibility timeout, and DLQ cap (D-B1-13). Every other caller --
+    /// tests overwhelmingly among them -- goes through `open`/
+    /// `open_in_memory` and gets the same defaults `SupervisorRole::default`
+    /// does.
+    pub fn open_with_role<P: AsRef<Path>>(
+        dir: P,
+        db_name: &str,
+        role: &SupervisorRole,
+    ) -> Result<Self> {
         if db_name.contains('/') || db_name.contains('\\') || db_name.contains("..") {
             return Err(anyhow!("Invalid database name: {}", db_name));
         }
         let path = dir.as_ref().join(db_name);
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode=WAL;")?;
-        Self::from_connection(conn)
+        Self::from_connection(conn, role)
     }
 
-    pub fn open_in_memory() -> Result<Self> {
-        Self::from_connection(Connection::open_in_memory()?)
-    }
-
-    fn from_connection(conn: Connection) -> Result<Self> {
+    fn from_connection(conn: Connection, role: &SupervisorRole) -> Result<Self> {
         Self::init_schema(&conn)?;
         let conn = Arc::new(Mutex::new(conn));
         let journal = DeploymentJournal::from_connection(conn.clone())?;
         let alerts = AlertStore::from_connection(conn.clone())?;
-        Ok(Self { conn, journal, alerts })
+        let queue = Queue::from_connection(conn.clone(), QueueConfig::from(role))?;
+        Ok(Self { conn, journal, alerts, queue })
     }
 
     fn init_schema(conn: &Connection) -> Result<()> {
@@ -694,6 +714,26 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    /// Test 26 (M05B B1, D-B1-5, failure-matrix row 13's supervisor half):
+    /// the queue's tables live in the same database file `desired_state`
+    /// does, not one of their own, so they inherit its protection posture
+    /// rather than becoming a second unencrypted store beside it.
+    #[test]
+    fn the_queue_lives_in_supervisor_db_under_the_same_protection_as_desired_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SupervisorStore::open(dir.path(), "supervisor.db").unwrap();
+        store.queue.enqueue("k", b"payload", 1_000).unwrap();
+
+        assert!(
+            !dir.path().join("supervisor.db-outbox").exists()
+                && !dir.path().join("queue.db").exists(),
+            "the queue must not open a database file of its own"
+        );
+        let conn = store.conn.lock().unwrap();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM outbox", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 1, "the outbox table must live in supervisor.db's own connection");
     }
 
     /// H3 (Slice A5b review): before the generation check, `submit` wrote

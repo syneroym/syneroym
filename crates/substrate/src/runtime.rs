@@ -171,6 +171,16 @@ pub struct RuntimeServices {
     /// (the loop starts only after both composition calls have already
     /// run) stays true.
     supervisor_join: Option<JoinHandle<anyhow::Result<()>>>,
+    /// The durable outbox worker's own task (M05B B1, D-B1-1), spawned and
+    /// raced the same way `supervisor_join` is. **Not** awaited in
+    /// `shutdown` (D-B1-8): the resident loop's join proves an in-flight
+    /// pass finished closing its clients, but the worker's own in-flight
+    /// deliveries are deliberately abandoned -- their visibility timeout
+    /// returns them to `Pending` on the next start, and waiting for a
+    /// delivery against a substrate that is offline (the exact case this
+    /// queue exists for) would make shutdown itself hang on the very
+    /// condition it is meant to survive.
+    queue_worker_join: Option<JoinHandle<anyhow::Result<()>>>,
 }
 
 impl Debug for RuntimeServices {
@@ -218,6 +228,7 @@ impl RuntimeServices {
             },
             supervisor: None,
             supervisor_join: None,
+            queue_worker_join: None,
         })
     }
 
@@ -244,6 +255,7 @@ impl RuntimeServices {
         // `JoinHandle`, not the pinned-and-dropped-on-exit future this
         // used to be.
         self.supervisor_join = spawn_supervisor_role(&self.supervisor);
+        self.queue_worker_join = spawn_queue_worker_role(&self.supervisor);
 
         #[cfg(feature = "community_registry")]
         let mut registry_fut = pin::pin!(async {
@@ -355,6 +367,21 @@ impl RuntimeServices {
                 None => pending_component().await,
             }
         });
+        // M05B B1: raced the same way `supervisor_fut` is -- a panic in the
+        // queue worker still brings the substrate down, but the task
+        // itself outlives this `select!` returning. Its ordinary exit path
+        // (cancellation) only fires from `shutdown`, at which point this
+        // arm racing is moot; see `queue_worker_join`'s own doc for why
+        // `shutdown` does not also await it.
+        let mut queue_worker_fut = pin::pin!(async {
+            match self.queue_worker_join.as_mut() {
+                Some(handle) => match handle.await {
+                    Ok(res) => res,
+                    Err(join_err) => Err(anyhow::anyhow!("queue worker task panicked: {join_err}")),
+                },
+                None => pending_component().await,
+            }
+        });
         let mut shutdown_signal = pin::pin!(shutdown_signal);
 
         info!(profile = %config.profile, "starting substrate components");
@@ -366,6 +393,7 @@ impl RuntimeServices {
             res = &mut health_fut => log_component_exit("health server", res),
             res = &mut metrics_fut => log_component_exit("metrics server", res),
             res = &mut supervisor_fut => log_component_exit("supervisor", res),
+            res = &mut queue_worker_fut => log_component_exit("queue worker", res),
             () = &mut expiry_sweep_fut => {},
             () = &mut shutdown_signal => warn!("received shutdown signal"),
         }
@@ -386,6 +414,16 @@ impl RuntimeServices {
                 }
             }
         }
+        // M05B B1, D-B1-8: `shutdown_supervisor_role` above already
+        // cancelled the token the queue worker watches too -- both loops
+        // are methods on the same `SupervisorService`, sharing one token --
+        // so the worker has already stopped ticking. Deliberately **not**
+        // awaited here, unlike `supervisor_join`: a delivery in flight
+        // against an offline substrate is exactly the case this queue
+        // exists for, and waiting for it here would make shutdown hang on
+        // it. Dropping the handle detaches the task; the process exiting
+        // shortly after this function returns is what actually ends it.
+        drop(self.queue_worker_join.take());
 
         #[cfg(feature = "client_gateway")]
         if let Some(service) = self.client_gateway.as_mut()
@@ -429,6 +467,25 @@ fn spawn_supervisor_role(
     #[cfg(feature = "supervisor")]
     {
         supervisor.clone().map(|service| tokio::spawn(async move { service.run().await }))
+    }
+    #[cfg(not(feature = "supervisor"))]
+    {
+        let _ = supervisor;
+        None
+    }
+}
+
+/// Spawns the durable outbox worker (M05B B1, D-B1-1) beside the resident
+/// loop -- the same shape `spawn_supervisor_role` uses, for the same
+/// reason: it must outlive `run_until_shutdown`'s own stack frame.
+fn spawn_queue_worker_role(
+    supervisor: &Option<Arc<SupervisorHandle>>,
+) -> Option<JoinHandle<anyhow::Result<()>>> {
+    #[cfg(feature = "supervisor")]
+    {
+        supervisor
+            .clone()
+            .map(|service| tokio::spawn(async move { service.run_queue_worker().await }))
     }
     #[cfg(not(feature = "supervisor"))]
     {
@@ -689,7 +746,7 @@ async fn init_supervisor(
         .ok_or_else(|| anyhow::anyhow!("init_supervisor called with no [roles.supervisor]"))?;
 
     std::fs::create_dir_all(&config.app_data_dir)?;
-    let store = SupervisorStore::open(&config.app_data_dir, &role.db_name)?;
+    let store = SupervisorStore::open_with_role(&config.app_data_dir, &role.db_name, role)?;
     let backup_dir = config.app_data_dir.join(&role.master_backup_dir);
     let vault = MasterVault::new(
         shared.storage_provider.clone(),
@@ -718,6 +775,7 @@ async fn init_supervisor(
             config.substrate.enable_bep0044_dht,
             config.substrate.registry_url.as_deref(),
         ),
+        role.queue_tick_secs,
     ));
     shared
         .native_dispatch

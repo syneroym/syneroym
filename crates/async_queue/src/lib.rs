@@ -41,6 +41,26 @@ pub struct QueueConfig {
     pub dlq_max_rows: u32,
 }
 
+/// The supervisor's five `queue_*` fields, converted (M05B D-B1-13):
+/// initial backoff and multiplier stay `RetryPolicy`'s own defaults (100 ms,
+/// x2) since `SupervisorRole` configures only the attempt budget and the
+/// ceiling, not the shape of the early curve.
+impl From<&syneroym_core::config::SupervisorRole> for QueueConfig {
+    fn from(role: &syneroym_core::config::SupervisorRole) -> Self {
+        let defaults = RetryPolicy::default();
+        Self {
+            retry: RetryPolicy {
+                max_attempts: role.queue_max_attempts,
+                initial_backoff_ms: defaults.initial_backoff_ms,
+                backoff_multiplier: defaults.backoff_multiplier,
+                max_backoff_ms: role.queue_max_backoff_secs.saturating_mul(1000),
+            },
+            visibility_timeout_ms: role.queue_visibility_timeout_secs.saturating_mul(1000),
+            dlq_max_rows: role.queue_dlq_max_rows,
+        }
+    }
+}
+
 /// One item due for delivery, as [`Queue::claim_due`] hands it to a worker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueueItem {
@@ -527,6 +547,25 @@ mod tests {
         // §0.12's own corrected arithmetic).
         assert_eq!(backoff_before_wait(&policy, 14), 819_200);
         assert_eq!(backoff_before_wait(&policy, 15), 900_000);
+    }
+
+    /// `SupervisorRole::default()`'s five `queue_*` fields convert into
+    /// exactly the curve test 7 pins by hand, so the two cannot silently
+    /// drift apart.
+    #[test]
+    fn supervisor_role_defaults_convert_into_the_same_ten_hour_window() {
+        let role = syneroym_core::config::SupervisorRole::default();
+        let cfg = QueueConfig::from(&role);
+        assert_eq!(cfg.retry.max_attempts, 54);
+        assert_eq!(cfg.retry.max_backoff_ms, 900_000);
+        assert_eq!(cfg.visibility_timeout_ms, 120_000);
+        assert_eq!(cfg.dlq_max_rows, 1000);
+
+        let total_ms: u64 = (1..=53).map(|wait| backoff_before_wait(&cfg.retry, wait)).sum();
+        assert!(
+            (36_737_000.0..=36_739_000.0).contains(&(total_ms as f64)),
+            "expected ~36,738,000 ms, got {total_ms} ms"
+        );
     }
 
     /// Test 8: D-B1-9.
