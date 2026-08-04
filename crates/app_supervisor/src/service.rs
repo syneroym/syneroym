@@ -786,8 +786,17 @@ impl SupervisorService {
                 let record_plan = Self::record_plan_for_pass(plan, needs_work, clients);
                 match keys::mint_and_substitute(&mut filtered_plan, &self.vault).await {
                     Ok((minted, masters)) => {
-                        redeployed_this_pass = true;
-                        if let Err(e) = self
+                        // Set from the call's own result, not from having
+                        // reached this arm -- mirrors `apply_result_is_ok`
+                        // in `apply_with_membership_pushes` and for the
+                        // same reason: `apply_with_clients` returning `Err`
+                        // can mean nothing was journaled this pass at all
+                        // (a certify failure before the journal write), in
+                        // which case `redeployed_this_pass` must stay
+                        // false, or `Degraded` was already journaled
+                        // instead of `Active`, in which case the finding-A
+                        // downgrade below is a harmless no-op either way.
+                        redeployed_this_pass = self
                             .apply_with_clients(
                                 &filtered_plan,
                                 &record_plan,
@@ -797,13 +806,14 @@ impl SupervisorService {
                                 minted,
                             )
                             .await
-                        {
-                            tracing::warn!(
-                                app_instance_id,
-                                error = %e,
-                                "this pass's redeploy did not fully land"
-                            );
-                        }
+                            .inspect_err(|e| {
+                                tracing::warn!(
+                                    app_instance_id,
+                                    error = %e,
+                                    "this pass's redeploy did not fully land"
+                                );
+                            })
+                            .is_ok();
                     }
                     Err(e) => tracing::warn!(
                         app_instance_id,
