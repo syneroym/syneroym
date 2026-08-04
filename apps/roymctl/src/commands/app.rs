@@ -21,7 +21,7 @@ use syneroym_app_orchestration::{
 use syneroym_core::dht_registry::RegistryClient;
 use syneroym_sdk::{
     SubstrateStatus, SyneroymClient,
-    deploy::{self, ApplyRequest, DeployTarget, SubstrateActor},
+    deploy::{self, ApplyRequest, DeployTarget},
     health,
 };
 
@@ -552,7 +552,11 @@ pub async fn handle(
             let fallback_target = fallback_client.as_ref().map(|fb| DeployTarget {
                 alias: None,
                 substrate_did: fb.service_id().to_string(),
-                actor: fb.clone() as Arc<dyn SubstrateActor>,
+                // `roymctl` deliberately keeps the undurable actor (D-B1-11):
+                // a CLI process exits when the command finishes, so a
+                // durable queue behind it would be written and never
+                // drained.
+                actor: deploy::build_actor(fb.clone()),
             });
 
             let targets: BTreeMap<SubstrateAlias, DeployTarget> = clients
@@ -563,7 +567,7 @@ pub async fn handle(
                         DeployTarget {
                             alias: Some(alias.clone()),
                             substrate_did: c.service_id().to_string(),
-                            actor: c.clone() as Arc<dyn SubstrateActor>,
+                            actor: deploy::build_actor(c.clone()),
                         },
                     )
                 })
@@ -1075,7 +1079,10 @@ mod tests {
     use clap::{CommandFactory, Parser};
     use syneroym_app_orchestration::models::{ServiceId, TopologyMode};
     use syneroym_identity::substrate;
-    use syneroym_sdk::{BindingWrite, BindingWriteOutcome, DeploymentPlan as WitDeploymentPlan};
+    use syneroym_sdk::{
+        BindingWrite, BindingWriteOutcome, DeploymentPlan as WitDeploymentPlan,
+        deploy::SubstrateActor,
+    };
 
     use super::*;
 

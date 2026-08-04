@@ -150,6 +150,21 @@ impl SubstrateActor for SyneroymClient {
     }
 }
 
+/// The single point every call site with no durable queue behind it upcasts
+/// a connected client (or, in a test, a fake) into the trait-object shape
+/// [`DeployTarget::actor`] and [`ApplyRequest`]'s targets consume --
+/// replacing ten near-identical `client.clone() as Arc<dyn SubstrateActor>`
+/// expressions (M05B B1, D-B1-4). `roymctl` and the SDK's own e2e fixtures
+/// call this deliberately (D-B1-11): a one-shot process exits when its
+/// command finishes, so a durable queue behind it would be written and never
+/// drained. [`build_durable_actor`] is the other call this function's
+/// callers choose between, for the one action-owner that keeps a worker
+/// alive to drain what it enqueues.
+#[must_use]
+pub fn build_actor<T: SubstrateActor + 'static>(actor: Arc<T>) -> Arc<dyn SubstrateActor> {
+    actor
+}
+
 /// A connected deploy target: the alias it was named by (`None` for the
 /// invocation's own default substrate), the substrate's DID, and the
 /// actor.

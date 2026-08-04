@@ -41,7 +41,7 @@ use syneroym_rpc::{Ability, Capability, CapabilityToken, ResourceUri};
 use syneroym_sdk::{
     DeployManifest, NetworkEndpoint, ServiceConfig as WitServiceConfig,
     ServiceType as WitServiceType, SyneroymClient, TcpManifest,
-    deploy::{ApplyRequest, DeployTarget, SubstrateActor, apply_plan, certify_instance},
+    deploy::{self, ApplyRequest, DeployTarget, apply_plan, certify_instance},
 };
 use syneroym_substrate::identity;
 use tempfile::TempDir;
@@ -508,7 +508,7 @@ fn deploy_targets(
                 DeployTarget {
                     alias: Some(alias.clone()),
                     substrate_did: c.service_id().to_string(),
-                    actor: c.clone() as Arc<dyn SubstrateActor>,
+                    actor: deploy::build_actor(c.clone()),
                 },
             )
         })

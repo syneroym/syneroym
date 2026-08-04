@@ -874,7 +874,7 @@ impl SupervisorService {
                 any_push_failed = true;
                 continue;
             };
-            let actor = client.clone() as Arc<dyn SubstrateActor>;
+            let actor = deploy::build_actor(client.clone());
             if self
                 .push_bindings(
                     instance_id,
@@ -919,7 +919,7 @@ impl SupervisorService {
         for (logical_ref, service_id, substrate_did) in restart_candidates {
             let Some(alias) = did_to_alias.get(substrate_did) else { continue };
             let Some(client) = clients.get(&SubstrateAlias::new(alias.clone())) else { continue };
-            let actor = client.clone() as Arc<dyn SubstrateActor>;
+            let actor = deploy::build_actor(client.clone());
             self.attempt_restart(
                 instance_id,
                 app_instance_id,
@@ -1873,10 +1873,7 @@ impl SupervisorService {
     fn actors_from_clients(
         clients: &BTreeMap<SubstrateAlias, Arc<SyneroymClient>>,
     ) -> BTreeMap<SubstrateAlias, Arc<dyn SubstrateActor>> {
-        clients
-            .iter()
-            .map(|(alias, c)| (alias.clone(), c.clone() as Arc<dyn SubstrateActor>))
-            .collect()
+        clients.iter().map(|(alias, c)| (alias.clone(), deploy::build_actor(c.clone()))).collect()
     }
 
     /// Raises or clears `AlertKind::SupervisorSuperseded` from a
@@ -2040,7 +2037,7 @@ impl SupervisorService {
                 ));
                 continue;
             };
-            let actor = client.clone() as Arc<dyn SubstrateActor>;
+            let actor = deploy::build_actor(client.clone());
             if let Err(e) = self
                 .push_bindings(
                     &plan.app_instance_id,
@@ -2221,7 +2218,7 @@ impl SupervisorService {
                     DeployTarget {
                         alias: Some(alias.clone()),
                         substrate_did: c.service_id().to_string(),
-                        actor: c.clone() as Arc<dyn SubstrateActor>,
+                        actor: deploy::build_actor(c.clone()),
                     },
                 )
             })
@@ -7025,7 +7022,7 @@ mod tests {
     }
 
     fn edge_1_actor(actor: Arc<RenewalActor>) -> BTreeMap<SubstrateAlias, Arc<dyn SubstrateActor>> {
-        BTreeMap::from([(SubstrateAlias::new("edge-1"), actor as Arc<dyn SubstrateActor>)])
+        BTreeMap::from([(SubstrateAlias::new("edge-1"), deploy::build_actor(actor))])
     }
 
     fn edge_1_alias() -> BTreeMap<String, String> {
