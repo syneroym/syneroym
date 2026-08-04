@@ -482,7 +482,7 @@ async fn a_second_supervisor_that_has_not_adopted_loses_every_write() {
         .request("supervisor", "adopt", json!(["a5b-second-inst"]))
         .await
         .expect("adopt failed");
-    assert_eq!(adopted.result.as_u64(), Some(1));
+    assert_eq!(adopted.result.get("generation").and_then(serde_json::Value::as_u64), Some(1));
 
     let status = supervisor_node
         .substrate_client
@@ -596,7 +596,7 @@ async fn adopt_reads_the_held_generation_from_the_managed_node_and_claims_the_ne
         .request("supervisor", "adopt", json!(["a5b-adopt-inst"]))
         .await
         .expect("first adopt failed");
-    assert_eq!(first.result.as_u64(), Some(1));
+    assert_eq!(first.result.get("generation").and_then(serde_json::Value::as_u64), Some(1));
 
     // A second adopt (the same supervisor, simulating a rebuilt one) reads
     // the now-held generation 1 back and claims 2.
@@ -605,7 +605,7 @@ async fn adopt_reads_the_held_generation_from_the_managed_node_and_claims_the_ne
         .request("supervisor", "adopt", json!(["a5b-adopt-inst"]))
         .await
         .expect("second adopt failed");
-    assert_eq!(second.result.as_u64(), Some(2));
+    assert_eq!(second.result.get("generation").and_then(serde_json::Value::as_u64), Some(2));
 
     supervisor_node.teardown().await;
     managed_node.teardown().await;
@@ -705,7 +705,7 @@ async fn a_supervisor_that_reads_a_higher_generation_marks_the_instance_supersed
         .request("supervisor", "adopt", json!(["a5b-superseded-inst"]))
         .await
         .expect("adopt failed");
-    assert_eq!(adopted.result.as_u64(), Some(1));
+    assert_eq!(adopted.result.get("generation").and_then(serde_json::Value::as_u64), Some(1));
 
     // A second writer claims generation 2 directly against the managed
     // substrate. The first supervisor's own store still holds generation 1.

@@ -42,7 +42,7 @@ use syneroym_sdk::{
     mapper::map_deployment_plan_to_wit,
 };
 use syneroym_wit_interfaces::supervisor::exports::syneroym::supervisor::supervisor::{
-    Alert, BindingConvergence, InstanceStatus, ManagedService, ManagedState,
+    AdoptResult, Alert, BindingConvergence, InstanceStatus, ManagedService, ManagedState,
     MintedMaster as WitMintedMaster, Submission, SubmitResult,
 };
 use tokio::sync::Mutex as AsyncMutex;
@@ -220,6 +220,16 @@ pub struct SupervisorService {
     /// `shutdown` -- cancelling alone does not wait for the pass in
     /// flight to actually finish closing its clients.
     cancellation_token: CancellationToken,
+    /// Test-only: keeps a fixture-built service's backing directory alive
+    /// for exactly this service's own lifetime (M05A A7 review finding
+    /// 4). `Fixture::build_with_key_store` needs the directory to survive
+    /// past its own return for the vault's encrypted-mint path to work at
+    /// all (an earlier fix that instead called `.keep()` on the
+    /// `TempDir`, unconditionally leaking it, is what finding 4 caught);
+    /// tying its lifetime to the service it backs, rather than never
+    /// dropping it, restores ordinary cleanup while keeping that fix.
+    #[cfg(test)]
+    _fixture_tempdir: Option<tempfile::TempDir>,
 }
 
 impl fmt::Debug for SupervisorService {
@@ -279,6 +289,8 @@ impl SupervisorService {
             instance_locks: DashMap::new(),
             last_reconciled: DashMap::new(),
             cancellation_token: CancellationToken::new(),
+            #[cfg(test)]
+            _fixture_tempdir: None,
         }
     }
 
@@ -2658,6 +2670,21 @@ impl SupervisorService {
             .map_err(|e| RpcError::InternalError(e.to_string()))?;
         let inventory: SupervisorInventory = serde_json::from_str(&state.inventory_json)
             .map_err(|e| RpcError::InternalError(e.to_string()))?;
+
+        // M05A A7 (D-A7-1): resolved or minted before any substrate
+        // connection is opened -- same ordering `submit`'s own mint uses
+        // ("a locked vault or a bad plan must fail before anything is
+        // persisted or a network round trip spent"). A locked vault fails
+        // the whole call here, before `claim_next_generation` burns a
+        // generation, through the ordinary `VaultError::Locked` message
+        // (which already names `inject-kek`) rather than a `kek_is_loaded`
+        // pre-check -- that check answers `false` on a working vault
+        // whenever `storage.encryption = false`.
+        let (app_master_did, app_master_vault_name) =
+            keys::app_master(&self.vault, &app_instance_id)
+                .await
+                .map_err(|e| RpcError::InternalError(e.to_string()))?;
+
         let aliases = Self::placed_aliases(&plan).map_err(RpcError::InternalError)?;
         let clients =
             self.build_clients(&aliases, &inventory).await.map_err(RpcError::InternalError)?;
@@ -2666,21 +2693,40 @@ impl SupervisorService {
         Self::shutdown_clients(clients.into_values()).await;
         let next_generation = result?;
 
-        self.store
-            .set_generation(&app_instance_id, next_generation)
-            .map_err(|e| RpcError::InternalError(e.to_string()))?;
         // `adopt` is the way back in from `retired` -- the message every
         // refusal on a retired instance points to (N3, Slice A5b review
         // round 2). Idempotent when the instance was never retired.
+        //
+        // M05A A7 (D-A7-5, review finding 6): the generation, the
+        // un-retired flag, and the resolved app master DID land in one
+        // combined store write rather than three separate ones -- a crash
+        // between them used to be able to leave a claimed generation with
+        // no recorded app master, which is exactly the state D-A7-4's "the
+        // row always agrees with the vault" claim rests on not happening.
+        // The DID is written *after* the claim succeeds, deliberately
+        // asymmetric with the mint above, which runs before it: a vault
+        // key with no row is recoverable (the next `adopt` resolves the
+        // same key), while a row naming a DID whose key was never stored
+        // is not. Written on every successful `adopt`, not only the one
+        // that minted, so the row always agrees with whatever the vault
+        // holds -- this is what makes `import-master` followed by `adopt`
+        // correct after a handover.
         self.store
-            .un_retire(&app_instance_id)
+            .record_adopt(&app_instance_id, next_generation, &app_master_did)
             .map_err(|e| RpcError::InternalError(e.to_string()))?;
         // D-A5c-20 (§19.20/F5): a fresh generation is a fresh start, so a
         // terminal `InstanceNotRunning` service -- one nothing will ever
-        // restart again on its own -- becomes escapable here.
+        // restart again on its own -- becomes escapable here. Stays a
+        // separate, best-effort call (unlike the combined write above):
+        // its own failure has never blocked `adopt` from succeeding.
         let _ = self.store.clear_remediation_for_instance(&app_instance_id);
 
-        Ok(NativeResponse { payload: serde_json::to_value(next_generation).unwrap_or(Value::Null) })
+        let result = AdoptResult {
+            generation: next_generation,
+            app_master_did,
+            vault_name: app_master_vault_name,
+        };
+        Ok(NativeResponse { payload: serde_json::to_value(result).unwrap_or(Value::Null) })
     }
 
     /// `build_clients`' own contract is all-or-nothing (a deploy correctly
@@ -3510,6 +3556,13 @@ impl SupervisorService {
                 .unwrap_or_default()
                 .into_iter()
                 .collect(),
+            // M05A A7 (D-A7-4/D-A7-6): read from the stored row only, never
+            // the vault -- a locked vault is the ordinary state of a
+            // freshly-booted supervisor, and this field must stay readable
+            // through it. Empty means "never adopted under A7", mapped to
+            // `None` here so a caller does not have to know `""` is a
+            // sentinel.
+            app_master_did: (!state.app_master_did.is_empty()).then_some(state.app_master_did),
         };
         Ok(NativeResponse { payload: serde_json::to_value(status).unwrap_or(Value::Null) })
     }
@@ -3601,7 +3654,10 @@ impl NativeService for SupervisorService {
 
 #[cfg(test)]
 mod tests {
-    use std::{path::Path, sync::Mutex};
+    use std::{
+        path::{Path, PathBuf},
+        sync::Mutex,
+    };
 
     use syneroym_app_orchestration::{
         ActionState, DeploymentJournal,
@@ -3639,6 +3695,17 @@ mod tests {
         max_renewals_per_pass: Option<u32>,
         anchor_writer: Option<Arc<dyn AnchorWriter>>,
         master_anchor_refresh_interval_secs: Option<u64>,
+        /// `None` leaves the default -- a private `dir.path().join(
+        /// "backups")` on the `TempDir` the built service now keeps alive
+        /// on its own `_fixture_tempdir` field, for its own lifetime
+        /// (M05A A7 review finding 4 -- an earlier version of this
+        /// comment described a `TempDir` the builder dropped before
+        /// returning, which was true before that fix). M05A A7's handover
+        /// test needs two fixture-built services to share one backup
+        /// directory (a stand-in for two supervisors handed the same
+        /// operator-carried file), which the default cannot do -- so the
+        /// test owns and passes one in, held for the whole test (§0.5).
+        backup_dir: Option<PathBuf>,
     }
 
     impl Fixture {
@@ -3654,6 +3721,29 @@ mod tests {
         fn build_with_key_store(
             self,
         ) -> (SupervisorService, Arc<syneroym_data_keystore::KeyStore>) {
+            // Kept alive on the returned `SupervisorService` itself
+            // (`_fixture_tempdir`), not left to drop here: a dropped
+            // `TempDir` deletes the directory tree from disk the instant
+            // this function returns, while `SqliteStorageProvider` already
+            // holds an open connection into it (M05A A7, found while
+            // adding the first fixture-built test that performs a real
+            // *encrypted* write -- every earlier fixture's writes went
+            // through `open_service_db`'s own on-demand directory
+            // recreation and never touched the provider's `substrate_conn`,
+            // so this never surfaced before). An *unencrypted* mint
+            // recreates its directory on demand and keeps working
+            // regardless -- the DEK path does not, since it writes through
+            // the provider's own top-level connection, opened once at
+            // construction against a file an early drop would have already
+            // unlinked, and a `-journal` file cannot be created in a
+            // directory that no longer exists. An earlier fix instead
+            // called `.keep()` on the `TempDir`, which stopped it from
+            // dropping *ever* -- fixing the encrypted path at the cost of
+            // leaking every fixture-built test's directory permanently
+            // (M05A A7 review finding 4). Tying its lifetime to the
+            // service's own restores ordinary cleanup on every ordinary
+            // test's `Drop`, ~150 of them, while keeping the fix for the
+            // handful that mint under encryption.
             let dir = tempfile::tempdir().unwrap();
             let store = SupervisorStore::open_in_memory().unwrap();
             let storage_provider: Arc<dyn syneroym_data_db::traits::StorageProvider> = Arc::new(
@@ -3675,10 +3765,10 @@ mod tests {
                 storage_provider,
                 key_store.clone(),
                 "supervisor".to_string(),
-                dir.path().join("backups"),
+                self.backup_dir.clone().unwrap_or_else(|| dir.path().join("backups")),
             );
             let identity = Identity::generate().unwrap();
-            let service = SupervisorService::new(
+            let mut service = SupervisorService::new(
                 "did:key:zSupervisorNode".to_string(),
                 store,
                 vault,
@@ -3693,6 +3783,7 @@ mod tests {
                 self.master_anchor_refresh_interval_secs.unwrap_or(12 * 3600),
                 self.anchor_writer,
             );
+            service._fixture_tempdir = Some(dir);
             (service, key_store)
         }
     }
@@ -6859,7 +6950,11 @@ mod tests {
     /// same computable name `mint_and_substitute` would have stored it as
     /// -- so the renewal path finds it exactly the way production does.
     async fn seeded_member(s: &SupervisorService, service_name: &str) -> String {
-        let master = s.vault.get_or_mint(&format!("member-inst-1#{service_name}-0")).await.unwrap();
+        let master = s
+            .vault
+            .get_or_mint(&format!("member-inst-1#{service_name}-0"), keys::MasterKind::Member)
+            .await
+            .unwrap();
         substrate::derive_did_key(&master.public_key())
     }
 
@@ -7823,9 +7918,11 @@ mod tests {
     async fn master_anchor_refresh_republishes_each_members_own_anchor_and_stamps_its_own_row() {
         let writer = Arc::new(RecordingAnchorWriter::default());
         let s = Fixture { anchor_writer: Some(writer.clone()), ..Fixture::default() }.build();
-        let master0 = s.vault.get_or_mint("member-inst-1#backend-0").await.unwrap();
+        let master0 =
+            s.vault.get_or_mint("member-inst-1#backend-0", keys::MasterKind::Member).await.unwrap();
         let master0_did = substrate::derive_did_key(&master0.public_key());
-        let master1 = s.vault.get_or_mint("member-inst-1#backend-1").await.unwrap();
+        let master1 =
+            s.vault.get_or_mint("member-inst-1#backend-1", keys::MasterKind::Member).await.unwrap();
         let master1_did = substrate::derive_did_key(&master1.public_key());
         assert_ne!(master0_did, master1_did);
 
@@ -8244,5 +8341,512 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("registry"), "{err}");
         assert!(s.store.revoked_placements("inst-1").unwrap().is_empty());
+    }
+
+    // ── M05A A7: the app-instance master identity ───────────────────────
+
+    fn adopt_field<'a>(res: &'a NativeResponse, field: &str) -> Option<&'a Value> {
+        res.payload.get(field)
+    }
+
+    /// D-A7-1/D-A7-4/D-A7-8: the ordinary path, over a services-less plan
+    /// so no substrate is involved (§0.12) -- `adopt` mints an app master
+    /// and both the vault and the instance row carry it afterwards.
+    #[tokio::test]
+    async fn adopt_mints_an_app_master_and_records_it_on_the_instance_row() {
+        let s = service();
+        s.store
+            .submit("inst-1", &plan_json_no_services("inst-1"), "{}", "did:key:owner", 0)
+            .unwrap();
+
+        let res = dispatch(
+            &s,
+            admin_caller("did:key:zSupervisorNode"),
+            "adopt",
+            serde_json::json!(["inst-1"]),
+        )
+        .await
+        .unwrap();
+        let did = adopt_field(&res, "app_master_did").and_then(Value::as_str).unwrap();
+        let vault_name = adopt_field(&res, "vault_name").and_then(Value::as_str).unwrap();
+        assert!(did.starts_with("did:key:"), "{did}");
+        assert_eq!(vault_name, "app-inst-1");
+        assert_eq!(adopt_field(&res, "generation").and_then(Value::as_u64), Some(1));
+
+        let row_did = s.store.get("inst-1").unwrap().unwrap().app_master_did;
+        assert_eq!(row_did, did);
+        let vault_entry = s.vault.get("app-inst-1").await.unwrap().unwrap();
+        assert_eq!(substrate::derive_did_key(&vault_entry.public_key()), did);
+    }
+
+    /// D-A7-1: a locked vault refuses the whole call, before a generation
+    /// is claimed and before any key is minted -- not through a
+    /// `kek_is_loaded` pre-check. The locked fixture (encryption on, no
+    /// KEK) is the only shape that proves anything about locking.
+    #[tokio::test]
+    async fn adopt_on_a_locked_vault_refuses_before_it_claims_a_generation() {
+        let s = Fixture { locked_vault: true, ..Fixture::default() }.build();
+        s.store
+            .submit("inst-1", &plan_json_no_services("inst-1"), "{}", "did:key:owner", 0)
+            .unwrap();
+
+        let err = dispatch(
+            &s,
+            admin_caller("did:key:zSupervisorNode"),
+            "adopt",
+            serde_json::json!(["inst-1"]),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("inject-kek"), "{err}");
+
+        let row = s.store.get("inst-1").unwrap().unwrap();
+        assert_eq!(row.generation, 0, "a refused adopt must not claim a generation");
+        assert_eq!(row.app_master_did, "", "a refused adopt must not record a DID");
+    }
+
+    /// D-A7-7's "and nowhere else" (M05A A7 review finding 7a): `adopt` is
+    /// the only mint point, stated as a decision rather than merely true
+    /// of the paths tested so far. Test 94 shows the field absent right
+    /// after `submit`; this covers the two paths most likely to grow a
+    /// mint by accident later, since both re-run the same apply pipeline
+    /// `adopt` does over the identical plan -- `force-reconcile` and one
+    /// resident-loop pass.
+    #[tokio::test]
+    async fn app_master_did_stays_empty_through_force_reconcile_and_a_loop_pass_without_adopt() {
+        let s = service();
+        s.store
+            .submit("inst-1", &plan_json_no_services("inst-1"), "{}", "did:key:owner", 0)
+            .unwrap();
+
+        dispatch(
+            &s,
+            admin_caller("did:key:zSupervisorNode"),
+            "force-reconcile",
+            serde_json::json!(["inst-1"]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(s.store.get("inst-1").unwrap().unwrap().app_master_did, "");
+
+        s.run_pass().await;
+        assert_eq!(s.store.get("inst-1").unwrap().unwrap().app_master_did, "");
+    }
+
+    /// D-A7-5: the DID stays stable across two `adopt`s -- resolving, not
+    /// minting, on the second call. Over a services-less plan (§0.12), the
+    /// generation itself stays `1` on both calls too: `claim_next_
+    /// generation` reads the held maximum only from the substrates the
+    /// plan places services on, and an empty plan has none to remember a
+    /// prior claim, so this in-process shape cannot demonstrate the
+    /// generation actually advancing -- that needs a real substrate, which
+    /// is what the e2e (test 98, step d) proves alongside DID stability.
+    /// Named for what it actually asserts (M05A A7 review finding 9,
+    /// renamed from `…_at_the_next_generation`, which promised an
+    /// increment this test cannot produce).
+    #[tokio::test]
+    async fn a_second_adopt_reports_the_same_app_master_did() {
+        let s = service();
+        s.store
+            .submit("inst-1", &plan_json_no_services("inst-1"), "{}", "did:key:owner", 0)
+            .unwrap();
+
+        let first = dispatch(
+            &s,
+            admin_caller("did:key:zSupervisorNode"),
+            "adopt",
+            serde_json::json!(["inst-1"]),
+        )
+        .await
+        .unwrap();
+        let second = dispatch(
+            &s,
+            admin_caller("did:key:zSupervisorNode"),
+            "adopt",
+            serde_json::json!(["inst-1"]),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            adopt_field(&first, "app_master_did").and_then(Value::as_str),
+            adopt_field(&second, "app_master_did").and_then(Value::as_str)
+        );
+        assert_eq!(adopt_field(&first, "generation").and_then(Value::as_u64), Some(1));
+        assert_eq!(adopt_field(&second, "generation").and_then(Value::as_u64), Some(1));
+    }
+
+    /// D-A7-6: `status` reports the same DID `adopt` minted.
+    #[tokio::test]
+    async fn status_reports_the_app_master_did_of_an_adopted_instance() {
+        let s = service();
+        s.store
+            .submit("inst-1", &plan_json_no_services("inst-1"), "{}", "did:key:owner", 0)
+            .unwrap();
+        let adopted = dispatch(
+            &s,
+            admin_caller("did:key:zSupervisorNode"),
+            "adopt",
+            serde_json::json!(["inst-1"]),
+        )
+        .await
+        .unwrap();
+        let minted_did = adopt_field(&adopted, "app_master_did").and_then(Value::as_str).unwrap();
+
+        let status = dispatch(
+            &s,
+            admin_caller("did:key:zSupervisorNode"),
+            "status",
+            serde_json::json!(["inst-1"]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(status.payload.get("app_master_did").and_then(Value::as_str), Some(minted_did));
+    }
+
+    /// D-A7-6/§0.7: absent, not an empty string -- an instance that has
+    /// never been adopted under A7 must not read as though it holds a DID
+    /// of `""`.
+    #[tokio::test]
+    async fn status_reports_no_app_master_for_an_instance_that_was_never_adopted() {
+        let s = service();
+        s.store
+            .submit("inst-1", &plan_json_no_services("inst-1"), "{}", "did:key:owner", 0)
+            .unwrap();
+
+        let status = dispatch(
+            &s,
+            admin_caller("did:key:zSupervisorNode"),
+            "status",
+            serde_json::json!(["inst-1"]),
+        )
+        .await
+        .unwrap();
+        assert!(
+            status.payload.get("app_master_did").is_none_or(Value::is_null),
+            "absent means null once serialized, not an empty string: {:?}",
+            status.payload.get("app_master_did")
+        );
+    }
+
+    /// D-A7-5/§0.5: the handover-order repair inside one vault -- mint by
+    /// adopting, import a different key under the same name (simulating an
+    /// operator-carried backup replacing this vault's own key), adopt
+    /// again, and the row follows the vault rather than keeping the
+    /// replaced DID.
+    #[tokio::test]
+    async fn adopt_after_an_import_records_the_imported_did_not_the_one_it_replaced() {
+        let s = service();
+        s.store
+            .submit("inst-1", &plan_json_no_services("inst-1"), "{}", "did:key:owner", 0)
+            .unwrap();
+        let first = dispatch(
+            &s,
+            admin_caller("did:key:zSupervisorNode"),
+            "adopt",
+            serde_json::json!(["inst-1"]),
+        )
+        .await
+        .unwrap();
+        let original_did =
+            adopt_field(&first, "app_master_did").and_then(Value::as_str).unwrap().to_string();
+
+        let replacement = Identity::generate().unwrap();
+        s.vault.import("app-inst-1", &replacement.to_bytes()).await.unwrap();
+        let replacement_did = substrate::derive_did_key(&replacement.public_key());
+        assert_ne!(original_did, replacement_did);
+
+        let second = dispatch(
+            &s,
+            admin_caller("did:key:zSupervisorNode"),
+            "adopt",
+            serde_json::json!(["inst-1"]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            adopt_field(&second, "app_master_did").and_then(Value::as_str),
+            Some(replacement_did.as_str())
+        );
+        assert_eq!(s.store.get("inst-1").unwrap().unwrap().app_master_did, replacement_did);
+    }
+
+    /// D-A7-7: an instance whose row predates A7 -- generation already
+    /// claimed, `app_master_did` empty -- gains one at its *next* `adopt`,
+    /// never anywhere else. Simulated by writing the pre-A7 state directly
+    /// rather than going through `adopt` to reach it.
+    #[tokio::test]
+    async fn an_instance_row_with_no_app_master_gains_one_on_its_next_adopt() {
+        let s = service();
+        s.store
+            .submit("inst-1", &plan_json_no_services("inst-1"), "{}", "did:key:owner", 0)
+            .unwrap();
+        s.store.set_generation("inst-1", 2).unwrap();
+        assert_eq!(s.store.get("inst-1").unwrap().unwrap().app_master_did, "");
+
+        let res = dispatch(
+            &s,
+            admin_caller("did:key:zSupervisorNode"),
+            "adopt",
+            serde_json::json!(["inst-1"]),
+        )
+        .await
+        .unwrap();
+        // The generation bump itself is D-A7-7's named cost -- not
+        // asserted at a specific number here, since a services-less plan
+        // (§0.12) has no substrate to remember `2` was already claimed and
+        // `claim_next_generation` always computes fresh from what the plan
+        // places, which is nothing.
+        let did = adopt_field(&res, "app_master_did").and_then(Value::as_str).unwrap();
+        assert!(did.starts_with("did:key:"));
+        assert_eq!(s.store.get("inst-1").unwrap().unwrap().app_master_did, did);
+    }
+
+    /// D-A7-8/§0.8: the A5b S1 failure, asserted directly -- the returned
+    /// name must be one `export-master` actually accepts, not the bare
+    /// logical name.
+    #[tokio::test]
+    async fn adopt_returns_the_vault_name_export_master_accepts() {
+        let s = service();
+        s.store
+            .submit("inst-1", &plan_json_no_services("inst-1"), "{}", "did:key:owner", 0)
+            .unwrap();
+        let res = dispatch(
+            &s,
+            admin_caller("did:key:zSupervisorNode"),
+            "adopt",
+            serde_json::json!(["inst-1"]),
+        )
+        .await
+        .unwrap();
+        let vault_name =
+            adopt_field(&res, "vault_name").and_then(Value::as_str).unwrap().to_string();
+
+        let export = dispatch(
+            &s,
+            admin_caller("did:key:zSupervisorNode"),
+            "export-master",
+            serde_json::json!([vault_name]),
+        )
+        .await
+        .unwrap();
+        assert!(export.payload.as_str().unwrap().contains("app-inst-1"));
+    }
+
+    /// D-A7-4, added in review (§0.4/test 99): `status` must stay readable
+    /// through a genuinely locked vault -- the column exists precisely so
+    /// the app's identity is visible while the vault is shut, and this is
+    /// the only test in this file that reaches that state over one held
+    /// service rather than a fresh, empty rebuild. Locked *in place*
+    /// (A5d's own recipe): unlocked at construction so `adopt` can mint,
+    /// then the KEK is cleared afterward.
+    #[tokio::test]
+    async fn status_reports_the_app_master_did_while_the_vault_is_locked() {
+        let (s, key_store) =
+            Fixture { locked_vault: true, inject_kek_anyway: true, ..Fixture::default() }
+                .build_with_key_store();
+        s.store
+            .submit("inst-1", &plan_json_no_services("inst-1"), "{}", "did:key:owner", 0)
+            .unwrap();
+        let adopted = dispatch(
+            &s,
+            admin_caller("did:key:zSupervisorNode"),
+            "adopt",
+            serde_json::json!(["inst-1"]),
+        )
+        .await
+        .unwrap();
+        let minted_did =
+            adopt_field(&adopted, "app_master_did").and_then(Value::as_str).unwrap().to_string();
+
+        key_store.clear_kek();
+        assert!(
+            s.vault.get("app-inst-1").await.is_err(),
+            "the vault must genuinely be locked for this test to prove anything"
+        );
+
+        let status = dispatch(
+            &s,
+            admin_caller("did:key:zSupervisorNode"),
+            "status",
+            serde_json::json!(["inst-1"]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            status.payload.get("app_master_did").and_then(Value::as_str),
+            Some(minted_did.as_str())
+        );
+    }
+
+    /// D-A7-5, the slice's most important new case (§0.5/test 100): a
+    /// *second* supervisor, which has never adopted this instance,
+    /// imports the app master another supervisor already exported, and
+    /// its first `adopt` reports the imported DID rather than minting a
+    /// fresh one. Two independent fixture-built services sharing one
+    /// test-owned backup directory -- the stand-in for the file an
+    /// operator carries between two real supervisors during a handover.
+    #[tokio::test]
+    async fn a_second_supervisor_that_imports_the_app_master_adopts_without_minting_a_new_one() {
+        let backup_dir = tempfile::tempdir().unwrap();
+        let supervisor_a =
+            Fixture { backup_dir: Some(backup_dir.path().to_path_buf()), ..Fixture::default() }
+                .build();
+        let supervisor_b =
+            Fixture { backup_dir: Some(backup_dir.path().to_path_buf()), ..Fixture::default() }
+                .build();
+
+        supervisor_a
+            .store
+            .submit("inst-1", &plan_json_no_services("inst-1"), "{}", "did:key:owner", 0)
+            .unwrap();
+        let adopted_a = dispatch(
+            &supervisor_a,
+            admin_caller("did:key:zSupervisorNode"),
+            "adopt",
+            serde_json::json!(["inst-1"]),
+        )
+        .await
+        .unwrap();
+        let a_did =
+            adopt_field(&adopted_a, "app_master_did").and_then(Value::as_str).unwrap().to_string();
+        let vault_name =
+            adopt_field(&adopted_a, "vault_name").and_then(Value::as_str).unwrap().to_string();
+
+        dispatch(
+            &supervisor_a,
+            admin_caller("did:key:zSupervisorNode"),
+            "export-master",
+            serde_json::json!([vault_name.clone()]),
+        )
+        .await
+        .unwrap();
+
+        // Supervisor B has never adopted this instance -- it must still
+        // hold its own desired-state row before `adopt` can act on it.
+        supervisor_b
+            .store
+            .submit("inst-1", &plan_json_no_services("inst-1"), "{}", "did:key:owner", 0)
+            .unwrap();
+        dispatch(
+            &supervisor_b,
+            admin_caller("did:key:zSupervisorNode"),
+            "import-master",
+            serde_json::json!([vault_name]),
+        )
+        .await
+        .unwrap();
+
+        let adopted_b = dispatch(
+            &supervisor_b,
+            admin_caller("did:key:zSupervisorNode"),
+            "adopt",
+            serde_json::json!(["inst-1"]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            adopt_field(&adopted_b, "app_master_did").and_then(Value::as_str),
+            Some(a_did.as_str()),
+            "B's first adopt must resolve A's imported DID, not mint a second identity"
+        );
+        assert_eq!(supervisor_b.store.get("inst-1").unwrap().unwrap().app_master_did, a_did);
+    }
+
+    /// D-A7-1/D-A7-5, optional (§0.12/test 101): the mint-before-claim,
+    /// record-after-claim asymmetry's failing direction -- a claim that
+    /// fails after the mint already landed must not mint a *second* key on
+    /// the retry, since a vault key with no row is meant to be
+    /// recoverable. Needs a placed service on an unreachable substrate, so
+    /// the services-less shortcut every other test in this section uses
+    /// does not apply.
+    #[tokio::test]
+    async fn a_failed_claim_after_a_successful_mint_reuses_the_same_app_master() {
+        let s = service();
+        let plan_json = plan_json_one_service("inst-1", "backend", Some("edge-1"));
+        let inventory_json =
+            serde_json::json!({"edge-1": {"did": "did:key:zEdge1", "api_url": "http://127.0.0.1:1"}})
+                .to_string();
+        s.store.submit("inst-1", &plan_json, &inventory_json, "did:key:owner", 0).unwrap();
+
+        let err = dispatch(
+            &s,
+            admin_caller("did:key:zSupervisorNode"),
+            "adopt",
+            serde_json::json!(["inst-1"]),
+        )
+        .await
+        .unwrap_err();
+        // The claim failed against the unreachable substrate, not the
+        // mint -- the row must show no generation was claimed, but the
+        // vault must already hold a key, since the mint runs first.
+        // `.expect` here, not `.map`: a plain `Option` comparison at the
+        // bottom of this test would pass on `None == None` if the mint
+        // ever stopped running before the claim (M05A A7 review finding
+        // 3) -- the exact regression this test exists to catch -- since
+        // both reads would then find nothing rather than the same key.
+        assert_eq!(s.store.get("inst-1").unwrap().unwrap().generation, 0, "{err}");
+        let minted = s
+            .vault
+            .get("app-inst-1")
+            .await
+            .unwrap()
+            .expect("the mint runs before the claim, so the vault must already hold a key");
+        let minted_did = substrate::derive_did_key(&minted.public_key());
+
+        // A real deployment would fix the substrate before retrying;
+        // here the same unreachable alias still fails the claim, so the
+        // only thing left to prove is that the vault key from the first
+        // attempt was reused, not replaced.
+        let _ = dispatch(
+            &s,
+            admin_caller("did:key:zSupervisorNode"),
+            "adopt",
+            serde_json::json!(["inst-1"]),
+        )
+        .await
+        .unwrap_err();
+        let second_minted = s
+            .vault
+            .get("app-inst-1")
+            .await
+            .unwrap()
+            .expect("the retried mint must also resolve a key, not find nothing");
+        let second_did = substrate::derive_did_key(&second_minted.public_key());
+        assert_eq!(
+            minted_did, second_did,
+            "a retried mint must resolve the same key, not a new one"
+        );
+    }
+
+    /// M05A A7 review finding 7c: `adopt`'s un-retire and its app-master
+    /// write now land in the same `record_adopt` call (finding 6), but
+    /// nothing at the service level had exercised them running back to
+    /// back on a genuinely retired instance -- store-level coverage
+    /// (`store.rs`'s `record_adopt_writes_generation_retired_and_
+    /// app_master_did_together`) proves the store method alone, not that
+    /// `handle_adopt` actually reaches it starting from `retired`.
+    #[tokio::test]
+    async fn adopt_on_a_retired_instance_un_retires_and_records_the_app_master_together() {
+        let s = service();
+        s.store
+            .submit("inst-1", &plan_json_no_services("inst-1"), "{}", "did:key:owner", 0)
+            .unwrap();
+        s.store.retire("inst-1").unwrap();
+        assert!(s.store.get("inst-1").unwrap().unwrap().retired);
+
+        let res = dispatch(
+            &s,
+            admin_caller("did:key:zSupervisorNode"),
+            "adopt",
+            serde_json::json!(["inst-1"]),
+        )
+        .await
+        .unwrap();
+
+        let row = s.store.get("inst-1").unwrap().unwrap();
+        assert!(!row.retired, "adopt must un-retire the instance");
+        let did = adopt_field(&res, "app_master_did").and_then(Value::as_str).unwrap();
+        assert_eq!(row.app_master_did, did);
     }
 }

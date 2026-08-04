@@ -3,6 +3,12 @@
 //! computable name A0 uses for files (`member-<instance>-<service>-<index>`),
 //! so adoption is a read.
 //!
+//! **Also holds the app instance's own master** (M05A A7, ADR-0022 §1),
+//! minted at `adopt` under `app-<app_instance_id>` beside the member
+//! masters it names. It delegates nothing and signs nothing in this slice
+//! -- it exists so the app has a network identity that outlives the
+//! supervisor managing it, for a later slice's registry publication to use.
+//!
 //! **Local by construction.** The supervisor writes to *its own* node's
 //! service database through `StorageProvider::open_service_db`, an
 //! in-process call -- it never issues a remote `security/set-secret` and so
@@ -101,6 +107,17 @@ fn ensure_backup_dir(dir: &Path) -> Result<(), VaultError> {
     fs::create_dir_all(dir).map_err(|e| VaultError::Storage(e.into()))
 }
 
+/// Which kind of master `get_or_mint` is minting -- read only to pick the
+/// mint-warning's wording (M05A A7, D-A7-9). A member master's loss story
+/// ("orphans every row this member has written") is the wrong noun and the
+/// wrong consequence for an app master, which owns no rows and instead
+/// loses the app instance's own network identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MasterKind {
+    Member,
+    App,
+}
+
 /// One minted or resolved member master, named by its logical service and
 /// carrying the DID an operator should record and back up.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,14 +147,21 @@ pub struct MasterVault {
     /// operator-declared via `SupervisorRole::master_backup_dir`, never
     /// caller-supplied.
     backup_dir: PathBuf,
-    /// Serializes `get_or_mint`'s read-then-write across concurrent
-    /// callers. `SupervisorService::dispatch` takes `&self`, so two
-    /// `submit`s for the same instance can otherwise interleave: both see
-    /// no existing master, both mint one, and the later `write_secret`
-    /// wins -- the earlier call has already certified and deployed a
-    /// member under a master no longer in the vault, which ADR-0020 §4
-    /// calls unrecoverable (S3, Slice A5b review). One process-wide lock
-    /// is enough: minting is rare and never on a hot path.
+    /// Serializes every write to a vault name -- `get_or_mint`'s own
+    /// read-then-write, and `import`'s (M05A A7 review round 2, finding
+    /// 2), across concurrent callers. `SupervisorService::dispatch` takes
+    /// `&self`, so two `submit`s for the same instance can otherwise
+    /// interleave: both see no existing master, both mint one, and the
+    /// later `write_secret` wins -- the earlier call has already
+    /// certified and deployed a member under a master no longer in the
+    /// vault, which ADR-0020 §4 calls unrecoverable (S3, Slice A5b
+    /// review). `import` taking this same lock closes the sibling case:
+    /// without it, a concurrent `import-master` could land between
+    /// `get_or_mint`'s read and its write and be silently clobbered, or
+    /// itself clobber a fresh mint with no warning, since its own
+    /// existence check would be racing against the write it is trying to
+    /// warn about. One process-wide lock is enough: minting and importing
+    /// are both rare and never on a hot path.
     mint_lock: tokio::sync::Mutex<()>,
 }
 
@@ -206,8 +230,9 @@ impl MasterVault {
     }
 
     /// Mints and stores if absent -- the ordinary path. Reuses an existing
-    /// master rather than minting a second one for the same name.
-    pub async fn get_or_mint(&self, name: &str) -> Result<Identity, VaultError> {
+    /// master rather than minting a second one for the same name. `kind`
+    /// (M05A A7, D-A7-9) picks only the mint-warning's wording below.
+    pub async fn get_or_mint(&self, name: &str, kind: MasterKind) -> Result<Identity, VaultError> {
         // Held across the whole read-then-write below (`mint_lock`'s own
         // doc): without it, two concurrent callers for the same `name`
         // both pass the `get` check and both mint.
@@ -218,19 +243,54 @@ impl MasterVault {
         let identity = Identity::generate().map_err(VaultError::Storage)?;
         self.store_bytes(name, &identity.to_bytes()).await?;
         let did = substrate::derive_did_key(&identity.public_key());
-        tracing::warn!(
-            name,
-            did,
-            "minted a new member master into the supervisor vault -- back it up with `roymctl \
-             supervisor export-master {name}`; losing it is unrecoverable and orphans every row \
-             this member has written"
-        );
+        match kind {
+            MasterKind::Member => tracing::warn!(
+                name,
+                did,
+                "minted a new member master into the supervisor vault -- back it up with `roymctl \
+                 supervisor export-master {name}`; losing it is unrecoverable and orphans every \
+                 row this member has written"
+            ),
+            MasterKind::App => tracing::warn!(
+                name,
+                did,
+                "minted a new app-instance master into the supervisor vault -- back it up with \
+                 `roymctl supervisor export-master {name}`; losing it is unrecoverable and loses \
+                 this app instance's own network identity"
+            ),
+        }
         Ok(identity)
     }
 
     /// Imports raw key bytes directly -- used by `import_master` once it has
-    /// read them from the backup directory.
+    /// read them from the backup directory. Takes `mint_lock` (M05A A7
+    /// review finding 2), the same lock `get_or_mint` holds across its own
+    /// read-then-write: without it, a concurrent `adopt` can see an empty
+    /// slot, mint, and store, and then have this import's write land
+    /// after -- the row would then name a DID the vault no longer holds.
+    /// Warns, rather than refuses, when this replaces an existing,
+    /// different key (finding 1): D-A7-11's standing rule is that a
+    /// master is never forgotten, and the handover A7 makes routine
+    /// (`import-master` before every `adopt`) can otherwise silently
+    /// destroy a live identity on a typo'd instance id or a stale backup
+    /// file, with nothing to notice. Not a refusal -- a deliberate
+    /// replacement (the actual handover case) must still succeed.
     pub async fn import(&self, name: &str, key_bytes: &[u8; 32]) -> Result<(), VaultError> {
+        let _guard = self.mint_lock.lock().await;
+        if let Some(existing) = self.get(name).await? {
+            let existing_did = substrate::derive_did_key(&existing.public_key());
+            let incoming_did =
+                substrate::derive_did_key(&Identity::from_bytes(key_bytes).public_key());
+            if existing_did != incoming_did {
+                tracing::warn!(
+                    name,
+                    existing_did,
+                    incoming_did,
+                    "import replaces an existing, different key under this name in the vault -- \
+                     the old identity is now unrecoverable unless it was exported first"
+                );
+            }
+        }
         self.store_bytes(name, key_bytes).await
     }
 
@@ -252,11 +312,13 @@ impl MasterVault {
     /// Adopts a master already placed in the backup directory (an A0-A4
     /// deployment's `identities/member-*.key`, copied there by the
     /// operator) into the vault. Reads by name from that directory only.
+    /// Routes through `import` so a replacement is locked and warned
+    /// about the same way a direct `import` call is.
     pub async fn import_master(&self, name: &str) -> Result<(), VaultError> {
         validate_backup_name(name)?;
         let path = self.backup_dir.join(format!("{name}.key"));
         let identity = Identity::load_from_path(&path).map_err(VaultError::Storage)?;
-        self.store_bytes(name, &identity.to_bytes()).await
+        self.import(name, &identity.to_bytes()).await
     }
 }
 
@@ -290,6 +352,61 @@ fn member_master_name(
     let name = format!("member-{app_instance_id}#{service_name}-{index}");
     validate_backup_name(&name)?;
     Ok(name)
+}
+
+/// `app-<app_instance_id>` -- the app instance's own master (M05A A7,
+/// D-A7-3). Collision-safe by construction on two independent grounds,
+/// neither of which depends on what `AppInstanceId`'s validator permits
+/// (unlike `member_master_name`'s `#` boundary above):
+///
+/// - **Injective by construction.** There is exactly one variable-length
+///   segment, and it is the whole remainder of the string, so the map from
+///   instance id to name has no room to collide two different ids onto one
+///   name.
+/// - **Disjoint from every member name.** `app-` and `member-` are fixed,
+///   disjoint prefixes at position 0, so no member name can ever equal an app
+///   name whatever either id's segments contain.
+///
+/// Still validated through `validate_backup_name`, the same rule
+/// `export_master`/`import_master` enforce on the name they are handed.
+/// `AppInstanceId::try_new` itself now also refuses `..` and `\` (a fix
+/// made after review found the gap this comment used to describe --
+/// M05A A7 review round 2, finding 5), so a caller that only ever
+/// constructs a name from an already-validated `AppInstanceId` cannot
+/// trip this. This function takes a bare `&str`, not an `AppInstanceId`,
+/// so the check stays as defense-in-depth against a caller that skipped
+/// that construction -- refused here, at mint time, rather than minted
+/// and only discovered unbackuppable later. Do not remove it on the
+/// strength of `AppInstanceId`'s own validator alone.
+///
+/// Deliberately **no** duplicated copy of this in `roymctl`, unlike
+/// `member_master_name`'s copy in `apps/roymctl/src/commands/
+/// member_identity.rs`: that copy exists because A0's operator-side flow
+/// mints member masters into files on the operator's own machine, and
+/// nothing client-side ever mints an app master -- there is nothing to
+/// keep in sync.
+fn app_master_name(app_instance_id: &str) -> Result<String, VaultError> {
+    let name = format!("app-{app_instance_id}");
+    validate_backup_name(&name)?;
+    Ok(name)
+}
+
+/// The app instance's own master: resolve-or-mint under `app-<id>`,
+/// returning both the DID `adopt` records on the instance row and the
+/// vault name `export-master`/`import-master` accept (M05A A7,
+/// D-A7-1/D-A7-3/D-A7-4/D-A7-8). Called on *every* successful `adopt`, not
+/// only the first -- resolving rather than minting-once is what makes a
+/// handover through `import-master` self-correcting: an `adopt` run after
+/// `import-master` resolves the imported key instead of minting a second
+/// identity for the same instance (D-A7-5).
+pub async fn app_master(
+    vault: &MasterVault,
+    app_instance_id: &str,
+) -> Result<(String, String), VaultError> {
+    let name = app_master_name(app_instance_id)?;
+    let master = vault.get_or_mint(&name, MasterKind::App).await?;
+    let did = substrate::derive_did_key(&master.public_key());
+    Ok((did, name))
 }
 
 /// The member master a *renewal* signs with: read-only, under the same
@@ -337,7 +454,7 @@ pub async fn mint_and_substitute(
             svc.logical_ref.service_name.as_str(),
             svc.member_index,
         )?;
-        let master = vault.get_or_mint(&name).await?;
+        let master = vault.get_or_mint(&name, MasterKind::Member).await?;
         let master_did = substrate::derive_did_key(&master.public_key());
         let master_id = ServiceId::try_new(master_did.clone()).map_err(VaultError::Storage)?;
         substitution.insert(svc.service_id.clone(), master_id.clone());
@@ -379,15 +496,73 @@ pub async fn mint_and_substitute(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::{collections::BTreeMap, sync::Mutex};
 
     use syneroym_app_orchestration::models::{
         AppBlueprintId, AppInstanceId, LogicalServiceName, LogicalServiceRef, PlannedService,
         RotationPolicy, ServiceConfig, ServiceType, TopologyMode,
     };
     use syneroym_data_db::SqliteStorageProvider;
+    use tokio::runtime::{Builder, Runtime};
+    use tracing_subscriber::prelude::*;
 
     use super::*;
+
+    struct MockWriter {
+        logs: Arc<Mutex<Vec<u8>>>,
+    }
+    impl std::io::Write for MockWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.logs.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Runs `f` under a scoped tracing subscriber and returns its result
+    /// alongside everything logged during the call, as text -- the same
+    /// `MockWriter`-over-`fmt::layer` shape already used elsewhere in this
+    /// tree (e.g. `crates/data_db/src/sqlite.rs`'s
+    /// `test_insecure_mode_warning`), adapted to an async callee by
+    /// driving a private, current-thread runtime inside the subscriber's
+    /// own scope: `with_default` sets a thread-local for the duration of
+    /// a *synchronous* closure, so the whole future must be polled to
+    /// completion on this one thread, not handed to the outer
+    /// `#[tokio::test]` runtime's own scheduler, or the capture would miss
+    /// anything logged after a hop to a different worker thread.
+    ///
+    /// Takes `rt` by reference rather than building one per call: a
+    /// `MasterVault`'s `open_service_db` spawns its writer loop with
+    /// `task::spawn_blocking`, which outlives the individual `get_or_mint`/
+    /// `import` call and is only joined when the *runtime* that spawned it
+    /// drops. A runtime built fresh inside this function and dropped at
+    /// its return would then block forever trying to join a writer thread
+    /// still kept alive by a vault the *caller* goes on using -- callers
+    /// build one `rt` for the whole test and declare it before the vault,
+    /// so the vault (and its writer channel) drops first, at the test's
+    /// own end, letting the runtime's final join succeed.
+    fn run_capturing_logs<F, Fut, T>(rt: &Runtime, f: F) -> (T, String)
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = T>,
+    {
+        let logs = Arc::new(Mutex::new(Vec::new()));
+        let logs_clone = logs.clone();
+        let make_writer = move || MockWriter { logs: logs_clone.clone() };
+        let layer = tracing_subscriber::fmt::layer().with_writer(make_writer);
+        let subscriber = tracing_subscriber::registry().with(layer);
+
+        let result = tracing::subscriber::with_default(subscriber, || rt.block_on(f()));
+
+        let logs_content = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+        (result, logs_content)
+    }
+
+    fn test_runtime() -> Runtime {
+        Builder::new_current_thread().enable_all().build().unwrap()
+    }
 
     fn vault(dir: &Path) -> MasterVault {
         let storage_provider: Arc<dyn StorageProvider> =
@@ -401,7 +576,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let v = vault(dir.path());
 
-        let minted = v.get_or_mint("member-inst-1-backend-0").await.unwrap();
+        let minted = v.get_or_mint("member-inst-1-backend-0", MasterKind::Member).await.unwrap();
         let read_back = v.get("member-inst-1-backend-0").await.unwrap().unwrap();
         assert_eq!(minted.public_key(), read_back.public_key());
     }
@@ -418,9 +593,13 @@ mod tests {
         let v = Arc::new(vault(dir.path()));
 
         let v1 = v.clone();
-        let a = tokio::spawn(async move { v1.get_or_mint("member-inst-1-backend-0").await });
+        let a = tokio::spawn(async move {
+            v1.get_or_mint("member-inst-1-backend-0", MasterKind::Member).await
+        });
         let v2 = v.clone();
-        let b = tokio::spawn(async move { v2.get_or_mint("member-inst-1-backend-0").await });
+        let b = tokio::spawn(async move {
+            v2.get_or_mint("member-inst-1-backend-0", MasterKind::Member).await
+        });
 
         let first = a.await.unwrap().unwrap();
         let second = b.await.unwrap().unwrap();
@@ -432,8 +611,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let v = vault(dir.path());
 
-        let first = v.get_or_mint("member-inst-1-backend-0").await.unwrap();
-        let second = v.get_or_mint("member-inst-1-backend-0").await.unwrap();
+        let first = v.get_or_mint("member-inst-1-backend-0", MasterKind::Member).await.unwrap();
+        let second = v.get_or_mint("member-inst-1-backend-0", MasterKind::Member).await.unwrap();
         assert_eq!(first.public_key(), second.public_key());
     }
 
@@ -540,8 +719,8 @@ mod tests {
     async fn master_for_member_reads_the_members_own_index_rather_than_zero() {
         let dir = tempfile::tempdir().unwrap();
         let v = vault(dir.path());
-        let member0 = v.get_or_mint("member-inst-1#backend-0").await.unwrap();
-        let member1 = v.get_or_mint("member-inst-1#backend-1").await.unwrap();
+        let member0 = v.get_or_mint("member-inst-1#backend-0", MasterKind::Member).await.unwrap();
+        let member1 = v.get_or_mint("member-inst-1#backend-1", MasterKind::Member).await.unwrap();
         assert_ne!(member0.public_key(), member1.public_key());
 
         let resolved0 = master_for_member(&v, "inst-1", "backend", 0).await.unwrap();
@@ -602,7 +781,7 @@ mod tests {
     async fn export_master_writes_only_into_the_configured_backup_dir() {
         let dir = tempfile::tempdir().unwrap();
         let v = vault(dir.path());
-        v.get_or_mint("member-inst-1-backend-0").await.unwrap();
+        v.get_or_mint("member-inst-1-backend-0", MasterKind::Member).await.unwrap();
 
         let err = v.export_master("../escape").await.unwrap_err();
         assert!(matches!(err, VaultError::Storage(_)));
@@ -656,5 +835,198 @@ mod tests {
 
         let err = v.get("member-inst-1-backend-0").await.unwrap_err();
         assert!(matches!(err, VaultError::Locked), "{err:?}");
+    }
+
+    // ── M05A A7: the app-instance master (D-A7-3/D-A7-5) ────────────────
+
+    /// D-A7-3: the two prefixes are disjoint at position 0, so no member
+    /// name can ever equal an app name -- checked over instance ids chosen
+    /// to look like a member name's own tail, the shape most likely to
+    /// collide under a careless boundary. The companion to
+    /// `member_master_name_cannot_collide_across_two_instance_and_service_pairs`
+    /// above, which pins the *member* name's own boundary.
+    #[test]
+    fn an_app_master_name_can_never_equal_a_member_master_name() {
+        for instance_id in ["inst-1", "backend-0", "member-inst-1#backend-0"] {
+            let app_name = app_master_name(instance_id).unwrap();
+            let member_name = member_master_name(instance_id, "svc", 0).unwrap();
+            assert_ne!(app_name, member_name);
+            assert!(app_name.starts_with("app-"));
+            assert!(member_name.starts_with("member-"));
+        }
+    }
+
+    /// D-A7-3, §0.3 as corrected in review. `AppInstanceId::try_new`
+    /// itself now also refuses `..` and `\` (M05A A7 review round 2,
+    /// finding 5) -- but `app_master`/`app_master_name` take a bare
+    /// `&str`, not an `AppInstanceId`, so this pins the defense-in-depth
+    /// layer directly: a caller that reaches this function with a raw
+    /// string that never went through `AppInstanceId::try_new` must still
+    /// be refused *before* anything is minted under it, not discovered
+    /// later at `export_master`.
+    #[tokio::test]
+    async fn an_app_instance_id_that_could_not_be_backed_up_is_refused_before_minting() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = vault(dir.path());
+
+        for instance_id in ["..", "back\\slash"] {
+            let err = app_master(&v, instance_id).await.unwrap_err();
+            assert!(matches!(err, VaultError::Storage(_)), "{err:?}");
+        }
+        // Neither rejected name was written to the vault under the name
+        // `app_master_name` would otherwise have produced.
+        assert!(v.get("app-..").await.unwrap().is_none());
+        assert!(v.get("app-back\\slash").await.unwrap().is_none());
+    }
+
+    /// D-A7-5: `adopt` calls `app_master` on every call, not only the
+    /// first -- resolving the same key it already minted is what makes a
+    /// re-`adopt` (and, across two vaults, a handover) safe rather than
+    /// minting a second identity.
+    #[tokio::test]
+    async fn a_second_resolve_returns_the_app_master_already_in_the_vault() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = vault(dir.path());
+
+        let (first_did, first_name) = app_master(&v, "inst-1").await.unwrap();
+        let (second_did, second_name) = app_master(&v, "inst-1").await.unwrap();
+        assert_eq!(first_did, second_did);
+        assert_eq!(first_name, second_name);
+        assert_eq!(first_name, "app-inst-1");
+    }
+
+    /// `task.md`'s own exit criterion: the app master "moves through
+    /// `export-master` / `import-master`" exactly as a member master does
+    /// -- exported under `app-<id>`, landing inside the configured backup
+    /// directory at mode `0o600`, and re-importable to restore the same
+    /// key.
+    #[tokio::test]
+    async fn an_app_master_round_trips_through_export_master_and_import_master() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = vault(dir.path());
+
+        let (did, vault_name) = app_master(&v, "inst-1").await.unwrap();
+        assert_eq!(vault_name, "app-inst-1");
+
+        let path = v.export_master(&vault_name).await.unwrap();
+        assert_eq!(path.parent().unwrap(), dir.path().join("backups"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+
+        // Importing into a second, independent vault (a stand-in for a
+        // second supervisor) restores the identical key.
+        let dir2 = tempfile::tempdir().unwrap();
+        let v2 = MasterVault::new(
+            Arc::new(SqliteStorageProvider::new(dir2.path().join("db"), false).unwrap()),
+            Arc::new(KeyStore::new()),
+            "supervisor".to_string(),
+            dir.path().join("backups"),
+        );
+        v2.import_master(&vault_name).await.unwrap();
+        let imported = v2.get(&vault_name).await.unwrap().unwrap();
+        assert_eq!(substrate::derive_did_key(&imported.public_key()), did);
+    }
+
+    // ── M05A A7 code review (2026-08-04): findings 1, 2, 7b, 10 ─────────
+
+    /// D-A7-9, review finding 10: `get_or_mint`'s warning names the right
+    /// noun and the right loss for each `MasterKind` -- the whole payload
+    /// of a decision that otherwise touched twelve call sites for no
+    /// externally visible effect.
+    #[test]
+    fn get_or_mint_warns_with_the_wording_matching_its_kind() {
+        // Declared before `dir`/`v`: dropped last, after the vault (and
+        // its background writer thread) is already gone -- see
+        // `run_capturing_logs`'s own doc for why the other order deadlocks.
+        let rt = test_runtime();
+        let dir = tempfile::tempdir().unwrap();
+        let v = vault(dir.path());
+
+        let (_, member_logs) = run_capturing_logs(&rt, || {
+            v.get_or_mint("member-inst-1#backend-0", MasterKind::Member)
+        });
+        assert!(member_logs.contains("member master"), "{member_logs}");
+        assert!(member_logs.contains("orphans every row"), "{member_logs}");
+
+        let (_, app_logs) =
+            run_capturing_logs(&rt, || v.get_or_mint("app-inst-1", MasterKind::App));
+        assert!(app_logs.contains("app-instance master"), "{app_logs}");
+        assert!(app_logs.contains("network identity"), "{app_logs}");
+    }
+
+    /// Review finding 7b (the ordering `import` taking `mint_lock` makes
+    /// safe, §0.5's own handover sequence): if `import-master` lands
+    /// *before* anything has minted under this name, `get_or_mint`
+    /// resolves the imported key rather than minting a second identity --
+    /// the exact "`import-master` before `adopt`" order the developer
+    /// guide recommends.
+    #[tokio::test]
+    async fn get_or_mint_after_an_import_resolves_the_imported_key_rather_than_minting() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = vault(dir.path());
+        let imported = Identity::generate().unwrap();
+
+        v.import("app-inst-1", &imported.to_bytes()).await.unwrap();
+        let resolved = v.get_or_mint("app-inst-1", MasterKind::App).await.unwrap();
+
+        assert_eq!(resolved.public_key(), imported.public_key());
+    }
+
+    /// Review findings 1 and 2 together: if a mint already landed under
+    /// this name before `import` runs, `import` still wins (a deliberate
+    /// handover replacement must succeed), but it must never do so
+    /// silently -- the exact "reverse interleaving" finding 2 called
+    /// worse than the base case, because nothing before this fix warned
+    /// at all. Sequential, not raced: the two lock-acquisition orderings
+    /// this fix distinguishes are each individually deterministic, and
+    /// this is the one where `import` runs second. Not `#[tokio::test]`:
+    /// `run_capturing_logs` drives its own runtime, and nesting one
+    /// inside another panics.
+    #[test]
+    fn import_over_an_existing_different_key_replaces_it_and_warns() {
+        let rt = test_runtime();
+        let dir = tempfile::tempdir().unwrap();
+        let v = vault(dir.path());
+
+        let ((minted_did, replacement_did, final_did), logs) = run_capturing_logs(&rt, || async {
+            let minted = v.get_or_mint("app-inst-1", MasterKind::App).await.unwrap();
+            let minted_did = substrate::derive_did_key(&minted.public_key());
+
+            let replacement = Identity::generate().unwrap();
+            let replacement_did = substrate::derive_did_key(&replacement.public_key());
+            v.import("app-inst-1", &replacement.to_bytes()).await.unwrap();
+
+            let final_identity = v.get("app-inst-1").await.unwrap().unwrap();
+            let final_did = substrate::derive_did_key(&final_identity.public_key());
+
+            (minted_did, replacement_did, final_did)
+        });
+
+        assert_ne!(minted_did, replacement_did);
+        assert_eq!(final_did, replacement_did, "import must still win over the earlier mint");
+        assert!(logs.contains("replaces an existing, different key"), "{logs}");
+    }
+
+    /// The companion case: importing the *same* key a second time (an
+    /// idempotent re-run of a handover step) must not warn -- there is
+    /// nothing to lose, since the incoming and existing DIDs are equal.
+    #[test]
+    fn importing_the_same_key_again_does_not_warn() {
+        let rt = test_runtime();
+        let dir = tempfile::tempdir().unwrap();
+        let v = vault(dir.path());
+
+        let ((), logs) = run_capturing_logs(&rt, || async {
+            let identity = Identity::generate().unwrap();
+            let bytes = identity.to_bytes();
+            v.import("app-inst-1", &bytes).await.unwrap();
+            v.import("app-inst-1", &bytes).await.unwrap();
+        });
+
+        assert!(!logs.contains("replaces an existing"), "{logs}");
     }
 }

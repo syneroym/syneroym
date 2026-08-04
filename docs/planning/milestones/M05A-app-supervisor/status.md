@@ -5,10 +5,10 @@
 [ADR-0021](../../../decisions/0021-binding-propagation-and-app-supervisor.md)
 
 **Overall:** Design accepted 2026-07-27. Slices P0, A0-A4, A5a, A5b, A5c,
-A5d, A5e complete; A5 splits into five sub-slices per
+A5d, A5e, A7 complete; A5 splits into five sub-slices per
 [slice-a5-implementation-plan.md](slice-a5-implementation-plan.md) §2. A7
-(pulled forward 2026-08-02) not started; the milestone closes when A5e and
-A7 have both landed.
+(pulled forward 2026-08-02) landed 2026-08-04, the second of A5e/A7 to land
+— **the milestone is closed.**
 
 ## Slice status
 
@@ -26,7 +26,7 @@ A7 have both landed.
 | A5d | Unattended certificate renewal, master-anchor refresh, revocation surface | **Complete (2026-08-03)** — [implementation plan](slice-a5-implementation-plan.md) Part V, evidence below | A5c (Complete) |
 | A5e | Scale-out, budgets (cross-app probes moved to overlay slice S4) | **Complete (2026-08-04)** — [implementation plan](slice-a5-implementation-plan.md) Part VI, evidence below | A5c, A5d (Complete) |
 | A6 | Durable delivery via outbox/DLQ | **Deferred, post-M5** | M5 item 1 Complete |
-| A7 | App-instance master identity | Not started | A5b (Complete) |
+| A7 | App-instance master identity | **Complete (2026-08-04)** — [implementation plan](slice-a7-implementation-plan.md), evidence below | A5b (Complete) |
 
 **A1 was added after design review** (2026-07-27) on finding that the
 `master DID → endpoint` mapping ADR-0021 leaned on does not exist: the registry
@@ -2648,6 +2648,329 @@ network-bind failures under the sandbox are the same pre-existing,
 sandbox-only set every earlier gate in this file documents, confirmed
 unrelated by re-running unsandboxed); `mise run test:e2e` (Playwright/
 WebRTC) green.
+
+## A7 — Verification evidence (2026-08-04)
+
+The milestone's second and closing slice — see
+[slice-a7-implementation-plan.md](slice-a7-implementation-plan.md) §0's
+thirteen findings (three changing what A7 had to build, two blocking) and
+§1's fourteen decisions (D-A7-1 … D-A7-14).
+
+**What shipped**, by phase:
+
+- **Phase 1 (the vault side,
+  [keys.rs](../../../../crates/app_supervisor/src/keys.rs)):**
+  `MasterKind` (`Member`/`App`) on `get_or_mint`, read only to pick the
+  mint-warning's wording (D-A7-9) — the one production call site
+  (`mint_and_substitute`) and every test call site updated mechanically;
+  `app_master_name` (`app-<app-instance-id>`), validated through the same
+  `validate_backup_name` rule `member_master_name` uses, with its
+  collision argument written down rather than assumed (D-A7-3: injective
+  by construction, and disjoint from every member name by its fixed
+  prefix); and `app_master`, the resolve-or-mint helper `adopt` calls on
+  *every* invocation, returning both the DID and the vault name.
+- **Phase 2 (the store side,
+  [store.rs](../../../../crates/app_supervisor/src/store.rs)):**
+  `desired_state.app_master_did TEXT NOT NULL DEFAULT ''`, added both in
+  the `CREATE TABLE` text and via one idempotent `ALTER TABLE … ADD
+  COLUMN` tolerating `duplicate column name` — the same shape
+  `RegistryStore`'s `manifest_hash` already uses (D-A7-2); a
+  `set_app_master_did` writer in `set_generation`'s shape; the column left
+  out of `submit`'s `ON CONFLICT` update list, so it survives a resubmit
+  untouched (D-A7-11).
+- **Phase 3 (`adopt`, `status`, the CLI,
+  [service.rs](../../../../crates/app_supervisor/src/service.rs)):**
+  `handle_adopt` resolves-or-mints the app master *before* `build_clients`
+  — a locked vault fails the whole call before a generation is claimed,
+  through the ordinary `VaultError::Locked` message rather than a
+  `kek_is_loaded` pre-check, which would wrongly refuse on an
+  encryption-disabled node (D-A7-1) — and records the DID on the instance
+  row *after* `claim_next_generation` succeeds, deliberately asymmetric
+  with the mint (D-A7-5): a vault key with no row is recoverable, a row
+  naming an unstored DID is not. `supervisor.wit` gained
+  `instance-status.app-master-did: option<string>` (D-A7-6, read from the
+  stored row only, never the vault) and `adopt-result` (`generation`,
+  `app-master-did`, `vault-name`, replacing the bare `u64` `adopt` used to
+  return, D-A7-8) — the four e2e assertions and the `roymctl` print that
+  read the old shape were updated in the same change.
+  `apps/roymctl/src/commands/supervisor.rs`'s `Adopt` handler prints the
+  app master and its backup command at the moment the key exists, the
+  same rule `submit`'s `minted-master` rows already encode. Prose pass
+  (D-A7-14) over the four shipped member-master-only sites: `supervisor.wit`'s
+  `minted-master.vault-name` doc (which also carried a second live copy of
+  the pre-A5e `-`-boundary vault name, corrected here) and `import-master`
+  doc, and `roymctl supervisor`'s module doc and `ExportMaster`/
+  `ImportMaster` help text.
+- **Phase 4 (end to end,
+  [app_instance_identity_e2e.rs](../../../../crates/substrate/tests/app_instance_identity_e2e.rs),
+  ports 13_000-13_002/13_100-13_102):** one real supervisor and one real
+  managed substrate, `submit` → `adopt` → `status` → `export-master` →
+  `adopt` again, proving the operator's own sequence rather than any one
+  property in isolation (those are proven at unit scale by phase 3's
+  tests).
+
+**A pre-existing fixture bug, found and fixed while writing test 99.**
+`Fixture::build_with_key_store`
+([service.rs](../../../../crates/app_supervisor/src/service.rs)) built its
+`SqliteStorageProvider` against a `TempDir` it then let drop before
+returning — every earlier fixture-built test's writes went through
+`open_service_db`'s own on-demand directory recreation and never surfaced
+this, because an *unencrypted* vault never touches the storage provider's
+top-level `substrate_conn` (the DEK path short-circuits before it). Test
+99 is the first test in this tree to perform a real *encrypted* mint
+against a fixture-built service, and it failed with a raw
+`"attempt to write a readonly database"` SQLite error: `substrate_conn`
+was still opened against a file the dropped `TempDir` had already
+unlinked, and SQLite could not create a `-journal` file in a directory
+that no longer existed on disk. Fixed by keeping the directory alive
+(`tempfile::tempdir().unwrap().keep()`) instead of leaving it to drop — a
+deliberate, test-only leak, the same trade-off every fixture already made
+for its on-demand directories, just made to cover the encrypted path too.
+Confirmed by reproducing the failure directly against `MasterVault`
+outside `SupervisorService` (isolating the `TempDir`-drop timing as the
+cause) before applying the fix.
+
+**Two of §3's specified unit tests needed correction against real fixture
+behaviour, the same discipline the plan's own review passes name (§7
+of this plan; A5e's §40 records the identical rule).** Tests 92
+(`a_second_adopt_reports_the_same_app_master_did`, renamed from
+`…_at_the_next_generation` in the post-merge review below)
+and 96 (`an_instance_row_with_no_app_master_gains_one_on_its_next_adopt`)
+were specified assuming a second `adopt` over a services-less plan claims
+a higher generation than the first. It does not: `claim_next_generation`
+reads the held maximum only from the substrates the plan actually places
+services on, and an empty plan has none to remember a prior claim, so
+every `adopt` over a services-less plan claims generation `1` regardless
+of how many times it is called. Both tests were corrected to assert what
+is actually true in-process (the DID staying stable, and `app_master_did`
+being filled, without asserting a specific incremented generation number)
+with a comment pointing at test 98's e2e step (d) as the case that proves
+the generation-increment property, which genuinely needs a real
+substrate.
+
+**Tests added: 18** (84-101, continuing A5e's 83; test 101, marked
+optional in the plan, was built) — 4 in `keys.rs` (84-87), 2 in `store.rs`
+(88-89, widened per plan from the resubmit case alone to also cover
+`retire`; `release` needs no case, since `handle_release` never writes to
+`desired_state` at all — a discrepancy from §0.11's "retire/release … each
+through `set_flag`", corrected here since only `retire` actually is one),
+11 in `service.rs` (90-97, 99-101), 1 e2e
+(`an_adopted_app_instance_carries_an_exportable_master_did`, test 98).
+Counted directly from the diff.
+
+**Gates, run 2026-08-04:**
+
+- `cargo +nightly fmt --all -- --check`: clean.
+- `cargo clippy --workspace --all-targets --all-features`: clean, zero
+  warnings.
+- `cargo test --workspace` (sandboxed, `--no-fail-fast`): every
+  `syneroym-app-supervisor` unit test green — **152/152**, of which 18 are
+  new (counted by running `cargo test -p syneroym-app-supervisor --lib`
+  directly, both in isolation and inside the full workspace run). The
+  failing targets are the identical pre-existing, environmental
+  sandbox-bind category documented throughout this file (real socket/DHT/
+  port binds the sandbox denies outright): `community-registry`,
+  `control-plane` (its HTTP-probe tests), `coordinator-iroh` (3 targets),
+  `mqtt-broker`, `sdk --test connect_timeout`, and every
+  `syneroym-substrate` e2e target, including the new
+  `app_instance_identity_e2e`. Two targets this slice touched most
+  directly were re-verified independently, sandbox disabled:
+  `app_instance_identity_e2e` (1/1, ~86s, test 98's full operator
+  sequence) and `supervisor_interface_e2e` (6/6, ~89s, including the four
+  edited `adopt`-result assertions).
+- `mise run test:e2e` (sandbox disabled, required for real port binds):
+  12/12 green (8 main + 4 multi-hop), unchanged pass count from before
+  this slice — expected, since A7 adds no browser-visible surface.
+- `wasm32-wasip2`: `greeter` builds clean, unaffected — A7 touches no WIT
+  interface any guest fixture imports (`supervisor.wit` is a
+  native-service interface only).
+
+### Post-merge code review (2026-08-04), ten findings, all incorporated
+
+An independent review of the merged commit (`361a47b`) found two medium
+findings, both in vault custody, plus five low and three nit findings. All
+ten were agreed with and fixed in the same pass; none were pushed back on.
+Every exit criterion the review checked was already met and stayed met —
+these are hardening and coverage, not correctness regressions in what
+shipped.
+
+**Medium — vault custody, both reachable because A7 makes `import-master`
+part of a routine operator flow rather than a one-time migration step:**
+
+- **`import-master` could silently destroy an existing app master.**
+  `MasterVault::import`/`import_master` wrote unconditionally, with no
+  existence check and no warning — a typo'd instance id or a stale
+  `.key` file in `master_backup_dir` could replace a live app identity
+  with nothing to notice, directly against D-A7-11's standing rule that a
+  master is never forgotten. Fixed: `import` now reads the existing entry
+  first and logs `tracing::warn!` naming both DIDs when it is about to
+  replace a *different* key (an idempotent re-import of the same key
+  stays silent). Not a refusal — a deliberate handover replacement must
+  still succeed. Tests: `import_over_an_existing_different_key_replaces_
+  it_and_warns`, `importing_the_same_key_again_does_not_warn`
+  (`keys.rs`).
+- **`import` bypassed `mint_lock`, so a concurrent `adopt` could race
+  it.** `get_or_mint` holds `mint_lock` across its own read-then-write;
+  `import`/`import_master` took no lock at all. Without it, the warning
+  above could itself be skipped by a stale read: `import`'s own
+  existence-check could run before a concurrent `get_or_mint`'s write had
+  landed, see nothing, and overwrite silently — the exact "worse than the
+  base case, this time without any operator error" scenario the review
+  named. Fixed: `import` now takes `mint_lock` too, so its check always
+  sees an up-to-date vault and the warning above fires reliably
+  regardless of which operation's critical section runs first. (This
+  narrows the race; it does not extend to the full `handle_adopt` call
+  the mint is part of — a concurrent import landing *after* `adopt` has
+  minted but *before* it writes the row is still possible and still
+  self-corrects on the next `adopt`, the same standing property D-A7-5
+  already documents and the backlog's *"Two supervisors can mint two
+  different app masters"* row already carries.) Tests:
+  `get_or_mint_after_an_import_resolves_the_imported_key_rather_than_
+  minting`, plus the two above (`keys.rs`).
+
+**Low:**
+
+- **Test 101 could pass on a regression it exists to catch.** Its final
+  assertion compared two `Option<String>` values; if the mint ever
+  stopped running before the claim, both reads would return `None` and
+  `None == None` would still pass. Fixed: `.expect(...)` in place of
+  `.map(...)`, so a missing key now fails the test outright
+  (`service.rs`).
+- **The fixture's temp-directory fix leaked one directory per
+  fixture-built test, permanently.** The `.keep()` fix for the
+  encrypted-mint bug (this file's own evidence above) applied to every
+  fixture, not only the encrypted ones — measured at ~100 leaked
+  directories per full test run, never cleaned up. Fixed: the directory
+  now lives on a new `#[cfg(test)] _fixture_tempdir` field on
+  `SupervisorService` itself, so it drops with the service at each test's
+  own end, restoring ordinary cleanup while keeping the original fix.
+  Verified: 0 new leaked directories after a full `-p
+  syneroym-app-supervisor` run.
+- **An instance id containing `..` or `\` became permanently
+  un-adoptable.** `AppInstanceId::try_new` refused only empty, `/`, and
+  `#`, so such an id could pass `submit` (a services-less plan skips the
+  member-name validator that would otherwise have caught it) and then
+  fail every `adopt` forever at the vault-name check — and since `adopt`
+  is also the only way back from `retired`, such an instance could never
+  recover. Fixed at the type, closing it for every caller rather than
+  only this one call site: `AppInstanceId`'s validator now refuses `..`
+  and `\` too, alongside the existing `#` guard. Tests:
+  `an_app_instance_id_that_could_never_be_backed_up_is_refused_at_
+  construction` (`crates/app_orchestration/src/models.rs`).
+- **`adopt` made four separate, un-transacted writes to one row.** A
+  crash between `set_generation`/`un_retire`/`set_app_master_did` could
+  leave a claimed generation with no recorded app master — the exact
+  state D-A7-4's "the row always agrees with the vault" claim rests on
+  not happening. Fixed: a new `SupervisorStore::record_adopt` combines
+  the generation, the un-retired flag, and the app master DID into one
+  SQL statement, atomic by construction; `clear_remediation_for_instance`
+  stays a separate, best-effort call, matching its existing behavior (its
+  own failure has never blocked `adopt` from succeeding). Tests:
+  `record_adopt_writes_generation_retired_and_app_master_did_together`,
+  `record_adopt_fails_for_an_instance_with_no_desired_state` (`store.rs`).
+- **Three coverage gaps behind decisions the slice states as
+  guarantees.** D-A7-7's "and nowhere else" had no case proving
+  `force-reconcile` or a resident-loop pass leave the field alone;
+  un-retire running back to back with the app-master write had store-level
+  coverage but nothing through the service; the import/mint interaction
+  had no test at all. Closed by
+  `app_master_did_stays_empty_through_force_reconcile_and_a_loop_pass_
+  without_adopt`, `adopt_on_a_retired_instance_un_retires_and_records_
+  the_app_master_together` (`service.rs`), and the import/mint tests
+  listed under the medium findings above (`keys.rs`).
+
+**Nits:**
+
+- `Fixture::backup_dir`'s doc comment described a `TempDir` the builder
+  drops before returning — true before the tempdir fix above, stale
+  after. Corrected in the same pass as the fix itself.
+- Test 92's name promised a generation increment it could not assert
+  (`a_second_adopt_reports_the_same_app_master_did_at_the_next_
+  generation`, over a services-less plan that has no substrate to
+  remember a prior claim). Renamed to
+  `a_second_adopt_reports_the_same_app_master_did`.
+- `get_or_mint`'s `MasterKind`-selected wording (D-A7-9) had no test
+  proving either string. Closed with
+  `get_or_mint_warns_with_the_wording_matching_its_kind`, using a
+  `MockWriter`-over-`tracing_subscriber::fmt::layer` capture (the same
+  shape `crates/data_db/src/sqlite.rs`'s `test_insecure_mode_warning`
+  already uses in this tree), adapted for an async callee by driving a
+  private, single-purpose `current_thread` runtime inside the
+  subscriber's own scope. **Found while building this adapter, not by
+  the review itself:** a runtime built fresh per call and dropped at
+  return deadlocks, because `MasterVault`'s writer thread
+  (`task::spawn_blocking` inside `open_service_db`) outlives the
+  individual call and is only joined when the runtime that spawned it
+  drops — while the vault it belongs to is still alive and being reused.
+  Fixed by sharing one runtime per test, declared before the vault so the
+  vault (and its writer channel) drops first, letting the runtime's own
+  drop succeed. Recorded in `run_capturing_logs`'s own doc comment so the
+  next person adapting this pattern does not rediscover it by hanging a
+  CI run.
+
+**New dev-dependency:** `tracing-subscriber` added to
+`crates/app_supervisor/Cargo.toml`'s `[dev-dependencies]` (already a
+workspace dependency; this is its first use in this crate), for the
+`MockWriter` capture above.
+
+**Test count: 101 → 110** (9 new, counted directly by diffing test
+attributes against the pre-review commit, not asserted).
+
+**Gates, re-run 2026-08-04 after all ten fixes:**
+
+- `cargo +nightly fmt --all -- --check`: clean.
+- `cargo clippy --workspace --all-targets --all-features`: clean, zero
+  warnings.
+- `cargo test --workspace` (sandboxed, `--no-fail-fast`): identical
+  failing-target set to the pre-review run above (the same pre-existing
+  sandbox-bind category) — no new failures from the
+  `AppInstanceId` validator change or any other fix.
+  `syneroym-app-supervisor` 160/160, `syneroym-app-orchestration` 112/112,
+  `roymctl` 63/63, all green. `app_instance_identity_e2e` (1/1, ~83s) and
+  `supervisor_interface_e2e` (6/6, ~90s) independently re-verified
+  passing with the sandbox disabled.
+- `mise run test:e2e` (sandbox disabled): 12/12 green (8 main + 4
+  multi-hop), unchanged.
+- `wasm32-wasip2`: `greeter` still builds clean.
+
+### Post-merge code review, round 2 (2026-08-04), three findings, all incorporated
+
+Three low findings, all created by the round-1 fix itself, not the
+original slice; none change behaviour.
+
+- **Two comments still described `AppInstanceId` as permitting `..` and
+  `\`**, which round 1 had already closed at the type
+  (`crates/app_orchestration/src/models.rs`). Both comments were the
+  stated reason for keeping `app_master_name`'s own
+  `validate_backup_name` call — a reader who checked the claim, found it
+  false, and concluded the check was now redundant could have deleted a
+  real defense-in-depth layer (`app_master_name` takes a bare `&str`, not
+  an `AppInstanceId`, so a caller that skips construction can still reach
+  it with an unvalidated string). Both corrected in
+  `crates/app_supervisor/src/keys.rs` to state plainly that the type-level
+  check exists now, and why the function-level one stays anyway.
+- **`mint_lock`'s own doc comment still described one caller and one
+  race**, from before round 1 gave `import` the same lock. Updated to
+  name both callers and both races.
+- **`record_adopt` (round 1) left `set_generation`, `un_retire`, and
+  `set_app_master_did` with no production caller**, each now a way to
+  write part of what `record_adopt` writes atomically, silently
+  reachable again by a later change. `pub` on all three, so `dead_code`
+  would never have caught it. `un_retire` and `set_app_master_did`
+  deleted outright, with their three test call sites moved onto
+  `record_adopt` directly. `set_generation` kept, `#[cfg(test)]`-gated
+  and its doc comment rewritten to say why: `record_adopt` cannot seed a
+  generation alone without also writing `app_master_did`, which some
+  test setup needs to avoid. Two stale doc comments elsewhere in
+  `store.rs` that still named `un_retire` as the method `handle_adopt`
+  calls were corrected to name `record_adopt` in the same pass.
+
+**Gates, re-run after all three:** `cargo +nightly fmt --all -- --check`
+clean; `cargo clippy --workspace --all-targets --all-features` clean,
+zero warnings; `cargo build --workspace --all-targets` clean;
+`syneroym-app-supervisor` 160/160 (no test count change — three existing
+tests moved from the deleted methods onto `record_adopt`, none added or
+removed).
 
 ## Dependencies pulled in
 

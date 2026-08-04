@@ -34,4 +34,5 @@ tracing.workspace = true
 hex.workspace = true
 semver = { workspace = true, features = ["serde"] }
 tempfile.workspace = true
+tracing-subscriber.workspace = true
 wit-parser.workspace = true

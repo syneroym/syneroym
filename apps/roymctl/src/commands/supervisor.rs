@@ -1,7 +1,8 @@
 //! `roymctl supervisor …`: an operator's interface to a running App
 //! Supervisor -- submit desired state, adopt/release/pause/resume/retire an
 //! app instance, force a reconcile, read status/alerts, and back up or
-//! adopt a member master (M05A A5b).
+//! adopt a master (M05A A5b) -- a member master, or, since M05A A7, the
+//! app instance's own.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -71,9 +72,10 @@ pub enum SupervisorCommands {
         #[arg(long)]
         all: bool,
     },
-    /// Ask the supervisor to write a member master into its configured
-    /// `master_backup_dir` and print the path it wrote (backup is
-    /// mandatory: mint-in-place means the operator holds nothing until
+    /// Ask the supervisor to write a master -- a member's, or the app
+    /// instance's own (M05A A7, named `app-<instance-id>`) -- into its
+    /// configured `master_backup_dir` and print the path it wrote (backup
+    /// is mandatory: mint-in-place means the operator holds nothing until
     /// they ask). Takes a name, not a path -- the destination is operator
     /// config on the supervisor's side, so no caller can steer a private
     /// key anywhere.
@@ -81,7 +83,12 @@ pub enum SupervisorCommands {
         name: String,
     },
     /// Ask the supervisor to adopt a master already placed in that same
-    /// directory (an A0-A4 deployment's `<dir>/identities/member-*.key`).
+    /// directory: either a member master (an A0-A4 deployment's
+    /// `<dir>/identities/member-*.key`), or an app instance's own master
+    /// carried from another supervisor by a prior `export-master`. For a
+    /// handover of an app instance's master, run this *before* `adopt` on
+    /// the new supervisor -- adopting first mints a second app identity
+    /// under the same name (M05A A7).
     ImportMaster {
         name: String,
     },
@@ -280,7 +287,18 @@ pub async fn handle(
             let res = client
                 .request("supervisor", "adopt", serde_json::to_value([instance_id.clone()])?)
                 .await?;
-            println!("Adopted '{instance_id}' at generation {}", res.result);
+            let generation = res.result.get("generation").and_then(|v| v.as_u64()).unwrap_or(0);
+            println!("Adopted '{instance_id}' at generation {generation}.");
+            // M05A A7 (D-A7-8): told at the moment the key exists, the same
+            // rule `submit`'s own `minted-master` rows already encode --
+            // not left to a follow-up `status` call.
+            let app_master_did =
+                res.result.get("app_master_did").and_then(|v| v.as_str()).unwrap_or("?");
+            let vault_name = res.result.get("vault_name").and_then(|v| v.as_str()).unwrap_or("?");
+            println!(
+                "  app master: {app_master_did} -- back it up with `roymctl supervisor \
+                 export-master {vault_name}`"
+            );
         }
         SupervisorCommands::Release { instance_id } => {
             let res = client

@@ -26,6 +26,11 @@ pub struct DesiredState {
     pub retired: bool,
     pub submitted_at: i64,
     pub updated_at: i64,
+    /// The app instance's own master DID (M05A A7, D-A7-2/D-A7-4), empty
+    /// until the instance's next `adopt` mints or resolves one -- the vault
+    /// cannot be enumerated and this instance appears in no plan, so this
+    /// column is the only index, not a cache of something else readable.
+    pub app_master_did: String,
 }
 
 /// One service's bounded-restart bookkeeping (§14 step 6, D-A5c-20).
@@ -88,7 +93,8 @@ impl SupervisorStore {
                 paused          INTEGER NOT NULL DEFAULT 0,
                 retired         INTEGER NOT NULL DEFAULT 0,
                 submitted_at    INTEGER NOT NULL,
-                updated_at      INTEGER NOT NULL
+                updated_at      INTEGER NOT NULL,
+                app_master_did  TEXT NOT NULL DEFAULT ''
              );
              -- M05A A5c D-A5c-4 (§19.3): one counter per *dependent
              -- service*, not per dependency -- every binding that service
@@ -154,6 +160,23 @@ impl SupervisorStore {
                 PRIMARY KEY (app_instance_id, logical_ref)
              );",
         )?;
+        // M05A A7 (D-A7-2): `desired_state` predates this column, so the
+        // `CREATE TABLE IF NOT EXISTS` above is a no-op on any database that
+        // already exists -- it never adds a column to a table already
+        // there. This `ALTER TABLE` is the one idempotent way to get the
+        // column onto a database that opened before it existed; not the
+        // version ladder AGENTS.md rules out, since there is no schema
+        // version to track. Same shape as `RegistryStore`'s own
+        // `manifest_hash` column (`crates/data_db/src/registry_store.rs`).
+        // "duplicate column name" is the expected outcome on every open
+        // after the first.
+        if let Err(err) = conn.execute(
+            "ALTER TABLE desired_state ADD COLUMN app_master_did TEXT NOT NULL DEFAULT ''",
+            [],
+        ) && !err.to_string().contains("duplicate column name")
+        {
+            return Err(err.into());
+        }
         Ok(())
     }
 
@@ -443,7 +466,7 @@ impl SupervisorStore {
     /// is meant to hand an instance back to manual operation, and a submit
     /// that landed anyway would silently resume supervision behind the
     /// operator's back. `adopt` is the only way back in -- it clears the
-    /// flag on a successful claim (`un_retire`, below); plain `release`
+    /// flag on a successful claim (`record_adopt`, below); plain `release`
     /// does not, since it only clears the substrate-side stamp and says
     /// nothing about whether *this* supervisor should resume managing the
     /// instance (N3, Slice A5b review round 2 -- the message here used to
@@ -511,7 +534,7 @@ impl SupervisorStore {
         let conn = self.conn.lock().expect("supervisor store connection lock poisoned");
         conn.query_row(
             "SELECT app_instance_id, plan_json, inventory_json, owner_did, generation, paused, \
-             retired, submitted_at, updated_at
+             retired, submitted_at, updated_at, app_master_did
              FROM desired_state WHERE app_instance_id = ?1",
             params![app_instance_id],
             |row| {
@@ -525,6 +548,7 @@ impl SupervisorStore {
                     retired: row.get::<_, i64>(6)? != 0,
                     submitted_at: row.get(7)?,
                     updated_at: row.get(8)?,
+                    app_master_did: row.get(9)?,
                 })
             },
         )
@@ -538,7 +562,7 @@ impl SupervisorStore {
         let conn = self.conn.lock().expect("supervisor store connection lock poisoned");
         let mut stmt = conn.prepare(
             "SELECT app_instance_id, plan_json, inventory_json, owner_did, generation, paused, \
-             retired, submitted_at, updated_at
+             retired, submitted_at, updated_at, app_master_did
              FROM desired_state WHERE retired = 0 AND paused = 0 ORDER BY app_instance_id ASC",
         )?;
         let mut rows = stmt.query([])?;
@@ -554,6 +578,7 @@ impl SupervisorStore {
                 retired: row.get::<_, i64>(6)? != 0,
                 submitted_at: row.get(7)?,
                 updated_at: row.get(8)?,
+                app_master_did: row.get(9)?,
             });
         }
         Ok(out)
@@ -583,29 +608,62 @@ impl SupervisorStore {
     /// A later `submit` is refused until the instance is re-adopted
     /// (D-A5-20's substrate-side release is the caller's counterpart --
     /// clearing the substrate's own stamp, not this row). Not terminal:
-    /// `handle_adopt` calls `un_retire` on a successful claim, which is
+    /// `handle_adopt` un-retires as part of `record_adopt`'s combined
+    /// write on a successful claim (M05A A7 review finding 6), which is
     /// the "re-adopted" this doc comment and every refusal message
     /// promise (N3, Slice A5b review round 2).
     pub fn retire(&self, app_instance_id: &str) -> Result<()> {
         self.set_flag(app_instance_id, "retired", true)
     }
 
-    /// `adopt`'s own counterpart to `retire`: an instance that has been
-    /// handed back to manual operation and then explicitly re-adopted is
-    /// no longer retired, so `submit` stops refusing it. Idempotent --
-    /// harmless to call on an instance that was never retired.
-    pub fn un_retire(&self, app_instance_id: &str) -> Result<()> {
-        self.set_flag(app_instance_id, "retired", false)
-    }
-
     /// Updates the held generation in place, without touching the rest of
-    /// desired state -- `adopt`'s own write, distinct from a re-`submit`.
+    /// desired state. Test-only hook (M05A A7 review round 2, finding C):
+    /// `record_adopt`, below, is what `handle_adopt` actually calls in
+    /// production, and it writes the generation together with the
+    /// un-retired flag and the app master DID in one statement -- this
+    /// method exists only to seed a generation in a test's setup step
+    /// without also touching those other two columns, which
+    /// `record_adopt` cannot do alone.
+    #[cfg(test)]
     pub fn set_generation(&self, app_instance_id: &str, generation: u64) -> Result<()> {
         let conn = self.conn.lock().expect("supervisor store connection lock poisoned");
         let now = chrono::Utc::now().timestamp();
         let updated = conn.execute(
             "UPDATE desired_state SET generation = ?1, updated_at = ?2 WHERE app_instance_id = ?3",
             params![generation as i64, now, app_instance_id],
+        )?;
+        if updated == 0 {
+            return Err(anyhow!("no desired state submitted for app instance '{app_instance_id}'"));
+        }
+        Ok(())
+    }
+
+    /// `adopt`'s own combined write, once the claim has succeeded: the
+    /// generation, the un-retired flag, and the resolved app master DID,
+    /// together in one statement (M05A A7 review finding 6). Before this,
+    /// `handle_adopt` called `set_generation`/`un_retire`/
+    /// `set_app_master_did` as three separate writes, so a crash between
+    /// them could leave a claimed generation with no recorded app
+    /// master -- exactly the state D-A7-4's "the row always agrees with
+    /// the vault" claim rests on not happening.
+    ///
+    /// `clear_remediation_for_instance` stays a separate call at the
+    /// caller: unlike these three fields, its own failure has never
+    /// blocked `adopt` from succeeding (it is a `let _ =`-ignored
+    /// best-effort clear today), and folding it in here would change
+    /// that.
+    pub fn record_adopt(
+        &self,
+        app_instance_id: &str,
+        generation: u64,
+        app_master_did: &str,
+    ) -> Result<()> {
+        let conn = self.conn.lock().expect("supervisor store connection lock poisoned");
+        let now = chrono::Utc::now().timestamp();
+        let updated = conn.execute(
+            "UPDATE desired_state SET generation = ?1, retired = 0, app_master_did = ?2, \
+             updated_at = ?3 WHERE app_instance_id = ?4",
+            params![generation as i64, app_master_did, now, app_instance_id],
         )?;
         if updated == 0 {
             return Err(anyhow!("no desired state submitted for app instance '{app_instance_id}'"));
@@ -702,9 +760,11 @@ mod tests {
         assert!(err.to_string().contains("retired"), "{err}");
 
         // N3 (Slice A5b review round 2): `retire` is not a dead end --
-        // `un_retire` (called by `handle_adopt` on a successful claim) is
-        // the "run `supervisor adopt`" the refusal above names.
-        store.un_retire("inst-1").unwrap();
+        // `record_adopt` (called by `handle_adopt` on a successful claim,
+        // M05A A7 review finding 6) un-retires as part of its combined
+        // write, which is the "run `supervisor adopt`" the refusal above
+        // names.
+        store.record_adopt("inst-1", 0, "did:key:zAppMaster").unwrap();
         assert!(!store.get("inst-1").unwrap().unwrap().retired);
         store.submit("inst-1", "{\"v\":2}", "{}", "did:key:owner", 0).unwrap();
         assert_eq!(store.get("inst-1").unwrap().unwrap().plan_json, "{\"v\":2}");
@@ -859,5 +919,83 @@ mod tests {
         // both verbs mean "start over", so both call it.
         store.clear_remediation_for_instance("inst-1").unwrap();
         assert!(store.remediation_state("inst-1", "inst-1/backend").unwrap().is_none());
+    }
+
+    // ── M05A A7: the app master column (D-A7-2/D-A7-11) ─────────────────
+
+    /// D-A7-2: `CREATE TABLE IF NOT EXISTS` is a no-op on a database that
+    /// already has `desired_state`, so a column added only there never
+    /// reaches a pre-existing file -- every `desired_state` read then fails
+    /// at runtime with "no such column". Opens a store, drops the column
+    /// back out (simulating a pre-A7 database), reopens, and confirms the
+    /// idempotent `ALTER TABLE` puts it back.
+    #[test]
+    fn a_database_that_predates_the_app_master_column_gains_it_on_open() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let store = SupervisorStore::open(dir.path(), "supervisor.db").unwrap();
+            store.submit("inst-1", "{}", "{}", "did:key:owner", 0).unwrap();
+            let conn = store.conn.lock().unwrap();
+            conn.execute("ALTER TABLE desired_state DROP COLUMN app_master_did", [])
+                .expect("this rusqlite's bundled sqlite must support DROP COLUMN");
+        }
+        // Reopening must not fail, and the reader must see the column back,
+        // defaulted empty for the row that predates it.
+        let store = SupervisorStore::open(dir.path(), "supervisor.db").unwrap();
+        let state = store.get("inst-1").unwrap().unwrap();
+        assert_eq!(state.app_master_did, "");
+    }
+
+    /// D-A7-11: an `app-<instance>` vault key must never be forgotten --
+    /// the same standing constraint the milestone already carries for
+    /// member masters. Covers the two store-level paths that could
+    /// plausibly clear it: a later `submit` (whose `ON CONFLICT` update
+    /// list must leave `app_master_did` out) and `retire` (a `set_flag`
+    /// call touching only its own column). `release` needs no case here --
+    /// `SupervisorService::handle_release` never writes to `desired_state`
+    /// at all, so it cannot clear this column any more than it clears
+    /// anything else on the row.
+    #[test]
+    fn a_recorded_app_master_survives_a_resubmit_and_a_retire() {
+        let store = SupervisorStore::open_in_memory().unwrap();
+        store.submit("inst-1", "{\"v\":1}", "{}", "did:key:owner", 0).unwrap();
+        store.record_adopt("inst-1", 0, "did:key:zAppMaster").unwrap();
+        assert_eq!(store.get("inst-1").unwrap().unwrap().app_master_did, "did:key:zAppMaster");
+
+        // A later submit at the current generation replaces the plan but
+        // must leave the app master alone.
+        store.submit("inst-1", "{\"v\":2}", "{}", "did:key:owner", 0).unwrap();
+        let state = store.get("inst-1").unwrap().unwrap();
+        assert_eq!(state.plan_json, "{\"v\":2}");
+        assert_eq!(state.app_master_did, "did:key:zAppMaster");
+
+        store.retire("inst-1").unwrap();
+        assert_eq!(store.get("inst-1").unwrap().unwrap().app_master_did, "did:key:zAppMaster");
+    }
+
+    /// M05A A7 review finding 6: `handle_adopt`'s combined write -- the
+    /// generation, the un-retired flag, and the app master DID all land
+    /// in one statement, so there is no window where a crash could leave
+    /// a claimed generation with no recorded DID.
+    #[test]
+    fn record_adopt_writes_generation_retired_and_app_master_did_together() {
+        let store = SupervisorStore::open_in_memory().unwrap();
+        store.submit("inst-1", "{}", "{}", "did:key:owner", 0).unwrap();
+        store.retire("inst-1").unwrap();
+        assert!(store.get("inst-1").unwrap().unwrap().retired);
+
+        store.record_adopt("inst-1", 3, "did:key:zAppMaster").unwrap();
+
+        let state = store.get("inst-1").unwrap().unwrap();
+        assert_eq!(state.generation, 3);
+        assert!(!state.retired, "record_adopt must also un-retire, like un_retire did");
+        assert_eq!(state.app_master_did, "did:key:zAppMaster");
+    }
+
+    #[test]
+    fn record_adopt_fails_for_an_instance_with_no_desired_state() {
+        let store = SupervisorStore::open_in_memory().unwrap();
+        let err = store.record_adopt("never-submitted", 1, "did:key:zAppMaster").unwrap_err();
+        assert!(err.to_string().contains("no desired state"), "{err}");
     }
 }

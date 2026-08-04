@@ -7537,6 +7537,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "tracing-subscriber",
  "wit-parser 0.251.0",
 ]
 

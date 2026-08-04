@@ -23,7 +23,7 @@ interface supervisor {
         service-name: string,
         master-did: string,
         /// The name `export-master`/`import-master` take -- not
-        /// `service-name`: the vault keys on `member-<app-instance-id>-
+        /// `service-name`: the vault keys on `member-<app-instance-id>#
         /// <service-name>-<index>`, so an operator who backs up under the
         /// bare logical name gets "no master named '<service-name>' in
         /// this vault" (S1, Slice A5b review).
@@ -89,6 +89,13 @@ interface supervisor {
         /// write pass that reaches the member and raises `InstanceRevoked`
         /// -- a state this permanent should not depend on that.
         revoked-placements: list<string>,
+        /// The app instance's own master DID (M05A A7, ADR-0022 §1),
+        /// minted or resolved at `adopt`. Absent means "never adopted
+        /// under A7" -- a genuinely different fact from "adopted", the
+        /// same option-not-sentinel choice `last-reconciled-at` already
+        /// makes. Read from the stored row only, never the vault, so it
+        /// stays reportable while the vault is locked.
+        app-master-did: option<string>,
     }
 
     record alert {
@@ -104,9 +111,27 @@ interface supervisor {
     }
 
     submit:          func(s: submission)          -> result<submit-result, string>;
+
+    /// `adopt`'s result: the claimed generation, plus the app instance's
+    /// own master (M05A A7) -- an operator who has just caused this key to
+    /// exist is told its backup command in the same call, the same rule
+    /// `submit-result`'s `minted-master` rows already encode.
+    record adopt-result {
+        generation: u64,
+        app-master-did: string,
+        /// The name `export-master`/`import-master` take for this app
+        /// instance's own master -- `app-<app-instance-id>`.
+        vault-name: string,
+    }
+
     /// Mints the next generation: reads what the substrates report
-    /// holding and writes `held + 1`. The only minter.
-    adopt:           func(app-instance-id: string) -> result<u64, string>;
+    /// holding and writes `held + 1`. The only minter. Also resolves or
+    /// mints this app instance's own master (M05A A7, D-A7-1/D-A7-5) --
+    /// on *every* call, not only the first, so `adopt` after
+    /// `import-master` always agrees with whatever the vault now holds
+    /// rather than minting a second identity. Refuses outright, claiming
+    /// no generation, if the vault is locked.
+    adopt:           func(app-instance-id: string) -> result<adopt-result, string>;
     /// Hand the instance back to manual operation: clears the stamp on
     /// every substrate it is placed on. Does **not** undeploy.
     release:         func(app-instance-id: string) -> result<_, string>;
@@ -136,10 +161,16 @@ interface supervisor {
     /// replace, because the vault is encrypted and its KEK lives only in
     /// this process's memory.
     export-master: func(name: string) -> result<string, string>;
-    /// Adopt a master an operator already created (an A0-A4 deployment's
-    /// `<dir>/identities/member-*.key`, placed into `master_backup_dir`)
-    /// into the vault. Reads by name from that same directory; takes no
-    /// key material and no path.
+    /// Adopt a master already placed into `master_backup_dir` into the
+    /// vault -- either a member master an operator already created (an
+    /// A0-A4 deployment's `<dir>/identities/member-*.key`), or an app
+    /// instance's own master (M05A A7) carried over from another
+    /// supervisor by a prior `export-master`. Reads by name from that same
+    /// directory; takes no key material and no path. For an app master, a
+    /// handover's intended order is `import-master` before `adopt`:
+    /// adopting first mints a second app identity under the same name,
+    /// which a later `import-master`/`adopt` repairs but does not prevent
+    /// (D-A7-5).
     import-master: func(name: string) -> result<_, string>;
 
     /// Revoke one placed member's derived instance key. Two writes in one
