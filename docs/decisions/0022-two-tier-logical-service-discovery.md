@@ -1,6 +1,7 @@
 # ADR-0022: Two-Tier Logical Service Discovery
 
-**Status**: Proposed (2026-08-02). Depends on
+**Status**: Proposed (2026-08-02, amended 2026-08-04 — see the dated
+amendment note under §1). Depends on
 [ADR-0020](0020-stable-logical-service-identity.md) (member master DIDs, and
 §6's endpoint records published under them) and pairs with
 [ADR-0021](0021-binding-propagation-and-app-supervisor.md) (the supervisor,
@@ -53,7 +54,7 @@ An app instance gets a **master DID** as its network identity, minted at
 
 `app_instance_id` is unchanged. It stays the short human name, and stays
 embedded where it already is: vault names
-(`member-<app_instance_id>-<service_name>-<index>`,
+(`member-<app_instance_id>#<service_name>-<index>`,
 [keys.rs:261](../../crates/app_supervisor/src/keys.rs#L261)), alert topics
 (`supervisor/alerts/<app_instance_id>`,
 [service.rs:639](../../crates/app_supervisor/src/service.rs#L639)), and the
@@ -85,6 +86,37 @@ through the `export-master` / `import-master` verbs that already exist
 A second benefit, beyond addressing: an app-level DID is the natural subject
 for access grants. "Grant this caller access to app X" is stable, where a grant
 against each member DID changes on every rebalance.
+
+**Amendment (2026-08-04, after M05A Slice A7 implementation, S0 of this
+overlay).** Three facts this section did not carry, all recorded rather
+than changing the decision itself — see the
+[implementation plan](../planning/milestones/M05A-app-supervisor/slice-a7-implementation-plan.md)
+§0/§1 for the reasoning:
+
+- **The vault name actually chosen is `app-<app_instance_id>`, with one
+  variable segment, needing no separator guard.** Unlike the member-master
+  name below (which joins two variable-length segments and needed the `#`
+  boundary), the app master's name has exactly one variable segment that is
+  the whole remainder of the string — the map from instance id to name is
+  injective by construction — and its fixed `app-` prefix is disjoint from
+  `member-` at position 0, so no member name can ever equal an app name.
+  Neither argument depends on what `AppInstanceId`'s validator permits.
+- **The handover this section calls "a key move" needs an ordering rule,
+  which this ADR did not state.** The intended sequence on a new
+  supervisor is `submit`, `import-master`, `adopt`. Running `adopt` first
+  mints a *second* app identity under the same name, which ADR-0021 §4's
+  generation fence does not catch — that fence resolves two writers over
+  *one* record, and the wrong order produces two records that never meet.
+  A7 documents the order and makes `adopt` self-correcting (it
+  resolves-and-records on every call, so a later `import-master`/`adopt`
+  repairs the wrong order), rather than enforcing it — enforcement is
+  S1's, the moment a wrongly-minted DID has an external consumer.
+- **This section's own parenthetical vault-name form for a *member*
+  master, `member-<app_instance_id>-<service_name>-<index>`, was already
+  stale when this ADR was written** — M05A Slice A5e had replaced the `-`
+  boundary with `#` one day earlier, closing a collision between two
+  different (instance, service) pairs. Corrected above; A7 found and fixed
+  the same stale copy that had also survived into shipped WIT.
 
 ## 2. Tier 1 — the registry maps the app DID to its supervisor, generation-fenced
 

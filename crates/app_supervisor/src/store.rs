@@ -26,6 +26,11 @@ pub struct DesiredState {
     pub retired: bool,
     pub submitted_at: i64,
     pub updated_at: i64,
+    /// The app instance's own master DID (M05A A7, D-A7-2/D-A7-4), empty
+    /// until the instance's next `adopt` mints or resolves one -- the vault
+    /// cannot be enumerated and this instance appears in no plan, so this
+    /// column is the only index, not a cache of something else readable.
+    pub app_master_did: String,
 }
 
 /// One service's bounded-restart bookkeeping (§14 step 6, D-A5c-20).
@@ -88,7 +93,8 @@ impl SupervisorStore {
                 paused          INTEGER NOT NULL DEFAULT 0,
                 retired         INTEGER NOT NULL DEFAULT 0,
                 submitted_at    INTEGER NOT NULL,
-                updated_at      INTEGER NOT NULL
+                updated_at      INTEGER NOT NULL,
+                app_master_did  TEXT NOT NULL DEFAULT ''
              );
              -- M05A A5c D-A5c-4 (§19.3): one counter per *dependent
              -- service*, not per dependency -- every binding that service
@@ -154,6 +160,23 @@ impl SupervisorStore {
                 PRIMARY KEY (app_instance_id, logical_ref)
              );",
         )?;
+        // M05A A7 (D-A7-2): `desired_state` predates this column, so the
+        // `CREATE TABLE IF NOT EXISTS` above is a no-op on any database that
+        // already exists -- it never adds a column to a table already
+        // there. This `ALTER TABLE` is the one idempotent way to get the
+        // column onto a database that opened before it existed; not the
+        // version ladder AGENTS.md rules out, since there is no schema
+        // version to track. Same shape as `RegistryStore`'s own
+        // `manifest_hash` column (`crates/data_db/src/registry_store.rs`).
+        // "duplicate column name" is the expected outcome on every open
+        // after the first.
+        if let Err(err) = conn.execute(
+            "ALTER TABLE desired_state ADD COLUMN app_master_did TEXT NOT NULL DEFAULT ''",
+            [],
+        ) && !err.to_string().contains("duplicate column name")
+        {
+            return Err(err.into());
+        }
         Ok(())
     }
 
@@ -511,7 +534,7 @@ impl SupervisorStore {
         let conn = self.conn.lock().expect("supervisor store connection lock poisoned");
         conn.query_row(
             "SELECT app_instance_id, plan_json, inventory_json, owner_did, generation, paused, \
-             retired, submitted_at, updated_at
+             retired, submitted_at, updated_at, app_master_did
              FROM desired_state WHERE app_instance_id = ?1",
             params![app_instance_id],
             |row| {
@@ -525,6 +548,7 @@ impl SupervisorStore {
                     retired: row.get::<_, i64>(6)? != 0,
                     submitted_at: row.get(7)?,
                     updated_at: row.get(8)?,
+                    app_master_did: row.get(9)?,
                 })
             },
         )
@@ -538,7 +562,7 @@ impl SupervisorStore {
         let conn = self.conn.lock().expect("supervisor store connection lock poisoned");
         let mut stmt = conn.prepare(
             "SELECT app_instance_id, plan_json, inventory_json, owner_did, generation, paused, \
-             retired, submitted_at, updated_at
+             retired, submitted_at, updated_at, app_master_did
              FROM desired_state WHERE retired = 0 AND paused = 0 ORDER BY app_instance_id ASC",
         )?;
         let mut rows = stmt.query([])?;
@@ -554,6 +578,7 @@ impl SupervisorStore {
                 retired: row.get::<_, i64>(6)? != 0,
                 submitted_at: row.get(7)?,
                 updated_at: row.get(8)?,
+                app_master_did: row.get(9)?,
             });
         }
         Ok(out)
@@ -606,6 +631,26 @@ impl SupervisorStore {
         let updated = conn.execute(
             "UPDATE desired_state SET generation = ?1, updated_at = ?2 WHERE app_instance_id = ?3",
             params![generation as i64, now, app_instance_id],
+        )?;
+        if updated == 0 {
+            return Err(anyhow!("no desired state submitted for app instance '{app_instance_id}'"));
+        }
+        Ok(())
+    }
+
+    /// Records this instance's app master DID, resolved or minted by
+    /// `adopt` (M05A A7, D-A7-5) -- written on *every* successful `adopt`,
+    /// not only the one that mints, so the row always agrees with whatever
+    /// the vault currently holds under this instance's name. Same shape as
+    /// `set_generation`: one column plus `updated_at`, erroring when no row
+    /// matched.
+    pub fn set_app_master_did(&self, app_instance_id: &str, app_master_did: &str) -> Result<()> {
+        let conn = self.conn.lock().expect("supervisor store connection lock poisoned");
+        let now = chrono::Utc::now().timestamp();
+        let updated = conn.execute(
+            "UPDATE desired_state SET app_master_did = ?1, updated_at = ?2 WHERE app_instance_id \
+             = ?3",
+            params![app_master_did, now, app_instance_id],
         )?;
         if updated == 0 {
             return Err(anyhow!("no desired state submitted for app instance '{app_instance_id}'"));
@@ -859,5 +904,57 @@ mod tests {
         // both verbs mean "start over", so both call it.
         store.clear_remediation_for_instance("inst-1").unwrap();
         assert!(store.remediation_state("inst-1", "inst-1/backend").unwrap().is_none());
+    }
+
+    // ── M05A A7: the app master column (D-A7-2/D-A7-11) ─────────────────
+
+    /// D-A7-2: `CREATE TABLE IF NOT EXISTS` is a no-op on a database that
+    /// already has `desired_state`, so a column added only there never
+    /// reaches a pre-existing file -- every `desired_state` read then fails
+    /// at runtime with "no such column". Opens a store, drops the column
+    /// back out (simulating a pre-A7 database), reopens, and confirms the
+    /// idempotent `ALTER TABLE` puts it back.
+    #[test]
+    fn a_database_that_predates_the_app_master_column_gains_it_on_open() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let store = SupervisorStore::open(dir.path(), "supervisor.db").unwrap();
+            store.submit("inst-1", "{}", "{}", "did:key:owner", 0).unwrap();
+            let conn = store.conn.lock().unwrap();
+            conn.execute("ALTER TABLE desired_state DROP COLUMN app_master_did", [])
+                .expect("this rusqlite's bundled sqlite must support DROP COLUMN");
+        }
+        // Reopening must not fail, and the reader must see the column back,
+        // defaulted empty for the row that predates it.
+        let store = SupervisorStore::open(dir.path(), "supervisor.db").unwrap();
+        let state = store.get("inst-1").unwrap().unwrap();
+        assert_eq!(state.app_master_did, "");
+    }
+
+    /// D-A7-11: an `app-<instance>` vault key must never be forgotten --
+    /// the same standing constraint the milestone already carries for
+    /// member masters. Covers the two store-level paths that could
+    /// plausibly clear it: a later `submit` (whose `ON CONFLICT` update
+    /// list must leave `app_master_did` out) and `retire` (a `set_flag`
+    /// call touching only its own column). `release` needs no case here --
+    /// `SupervisorService::handle_release` never writes to `desired_state`
+    /// at all, so it cannot clear this column any more than it clears
+    /// anything else on the row.
+    #[test]
+    fn a_recorded_app_master_survives_a_resubmit_and_a_retire() {
+        let store = SupervisorStore::open_in_memory().unwrap();
+        store.submit("inst-1", "{\"v\":1}", "{}", "did:key:owner", 0).unwrap();
+        store.set_app_master_did("inst-1", "did:key:zAppMaster").unwrap();
+        assert_eq!(store.get("inst-1").unwrap().unwrap().app_master_did, "did:key:zAppMaster");
+
+        // A later submit at the current generation replaces the plan but
+        // must leave the app master alone.
+        store.submit("inst-1", "{\"v\":2}", "{}", "did:key:owner", 0).unwrap();
+        let state = store.get("inst-1").unwrap().unwrap();
+        assert_eq!(state.plan_json, "{\"v\":2}");
+        assert_eq!(state.app_master_did, "did:key:zAppMaster");
+
+        store.retire("inst-1").unwrap();
+        assert_eq!(store.get("inst-1").unwrap().unwrap().app_master_did, "did:key:zAppMaster");
     }
 }

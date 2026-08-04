@@ -606,7 +606,7 @@ supervisors are wanted. Nothing above the trait changes.
 [deferred-backlog.md](../../deferred-backlog.md) §8 *Node lifecycle & ops* so it
 is not remembered by accident.
 
-### A7 — App-instance master identity *(pulled forward, 2026-08-02)*
+### A7 — App-instance master identity *(pulled forward, 2026-08-02)* — **Complete (2026-08-04)**
 
 > **Numbered after A6 but not sequenced after it.** A7 depends only on A5b's
 > vault custody and may land before, after, or alongside A5d/A5e. A6 is the
@@ -642,6 +642,26 @@ changes on every membership change.
 `app_instance_id` is unchanged and stays the human name, in vault names, alert
 topics, and `LogicalServiceRef`'s display form — the same alias/DID split the
 substrate inventory already uses.
+
+Implementation plan:
+[slice-a7-implementation-plan.md](slice-a7-implementation-plan.md). Verification
+evidence: [status.md](status.md)'s A7 section.
+
+**Delivered as scoped.** `adopt` mints or resolves the app-instance master
+(`app-<app-instance-id>`, `MasterVault::get_or_mint` now taking a
+`MasterKind` so its mint warning names the right noun) before claiming any
+generation, and records the DID on the instance row after the claim
+succeeds — resolve-and-record on *every* call, not mint-once, so an
+`import-master`/`adopt` handover always leaves the row agreeing with the
+vault (D-A7-5). `instance-status` reports `app-master-did: option<string>`
+from the stored row alone, readable through a locked vault; `adopt`'s
+result is now a record (`generation`, `app-master-did`, `vault-name`) so an
+operator learns the backup command the moment the key exists, matching
+`submit`'s own `minted-master` rows. `export-master`/`import-master` carry
+it under exactly that name, with no signature change. Every exit-criteria
+bullet this slice owns is met — see §5 of the implementation plan and
+`status.md`'s A7 evidence section for the full test list and gate
+history.
 
 ---
 
@@ -828,10 +848,12 @@ Standard gates: `cargo +nightly fmt --all`, `cargo clippy --workspace
   through the `supervisor` interface — the read surface is a deliverable, not an
   implementation detail. **✅**, including the member dimension A5e adds to
   every field of it (D-A5e-2).
-- `[LFC-MGT]` (App Supervisor) and `[FND-IDT]` (stable service identity) rows
-  flip to Complete with evidence **once A7 has also landed** (§41 answer 1) —
-  not yet, since A5e alone does not close the milestone.
+- **✅** `[LFC-MGT]` (App Supervisor) and `[FND-IDT]` (stable service identity)
+  rows flip to Complete with evidence **once A7 has also landed** (§41 answer
+  1) — both A5e and A7 are now Complete, so the milestone closes; see
+  [traceability-matrix.md](../../traceability-matrix.md).
 - Slice A6 recorded as outstanding in `deferred-backlog.md` §8 *Node lifecycle &
   ops* with its pickup trigger — this milestone closes without it, deliberately.
-- An app instance carries a master DID minted at `adopt`, readable through
-  `status`, and movable through `export-master` / `import-master` (slice A7).
+- **✅** An app instance carries a master DID minted at `adopt`, readable
+  through `status`, and movable through `export-master` / `import-master`
+  (slice A7).

@@ -765,6 +765,57 @@ that same `master_backup_dir`, then ask the supervisor to adopt it by name.
 Neither verb ever carries key bytes in its request or response — only a
 name (in) or a path (out).
 
+##### Custody: the app instance also has a master of its own (M05A A7)
+
+Beside every member master, the vault also holds one key per **app
+instance** — its own master DID, distinct from any member's and from the
+supervisor node's own identity. It is minted (or, on every later `adopt`,
+resolved) the moment you `adopt` the instance, under the computable name
+`app-<app-instance-id>`:
+
+```bash
+roymctl --substrate <supervisor-node-did> supervisor adopt guild-instance-1
+# -> Adopted 'guild-instance-1' at generation 1.
+#   app master: did:key:... -- back it up with `roymctl supervisor export-master app-guild-instance-1`
+```
+
+`roymctl supervisor status` reports it too, once adopted:
+
+```bash
+roymctl --substrate <supervisor-node-did> supervisor status guild-instance-1
+# -> { ..., "app_master_did": "did:key:...", ... }
+```
+
+**It is not backed up automatically, exactly like a member master.**
+`export-master`/`import-master` move it by the same name `adopt` printed —
+neither verb changed shape for this: they already took a bare name, and
+`app-<app-instance-id>` is simply one more name they accept.
+
+> **An instance adopted before this slice gets its app master at its
+> *next* `adopt`, and nowhere else** — not on `submit`, `force-reconcile`,
+> a loop pass, or `status`. Until then, `status` reports `app_master_did`
+> absent, the same way `member_master_name`'s A5e boundary change reads on
+> an instance that predates it: pre-release, no migration, and the visible
+> cost is one generation bump, which is what `adopt` already means.
+
+**Handover order: `import-master` before `adopt`.** Moving an app instance
+to a new supervisor follows the same sequence as any other handover
+(`submit`, `import-master`, `adopt`), but for the app master the order is
+load-bearing. Running `adopt` *before* `import-master` mints a **second**
+app identity under the same name — the generation fence does not catch
+this, since it fences two writers over *one* record, and a wrong-order
+adopt produces two records that never meet. Re-running `adopt` after the
+correct `import-master` repairs it: `adopt` always resolves-and-records
+from whatever the vault currently holds, so the row ends up agreeing with
+the vault either way — just later than necessary if the order was wrong.
+
+**What this DID does not do yet.** Nothing publishes it to a registry,
+nothing resolves it to an address, and no caller outside this supervisor
+can use it for anything — that is the Logical Service Discovery Overlay's
+slice S1, outside this milestone. What lands here is the identity itself:
+where it lives, how it moves, and that it survives a supervisor handover
+unchanged.
+
 ##### The grant a supervisor needs on every substrate it manages
 
 The supervisor's own credential against each managed substrate travels
