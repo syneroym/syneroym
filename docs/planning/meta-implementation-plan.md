@@ -455,6 +455,15 @@ phase per the 2026-07-16 resequencing.
 ## Committed Work: Logical Service Discovery Overlay (2026-08-02)
 
 **Design of record:** [ADR-0022](../decisions/0022-two-tier-logical-service-discovery.md).
+**Promoted to a milestone directory on 2026-08-04:
+[M05C-logical-discovery-overlay](./milestones/M05C-logical-discovery-overlay/task.md)**,
+which carries the `task.md`, the slice plans, and the `§0` findings passes. This
+section keeps the build-order reasoning below — that is meta-plan work — and the
+milestone doc carries everything else. Two findings from that planning pass
+correct text on this page and are noted in place: the record cannot be
+`EndpointInfo` "unchanged" *and* carry a generation, and "generation-fenced" in
+the slice table below overstates what the generation does.
+
 This is the build-out of the 2026-07-16 resequencing's item 4 spike — "the
 orchestrator's shard-discovery / data-routing design question" — whose design
 half is now discharged. Recorded here, not in
@@ -534,7 +543,7 @@ M05A (slice A7 = S0)  →  S1 → S2 → S3   ─┐
 | # | Scope | Pickup trigger |
 |---|---|---|
 | **S0** | App-instance master DID: minted at `adopt`, held in the supervisor vault, surfaced on `status`, exportable/importable for handover. Identity and custody only — no registry publication. | **Landed as M05A slice A7, Complete 2026-08-04.** `docs/planning/milestones/M05A-app-supervisor/status.md`'s A7 section carries the evidence. |
-| **S1** | Tier 1: the app-DID registry record, generation-fenced, published and refreshed by the supervisor. Manifest surface for `ShardingStrategy` (absorbed backlog row). | M05A slice A7 (S0) Complete — **cleared, S1 can start.** S1 inherits an ordering constraint from A7, not just a key: `import-master` must run before `adopt` on a handover, or `adopt` mints a *second* app identity under the same name that the generation fence cannot catch (two DIDs, not one record two writers contend over). A7 documents the order and makes `adopt` self-correcting; S1 is where publishing under the wrong identity first has an external consequence, so whoever picks this slice up should read A7's plan §0.5 before writing the publisher. |
+| **S1** | Tier 1: the app-DID registry record, published and refreshed by the supervisor, carrying a `generation` a **reader** compares. Manifest surface for `ShardingStrategy` (absorbed backlog row). *(Corrected 2026-08-04: this row said "generation-fenced". ADR-0022 §2 is careful and this was not — admission stays last-writer-wins; the generation makes the split-brain **visible**, not impossible. Prevention would need registry compare-and-set, which [ADR-0023](../decisions/0023-durable-async-primitives.md) §6 declines to build. Also: §2 says the record reuses `EndpointInfo` "unchanged" and that it carries a generation; `EndpointInfo` has no such field, so S1 adds one — see [M05C plan](./milestones/M05C-logical-discovery-overlay/implementation-plan.md) §0.1.)* | M05A slice A7 (S0) Complete — the design gate is **cleared**. **Sequenced after M05B (decided 2026-08-04):** the two streams are design-independent but edit the same four files, so M05B runs to completion first — see [M05C plan](./milestones/M05C-logical-discovery-overlay/implementation-plan.md) §2. S1 inherits an ordering constraint from A7, not just a key: `import-master` must run before `adopt` on a handover, or `adopt` mints a *second* app identity under the same name that the generation fence cannot catch (two DIDs, not one record two writers contend over). A7 documents the order and makes `adopt` self-correcting; S1 is where publishing under the wrong identity first has an external consequence, so whoever picks this slice up should read A7's plan §0.5 before writing the publisher. |
 | **S2** | Tier 2: the signed topology document, the supervisor `resolve` RPC, and the client-side verify/cache path feeding `LogicalResolver::register`. Ships the `epoch` field unenforced. | S1 Complete. |
 | **S3** | Gateway hostname scheme (`-a…-s…-i…`) plus the routing-key request header; coordinator relay of the document in the WebRTC bootstrap page. | S2 Complete. |
 | **S4** | Cross-app `Bind`: manifest surface, UCAN-scoped per-service exposure declared in the submitted plan, and replacing `prepare_binding`'s intra-app refusal with an authorization check (absorbed backlog row). | S2 Complete **and** a first real cross-app dependency exists. |
@@ -566,17 +575,29 @@ and the reason would otherwise be lost.
 - `[FND-IAM]` `ControllerAgreement` creation tool (closes the M04A B7b gate)
 
 **Implementation Approach:**
-1. **Async Primitives:** Implement the Outbox queue, cron lease mechanisms, Dead Letter Queue (DLQ), long-running task restart rules, and compensating transactions (sagas).
+1. **Async Primitives:** Implement the Outbox queue, cron lease mechanisms, Dead Letter Queue (DLQ), long-running task restart rules, and compensating transactions (sagas). **Split out 2026-08-04 into its own milestone directory, [M05B-async-primitives](./milestones/M05B-async-primitives/task.md)** — the same treatment item 2 got, and for the same reason: this is five distinct mechanisms, not one, and it now has a design of record ([ADR-0023](../decisions/0023-durable-async-primitives.md)). **Four of the five are built there (slices B1–B4); long-running-task restart rules are deferred** to this milestone's final phase alongside items 2–4 — the only mechanism with no consumer and no near-term consumer, and the one needing genuinely new machinery, since `dispatch_epoch_timeout_secs` bounds every guest entry point at 5 seconds. Tracked in [deferred-backlog.md](./deferred-backlog.md) §8. Milestone numbering and labels are unchanged; M5 itself still has no directory.
+
+   **Build order within M5's front-loaded halves (decided 2026-08-04):** M05B first, then [M05C](./milestones/M05C-logical-discovery-overlay/task.md) (the discovery overlay). The two are design-independent — the overlay section below says so and is right — but they edit the same four files, so sequencing removes the collision instead of managing it. It also matches the priority that section already states on merit.
    > **Landing this fires a pickup trigger.** The App Supervisor ships its
    > binding propagation with best-effort synchronous delivery behind a narrow
    > "apply this action to that substrate" trait, deliberately, because durable
    > delivery needs the Outbox/DLQ built here
    > ([ADR-0021](../decisions/0021-binding-propagation-and-app-supervisor.md) §5).
-   > When this item completes, swap that trait's implementation and add the
-   > single-writer cron lease — tracked in
+   > When this item completes, swap that trait's implementation — tracked in
    > [deferred-backlog.md](./deferred-backlog.md) §8 *Node lifecycle & ops*.
    > Recorded here rather than only in the supervisor's own milestone doc, so
    > the trigger is visible from the side that fires it.
+   >
+   > **Amended 2026-08-04 — "and add the single-writer cron lease" is
+   > withdrawn.** [ADR-0023](../decisions/0023-durable-async-primitives.md) §6
+   > finds there is nothing for such a lease to arbitrate in this topology:
+   > registry writes are partitioned by key ownership, so distinct principals
+   > never contend, and inside an app instance the supervisor is already the
+   > single writer at an operator-minted generation
+   > ([ADR-0021](../decisions/0021-binding-propagation-and-app-supervisor.md) §4).
+   > What the specification calls a lease reduces to target selection plus a
+   > local overlap guard. Supervisor HA is unaffected by this and stays with M7,
+   > where replicated supervisor state lives.
 2. **App Supervisor & Query Orchestrator:** Continuous reconciliation of desired state across substrates — **split out and mostly resequenced ahead of item 1**; see the *App Supervisor Split* amendment above and [M05A-app-supervisor](./milestones/M05A-app-supervisor/task.md). What remains here is the half that genuinely needs item 1's primitives (durable push delivery, retry against offline substrates, DLQ, single-writer lease). Separately, introduce foundational DataFusion logical planning and Substrait serialization for federated queries. This includes:
    - Defining the DataFusion `TableProvider` interface for Syneroym Data Services.
    - Defining the plan-fragment serialization contract (Substrait schema version pinning).

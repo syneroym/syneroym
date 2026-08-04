@@ -606,6 +606,22 @@ supervisors are wanted. Nothing above the trait changes.
 [deferred-backlog.md](../../deferred-backlog.md) §8 *Node lifecycle & ops* so it
 is not remembered by accident.
 
+> **Planned 2026-08-04 as slice B1 of
+> [M05B-async-primitives](../M05B-async-primitives/task.md)** — this slice is
+> executed there, against
+> [ADR-0023](../../../decisions/0023-durable-async-primitives.md), rather than
+> as a late addition to this milestone, so the primitive lands with its first
+> real consumer. Two corrections to the scope note above surfaced in that
+> planning pass, both in
+> M05B's plans: "nothing above the trait changes" holds only under
+> try-then-queue
+> ([slice-b1 plan](../M05B-async-primitives/slice-b1-implementation-plan.md)
+> §0.2), and the single-writer cron lease is withdrawn rather than built,
+> because there is nothing for it to arbitrate here
+> ([milestone plan](../M05B-async-primitives/implementation-plan.md) §0.4,
+> ADR-0023 §6). **This milestone's
+> exit criteria are unaffected and stay closed** — A6 was always outside them.
+
 ### A7 — App-instance master identity *(pulled forward, 2026-08-02)* — **Complete (2026-08-04)**
 
 > **Numbered after A6 but not sequenced after it.** A7 depends only on A5b's
