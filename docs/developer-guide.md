@@ -737,9 +737,24 @@ A member master minted this way is **not backed up automatically**. The
 moment `submit` mints one, it prints the DID and the export command:
 
 ```bash
-roymctl --substrate <supervisor-node-did> supervisor export-master member-guild-instance-1-frontend-0
-# -> Wrote master 'member-guild-instance-1-frontend-0' to <supervisor's app_data_dir>/master-backups/member-guild-instance-1-frontend-0.key
+roymctl --substrate <supervisor-node-did> supervisor export-master member-guild-instance-1#frontend-0
+# -> Wrote master 'member-guild-instance-1#frontend-0' to <supervisor's app_data_dir>/master-backups/member-guild-instance-1#frontend-0.key
 ```
+
+> **The vault-key name changed shape in M05A Slice A5e.** Before A5e, a
+> member master's computable name was `member-<app-instance-id>-<service-
+> name>-<index>`; A5e changed the `app-instance-id`/`service-name` boundary
+> to `#` (`member-<app-instance-id>#<service-name>-<index>`) to close a
+> collision between two different (instance, service) pairs that could
+> otherwise stem to the identical name. `get_or_mint` finds nothing under
+> the new name for an instance deployed before this change, so its **next
+> submit re-identifies every member with a fresh master DID** rather than
+> failing — the old master, its anchor, and its `revoke-instance` rows are
+> left behind, orphaned. Pre-release policy accepts this the same way it
+> accepts every other in-place schema change (no migration, no compat
+> shim); if you have a real deployment predating A5e, back up and
+> re-`import-master` each member under its new name (or just accept the
+> re-identification) before its next submit.
 
 That path is on the **supervisor's own host** — collecting the file from
 there (a mounted volume, a backup agent, `scp`) is the operator's own
@@ -838,6 +853,78 @@ until the instance is adopted again. `force-reconcile` re-runs the
 mint/certify/apply pipeline against whatever is currently stored — the same
 work the resident loop itself does when the instance's plan changes since
 the last landed one, run immediately rather than waiting for the next tick.
+
+##### Scaling a service (`replicas`)
+
+```toml
+[services.backend]
+service_type = "wasm"
+source = "backend.wasm"
+replicas = 2
+```
+
+`replicas` (default `1`) tells the compiler to emit N members of that
+service instead of one, each with its own master DID minted through the
+same custody path as an unscaled service. Above `1`, the compiled topology
+mode becomes `Redundant`: an unkeyed call from another service round-robins
+across the members, and a keyed call (a WASM guest passing a routing key)
+uses rendezvous hashing so the same key keeps landing on the same member.
+`Sharded` mode is not reachable from a manifest yet — it needs a
+`ShardingStrategy` surface a later slice adds.
+
+A member is a full peer for every other supervisor mechanic: its own
+placement, its own certificate lifecycle, its own restart budget, and its
+own row on `supervisor status` (`<app-instance-id>/<service-name>#<index>` —
+the `#<index>` suffix is what distinguishes member 1 from member 0 on every
+read surface, including the argument `supervisor revoke-instance` takes).
+Scaling a service that other services depend on is a **binding push, not a
+redeploy**: a resubmit that only changes which member DIDs a dependency
+resolves to reaches every dependent member through the same
+`write-bindings` path A5c built, with no reinstall and no artifact
+re-sent — `roymctl supervisor status`'s `bindings` array shows written vs.
+observed epoch converging per dependent member.
+
+**What `replicas` does not do.** All N members of a scaled service still
+share one placement (`ServiceSpec.placement` is a single selector), so a
+scale-out does not survive losing the node it is placed on — that needs a
+placement-selector design a later slice will add, tracked in the deferred
+backlog. And **each member is its own `service_id` and therefore its own
+database** (`syneroym-data-db` opens one SQLite file per `service_id`):
+`replicas` is for **stateless members only**, until M7's state replication
+lands. The compiler refuses `replicas > 1` on a service that also declares
+a `schema` (the manifest's own marker for "this service uses the structured
+data layer"), naming M7 as the reason the refusal will relax. It cannot see
+a service that uses the data layer without declaring a `schema` — that
+residual case is on the operator to avoid; declaring it whenever a service
+does use structured data is what makes the refusal actually catch this.
+Above the cap of 16 members, `replicas` is refused outright at manifest
+validation, before anything is deployed.
+
+**Convergence, measured.** Two different numbers answer "how long until a
+scale-out is actually being called":
+
+- A `submit`-driven membership change applies in-call: the clock starts
+  when the RPC is received, and stops when every reachable dependent
+  member's `write-bindings` call has returned `Applied`/`NoOp`. Measured
+  against a fake substrate answering immediately, this lands in
+  microseconds — the write itself, not a poll.
+- A change the resident loop discovers on its own (nothing resubmitted)
+  waits up to one `poll_interval_secs` (default 30s) before the first push
+  is even attempted, since that is when the loop's own diff next runs.
+
+Both are inside ADR-0021 §6's 5-second budget for the first clause
+(reachable dependents); the second clause — an unreachable dependent
+converging within one poll interval of coming back — is bounded by
+`poll_interval_secs` and, until A6 ships durable delivery, by the absence
+of an outbox to hold the push in until then. Neither miss implicates the
+push model itself, so §6's redesign trigger has not fired; see ADR-0021's
+own §6 amendment and ADR-0022 §11, which already draws this line for
+callers outside the app instance.
+
+`roymctl supervisor status`'s own `bindings` array is a **third**, slower
+number: it reflects what the last health poll observed, so it lags a real
+push by up to `poll_interval_secs` even after that push has already landed
+-- the operator-facing confirmation, not the write's own latency.
 
 ##### Alerts over MQTT
 

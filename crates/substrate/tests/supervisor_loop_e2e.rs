@@ -250,6 +250,7 @@ fn two_service_manifest() -> SynAppManifest {
             },
             depends_on: vec![],
             placement: Some(PlacementSelector::Substrate(SubstrateAlias::new(MANAGED_A_ALIAS))),
+            replicas: 1,
         },
     );
     services.insert(
@@ -271,6 +272,7 @@ fn two_service_manifest() -> SynAppManifest {
             },
             depends_on: vec![],
             placement: Some(PlacementSelector::Substrate(SubstrateAlias::new(MANAGED_B_ALIAS))),
+            replicas: 1,
         },
     );
     SynAppManifest {
@@ -442,7 +444,7 @@ async fn a_partial_deploy_is_degraded_and_its_failed_service_is_retried_without_
         let services =
             status.result.get("services").and_then(|s| s.as_array()).cloned().unwrap_or_default();
         let state = status.result.get("state").and_then(|v| v.as_str()).unwrap_or("");
-        if signal_of(&services, "a5c-loop-inst/svc-a") == Some("unknown") && state == "Degraded" {
+        if signal_of(&services, "a5c-loop-inst/svc-a#0") == Some("unknown") && state == "Degraded" {
             break;
         }
         assert!(
@@ -460,7 +462,7 @@ async fn a_partial_deploy_is_degraded_and_its_failed_service_is_retried_without_
         .expect("status failed");
     let services =
         status.result.get("services").and_then(|s| s.as_array()).cloned().unwrap_or_default();
-    assert_eq!(signal_of(&services, "a5c-loop-inst/svc-a"), Some("unknown"), "{services:?}");
+    assert_eq!(signal_of(&services, "a5c-loop-inst/svc-a#0"), Some("unknown"), "{services:?}");
 
     // Managed B comes back, same identity -- the loop's next pass must
     // retry only the failed service.
@@ -494,8 +496,8 @@ async fn a_partial_deploy_is_degraded_and_its_failed_service_is_retried_without_
         let services =
             status.result.get("services").and_then(|s| s.as_array()).cloned().unwrap_or_default();
         let state = status.result.get("state").and_then(|v| v.as_str()).unwrap_or("");
-        if signal_of(&services, "a5c-loop-inst/svc-a") == Some("unknown")
-            && signal_of(&services, "a5c-loop-inst/svc-b") == Some("unknown")
+        if signal_of(&services, "a5c-loop-inst/svc-a#0") == Some("unknown")
+            && signal_of(&services, "a5c-loop-inst/svc-b#0") == Some("unknown")
             && state == "Active"
         {
             break;

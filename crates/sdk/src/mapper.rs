@@ -6,8 +6,8 @@ use std::{
 use syneroym_app_orchestration::{
     DEFAULT_BINDING_CACHE_TTL_MS,
     models::{
-        DeploymentPlan, DocumentRef, HealthCheck, LogicalServiceName, LogicalServiceRef,
-        PlannedService, RotationPolicy, ServiceId, ServiceType, TopologyMode,
+        DeploymentPlan, DocumentRef, HealthCheck, LogicalServiceName, MemberRef, PlannedService,
+        RotationPolicy, ServiceId, ServiceType, TopologyMode,
     },
 };
 use syneroym_core::{deploy_docs, util};
@@ -126,6 +126,10 @@ fn map_health_check(check: &HealthCheck) -> WitHealthCheck {
 /// `PlannedService.substrate` is not mapped onto the wire: a substrate has no
 /// use for the placement of services it is not hosting, and publishing it
 /// would hand every node a partial topology map of the app for nothing.
+///
+/// `binding_epochs` is keyed by `MemberRef`, not `LogicalServiceRef` (M05A
+/// A5e, D-A5e-2): the epoch belongs to the dependent *member*, since each
+/// member holds its own `service_bindings` row on the substrate.
 pub fn map_deployment_plan_to_wit(
     plan: &DeploymentPlan,
     services: &[&PlannedService],
@@ -133,7 +137,7 @@ pub fn map_deployment_plan_to_wit(
     registry_certificates: &BTreeMap<ServiceId, String>,
     emit_bindings: bool,
     generation: u64,
-    binding_epochs: &BTreeMap<LogicalServiceRef, u64>,
+    binding_epochs: &BTreeMap<MemberRef, u64>,
 ) -> anyhow::Result<WitDeploymentPlan> {
     let plan_instance_id = plan.app_instance_id.to_string();
     // `mode` belongs to the *target* of a dependency, not the dependent --
@@ -322,7 +326,7 @@ pub fn map_deployment_plan_to_wit(
                         // service's bindings. `0` (an absent entry) means
                         // "no supervisor has written here", which is also
                         // what every caller through A5b still means by it.
-                        epoch: binding_epochs.get(&svc.logical_ref).copied().unwrap_or(0),
+                        epoch: binding_epochs.get(&svc.member_ref()).copied().unwrap_or(0),
                         cache_ttl_ms: DEFAULT_BINDING_CACHE_TTL_MS,
                     })
                     .collect()
@@ -400,6 +404,7 @@ mod tests {
                 config,
                 resolved_dependencies: BTreeMap::new(),
                 topology_mode: TopologyMode::Singleton,
+                member_index: 0,
             }],
         }
     }
@@ -689,6 +694,7 @@ mod tests {
                     config: base_config(),
                     resolved_dependencies: BTreeMap::new(),
                     topology_mode: TopologyMode::Redundant,
+                    member_index: 0,
                 },
                 PlannedService {
                     service_id: ServiceId::new("did:key:hFrontend"),
@@ -703,6 +709,7 @@ mod tests {
                         ],
                     )]),
                     topology_mode: TopologyMode::Singleton,
+                    member_index: 0,
                 },
             ],
         }
@@ -775,13 +782,13 @@ mod tests {
     }
 
     /// M05A A5c §19.3/D-A5c-4: the epoch is keyed by the *dependent*
-    /// service's own logical ref, not by the dependency name -- frontend's
-    /// one entry in the map must land on every one of frontend's bindings.
+    /// member's own ref, not by the dependency name -- frontend's one entry
+    /// in the map must land on every one of frontend's bindings.
     #[test]
     fn a_plan_mapped_at_a_nonzero_epoch_emits_that_epoch_on_every_binding() {
         let plan = plan_with_a_dependency();
-        let frontend_ref = plan.services[1].logical_ref.clone();
-        let epochs = BTreeMap::from([(frontend_ref, 7u64)]);
+        let frontend_member_ref = plan.services[1].member_ref();
+        let epochs = BTreeMap::from([(frontend_member_ref, 7u64)]);
 
         let all: Vec<&PlannedService> = plan.services.iter().collect();
         let wit_plan = map_deployment_plan_to_wit(

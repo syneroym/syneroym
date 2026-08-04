@@ -16,7 +16,7 @@ use std::{
 use anyhow::Result;
 use syneroym_app_orchestration::{
     AlertKind, AlertStore,
-    models::{AppInstanceId, LogicalServiceRef, SubstrateAlias},
+    models::{AppInstanceId, LogicalServiceRef, MemberRef, SubstrateAlias},
 };
 use syneroym_identity::delegation::{is_expired_parts, is_near_expiry_parts};
 
@@ -51,6 +51,11 @@ pub struct ExpectedService {
     pub logical_ref: LogicalServiceRef,
     pub service_id: String,
     pub substrate_did: String,
+    /// This member's ordinal within its logical service (M05A A5e,
+    /// D-A5e-17). The caller already holds the `PlannedService` at every
+    /// construction site, so this is a plain `u32`, never an `Option` --
+    /// there is no site that would have to invent an absent value.
+    pub member_index: u32,
 }
 
 /// The three signals `task.md` requires stay distinct, plus the two states
@@ -99,6 +104,23 @@ pub struct ServiceHealth {
     /// unreachable substrate, an untargeted one, or a service the substrate
     /// has no record of (M05A A5c §19.4) -- rather than fabricating one.
     pub binding_epochs: Vec<(String, u64)>,
+    /// This member's ordinal, copied straight through from the
+    /// `ExpectedService` the caller resolved (M05A A5e, D-A5e-17) -- the
+    /// `service_id -> member_index` join every health-derived alert clear
+    /// and restart-attempt site needs, derived once here rather than
+    /// re-derived at each of those sites.
+    pub member_index: u32,
+}
+
+impl ServiceHealth {
+    /// This member's identity as a managed unit (M05A A5e, D-A5e-2/D-A5e-17)
+    /// -- the key every per-member alert clear and restart-attempt site
+    /// must use instead of the bare `logical_ref`, now that two members of
+    /// one logical service can report independently.
+    #[must_use]
+    pub fn member_ref(&self) -> MemberRef {
+        MemberRef { logical_ref: self.logical_ref.clone(), index: self.member_index }
+    }
 }
 
 /// Why a substrate produced no facts and no per-service answer -- distinct
@@ -197,6 +219,7 @@ pub async fn poll_once(
                     instance_certificate_issued_at: None,
                     instance_certificate_expires_at: None,
                     binding_epochs: Vec::new(),
+                    member_index: s.member_index,
                 });
             }
             continue;
@@ -234,6 +257,7 @@ pub async fn poll_once(
                         instance_certificate_issued_at: None,
                         instance_certificate_expires_at: None,
                         binding_epochs: Vec::new(),
+                        member_index: s.member_index,
                     });
                 }
             }
@@ -259,6 +283,7 @@ pub async fn poll_once(
                             instance_certificate_issued_at: None,
                             instance_certificate_expires_at: None,
                             binding_epochs: Vec::new(),
+                            member_index: s.member_index,
                         });
                         continue;
                     };
@@ -289,6 +314,7 @@ pub async fn poll_once(
                         instance_certificate_issued_at: st.instance_certificate_issued_at,
                         instance_certificate_expires_at: st.instance_certificate_expires_at,
                         binding_epochs: st.binding_epochs.clone(),
+                        member_index: s.member_index,
                     });
                 }
             }
@@ -304,6 +330,7 @@ pub async fn poll_once(
             signal: Signal::NotDeployed,
             instance_certificate_issued_at: None,
             instance_certificate_expires_at: None,
+            member_index: s.member_index,
             binding_epochs: Vec::new(),
         });
     }
@@ -392,7 +419,7 @@ pub fn record_report(
     }
 
     for svc in &report.services {
-        let l_ref = svc.logical_ref.to_string();
+        let l_ref = svc.member_ref().to_string();
         // Exactly one of the two service-level kinds can be active at a
         // time; the other is cleared on every pass, so a service that moves
         // from "not running" to "probe failing" does not leave a stale
@@ -488,7 +515,7 @@ pub fn record_report(
     let live_services: HashSet<(String, String)> = report
         .services
         .iter()
-        .map(|s| (s.logical_ref.to_string(), s.substrate_did.clone()))
+        .map(|s| (s.member_ref().to_string(), s.substrate_did.clone()))
         .chain(extra_live_pairs.iter().cloned())
         .collect();
     let live_substrates: HashSet<&str> =
@@ -548,6 +575,7 @@ mod tests {
             logical_ref: l_ref(name),
             service_id: service_id.to_string(),
             substrate_did: did.to_string(),
+            member_index: 0,
         }
     }
 
@@ -695,6 +723,7 @@ mod tests {
             logical_ref: l_ref("backend"),
             service_id: String::new(),
             substrate_did: String::new(),
+            member_index: 0,
         }];
 
         let report = poll_once(&targets, &expected).await;
@@ -718,6 +747,7 @@ mod tests {
                 instance_certificate_issued_at: None,
                 instance_certificate_expires_at: None,
                 binding_epochs: Vec::new(),
+                member_index: 0,
             }],
         };
         record_report(&alerts, &instance_id, &not_running, 1000, &[], CertAlertPolicy::Reminder)
@@ -736,6 +766,7 @@ mod tests {
                 instance_certificate_issued_at: None,
                 instance_certificate_expires_at: None,
                 binding_epochs: Vec::new(),
+                member_index: 0,
             }],
         };
         record_report(&alerts, &instance_id, &probe_failing, 1001, &[], CertAlertPolicy::Reminder)
@@ -767,6 +798,7 @@ mod tests {
                     instance_certificate_issued_at: None,
                     instance_certificate_expires_at: None,
                     binding_epochs: Vec::new(),
+                    member_index: 0,
                 },
                 ServiceHealth {
                     logical_ref: l_ref("backend2"),
@@ -777,6 +809,7 @@ mod tests {
                     instance_certificate_issued_at: None,
                     instance_certificate_expires_at: None,
                     binding_epochs: Vec::new(),
+                    member_index: 0,
                 },
             ],
         };
@@ -814,6 +847,7 @@ mod tests {
                 instance_certificate_issued_at: None,
                 instance_certificate_expires_at: None,
                 binding_epochs: Vec::new(),
+                member_index: 0,
             }],
         };
         let opened =
@@ -843,6 +877,7 @@ mod tests {
                 instance_certificate_issued_at: None,
                 instance_certificate_expires_at: None,
                 binding_epochs: Vec::new(),
+                member_index: 0,
             }],
         };
         record_report(&alerts, &instance_id, &failing, 1000, &[], CertAlertPolicy::Reminder)
@@ -874,6 +909,7 @@ mod tests {
                 instance_certificate_issued_at: Some(now),
                 instance_certificate_expires_at: Some(now + 24 * 3600),
                 binding_epochs: Vec::new(),
+                member_index: 0,
             }],
         };
         record_report(&alerts, &instance_id, &report, now, &[], CertAlertPolicy::Reminder).unwrap();
@@ -901,12 +937,13 @@ mod tests {
                 instance_certificate_issued_at: Some(now - 25 * 3600),
                 instance_certificate_expires_at: Some(now - 3600),
                 binding_epochs: Vec::new(),
+                member_index: 0,
             }],
         };
         let opened =
             record_report(&alerts, &instance_id, &report, now, &[], CertAlertPolicy::Reminder)
                 .unwrap();
-        assert_eq!(opened, vec![(AlertKind::CertificateExpired, l_ref("backend").to_string())]);
+        assert_eq!(opened, vec![(AlertKind::CertificateExpired, "inst-1/backend#0".to_string())]);
         let active = alerts.active(&instance_id).unwrap();
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].kind, AlertKind::CertificateExpired);
@@ -939,6 +976,7 @@ mod tests {
                 instance_certificate_issued_at: Some(now - 21_600),
                 instance_certificate_expires_at: Some(now + 1_440),
                 binding_epochs: Vec::new(),
+                member_index: 0,
             }],
         };
         let opened = record_report(
@@ -985,7 +1023,7 @@ mod tests {
         alerts
             .raise(
                 &instance_id,
-                Some("inst-1/backend"),
+                Some("inst-1/backend#0"),
                 None,
                 "did:key:b",
                 AlertKind::CertificateNearExpiry,
@@ -1004,6 +1042,7 @@ mod tests {
                 instance_certificate_issued_at: Some(now),
                 instance_certificate_expires_at: Some(now + 14_400),
                 binding_epochs: Vec::new(),
+                member_index: 0,
             }],
         };
         record_report(&alerts, &instance_id, &fresh, now, &[], CertAlertPolicy::ManagedElsewhere)

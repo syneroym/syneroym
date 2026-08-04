@@ -5158,3 +5158,1374 @@ its three sub-checks `1096-1103`/`1104-1118`/`1119-1121`, the
 **Test count: 40 → 42.** New config fields this round:
 `max_renewals_per_pass` (5). Numbers pinned this round:
 `master_anchor_refresh_interval_secs` = 12h.
+
+---
+
+# Part VI — A5e: scale-out, cross-app, budgets
+
+**Status:** 🚧 Approved (2026-08-03), implementation starting. §38's three
+questions were put to the requester and answered — see §41. This is the `§0`
+findings pass **D-A5-2** requires before A5e is handed to an implementer, and
+it is the last one this milestone needs. §16 planned A5e to a seven-item
+sketch —
+`replicas`, member-index generalization, a cross-app `Bind` surface, the
+ADR-0021 §7 probe, the convergence budget, the no-network-hop bench, and the
+reference-scenario e2e — and `task.md`'s A5e bullet restates the same seven in
+one sentence. Everything below is what those two, plus A5d's shipped code,
+leave open, understate, or state in a way the actual tree does not support.
+
+Same discipline as A0 §6 / A1 §6 / A2 §0 / A3 §0 / A4 §0 / P0 §0 / A5 §0 / A5c
+§19 / A5d §26.
+
+**Headline.** Twenty-two findings — sixteen in this pass, three added by the
+first 2026-08-03 review (§39), two by the second (§40), one by the third
+(§41) — **six of which change what A5e has to build** and **nine of which are
+blocking**. Unlike A5c and A5d, the unifying insight here
+does not add a missing piece; it renames the whole slice. §16 reads `replicas`
+as a compiler feature: teach `compile` to emit N members and adjust two call
+sites that hardcode index `0`. It is not a compiler feature. **The
+`LogicalServiceRef` is the primary key of essentially every durable, reported,
+and wire-level fact this milestone has built** — the deployment journal's
+action rows, `apply_plan`'s resume check, `ApplyReport`,
+`Reconciler::diff_plans`, five of the six `SupervisorStore` tables, the alert
+store's uniqueness index, the loop's `needs_work` set, the binding epoch's wire
+assembly, every member-naming field of the `supervisor` interface, and
+`revoke-instance`'s own argument. `replicas` is the change that makes that key
+stop being unique. Every one of those sites keeps compiling and starts being
+wrong, and four of them are wrong *silently* (§33.5, §33.6, §33.12, §33.18).
+
+That the first review found three more instances of this one invariant — the
+read surface, the health-report join, the epoch's wire assembly — after this
+pass had already named it is itself worth carrying into implementation: the
+enumeration is the hard part here, not the diagnosis. The second review
+sharpened that into a rule about *fixes* rather than findings (§40): two of
+this document's own repairs named a call site that does not exist and an
+existing pattern whose two ends do not match. Reuse-an-existing-verb and
+mirror-an-existing-pattern are the moves this slice invites most, and both
+need the site and the pattern checked before they are relied on. The third
+review (§41) then found the enumeration wrong twice more, in loops this
+document had already opened — once harmlessly, once in the only silent
+failure of the three rounds. So the standing instruction for whoever
+implements this: **every list of call sites in Part VI is a starting point to
+re-derive with a grep, not a finished inventory.**
+
+The slice also **shrinks**, which no other `§0` pass in this milestone has had
+to say. §16 items 3 and 4 — the cross-app `Bind` manifest surface and the
+ADR-0021 §7 probe — left M05A on 2026-08-02 with ADR-0022 and the
+`meta-implementation-plan.md` move to slice **S4**, which is post-milestone
+and sits behind two slices of its own. Reading the code confirms the move was
+right and understates the gap: the naming surface is only one of four missing
+pieces, and building it inside A5e would still leave failure-matrix rows 15
+and 18 untestable (§33.1).
+
+---
+
+## §33 — What §16, `task.md`, and A5d's shipped code leave open, understate, or state wrongly
+
+### 33.1 (Scope-changing, blocking) The cross-app third of A5e left the milestone on 2026-08-02, and building the manifest surface here would still not make rows 15/18 testable
+
+§16 item 3 lists "a manifest surface naming which service of the bound
+instance is depended on" as A5e's own work, and §18 question 6 asked the
+requester to confirm exactly that ("in scope for A5e rather than deferred past
+the milestone"). That confirmation was given, and it has since been overtaken
+by a later decision from the same source.
+
+**What moved.** `deferred-backlog.md:75` records the row *"Cross-app `Bind`
+dependency naming has no manifest surface"* as **Moved 2026-08-02**, into
+`meta-implementation-plan.md`'s *Committed Work: Logical Service Discovery
+Overlay* as slice **S4**. S4's pickup trigger is "S2 Complete **and** a first
+real cross-app dependency exists". S2 needs S1; S1 needs S0; S0 is M05A's own
+slice A7. So S4 is at minimum three slices past this milestone, and the
+overlay's own text places S1–S4 "between M05A and M7". **A5e cannot depend on
+S4** without gating the milestone's closing slice on post-milestone work.
+
+**Reading the code says the move understated the gap.** A manifest surface is
+one of four missing pieces, and it is not even the load-bearing one:
+
+1. **The compiler ignores `Bind` entirely.** `compile_recursive`
+   ([compiler.rs:98-109](../../../../crates/app_orchestration/src/compiler.rs#L98))
+   matches `AppDependencySpec::Bind` only to check for a compilation cycle. It
+   emits no `resolved_dependencies` entry, and it could not: `resolved_dependencies`
+   is built from `spec.depends_on`
+   ([compiler.rs:133-143](../../../../crates/app_orchestration/src/compiler.rs#L133)),
+   and `SynAppManifest::validate` refuses any `depends_on` name that is not a
+   service in *this* manifest
+   ([models.rs:470-480](../../../../crates/app_orchestration/src/models.rs#L470)).
+   `manifest.dependencies` is keyed by `DependencyName`, a different type from
+   `LogicalServiceName`, and nothing joins the two maps. So today
+   `manifest.dependencies` produces **zero bindings of any kind** — that is
+   true of `Spawn` as well, which compiles a child plan no parent service can
+   name.
+2. **The substrate refuses the write.** `prepare_binding`
+   ([orchestration.rs:237-243](../../../../crates/control_plane/src/service/orchestration.rs#L237))
+   rejects any binding whose `app_instance_id` differs from the deploying
+   instance's, on both the deploy path and `write-bindings`. ADR-0022's
+   consequences name replacing that refusal with a UCAN check as **S4's**
+   work, and ADR-0022 §5 supplies the authorization model it needs
+   (per-logical-service, all-or-nothing visibility, declared in the submitted
+   plan). Neither exists.
+3. **A's supervisor has no way to learn B's member set.** ADR-0021 §7 reasons
+   under the condition "no directory exists for A to observe B through".
+   ADR-0022 §11 states plainly that its own signed topology document is what
+   changes that premise — and that document is **S2**. Without it, A's
+   supervisor holds no member DID for B's service, so there is nothing for the
+   probe to call.
+4. **The probe's posture split has nothing to report.** §16 item 4 says the
+   status output "says which is in force". The attended posture is
+   `roymctl app deploy` without `--mint-masters`, which has no supervisor and
+   no loop at all, so no supervisor is ever *in* it. **Narrowed after review
+   (R10):** the first draft said a supervisor holds member masters "by
+   construction", which is stronger than the tree — that holds for `submit`'s
+   mint-in-place, but a supervisor that `adopt`s an attended deployment holds
+   none until the operator runs `import-master`, which is exactly why
+   `master_for_member` fails rather than minting
+   ([keys.rs:284-297](../../../../crates/app_supervisor/src/keys.rs#L284)).
+   That state is a custody gap the error message tells the operator to
+   repair, not a posture the app owner chose, so there is still no runtime
+   posture for `status` to report — and items 1-3 already carry this
+   finding's conclusion on their own.
+
+**Fix.** §16 items 3 and 4 are struck from A5e. Failure-matrix rows 15 and 18
+move to **S4** with the row that was already moved there, annotated with the
+three further prerequisites above rather than only the naming surface. A5e
+does not depend on S4, and S4 does not depend on A5e. The consequence to state
+rather than discover: the exit criterion *"Every row of the failure/security
+matrix has a test"* cannot be met inside this milestone, and needs an explicit
+amendment naming rows 15/18 and where they went. See **D-A5e-1** and §38
+question 2 — this reverses an answer the requester already gave, so it is
+asked rather than assumed.
+
+**What A5e keeps from the cross-app item:** nothing structural, and one piece
+of groundwork it already has. §0.20's per-dependent binding rows exist since
+A5c precisely so two dependents can legitimately hold different views of one
+dependency. That property is what S4 will need and is not lost by deferring
+the rest; it is exercised inside one app instance by `replicas` (§33.7).
+
+### 33.2 (Scope-changing) `replicas` is not a compiler change; it is a key change across four crates
+
+This is the finding the rest of the slice hangs off. §16 item 1 frames the
+work as "`compile` emits N members" plus item 2's two call sites that hardcode
+`0`. The real cost is that **the identity of a thing this milestone manages
+stops being a `LogicalServiceRef`**. Every site below compiles unchanged after
+`replicas` lands and is wrong:
+
+| Site | Key today | What breaks with two members |
+|---|---|---|
+| `journal.append_action` / `current_placement` ([deploy.rs:293-307](../../../../crates/sdk/src/deploy.rs#L293)) | `logical_ref` string | One placement row per logical service; §33.12 |
+| `ApplyReport.deployed/skipped/failures` ([deploy.rs:326-340](../../../../crates/sdk/src/deploy.rs#L326)) | `Vec<LogicalServiceRef>` | A per-member outcome is unrepresentable |
+| `Reconciler::diff_plans` ([reconcile.rs:102-127](../../../../crates/app_orchestration/src/reconcile.rs#L102)) | `HashMap<LogicalServiceRef, _>` | Two active members collapse to one entry; the second desired member reads as `Add`; `ReconcileAction::Remove(LogicalServiceRef)` cannot name *which* member to drop, so scale-down is unrepresentable |
+| `SupervisorStore` — `binding_epochs`, `remediation`, `revoked_placements`, `pending_rotation_restarts` ([store.rs:100-154](../../../../crates/app_supervisor/src/store.rs#L100)) | `PRIMARY KEY (app_instance_id, logical_ref)` | Four durable tables silently shared between members |
+| `AlertStore`'s active-alert index ([alerts.rs:214-215](../../../../crates/app_orchestration/src/alerts.rs#L214)) | `(instance_id, logical_ref, substrate_did, kind)` | Two members on one substrate collapse to one alert row; on two substrates they do not — a partial collapse, which is worse than either |
+| `needs_work` / `missing_placement` ([service.rs:521-584](../../../../crates/app_supervisor/src/service.rs#L521)) | `BTreeSet<String>` of logical refs | Member 1 landing marks member 2 as landed |
+| `binding_convergence_rows` ([service.rs:2759-2764](../../../../crates/app_supervisor/src/service.rs#L2759)) | `.find(|s| s.logical_ref == …)` | Reports the first matching member and discards the rest — on an **exit-criterion** read surface |
+| `revoke-instance` ([supervisor.wit:149](../../../../crates/wit_interfaces/wit/supervisor/supervisor.wit#L149)) | `logical-ref: string` | Its own doc says "scoped to one member"; the argument cannot name one |
+
+The one place that is already right is the health report: `ServiceHealth`
+carries both `logical_ref` and `service_id`
+([health.rs:88-102](../../../../crates/sdk/src/health.rs#L88)), so the poll
+distinguishes members. Only the supervisor's own keying does not.
+
+**Fix.** Introduce a `MemberRef { logical_ref, index }` in
+`app_orchestration::models`, with `Display` = `<app_instance_id>/<service_name>#<index>`
+and a matching `FromStr`, and use it wherever a stored or reported fact
+identifies a *managed unit*. `LogicalServiceRef` stays exactly what it is —
+the key of a logical service, which is what the resolver, `TopologyEntry`, and
+a binding's dependency name are about. The two are genuinely different things,
+and conflating them is what produced the table above. `#` is legal in a
+`LogicalServiceName` today (the validator forbids only empty and `/`,
+[models.rs:96-107](../../../../crates/app_orchestration/src/models.rs#L96)),
+and `AppInstanceId` has **no validator at all**
+([models.rs:94](../../../../crates/app_orchestration/src/models.rs#L94)), so
+both gain one. Pre-release policy is change-in-place with no ladder, so the
+four `SupervisorStore` tables take the new string form directly. See
+**D-A5e-2**.
+
+### 33.3 (Scope-changing) The `Vec<ServiceId>` versus N `PlannedService`s call, made — and it needs a stored index, not a position
+
+§16 item 1 leaves this to A5e and gives one argument for N `PlannedService`s:
+it "keeps `PlannedService` a 1:1 unit of deploy work, which `apply_plan`, the
+journal, and `deployed_service_id` all already assume." That argument is
+correct and incomplete — those three sites assume 1:1 **on the logical ref**,
+which is exactly what §33.2 shows breaking either way.
+
+The decisive argument is on the other side. `PlannedService.members:
+Vec<ServiceId>` breaks the substitution step in both minting paths, which are
+1:1 by construction:
+`substitute_and_certify_members` builds `BTreeMap<ServiceId, ServiceId>` from
+the compiler's fabricated id to the resolved master
+([member_identity.rs:172-181](../../../../apps/roymctl/src/commands/member_identity.rs#L172)),
+and `keys::mint_and_substitute` builds the identical map
+([keys.rs:310-326](../../../../crates/app_supervisor/src/keys.rs#L310)). One
+fabricated id cannot map to N masters. `certify_placed_members` keys both
+returned maps by `service_id`
+([deploy.rs:454-496](../../../../crates/sdk/src/deploy.rs#L454)), and
+`resolve_targets` yields one target per `PlannedService`. So:
+
+**N `PlannedService`s**, each with its own fabricated `service_id`, plus a new
+`PlannedService.member_index: u32` (`#[serde(default)]`, skip-if-0, so no
+existing plan JSON changes). Two consequences §16 does not state:
+
+- **`derive_deterministic_service_id` must take the index.** It hashes
+  `logical_ref.to_string()`
+  ([compiler.rs:180-188](../../../../crates/app_orchestration/src/compiler.rs#L180)),
+  so N members of one service would otherwise share one fabricated id, and the
+  substitution map would collapse before minting ever ran.
+- **The index is a stored field, not a position.** `apply_write_phase` filters
+  the plan in place (`filtered_plan.services.retain`,
+  [service.rs:727-730](../../../../crates/app_supervisor/src/service.rs#L727))
+  and `record_plan_for_pass` rebuilds a different subset again, so an index
+  derived from the vector position would change a member's identity depending
+  on which pass looked at it.
+
+**`certify_placed_members`' assertion does not need to relax**, contrary to
+§16 item 2. It deduplicates on `service_id`
+([deploy.rs:442-452](../../../../crates/sdk/src/deploy.rs#L442)), and distinct
+members carry distinct masters, so the invariant it protects — one endpoint
+record per DID — still holds exactly. What it needs is a better message: it
+prints two `LogicalServiceRef`s, which for two members of one service are the
+same string. It prints two `MemberRef`s instead. See **D-A5e-3**.
+
+### 33.4 (Correctness, blocking) `replicas = 2` under the compiler's hardcoded topology mode resolves to member 0 forever
+
+The compiler sets `topology_mode: TopologyMode::default()`
+([compiler.rs:151](../../../../crates/app_orchestration/src/compiler.rs#L151)),
+which is `Singleton`
+([models.rs:226-231](../../../../crates/app_orchestration/src/models.rs#L226)),
+and nothing in a manifest can set it to anything else. `select_member`'s
+`Singleton` arm returns `members.first()` unconditionally
+([resolver.rs:645-652](../../../../crates/app_orchestration/src/resolver.rs#L645)).
+
+So a plan that compiles two members, mints two masters, deploys two services,
+and pushes a two-member `TopologyEntry` would still send **every call to member
+0, permanently and silently**. Reference-scenario step 5's "`frontend`
+resolves across both from the next call" fails with no error anywhere.
+
+**Fix.** `replicas > 1` sets `topology_mode: Redundant` in the compiled plan.
+`Sharded` stays unreachable: its `ShardingStrategy` manifest surface is slice
+**S1**, and ADR-0022's consequences say `Sharded` needs four things at once and
+is unusable with any one missing. A second, quieter site: the wire mode comes
+from `target_modes`, a `BTreeMap<LogicalServiceName, TopologyMode>` collected
+over `plan.services`
+([mapper.rs:143-147](../../../../crates/sdk/src/mapper.rs#L143)), where N
+members collapse to one entry — harmless only because the compiler will give
+every member of one logical service the same mode, which is now an invariant
+worth a test rather than an accident.
+
+**The mode has to arrive at the *dependent*, and that is a separate
+assertion** (found in review, R5). The mode a dependent resolves under
+travels on the binding, from `target_modes` into `WitDependencyBinding.mode`
+([mapper.rs:316](../../../../crates/sdk/src/mapper.rs#L316)), and lands in the
+dependent substrate's `TopologyEntry` through `prepare_binding`. A scale-out
+test that asserts only "a push happened and nothing was reinstalled" passes
+even when the dependent's substrate is still holding `Singleton` and sending
+every call to member 0 — the exact silent failure this finding exists to
+prevent. Reference-scenario step 5's own words are the assertion to write:
+`frontend` "resolves across both from the next call". See **D-A5e-4**.
+
+### 33.5 (Correctness, blocking) Master-anchor refresh republishes member 0's anchor and stamps member N's row, so member N fails closed in 24 hours
+
+The sharpest of the member-blind defects, because it is silent and it is an
+outage. `refresh_due_master_anchors`
+([service.rs:1258-1295](../../../../crates/app_supervisor/src/service.rs#L1258))
+iterates `plan.services`, takes `master_did = svc.service_id` (member N's own
+DID), checks the due time against `last_master_anchor_refresh(&master_did)`,
+and then reads the key with:
+
+```rust
+keys::master_for_member(&self.vault, &plan.app_instance_id.to_string(),
+                        svc.logical_ref.service_name.as_str())
+```
+
+`master_for_member` hardcodes index `0`
+([keys.rs:284-297](../../../../crates/app_supervisor/src/keys.rs#L284)). So for
+member 1 the loop republishes **member 0's** anchor and then stamps
+`record_master_anchor_refresh(member_1_did, now)`. Member 1's anchor is never
+refreshed, the store reports it as refreshed, and 24 hours later — an anchor's
+validity window, the number D-A5d-8's 12-hour interval was chosen against —
+every connection presenting member 1's certificate is rejected at
+`HandshakeVerifier::verify_preamble`, which resolves the anchor and fails
+closed.
+
+The sibling defect is loud rather than silent, and worth naming because it
+proves the diagnosis: renewal takes the same `master_for_member` call
+([service.rs:971-980](../../../../crates/app_supervisor/src/service.rs#L971)),
+and `certificate_over_instance_identity` bails when the master's DID does not
+equal the `service_id`
+([deploy.rs:400-406](../../../../crates/sdk/src/deploy.rs#L400)). So member 1's
+renewal fails on every pass with a clear error while its certificate ages out
+under `CertificateNearExpiry`. One shared root cause, two different failure
+modes, neither of them acceptable.
+
+**Fix.** `master_for_member` takes the index, from `PlannedService.member_index`
+(§33.3), at all three call sites — renewal, anchor refresh, and
+`revoke-instance` ([service.rs:2721](../../../../crates/app_supervisor/src/service.rs#L2721)).
+See **D-A5e-5**.
+
+### 33.6 (Correctness, blocking) A5c's placement-change refusal fires on a scale-out
+
+`refuse_placement_change`
+([service.rs:1551-1556](../../../../crates/app_supervisor/src/service.rs#L1551))
+compares each planned service's inventory alias against
+`current_placement(&landed, &l_ref)` — the journal's most recent row for that
+**logical ref**. With two members:
+
+- placed on **different** substrates, member 1's plan entry is compared against
+  member 0's journal row, the DIDs differ, and the whole submission is refused
+  with `PlacementChangeRefused` and the message "the supervisor does not
+  relocate a running member". Nothing was relocated.
+- placed on the **same** substrate it passes, but only because the comparison
+  happens to match a sibling's row rather than the member's own.
+
+`roymctl`'s own private `check_no_placement_change` has the same shape and the
+same defect ([app.rs:300](../../../../apps/roymctl/src/commands/app.rs#L300),
+via `deployed_service_id`).
+
+**Fix.** Both checks key on the member (§33.2), and a member with no journal
+row of its own is treated as "never placed" rather than inheriting a sibling's.
+This is what makes cross-substrate `replicas` even *expressible* — which it is
+not today for a second reason: `ServiceSpec.placement` is one
+`PlacementSelector`
+([models.rs:414-416](../../../../crates/app_orchestration/src/models.rs#L414)),
+so all N members of a service land on one node. A5e does not add per-member
+placement (that is a placement-selector design, not a supervisor one), but it
+must not leave a guard that would refuse it later on a false reading. Recorded
+as a backlog row in §37. See **D-A5e-6**.
+
+### 33.7 (Scope-changing) A re-submit that scales a service reinstalls every dependent — which is exactly what `push_bindings` exists to prevent, and A5e is where it gets its first production caller
+
+The reference scenario's step 5 says the scale-out reaches `frontend` "with no
+restart". Trace what a `submit` actually does today:
+
+1. `compute_diff` marks `frontend` as `Update`, because its
+   `resolved_dependencies` changed and `PlannedService` compares by whole-struct
+   equality ([reconcile.rs:108-114](../../../../crates/app_orchestration/src/reconcile.rs#L108)).
+2. `needs_work` picks it up from the `Update` arm
+   ([service.rs:562-564](../../../../crates/app_supervisor/src/service.rs#L562)).
+3. `apply_write_phase` puts it through `apply_with_clients` → `apply_plan` →
+   a full `deploy_with_context`, which reinstalls the component, revalidates
+   the FDAE policy, and bumps the config generation. A5a's content-hash dedup
+   does not save it: the app context changed, so the hash changed.
+
+So the milestone's headline claim — "changing the member set propagates
+correctly", with step 4/step 5's difference being "the design" — is delivered
+today by reinstalling every dependent and shipping the hex-inlined Wasm
+artifact again per dependent, per scale event.
+
+`push_bindings` was built in A5c for precisely this and carries
+`#[allow(dead_code)]` because A5c had no reachable membership change
+([service.rs:1965-2039](../../../../crates/app_supervisor/src/service.rs#L1965));
+D-A5c-16 defers the trigger to A5e, and `task.md:452-456` says so. §16 never
+mentions wiring it. **A5e must:**
+
+- classify a diff whose **only** change to a dependent is
+  `resolved_dependencies`, and route that dependent to `push_bindings` instead
+  of into `needs_work`;
+- push to **every member** of the dependent, since each member is its own
+  `service_id` with its own `service_bindings` row on the substrate;
+- leave every other kind of change on the redeploy path unchanged.
+
+Without this, §16 item 5's convergence budget has nothing to measure that is
+distinguishable from a redeploy. See **D-A5e-7**.
+
+### 33.8 (Correctness) An unconverged binding never marks the instance `Degraded`, and ADR-0021 §5 says it must — A5e is the first slice where that is reachable
+
+ADR-0021 §5 is explicit: "A dependent that cannot be reached leaves the app
+instance `Degraded`, and the supervisor keeps retrying on its normal loop."
+`overall_state` derives from health faults and never-landed placements only
+([service.rs:3084-3101](../../../../crates/app_supervisor/src/service.rs#L3084)):
+a `BindingConflict` alert is raised and stored, and the instance stays
+`Active`.
+
+`task.md`'s row 11 already records this honestly, and gives the reason it was
+acceptable: "`push_bindings` has no production caller this slice regardless
+(D-A5c-16 defers the trigger to A5e), so there is no live path that would
+exercise it." **§33.7 is that live path.** The moment A5e wires the trigger,
+the gap between ADR-0021 §5 and the code becomes reachable, and it is on the
+same read surface the exit criteria call a deliverable.
+
+**Fix.** An instance with at least one dependent whose written and observed
+epochs disagree, *after* a push for it has been attempted and not landed,
+reports `Degraded`. Deliberately not "any unconverged row": a row is
+unconverged for up to one poll interval after every successful push simply
+because the observed epoch is read on the next sweep (§33.9), and reporting
+that as `Degraded` would make the state flap on every ordinary change. The
+condition is a failed or conflicted push, which `push_bindings` already knows
+and already alerts on. See **D-A5e-8**.
+
+### 33.9 (Correctness) The convergence budget cannot be measured off `binding-epochs`, which is what §16 item 5 says to measure it off
+
+§16 item 5: "measure from a membership change to every reachable dependent
+serving the new epoch, read directly off §6's `binding-epochs`."
+
+`binding_convergence_rows` compares the store's written epoch against
+`ServiceHealth.binding_epochs`
+([service.rs:2745-2777](../../../../crates/app_supervisor/src/service.rs#L2745)),
+and `ServiceHealth` is produced by the pass's health poll. The poll runs on
+`poll_interval_secs`, default **30**
+([config.rs:545-547](../../../../crates/core/src/config.rs#L545)). So a push
+that lands in 8 ms shows as unconverged for up to 30 s on that surface. The
+instrument is six times the 5-second budget it is supposed to measure. A
+measurement taken that way would report a failure of the *read surface* and be
+recorded as a failure of the *push model* — and `task.md` makes missing this
+budget "the trigger to build the pull path".
+
+Two things follow, and both have to be written down rather than chosen
+silently:
+
+- **Measure the write, not the read.** The stopwatch stops when every
+  reachable dependent's `write_bindings` call has returned
+  `BindingWriteOutcome::Applied` (or `NoOp`). `binding-epochs` stays what it
+  is — the operator-facing confirmation — and its own lag is a separate,
+  reportable number, bounded by `poll_interval_secs` by construction.
+- **Say which clock starts.** A `submit` applies in-call, so its convergence
+  clock starts when the RPC is received. A change the *loop* discovers waits up
+  to one poll interval before anything is pushed. Both numbers are real and
+  they differ by 30 s; reporting one without the other would make the budget
+  either trivially met or trivially missed depending on which was chosen. See
+  **D-A5e-9**.
+
+### 33.10 (Understated) ADR-0021 §6's trigger has a second clause that a pull path would not fix, and ADR-0022 §11 has already ruled on it
+
+§16 item 5 says to "evaluate ADR-0021 §6's trigger explicitly". Two things
+make that more than reading one number off a stopwatch.
+
+**The budget has two clauses**, and `task.md`'s *Performance budgets* section
+states both: all reachable dependents inside 5 s, **and** any dependent that
+was unreachable converged "within one poll interval of becoming reachable".
+The second clause is bounded by `poll_interval_secs` and by nothing else — it
+is a *detection* latency, not a delivery one. A pull-side directory would not
+improve it: a dependent that cannot reach the network cannot pull either, and
+would additionally serve a stale cached document for its own TTL. So a miss on
+clause two implicates the poll interval, and a miss on clause one implicates
+the push model. Only the second is ADR-0021 §6's trigger. Conflating them
+would fire a redesign at a config default.
+
+**ADR-0022 §11 has already ruled**, and A5e must reconcile with it rather than
+re-decide it: "That trigger has not fired, and nothing here claims it has."
+§11 also draws the line A5e's write-up has to respect — what §6 rejected is a
+directory that *intra-app* dependents query on the hot path, which is exactly
+what A5e's `replicas` exercises; ADR-0022's document serves callers *outside*
+the instance, who have no push relationship to replace. If A5e's measurement
+does fire the trigger, the consequence is a second `AppRegistry`
+implementation for intra-app dependents, not a claim on ADR-0022's design. See
+**D-A5e-10**.
+
+### 33.11 (Scope-changing) A5d's renewal, revocation, and rotation surfaces are member-blind, and A5e is what makes them wrong
+
+A5d shipped four days before this pass and is correct for one member per
+service. §16 was written before A5d existed and names none of it. Beyond
+§33.5's `master_for_member`:
+
+- `keys::mint_and_substitute` mints one master per `PlannedService` at index 0
+  ([keys.rs:315](../../../../crates/app_supervisor/src/keys.rs#L315)), so N
+  members would resolve to one master and the substitution map would collapse
+  before the plan ever reached a substrate. Same for `roymctl`'s
+  `substitute_and_certify_members`
+  ([member_identity.rs:175](../../../../apps/roymctl/src/commands/member_identity.rs#L175)).
+- `revoke-instance` takes `logical-ref` and its own WIT doc says "Scoped to one
+  member, not the whole instance"
+  ([supervisor.wit:143-149](../../../../crates/wit_interfaces/wit/supervisor/supervisor.wit#L143)).
+  With two members the argument cannot name one, and `revoked_placements`
+  (PK `(app_instance_id, logical_ref)`) would exclude both from renewal and
+  from `certify_placed_members` on every write path — silently revoking a
+  member the operator did not name.
+- `remediation` and `pending_rotation_restarts` share the same key, so
+  `max_restart_attempts` is spent across members and one member's exhausted
+  budget marks its siblings terminal.
+- `deployed_service_id` ([member_identity.rs:87-93](../../../../apps/roymctl/src/commands/member_identity.rs#L87))
+  is the backlog row §16 item 2 names, and its own doc comment already
+  predicts this slice.
+
+All of it falls out of §33.2's key change; it is listed separately because an
+implementer reading §16 would look at the compiler and the two named call
+sites and stop. See **D-A5e-11**.
+
+### 33.12 (Understated) Two members on one substrate collapse in `apply_plan`'s resume check, and that one produces a silent success
+
+`apply_plan` skips a service whose logical ref already has a completed
+placement row at the same substrate DID
+([deploy.rs:293-298](../../../../crates/sdk/src/deploy.rs#L293)). Two members
+of one logical service on one node: the first lands and journals, the second
+matches the first's row and goes into `report.skipped`. The report says
+success and one member was never deployed.
+
+Not reachable on a plain `submit` — `apply_with_clients` appends a fresh
+journal record, so `get_completed_actions(deployment_id)` is empty and nothing
+is skipped. It **is** reachable on `Reconciler::recover_applying`'s resume path
+and on any second `apply_plan` against the same record, which is the path A3
+built for a partially-failed deploy. Called out separately from §33.2 because
+it is the one collapse whose symptom is a clean `Ok` rather than an error.
+
+### 33.13 (Correctness, found while reading) `member_master_name` can collide across two different (instance, service) pairs, and A5e is the cheapest place to fix it
+
+`format!("member-{app_instance_id}-{service_name}-{index}")`, in both copies
+([keys.rs:269-277](../../../../crates/app_supervisor/src/keys.rs#L269),
+[member_identity.rs:38-48](../../../../apps/roymctl/src/commands/member_identity.rs#L38)).
+`AppInstanceId` has no validator and `LogicalServiceName` forbids only `/`, so
+instance `a` + service `b-c` and instance `a-b` + service `c` both produce
+`member-a-b-c-0`. A supervisor managing both apps would call
+`vault.get_or_mint` once and hand **one master DID to two services in two
+different app instances** — which then publish two endpoint records under one
+`service_id` pointing at different substrates, the permanent compare-and-swap
+fight `certify_placed_members`' own assertion comment describes, with the
+assertion unable to fire because the two services are in different plans.
+
+Pre-existing and not caused by `replicas`. Recorded here because A5e is the
+slice that touches every one of these name-building sites anyway, and because
+§33.2 is already adding validators to both id types — forbidding the separator
+in `AppInstanceId` closes it in the same line of code. The index suffix itself
+is unambiguous (the last segment is always a `u32`), so only the
+instance/service boundary needs the guard. See **D-A5e-12**.
+
+### 33.14 (Understated) N members means N databases, and nothing in this milestone replicates state
+
+Each member is its own `service_id`, and `SqliteStorageProvider` gives every
+`service_id` its own database
+([sqlite.rs:1231, 1413](../../../../crates/data_db/src/sqlite.rs#L1231)). So
+`replicas = 2` on a service that stores anything splits its data between two
+members that `Redundant` mode then round-robins across — an unkeyed call goes
+to whichever member the counter lands on
+([resolver.rs:665-670](../../../../crates/app_orchestration/src/resolver.rs#L665)),
+and reads and writes for the same logical entity land in different databases.
+
+This is not a bug for A5e to fix. State replication is M7's `[PLT-RED]`, and
+`meta-implementation-plan.md` deliberately places it **downstream** of the
+discovery overlay, which is itself downstream of this milestone. But it is a
+property of the manifest surface A5e is adding, and an operator who reads
+`replicas = 2` and expects redundancy is entitled to know it before they lose
+data rather than after. §38 question 3 asked whether the compiler should refuse
+the combination outright or only document it — a product call about what
+`replicas` promises before M7 ships, and not this pass's to make.
+**Answered (§41): it refuses**, at `validate()`, with an error naming M7 as
+the reason the refusal will relax. The heuristic's residual case — a service
+that uses the data layer without declaring a `schema` — stays documented
+rather than refused, since nothing in a manifest marks it.
+
+### 33.15 (Correctness) The no-network-hop bench cannot be written where its backlog row says it goes
+
+The row (`deferred-backlog.md:82`) names `crates/router/benches/proxy.rs` and
+"a `dependency`-target call end to end". `ProxyRouter` has no dependency
+target. `CallTarget::Dependency` is resolved in the WASM host capability
+([host_capabilities.rs:1114-1151](../../../../crates/sandbox_wasm/src/host_capabilities.rs#L1114)),
+*before* a `ProxyRequest` exists — the comment there says so explicitly ("a
+guest never holds the resolved DID") — and the bench builds its router with
+`empty_resolver()`
+([proxy.rs:127](../../../../crates/router/benches/proxy.rs#L127)).
+
+The budget's own wording is the guide: "the name → master-DID step must stay
+an in-process cache lookup." That step is `LogicalResolver::resolve`. So the
+Criterion case goes in a new `crates/app_orchestration/benches/resolver.rs`
+and benches three cases — cache hit, cache miss through the registry, and a
+two-member `Redundant` round-robin, which A5e is the first slice to make real.
+The existing unit-level invoke-count assertion in `host_capabilities.rs` keeps
+guarding against a regression to a second *network* hop; the bench quantifies
+the resolution itself, which nothing does today. See **D-A5e-13**.
+
+### 33.16 (Stale) `task.md` says the milestone closes at the end of A5e, and A7 was added to the milestone after that sentence was written
+
+`task.md:520` — "**Milestone closes at the end of A5e.**" `task.md:580-586`
+adds slice **A7** (app-instance master identity, pulled forward from the
+overlay's S0 on 2026-08-02) and says it "may land before, after, or alongside
+A5d/A5e". `status.md`'s slice table has no A7 row at all, and the milestone's
+exit criteria list A7's deliverable as a gate.
+
+This matters beyond tidiness for one reason: flipping `[LFC-MGT]` and
+`[FND-IDT]` to Complete in the traceability matrix is an A5e exit criterion
+per §17, and whether that flip happens at A5e sign-off or after A7 depends on
+which slice actually closes the milestone. §38 question 1, **answered in
+§41: the milestone closes when A5e and A7 have both landed, and the two rows
+flip at whichever lands second.**
+
+### 33.17 (Scope-changing, blocking, found in review — R2) The operator read surface never gains the member dimension, and it is an exit criterion in its own right
+
+§33.2's table lists the *stored* facts and `revoke-instance`'s argument. It
+does not list a single field an operator actually reads, and `task.md:759`
+makes that surface a deliverable: "An operator can read health, alerts, and
+per-dependent binding convergence through the `supervisor` interface — the
+read surface is a deliverable, not an implementation detail."
+
+| Field | Consequence with two members |
+|---|---|
+| `managed-service.logical-ref` ([supervisor.wit:40](../../../../crates/wit_interfaces/wit/supervisor/supervisor.wit#L40)) | Two rows with identical `logical-ref`. Worse: `revoke-instance`'s own doc says its argument is "the member's full logical reference, **as `status` reports it**" ([:147](../../../../crates/wit_interfaces/wit/supervisor/supervisor.wit#L147)) — after D-A5e-2 changes the argument, `status` is the one place an operator would copy it from, and it would not have it |
+| `binding-convergence.dependent-logical-ref` ([:56](../../../../crates/wit_interfaces/wit/supervisor/supervisor.wit#L56)) | Test 61 promises one row per dependent member; the wire field cannot name one |
+| `alert.logical-ref` ([:84](../../../../crates/wit_interfaces/wit/supervisor/supervisor.wit#L84)), `instance-status.revoked-placements` ([:79](../../../../crates/wit_interfaces/wit/supervisor/supervisor.wit#L79)) | Ambiguous on both, and the second is the surface A5d added *because* a revocation is otherwise invisible |
+| `minted-master.service-name` ([:23](../../../../crates/wit_interfaces/wit/supervisor/supervisor.wit#L23)) | `submit` returns N rows carrying one `service-name`; only `vault-name` differs, and `roymctl` prints the name in the operator-facing line ([supervisor.rs:262-274](../../../../apps/roymctl/src/commands/supervisor.rs#L262)) |
+
+The first draft of this pass had no test touching any of it. Folded into
+**D-A5e-2**; tests 72-73.
+
+### 33.18 (Correctness, blocking, found in review — R3) Every health-derived alert clear and restart-attempt site needs a `service_id → member_index` join that nothing supplies
+
+§33.2 says the health report "is already right". That is true only for
+*distinguishing* members: `ServiceHealth` carries `logical_ref` and
+`service_id` and **no index**
+([health.rs:88-102](../../../../crates/sdk/src/health.rs#L88)). Once the alert
+index and `remediation` are member-keyed (D-A5e-2), every site that keys an
+alert or an attempt from the health report is joining on a value it does not
+have:
+
+- `clear_settled_renewal_alerts` builds `l_ref` from
+  `svc.logical_ref.to_string()` and clears `CertificateNearExpiry`,
+  `CertificateExpired`, and `VaultLocked` under it
+  ([service.rs:1219-1228](../../../../crates/app_supervisor/src/service.rs#L1219)).
+  Member 1's healthy certificate read would clear **member 0's** alert rows.
+- `attempt_restart`/`record_restart_attempt` take `logical_ref: &str`
+  ([service.rs:1336-1368](../../../../crates/app_supervisor/src/service.rs#L1336)),
+  so `max_restart_attempts` is spent across members — §33.11 named the table,
+  not the call path that writes it.
+- The never-landed `InstanceNotRunning` raise/clear loop
+  ([service.rs:521-543](../../../../crates/app_supervisor/src/service.rs#L521))
+  has the same shape.
+
+**Fix, and where it belongs.** The join is built from the plan, which every
+one of these sites already has in hand: `service_id → member_index`, derived
+once per pass from `PlannedService`. The *substrate's* `service-status` WIT is
+deliberately left alone — a member index is an app-plan concept the substrate
+has never had and should not learn; it knows `service_id`s. `ServiceHealth`
+gains `member_index: Option<u32>`, filled by the supervisor from that join
+when it builds the report, so every downstream site reads one field instead of
+re-deriving the join five times. See **D-A5e-17**.
+
+### 33.19 (Correctness, found in review — R4) `BindingConflict` has no clear path anywhere, so D-A5e-8's `Degraded` would be permanent
+
+Every other `AlertKind` this supervisor raises has a matching clear site
+([service.rs:536](../../../../crates/app_supervisor/src/service.rs#L536),
+[:590](../../../../crates/app_supervisor/src/service.rs#L590),
+[:1106](../../../../crates/app_supervisor/src/service.rs#L1106),
+[:1138](../../../../crates/app_supervisor/src/service.rs#L1138),
+[:1226](../../../../crates/app_supervisor/src/service.rs#L1226),
+[:3002](../../../../crates/app_supervisor/src/service.rs#L3002)).
+`BindingConflict` is raised in two places
+([:2029](../../../../crates/app_supervisor/src/service.rs#L2029),
+[:2059](../../../../crates/app_supervisor/src/service.rs#L2059)) and cleared
+in none — harmless while A5c had no production caller, and the reason nobody
+noticed.
+
+D-A5e-8 as first written named the condition ("attempted and did not land")
+without naming where `handle_status` reads it or when it stops being true. If
+the answer is the active alert, one failed push pins the instance `Degraded`
+for the life of the supervisor, on the same read surface §33.17 is about. Test
+67 as first written asserted only the `Degraded` direction.
+
+**Fix.** `push_bindings` clears `BindingConflict` for that dependent member on
+an outcome that lands cleanly — the raise site's own inverse, beside it, the
+shape every other kind already uses. `handle_status` then derives `Degraded`
+from the *active* `BindingConflict` set, which needs no new column. Both
+directions tested (75, 76). See the revised **D-A5e-8**.
+
+### 33.20 (Correctness, blocking, found in second review — S1) D-A5e-18's forgetting has no caller, and forgetting one of the four tables is actively unsafe
+
+D-A5e-18 said member rows are forgotten "only on an explicit operator removal
+(`app forget`'s shape)". No such surface exists, and the one it names cannot
+reach the store:
+
+- `supervisor.wit` declares twelve functions
+  ([:93-152](../../../../crates/wit_interfaces/wit/supervisor/supervisor.wit#L93))
+  and none removes a member. `revoke-instance` is the only per-member write,
+  and D-A5e-18 excludes `revoked_placements` from forgetting, so it is not the
+  hook either.
+- `roymctl app forget` opens the operator's **own** `deployments.db` directly
+  and appends a `REMOVE` row ([app.rs:762-800](../../../../apps/roymctl/src/commands/app.rs#L762));
+  its doc comment says it works "without contacting any substrate itself"
+  ([:85-89](../../../../apps/roymctl/src/commands/app.rs#L85)). It has no path
+  to `supervisor.db` on the supervisor's node.
+
+**And the deeper problem, which neither the original review finding nor
+D-A5e-18 saw: one of the four tables must never be forgotten while the
+member's substrate row survives.** `advance_binding_epoch` inserts at **1** on
+a missing row ([store.rs:182-188](../../../../crates/app_supervisor/src/store.rs#L182)).
+So forgetting a member's `binding_epochs` row and later re-adding that member
+restarts the supervisor's counter at 1 while the substrate still holds epoch
+N — every push is then classified `Stale(N)`, retried once at `N+1` per
+D-A5c-19, and alerts. The supervisor would have forgotten its way into a
+permanent conflict with itself, which is the failure the epoch exists to
+prevent.
+
+**Fix: withdraw the mechanism, keep the constraint.** A5e builds no forget
+verb. The accumulation the original finding identified is real but bounded
+(members × instances) and three of the four tables are harmless to keep — a
+`remediation` or `pending_rotation_restarts` row for an absent member is
+inert, and `revoked_placements` must persist by D-A5d-15's own reasoning. The
+fourth is not merely harmless to keep, it is **required** to be kept. What A5e
+owes is a backlog row that states which table is which and why, plus one test
+pinning the property that makes keeping it correct. See the rewritten
+**D-A5e-18**.
+
+### 33.21 (Correctness, blocking, found in second review — S2) The `BindingConflict` raise sites write a substrate *alias* into the `substrate_did` column, so D-A5e-8's clear can never match
+
+§33.19 found that `BindingConflict` has no clear site. Writing one "in the
+shape every other kind already uses" would not work, because the raise sites
+are not in that shape.
+
+Both raises pass `&svc.substrate.as_ref().map_or_else(String::new,
+ToString::to_string)` into `raise`'s `substrate_did` positional argument
+([service.rs:2028](../../../../crates/app_supervisor/src/service.rs#L2028),
+[:2057](../../../../crates/app_supervisor/src/service.rs#L2057)).
+`PlannedService.substrate` is `Option<SubstrateAlias>` — an operator-chosen
+alias, never a DID, and the **empty string** when placement falls back. Every
+other clear site passes a real DID off the health report, e.g.
+`&svc.substrate_did` at
+[:1226](../../../../crates/app_supervisor/src/service.rs#L1226). The alert
+store's active-row index is
+`(instance_id, IFNULL(logical_ref,''), substrate_did, kind)`
+([alerts.rs:214-215](../../../../crates/app_orchestration/src/alerts.rs#L214)),
+so a clear passing the DID would look for a row keyed by the alias, find
+nothing, and leave the alert active — and with D-A5e-8 reading `Degraded` off
+the active set, the instance would stay `Degraded` forever. That is §33.19's
+own failure, one layer down.
+
+**Fix.** The raise sites are corrected to write the real `substrate_did`,
+threaded into the push path the way `restart_candidates` already threads it
+(`(logical_ref, service_id, substrate_did)`,
+[service.rs:2788](../../../../crates/app_supervisor/src/service.rs#L2788)),
+rather than the clear being bent to match a wrong key. Two reasons for that
+direction rather than the other: an alias in a DID column is wrong on the
+operator's read surface regardless of the clear, and it cannot be correlated
+with anything. **The correction costs nothing to make now** — `push_bindings`
+has no production caller until D-A5e-7, so these rows have never been written
+outside tests, and there is no live data whose key changes underneath it.
+Folded into **D-A5e-8**; test 80.
+
+### 33.22 (Correctness, blocking, found in third review — T2) Three `current_placement` lookups sit in the same loops D-A5e-17 opens, and the re-key makes every one of them stop matching — silently
+
+`current_placement` has **eight** callers. Five are accounted for: `apply_plan`'s
+resume check ([deploy.rs:293](../../../../crates/sdk/src/deploy.rs#L293), §33.2),
+the two placement-change guards
+([service.rs:1553](../../../../crates/app_supervisor/src/service.rs#L1553),
+[app.rs:297](../../../../apps/roymctl/src/commands/app.rs#L297), §33.6), and the
+orphan/`needs_work` pair
+([service.rs:567](../../../../crates/app_supervisor/src/service.rs#L567),
+[:589](../../../../crates/app_supervisor/src/service.rs#L589), phase 3).
+
+The three that were not are the **health-expectation builders**, each looking up
+`current_placement(&landed, &svc.logical_ref.to_string())`:
+[service.rs:434](../../../../crates/app_supervisor/src/service.rs#L434) (the
+loop's sweep), [service.rs:2858](../../../../crates/app_supervisor/src/service.rs#L2858)
+(`handle_status`'s near-duplicate builder — the second half of the double
+connect §19.9 already named), and
+[app.rs:852](../../../../apps/roymctl/src/commands/app.rs#L852) (`roymctl app
+status`).
+
+**Why this one fails quietly.** Once D-A5e-2 re-keys the journal's action rows
+to `MemberRef`, these three compare a *logical-ref* string against
+*member-ref* rows. The argument is a `&str` either way, so it type-checks, it
+compiles, and it simply never matches. Every service then takes the `None`
+arm, which pushes an `ExpectedService` with an **empty `service_id` and empty
+`substrate_did`** and inserts into `missing_placement`
+([service.rs:434-441](../../../../crates/app_supervisor/src/service.rs#L434)).
+The sweep asks the substrate nothing, and D-A5c-10 turns `missing_placement`
+into `Degraded` — so **every instance reports permanently `Degraded` with
+every service unpolled**, on the read surface §33.17 exists to protect. Not
+only scaled services: the re-key changes the journal's key format for
+single-member services too, so an unscaled deployment breaks identically.
+
+Before the re-key the same three sites carry the milder form of §33.6's
+defect — member 1 inherits member 0's placement row and is polled at member
+0's substrate, which is wrong whenever the two are not co-located.
+
+These are the **same three loops** D-A5e-17 already opens to thread
+`member_index` onto `ExpectedService`, so this is one more line in each, not a
+new phase. It is called out as its own finding because it is a different
+defect — a read-key mismatch, not a missing field — and because it is the only
+item in three rounds of review that neither compiles away nor announces
+itself. Folded into **D-A5e-2** and **D-A5e-17**; test 82.
+
+---
+
+## §34 — Decisions
+
+| ID | Decision |
+|---|---|
+| **D-A5e-1** | §16 items 3 and 4 (the cross-app `Bind` manifest surface and the ADR-0021 §7 probe) are **struck from A5e**, and failure-matrix rows 15/18 move to slice **S4** of the Logical Service Discovery Overlay, joining the backlog row moved there on 2026-08-02 (§33.1). A5e does not depend on S4 and S4 does not depend on A5e. `task.md`'s rows 15/18 are annotated with all four prerequisites — the manifest surface, compiler resolution of `Bind`, replacing `prepare_binding`'s intra-app refusal with ADR-0022 §5's authorization check, and S2's topology document — not only the naming surface §0.9 found. The exit criterion "every row of the failure/security matrix has a test" gains an explicit exception naming the two rows and where they went. Reverses §18 question 6's answer; §38 question 2 asks for that reversal rather than assuming it. |
+| **D-A5e-2** | **Revised after review (R2, R7).** A managed unit is identified by `MemberRef { logical_ref, index }`, `Display` = `<app_instance_id>/<service_name>#<index>`, replacing the bare `logical_ref` string in the four `SupervisorStore` tables, the alert store's active-alert index, `needs_work`/`missing_placement`, `binding_convergence_rows`, the deployment journal's action rows, and `ApplyReport` (§33.2). It also replaces it in **every operator-facing field of the `supervisor` interface** — `managed-service.logical-ref`, `binding-convergence.dependent-logical-ref`, `alert.logical-ref`, `instance-status.revoked-placements`, and `revoke-instance`'s argument — and `minted-master` gains the member index beside `service-name`, since `submit` returns N rows per scaled service that are otherwise identical (§33.17). And in the **epoch's wire assembly**: `map_deployment_plan_to_wit`'s `binding_epochs` map and its `binding_epochs.get(&svc.logical_ref)` lookup ([mapper.rs:135, :326](../../../../crates/sdk/src/mapper.rs#L135)), plus `write_bindings_at_epoch`'s single-entry map ([service.rs:2078](../../../../crates/app_supervisor/src/service.rs#L2078)) — a compile break rather than a silent one, listed because the rule it encodes is load-bearing for D-A5e-7: **the binding epoch is per dependent *member***, since each member holds its own `service_bindings` row on the substrate. **Extended in the third review (T2):** re-keying the journal's action rows is a *write*-side change with three unaccounted *read*-side callers — the `current_placement` lookups in the three health-expectation builders ([service.rs:434](../../../../crates/app_supervisor/src/service.rs#L434), [:2858](../../../../crates/app_supervisor/src/service.rs#L2858), [app.rs:852](../../../../apps/roymctl/src/commands/app.rs#L852)), which still pass a logical-ref string, still compile, and silently stop matching (§33.22). Every site that *reads* a journal action row moves with every site that writes one; the eight `current_placement` callers are the complete list. `LogicalServiceRef` is unchanged and keeps its own meaning — the key of a *logical service*, which is what `TopologyEntry`, the resolver, and a binding's dependency *name* are about. `LogicalServiceName` and `AppInstanceId` gain validators forbidding `#` (and, for `AppInstanceId`, `/`), so the display form cannot be forged from a service name. Tables take the new string form in place, per pre-release policy; no migration. |
+| **D-A5e-3** | `replicas = N` compiles to **N `PlannedService`s**, not one carrying `members: Vec<ServiceId>` (§33.3). Decided by the substitution step, which is 1:1 by construction in both minting paths and cannot express one fabricated id → N masters. `PlannedService` gains `member_index: u32` (`#[serde(default)]`, skip-if-0) — a stored field, never a vector position, because two live code paths re-filter and rebuild `plan.services`. `derive_deterministic_service_id` folds the index into its hash **only above index 0** — **revised after review (R1)**: without `--mint-masters` there is no substitution step ([app.rs:584-595](../../../../apps/roymctl/src/commands/app.rs#L584) returns `target_plan.clone()`), so the fabricated id *is* the deployed `service_id`, and changing the hash input at index 0 would silently re-identify every existing unmastered deployment — `diff_plans` keys on the logical ref, so it emits `Update`, never `Remove`, leaving the old service running and publishing while the new id starts on an empty per-`service_id` database. Index 0 hashes exactly what it hashes today, byte for byte, pinned by test 71. `certify_placed_members`' one-master-per-`service_id` assertion **stays as it is** (§16 item 2 is wrong that it must relax); only its message changes, to print `MemberRef`s rather than two identical `LogicalServiceRef`s. |
+| **D-A5e-4** | `ServiceSpec.replicas: u32` (default 1, `#[serde(default)]`, skip-if-1, on `ServiceSpec` and **not** `ServiceConfig`, so it never travels to a substrate), and `replicas > 1` sets the compiled `topology_mode` to `Redundant` (§33.4). Without it `select_member`'s `Singleton` arm sends every call to member 0, silently. `Sharded` stays unreachable — its strategy surface is slice S1. `replicas = 0` is refused at manifest validation, and a maximum is enforced there too (see D-A5e-14). |
+| **D-A5e-5** | `keys::master_for_member` takes the member index, sourced from `PlannedService.member_index`, at all three call sites: renewal, `refresh_due_master_anchors`, and `revoke-instance` (§33.5). This is the slice's single most consequential correctness fix — as written, member N's anchor is never refreshed while the store records that it was, and every connection presenting member N's certificate fails closed once the 24-hour anchor window elapses. |
+| **D-A5e-6** | `refuse_placement_change` and `roymctl`'s `check_no_placement_change` compare a member against **its own** journal row, and a member with no row of its own is "never placed" rather than inheriting a sibling's (§33.6). Without this a scale-out onto a second substrate is refused as a relocation, and a same-substrate scale-out passes only by coincidence. Per-member placement is **not** built here — `ServiceSpec.placement` stays one selector, so all N members of a service share a node — but the guard must not be left in a state that would misread it later. Backlog row in §37. |
+| **D-A5e-7** | The loop gains a **membership-change classifier**: a dependent whose only diff against the last active plan is `resolved_dependencies` is routed to `push_bindings` (per dependent **member**), not into `needs_work` (§33.7). Every other kind of change keeps the redeploy path unchanged. This gives `push_bindings` its first production caller — the trigger D-A5c-16 deferred to this slice — and its `#[allow(dead_code)]` is removed. Without it, scaling a service reinstalls every dependent, artifact and all, which is the churn A5c and A5d each rejected once. |
+| **D-A5e-8** | **Revised after review (R4).** An instance reports `Degraded` when a binding push for one of its dependent members has been **attempted and did not land** — ADR-0021 §5's own rule, unreachable until D-A5e-7 supplies the trigger (§33.8). Deliberately not "any unconverged convergence row": every successful push reads as unconverged for up to one poll interval, and reporting that as `Degraded` would flap on every ordinary change. The fact is carried by the **active `BindingConflict` alert**, and `push_bindings` gains the clear site it has never had (§33.19) — cleared for that member on an outcome that lands cleanly, beside the two raise sites. No new store column: an alert that is raised and never cleared is what would make this `Degraded` permanent, and giving the kind the same raise/clear pairing every other kind already has fixes both problems with one mechanism. **Extended after the second review (S2):** "the same shape every other kind uses" is not yet true of the raise sites — both write `svc.substrate` (a `SubstrateAlias`, empty on fallback placement) into the `substrate_did` column, where every other kind writes a real DID, so a clear in the ordinary shape would never match the row and `Degraded` would be permanent anyway (§33.21). **Both raise sites are corrected to write the real `substrate_did`**, threaded into the push path the way `restart_candidates` already threads it — not the clear bent to match a wrong key. Free to do now: `push_bindings` has no production caller until D-A5e-7, so no such row has ever been written outside a test. |
+| **D-A5e-9** | The convergence budget is measured from the membership change to every reachable dependent's `write_bindings` returning `Applied`/`NoOp` — **not** off `binding-epochs`, whose refresh is bounded by `poll_interval_secs` (default 30 s) and is six times the 5-second budget it would be measuring (§33.9). `binding-epochs` stays the operator-facing confirmation and its own lag is reported as a second, separate number. Two clocks are reported, both named: a `submit`-driven change (applied in-call) and a loop-discovered change (up to one poll interval before the first push). |
+| **D-A5e-10** | ADR-0021 §6's trigger is evaluated against **clause one only** — reachable dependents inside 5 s (§33.10). A miss on clause two (an unreachable dependent converging within one poll interval of returning) implicates `poll_interval_secs`, not the push model, and a pull-side directory would not improve it. The write-up reconciles with **ADR-0022 §11**, which already states the trigger has not fired and draws the intra-app/external line, rather than re-deciding it. If clause one is missed, the consequence recorded is a second `AppRegistry` implementation for intra-app dependents — nothing about ADR-0022's Tier 2. **Extended after review (R11):** clause two has **two** causes, not one. A dependent unreachable at push time converges when the loop rediscovers it, which is bounded by `poll_interval_secs` *and* by the absence of durable delivery — ADR-0021 §5's "after M5" half, deferred to **A6**. The write-up names both, so a clause-two miss is not read as a tuning problem when what is actually missing is the outbox. |
+| **D-A5e-11** | A5d's four member-blind surfaces are threaded with the index in the same pass as D-A5e-5: `mint_and_substitute`, `substitute_and_certify_members`, `revoke-instance` + `revoked_placements`, and `remediation`/`pending_rotation_restarts` (§33.11). Restart attempt budgets are per member, so one member exhausting `max_restart_attempts` does not mark its siblings terminal. |
+| **D-A5e-12** | `member_master_name`'s instance/service boundary is disambiguated in both copies, closing the pre-existing collision where instance `a` + service `b-c` and instance `a-b` + service `c` share one vault key and therefore one master DID (§33.13). Closed by D-A5e-2's `AppInstanceId` validator rather than by a new naming scheme, so existing vault names are unchanged. |
+| **D-A5e-13** | The no-network-hop Criterion case goes in a **new** `crates/app_orchestration/benches/resolver.rs` over `LogicalResolver::resolve`, not in `crates/router/benches/proxy.rs` as its backlog row says — `ProxyRouter` has no dependency target, resolution happens in the WASM host capability before a `ProxyRequest` exists, and the existing bench uses `empty_resolver()` (§33.15). Three cases: cache hit, cache miss through the registry, and a two-member `Redundant` round-robin. The row is resolved with the bench's actual home recorded, not silently relocated. |
+| **D-A5e-14** | `replicas` is capped at **16** at manifest validation, a priori, for D-A5c-12's stated reason — a bound set after the first measurement can never fail. 16 members of one service on one node is already past what a single substrate's per-service database and instance-certificate budget make sensible, and per-member placement (which would be the reason to want more) does not exist. Refused at `validate()`, so the error names the manifest rather than surfacing as a substrate failure N deploys later — the same gate that now carries D-A5e-16's `schema` refusal, so `validate()` has three `replicas` rules in one place: `>= 1`, `<= 16`, and not-with-a-schema. |
+| **D-A5e-15** | The reference-scenario e2e (§16 item 7) covers steps **1-6 in one test** over two real substrates, continuing the port sequence at **12_600** (12_300-12_502 are taken by `cert_renewal_e2e.rs`). Step 6's stale-epoch rejection and identical-content no-op are *also* already proven live by A5a's `binding_push_e2e.rs`; they stay in this test because the scenario's claim is the sequence, not the individual outcomes. |
+| **D-A5e-16** | **Settled by the requester (§41 answer 3).** `replicas > 1` is documented as **stateless-only** for this milestone: N members are N `service_id`s and therefore N separate databases, and state replication is M7's `[PLT-RED]`, which the overlay's build order puts downstream of this milestone (§33.14). **And the compiler refuses it:** `replicas > 1` combined with a declared `schema` is rejected at `validate()`, with an error naming M7 as the reason the refusal will relax. The residual case the heuristic misses — a service that uses the data layer without declaring a `schema` — stays documented rather than refused, since nothing in a manifest marks it. Test 83. |
+| **D-A5e-17** | *(found in review, R3; **carrier corrected in the second review, S3**)* The member index reaches every health-derived alert clear and restart-attempt site on **`ExpectedService`** — the sweep's *input*, whose own doc comment already calls itself the "the caller resolves it" boundary for exactly this reason (D-A4-11, [health.rs:44-54](../../../../crates/sdk/src/health.rs#L44)) — and is copied onto `ServiceHealth` at the sweep's five construction sites. The first version said the supervisor fills `ServiceHealth` directly, which it does not: the sdk builds it, from `ExpectedService`. It is a plain **`u32`, not `Option<u32>`**: **all six** production `ExpectedService` construction sites — two in `roymctl` ([app.rs:853, :863](../../../../apps/roymctl/src/commands/app.rs#L853)) and **four** in the supervisor, the loop's sweep ([service.rs:436, :444](../../../../crates/app_supervisor/src/service.rs#L436)) **and `handle_status`'s near-duplicate builder ([service.rs:2860, :2868](../../../../crates/app_supervisor/src/service.rs#L2860))** — iterate `plan.services` and hold the `PlannedService`, so there is no site that would have to invent an absent value. (**Count corrected in the third review, T1:** the first version said four and omitted `handle_status`'s pair, which is the second half of the double connect §19.9 named. A seventh site, the `health_monitoring_e2e.rs:331` helper, is a test fixture and updates with them.) **Each of the three loops these sit in also carries a `current_placement` lookup that the re-key breaks silently — §33.22, fixed in the same edit.** The substrate's own `service-status` WIT is deliberately **not** changed: a member index is an app-plan concept the substrate has never had and has no use for. Without this, `clear_settled_renewal_alerts` clears member 0's certificate alerts on member 1's healthy read, and `record_restart_attempt` spends one restart budget across every member. |
+| **D-A5e-18** | **Rewritten after the second review (S1); the first version's mechanism is withdrawn.** A5e builds **no member-forgetting verb**. The first version said rows are forgotten "on an explicit operator removal (`app forget`'s shape)" — a surface that does not exist on `supervisor.wit` and cannot be reached by `roymctl app forget`, which touches only the operator's own `deployments.db` (§33.20). Building one would mean a new WIT verb, its `require_admin` gate, its per-instance lock, and a semantics decision — a real operator surface, not a cleanup detail. And it would be **unsafe for one of the four tables**: `advance_binding_epoch` inserts at 1, so forgetting a member's `binding_epochs` row and later re-adding that member restarts the counter beneath the epoch the substrate still holds, making every subsequent push permanently `Stale`. So the decision is the constraint, not a mechanism: `binding_epochs` **must not** be forgotten while the substrate holds a row for that member; `revoked_placements` must not be forgotten at all (D-A5d-15); `remediation` and `pending_rotation_restarts` rows for an absent member are inert and are left. Recorded as a backlog row naming which table is which, and pinned by test 79. |
+
+---
+
+## §35 — Phase plan and merge order
+
+Each phase is independently reviewable. The ordering rule is that **nothing
+observable changes until phase 2**: phase 1 introduces the member dimension
+with every plan still holding exactly one member at index 0, so it can be
+merged, reviewed, and left alone while phase 2 is written.
+
+1. **The member dimension, with no behaviour change.** `MemberRef` and its
+   `Display`/`FromStr` (D-A5e-2); `LogicalServiceName`/`AppInstanceId`
+   validators, which also close §33.13's vault-name collision (D-A5e-12);
+   `PlannedService.member_index` (D-A5e-3); `derive_deterministic_service_id`
+   taking the index; `master_for_member`, `mint_and_substitute`,
+   `substitute_and_certify_members`, and `deployed_service_id` reading the
+   member's own index instead of the literal `0` (D-A5e-5, D-A5e-11). Every
+   plan still compiles to one member at index 0, so the whole phase is a
+   refactor with a regression guard — **and the guard is a literal-value
+   assertion, not a shape one** (R1): index 0's `service_id` must hash to the
+   byte-identical DID it does today, because an unmastered deploy ships the
+   fabricated id as the real one. Tests 43-49, 71.
+2. **The manifest surface and the compiler.** `ServiceSpec.replicas`, N
+   `PlannedService`s with distinct fabricated ids and indices, `topology_mode
+   = Redundant` above 1, `resolved_dependencies` naming every member of a
+   dependency, and validation — all three `replicas` rules in one place:
+   `>= 1`, `<= 16`, and **not alongside a declared `schema`** (D-A5e-4,
+   D-A5e-14, and D-A5e-16 per §41 answer 3). After this phase a scaled plan
+   *compiles*; it does not yet deploy correctly, which is phase 3. Tests
+   50-55, 83.
+3. **Re-keying the durable and reported facts.** The four `SupervisorStore`
+   tables and the alert index; `needs_work`/`missing_placement`;
+   `binding_convergence_rows`; `apply_plan`'s resume check and `ApplyReport`
+   (§33.12); `Reconciler::diff_plans` and `ReconcileAction::Remove`, which is
+   what makes scale-*down* representable at all; both placement-change guards
+   (D-A5e-6); `revoke-instance`'s argument and `revoked_placements`;
+   `refresh_due_master_anchors` (D-A5e-5's sharpest consequence). **The
+   operator read surface** — every member-naming field of the `supervisor`
+   WIT, plus `minted-master` (D-A5e-2, §33.17) — and the
+   `service_id → member_index` join with `ServiceHealth.member_index`
+   (D-A5e-17, carried on `ExpectedService`, **six construction sites**),
+   without which the alert clears and restart budgets cross between members.
+   **In the same three loops, the `current_placement` lookups that the
+   journal re-key silently breaks** (§33.22) — the one change in this slice
+   that neither compiles away nor announces itself, and whose symptom is
+   every instance permanently `Degraded`. **No member-forgetting verb**
+   (D-A5e-18, withdrawn — §33.20). Tests 56-63, 72-74, 79, 81, 82.
+4. **The push trigger.** The membership-change classifier, `push_bindings`'s
+   first production caller and the removal of its `#[allow(dead_code)]`
+   (D-A5e-7), the per-member epoch (D-A5e-2), the `substrate_did` correction
+   at both `BindingConflict` raise sites, its missing clear site, and
+   `Degraded` derived from the active conflict set in both directions
+   (D-A5e-8, §33.19, §33.21). Tests 64-67, 75-78, 80.
+5. **Budgets, written down.** The convergence measurement on both clocks and
+   both clauses (D-A5e-9), ADR-0021 §6's trigger evaluated against ADR-0022
+   §11 (D-A5e-10), and the `LogicalResolver::resolve` Criterion case
+   (D-A5e-13). Tests 68-69. **The write-up is the deliverable**, not the
+   measurement: `task.md` makes this an exit criterion and a number taken but
+   not recorded fails it.
+6. **The reference scenario, end to end.** Steps 1-6 over two real substrates
+   (D-A5e-15). Test 70.
+
+**What could move, stated the way A5c's §22 and A5d's §28 stated theirs:**
+
+- **Phase 1 could ship separately, and probably should.** It is a pure
+  refactor with no manifest change, it closes a live latent defect (§33.13),
+  and it is the phase most likely to churn under review because it touches
+  four crates. Nothing after it can start until it lands, so shipping it alone
+  costs one merge and buys a clean review of the rest.
+- **Phase 5 does not depend on phase 6**, and vice versa. The convergence
+  numbers are measurable against phase 4's push path with fake actors and one
+  real pair of substrates; the reference scenario is a separate harness. If
+  the milestone is under time pressure, phase 5 is the one that cannot slip —
+  it is an exit criterion in its own right, where phase 6 is a demonstration
+  of criteria proven elsewhere.
+- **Nothing here depends on A7**, and A7 depends on nothing here. A7 mints an
+  app-instance master at `adopt`; A5e touches member masters and plan shape.
+  They share the vault and no code. §38 question 1 is about which one closes
+  the milestone, not about ordering the work.
+- **The cross-app work is not deferred *from* this slice, it was moved out of
+  the milestone before this pass ran** (§33.1). Stated here because "A5e drops
+  cross-app" would otherwise read as this pass narrowing its own scope, which
+  is not what happened.
+
+---
+
+## §36 — A5e tests
+
+Named the way §8, §13, §23, and §29 named theirs. **e2e and bench cases are
+marked; everything else is a unit test.** Continues from A5d's 42.
+
+**Phase 1 —** `crates/app_orchestration/src/models.rs`,
+`crates/app_supervisor/src/keys.rs`,
+`apps/roymctl/src/commands/member_identity.rs`:
+
+43. `member_ref_round_trips_through_display_and_from_str`
+44. `member_ref_parse_rejects_a_service_name_carrying_the_index_separator`
+45. `a_logical_service_name_containing_the_index_separator_is_refused`
+46. `an_app_instance_id_containing_a_separator_is_refused` — both `/` and `#`;
+    `AppInstanceId` has no validator at all today
+47. `member_master_name_cannot_collide_across_two_instance_and_service_pairs`
+    — instance `a` + service `b-c` versus instance `a-b` + service `c`
+    (§33.13), the pre-existing defect this phase closes
+48. `deployed_service_id_reads_the_members_own_index_rather_than_zero`
+49. `master_for_member_reads_the_members_own_index_rather_than_zero`
+
+**Phase 2 —** `crates/app_orchestration/src/compiler.rs`, `models.rs`:
+
+50. `a_manifest_without_replicas_compiles_to_one_member_at_index_zero` — the
+    no-change regression guard for every existing manifest. **Amended after
+    review (R1):** asserts the member count *and* the literal `service_id`,
+    paired with test 71
+51. `replicas_three_compiles_to_three_planned_services_with_distinct_service_ids`
+    — the fabricated ids must differ, or the substitution map collapses
+52. `each_member_of_one_logical_service_carries_its_own_stored_index`
+53. `replicas_above_one_compiles_the_topology_mode_as_redundant` (D-A5e-4)
+54. `a_dependents_resolved_dependencies_names_every_member_of_its_dependency`
+55. `replicas_of_zero_or_above_the_cap_is_refused_at_manifest_validation`
+    (D-A5e-14) — joined by test 83 at the same `validate()` gate
+
+**Phase 3 —** `crates/sdk/src/deploy.rs`,
+`crates/app_orchestration/src/reconcile.rs`,
+`crates/app_supervisor/src/{service.rs,store.rs}`:
+
+56. `two_members_on_one_substrate_both_land_rather_than_the_second_being_skipped`
+    — the silent-success collapse in `apply_plan`'s resume check (§33.12),
+    driven through `recover_applying` where it is reachable
+57. `a_scale_down_removes_the_named_member_and_leaves_its_siblings_running` —
+    `ReconcileAction::Remove` naming a member, which it cannot express today
+58. `a_scale_out_onto_the_same_substrate_is_not_refused_as_a_placement_change`
+59. `a_second_member_placed_on_a_different_substrate_is_not_refused_as_a_relocation`
+    (§33.6 — the case that fails outright today)
+60. `restart_attempts_are_counted_per_member_not_per_logical_service`
+61. `binding_convergence_reports_one_row_per_dependent_member`
+62. `revoke_instance_scoped_to_one_member_leaves_its_siblings_renewable` —
+    asserts the sibling is still a renewal candidate and still recertified by
+    `submit`
+63. `master_anchor_refresh_republishes_each_members_own_anchor_and_stamps_its_own_row`
+    — the silent fail-closed outage of §33.5; asserts the *key used to sign*
+    is member N's, not that a call was made
+
+**Phase 4 —** `crates/app_supervisor/src/service.rs`:
+
+64. `a_diff_whose_only_change_is_resolved_dependencies_pushes_instead_of_redeploying`
+    (D-A5e-7) — asserts the fake substrate saw `write_bindings` and **no**
+    `apply_plan`
+65. `a_diff_that_also_changes_the_config_still_takes_the_redeploy_path` — the
+    other half of the classifier, so it cannot be written as "always push"
+66. `a_membership_change_pushes_to_every_member_of_every_dependent`
+67. `a_push_that_does_not_land_marks_the_instance_degraded` (D-A5e-8,
+    ADR-0021 §5) — paired with an assertion that a *successful* push whose
+    observed epoch has not yet been re-polled does **not**
+
+**Phase 5 —** `crates/app_orchestration/benches/resolver.rs`,
+`crates/app_supervisor/src/service.rs`:
+
+68. **[bench]** `logical_resolver_resolve` — cache hit, cache miss through the
+    registry, and a two-member `Redundant` round-robin (D-A5e-13). Resolves
+    the "no network hop" backlog row with its real home recorded
+69. `convergence_is_measured_from_the_membership_change_to_the_last_applied_write`
+    — a harness over fake actors asserting the measured interval excludes the
+    health poll, so the recorded number cannot silently become the read
+    surface's lag (D-A5e-9)
+
+**Phase 6 —** `crates/substrate/tests/reference_scenario_e2e.rs`:
+
+70. **[e2e]** `the_reference_scenario_runs_end_to_end_over_two_substrates` —
+    `frontend` on A, `backend` on B; deploy and push (step 1), a resolved
+    dependency call (step 2), B stopped and the fault distinguished from a
+    service fault (step 3), B returned and `backend` restarted **as the same
+    member** with an unchanged master DID and no push (step 4), `backend`
+    scaled to two members with a push and no reinstall of `frontend` (step 5),
+    and a stale-epoch retry rejected followed by an identical write at the
+    current epoch succeeding as a no-op (step 6). **Amended after review
+    (R5):** step 5 additionally asserts what step 5 actually claims — that
+    `frontend` *resolves across both members from the next call* — since a
+    test asserting only "pushed, not reinstalled" passes while the dependent's
+    substrate still holds `Singleton` and sends every call to member 0. New
+    port block at **12_600** (D-A5e-15); `federated_fdae_e2e.rs` is the
+    harness precedent `task.md` names, `multi_substrate_placement_e2e.rs` the
+    closest two-node deploy shape
+
+**Tests added in review (R1-R5, R7, R8):**
+
+71. `an_unscaled_manifest_compiles_the_service_id_it_compiles_today` — the
+    literal DID, not the shape, for an unmastered plan whose fabricated id is
+    the deployed one (D-A5e-3, §33.3)
+72. `status_reports_a_distinct_member_ref_for_every_member` — across
+    `managed-service`, `alert`, and `binding-convergence`, so the string
+    `revoke-instance` takes is one an operator can copy from `status`
+    (D-A5e-2, §33.17)
+73. `submit_returns_one_minted_master_row_per_member_carrying_its_index`
+    (§33.17)
+74. `a_settled_renewal_on_one_member_does_not_clear_its_siblings_certificate_alert`
+    — `clear_settled_renewal_alerts` through the plan join (D-A5e-17, §33.18)
+75. `a_binding_conflict_clears_once_a_later_push_for_that_member_lands_cleanly`
+    — the clear site that has never existed (D-A5e-8, §33.19)
+76. `an_instance_leaves_degraded_once_the_retried_push_lands` — the direction
+    test 67 did not assert
+77. `a_scale_out_push_carries_the_redundant_mode_to_the_dependent` — asserts
+    `WitDependencyBinding.mode` flips on the wire, the unit-level half of test
+    70's amended step 5 (R5)
+78. `two_members_of_one_dependent_advance_their_binding_epochs_independently`
+    — the per-member epoch rule D-A5e-2 now states (R7)
+79. **Replaced after the second review (S1).**
+    `a_member_removed_from_the_plan_and_returned_keeps_its_binding_epoch` —
+    the property that makes *not* forgetting correct: `advance_binding_epoch`
+    inserts at 1, so a forgotten-and-restored epoch would sit permanently
+    below the substrate's held value and every push would classify `Stale`
+    (D-A5e-18, §33.20). Replaces the first draft's
+    `forgetting_a_member_clears_its_store_rows…`, which tested a verb that
+    does not exist
+
+**Tests added in the second review (S1, S2, S3):**
+
+80. `a_binding_conflict_is_raised_under_the_substrate_did_not_the_alias` —
+    asserts the raise writes a real DID, and that a clear in the ordinary
+    shape then matches the row it wrote; the pairing test 75 assumed
+    (D-A5e-8, §33.21). Includes the fallback-placement case, where
+    `svc.substrate` is `None` and the old code wrote an empty string
+81. `the_member_index_reaches_the_sweep_through_expected_service` — one
+    assertion per `ExpectedService` construction site, **all six**:
+    `roymctl`'s two, the loop's sweep, and `handle_status`'s near-duplicate
+    builder, so no client and neither supervisor path can silently stop
+    supplying it (D-A5e-17, §33.18; count corrected in the third review)
+
+**Test added in the third review (T2):**
+
+82. `a_members_placement_is_found_after_the_journal_is_re_keyed` — the same
+    assertion at all three health-expectation builders (`service.rs:434`,
+    `service.rs:2858`, `app.rs:852`): a member with a completed journal row
+    resolves to a real `substrate_did` and does **not** land in
+    `missing_placement`. The failure this pins is silent and total — a
+    logical-ref lookup against member-ref rows compiles, never matches, and
+    reports every service of every instance permanently `Degraded` and
+    unpolled (D-A5e-2, §33.22). Includes an unscaled, single-member instance,
+    since the re-key breaks that case identically
+
+**Test added by the requester's decision (§41 answer 3):**
+
+83. `replicas_above_one_is_refused_for_a_service_declaring_a_schema` — at
+    `validate()` beside D-A5e-14's other two `replicas` rules, asserting the
+    error names M7 as the reason the refusal will relax (D-A5e-16, §33.14).
+    Belongs to **phase 2**, with tests 50-55, not to the end of the build
+
+**Test count: 42 → 83.**
+
+---
+
+## §37 — Docs and backlog for A5e
+
+**Docs**
+
+- `docs/developer-guide.md` — `replicas` in the manifest reference: what it
+  does (N members, N master DIDs, `Redundant` mode, round-robin for unkeyed
+  calls and rendezvous hashing for keyed ones), what it does **not** do
+  (**each member has its own database — `replicas` is for stateless members
+  until M7's replication lands**, D-A5e-16), and that the compiler **refuses**
+  `replicas > 1` on a service declaring a `schema` (§41 answer 3), including
+  the residual case the check cannot see, that all N members share one
+  placement so a scale-out does not survive losing a node, and the cap
+  (D-A5e-14). Beside it, what a scale-out costs at runtime: a binding push to
+  every dependent member, no reinstall, no restart. The measured convergence
+  numbers from phase 5 go here too, in the operator's terms — how long after a
+  `submit` a scaled service is actually being called, and how long after that
+  `roymctl supervisor status` shows it converged, which are two different
+  numbers (D-A5e-9).
+- `task.md` — the **A5e bullet rewritten**: the cross-app surface and the
+  ADR-0021 §7 probe struck, `replicas` described as the key change it is
+  (§33.2), the push trigger added, the bench's real home named. **Rows 15 and
+  18 re-scoped to S4** with all four prerequisites listed (D-A5e-1), and the
+  exit criterion "every row of the failure/security matrix has a test" gaining
+  its explicit, reasoned exception. Rows 5/6/7 gain the live scale-out
+  evidence from test 70. The *Performance budgets* section gains the recorded
+  numbers and the ADR-0021 §6 evaluation, replacing the provisional 5 s with a
+  measured value **and the reasoning either way** — `task.md`'s own wording
+  makes an unrecorded measurement a failure. **`Milestone closes at the end of
+  A5e` corrected** for A7 (§33.16) to read that it closes when **A5e and A7
+  have both landed** (§41 answer 1).
+  **Added after review (R6): row 11 is invalidated by this slice and must be
+  rewritten, not annotated.** It states as current fact both that
+  `InstanceStatus.state` does not turn `Degraded` from a `BindingConflict` and
+  that "`push_bindings` has no production caller this slice regardless
+  (D-A5c-16 defers the trigger to A5e)". D-A5e-7 and D-A5e-8 make both halves
+  false, and row 11's evidence moves from a fake-actor unit test to the live
+  trigger. Row 14's revocation half also changes shape, since
+  `revoke-instance`'s argument becomes a member ref (D-A5e-2).
+- `status.md` — an A5e section in the A0-A5d shape, and an **A7 row added to
+  the slice table**, which it does not have today.
+- `docs/planning/traceability-matrix.md` — `[LFC-MGT]` (App Supervisor) and
+  `[FND-IDT]` (stable service identity) flipped to Complete with evidence.
+  Flipped at whichever of **A5e or A7 lands second** (§41 answer 1), not at
+  A5e sign-off.
+- ADR-0021 — an amendment on **§6**: the trigger evaluated, with the number
+  and the two-clause distinction (D-A5e-10), and a pointer to ADR-0022 §11 so
+  the two documents do not read as competing rulings. And on **§7**: its
+  premise ("no directory exists for A to observe B through") is now addressed
+  by ADR-0022's Tier 2, and its probe is S4's, not this milestone's — the
+  rule itself ("A's owner owns the consequence") is unchanged.
+- ADR-0022 — no change. §11 already says what A5e would otherwise have to say.
+  Worth a line in the A5e sign-off note that the measurement confirmed §11's
+  claim rather than contradicting it.
+
+**Backlog rows resolved**
+
+- *"A4: `deployed_service_id` assumes member index 0"* — D-A5e-5/D-A5e-11.
+  The row's own text predicted this slice ("A5's reference-scenario step 5
+  breaks this the moment it lands"); the resolution is larger than the row
+  describes, since the same index-0 assumption turned out to sit in
+  `master_for_member`, `mint_and_substitute`, and
+  `substitute_and_certify_members` as well.
+- *"No Criterion bench case pinning A2's 'no network hop' budget"* — D-A5e-13,
+  with the bench's actual home recorded (`app_orchestration`, over
+  `LogicalResolver::resolve`) and the reason the row's own suggested home is
+  not reachable.
+- *"Cross-app `Bind` dependency naming has no manifest surface"* — **already
+  moved** to S4 on 2026-08-02, not resolved here. Noted so the A5e sign-off
+  does not appear to have dropped it.
+
+**Backlog rows to add**
+
+- ***`replicas` places every member of a service on one substrate*** (§33.6,
+  D-A5e-6) — `ServiceSpec.placement` is a single `PlacementSelector`, so
+  scaling a service to N members does not survive losing its node, which is
+  the main thing an operator would want redundancy for. Needs a
+  placement-selector design (a list, a spread constraint, or a pool), not a
+  supervisor change. A5e makes sure the two placement-change guards would not
+  misread it when it arrives. → **post-M5**.
+- ***`replicas` with a stateful service splits its data across N databases***
+  (§33.14, D-A5e-16) — each member is its own `service_id` and therefore its
+  own SQLite database, while `Redundant` round-robins unkeyed calls across
+  them. Resolved by M7's `[PLT-RED]`, which the overlay's build order already
+  places downstream of this milestone. Recorded as a known property with a
+  documented warning, not as debt A5e could have paid. → **M7**.
+- ***`TopologyMode::Sharded` is compiled by nothing*** — `replicas` sets
+  `Redundant` only, because `Sharded` needs a `ShardingStrategy` manifest
+  surface (slice **S1**) and a routing key on the wire (**S3**) before it is
+  usable. The resolver's `Sharded` arm and its range/rendezvous selection stay
+  exercised by unit tests alone. **The forward coupling stated for S1's
+  benefit (R9):** D-A5e-4's derivation is unconditional (`replicas > 1` ⇒
+  `Redundant`), and S1 adds `ShardingStrategy` to the same `ServiceSpec`, at
+  which point that one line becomes "strategy present ⇒ `Sharded`, else
+  `Redundant`". Naming the line here is the point of the row — "`Sharded` is
+  compiled by nothing" does not tell S1 where to edit. → **S1**,
+  cross-referenced from the overlay.
+- ***Scale-down leaves the removed member deployed*** — `ReconcileAction::
+  Remove` can name a member after phase 3, but the loop still does not
+  undeploy: `Remove` is raised as `OrphanedService` and left to the operator
+  (D-A5c-2's rule, unchanged here). Scaling from 3 members to 2 therefore
+  leaves the third running and publishing its endpoint record until someone
+  removes it by hand. The alert names it, which is the whole of what A5e
+  provides. → **TBD**, pairs with the existing *"Stale `StaticInventory`
+  entries after undeploy"* row, which has the same shape.
+- ***A member removed from the plan keeps its master in the vault*** — nothing
+  forgets a `member-<instance>-<service>-<index>` key after a scale-down, so
+  scaling 2 → 1 → 2 silently reuses the old member 1 master, which is
+  *correct* (the member comes back with its data and its bindings intact) but
+  is never stated anywhere, and there is no verb to forget one deliberately.
+  Worth a decision before an operator relies on either behaviour. → **TBD**.
+- ***No operator surface removes a member's supervisor-side rows, and one of
+  the four tables must never lose them*** (§33.20, D-A5e-18) — `supervisor.wit`
+  has no member-removal verb and `roymctl app forget` reaches only the
+  operator's own `deployments.db`, so `remediation`,
+  `pending_rotation_restarts`, `binding_epochs`, and `revoked_placements`
+  accumulate a row per member that ever existed. Bounded (members ×
+  instances) and mostly inert, so A5e builds no verb. **The row exists to
+  record which table is which before someone writes that verb:**
+  `binding_epochs` must **not** be cleared while the substrate still holds a
+  binding row for the member — `advance_binding_epoch` inserts at 1, so a
+  cleared-and-restored epoch sits below the substrate's held value and every
+  push classifies `Stale` forever. `revoked_placements` must not be cleared at
+  all (D-A5d-15), which is the same constraint the existing *"`revoke-instance`
+  has no path back"* row already carries from A5d. The other two are safe.
+  → **TBD**, and whoever picks it up should read this row before the verb.
+- Whatever A7's own pass finds, if A7 gets one.
+
+---
+
+## §38 — Questions for the requester
+
+**All three answered 2026-08-03, as recommended — see §41.** Kept as written
+rather than rewritten into their answers, so the reasoning that produced
+each recommendation stays readable next to the decision it produced.
+
+Three, and only three: everything else in this pass was decidable from the
+code. Each of these changes what gets built or what the milestone claims.
+
+1. **§33.16 — which slice closes M05A, and when do the traceability rows
+   flip?** `task.md:520` says the milestone closes at the end of A5e;
+   `task.md:580` adds A7 after that sentence was written and says A7 "may land
+   before, after, or alongside A5d/A5e"; `status.md`'s slice table has no A7
+   row at all. Flipping `[LFC-MGT]` and `[FND-IDT]` to Complete is an A5e exit
+   criterion per §17, so the answer decides whether that flip happens at A5e
+   sign-off or waits for A7. **Recommended:** the milestone closes when A5e
+   *and* A7 have both landed, with the flip at whichever is second — A7 is
+   inside the milestone by the same decision that created it, and a
+   traceability row saying "stable service identity: Complete" while the
+   app-instance identity slice is open would be the kind of claim these rows
+   exist to prevent.
+
+2. **§33.1 / D-A5e-1 — confirm rows 15/18 leave the milestone, which reverses
+   §18 question 6's answer.** That answer put the cross-app manifest surface
+   "in scope for A5e rather than deferred past the milestone", and it was
+   given before ADR-0022 (2026-08-02) moved the work to slice S4 and before
+   this pass read the code. Reading it changes the picture in a way the move
+   alone does not: the naming surface is one of four missing pieces, so
+   building it inside A5e would still leave rows 15/18 untestable, while
+   costing a manifest-format change that S4 would then have to work around.
+   The cost to accept explicitly: the exit criterion *"Every row of the
+   failure/security matrix has a test"* is not met at milestone close, and
+   needs a written exception naming two rows out of twenty. **Recommended as
+   written** — the alternative is A5e depending on S2 and S4, which are three
+   slices past this milestone, and the milestone's closing slice cannot be
+   gated on post-milestone work. **Independently verified in review (§39):**
+   the reviewer checked the S4 move against `meta-implementation-plan.md`'s
+   slice table and pickup triggers, confirmed the four-prerequisite argument
+   against the code, and confirmed that every remaining `task.md` A5e item —
+   `replicas`, member-index generalization, the convergence budget and §6
+   trigger, the no-network-hop bench, reference-scenario steps 5-6 — is
+   carried rather than quietly dropped. So what is being asked for here is a
+   decision about scope, not a re-check of the facts behind it.
+
+3. **§33.14 / D-A5e-16 — should the compiler *refuse* `replicas > 1` on a
+   stateful service, or only document the consequence?** N members are N
+   `service_id`s and therefore N separate databases, while `Redundant` mode
+   round-robins unkeyed calls across them: reads and writes for one entity
+   land in different stores, with no error. State replication is M7's
+   `[PLT-RED]`, deliberately downstream of this milestone. The manifest's only
+   marker for "this service uses the structured-data layer" is
+   `ServiceConfig.schema`, and it is a **heuristic** — a service can use the
+   data layer without declaring one — which is exactly why this is not
+   decidable from the code. **Recommended:** refuse at `validate()` when
+   `replicas > 1` and `schema` is present, with an error naming M7, and
+   document the residual case the heuristic misses. Silently splitting an
+   app's data is discovered as data loss, and a manifest-time refusal is
+   cheap to relax when replication lands; the opposite direction is not. The
+   counter-argument is real and worth the requester's judgment: a false
+   refusal blocks a legitimate stateless-with-a-schema service for a reason
+   that will disappear at M7.
+
+---
+
+## §39 — Review response (2026-08-03)
+
+An independent review of Part VI, run against the same HEAD this pass was
+written on. **Eleven findings: five high, three medium, three minor. Every
+citation checked out and every finding is correct against the tree.** All
+eleven incorporated; two with a correction to the proposed fix, noted below.
+
+The review's own framing is worth keeping: five of the eleven are variations
+on one theme this pass named and then under-applied. §33.2 said
+`LogicalServiceRef` stops being unique and listed the *stored* facts. It
+missed the **read** surface (R2), the **join** every health-derived write
+needs (R3), and the **wire** assembly of the epoch (R7) — three more places
+the same key appears, one of which is an exit criterion in its own right. A
+finding that identifies the right invariant and then enumerates it
+incompletely is the failure mode F-A5d-5 caught in Part V, one slice earlier.
+
+| # | Finding | Disposition |
+|---|---|---|
+| **R1** | *(high)* Folding the index into `derive_deterministic_service_id` is not a no-op. Without `--mint-masters` there is no substitution step, so the fabricated id *is* the deployed `service_id`; changing the hash input re-identifies every existing unmastered deployment, and `diff_plans` keys on the logical ref so it emits `Update`, never `Remove` — the old service keeps running and publishing while the new id starts on an empty per-`service_id` database | **Incorporated.** D-A5e-3 revised: the index is folded in **only above index 0**, so index 0 hashes byte-identically to today. Phase 1's "pure refactor" claim now carries the condition that makes it true. Test 50 amended to assert the literal DID rather than the member count, plus new test 71. Verified at [app.rs:584-595](../../../../apps/roymctl/src/commands/app.rs#L584) — the non-mastered arm is `(target_plan.clone(), …)` |
+| **R2** | *(high)* The operator read surface never gains the member dimension: `managed-service.logical-ref`, `binding-convergence.dependent-logical-ref`, `alert.logical-ref`, `instance-status.revoked-placements`, and `minted-master.service-name` are all ambiguous with two members, and no test in §36 touched any of them — while `task.md:759` makes the read surface a deliverable in its own right | **Incorporated** as §33.17 and folded into **D-A5e-2**; tests 72-73. The sharpest half is the one the review found by reading the WIT doc comments against each other: `revoke-instance`'s argument is documented as "the member's full logical reference, **as `status` reports it**", so D-A5e-2 changing that argument without changing `status` would leave the operator with nothing to copy. That is a self-inflicted version of exactly the `service_name`-versus-`vault_name` bug the A5b review already fixed once on this same record |
+| **R3** | *(high)* §33.2 called the health report "already right", but `ServiceHealth` has `logical_ref` + `service_id` and **no index**. Once the alert index and `remediation` are member-keyed, `clear_settled_renewal_alerts`, the never-landed raise/clear loop, and `record_restart_attempt` all need a `service_id → member_index` join the plan never specifies — until then member 1's settled renewal clears member 0's alert row | **Incorporated** as §33.18, **D-A5e-17**, test 74. The review offered the choice "either `service-status`/`ServiceHealth` gains the index or the join is written down"; taken as **both, split by which side owns the concept** — the join is derived from the plan (every affected site already holds it) and lands in `ServiceHealth.member_index`, while the *substrate's* `service-status` WIT is deliberately untouched, since a member index is an app-plan concept the substrate has never had |
+| **R4** | *(high)* `BindingConflict` is raised in two places and cleared in none, unlike every other `AlertKind`. D-A5e-8 named the condition but not where `handle_status` reads it or when it stops being true, so one failed push would pin the instance `Degraded` forever; test 67 asserted only the `Degraded` direction | **Incorporated** as §33.19 and a revised **D-A5e-8**: `push_bindings` gains the clear site beside its raise sites, and `Degraded` derives from the active conflict set — one mechanism closing both the missing clear and the missing read, with no new store column. Tests 75-76. The gap was invisible while A5c had no production caller, which is precisely why D-A5e-7 is the finding that exposes it |
+| **R5** | *(high)* Test 70 asserts the push and the absence of a reinstall, but not reference-scenario step 5's actual claim — that `frontend` resolves across both members. As described it passes even when the dependent's substrate still holds `Singleton` and sends every call to member 0, which is the exact silent failure §33.4 exists to prevent | **Incorporated.** §33.4 extended with the mode's wire path (`target_modes` → `WitDependencyBinding.mode` → the dependent's `TopologyEntry`), test 70's step 5 amended to assert resolution across both, and new unit test 77 asserting the mode flips on the wire. The strongest finding in the round: this pass diagnosed the `Singleton` trap and then wrote a test that would not have caught it |
+| **R6** | *(medium)* `task.md` row 11 states as current fact both that `InstanceStatus.state` does not turn `Degraded` from a `BindingConflict` and that `push_bindings` has no production caller. D-A5e-7 and D-A5e-8 falsify both halves, and §37's doc list named only rows 15/18 and 5/6/7 | **Incorporated** into §37, with the correction that row 11 needs **rewriting rather than annotating** — both of its halves become false, including the reasoning that justified its unit-only evidence. Row 14's revocation half also changes shape once `revoke-instance` takes a member ref |
+| **R7** | *(medium)* The epoch's wire assembly is an unnamed call site: `map_deployment_plan_to_wit`'s `binding_epochs` map keyed by `LogicalServiceRef`, its `.get(&svc.logical_ref)` lookup, and `write_bindings_at_epoch`'s single-entry map | **Incorporated** into **D-A5e-2**, with the rule the review says it implies stated explicitly: the binding epoch is **per dependent member**, since each member holds its own `service_bindings` row on the substrate. That is what makes D-A5e-7's per-member push coherent rather than incidental. Test 78. The review is right that it is a compile break, not a silent one — listed anyway, because D-A5e-2's list is exhaustive everywhere else and a reader would take the omission as a decision |
+| **R8** | *(medium)* Nothing forgets a removed member's rows in the four re-keyed tables; A5a set the opposite precedent for `app_instance_owners` | **Incorporated as §34's D-A5e-18, with a correction to the fix.** Forgetting on *plan removal* would be wrong here for a reason A5a did not face: the loop does not undeploy a service dropped from the plan (D-A5c-2 raises `OrphanedService` and leaves it running), so a scaled-down member is still live and still needs the rows that describe it. Forgetting is therefore scoped to an **explicit operator removal**, and `revoked_placements` is excluded on every path — dropping a revocation row for a running process would silently re-admit a revoked key on the next `submit`, reopening the hole D-A5d-15 exists to close |
+| **R9** | *(minor)* D-A5e-4's derivation is unconditional, and S1 adds `ShardingStrategy` to the same `ServiceSpec`, at which point it has to become "strategy present ⇒ `Sharded`, else `Redundant`" — which §37's backlog row does not say | **Incorporated** into the `Sharded` backlog row. The point is well taken that "`Sharded` is compiled by nothing" tells S1 that a gap exists but not where to edit, which is the difference between a row that gets picked up correctly and one that gets re-derived |
+| **R10** | *(minor)* §33.1 item 4's "a supervisor holds member masters by construction" is stronger than the tree: a supervisor that `adopt`s an attended deployment holds none until the operator imports one, which is why `master_for_member` fails rather than mints | **Incorporated**, narrowed in place. The masterless state is a custody gap the error message tells the operator to repair, not a posture the app owner chose, so item 4's conclusion survives — and, as the review says, items 1-3 already carry D-A5e-1 without it |
+| **R11** | *(minor)* D-A5e-10 gives clause two one cause; it has two. An unreachable dependent's convergence is bounded by `poll_interval_secs` **and** by the absence of durable delivery — ADR-0021 §5's "after M5" half, deferred to A6 | **Incorporated** into D-A5e-10. Named in the write-up so a clause-two miss is not read as a tuning problem when what is missing is the outbox. This matters more than its "minor" tag suggests: D-A5e-10's whole purpose is keeping a clause-two miss from firing ADR-0021 §6's redesign trigger, and "it is the poll interval" would have been the wrong diagnosis half the time |
+
+**One thing the review checked that this pass should have stated itself.** Its
+"not gaps" section verified that A5e's scope reduction is declared rather than
+silent, that the S4 move matches `meta-implementation-plan.md`'s slice table
+and pickup triggers, and that every remaining `task.md` A5e item is carried.
+That is the check §38 question 2 asks the requester to make, and the review
+having made it independently against the code is worth recording next to the
+question rather than only here.
+
+**Test count: 70 → 79.** New decisions this round: **D-A5e-17** (the
+`service_id → member_index` join), **D-A5e-18** (member-row forgetting, scoped
+to explicit removal). Revised in place: **D-A5e-2** (read surface, epoch wire
+assembly), **D-A5e-3** (index 0 preserves today's hash), **D-A5e-8**
+(`BindingConflict`'s clear site), **D-A5e-10** (clause two's second cause).
+
+---
+
+## §40 — Second review response (2026-08-03)
+
+A second review, run against the §39 revisions rather than the original pass.
+**Four findings: two blocking, two precision.** All four correct, all four
+incorporated. Every one of them is a defect **introduced by §39's own fixes**,
+which is the useful thing about this round: three of the four are cases where
+a fix named a mechanism without checking that the mechanism exists or that its
+two ends match.
+
+| # | Finding | Disposition |
+|---|---|---|
+| **S1** | *(blocking)* D-A5e-18's forgetting has no caller. `supervisor.wit`'s twelve functions include no member removal, and `roymctl app forget` opens the operator's own `deployments.db` and contacts no substrate — it cannot reach `supervisor.db`. So the four re-keyed tables are never forgotten by any path and test 79 exercised a function nothing calls | **Incorporated** as §33.20; **D-A5e-18 rewritten, mechanism withdrawn.** The review offered two ways out — name a new verb with its authorization and lock, or hang the forget off an existing verb — and this pass takes **neither**, for a reason the finding did not reach: forgetting `binding_epochs` is *unsafe*. `advance_binding_epoch` inserts at 1 ([store.rs:182-188](../../../../crates/app_supervisor/src/store.rs#L182)), so a forgotten-and-restored epoch sits below the epoch the substrate still holds and every push classifies `Stale` permanently. A5e therefore builds no verb, states which table may never be forgotten and why, and pins it with a replaced test 79. The backlog row is written for whoever does build the verb later |
+| **S2** | *(blocking)* D-A5e-8's clear will not match its raise sites. Both `BindingConflict` raises write `svc.substrate` — a `SubstrateAlias`, empty on fallback placement — into the `substrate_did` column, while every existing clear passes a real DID off the health report. With the alert index keyed on `substrate_did`, a clear "in the shape every other kind uses" finds nothing, the alert stays active, and the instance stays `Degraded` forever | **Incorporated** as §33.21, folded into **D-A5e-8**; test 80. Taken in the direction the review offered as the alternative — **the raise sites are corrected to the real DID**, not the clear bent to match a wrong key: an alias sitting in a DID column is wrong on the operator's read surface independently of the clear, and cannot be correlated with anything. The review flagged that this changes rows A5c already writes; it does not in practice, because `push_bindings` has no production caller until D-A5e-7, so no such row has ever been written outside a test. That is worth stating in the plan, since it is the reason the correction is free now and would not be later. The finding is the sharper of the two blockers: §33.19 diagnosed a missing clear and the fix would have reproduced the same permanent-`Degraded` failure one layer down |
+| **S3** | *(precision)* D-A5e-17 names the wrong carrier. The sdk builds `ServiceHealth` at five sites from the caller-supplied `ExpectedService`, which is where the index belongs — it is already the "the caller resolves it" boundary its own doc describes. `roymctl app status` builds these too and would pass `None`, which `Option<u32>` handles but which someone should decide rather than discover | **Incorporated**, with the decision the finding asks for made rather than deferred: the field is a plain **`u32`**, not `Option<u32>`. All four `ExpectedService` construction sites — two in `roymctl`, two in the supervisor — iterate `plan.services` and hold the `PlannedService`, so no site would have to invent an absent value, and `Option` would only create a case for someone to get wrong. Test 81 asserts it at each site, `roymctl`'s included |
+| **S4** | *(precision)* §39's closing note says the review's independent verification of the S4 move "is worth recording next to the question rather than only here", and §38 question 2 was left unchanged — the one item in §39 claiming an edit that did not happen | **Incorporated.** §38 question 2 now carries it, and says what it is for: the requester is being asked for a scope decision, not a re-check of the facts under it, since those were verified independently |
+
+**What this round says about the previous one.** §39 closed with the
+observation that "the enumeration is the hard part here, not the diagnosis".
+S1 and S2 are the same lesson applied to fixes rather than findings: a fix
+that names a call site (`app forget`'s shape) or an existing pattern ("the
+shape every other kind uses") inherits an obligation to check that the site
+exists and that the pattern actually matches at both ends. Both fixes read as
+correct and neither was. Worth carrying into implementation, since the same
+two moves — reuse an existing verb, mirror an existing pattern — are the ones
+an implementer will reach for most often in this slice.
+
+**Test count: 79 → 81** (test 79 replaced, 80-81 added). Rewritten:
+**D-A5e-18** (mechanism withdrawn). Extended: **D-A5e-8** (raise-site
+`substrate_did` correction), **D-A5e-17** (carrier is `ExpectedService`,
+`u32` not `Option<u32>`).
+
+---
+
+## §41 — Requester decisions (2026-08-03)
+
+All three §38 questions answered before implementation started. All three
+taken as recommended, no changes to the plan.
+
+1. **Milestone close (§33.16).** The milestone closes when **A5e and A7 have
+   both landed**, and `[LFC-MGT]`/`[FND-IDT]` flip to Complete at whichever
+   lands second.
+2. **Rows 15/18 (§33.1, D-A5e-1).** Confirmed struck from A5e and re-scoped to
+   S4, with the exit criterion's exception written down naming both rows and
+   all four prerequisites.
+3. **Stateful `replicas` (§33.14, D-A5e-16, §38 Q3).** The compiler **refuses**
+   `replicas > 1` combined with a declared `schema` at `validate()`, naming
+   M7 as the reason it will relax.
+
+Implementation proceeds per §35's six phases, in order, each phase's own
+tests green before the next starts.
+
+---
+
+## §42 — Third review response (2026-08-03)
+
+Two findings, both enumeration errors in this document, both in the same three
+loops. **Both correct; both incorporated.** One is a miscount that a compiler
+would catch. The other is the only defect surfaced across three review rounds
+that **fails silently** — it compiles, it runs, and it reports every instance
+permanently `Degraded`.
+
+| # | Finding | Disposition |
+|---|---|---|
+| **T1** | *(precision)* D-A5e-17 says "all four `ExpectedService` construction sites". There are **six** in production; the missing pair is `handle_status`'s own near-duplicate builder ([service.rs:2860, :2868](../../../../crates/app_supervisor/src/service.rs#L2860)), the second half of the double connect §19.9 already named — plus the `health_monitoring_e2e.rs:331` fixture. Both extra sites iterate `plan.services` and hold the `PlannedService`, so the `u32`-not-`Option` reasoning survives; only the enumeration was wrong. A compile break, but test 81 was specified as "one assertion per construction site" and would have been written to a list of four | **Incorporated.** D-A5e-17's count corrected to six, with `handle_status`'s pair named rather than folded into "the supervisor's", and test 81 respecified against all six. The miscount is mine and it is the plainest kind: the grep output listing all six is in this pass's own working notes, and four of them were read |
+| **T2** | *(blocking, silent)* Three `current_placement` callers are unaccounted for — `service.rs:434`, `service.rs:2858`, `app.rs:852`, the three health-expectation builders. Once D-A5e-2 re-keys the journal's action rows to `MemberRef`, each compares a logical-ref string against member-ref rows: it still type-checks, still compiles, and never matches. Every service takes the `None` arm, gets an empty `substrate_did`, lands in `missing_placement`, and D-A5c-10 turns that into a permanent `Degraded` | **Incorporated** as §33.22, folded into **D-A5e-2** and **D-A5e-17**; test 82. **One correction, which makes the finding worse:** this is not confined to scaled services. The re-key changes the journal's key format for single-member services too, so an unscaled deployment breaks identically — every service of every instance reports `Degraded` and is never polled at all. The review is right that it is one edit per loop rather than a new phase, since D-A5e-17 already opens all three; it is recorded as its own finding because it is a different defect (a read-key mismatch, not a missing field) and because its failure mode is the one thing in three rounds that neither compiles away nor announces itself |
+
+**The rule T2 implies, now written into D-A5e-2 rather than left as an
+instance.** Re-keying the journal's action rows is a *write*-side change with
+a *read*-side obligation, and the eight `current_placement` callers are the
+complete list of the reads. §33.2's original table enumerated the sites that
+**write** each key and, for the journal, stopped there. Every re-keyed store
+in this slice deserves the same two-sided check — which for the four
+`SupervisorStore` tables is already satisfied, since each has its accessor
+pair in `store.rs`, and for the alert index is what §33.21 found the hard way.
+
+**What three rounds of review say about this pass.** §39 found the invariant
+under-enumerated across three surfaces. §40 found two *fixes* that named a
+call site and a pattern without checking either. §41 found the enumeration
+wrong twice more in loops the plan had already opened. The diagnosis in this
+document has held up in every round; the counting has not, three times.
+That is worth stating plainly for whoever implements it: **treat every list of
+call sites in Part VI as a starting point to re-derive with a grep, not as a
+finished inventory** — including this sentence's own list.
+
+**Test count: 81 → 82.** Corrected: **D-A5e-17** (six construction sites, not
+four). Extended: **D-A5e-2** (the three read-side `current_placement`
+callers, and the write/read rule behind them).

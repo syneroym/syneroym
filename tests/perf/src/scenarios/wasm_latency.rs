@@ -56,8 +56,10 @@ pub async fn run_scenario() -> Result<()> {
     let engine = AppSandboxEngine::build_wasm_engine(None, None)?;
     let linker = AppSandboxEngine::build_wasm_linker(&engine)?;
     let component = Component::new(&engine, &wasm_bytes)?;
-    let expected_result =
-        serde_json::json!("Hello, BenchmarkUser! Greetings from greeter::greet::greet");
+    // `greet`'s reply also echoes this instance's own `component_id` (M05A
+    // Slice A5e, `greeter`'s `context::get-test-context`), so only the fixed
+    // prefix is checked below.
+    let expected_result_prefix = "Hello, BenchmarkUser! Greetings from greeter::greet::greet";
 
     let interface_name = GREETER_INTERFACE_NAME;
     let method_name = "greet";
@@ -231,7 +233,7 @@ pub async fn run_scenario() -> Result<()> {
         let res = app_client
             .request(interface_name, method_name, serde_json::json!(["BenchmarkUser"]))
             .await?;
-        assert_eq!(res.result, expected_result);
+        assert!(res.result.as_str().is_some_and(|s| s.starts_with(expected_result_prefix)));
         via_substrate_latencies.push(start.elapsed().as_micros() as u64);
     }
 

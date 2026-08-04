@@ -30,21 +30,19 @@ use syneroym_sdk::{SyneroymClient, deploy};
 /// command for a longer- or shorter-lived one.
 const DEFAULT_INSTANCE_CERT_EXPIRES_HOURS: u64 = 24;
 
-/// `<dir>/identities/member-<app_instance_id>-<service_name>-<index>.key`'s
+/// `<dir>/identities/member-<app_instance_id>#<service_name>-<index>.key`'s
 /// stem. `index` is the member ordinal (`0` for a `Singleton`).
 ///
-/// `LogicalServiceName` already forbids `/`, but `AppInstanceId` has no
-/// validator -- checked here so a name containing a path separator is
-/// rejected before it can escape the identities directory.
-pub fn member_master_name(logical_ref: &LogicalServiceRef, index: u32) -> Result<String> {
-    let app_instance_id = logical_ref.app_instance_id.to_string();
-    if app_instance_id.contains('/') {
-        anyhow::bail!(
-            "app instance id '{app_instance_id}' must not contain '/': it becomes part of a \
-             member master's file name"
-        );
-    }
-    Ok(format!("member-{app_instance_id}-{}-{index}", logical_ref.service_name))
+/// The `app_instance_id`/`service_name` boundary is `#`, not `-` (M05A A5e,
+/// D-A5e-12): both id types forbid `/` and `#` at construction, but neither
+/// forbids `-`, so instance `a` + service `b-c` and instance `a-b` +
+/// service `c` would otherwise both stem to `member-a-b-c-0` -- one master
+/// key handed to two different app instances. `#` is forbidden in both, so
+/// it always marks the true boundary regardless of what either segment
+/// contains. Kept in sync with `crates/app_supervisor/src/keys.rs`'s own
+/// `member_master_name`.
+pub fn member_master_name(logical_ref: &LogicalServiceRef, index: u32) -> String {
+    format!("member-{}#{}-{index}", logical_ref.app_instance_id, logical_ref.service_name)
 }
 
 fn member_master_path(dir: &Path, name: &str) -> PathBuf {
@@ -85,7 +83,7 @@ pub fn resolve_member_master(dir: &Path, name: &str) -> Result<Identity> {
 /// the moment a supervisor scales a service (A5's own reference-scenario
 /// step 5).
 pub fn deployed_service_id(dir: &Path, svc: &PlannedService) -> Result<String> {
-    let name = member_master_name(&svc.logical_ref, 0)?;
+    let name = member_master_name(&svc.logical_ref, svc.member_index);
     Ok(match resolve_member_master(dir, &name) {
         Ok(id) => substrate::derive_did_key(&id.public_key()),
         Err(_) => svc.service_id.to_string(),
@@ -172,7 +170,7 @@ pub async fn substitute_and_certify_members(
     let mut substitution: BTreeMap<ServiceId, ServiceId> = BTreeMap::new();
     let mut masters: BTreeMap<ServiceId, Identity> = BTreeMap::new();
     for svc in &plan.services {
-        let name = member_master_name(&svc.logical_ref, 0)?;
+        let name = member_master_name(&svc.logical_ref, svc.member_index);
         let master = resolve_or_mint_member_master(dir, &name)?;
         let master_did = ServiceId::try_new(substrate::derive_did_key(&master.public_key()))
             .context("substrate-derived master DID failed ServiceId validation")?;
@@ -238,20 +236,35 @@ mod tests {
 
     #[test]
     fn member_master_name_is_deterministic() {
-        let name = member_master_name(&logical_ref("inst-1", "backend"), 0).unwrap();
-        assert_eq!(name, "member-inst-1-backend-0");
+        let name = member_master_name(&logical_ref("inst-1", "backend"), 0);
+        assert_eq!(name, "member-inst-1#backend-0");
     }
 
     #[test]
     fn member_master_name_carries_the_index() {
-        let name = member_master_name(&logical_ref("inst-1", "backend"), 2).unwrap();
-        assert_eq!(name, "member-inst-1-backend-2");
+        let name = member_master_name(&logical_ref("inst-1", "backend"), 2);
+        assert_eq!(name, "member-inst-1#backend-2");
     }
 
+    /// M05A A5e closed this one layer up: `AppInstanceId::try_new` itself
+    /// refuses a path separator now, so a `LogicalServiceRef` carrying one
+    /// can no longer be constructed at all, and `member_master_name` needs
+    /// no defensive check of its own.
     #[test]
-    fn member_master_name_rejects_an_app_instance_id_containing_a_path_separator() {
-        let err = member_master_name(&logical_ref("inst/../escape", "backend"), 0).unwrap_err();
-        assert!(err.to_string().contains('/'));
+    fn an_app_instance_id_containing_a_path_separator_is_refused_at_construction() {
+        assert!(AppInstanceId::try_new("inst/../escape").is_err());
+    }
+
+    /// D-A5e-12: the pre-existing collision this slice closes -- instance
+    /// `a` + service `b-c` and instance `a-b` + service `c` used to both
+    /// stem to `member-a-b-c-0` under the old `-`-only boundary. The `#`
+    /// boundary keeps them apart because both id types forbid `#`, so `-`
+    /// inside either segment can never be mistaken for the separator.
+    #[test]
+    fn member_master_name_cannot_collide_across_two_instance_and_service_pairs() {
+        let a_bc = member_master_name(&logical_ref("a", "b-c"), 0);
+        let ab_c = member_master_name(&logical_ref("a-b", "c"), 0);
+        assert_ne!(a_bc, ab_c);
     }
 
     #[test]
@@ -296,6 +309,7 @@ mod tests {
             },
             resolved_dependencies: BTreeMap::new(),
             topology_mode: TopologyMode::Singleton,
+            member_index: 0,
         }
     }
 
@@ -309,9 +323,29 @@ mod tests {
         assert_eq!(deployed_service_id(dir.path(), &svc).unwrap(), "did:key:hFabricated");
 
         // A local member master exists: its derived DID wins.
-        let name = member_master_name(&l_ref, 0).unwrap();
+        let name = member_master_name(&l_ref, 0);
         let master = resolve_or_mint_member_master(dir.path(), &name).unwrap();
         let real_did = substrate::derive_did_key(&master.public_key());
         assert_eq!(deployed_service_id(dir.path(), &svc).unwrap(), real_did);
+    }
+
+    /// D-A5e-5/D-A5e-11: member 1's own local master file must win, not
+    /// member 0's -- `deployed_service_id` reads `svc.member_index` rather
+    /// than the literal `0` it used to.
+    #[test]
+    fn deployed_service_id_reads_the_members_own_index_rather_than_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let l_ref = logical_ref("inst-1", "backend");
+        let mut svc = planned_service(l_ref.clone(), "did:key:hFabricated");
+        svc.member_index = 1;
+
+        let name0 = member_master_name(&l_ref, 0);
+        let master0 = resolve_or_mint_member_master(dir.path(), &name0).unwrap();
+        let name1 = member_master_name(&l_ref, 1);
+        let master1 = resolve_or_mint_member_master(dir.path(), &name1).unwrap();
+        assert_ne!(master0.public_key(), master1.public_key());
+
+        let expected_did = substrate::derive_did_key(&master1.public_key());
+        assert_eq!(deployed_service_id(dir.path(), &svc).unwrap(), expected_did);
     }
 }

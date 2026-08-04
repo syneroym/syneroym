@@ -336,6 +336,7 @@ fn expected(name: &str, service_id: &str, did: &str) -> ExpectedService {
         },
         service_id: service_id.to_string(),
         substrate_did: did.to_string(),
+        member_index: 0,
     }
 }
 

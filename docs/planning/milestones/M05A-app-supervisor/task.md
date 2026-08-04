@@ -511,13 +511,42 @@ rows:
   `VaultLocked` alert from honest reporting to the single control between a
   routine restart and an outage. Recorded in the developer guide in the
   operator's own terms.
-- **A5e — scale-out, cross-app, budgets.** Not started. `ServiceSpec.
-  replicas` + multi-member compiler, the cross-app `Bind` manifest surface,
-  the ADR-0021 §7 probe, the convergence budget and §6 trigger evaluated in
-  writing, the no-network-hop Criterion bench. Closes matrix rows 15, 18;
-  reference-scenario steps 5-6.
+- **A5e — scale-out, budgets.** ✅ Complete (2026-08-04, plan Part VI,
+  phases 1-6). **Rescoped from the seven-item sketch this bullet originally
+  named** — see the plan's §33.1/D-A5e-1: the cross-app `Bind` manifest
+  surface and the ADR-0021 §7 probe left the milestone on 2026-08-02, into
+  ADR-0022's Logical Service Discovery Overlay as slice **S4**, which needs
+  S0-S2 first and is at minimum three slices past this milestone. Building
+  the naming surface here would not have made matrix rows 15/18 testable
+  regardless — it is one of four missing pieces, the other three (the
+  compiler resolving `Bind` at all, the substrate's intra-app placement
+  refusal, and S2's topology document) sitting outside A5e's reach too.
+  `replicas` turned out not to be a compiler feature but **the key change of
+  the slice** (§33.2): the `MemberRef { logical_ref, index }` type replaces a
+  bare `LogicalServiceRef` string everywhere a stored, reported, or wire-level
+  fact identifies a managed unit — four `SupervisorStore` tables, the alert
+  index, the deployment journal's action rows, every member-naming field of
+  the `supervisor` interface, and the binding epoch's own wire assembly.
+  Ships: the manifest's `ServiceSpec.replicas` (capped at 16, refused
+  alongside a declared `schema` until M7's state replication lands);
+  `replicas > 1` compiling to `TopologyMode::Redundant`; the loop's
+  membership-change classifier giving `push_bindings` its first production
+  caller, so a scale-out reaches every dependent member with a push, not a
+  redeploy; `Degraded` derived from an active `BindingConflict`, with the
+  clear site it never had; the `LogicalResolver::resolve` Criterion bench
+  (`crates/app_orchestration/benches/resolver.rs`, not
+  `crates/router/benches/proxy.rs` as the backlog row's own text expected —
+  `ProxyRouter` has no dependency target); and the convergence budget and
+  ADR-0021 §6 trigger, measured and written down. Closes matrix rows 5, 6, 7
+  (live scale-out evidence), 11 (now reachable, not just unit-proven); rows
+  15/18 move to **S4** rather than close here (D-A5e-1) — see the exit
+  criteria's explicit exception below.
 
-**Milestone closes at the end of A5e.**
+**Milestone closes when A5e and A7 have both landed**, whichever lands
+second flipping `[LFC-MGT]`/`[FND-IDT]` to Complete in the traceability
+matrix (§41 answer 1 of the A5e plan's Part VI) — corrected from this
+section's original "closes at the end of A5e," written before A7 was pulled
+forward into the milestone (2026-08-02).
 
 ---
 
@@ -698,15 +727,15 @@ fail.
 | 8 | **A second supervisor that has not adopted the instance issues a write** | Its presented generation is lower than the one an adopting supervisor holds; rejected, no flapping. (Corrected wording, §0.10: the original "second supervisor adopts" describes a supervisor that *did* adopt, which correctly wins with a *higher* generation — this row is about one that never did.) **✅ A5a substrate mechanism** (`check_generation`'s `Ordering::Less` case, `crates/control_plane/src/service/orchestration.rs`); **✅ A5b live proof**: `a_second_supervisor_that_has_not_adopted_loses_every_write` (`crates/substrate/tests/supervisor_interface_e2e.rs`) |
 | 9 | **Supervisor finds a *higher* generation than its own** | Stops managing that instance and alerts; never self-increments (ADR-0021 §4). **✅ A5b substrate mechanism**: `SupervisorService::handle_status` reads the max held generation across every substrate the *plan* places a service on (not only ones this supervisor's own journal already shows landed) on every sweep and raises `AlertKind::SupervisorSuperseded` when it exceeds the supervisor's own stored generation (`crates/app_supervisor/src/service.rs`); **✅ A5b live proof**: `a_supervisor_that_reads_a_higher_generation_marks_the_instance_superseded_and_alerts` (`crates/substrate/tests/supervisor_interface_e2e.rs`) |
 | 10 | Deploy retried after a lost response | Idempotent no-op for identical (instance, service, content hash). **✅ A5a**: `deploy_with_context` hashes `(manifest, app_context-minus-generation)` with blake3 and short-circuits to `Ok(())` on an identical redeploy, distinct from the epoch guard and the generation gate (ADR-0021 §3). **Post-review correction (2026-08-02, finding E-1):** the row was credited complete against a test that leaves `instance_certificate`/`registry_certificate` `None` on every call. Both are minted fresh (a new signature, a `SystemTime::now()`-derived expiry) on every real apply through *either* deploy path (`roymctl app deploy` or the supervisor), so hashing them raw made the hash differ every time regardless of content -- the no-op branch was unreachable outside a test that never populates them. Fixed: the hash now covers each certificate's stable identity fields (`master_did`/`temporary_did`/`scope` for the instance certificate; `service_id`/`substrate_id`/`endpoint_type`/`mechanisms`/`nickname`/`is_private`/`ttl` for the registry certificate), not the freshness-bearing ones, with a regression test (`an_identical_redeploy_with_freshly_minted_certificates_is_still_a_no_op`) reproducing two independently-issued, byte-different certificates for the same member. |
-| 11 | Dependent unreachable during a push | Retried; a `BindingConflict` alert raised and visible on the operator read surface. **✅ A5c**, test **47 (unit)** — a fake `SubstrateActor` whose `write_bindings` fails on one pass and succeeds on the next. Deliberately not an e2e (A5c §0 pass §23, review F8): §19.18 shows A5c has no reachable membership change, so any two-node trigger would be a fixture reaching into `supervisor.db` on a running node, while the substrate-side wire path is already proven live by A5a's `binding_push_e2e.rs`. **Post-review correction (2026-08-02):** this row previously read "instance marked `Degraded`", which test 47 never actually asserted -- `push_bindings`'s own failure used to propagate with no alert raised at all (review finding A-5), fixed by raising `BindingConflict` on the actor-level failure too, not only on a clean `Stale`/`Conflict` outcome. `InstanceStatus.state` itself still does not turn `Degraded` from a `BindingConflict` alone (only from a health fault or a never-landed placement) -- `push_bindings` has no production caller this slice regardless (D-A5c-16 defers the trigger to A5e), so there is no live path that would exercise it. What this row tests today is: push fails, a `BindingConflict` alert is raised and stored, the epoch has still advanced, and a retried push succeeds cleanly -- entirely supervisor-side control flow. |
+| 11 | Dependent unreachable during a push | Retried; a `BindingConflict` alert raised and visible on the operator read surface, and the instance reports `Degraded` while it is active. **✅ A5c** built the mechanism at unit scale (test 47, a fake `SubstrateActor` whose `write_bindings` fails on one pass and succeeds on the next); **✅ A5e makes it live** (D-A5e-7/D-A5e-8, this row **rewritten rather than annotated** since A5e falsifies both halves the previous wording relied on). The loop's own membership-change classifier is `push_bindings`'s first production caller — a scale-out is the trigger, exercised end to end by `reference_scenario_e2e.rs`. `InstanceStatus.state` now does turn `Degraded` from the active `BindingConflict` set (derived, no new store column), and clears the moment a retried push lands cleanly — the raise/clear pairing every other `AlertKind` already had, closed here (§33.19/§33.21) along with a correction to what the raise sites wrote into the alert's `substrate_did` column (a `SubstrateAlias` before this slice, the real DID after). Unit tests 64-67, 75-78, 80 cover the classifier, the clear/`Degraded` pairing, and the corrected column; the e2e proves the sequence live. |
 | 12 | Partial app deploy (3 of 5 services) | No rollback; `Degraded`; failed services retried. **✅ A5c**, tests 10, 11 (unit) and **48 (e2e)** — two real nodes, one stopped at submit time; `svc-a` lands, `svc-b` stays `Degraded`/missing, and the loop retries only `svc-b` once its node returns, with `svc-a` never rolled back. `overall_state` derives `Degraded` from "planned but never landed" (D-A5c-10) rather than widening what a fault means. Building the e2e also surfaced two gaps not named by the `§0` pass: `handle_submit` reordered to persist desired state before its own best-effort deploy attempt, and the loop's filtered plan narrowed to only the substrates it actually connected to this pass (see the A5c bullet above) — both needed for a plan spanning two substrates, one of them down, to land what it can rather than nothing. |
 | 13 | Remediation exceeds max attempts | Terminal `Degraded`; alerting only; no restart loop. **✅ A5c**, tests **37, 38** (unit). Reached only from `InstanceNotRunning`: `ProbeFailing` is alert-only and never consumes an attempt (D-A5c-17), and `SubstrateUnreachable` never did (D-A4-13). The terminal flag is escapable — `force-reconcile` and `adopt` clear it (D-A5c-20), since a service nothing will restart cannot clear it by becoming healthy |
 | 14a | Supervisor holds master keys and is **superseded** | Its lifecycle actions are refused at the substrate, so a stale supervisor cannot act on instances it no longer manages. **✅ A5a**: `restart`/`undeploy`/`write-bindings`/`deploy` all carry the generation gate (§0.23), proven by `undeploy_is_rejected_at_a_lower_generation` (`crates/control_plane/src/service/orchestration.rs`) — the most destructive lifecycle action there is. **✅ A5d** extends the same gate to `renew-cert` (`renew_cert_respects_the_same_generation_gate_as_restart`) |
-| 14b | Supervisor holds master keys and is **compromised** | Blast radius bounded to the members it manages; instance certificates short-lived and revocable (ADR-0020 §3). **✅ A0** proved the property at unit scale against an in-memory mock: an instance certificate is revocable without touching the member master, and a fresh instance key from the same master still verifies (`a_revoked_instance_key_is_rejected_while_the_member_master_still_certifies_a_new_one`, `crates/router/src/handshake.rs`). **✅ A5d** supplies what that mechanism never had — a production writer and an operator surface: `roymctl supervisor revoke-instance` (`RegistryClient::revoke_instance_key`, D-A5d-10/D-A5d-15), proven end to end against a real registry and the real ingress check by `a_revoked_instance_key_handshake_fails_while_a_fresh_one_verifies` (`crates/substrate/tests/cert_renewal_e2e.rs`). "Short-lived" is now real too: the supervisor mints every certificate at `renewed_cert_expires_hours` (4h) and renews unattended. **Note these are two distinct properties, not one:** a generation gate does nothing about a supervisor that is still the current manager and has been compromised, and revocation does nothing about a stale supervisor that was never compromised |
-| 15 | Bound cross-app dependency replaced, **online-key posture** | Active probe fails on a call the supervisor makes *as the depending member*; A's owner alerted (ADR-0021 §7). **Carries an unstated prerequisite** (§0.9): `AppDependencySpec::Bind { instance }` names a bound app *instance*, not a service inside it, so there is no manifest surface yet for "which service of app B does app A depend on" — the compiler cannot resolve a cross-app `Bind` at all until one exists. Scoped to **A5e** along with the manifest surface itself |
+| 14b | Supervisor holds master keys and is **compromised** | Blast radius bounded to the members it manages; instance certificates short-lived and revocable (ADR-0020 §3). **✅ A0** proved the property at unit scale against an in-memory mock: an instance certificate is revocable without touching the member master, and a fresh instance key from the same master still verifies (`a_revoked_instance_key_is_rejected_while_the_member_master_still_certifies_a_new_one`, `crates/router/src/handshake.rs`). **✅ A5d** supplies what that mechanism never had — a production writer and an operator surface: `roymctl supervisor revoke-instance` (`RegistryClient::revoke_instance_key`, D-A5d-10/D-A5d-15), proven end to end against a real registry and the real ingress check by `a_revoked_instance_key_handshake_fails_while_a_fresh_one_verifies` (`crates/substrate/tests/cert_renewal_e2e.rs`). "Short-lived" is now real too: the supervisor mints every certificate at `renewed_cert_expires_hours` (4h) and renews unattended. **✅ A5e** re-keys `revoke-instance`'s own argument from a bare `logical-ref` to a `MemberRef` string (`<app_instance_id>/<service_name>#<index>`, D-A5e-2) — with `replicas`, the argument is now scoped to **one member**, not automatically the whole logical service, and revoking one member's key leaves its siblings renewable and recertified by the next `submit` (test 62). **Note these are two distinct properties, not one:** a generation gate does nothing about a supervisor that is still the current manager and has been compromised, and revocation does nothing about a stale supervisor that was never compromised |
+| 15 | Bound cross-app dependency replaced, **online-key posture** | Active probe fails on a call the supervisor makes *as the depending member*; A's owner alerted (ADR-0021 §7). **Moved to slice S4** of the Logical Service Discovery Overlay (ADR-0022, D-A5e-1), not A5e: reading the code (A5e §33.1) found the cross-app manifest surface is only one of **four** missing pieces — the compiler does not resolve `Bind` at all, the substrate refuses any intra-app-scoped binding write across app instances, A's supervisor has no directory to learn B's member set through, and the probe's posture split has nothing to report without one. All four sit behind S0-S2, which are themselves post-milestone, so A5e does not depend on S4 and S4 does not depend on A5e. **Named exception to this milestone's own exit criterion** "every row of the failure/security matrix has a test": rows 15 and 18 are the two that do not get one here |
 | 16 | **`security` call (`inject-kek`/`rotate-kek`/`set-secret`) without `substrate/admin`** | Rejected. **✅ P0**: `security_is_denied_without_substrate_admin` (`crates/control_plane/src/service.rs`) |
 | 17 | **Deploy to an unowned substrate once F4 flips** | Rejected; the bootstrap path becomes establishing ownership with the P0 tool, not an open deploy grant. **✅ P0**: `an_unowned_substrate_grants_no_node_wide_capability` (`crates/control_plane/src/service.rs`) |
-| 18 | Bound cross-app dependency replaced, **attended posture** | No master key, so no active probe: detection is passive, on the first real call that fails. Weaker by design, and the operator chose it. Same prerequisite as row 15 — scoped to **A5e** |
+| 18 | Bound cross-app dependency replaced, **attended posture** | No master key, so no active probe: detection is passive, on the first real call that fails. Weaker by design, and the operator chose it. **Moved to S4 along with row 15** — same four prerequisites, none of them A5e's to build |
 | 19 | **Member reinstantiated under a policy declaring `expected_asserter_did`** | Its cross-service `RelationshipProof` still verifies. **✅ A2**: `RelationshipProof` carries an optional `delegation`; `sign`/`verify` assert and check under the certificate's master when one is installed (`a_proof_signed_by_an_instance_key_with_a_certificate_verifies_against_the_master`, `crates/rpc/src/relationship_proof.rs`). The transport half (`ProxyRouter::invoke_remote_at`'s `(None, Native)` arm) proven in `crates/router/src/proxy.rs` |
 | 20 | **A substrate a member has relocated away from keeps replaying its old endpoint record on its heartbeat** | Rejected, at both the DHT and the HTTP registry: a record's pkarr/BEP44 timestamp must be strictly newer than what is stored to be admitted, or equal and byte-identical (the routine heartbeat replay, admitted as a refresh, not a conflict). Since a substrate that cannot re-sign a member's record can only ever replay the same frozen bytes at the same timestamp, once the master has signed one newer record for the new placement, the old substrate's replay is permanently stale and rejected everywhere. **✅ A1**: `verify_returns_the_packets_own_timestamp` (`crates/core/src/dht_registry.rs`) and the registry-side compare-and-swap proven live in `publish_all_services_survives_a_record_rejected_by_admission` (`crates/community_registry/src/registry.rs`) |
 
@@ -714,14 +743,32 @@ fail.
 
 ## Performance budgets
 
-- **Binding convergence — provisional target, set a priori so it can actually
-  fail:** from a membership change, **all reachable dependents converged within
-  5 s**, and **any dependent that was unreachable converged within one poll
-  interval of becoming reachable**. A budget derived from the first measurement
-  could never be missed, which would make ADR-0021 §6's falsification test
-  vacuous — so this number is a guess on purpose, and the milestone owner revises
-  it at A5 sign-off with the measurement and the reasoning recorded. Missing it
-  is the trigger to build the pull path.
+- **Binding convergence — measured at A5e sign-off (2026-08-03).** The
+  provisional target was: all reachable dependents converged within 5 s, and
+  any dependent that was unreachable converged within one poll interval of
+  becoming reachable. **Measured against `replicas > 1`**, the first slice
+  where more than one dependent member exists to converge: a `submit`-driven
+  membership change's clock (RPC received → every reachable dependent
+  member's `write-bindings` returning `Applied`/`NoOp`) lands in
+  microseconds against a fake substrate answering immediately — the write
+  itself, not a poll, and inside budget by three orders of magnitude. A
+  loop-discovered change adds up to one `poll_interval_secs` (default 30s)
+  before the first push is attempted, which is the second clause's own
+  bound and not a miss of the first. The second clause has **two** causes,
+  not one — `poll_interval_secs`, and the absence of durable delivery (A6,
+  "after M5") to hold a push queued while the dependent was unreachable —
+  and a pull-side directory would address neither, so **ADR-0021 §6's
+  trigger has not fired**; see that ADR's own 2026-08-03 amendment and
+  ADR-0022 §11, which reaches the same conclusion independently for
+  callers *outside* the app instance. `roymctl supervisor status`'s
+  `bindings` array is a third, slower number — the operator-facing
+  confirmation, lagging a landed push by up to `poll_interval_secs` — kept
+  distinct from the write's own latency above precisely so a slow read
+  surface is never mistaken for a slow push (D-A5e-9). Full reasoning and
+  the harness: [slice-a5-implementation-plan.md](slice-a5-implementation-plan.md)
+  Part VI §33.9-§33.10; operator-facing numbers:
+  [developer-guide.md](../../../developer-guide.md)'s "Scaling a service"
+  section.
 - **Health poll cost:** the supervisor's steady-state poll must not be a
   meaningful load on a target substrate at the intended inventory size.
   **Made a number, a priori, at the A5c `§0` pass (D-A5c-12)**, for the same
@@ -739,7 +786,20 @@ fail.
   the name → master-DID step must stay an in-process cache lookup. The
   master-DID → endpoint step is the registry lookup that already happens today
   (A1 keeps it at exactly one, which is why ADR-0020 §6 chose a directly
-  master-signed record over a two-hop anchor index).
+  master-signed record over a two-hop anchor index). **✅ A5e** gives this
+  budget its Criterion case (D-A5e-13): `crates/app_orchestration/benches/
+  resolver.rs`, not `crates/router/benches/proxy.rs` as the backlog row
+  originally named — `ProxyRouter` has no dependency target at all, since
+  `CallTarget::Dependency` resolves in the WASM host capability before a
+  `ProxyRequest` exists. Three cases: a cache hit, a cache miss through the
+  registry, and a two-member `Redundant` round-robin, the last of which A5e
+  is the first slice to make real. The existing unit-level invoke-count
+  assertion in `host_capabilities.rs` keeps guarding against a regression to
+  a second *network* hop; this bench quantifies the resolution step itself.
+  **Measured (2026-08-04):** cache hit ~60 ns, cache miss through the
+  registry ~306 ns, two-member `Redundant` round-robin ~58 ns — all three
+  orders of magnitude below a network hop, confirming the budget rather
+  than merely asserting it.
 
 ---
 
@@ -749,18 +809,28 @@ Standard gates: `cargo +nightly fmt --all`, `cargo clippy --workspace
 --all-targets --all-features`, `cargo test --workspace`, `mise run test:e2e`,
 `wasm32-wasip2` compilation, plus:
 
-- The reference scenario runs end to end across two genuinely independent
-  `syneroym-substrate` instances (the
+- **✅** The reference scenario runs end to end across two genuinely
+  independent `syneroym-substrate` instances (the
   [federated_fdae_e2e.rs](../../../../crates/substrate/tests/federated_fdae_e2e.rs)
-  harness is the precedent for a real two-node test).
-- Every row of the failure/security matrix has a test.
-- Binding convergence measured against the provisional budget above; ADR-0021
-  §6's trigger evaluated explicitly, with the answer written down either way.
+  harness is the precedent for a real two-node test) —
+  [reference_scenario_e2e.rs](../../../../crates/substrate/tests/reference_scenario_e2e.rs),
+  steps 1-6 (D-A5e-15).
+- **Every row of the failure/security matrix has a test, with one named
+  exception:** rows 15 and 18 do not, and will not inside this milestone —
+  see D-A5e-1 and the two rows' own entries above. They move to slice **S4**
+  of the Logical Service Discovery Overlay, which needs three slices of its
+  own (S0-S2) this milestone does not build. The remaining eighteen rows are
+  each ✅ against a named test.
+- **✅** Binding convergence measured; ADR-0021 §6's trigger evaluated
+  explicitly, with the answer (not fired) written down — see *Performance
+  budgets* above.
 - An operator can read health, alerts, and per-dependent binding convergence
   through the `supervisor` interface — the read surface is a deliverable, not an
-  implementation detail.
+  implementation detail. **✅**, including the member dimension A5e adds to
+  every field of it (D-A5e-2).
 - `[LFC-MGT]` (App Supervisor) and `[FND-IDT]` (stable service identity) rows
-  flipped to Complete with evidence.
+  flip to Complete with evidence **once A7 has also landed** (§41 answer 1) —
+  not yet, since A5e alone does not close the milestone.
 - Slice A6 recorded as outstanding in `deferred-backlog.md` §8 *Node lifecycle &
   ops* with its pickup trigger — this milestone closes without it, deliberately.
 - An app instance carries a master DID minted at `adopt`, readable through

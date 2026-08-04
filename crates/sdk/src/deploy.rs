@@ -19,7 +19,9 @@ use anyhow::{Context, Result};
 use ed25519_dalek::VerifyingKey;
 use syneroym_app_orchestration::{
     ActionRecord, ActionState, DeploymentJournal,
-    models::{DeploymentPlan, LogicalServiceRef, PlannedService, ServiceId, SubstrateAlias},
+    models::{
+        DeploymentPlan, LogicalServiceRef, MemberRef, PlannedService, ServiceId, SubstrateAlias,
+    },
 };
 use syneroym_core::dht_registry::{DEFAULT_ENDPOINT_NOT_AFTER_SECS, EndpointInfo, EndpointType};
 use syneroym_identity::{
@@ -174,19 +176,21 @@ pub struct ApplyRequest<'a> {
     /// for every caller through A5a -- the supervisor that presents a
     /// real, `adopt`-minted generation does not exist yet.
     pub generation: u64,
-    /// The binding epoch to stamp on each dependent service's own
-    /// bindings, keyed by the dependent's `LogicalServiceRef` (M05A A5c
-    /// §19.3/D-A5c-4) -- not a scalar, since one apply can deploy several
-    /// dependent services whose counters have each advanced independently.
-    /// A service absent from this map maps its bindings at epoch `0`,
-    /// meaning "no supervisor has written here", which is what every
-    /// caller through A5b still means by it.
-    pub binding_epochs: &'a BTreeMap<LogicalServiceRef, u64>,
+    /// The binding epoch to stamp on each dependent member's own bindings,
+    /// keyed by the dependent's `MemberRef` (M05A A5c §19.3/D-A5c-4;
+    /// re-keyed from `LogicalServiceRef` in M05A A5e, D-A5e-2, since each
+    /// member holds its own `service_bindings` row on the substrate) -- not
+    /// a scalar, since one apply can deploy several dependent members whose
+    /// counters have each advanced independently. A member absent from this
+    /// map maps its bindings at epoch `0`, meaning "no supervisor has
+    /// written here", which is what every caller through A5b still means by
+    /// it.
+    pub binding_epochs: &'a BTreeMap<MemberRef, u64>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ServiceFailure {
-    pub logical_ref: LogicalServiceRef,
+    pub member_ref: MemberRef,
     pub alias: Option<SubstrateAlias>,
     pub substrate_did: String,
     pub error: String,
@@ -194,8 +198,8 @@ pub struct ServiceFailure {
 
 #[derive(Debug, Default)]
 pub struct ApplyReport {
-    pub deployed: Vec<LogicalServiceRef>,
-    pub skipped: Vec<LogicalServiceRef>,
+    pub deployed: Vec<MemberRef>,
+    pub skipped: Vec<MemberRef>,
     pub failures: Vec<ServiceFailure>,
 }
 
@@ -226,7 +230,7 @@ pub fn resolve_targets<'a>(
             ),
             (Some(alias), _) => match targets.get(alias) {
                 Some(t) => out.push((svc, t)),
-                None => missing.push((svc.logical_ref.clone(), alias.clone())),
+                None => missing.push((svc.member_ref(), alias.clone())),
             },
         }
     }
@@ -242,11 +246,16 @@ pub fn resolve_targets<'a>(
     }
 }
 
-/// The substrate a logical ref is currently placed on, per the **most
-/// recent** row naming it, or `None` if it has never landed or was most
-/// recently `REMOVE`d. `landed` must be ordered oldest-first, exactly as
+/// The substrate a member is currently placed on, per the **most recent**
+/// row naming it, or `None` if it has never landed or was most recently
+/// `REMOVE`d. `landed` must be ordered oldest-first, exactly as
 /// `DeploymentJournal::get_completed_actions`/`get_completed_actions_for_
 /// instance` return it.
+///
+/// `member_ref` is a `MemberRef`'s display string (M05A A5e, D-A5e-2): the
+/// journal's action rows are keyed per managed member, not per logical
+/// service, since two members of one logical service land as two separate
+/// placements.
 ///
 /// Shared by `apply_plan`'s resume-skip and `roymctl`'s placement-change
 /// refusal (`check_no_placement_change`) so the two cannot read the journal
@@ -258,9 +267,9 @@ pub fn resolve_targets<'a>(
 /// not care that a `REMOVE` sits after it.
 pub fn current_placement<'a>(
     landed: &'a [ActionRecord],
-    logical_ref: &str,
+    member_ref: &str,
 ) -> Option<&'a ActionRecord> {
-    match landed.iter().rev().find(|r| r.logical_ref == logical_ref) {
+    match landed.iter().rev().find(|r| r.logical_ref == member_ref) {
         Some(r) if r.action_type == "ADD" => Some(r),
         _ => None,
     }
@@ -282,7 +291,7 @@ pub async fn apply_plan(
     let mut report = ApplyReport::default();
 
     for (svc, target) in placed {
-        let l_ref = svc.logical_ref.to_string();
+        let l_ref = svc.member_ref().to_string();
 
         // D-A3-11: keyed on the DID, so an alias re-pointed at a different
         // node correctly redeploys rather than being skipped as already
@@ -293,7 +302,7 @@ pub async fn apply_plan(
         if current_placement(&completed, &l_ref)
             .is_some_and(|r| r.substrate_did == target.substrate_did)
         {
-            report.skipped.push(svc.logical_ref.clone());
+            report.skipped.push(svc.member_ref());
             continue;
         }
 
@@ -326,12 +335,12 @@ pub async fn apply_plan(
         match outcome {
             Ok(()) => {
                 journal.update_action_state(action_id, ActionState::Completed)?;
-                report.deployed.push(svc.logical_ref.clone());
+                report.deployed.push(svc.member_ref());
             }
             Err(error) => {
                 journal.update_action_state(action_id, ActionState::Failed)?;
                 report.failures.push(ServiceFailure {
-                    logical_ref: svc.logical_ref.clone(),
+                    member_ref: svc.member_ref(),
                     alias: target.alias.clone(),
                     substrate_did: target.substrate_did.clone(),
                     error,
@@ -583,6 +592,7 @@ mod tests {
             config: dummy_config(),
             resolved_dependencies: BTreeMap::new(),
             topology_mode: TopologyMode::Singleton,
+            member_index: 0,
         }
     }
 
@@ -735,7 +745,7 @@ mod tests {
             .append_action(
                 deployment_id,
                 "ADD",
-                &p.services[0].logical_ref.to_string(),
+                &p.services[0].member_ref().to_string(),
                 Some("edge-1"),
                 "did:key:zA",
                 ActionState::Completed,
@@ -782,7 +792,7 @@ mod tests {
             .append_action(
                 deployment_id,
                 "ADD",
-                &p.services[0].logical_ref.to_string(),
+                &p.services[0].member_ref().to_string(),
                 Some("edge-1"),
                 "did:key:zOldNode",
                 ActionState::Completed,
@@ -829,7 +839,7 @@ mod tests {
         let journal = DeploymentJournal::open_in_memory().unwrap();
         let p = plan(vec![service("a", Some("edge-1"))]);
         let deployment_id = journal.append(&p, DeploymentState::Degraded).unwrap();
-        let l_ref = p.services[0].logical_ref.to_string();
+        let l_ref = p.services[0].member_ref().to_string();
         journal
             .append_action(
                 deployment_id,

@@ -13,8 +13,8 @@ use syneroym_app_orchestration::{
     ActionRecord, ActionState, AlertStore, AppInstanceId, DeploymentJournal, DeploymentPlan,
     DeploymentState, LocalFilesystemCatalog, Reconciler, SynAppManifest, compile,
     models::{
-        AppBlueprintId, LogicalServiceName, LogicalServiceRef, PlannedService, ServiceConfig,
-        ServiceSpec, ServiceType, SubstrateAlias,
+        AppBlueprintId, LogicalServiceName, LogicalServiceRef, MemberRef, PlannedService,
+        ServiceConfig, ServiceSpec, ServiceType, SubstrateAlias,
     },
     substrate_inventory::{SubstrateEntry, SubstrateInventory, check_placement, placement_demand},
 };
@@ -293,7 +293,7 @@ fn check_no_placement_change(
     landed: &[ActionRecord],
 ) -> anyhow::Result<()> {
     for (svc, target) in placed {
-        let l_ref = svc.logical_ref.to_string();
+        let l_ref = svc.member_ref().to_string();
         if let Some(prev) = deploy::current_placement(landed, &l_ref)
             && prev.substrate_did != target.substrate_did
         {
@@ -391,6 +391,7 @@ pub async fn handle(
                         },
                         depends_on: vec![],
                         placement: None,
+                        replicas: 1,
                     },
                 );
                 SynAppManifest {
@@ -664,7 +665,7 @@ pub async fn handle(
                         report.deployed.iter().map(ToString::to_string).collect();
                     let succeeded: Vec<_> = deployed_placed
                         .into_iter()
-                        .filter(|(svc, _)| deployed.contains(&svc.logical_ref.to_string()))
+                        .filter(|(svc, _)| deployed.contains(&svc.member_ref().to_string()))
                         .collect();
                     probe_registry_reachability(&succeeded, &urls).await;
                 }
@@ -683,7 +684,7 @@ pub async fn handle(
                 for failure in &report.failures {
                     eprintln!(
                         "  {} on {} ({}): {}",
-                        failure.logical_ref,
+                        failure.member_ref,
                         failure.alias.as_ref().map(SubstrateAlias::as_str).unwrap_or("--substrate"),
                         failure.substrate_did,
                         failure.error
@@ -765,7 +766,16 @@ pub async fn handle(
                 app_instance_id: instance_id.clone(),
                 service_name: LogicalServiceName::new(service.as_str()),
             };
-            let l_ref = logical_ref.to_string();
+            // M05A A5e: the journal now keys every action row on a
+            // `MemberRef`, not a bare `LogicalServiceRef`. `--service` names
+            // only the logical service, with no way to name one member of a
+            // scaled one -- forgets member 0, the only member an unscaled
+            // deploy ever has. Forgetting one member of a `replicas > 1`
+            // service is not supported by this command yet (deferred-
+            // backlog: "roymctl app forget has no per-member verb"), so a
+            // scaled service is refused below rather than silently acting
+            // on member 0 alone while its siblings stay tracked.
+            let l_ref = (MemberRef { logical_ref: logical_ref.clone(), index: 0 }).to_string();
 
             let parent_dir = journal_path.parent().unwrap_or(Path::new("."));
             let db_name = journal_path
@@ -776,6 +786,26 @@ pub async fn handle(
             let journal = DeploymentJournal::open(parent_dir, db_name)?;
 
             let landed = journal.get_completed_actions_for_instance(&instance_id)?;
+
+            let member_prefix = format!("{logical_ref}#");
+            let landed_member_indices: BTreeSet<u32> = landed
+                .iter()
+                .filter(|r| r.logical_ref.starts_with(&member_prefix))
+                .filter_map(|r| r.logical_ref[member_prefix.len()..].parse::<u32>().ok())
+                .filter(|idx| {
+                    deploy::current_placement(&landed, &format!("{member_prefix}{idx}")).is_some()
+                })
+                .collect();
+            if landed_member_indices.len() > 1 {
+                anyhow::bail!(
+                    "'{service}' in {instance_id} has {} landed members \
+                     ({landed_member_indices:?}); `app forget` does not yet support naming one \
+                     member of a scaled service. Forgetting only member 0 would leave the others \
+                     tracked as if this command had never run.",
+                    landed_member_indices.len()
+                );
+            }
+
             match landed.iter().rev().find(|r| r.logical_ref == l_ref) {
                 None => anyhow::bail!(
                     "no completed deploy is recorded for '{service}' in {instance_id}; nothing to \
@@ -849,11 +879,12 @@ pub async fn handle(
             let mut expected = Vec::new();
             let mut aliases: BTreeMap<String, Option<SubstrateAlias>> = BTreeMap::new();
             for svc in &record.plan.services {
-                match deploy::current_placement(&landed, &svc.logical_ref.to_string()) {
+                match deploy::current_placement(&landed, &svc.member_ref().to_string()) {
                     None => expected.push(health::ExpectedService {
                         logical_ref: svc.logical_ref.clone(),
                         service_id: String::new(),
                         substrate_did: String::new(),
+                        member_index: svc.member_index,
                     }),
                     Some(row) => {
                         // The plan's `service_id` is the compiler's
@@ -864,6 +895,7 @@ pub async fn handle(
                             logical_ref: svc.logical_ref.clone(),
                             service_id: id,
                             substrate_did: row.substrate_did.clone(),
+                            member_index: svc.member_index,
                         });
                         aliases.insert(
                             row.substrate_did.clone(),
@@ -1336,6 +1368,7 @@ mod tests {
             config: dummy_config(),
             resolved_dependencies: BTreeMap::new(),
             topology_mode: TopologyMode::Singleton,
+            member_index: 0,
         }
     }
 
@@ -1357,7 +1390,7 @@ mod tests {
             app_instance_id: AppInstanceId::new("inst-1"),
             service_name: LogicalServiceName::new("backend"),
         };
-        let name = member_identity::member_master_name(&logical_ref, 0).unwrap();
+        let name = member_identity::member_master_name(&logical_ref, 0);
         let master = member_identity::resolve_or_mint_member_master(dir.path(), &name).unwrap();
         let real_did = substrate::derive_did_key(&master.public_key());
 
@@ -1366,7 +1399,7 @@ mod tests {
         let placed = vec![(&svc, &target)];
         let landed = vec![ActionRecord {
             action_type: "ADD".to_string(),
-            logical_ref: logical_ref.to_string(),
+            logical_ref: format!("{logical_ref}#0"),
             substrate_alias: Some("edge-1".to_string()),
             substrate_did: "did:key:zOldNode".to_string(),
         }];
@@ -1419,7 +1452,7 @@ mod tests {
             .append_action(
                 deployment_id,
                 "ADD",
-                &logical_ref.to_string(),
+                &format!("{logical_ref}#0"),
                 Some("edge-1"),
                 "did:key:zOldNode",
                 ActionState::Completed,
@@ -1519,7 +1552,7 @@ mod tests {
                 .append_action(
                     deployment_id,
                     "ADD",
-                    &logical_ref.to_string(),
+                    &format!("{logical_ref}#0"),
                     Some("edge-1"),
                     "did:key:zOldNode",
                     ActionState::Completed,
@@ -1544,7 +1577,8 @@ mod tests {
 
         let journal = DeploymentJournal::open(dir.path(), "deployments.db").unwrap();
         let landed = journal.get_completed_actions_for_instance(&instance_id).unwrap();
-        let last = landed.iter().rev().find(|r| r.logical_ref == logical_ref.to_string()).unwrap();
+        let last =
+            landed.iter().rev().find(|r| r.logical_ref == format!("{logical_ref}#0")).unwrap();
         assert_eq!(last.action_type, "REMOVE");
         assert_eq!(last.substrate_did, "did:key:zOldNode");
 
@@ -1571,6 +1605,71 @@ mod tests {
         .unwrap();
         let landed_again = journal.get_completed_actions_for_instance(&instance_id).unwrap();
         assert_eq!(landed_again.len(), landed.len(), "{landed_again:?}");
+    }
+
+    /// M05A A5e review: `--service` names a logical service, and this
+    /// command hardcodes member 0 -- forgetting a scaled service used to
+    /// silently forget member 0 alone while its siblings stayed tracked as
+    /// if nothing had happened. Refused instead, naming the count.
+    #[tokio::test]
+    async fn app_forget_refuses_a_service_with_more_than_one_landed_member() {
+        let dir = tempfile::tempdir().unwrap();
+        let instance_id = AppInstanceId::new("inst-forget-scaled");
+        let logical_ref = LogicalServiceRef {
+            app_instance_id: instance_id.clone(),
+            service_name: LogicalServiceName::new("backend"),
+        };
+        let journal_path = dir.path().join("deployments.db");
+
+        {
+            let journal = DeploymentJournal::open(dir.path(), "deployments.db").unwrap();
+            let plan = dummy_deployment_plan(
+                &instance_id,
+                planned_service(logical_ref.clone(), "did:key:hFabricated", "edge-1"),
+            );
+            let deployment_id = journal.append(&plan, DeploymentState::Active).unwrap();
+            journal
+                .append_action(
+                    deployment_id,
+                    "ADD",
+                    &format!("{logical_ref}#0"),
+                    Some("edge-1"),
+                    "did:key:zNode0",
+                    ActionState::Completed,
+                )
+                .unwrap();
+            journal
+                .append_action(
+                    deployment_id,
+                    "ADD",
+                    &format!("{logical_ref}#1"),
+                    Some("edge-2"),
+                    "did:key:zNode1",
+                    ActionState::Completed,
+                )
+                .unwrap();
+        }
+
+        let err = handle(
+            &AppCommands::Forget {
+                instance_id: instance_id.to_string(),
+                service: "backend".to_string(),
+                journal_path: journal_path.clone(),
+            },
+            "http://localhost:1",
+            None,
+            dir.path(),
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("2 landed members"), "{err}");
+
+        // Neither member was touched.
+        let journal = DeploymentJournal::open(dir.path(), "deployments.db").unwrap();
+        let landed = journal.get_completed_actions_for_instance(&instance_id).unwrap();
+        assert!(landed.iter().all(|r| r.action_type == "ADD"), "{landed:?}");
     }
 
     #[tokio::test]

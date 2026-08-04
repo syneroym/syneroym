@@ -95,8 +95,8 @@ pub enum SupervisorCommands {
     /// process itself should stop.
     RevokeInstance {
         instance_id: String,
-        /// The member's full logical reference, as `status` prints it:
-        /// `<instance-id>/<service-name>`.
+        /// The member's full `MemberRef`, as `status` prints it:
+        /// `<instance-id>/<service-name>#<index>` (M05A A5e).
         logical_ref: String,
     },
 }

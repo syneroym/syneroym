@@ -332,9 +332,16 @@ async fn test_wasm_app_scenario(ctx: &SubstrateTestContext) {
     .expect("app run request timed out")
     .expect("App request failed");
 
-    assert_eq!(
-        app_res.result,
-        serde_json::json!("Hello, tester! Greetings from greeter::greet::greet")
+    // `greet`'s reply also echoes this instance's own `component_id` (M05A
+    // Slice A5e, `greeter`'s `context::get-test-context`), so only the
+    // fixed prefix is asserted here.
+    assert!(
+        app_res
+            .result
+            .as_str()
+            .is_some_and(|s| s.starts_with("Hello, tester! Greetings from greeter::greet::greet")),
+        "{:?}",
+        app_res.result
     );
     app_client.shutdown().await.ok();
     debug!(">>> Finished WASM Scenario: Run RPC");
@@ -608,8 +615,11 @@ async fn test_http_proxy_invocation(
     assert!(proxy_res.status().is_success(), "Expected 200 OK, got {}", proxy_res.status());
 
     let proxy_json: JsonRpcResponse = proxy_res.json().await.unwrap();
-    assert_eq!(
-        proxy_json.result,
-        serde_json::json!("Hello, proxy-tester! Greetings from greeter::greet::greet")
+    assert!(
+        proxy_json.result.as_str().is_some_and(
+            |s| s.starts_with("Hello, proxy-tester! Greetings from greeter::greet::greet")
+        ),
+        "{:?}",
+        proxy_json.result
     );
 }

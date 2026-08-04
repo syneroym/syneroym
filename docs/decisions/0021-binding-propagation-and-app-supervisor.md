@@ -220,6 +220,39 @@ dependents cannot be kept inside its budget by delivery retry alone, add the pul
 path. Recorded in the milestone's exit criteria and in the deferred backlog so it
 is picked up rather than remembered.
 
+**Amendment (2026-08-03, after Slice A5e implementation).** The trigger has been
+measured, and it has not fired. The budget has two clauses, and they were
+measured separately because a pull-side directory would not have moved the
+second one:
+
+- **Reachable dependents, inside 5 seconds.** Measured from a `submit`-driven
+  membership change to every reachable dependent member's `write-bindings`
+  call returning `Applied`/`NoOp`, against a fake substrate answering
+  immediately: microseconds, not seconds. A loop-discovered change (nothing
+  resubmitted) adds up to one `poll_interval_secs` (default 30s) before the
+  first push is attempted, since that is when the loop's diff next runs, but
+  the write itself is the same order of magnitude once it starts.
+- **An unreachable dependent, converging within one poll interval of coming
+  back.** This clause has **two** causes, not one: `poll_interval_secs` bounds
+  how soon the loop notices the dependent is reachable again, and the absence
+  of durable delivery (this ADR's own §5, "after M5") bounds whether the push
+  that was due while it was down is still queued anywhere to send. A pull-side
+  directory addresses neither -- a dependent that cannot reach the network
+  cannot pull either, and would additionally serve a stale cached document for
+  its own TTL. A miss here implicates the poll interval and the missing
+  outbox (A6), not the push model, so it is not this trigger.
+
+Measured against `replicas > 1`, the first slice where more than one dependent
+member exists to converge: full reasoning, the harness, and the recorded
+numbers are in
+[slice-a5-implementation-plan.md](../planning/milestones/M05A-app-supervisor/slice-a5-implementation-plan.md)
+Part VI §33.9-§33.10 and the operator-facing numbers in
+[developer-guide.md](../developer-guide.md)'s "Scaling a service" section.
+[ADR-0022](0022-logical-service-discovery-overlay.md) §11 reaches the same
+conclusion independently, for callers *outside* the app instance -- this
+amendment does not contradict it, it confirms it from the other side of the
+same line.
+
 ## 7. Cross-application bindings are best effort
 
 `AppDependencySpec::Bind`
@@ -266,6 +299,22 @@ operator will see it, and should not have to guess where it came from.
 In either posture the supervisor learns liveness and reachability, which is all
 §7 claims. It does **not** learn why B is unhealthy, or that B's owner is
 mid-migration, and this ADR does not promise that.
+
+**Amendment (2026-08-03, after Slice A5e implementation).** This probe and the
+manifest surface naming which service of B a dependency binds to left this
+milestone on 2026-08-02, moved to slice **S4** of the Logical Service Discovery
+Overlay ([ADR-0022](0022-logical-service-discovery-overlay.md)). §7's premise
+above — "no directory exists for A to observe B through" — is exactly what
+ADR-0022's Tier 2 changes: once S2's signed topology document exists, A's
+supervisor has a directory to observe B's member set through, and S4 is what
+builds the probe against it. The rule this section states, **A's owner owns
+the consequence**, is unchanged; only which slice builds the mechanism that
+lets A's supervisor act on it moves. Failure-matrix rows 15 and 18 (this
+probe, in both key postures) move with it, annotated with the three further
+prerequisites S4 needs beyond the naming surface itself: the compiler
+resolving `Bind` at all, the substrate's `prepare_binding` accepting a
+cross-instance write under ADR-0022 §5's authorization model, and S2's
+topology document.
 
 ## 8. Naming
 

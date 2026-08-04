@@ -276,6 +276,7 @@ fn one_service_manifest() -> SynAppManifest {
             },
             depends_on: vec![],
             placement: Some(PlacementSelector::Substrate(SubstrateAlias::new(MANAGED_ALIAS))),
+            replicas: 1,
         },
     );
     SynAppManifest {
@@ -312,6 +313,7 @@ fn bound_app_manifest() -> SynAppManifest {
             },
             depends_on: vec![],
             placement: Some(PlacementSelector::Substrate(SubstrateAlias::new(MANAGED_ALIAS))),
+            replicas: 1,
         },
     );
     services.insert(
@@ -333,6 +335,7 @@ fn bound_app_manifest() -> SynAppManifest {
             },
             depends_on: vec![LogicalServiceName::new("backend")],
             placement: Some(PlacementSelector::Substrate(SubstrateAlias::new(MANAGED_ALIAS))),
+            replicas: 1,
         },
     );
     SynAppManifest {
@@ -637,7 +640,7 @@ async fn a_pushed_binding_reaches_a_dependent_the_supervisor_deployed() {
     let frontend_id = services
         .iter()
         .find(|s| {
-            s.get("logical_ref").and_then(|v| v.as_str()).map(|r| r.ends_with("/frontend"))
+            s.get("logical_ref").and_then(|v| v.as_str()).map(|r| r.ends_with("/frontend#0"))
                 == Some(true)
         })
         .and_then(|s| s.get("service_id"))
